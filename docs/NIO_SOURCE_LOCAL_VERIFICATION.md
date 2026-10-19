@@ -270,6 +270,26 @@ exceeded its 15-second per-process timeout for four cases, which were
 re-executed successfully with a 60-second timeout and two workers.
 These tests are not actual JDK25 Maven/JUnit/GraalVM or LLVM compiler tests.
 
+### Eliminate the raw-verifier check/use race (2026-10-18)
+
+The gate originally verified the raw Python helper's worktree hash and then
+launched the helper **by pathname**. A concurrent swap after `git hash-object`
+but before `python3` could execute unapproved Python from the worktree.
+A deterministic synthetic Git shim reproduces this: the old gate eventually
+returned exit 77 but had **already created the injected side-effect marker**.
+The source-local gate now loads the approved verifier code by immutable Git
+blob ID (`git cat-file blob "$approved_blob"`) and executes those bytes via
+isolated Python `-I -B -c`, preserving the same commit/tree arguments. The
+mutable worktree helper is still hashed for mismatch detection, but is no
+longer the executed Python source.
+
+The new regression asserts **no side effect and no Maven start**. Locally
+executed synthetic results: 22/22 exact-tree gate tests, 7/7 Git-inspection
+checks, 20/20 Surefire evidence cases, 10/10 additional verifier cases and
+13/13 standalone scenarios. These do not prove full JDK 25/Maven/GraalVM or
+LLVM compiler correctness. A trusted bootstrap and reviewed shell entrypoint
+remain prerequisites; this change addresses only the verifier path race.
+
 ## Evidence, trust boundary and interpretation
 
 - The script writes an **unsigned** `target/nio-exact-tree-gate/receipt.txt`

@@ -216,6 +216,42 @@ exit 0
         self.assertIn("stage=source-identity", self.receipt())
         self.assertFalse((self.root / "target/nio-exact-tree-gate/targeted-junit.log").exists())
 
+    def test_raw_verifier_posthash_swap_does_not_execute_unapproved_python(self):
+        # A concurrent worktree mutation immediately AFTER the hash-object
+        # probe used to execute an unapproved verifier, even if its later
+        # raw hash comparison rejected the checkout.
+        marker = self.outside / "swapped-python-executed"
+        shim = self.tools / "git"
+        shim.write_text(r"""#!/bin/sh
+set -eu
+case " $* " in
+  *" hash-object --no-filters scripts/nio_verify_raw_worktree.py "*)
+    /usr/bin/git "$@"
+    python3 - <<'PY_SWAP'
+import os
+from pathlib import Path
+helper = Path('scripts/nio_verify_raw_worktree.py')
+raw = helper.read_text()
+replacement = ("from __future__ import annotations\n"
+               "from pathlib import Path as _ProbePath\n"
+               "_ProbePath(" + repr(os.environ['NIO_SWAP_MARKER']) + ")"
+               ".write_text('executed')\n")
+assert 'from __future__ import annotations\n' in raw
+helper.write_text(raw.replace('from __future__ import annotations\n', replacement, 1))
+PY_SWAP
+    exit 0 ;;
+esac
+exec /usr/bin/git "$@"
+""")
+        shim.chmod(0o755)
+        environment = self.env.copy()
+        environment['NIO_SWAP_MARKER'] = str(marker)
+        result = self.gate(env=environment)
+        self.assertEqual(77, result.returncode, result.stderr)
+        self.assertFalse(marker.exists(), "unapproved worktree Python executed after hash probe")
+        self.assertIn('stage=source-identity', self.receipt())
+        self.assertFalse((self.root / 'target/nio-exact-tree-gate/targeted-junit.log').exists())
+
     def test_successful_clean_that_leaves_stale_target_fails_closed(self):
         target = self.root / "target"
         target.mkdir()

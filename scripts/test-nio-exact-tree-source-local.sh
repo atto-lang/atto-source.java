@@ -150,7 +150,11 @@ verify_raw_worktree() {
     printf 'ERROR: raw verifier bytes/index differ from approved HEAD blob.\n' >&2
     return 77
   }
-  python3 -I scripts/nio_verify_raw_worktree.py "$EXPECTED_COMMIT" "$EXPECTED_TREE"
+  # Execute the already-approved immutable Git object instead of reopening the
+  # worktree path after hashing: the path can be swapped between check/use.
+  local approved_source
+  approved_source="$(git cat-file blob "$approved_blob")" || return 77
+  python3 -I -B -c "$approved_source" "$EXPECTED_COMMIT" "$EXPECTED_TREE"
 }
 verify_raw_worktree || exit 77
 
