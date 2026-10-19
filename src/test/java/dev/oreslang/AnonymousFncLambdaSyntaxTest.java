@@ -39,6 +39,26 @@ final class AnonymousFncLambdaSyntaxTest {
     }
 
     @Test
+    void inlineListsOfSymbolsPreserveExistingTokenAndAstShapes() {
+        Ast.Program program = Parser.parse("""
+                pub fnc main(): void {
+                    val symbols = [#auto, #numa_aware, #aosoa];
+                    return;
+                }
+                """);
+        Ast.FunctionDecl main = assertInstanceOf(Ast.FunctionDecl.class,
+                program.modules().getFirst().declarations().getFirst());
+        Ast.BindingStmt binding = assertInstanceOf(Ast.BindingStmt.class, main.body().getFirst());
+        Ast.ListExpr list = assertInstanceOf(Ast.ListExpr.class, binding.initializer());
+        assertEquals(3, list.elements().size());
+        String[] expected = {"auto", "numa_aware", "aosoa"};
+        for (int i = 0; i < expected.length; i++) {
+            Ast.LiteralExpr element = assertInstanceOf(Ast.LiteralExpr.class, list.elements().get(i));
+            assertEquals(dev.oreslang.runtime.OresSymbol.process(expected[i]), element.value());
+        }
+    }
+
+    @Test
     void anonymousFncIsAcceptedAsAPlainPositionalCallbackArgument() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc apply(Fnc<int, int> callback): int {
