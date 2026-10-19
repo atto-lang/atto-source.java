@@ -181,16 +181,19 @@ public final class IpcReceiptCorrelation {
     }
 
     /**
-     * Local trusted EOF/disconnect: return exactly which correlations became
-     * uncertain. Copies finish before any mutation; a throwing allocation
-     * cannot partially retire correlations. No message is automatically resent.
+     * Local trusted EOF/disconnect with an authenticated transport epoch,
+     * not a guest-chosen or textual session name. Caller must prove the
+     * physical session incarnation/route/grant before invoking this method.
+     * A stale EOF cannot retire a new generation with a reused session string.
+     * Copies finish before any mutation; a throwing allocation cannot
+     * partially retire correlations. No message is automatically resent.
      */
-    public synchronized List<LostCorrelation> retireTransportLost(String trustedSession) {
-        requireToken(trustedSession, "trustedSession");
+    synchronized List<LostCorrelation> retireTransportLost(Envelope trustedEpoch) {
+        Objects.requireNonNull(trustedEpoch, "trustedEpoch");
         ArrayList<LostCorrelation> losses = new ArrayList<>();
         for (Map.Entry<Long, Entry> item : pending.entrySet()) {
             Entry entry = item.getValue();
-            if (entry.envelope.session().equals(trustedSession)) {
+            if (sameTransportEpoch(entry.envelope, trustedEpoch)) {
                 losses.add(new LostCorrelation(entry.envelope, entry.stage));
             }
         }
@@ -204,6 +207,22 @@ public final class IpcReceiptCorrelation {
                     || removed.stage == Stage.DISPATCH_COMMITTED) --transportCredits;
         }
         return immutableLosses;
+    }
+
+    /**
+     * Prevent a delayed close from an old authenticated session incarnation,
+     * route or grant from retiring messages on a reused textual session name.
+     * Sequence and payload digest identify messages, not the transport epoch.
+     */
+    private static boolean sameTransportEpoch(Envelope a, Envelope b) {
+        return a.domain().equals(b.domain())
+                && a.sender().equals(b.sender())
+                && a.destination().equals(b.destination())
+                && a.session().equals(b.session())
+                && a.senderIncarnation() == b.senderIncarnation()
+                && a.destinationIncarnation() == b.destinationIncarnation()
+                && a.routeEpoch() == b.routeEpoch()
+                && a.capabilityGeneration() == b.capabilityGeneration();
     }
 
     public synchronized Counters counters() {
