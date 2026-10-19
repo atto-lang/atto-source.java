@@ -578,6 +578,72 @@ final class TaskAccessVerifierTest {
         assertEquals(0, ledger.activeClaims());
     }
 
+    @Test void resolverCannotRetireOrCancelAnotherChildDuringAdmission() {
+        var ledger = new TaskAccessVerifier();
+        var place = TaskAccessVerifier.Place.whole(WORLD);
+        var live = admit(ledger, List.of(read(place)));
+        assertThrows(IllegalStateException.class, () ->
+                ledger.admitTyped(List.of(
+                        new TaskAccessVerifier.TypedClaim(read(place), Types.Primitive.INT)),
+                        (name, trait) -> false,
+                        p -> {
+                            ledger.quiescent(live);
+                            return Types.Primitive.INT;
+                        }));
+        assertEquals(1, ledger.activeChildren());
+        assertEquals(1, ledger.activeClaims());
+        assertThrows(IllegalStateException.class, () ->
+                ledger.admitTyped(List.of(
+                        new TaskAccessVerifier.TypedClaim(read(place), Types.Primitive.INT)),
+                        (name, trait) -> false,
+                        p -> {
+                            ledger.requestCancel(live);
+                            return Types.Primitive.INT;
+                        }));
+        assertFalse(ledger.cancellationRequested(live));
+        ledger.quiescent(live);
+        ledger.finishScope();
+    }
+
+    @Test void resolverCannotSealScopeDuringAdmission() {
+        var ledger = new TaskAccessVerifier();
+        var place = TaskAccessVerifier.Place.whole(WORLD);
+        assertThrows(IllegalStateException.class, () ->
+                ledger.admitTyped(List.of(
+                        new TaskAccessVerifier.TypedClaim(read(place), Types.Primitive.INT)),
+                        (name, trait) -> false,
+                        p -> {
+                            ledger.finishScope();
+                            return Types.Primitive.INT;
+                        }));
+        assertEquals(0, ledger.activeClaims());
+        var ticket = admit(ledger, List.of(read(place)));
+        ledger.quiescent(ticket);
+        ledger.finishScope();
+    }
+
+    @Test void nestedAdmissionByNominalProofIsRejectedAndGuardResets() {
+        var ledger = new TaskAccessVerifier();
+        var place = TaskAccessVerifier.Place.whole(WORLD);
+        var nominal = new Types.Named("DefinitelyNotBuiltIn", List.of());
+        var claim = new TaskAccessVerifier.TypedClaim(read(place), nominal);
+        assertThrows(IllegalStateException.class, () ->
+                ledger.admitTyped(List.of(claim),
+                        (name, trait) -> {
+                            ledger.admitTyped(List.of(
+                                    new TaskAccessVerifier.TypedClaim(
+                                            read(place), Types.Primitive.INT)),
+                                    (nestedName, nestedTrait) -> false,
+                                    p -> Types.Primitive.INT);
+                            return true;
+                        },
+                        p -> nominal));
+        assertEquals(0, ledger.activeClaims());
+        var accepted = admit(ledger, List.of(read(place)));
+        ledger.quiescent(accepted);
+        ledger.finishScope();
+    }
+
     @Test void racingWritersNeverAcquireTwoLiveLoans() throws Exception {
         var verifier = new TaskAccessVerifier();
         var place = TaskAccessVerifier.Place.whole(WORLD);
