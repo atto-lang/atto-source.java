@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.OwnershipChecker;
 
 import java.util.Map;
 
@@ -76,6 +77,46 @@ public final class RecordFrontendSmoke {
         check(TypeChecker.checkTypesWithDiagnostics(Parser.parse(existingType))
                         .shortInferredAliases().isEmpty(),
                 "preexisting type is never implicitly redeclared");
+
+        // Match the production linked-public-class checker handoff without
+        // pulling in Maven, GraalVM, or the incremental build runtime.
+        Ast.Program exportingUnit = Parser.parse("""
+                pub define class ImportedOptions as
+                    pub val int max_input_bytes;
+                end
+                """);
+        Ast.ClassDecl exported = exportingUnit.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast).findFirst().orElseThrow();
+        Map<String, Ast.ClassDecl> linked = Map.of("ImportedOptions", exported);
+        Ast.Program consumerUnit = Parser.parse("""
+                import class ImportedOptions from './options';
+                fnc read(): string {
+                    const LocalRow first = infer record{name: "Ada"};
+                    const LocalRow second = infer struct{name: "Grace"};
+                    return second.name;
+                }
+                """);
+        TypeChecker.TypeCheckResult linkedAnalysis =
+                TypeChecker.checkTypesWithImportedClassesWithDiagnostics(
+                        consumerUnit, linked, Map.of());
+        check(linkedAnalysis.shortInferredAliases().size() == 1,
+                "linked checker must retain short inference proof");
+        OwnershipChecker.checkWithImportedClasses(
+                linkedAnalysis.program(), linked, linkedAnalysis.shortInferredAliases());
+
+        // Imported symbols are not allowed to become new inferred aliases.
+        Ast.Program shadowingImport = Parser.parse("""
+                import class ImportedOptions from './options';
+                fnc bad(): void {
+                    const ImportedOptions option = infer record{name: "Ada"};
+                    return;
+                }
+                """);
+        denied(() -> TypeChecker.checkTypesWithImportedClassesWithDiagnostics(
+                        shadowingImport, linked, Map.of()),
+                "imported class name must not become a short inferred alias");
 
         // Failure gates must reach ownership analysis as well as type checking.
         denied(() -> TypeChecker.check(Parser.parse("""
