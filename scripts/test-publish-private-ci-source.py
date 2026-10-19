@@ -29,6 +29,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.route_calls = []
         self.visibility = ["private"] * 100
         self.repo_ids = [12345] * 100
+        self.push_permissions = [True] * 100
         self.destination = patch.object(pub, "MIRROR_DESTINATION", "trusted/ci")
         self.destination.start()
         self.addCleanup(self.destination.stop)
@@ -47,7 +48,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == "repos/trusted/ci":
             return dict(id=self.repo_ids.pop(0), full_name="trusted/ci",
                         visibility=self.visibility.pop(0),
-                        private=True, default_branch="anything-can-move")
+                        private=True, default_branch="anything-can-move",
+                        permissions={"push": self.push_permissions.pop(0)})
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
             return {"sha": hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
@@ -183,6 +185,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_visibility_flip_aborts_before_next_write(self):
         self.visibility = ["private", "private", "public"]
         with self.assertRaises(pub.Denied):
+            self.publish()
+        self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
+                         ["repos/trusted/ci/git/blobs"])
+
+    def test_push_permission_flip_aborts_before_next_write(self):
+        self.push_permissions = [True, True, False]
+        with self.assertRaisesRegex(pub.Denied, "write permission"):
             self.publish()
         self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
                          ["repos/trusted/ci/git/blobs"])
