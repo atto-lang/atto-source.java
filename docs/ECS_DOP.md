@@ -155,6 +155,15 @@ ECS is appropriate for dense homogeneous state, bulk traversal, predictable memo
 
 An Oreslang program can use both. Actor/runtime isolation rules are not weakened by ECS.
 
+
+## Actor-free ownership and structured Tasks (cross-PR requirement)
+
+**ECS is not an actor subsystem**: ordinary functions and the main execution context must be able to construct, own and query `World` without any `ActorRef`, mailbox, supervisor, or actor-local arena. Future `nb` Tasks can process explicitly borrowed disjoint column/row partitions while the owning Task scope remains live; shared read-only snapshots may use an Arc-style immutable backing. Scheduling requires compiler-verified field/region effects, not annotations alone. A detached task cannot retain an unsafe borrowed query beyond its owner's lifetime.
+
+An actor may optionally *own* a world for network/service isolation, but that is an application architectural choice. Actor-private mutable pointers must not be exported via `rt share`; any cross-actor immutable sharing requires an approved allocation/trust domain and explicit transport admission. `Arc<T>`-style refcounting is not a mutable world lock or a cross-domain permission.
+
+The explicit [cross-backend zero-copy/Task/ECS contract](https://github.com/ores-truffle-oreslang/oreslang-source.java/blob/docs/inverted-class-dop-20261018/docs/SHARED_STORAGE_ECS_TASKS_V1.md) is staged in Java PR #1423 and native host buffer reference work is staged in LLVM PR #657. This draft's `Object[]` columns remain a correctness model, **not** a production zero-copy POD layout. Compile-time system effects, native backing, nonescaping loans and `nb` source lowering all gate production claims.
+
 ## Current implementation boundary
 
 This draft establishes the source declaration/effect contract, compiler metadata, chunked SoA/archetype reference runtime, structural command barrier, and tests.
