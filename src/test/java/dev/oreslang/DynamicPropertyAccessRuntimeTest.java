@@ -161,4 +161,72 @@ final class DynamicPropertyAccessRuntimeTest {
         String text = output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
         assertEquals("4.0\n5.0\n11.0\n12\n13\n", text);
     }
+
+    @Test
+    void inheritedComputedClassFieldsAndOwnerPrivateAccessExecuteAtRuntime() {
+        String source = """
+                define class Parent<T> as
+                    pub let T inherited;
+                end
+
+                define class Child<U> extends Parent<U> as
+                    pub let U own;
+                end
+
+                define class Secret as
+                    private let int hidden = 1;
+                    pub let int shown = 2;
+
+                    pub fnc read(string key): int {
+                        return self[key];
+                    }
+
+                    pub fnc write(string key, int value): int {
+                        self[key] = value;
+                        return self[key];
+                    }
+                end
+
+                fnc inherited_key(): string {
+                    return "inherited";
+                }
+
+                fnc private_key(): string {
+                    return "hidden";
+                }
+
+                pub fnc main(): void {
+                    val Child<int> child = new Child<int>(3, 4);
+                    const inherited = inherited_key();
+                    stdio.println(child[inherited]);
+                    child[inherited] = 8;
+                    stdio.println(child[inherited]);
+
+                    val Secret secret = new Secret();
+                    const hidden = private_key();
+                    stdio.println(secret.read(hidden));
+                    stdio.println(secret.write(hidden, 9));
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(OresLanguage.ID, source, "dynamic-property-inherited-runtime.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(output)
+                    .build()) {
+                context.eval(program);
+            }
+        });
+
+        String text = output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
+        assertEquals("3\n8\n1\n9\n", text);
+    }
 }
