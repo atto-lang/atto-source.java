@@ -1161,10 +1161,12 @@ public final class Ast {
             // arbitrary object with the same key names. A rewrite that changes
             // the receiver expression must obtain a fresh type/ownership check,
             // not inherit another receiver's field visibility or tuple slot.
-            // Compare AST structure (not a receiver's runtime value); ordinary
-            // semantic-preserving cloning keeps equivalent immutable records.
+            // Lexically distinct receivers can be structurally equal while
+            // resolving to different bindings or static views. Proof transfer
+            // requires the identical checked receiver AST node; a rewrite
+            // that creates a new receiver must be fully re-typechecked.
             if ((visible != null || fixed != null)
-                    && !original.receiver().equals(rewritten.receiver())) {
+                    && original.receiver() != rewritten.receiver()) {
                 throw new IllegalStateException(
                         "optimizer changed receiver of a certified indexed projection");
             }

@@ -475,7 +475,7 @@ final class CheckedDynamicIndexAccessTest {
                 () -> Ast.CheckedIndexKeys.propagate(first, second));
         assertEquals(false, Ast.CheckedIndexKeys.hasProjectionProof(second));
         Ast.IndexExpr clone = new Ast.IndexExpr(
-                new Ast.NameExpr("first"), new Ast.NameExpr("key"));
+                first.receiver(), new Ast.NameExpr("key"));
         assertDoesNotThrow(() -> Ast.CheckedIndexKeys.propagate(first, clone));
         assertEquals(Set.of("public"), Ast.CheckedIndexKeys.requirePlan(clone));
     }
@@ -491,7 +491,7 @@ final class CheckedDynamicIndexAccessTest {
                 () -> Ast.CheckedIndexKeys.propagate(first, second));
         assertEquals(null, Ast.CheckedIndexKeys.knownTupleSlot(second));
         Ast.IndexExpr clone = new Ast.IndexExpr(
-                new Ast.NameExpr("first"), new Ast.NameExpr("index"));
+                first.receiver(), new Ast.NameExpr("index"));
         assertDoesNotThrow(() -> Ast.CheckedIndexKeys.propagate(first, clone));
         assertEquals(0, Ast.CheckedIndexKeys.knownTupleSlot(clone));
     }
@@ -568,20 +568,20 @@ final class CheckedDynamicIndexAccessTest {
                 new Ast.NameExpr("record"), new Ast.NameExpr("key"));
         Ast.CheckedIndexKeys.record(checked, Set.of("public"));
         Ast.IndexExpr forbidden = new Ast.IndexExpr(
-                new Ast.NameExpr("record"), new Ast.LiteralExpr("private"));
+                checked.receiver(), new Ast.LiteralExpr("private"));
         assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedIndexKeys.propagate(checked, forbidden));
         assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedIndexKeys.requirePlan(forbidden));
         Ast.IndexExpr wrongType = new Ast.IndexExpr(
-                new Ast.NameExpr("record"), new Ast.LiteralExpr(0L));
+                checked.receiver(), new Ast.LiteralExpr(0L));
         assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedIndexKeys.propagate(checked, wrongType));
         assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedIndexKeys.requirePlan(wrongType));
 
         Ast.IndexExpr allowed = new Ast.IndexExpr(
-                new Ast.NameExpr("record"), new Ast.LiteralExpr("public"));
+                checked.receiver(), new Ast.LiteralExpr("public"));
         assertEquals(allowed, Ast.CheckedIndexKeys.propagate(checked, allowed));
         assertDoesNotThrow(() -> Ast.CheckedIndexKeys.require(allowed, "public"));
         assertThrows(IllegalArgumentException.class,
@@ -594,18 +594,18 @@ final class CheckedDynamicIndexAccessTest {
                 new Ast.NameExpr("tuple"), new Ast.NameExpr("offset"));
         Ast.CheckedIndexKeys.recordTupleSlot(checked, 0);
         Ast.IndexExpr bad = new Ast.IndexExpr(
-                new Ast.NameExpr("tuple"), new Ast.LiteralExpr(1L));
+                checked.receiver(), new Ast.LiteralExpr(1L));
         assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedIndexKeys.propagate(checked, bad));
         assertEquals(null, Ast.CheckedIndexKeys.knownTupleSlot(bad));
         Ast.IndexExpr wrongType = new Ast.IndexExpr(
-                new Ast.NameExpr("tuple"), new Ast.LiteralExpr("0"));
+                checked.receiver(), new Ast.LiteralExpr("0"));
         assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedIndexKeys.propagate(checked, wrongType));
         assertEquals(null, Ast.CheckedIndexKeys.knownTupleSlot(wrongType));
 
         Ast.IndexExpr good = new Ast.IndexExpr(
-                new Ast.NameExpr("tuple"), new Ast.LiteralExpr(0L));
+                checked.receiver(), new Ast.LiteralExpr(0L));
         assertEquals(good, Ast.CheckedIndexKeys.propagate(checked, good));
         assertEquals(0, Ast.CheckedIndexKeys.knownTupleSlot(good));
         assertDoesNotThrow(() -> Ast.CheckedIndexKeys.requireTupleSlot(good, 0));
@@ -616,7 +616,7 @@ final class CheckedDynamicIndexAccessTest {
         Ast.IndexExpr first = new Ast.IndexExpr(
                 new Ast.NameExpr("tuple"), new Ast.NameExpr("index"));
         Ast.IndexExpr second = new Ast.IndexExpr(
-                new Ast.NameExpr("tuple"), new Ast.NameExpr("index"));
+                first.receiver(), new Ast.NameExpr("index"));
         Ast.CheckedIndexKeys.recordTupleSlot(first, 0);
         assertEquals(0, Ast.CheckedIndexKeys.knownTupleSlot(first));
         assertEquals(null, Ast.CheckedIndexKeys.knownTupleSlot(second));
@@ -629,6 +629,42 @@ final class CheckedDynamicIndexAccessTest {
                 () -> Ast.CheckedIndexKeys.recordTupleSlot(first, 1));
         assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedIndexKeys.record(first, Set.of("x")));
+    }
+
+    @Test
+    void structurallyEqualButDistinctFieldReceiverIsNotAProof() {
+        Ast.Expr originalReceiver = new Ast.MemberExpr(new Ast.NameExpr("context"), "record");
+        Ast.Expr lookalikeReceiver = new Ast.MemberExpr(new Ast.NameExpr("context"), "record");
+        assertEquals(originalReceiver, lookalikeReceiver);
+        assertNotSame(originalReceiver, lookalikeReceiver);
+        Ast.IndexExpr original = new Ast.IndexExpr(originalReceiver, new Ast.NameExpr("key"));
+        Ast.IndexExpr forbidden = new Ast.IndexExpr(lookalikeReceiver, new Ast.NameExpr("key"));
+        Ast.CheckedIndexKeys.record(original, Set.of("public"));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedIndexKeys.propagate(original, forbidden));
+        assertEquals(false, Ast.CheckedIndexKeys.hasProjectionProof(forbidden));
+
+        Ast.IndexExpr legitimate = new Ast.IndexExpr(originalReceiver, new Ast.NameExpr("key"));
+        assertDoesNotThrow(() -> Ast.CheckedIndexKeys.propagate(original, legitimate));
+        assertEquals(Set.of("public"), Ast.CheckedIndexKeys.requirePlan(legitimate));
+    }
+
+    @Test
+    void structurallyEqualButDistinctTupleReceiverIsNotAProof() {
+        Ast.Expr originalReceiver = new Ast.MemberExpr(new Ast.NameExpr("context"), "tuple");
+        Ast.Expr lookalikeReceiver = new Ast.MemberExpr(new Ast.NameExpr("context"), "tuple");
+        assertEquals(originalReceiver, lookalikeReceiver);
+        assertNotSame(originalReceiver, lookalikeReceiver);
+        Ast.IndexExpr original = new Ast.IndexExpr(originalReceiver, new Ast.NameExpr("position"));
+        Ast.IndexExpr forbidden = new Ast.IndexExpr(lookalikeReceiver, new Ast.NameExpr("position"));
+        Ast.CheckedIndexKeys.recordTupleSlot(original, 0);
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedIndexKeys.propagate(original, forbidden));
+        assertEquals(null, Ast.CheckedIndexKeys.knownTupleSlot(forbidden));
+
+        Ast.IndexExpr legitimate = new Ast.IndexExpr(originalReceiver, new Ast.LiteralExpr(0L));
+        assertDoesNotThrow(() -> Ast.CheckedIndexKeys.propagate(original, legitimate));
+        assertEquals(0, Ast.CheckedIndexKeys.knownTupleSlot(legitimate));
     }
 
     @Test
@@ -688,7 +724,7 @@ final class CheckedDynamicIndexAccessTest {
                 new Ast.NameExpr("point"), new Ast.NameExpr("field"));
         Ast.CheckedIndexKeys.record(site, Set.of("x"));
         Ast.IndexExpr optimized = new Ast.IndexExpr(
-                new Ast.NameExpr("point"), new Ast.NameExpr("field"));
+                site.receiver(), new Ast.NameExpr("field"));
         Ast.CheckedIndexKeys.propagate(site, optimized);
         assertDoesNotThrow(() -> Ast.CheckedIndexKeys.require(optimized, "x"));
         assertThrows(IllegalArgumentException.class,

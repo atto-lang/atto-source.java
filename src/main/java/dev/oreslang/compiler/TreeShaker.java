@@ -959,7 +959,7 @@ public final class TreeShaker {
                 // the original receiver on certified projections until the
                 // optimizer supports a fresh, post-rewrite type/loan proof.
                 if (Ast.CheckedIndexKeys.hasProjectionProof(indexed)
-                        && !indexed.receiver().equals(receiver)) {
+                        && indexed.receiver() != receiver) {
                     receiver = indexed.receiver();
                 }
                 return Ast.CheckedIndexKeys.propagate(indexed, new Ast.IndexExpr(
