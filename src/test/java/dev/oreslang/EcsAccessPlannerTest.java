@@ -133,6 +133,54 @@ final class EcsAccessPlannerTest {
         }
     }
 
+
+    @Test
+    void plannerRejectsOversizedSystemCountsAndQuadraticProofs() {
+        SystemAccess simple = sys("read", read(new Object(), 0, 1));
+        assertThrows(IllegalArgumentException.class, () ->
+                EcsAccessPlanner.plan(java.util.Collections.nCopies(
+                        EcsAccessPlanner.MAX_SYSTEMS + 1, simple)));
+
+        Access read = read(new Object(), 0, 1);
+        List<Access> largest = java.util.Collections.nCopies(
+                EcsAccessPlanner.MAX_ACCESSES_PER_SYSTEM, read);
+        assertThrows(IllegalArgumentException.class, () ->
+                new SystemAccess("too-many-spans", new java.util.ArrayList<>(
+                        java.util.Collections.nCopies(
+                                EcsAccessPlanner.MAX_ACCESSES_PER_SYSTEM + 1, read))));
+        SystemAccess a = new SystemAccess("a", largest);
+        SystemAccess b = new SystemAccess("b", largest);
+        // Even read/read is denied when the compiler cannot finish proof
+        // work within its explicit complexity budget.
+        assertThrows(IllegalArgumentException.class, () -> EcsAccessPlanner.conflicts(a, b));
+        assertThrows(IllegalArgumentException.class, () -> EcsAccessPlanner.plan(List.of(a, b)));
+        assertFalse(EcsAccessPlanner.conflicts(simple, simple));
+    }
+
+    @Test
+    void provenanceUsesObjectIdentityNotSpoofableValueEquality() {
+        Object a = new String("same");
+        Object b = new String("same");
+        assertNotSame(a, b);
+        assertEquals(a, b);
+        SystemAccess first = sys("a", write(a, 0, 100));
+        SystemAccess second = sys("b", write(b, 0, 100));
+        assertFalse(EcsAccessPlanner.conflicts(first, second),
+                "compiler-owned provenance must be identity-based, not string equality");
+        SystemAccess shared = sys("shared", read(a, 0, 100));
+        assertTrue(EcsAccessPlanner.conflicts(first, shared));
+    }
+
+    @Test
+    void aSystemCanReadModifyWriteItsOwnRegionButSerializesWithOtherSystems() {
+        Object allocation = new Object();
+        SystemAccess update = sys("update",
+                read(allocation, 0, 64), write(allocation, 0, 64));
+        SystemAccess observer = sys("observer", read(allocation, 0, 64));
+        assertEquals(List.of(List.of(update), List.of(observer)),
+                EcsAccessPlanner.plan(List.of(update, observer)));
+    }
+
     @Test
     void invalidRangesAndNullInputsFailClosed() {
         assertThrows(IllegalArgumentException.class, () -> read(new Object(), -1, 1));
