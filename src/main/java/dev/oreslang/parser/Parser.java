@@ -2426,9 +2426,11 @@ public final class Parser {
                     || !type.arguments().isEmpty() || type.inferArguments()) {
                 throw error(previous(), "binding type must match infer<T> exactly");
             }
-            if (match(STRUCT) || matchContextualIdentifier("record")) {
-                // Records are closed readonly row schemas; no dynamic Map.
+            if (match(STRUCT)) {
                 initializer = parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
+            } else if (matchContextualIdentifier("record")) {
+                // Same readonly row lowering; preserve syntax identity for the formatter.
+                initializer = parseObjectLiteral(Ast.ObjectKind.INFERRED_RECORD, List.of());
             } else if (matchContextualKeyword("tuple")) {
                 consume(LPAREN, "expected '(' after infer<T> tuple");
                 List<Ast.Expr> items = parseArgumentsUntil(RPAREN);
@@ -3575,10 +3577,11 @@ public final class Parser {
                     || (checkNext(IDENT) && current + 1 < tokens.size()
                         && tokens.get(current + 1).lexeme().equals("record")))) {
             advance(); // contextual infer
-            if (!match(STRUCT)) {
-                consumeContextualIdentifier("record", "expected 'record' after infer");
+            if (match(STRUCT)) {
+                return parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
             }
-            return parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
+            consumeContextualIdentifier("record", "expected 'record' after infer");
+            return parseObjectLiteral(Ast.ObjectKind.INFERRED_RECORD, List.of());
         }
         if (isContextualIdentifier("tuple") && checkNext(LPAREN)) {
             advance();
@@ -3677,9 +3680,11 @@ public final class Parser {
             Ast.ObjectKind kind,
             List<Ast.StructFieldSpec> declaredFields) {
         boolean inferredStruct = kind == Ast.ObjectKind.INFERRED_STRUCT;
+        boolean inferredRecord = kind == Ast.ObjectKind.INFERRED_RECORD;
         boolean explicitStruct = kind == Ast.ObjectKind.EXPLICIT_STRUCT;
         consume(LBRACE, inferredStruct
                 ? "expected '{' after infer struct"
+                : inferredRecord ? "expected '{' after infer record"
                 : "expected '{' after explicit struct shape");
         List<Ast.ObjectField> fields = new ArrayList<>();
         if (!check(RBRACE)) {
@@ -3696,6 +3701,7 @@ public final class Parser {
         }
         consume(RBRACE, explicitStruct
                 ? "expected '}' after explicit struct initializer"
+                : inferredRecord ? "expected '}' after infer record literal"
                 : "expected '}' after infer struct literal");
         return new Ast.ObjectExpr(fields, kind, declaredFields);
     }
