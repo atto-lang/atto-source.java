@@ -144,3 +144,51 @@ Required before enabling a cross-org mirror: independently reviewed protected-so
 - Re-ran local Java 21 isolated exact-source probes: `OresScalarTaskFrame.java` 15/15, `TaskRegionTestLedger.java` 10/10, `javac --release 21 -Xlint:all -Werror`. Production-source Git blob hashes were reconfirmed. These smoke checks use stubs and **do not** validate the new VM launch-grant change or full-source guest execution.
 
 **Next required gate:** Restore an approved source-local runner; execute the full `test-compile` and targeted JUnit selection, including both guest root-launch and physical-exit tests; then run all CI suites. No cross-org private source transfer is authorized by the current empty default-branch allowlist and unresolved security issue #962.
+
+## October 19 deferred-Future cancellation audit and CI restriction
+
+Latest audit of the evolving Task scope (including pre-admission ownership,
+cancellation ordering and physical-exit tests):
+
+- **Corrected an irreversible cancellation allocation window** in
+  `OresFuture.cancelDeferredNotification()`. Previously the
+  `AtomicBoolean` single-delivery guard and notification closure were created
+  **after** `PENDING -> Cancelled` committed. Allocation failure at that
+  point could leave the cancellation revocation barrier closed permanently,
+  with late/early runtime subscribers unnotified. The guard and closure now
+  allocate **before** the terminal CAS; the losing CAS discards them without
+  effects. Production file blob after change:
+  `28f6e8bd2ab6f77a3fa2e3c1e2c8f10bfc48e594`.
+- **Added regression** `OresTaskScopeCancellationOrderingTest.
+  deferredFutureCancellationRevokesBeforeDeliveringOldAndLateWaiters`:
+  cancellation hooks run before either early or late subscriber,
+  notifications wait for explicit delivery, and repeated delivery is inert.
+  The Java/JUnit test is committed but **not executed**.
+- **Source invariant check executed** against current GitHub blobs: the
+  notification guard/closure precede the state CAS and no guard allocation
+  remains after the irreversible CAS. This is a static inspection, **not**
+  a compiled-source test of `OresFuture`.
+- **Local Java 21 tests executed:** Git-blob-matching production scalar frame
+  `3d11cd5ddb3c85115b73e1cfe251810a604c3751`, `15/15` isolated
+  smoke checks and `100 × 12` competing virtual-thread resumes, one winner
+  per round; test-only region ledger facade
+  `39a5c80ae46984e0e05dd995dc2bf87fc0985082`, `10/10` isolated
+  checks. `javac --release 21 -Xlint:all -Werror`. These tests use
+  minimal scheduler/verifier stubs and **do not** validate the latest
+  `OresFuture` or full Maven/GraalVM guest runtime.
+- **Current head before this documentation update:**
+  `e8fca59971296dfabe51d32eb2829d514c35b098`.
+  [fast-ci 39313270175](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39313270175)
+  and [concurrency-contract 39313270412](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39313270412)
+  failed with **zero steps**. No evidence of a Java/Maven/JUnit failure
+  or of exhausted Actions minutes follows from a zero-step job.
+- **Cross-org private mirror remains blocked:** the default-branch
+  `.github/private-ci-approved-repositories.txt` has zero uncommented
+  destinations, [security issue #962](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/962)
+  is unresolved, and the connector provides no org billing/minute balance.
+  Even a private org with available Actions minutes cannot receive private
+  source until explicitly approved under the source-provenance/destination
+  security gate. No code was transferred.
+- **Still required:** approved exact-head source-local runner, JDK21/25
+  Maven `test-compile`, targeted `concurrency-contract`, full Java suite
+  and GraalVM guest positive/negative execution, then LLVM parity.
