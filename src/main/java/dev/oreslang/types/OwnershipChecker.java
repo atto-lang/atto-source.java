@@ -2736,6 +2736,125 @@ public final class OwnershipChecker {
         return false;
     }
 
+    private boolean isProvenTaskOwnedRvalue(
+            Ast.Expr expression, Scope scope) {
+        if (expression == null) return false;
+        if (expression instanceof Ast.LiteralExpr) return true;
+        if (expression instanceof Ast.NameExpr name) {
+            VarState state = scope.lookup(name.name());
+            if (state == null) return false;
+            VarState root = ownershipRoot(state);
+            if (state.kind == ValueKind.COPY) return true;
+            return root.moved
+                    && root.immutableBorrows == 0
+                    && !root.mutableBorrowed;
+        }
+        if (expression instanceof Ast.CastExpr cast) {
+            return isProvenTaskOwnedRvalue(cast.value(), scope);
+        }
+        if (expression instanceof Ast.SpreadExpr spread) {
+            return isProvenTaskOwnedRvalue(spread.expression(), scope);
+        }
+        if (expression instanceof Ast.TrapExpr trapped) {
+            return isProvenTaskOwnedRvalue(trapped.expression(), scope);
+        }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            // The condition selects a branch but does not contribute ownership
+            // to the expression result.
+            return isProvenTaskOwnedRvalue(conditional.whenTrue(), scope)
+                    && isProvenTaskOwnedRvalue(
+                            conditional.whenFalse(), scope);
+        }
+        if (expression instanceof Ast.MatchExpr match) {
+            for (Ast.MatchValueArm arm : match.arms()) {
+                if (!isProvenTaskOwnedRvalue(arm.value(), scope)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (expression instanceof Ast.RuntimeCallExpr runtime) {
+            if (!runtime.operation().equals("take")
+                    || runtime.arguments().size() != 1
+                    || !(runtime.arguments().getFirst()
+                            instanceof Ast.NameExpr name)) {
+                return false;
+            }
+            VarState state = scope.lookup(name.name());
+            if (state == null) return false;
+            VarState root = ownershipRoot(state);
+            return root.moved
+                    && root.immutableBorrows == 0
+                    && !root.mutableBorrowed;
+        }
+        if (expression instanceof Ast.NewExpr created) {
+            for (Ast.Expr argument : created.arguments()) {
+                if (!isProvenTaskOwnedRvalue(argument, scope)) return false;
+            }
+            return true;
+        }
+        if (expression instanceof Ast.ListExpr list) {
+            for (Ast.Expr element : list.elements()) {
+                if (!isProvenTaskOwnedRvalue(element, scope)) return false;
+            }
+            return true;
+        }
+        if (expression instanceof Ast.TupleExpr tuple) {
+            for (Ast.Expr element : tuple.elements()) {
+                if (!isProvenTaskOwnedRvalue(element, scope)) return false;
+            }
+            return true;
+        }
+        if (expression instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) {
+                if (!isProvenTaskOwnedRvalue(field.value(), scope)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (expression instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.NameExpr constructor
+                    && (constructor.name().equals("Some")
+                        || constructor.name().equals("Ok")
+                        || constructor.name().equals("Err"))) {
+                for (Ast.Expr argument : call.arguments()) {
+                    if (!isProvenTaskOwnedRvalue(argument, scope)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            if (call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr receiver
+                    && Set.of(
+                            "unwrap", "unwrap_safe", "unwrap_all",
+                            "flatten", "expect", "unwrap_or")
+                            .contains(member.member())) {
+                VarState state = scope.lookup(receiver.name());
+                if (state == null) return false;
+                VarState root = ownershipRoot(state);
+                if (state.kind != ValueKind.COPY
+                        && (!root.moved
+                            || root.immutableBorrows > 0
+                            || root.mutableBorrowed)) {
+                    return false;
+                }
+                for (Ast.Expr argument : call.arguments()) {
+                    if (!isProvenTaskOwnedRvalue(argument, scope)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            // No return-provenance/effect summary exists for arbitrary
+            // functions or methods yet. An rvalue call result is not itself
+            // proof that its backing storage is uniquely owned.
+            return false;
+        }
+        return false;
+    }
+
     private TaskTransferProvenance.Transfer scheduledArgumentTransfer(
             int index,
             Ast.Expr argument,
@@ -2756,9 +2875,15 @@ public final class OwnershipChecker {
             }
             kind = TaskTransferProvenance.TransferKind.UNIQUE_MOVE;
         } else {
-            // checkExpr(..., consuming=true) recursively consumed every owned
-            // constituent. Projected lvalues are rejected above because this
-            // checker cannot yet mark only a field/index place as moved.
+            // Syntax alone does not prove that an arbitrary call result owns
+            // fresh/exclusive backing storage. Restrict OWNED_RVALUE to forms
+            // whose ownership transfer is observable in this pass.
+            if (!isProvenTaskOwnedRvalue(argument, scope)) {
+                throw error("scheduled lambda argument " + index
+                        + " has move-only rvalue provenance that cannot be "
+                        + "proven exclusive; bind a compiler-proven fresh "
+                        + "value or move a named owner before scheduling");
+            }
             kind = TaskTransferProvenance.TransferKind.OWNED_RVALUE;
         }
         return new TaskTransferProvenance.Transfer(
