@@ -4,7 +4,6 @@ import dev.oreslang.types.Types.*;
 import dev.oreslang.types.Types.Record;
 
 import java.util.Objects;
-import java.util.function.Predicate;
 
 /**
  * Conservative structural proof of cross-execution-context transfer.
@@ -97,11 +96,21 @@ public final class SendSyncTraits {
                 return trait == Trait.SEND && args.size() == 1
                         && derive(args.getFirst(), Trait.SEND, nominal, next);
             }
-            case "Arc", "Weak", "RwLock" -> {
-                // Shared RwLock and Arc require T to be both Send AND Sync.
+            case "Arc", "Weak" -> {
+                // Atomic reference-count ownership is freely clonable. Both
+                // moving and sharing the handle need T: Send + Sync.
                 return args.size() == 1
                         && derive(args.getFirst(), Trait.SEND, nominal, next)
                         && derive(args.getFirst(), Trait.SYNC, nominal, next);
+            }
+            case "RwLock" -> {
+                // The lock can itself be moved when T: Send. It can only
+                // be shared concurrently if T is ALSO Sync, because an
+                // admitted reader exposes &T to other execution contexts.
+                return args.size() == 1
+                        && derive(args.getFirst(), Trait.SEND, nominal, next)
+                        && (trait == Trait.SEND
+                                || derive(args.getFirst(), Trait.SYNC, nominal, next));
             }
             case "Mutex", "SharedMutex", "Channel" -> {
                 // A mutex/channel can transport a non-Sync but Send payload.
