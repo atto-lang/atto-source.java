@@ -288,3 +288,30 @@ These production-source JUnit cases are committed, **not yet executed**.
 CI remains unusable at source-org workflow level until runner admission is
 diagnosed; do not infer whether minutes or billing is the actual cause from
 zero-step failures. Cross-org private mirroring remains prohibited by #962.
+
+
+## Authenticated checkpoint cancellation inherited from Stage 2
+
+Stage 3 now incorporates the latest Stage-2 cancellation changes in its
+source tree. Compiler-selected safe checkpoints carry the identity of their
+own TaskCancellation authority and OresScheduler logical Task domain, so
+an unrelated or nested Task cannot replay a cancellation marker to cancel
+its own result. A Task may complete a running synchronous `finally`
+before cancellation, but cannot enter another normal resume afterward.
+
+`OresScheduler.TaskRunner` records a successful checkpoint's terminal
+transition first and publishes its actual `OresFuture.cancel(false)`
+after the guest turn and scheduler-bound context unwind. Therefore the
+underlying TaskHandle result Future reports `isCancelled()` as well as
+the TaskHandle `Cancelled(reason)` outcome, including synchronous inline
+self-cancellation before Future binding. A previously winning wall deadline
+retains failure precedence. Stage-3 actor `done` continues to require
+TaskScope physical quiescence and full termination-cascade completion.
+
+Stage-2 exact source currently has 37 TaskHandleTest and 17
+TaskScopeTest methods; Stage 3 additionally has 9 ActorOwnedTaskScopeTest
+and 10 ActorTaskTerminationCascadeTest methods. These committed tests have
+not executed against the complete GraalVM runtime while Actions jobs continue
+to fail without executing steps. Local simulation evidence is not a substitute
+for real source CI. No cross-organization private source mirror has been made:
+security issue #962 remains the blocker.
