@@ -126,10 +126,16 @@ the authorization ref to be absent; (4) create only that new authorization ref;
 `type=commit` and identical SHA; and (6) re-read the payload ref again, also
 requiring its exact name, commit type and SHA.
 
-If a post-write readback fails, the dispatcher's existing bounded cleanup
-path attempts to remove only the authorization and payload refs still
-pointing at the expected commit. Failed or ambiguous cleanup is itself a
-denial, never positive test evidence. Ref reads and writes are not atomic,
+If creating the payload ref succeeds but its GitHub response is malformed
+or interrupted, the dispatcher also enters the exact-ref cleanup path.
+It may remove a payload ref only after an authenticated fresh read confirms
+that ref still points at the expected payload commit. Absence is safe;
+a moved or ambiguous ref is never deleted by the dispatcher.
+
+If a post-write readback or ref-creation response fails, the dispatcher's
+bounded cleanup path attempts to remove only the authorization and payload
+refs still pointing at the expected commit. Failed or ambiguous cleanup is
+itself a denial, never positive test evidence. Ref reads and writes are not atomic,
 so the carrier must continue enforcing its independently reviewed exact
 `github.sha` authorization and source subtree checks immediately before
 source checkout; a green job without those gates is non-certifying.
