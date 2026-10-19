@@ -43,8 +43,14 @@ public final class IpcReceiptCorrelationSelfTest {
         denies(() -> book.admit(first));
         var wrong = env(1, "sessionB");
         denies(() -> book.acceptVerified(wrong, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED));
+        // A peer-authenticated receipt cannot assert uncertainty. That is
+        // exclusively a trusted local transport-liveness determination.
+        denies(() -> book.acceptVerified(first, IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
+        check(book.counters().equals(new IpcReceiptCorrelation.Counters(1, 1)));
         book.acceptVerified(first, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+        denies(() -> book.acceptVerified(first, IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
         denies(() -> book.acceptVerified(first, IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE));
+        check(book.counters().equals(new IpcReceiptCorrelation.Counters(1, 0)));
         book.admit(second);
         check(book.counters().equals(new IpcReceiptCorrelation.Counters(2, 1)));
         var lost = book.retireTransportLost("sessionA");
@@ -128,7 +134,11 @@ public final class IpcReceiptCorrelationSelfTest {
                     if (choice == 0) {
                         ledger.acceptVerified(msg, IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
                     } else if (choice == 1) {
-                        ledger.acceptVerified(msg, IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+                        // Trust-domain distinction: only a *local*
+                        // disconnected transport can report uncertainty.
+                        denies(() -> ledger.acceptVerified(
+                                msg, IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
+                        check(ledger.retireTransportLost("session").size() == 1);
                     } else {
                         ledger.acceptVerified(msg, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
                         ledger.acceptVerified(msg, choice == 2
