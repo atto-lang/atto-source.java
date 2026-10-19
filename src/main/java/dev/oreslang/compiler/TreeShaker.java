@@ -353,9 +353,9 @@ public final class TreeShaker {
                         member.member());
             }
             if (expression instanceof Ast.IndexExpr indexed) {
-                return new Ast.IndexExpr(
+                return Ast.CheckedIndexKeys.propagate(indexed, new Ast.IndexExpr(
                         substitute(indexed.receiver(), substitutions, shadowed),
-                        substitute(indexed.index(), substitutions, shadowed));
+                        substitute(indexed.index(), substitutions, shadowed)));
             }
             if (expression instanceof Ast.NewExpr created) {
                 List<Ast.Expr> arguments = new ArrayList<>();
@@ -943,9 +943,9 @@ public final class TreeShaker {
                         member.member());
             }
             if (expression instanceof Ast.IndexExpr indexed) {
-                return new Ast.IndexExpr(
+                return Ast.CheckedIndexKeys.propagate(indexed, new Ast.IndexExpr(
                         rewriteExpression(indexed.receiver(), module, locals),
-                        rewriteExpression(indexed.index(), module, locals));
+                        rewriteExpression(indexed.index(), module, locals)));
             }
             if (expression instanceof Ast.NewExpr created) {
                 List<Ast.Expr> arguments = new ArrayList<>();
