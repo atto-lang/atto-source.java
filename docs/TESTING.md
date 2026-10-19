@@ -127,7 +127,13 @@ deterministic guest scheduler:
   must denote an independently executing logical task/message lifetime,
   including distinct lanes within a concurrently executing actor; using only
   the actor reference as an identity would hide races. Labels containing
-  control characters are rejected. It requires a
+  control characters are rejected. Host-only `fork(parent, child)`,
+  `finish(child)`, and `join(parent, child)` now model typed task-lifecycle
+  ordering: a fresh child inherits only pre-fork parent time, and exactly one
+  direct-parent join may import a finished child's clock. Unjoined children and
+  siblings remain unordered. This API is **not** wired to full guest actor
+  lifecycle events yet, so it must not certify guest memory-race freedom.
+  It requires a
   **complete trusted stream of memory-access events**; no guest instrumentation
   feeds it yet, so it cannot certify a program as race-free.
 - `--race` and `--model-check` are reserved and intentionally return exit 2
@@ -170,3 +176,8 @@ The gate must execute the tests and print `ORES_CONCURRENCY_CI|...|result=PASS`
 only after success. Matching Git tree SHA and executable CI logs are required;
 failed pre-step GitHub Actions jobs do not count as test evidence. This
 script does not grant access to private source across organizations.
+
+To run the entire repository test suite alongside the targeted exact-tree gate,
+set `RUN_FULL_SUITE=1` when invoking `scripts/ci-verify-concurrency-p0.sh`.
+This requires a working authorized runner; scripts and setup alone do not
+constitute executed test evidence.
