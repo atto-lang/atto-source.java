@@ -43,6 +43,35 @@ final class ConcurrencyTestProbeTest {
     }
 
     @Test
+    void v2CheckpointRoundTripChecksLiteralPipeAndRejectsCorruption() throws Exception {
+        Path trace = tmp.resolve("v2.trace");
+        String digest = "a".repeat(64);
+        try (var session = ConcurrencyTestProbe.start(18, true, null,
+                digest, "jit-server")) {
+            ConcurrencyTestProbe.checkpoint("task-turn");
+            ConcurrencyTestProbe.deadlock("future-cycle");
+            session.writeTrace(trace);
+        }
+        var loaded = ConcurrencyTestProbe.readTraceData(trace);
+        assertEquals(18, loaded.seed());
+        assertEquals(digest, loaded.entrySha256());
+        assertEquals("jit-server", loaded.backend());
+        assertEquals(2, loaded.events().size());
+        assertTrue(loaded.events().get(0).startsWith("task-turn|"));
+
+        var original = java.nio.file.Files.readString(trace);
+        java.nio.file.Files.writeString(trace,
+                original.replace("deadlock-future-cycle|0",
+                        "deadlock-future-cycle:0"));
+        assertThrows(IllegalArgumentException.class,
+                () -> ConcurrencyTestProbe.readTraceData(trace));
+        java.nio.file.Files.writeString(trace,
+                original.replace("|probe=1", "|probe=2"));
+        assertThrows(IllegalArgumentException.class,
+                () -> ConcurrencyTestProbe.readTraceData(trace));
+    }
+
+    @Test
     void replayMismatchFailsClosedAndSessionRetires() {
         try (var session = ConcurrencyTestProbe.start(1, true, List.of("future-await|1"))) {
             assertThrows(IllegalStateException.class,
