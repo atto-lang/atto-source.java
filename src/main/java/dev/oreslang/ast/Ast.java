@@ -1101,6 +1101,14 @@ public final class Ast {
             return TUPLE_SLOTS.get(new IdentityKey(site, null));
         }
 
+        /** True only if this exact AST node has a compiler-certified projection. */
+        public static synchronized boolean hasProjectionProof(IndexExpr site) {
+            java.util.Objects.requireNonNull(site, "index site");
+            expunge();
+            IdentityKey key = new IdentityKey(site, null);
+            return KEYS.containsKey(key) || TUPLE_SLOTS.containsKey(key);
+        }
+
         /** Runtime guard: optimizer clones must not change a certified tuple slot. */
         public static void requireTupleSlot(IndexExpr site, int actual) {
             Integer known = knownTupleSlot(site);
@@ -1122,6 +1130,18 @@ public final class Ast {
             expunge();
             java.util.Set<String> visible = KEYS.get(new IdentityKey(original, null));
             Integer fixed = TUPLE_SLOTS.get(new IdentityKey(original, null));
+
+            // The proof is for a statically typed receiver view, not for an
+            // arbitrary object with the same key names. A rewrite that changes
+            // the receiver expression must obtain a fresh type/ownership check,
+            // not inherit another receiver's field visibility or tuple slot.
+            // Compare AST structure (not a receiver's runtime value); ordinary
+            // semantic-preserving cloning keeps equivalent immutable records.
+            if ((visible != null || fixed != null)
+                    && !original.receiver().equals(rewritten.receiver())) {
+                throw new IllegalStateException(
+                        "optimizer changed receiver of a certified indexed projection");
+            }
 
             // Even trusted optimizers may fold a computed index into a literal.
             // The rewritten literal cannot contradict a previously proved
