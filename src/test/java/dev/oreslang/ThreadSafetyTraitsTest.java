@@ -356,6 +356,47 @@ final class ThreadSafetyTraitsTest {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(5)
+    void sharedDagTypeGraphDoesNotTriggerExponentialProofWork() {
+        // Only 71 physical nodes, but a naive recursive proof would expand
+        // 2^70 visits. Identity memoization must keep this bounded.
+        java.util.concurrent.atomic.AtomicInteger nominalCalls =
+                new java.util.concurrent.atomic.AtomicInteger();
+        ThreadSafetyTraits.NominalProof safeLeaf = (type, trait) -> {
+            nominalCalls.incrementAndGet();
+            return type.name().equals("KnownSafe");
+        };
+        Type graph = new Types.Named("KnownSafe", List.of());
+        for (int i = 0; i < 70; i++) {
+            graph = new Types.Tuple(List.of(graph, graph));
+        }
+        assertTrue(ThreadSafetyTraits.has(graph, Trait.SEND, safeLeaf));
+        assertTrue(ThreadSafetyTraits.has(graph, Trait.SYNC, safeLeaf));
+        assertEquals(2, nominalCalls.get(),
+                "the trusted nominal callback must execute once per top-level trait proof");
+
+        Type bad = new Types.Named("Future", List.of(Types.Primitive.INT));
+        for (int i = 0; i < 70; i++) {
+            bad = new Types.Tuple(List.of(bad, bad));
+        }
+        assertFalse(ThreadSafetyTraits.has(bad, Trait.SEND, safeLeaf));
+        assertFalse(ThreadSafetyTraits.has(bad, Trait.SYNC, safeLeaf));
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(5)
+    void enormousFlatTypeProofFailsClosedWithinNodeBudget() {
+        Type wide = new Types.Tuple(java.util.Collections.nCopies(
+                100_001, Types.Primitive.INT));
+        assertFalse(has(wide, Trait.SEND),
+                "an oversized but shallow type must not cause unbounded proof work");
+        // Budgets and memoization are per-query, never stored in a global
+        // cache that could poison a subsequent independent derivation.
+        assertTrue(has(Types.Primitive.INT, Trait.SEND));
+        assertTrue(has(new Types.Tuple(List.of(Types.Primitive.INT)), Trait.SYNC));
+    }
+
+    @Test
     void sharedMutexAcceptsSendOwnedDataButRejectsUnprovenPayloads() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc good(): void {
