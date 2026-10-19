@@ -434,7 +434,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             }
 
             if (!attachHandle(admitted, handle)) {
-                handle.cancel();
+                cancelBestEffort(handle);
                 return;
             }
 
@@ -497,7 +497,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
                 if (admitted.deadline != null) admitted.deadline.cancel(false);
             }
             DispatchHandle handle = admitted.handle;
-            if (handle != null) handle.cancel();
+            if (handle != null) cancelBestEffort(handle);
             admitted.credit.close();
         }
 
@@ -542,7 +542,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
                 responsePayloadBytes += credit.bytes;
             }
 
-            if (cancelDispatch && handle != null) handle.cancel();
+            if (cancelDispatch && handle != null) cancelBestEffort(handle);
 
             UnaryTransportFrame.Envelope terminal = new UnaryTransportFrame.Envelope(
                     reply.kind(), sessionId, generation, admitted.correlationId, body);
@@ -610,7 +610,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
                 }
                 handle = admitted.handle;
             }
-            if (cancelDispatch && handle != null) handle.cancel();
+            if (cancelDispatch && handle != null) cancelBestEffort(handle);
             admitted.credit.close();
         }
 
@@ -649,7 +649,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
 
             closeQuietly(socket);
             for (Pending admitted : toCancel) {
-                if (admitted.handle != null) admitted.handle.cancel();
+                cancelBestEffort(admitted.handle);
                 admitted.credit.close();
             }
             for (WorkCredit credit : toRelease) credit.close();
@@ -669,6 +669,21 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             this.correlationId = correlationId;
             this.requestBytes = requestBytes;
             this.credit = credit;
+        }
+    }
+
+    /**
+     * Cancellation is advisory: a faulty actor/dispatcher cancellation hook may
+     * throw, but it must not prevent terminal credit release, another pending
+     * request's cancellation, or closure of the host-owned socket.
+     */
+    private static void cancelBestEffort(DispatchHandle handle) {
+        if (handle == null) return;
+        try {
+            handle.cancel();
+        } catch (Throwable ignored) {
+            // Never let an actor cancellation failure interrupt transport cleanup.
+            // No arbitrary exception text crosses the wire.
         }
     }
 
