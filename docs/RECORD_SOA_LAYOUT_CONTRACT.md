@@ -72,6 +72,38 @@ canonical-column checks. The local audited build used OpenJDK 21
 `java -Xmx96m -ea`. This is intentionally independent
 of actor memory domains, LLVM, guest compiler intrinsics, and FFI.
 
+## Reproducible private CI verification
+
+The standalone oracle is gated by a full checkout test runner in
+`scripts/check-record-inference.sh`. Run in the source repository against
+the **exact approved source commit**:
+
+```sh
+bash scripts/check-record-inference.sh --commit <40-hex-source-commit>
+```
+
+For a security-approved private mirror, Git commit identity may differ
+because the destination has different parents. Instead verify that its
+**complete Git tree SHA** equals the trusted source head's tree SHA:
+
+```sh
+bash scripts/check-record-inference.sh --tree <40-hex-source-tree>
+```
+
+The test runner rejects a wrong identity, nested checkout and dirty tracked,
+untracked **or ignored** files before Maven. Ignored generated classes or
+injected Java sources must not contaminate test results. The `--tree` mode
+does not itself grant permission to copy private code: require reviewed
+destination allowlisting on the protected source branch and verify private
+destination identity and full blob/mode/tree equality first. The commands
+report the actual checked-out commit and tree. Never substitute successful
+host smoke or formatter-only tests for compiler/GraalVM/LLVM test evidence.
+
+`bash scripts/test-record-inference-gate.sh` uses synthetic Git repositories
+and stub Maven commands to exercise both identity modes, wrong IDs, dirty
+worktrees, ignored source injection, nested checkouts, and missing tools.
+That test validates only the **gate script**, not Oreslang compiler semantics.
+
 ## Proposed columnar surface (future, NOT YET EXECUTABLE)
 
 ```ores
