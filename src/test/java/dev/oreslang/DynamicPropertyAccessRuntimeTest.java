@@ -23,6 +23,11 @@ final class DynamicPropertyAccessRuntimeTest {
                     pub let int y = 2;
                 end
 
+                define class InferredPoint as
+                    pub let x = 20;
+                    pub let y = 30;
+                end
+
                 fnc record_get(Row row, string key): float {
                     return row[key];
                 }
@@ -52,6 +57,10 @@ final class DynamicPropertyAccessRuntimeTest {
                     const classKey = dynamic_key();
                     point[classKey] = 12;
                     stdio.println(point[classKey]);
+
+                    val InferredPoint inferred = new InferredPoint();
+                    inferred[classKey] = 13;
+                    stdio.println(inferred[classKey]);
                     return;
                 }
                 """;
@@ -73,6 +82,6 @@ final class DynamicPropertyAccessRuntimeTest {
         });
 
         String text = output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
-        assertEquals("4.0\n5.0\n11.0\n12\n", text);
+        assertEquals("4.0\n5.0\n11.0\n12\n13\n", text);
     }
 }
