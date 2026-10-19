@@ -6,6 +6,8 @@ import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
 import java.io.ByteArrayOutputStream;
+import java.math.BigInteger;
+import java.util.Random;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
@@ -167,5 +169,34 @@ final class ExperimentalCheckedI64RemainderParityTest {
             assertThrows(RuntimeException.class, () -> expression(guest),
                     "unsupported numeric operation must fail before execution: " + guest);
         }
+    }
+
+    @Test
+    void deterministicLinkedGuestRemainderAgreementWithBigInteger() throws Exception {
+        // Independent mathematical quotient/remainder oracle. The Oreslang
+        // guest computes the actual %, then returns a small exit status
+        // through a Boolean comparison: never truncate i64 to a process code.
+        final long[] boundary = {
+            Long.MIN_VALUE, Long.MAX_VALUE, -1L, 1L, 0L,
+            2L, -2L, 3L, -3L, 43L, -43L
+        };
+        Random seeded = new Random(20261019L);
+        int checked = 0;
+        for (int i = 0; i < boundary.length + 16; i++) {
+            long left = i < boundary.length ? boundary[i] : seeded.nextLong();
+            long right = i < boundary.length
+                    ? boundary[(i * 3 + 1) % boundary.length]
+                    : seeded.nextLong();
+            if (right == 0L) right = -1L;
+            BigInteger mathematical = BigInteger.valueOf(left)
+                    .remainder(BigInteger.valueOf(right));
+            String expression = "((" + left + " % " + right + ") == ("
+                    + mathematical + ")) ? 43 : 1";
+            assertEquals(43, expression(expression),
+                    "guest % versus BigInteger, index=" + i
+                    + ", left=" + left + ", right=" + right);
+            checked++;
+        }
+        assertEquals(27, checked);
     }
 }
