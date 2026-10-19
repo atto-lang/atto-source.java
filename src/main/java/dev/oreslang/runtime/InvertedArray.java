@@ -59,12 +59,6 @@ public final class InvertedArray implements AutoCloseable {
                 throw new IllegalArgumentException(
                         "only non-generic, flat, non-actor inverted classes are supported");
             }
-            if (!klass.methods().isEmpty()) {
-                // Method dispatch requires checked receiver (owner, slot,
-                // generation) lowering; don't invent a host-method fallback.
-                throw new IllegalArgumentException(
-                        "inverted class methods require verified row-method lowering");
-            }
             List<Field> ordered = new ArrayList<>();
             for (Ast.FieldDecl field : klass.fields()) {
                 if (field.type() == null || field.type().inferArguments()
@@ -112,9 +106,15 @@ public final class InvertedArray implements AutoCloseable {
 
     private final Schema schema;
     private final InvertedColumnStore store;
+    private final Map<String, InvertedRowMethod> methods;
 
     public InvertedArray(Schema schema, int initialCapacity) {
+        this(schema, initialCapacity, Map.of());
+    }
+
+    private InvertedArray(Schema schema, int initialCapacity, Map<String, InvertedRowMethod> methods) {
         this.schema = Objects.requireNonNull(schema, "schema");
+        this.methods = Map.copyOf(methods);
         store = new InvertedColumnStore(schema.columnKinds());
         try {
             store.reserve(initialCapacity);
@@ -125,7 +125,29 @@ public final class InvertedArray implements AutoCloseable {
     }
 
     public static InvertedArray fromClass(Ast.ClassDecl klass, int capacity) {
-        return new InvertedArray(Schema.fromClass(klass), capacity);
+        Schema schema = Schema.fromClass(klass);
+        LinkedHashMap<String, InvertedRowMethod> prepared = new LinkedHashMap<>();
+        for (Ast.MethodDecl method : klass.methods()) {
+            InvertedRowMethod plan = InvertedRowMethod.compile(method, schema);
+            if (prepared.putIfAbsent(plan.selector(), plan) != null) {
+                throw new IllegalArgumentException("duplicate inverted method selector " + plan.selector());
+            }
+        }
+        return new InvertedArray(schema, capacity, prepared);
+    }
+
+    /**
+     * Execute only a statically admitted scalar method plan. Caller-supplied
+     * arguments are evaluated exactly once before the atomic row update.
+     */
+    public void invoke(InvertedColumnStore.Handle handle, String method, Object... args) {
+        Objects.requireNonNull(method, "method");
+        int arity = args == null ? -1 : args.length;
+        InvertedRowMethod plan = methods.get(method + "/" + arity);
+        if (plan == null) {
+            throw new IllegalArgumentException("unknown or unsupported inverted method '" + method + "'");
+        }
+        plan.invoke(store, handle, args);
     }
 
     public Schema schema() { return schema; }
@@ -225,6 +247,9 @@ public final class InvertedArray implements AutoCloseable {
         public Object get(String field) { return read(handle, field); }
         public void set(String field, Object value) { write(handle, field, value); }
         public Map<String, Object> snapshot() { return InvertedArray.this.snapshot(handle); }
+        public void invoke(String method, Object... args) {
+            InvertedArray.this.invoke(handle, method, args);
+        }
         public InvertedColumnStore.Handle handle() { return handle; }
     }
 
