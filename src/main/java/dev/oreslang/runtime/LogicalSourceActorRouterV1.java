@@ -676,7 +676,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             String linkedCodeSha256,
             String stateSchemaSha256,
             String messageAbiSha256,
-            LogicalActorProxyMailboxV1.Snapshot mailbox) { }
+            LogicalActorProxyMailboxV1.Snapshot mailbox,
+            boolean retirementQuarantined) { }
 
     SupervisorPublication supervisorPublication(
             LogicalActorProxyMailboxV1 mailbox) {
@@ -699,7 +700,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                     current.image.linkedCodeSha256(),
                     current.image.stateSchemaSha256(),
                     current.image.messageAbiSha256(),
-                    mailbox.snapshot());
+                    mailbox.snapshot(), retirementQuarantined);
         }
     }
 
