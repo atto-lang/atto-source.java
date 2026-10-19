@@ -643,6 +643,24 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         @Override
+        public boolean actorReceivesProxyLong(String actorTypeName) {
+            // Use the linked compiler's resolved receive declaration, never a
+            // caller-provided digest or a reflective guess over guest values.
+            Ast.ClassDecl klass = requireLocalActorClass(actorTypeName);
+            Ast.MethodDecl receive = findMethod(
+                    klass, CallableSelector.instance("receive", 1));
+            if (receive == null || receive.parameters().size() != 1) return false;
+            Ast.TypeRef mail = receive.parameters().getFirst().type();
+            if (mail == null || mail.inferArguments()
+                    || !mail.name().equals("ActorMail")
+                    || mail.arguments().size() != 1) return false;
+            Ast.TypeRef value = mail.arguments().getFirst();
+            return !value.inferArguments()
+                    && value.name().equals("int")
+                    && value.arguments().isEmpty();
+        }
+
+        @Override
         public byte[] snapshotActorState(
                 String actorTypeName,
                 ActorRuntime.ActorOwnedGuestState rawState,
