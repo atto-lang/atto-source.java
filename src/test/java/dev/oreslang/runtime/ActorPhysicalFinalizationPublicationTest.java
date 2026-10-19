@@ -49,6 +49,56 @@ final class ActorPhysicalFinalizationPublicationTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void terminationWaitSurvivesRegistryRemovalWithoutSpuriousTimeout()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            var field = ActorRuntime.class.getDeclaredField("actors");
+            field.setAccessible(true);
+            var actors = (java.util.Map<Object, Object>) field.get(runtime);
+            Object cell = actors.remove(actor.id());
+            assertNotNull(cell);
+
+            var started = new CountDownLatch(1);
+            var completed = new CountDownLatch(1);
+            var observedFinalization = new AtomicBoolean();
+            var error = new AtomicReference<Throwable>();
+            Thread waiter = Thread.ofPlatform().start(() -> {
+                started.countDown();
+                try {
+                    observedFinalization.set(
+                            actor.awaitTermination(5, TimeUnit.SECONDS));
+                } catch (Throwable failure) {
+                    error.set(failure);
+                } finally {
+                    completed.countDown();
+                }
+            });
+            try {
+                assertTrue(started.await(5, TimeUnit.SECONDS));
+                assertFalse(completed.await(40, TimeUnit.MILLISECONDS),
+                        "temporary absence of ActorCell must not shorten a "
+                        + "five-second physical finalization wait");
+                assertFalse(runtime.physicallyFinalizedForHotUpgrade(actor));
+            } finally {
+                // A missing actor is a simulated registry linearization
+                // window, not permission to discard its live executor.
+                assertNull(actors.putIfAbsent(actor.id(), cell));
+                actor.stop();
+                waiter.join(5000);
+            }
+            assertFalse(waiter.isAlive());
+            assertNull(error.get());
+            assertTrue(observedFinalization.get(),
+                    "surviving ActorRef wait must observe actual finalization");
+            assertTrue(runtime.physicallyFinalizedForHotUpgrade(actor));
+        }
+    }
+
+    @Test
     void recordedPhysicalFinalizerCannotSynchronouslyWaitForItself()
             throws Exception {
         try (var runtime = new ActorRuntime()) {
