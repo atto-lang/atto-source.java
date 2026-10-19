@@ -104,6 +104,18 @@ final class DynSendSyncConvergenceTest {
     }
 
     @Test
+    void spoofedArcNominalCannotEnterAsyncTaskBoundary() {
+        String program = """
+                define class Arc as end
+                async fnc launch(Arc handle): int {
+                    return 0;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+    }
+
+    @Test
     void unresolvedAndDeepTypesNeverGainSendOrSync() {
         Type nested = new Types.Dyn(new Types.Named("Worker", List.of()));
         for (int i = 0; i < 400; i++) nested = new Types.ListType(nested);
