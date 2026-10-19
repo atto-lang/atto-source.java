@@ -67,7 +67,7 @@ public final class IpcReceiptCompletionBridge {
      * Do not route authenticated remote receipts or actor guest DATA here.
      * User callbacks complete only after releasing the correlation monitor.
      */
-    public void rejectBeforeRemote(IpcReceiptCorrelation.Envelope envelope) {
+    void rejectBeforeRemote(IpcReceiptCorrelation.Envelope envelope) {
         Objects.requireNonNull(envelope, "envelope");
         CompletableFuture<IpcReceiptCorrelation.Stage> done;
         synchronized (gate) {
