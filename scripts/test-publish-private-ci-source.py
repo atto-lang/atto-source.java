@@ -13,6 +13,7 @@ spec = importlib.util.spec_from_file_location("private_publisher", MODULE)
 pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
 A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
+REPO_ID = 1412142815
 
 
 class DestinationBoundPublisherTests(unittest.TestCase):
@@ -24,18 +25,32 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.source.mkdir()
         (self.root / ".github").mkdir()
         self.approval = self.root / ".github" / "private-ci-approved-repositories.txt"
-        self.approval.write_text("trusted/ci\n")
+        self.approval.write_text("trusted/ci 1412142815\n")
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.route_calls = []
         self.visibility = ["private"] * 100
+        self.repository_ids = [REPO_ID] * 100
+        self.protected_policy = b"trusted/ci 1412142815\n"
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
+        if route == (
+                f"repos/{pub.POLICY_REPOSITORY}/contents/"
+                f"{pub.POLICY_PATH}?ref={pub.POLICY_REF}"):
+            return {
+                "type": "file",
+                "encoding": "base64",
+                "sha": A,
+                "content": base64.b64encode(
+                    self.protected_policy).decode("ascii"),
+            }
         if route == "repos/trusted/ci":
-            return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
+            return dict(full_name="trusted/ci",
+                        id=self.repository_ids.pop(0),
+                        visibility=self.visibility.pop(0),
                         private=True, default_branch="main")
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
@@ -90,6 +105,33 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(tree_writes[1]["tree"], [
             {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": D}])
         self.assertEqual(tree_writes[1]["base_tree"], B)
+
+    def test_recreated_repository_id_aborts_before_any_write(self):
+        self.repository_ids = [REPO_ID + 1]
+        with self.assertRaisesRegex(pub.Denied, "repository ID"):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_repository_id_flip_aborts_before_next_write(self):
+        self.repository_ids = [REPO_ID, REPO_ID, REPO_ID + 1]
+        with self.assertRaisesRegex(pub.Denied, "repository ID"):
+            self.publish()
+        self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
+                         ["repos/trusted/ci/git/blobs"])
+
+    def test_slug_only_policy_is_rejected(self):
+        self.approval.write_text("trusted/ci\n")
+        self.protected_policy = b"trusted/ci\n"
+        with self.assertRaisesRegex(pub.Denied, "invalid entry"):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_protected_policy_id_drift_aborts_before_source_read(self):
+        self.protected_policy = b"trusted/ci 1412142816\n"
+        with patch.object(pub, "collect_source") as collect:
+            with self.assertRaisesRegex(pub.Denied, "differs from protected main"):
+                self.publish()
+            collect.assert_not_called()
 
     def test_public_visibility_aborts_before_any_write(self):
         self.visibility = ["public"]
@@ -232,7 +274,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_policy_symlink_swap_between_check_and_read_rejected(self):
         outside = self.root / "outside-approved-policy"
-        outside.write_text("trusted/ci\n")
+        outside.write_text("trusted/ci 1412142815\n")
         self.approval.write_text("# no approval\n")
         original_read = Path.read_bytes
         def malicious_read(path):
@@ -253,7 +295,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_policy_parent_directory_swap_rejected(self):
         outside = self.root / "external-approved-dir"
         outside.mkdir()
-        (outside / "private-ci-approved-repositories.txt").write_text("trusted/ci\n")
+        (outside / "private-ci-approved-repositories.txt").write_text("trusted/ci 1412142815\n")
         self.approval.write_text("# no approval\n")
         original_open = pub.os.open
         replaced = [False]
@@ -342,7 +384,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         import os
         import threading
         outside = self.root / "outside-policy"
-        outside.write_text("trusted/ci\n")
+        outside.write_text("trusted/ci 1412142815\n")
         self.approval.write_text("# no approval\n")
         stop = threading.Event()
         def attacker():
