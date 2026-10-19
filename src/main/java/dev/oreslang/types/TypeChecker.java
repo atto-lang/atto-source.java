@@ -2229,28 +2229,104 @@ public final class TypeChecker {
                 targetType = memberType(member, env, generics, self, true);
                 where = member.member();
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
-                Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
+                Type receiver = receiverDispatchType(deref(typeOf(indexed.receiver(), env, generics, self)));
                 Type index = typeOf(indexed.index(), env, generics, self);
-                requireAssignable(index, Primitive.INT, "array/list index");
-                if (receiver instanceof ListType list) targetType = list.element();
-                else if (receiver instanceof Tuple tuple) {
-                    // Constant reads preserve individual slot types, so
-                    // writes must retain the same invariant.
-                    Long constant = constantTupleIndex(indexed.index());
-                    if (tuple.elements().isEmpty() || (constant != null
-                            && (constant < 0 || constant >= tuple.elements().size()))) {
-                        throw new IllegalArgumentException("fixed collection index outside arity "
-                                + tuple.elements().size());
+                if (receiver instanceof Record record) {
+                    requireAssignable(index, Primitive.STRING, "record/struct field key");
+                    if (record.readOnly()) {
+                        throw new IllegalArgumentException(
+                                "cannot mutate a readonly structural record through indexed access");
                     }
-                    if (constant != null) {
-                        targetType = tuple.elements().get(constant.intValue());
+                    if (index instanceof StringLiteral key) {
+                        targetType = record.members().get(key.value());
+                        if (targetType == null) {
+                            throw new IllegalArgumentException(
+                                    "unknown record/struct field key '" + key.value() + "'");
+                        }
                     } else {
-                        targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                        dynamicFixedSlots = tuple.elements();
+                        if (record.members().isEmpty()) {
+                            throw new IllegalArgumentException(
+                                    "cannot dynamically assign through an empty record/struct shape");
+                        }
+                        targetType = indexedElementUnion(record.members().values());
+                        dynamicFixedSlots = List.copyOf(record.members().values());
+                    }
+                } else if (receiver instanceof Named named && findClass(named.name()) != null) {
+                    requireAssignable(index, Primitive.STRING, "class field key");
+                    Ast.ClassDecl klass = findClass(named.name());
+                    if (index instanceof StringLiteral key) {
+                        ResolvedField field = findFieldTarget(
+                                klass, named, key.value(), new LinkedHashSet<>());
+                        if (field == null) {
+                            throw new IllegalArgumentException(
+                                    "unknown class field key '" + key.value() + "' on " + named.name());
+                        }
+                        requireClassMemberVisible(
+                                field.field().visibility(), field.owner(), "field", field.field().name());
+                        if (field.field().bindingKind() != Ast.BindingKind.LET) {
+                            throw new IllegalArgumentException(
+                                    "field '" + field.owner().name() + "." + field.field().name()
+                                            + "' is immutable/final; indexed assignment cannot initialize fixed class fields");
+                        }
+                        Type pattern = resolve(
+                                field.field().type(),
+                                Set.copyOf(field.owner().genericParameters()),
+                                field.ownerType());
+                        targetType = substituteGenerics(
+                                pattern, classGenericBindings(field.owner(), field.ownerType()));
+                    } else {
+                        List<Type> writableFields = new ArrayList<>();
+                        for (ResolvedField field : effectiveFieldTargets(
+                                klass, named, new LinkedHashSet<>())) {
+                            requireClassMemberVisible(
+                                    field.field().visibility(), field.owner(), "field", field.field().name());
+                            if (field.field().bindingKind() != Ast.BindingKind.LET) {
+                                throw new IllegalArgumentException(
+                                        "dynamic class field assignment requires every reachable field to be mutable; '"
+                                                + field.owner().name() + "." + field.field().name()
+                                                + "' is immutable/final");
+                            }
+                            Type pattern = resolve(
+                                    field.field().type(),
+                                    Set.copyOf(field.owner().genericParameters()),
+                                    field.ownerType());
+                            writableFields.add(substituteGenerics(
+                                    pattern, classGenericBindings(field.owner(), field.ownerType())));
+                        }
+                        if (writableFields.isEmpty()) {
+                            throw new IllegalArgumentException(
+                                    "class '" + named.name() + "' has no indexable instance fields");
+                        }
+                        targetType = indexedElementUnion(writableFields);
+                        dynamicFixedSlots = List.copyOf(writableFields);
+                    }
+                } else {
+                    requireAssignable(index, Primitive.INT, "array/list/tuple index");
+                    if (receiver instanceof ListType list) {
+                        targetType = list.element();
+                    } else if (receiver instanceof Tuple tuple) {
+                        if (tuple.kind() == TupleKind.TUPLE) {
+                            throw new IllegalArgumentException(
+                                    "Tuple values are positional immutable products; indexed assignment is not allowed");
+                        }
+                        // FixedArray/FixedList retain their existing indexed mutation contract.
+                        Long constant = constantTupleIndex(indexed.index());
+                        if (tuple.elements().isEmpty() || (constant != null
+                                && (constant < 0 || constant >= tuple.elements().size()))) {
+                            throw new IllegalArgumentException("fixed collection index outside arity "
+                                    + tuple.elements().size());
+                        }
+                        if (constant != null) {
+                            targetType = tuple.elements().get(constant.intValue());
+                        } else {
+                            targetType = indexedElementUnion(tuple.elements());
+                            dynamicFixedSlots = tuple.elements();
+                        }
+                    } else {
+                        throw new IllegalArgumentException(
+                                "indexed assignment requires a mutable array/list/fixed collection, mutable struct, or class field");
                     }
                 }
-                else throw new IllegalArgumentException(
-                        "indexed assignment requires an array/list or tuple; structs have a closed static field set");
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
@@ -3642,21 +3718,58 @@ public final class TypeChecker {
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.IndexExpr indexed) {
-            Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
+            Type receiver = receiverDispatchType(deref(typeOf(indexed.receiver(), env, generics, self)));
             Type index = typeOf(indexed.index(), env, generics, self);
             if (receiver instanceof Record record) {
-                requireAssignable(index, Primitive.STRING, "object/map key");
+                requireAssignable(index, Primitive.STRING, "record/struct field key");
                 if (index instanceof StringLiteral key) {
                     Type member = record.members().get(key.value());
                     if (member == null) {
-                        throw new IllegalArgumentException("unknown object/map key '" + key.value() + "'");
+                        throw new IllegalArgumentException(
+                                "unknown record/struct field key '" + key.value() + "'");
                     }
                     return member;
                 }
                 if (record.members().isEmpty()) return Unknown.INSTANCE;
                 return indexedElementUnion(record.members().values());
             }
-            requireAssignable(index, Primitive.INT, "array/list index");
+            if (receiver instanceof Named named) {
+                Ast.ClassDecl klass = findClass(named.name());
+                if (klass != null) {
+                    requireAssignable(index, Primitive.STRING, "class field key");
+                    if (index instanceof StringLiteral key) {
+                        ResolvedField field = findFieldTarget(
+                                klass, named, key.value(), new LinkedHashSet<>());
+                        if (field == null) {
+                            throw new IllegalArgumentException(
+                                    "unknown class field key '" + key.value() + "' on " + named.name());
+                        }
+                        requireClassMemberVisible(
+                                field.field().visibility(), field.owner(), "field", field.field().name());
+                        Type pattern = classFieldType(field.owner(), field.field());
+                        return substituteGenerics(
+                                pattern, classGenericBindings(field.owner(), field.ownerType()));
+                    }
+                    List<Type> fields = new ArrayList<>();
+                    for (ResolvedField field : effectiveFieldTargets(
+                            klass, named, new LinkedHashSet<>())) {
+                        // Arbitrary dynamic keys must not become a private-field
+                        // side channel. Outside the declaring class, fail closed
+                        // if the runtime key could select an inaccessible field.
+                        requireClassMemberVisible(
+                                field.field().visibility(), field.owner(), "field", field.field().name());
+                        Type pattern = classFieldType(field.owner(), field.field());
+                        fields.add(substituteGenerics(
+                                pattern, classGenericBindings(field.owner(), field.ownerType())));
+                    }
+                    if (fields.isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "class '" + named.name() + "' has no indexable instance fields");
+                    }
+                    return indexedElementUnion(fields);
+                }
+            }
+            requireAssignable(index, Primitive.INT, "array/list/tuple index");
             if (receiver instanceof ListType list) return list.element();
             if (receiver instanceof Tuple tuple) {
                 Long constant = constantTupleIndex(indexed.index());
@@ -3670,7 +3783,7 @@ public final class TypeChecker {
                 return indexedElementUnion(tuple.elements());
             }
             throw new IllegalArgumentException(
-                    "indexing requires an array/list, tuple, or closed struct with a statically known string key");
+                    "indexing requires an array/list, tuple, record/struct, or class instance field");
         }
         if (expr instanceof Ast.NewExpr created) {
             // Guest Symbols are immutable keys, not fresh reference capabilities.
