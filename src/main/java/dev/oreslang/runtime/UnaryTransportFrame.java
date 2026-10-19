@@ -81,7 +81,20 @@ final class UnaryTransportFrame {
 
     /** One WebSocket binary MESSAGE, after RFC 6455 reassembly/validation. */
     static byte[] encodeWebSocketBinary(Envelope envelope) { return body(envelope); }
-    static Envelope decodeWebSocketBinary(byte[] message) throws IOException { return parse(message); }
+    static Envelope decodeWebSocketBinary(byte[] message) throws IOException {
+        return decodeWebSocketBinary(message, MAX_PAYLOAD_BYTES);
+    }
+    static Envelope decodeWebSocketBinary(byte[] message, int maxPayloadBytes) throws IOException {
+        checkBudget(maxPayloadBytes);
+        if (message == null || message.length > ENVELOPE_BYTES + maxPayloadBytes)
+            throw new IOException("WebSocket unary message exceeds request byte limit");
+        return parse(message);
+    }
+
+    private static void checkBudget(int maxPayloadBytes) {
+        if (maxPayloadBytes < 0 || maxPayloadBytes > MAX_PAYLOAD_BYTES)
+            throw new IllegalArgumentException("invalid unary request byte limit");
+    }
 
     /** TCP framing: 4-byte big-endian envelope byte count, then that envelope. */
     static byte[] encodeTcp(Envelope envelope) {
