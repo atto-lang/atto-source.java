@@ -426,6 +426,20 @@ def cleanup_exact_payload_ref(r,commit_sha):
         raise Denied("payload ref cleanup could not be confirmed")
 
 
+
+def cleanup_exact_payload_ref_if_present(r,commit_sha):
+    """Only clean an exact, unchanged payload ref; absent is safe."""
+    commit_sha=require_sha(commit_sha,"payload commit")
+    branch="ci/oreslang-"+r["source_tree_sha"]
+    refs=api_list(f"repos/{CARRIER_REPO}/git/matching-refs/heads/{branch}")
+    exact=[x for x in refs if isinstance(x,dict) and x.get("ref")=="refs/heads/"+branch]
+    if not exact:
+        return
+    if len(exact)!=1:
+        raise Denied("payload ref cleanup found ambiguous refs")
+    cleanup_exact_payload_ref(r,commit_sha)
+
+
 def cleanup_exact_authorization_ref_if_present(commit_sha):
     """Remove only our exact authorization ref; absence is already safe."""
     commit_sha=require_sha(commit_sha,"payload commit")
