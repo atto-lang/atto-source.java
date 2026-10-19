@@ -12,6 +12,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class DisjointIntRegionTest {
     @Test
+    @SuppressWarnings("try") // Explicit close is the retirement event under test.
     void tenWorkersUpdateDisjointRangesWithoutElementLocks() throws Exception {
         final int workers = 10;
         final int width = 1_000;
