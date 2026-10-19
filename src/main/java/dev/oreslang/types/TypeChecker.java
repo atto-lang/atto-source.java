@@ -3645,6 +3645,7 @@ public final class TypeChecker {
                         throw new IllegalArgumentException(
                                 "tuple index " + constant + " outside arity " + tuple.elements().size());
                     }
+                    Ast.CheckedIndexKeys.recordTupleSlot(indexed, constant.intValue());
                     return tuple.elements().get(constant.intValue());
                 }
                 if (tuple.elements().isEmpty()) {
