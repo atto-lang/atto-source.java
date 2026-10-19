@@ -128,8 +128,8 @@ final class GuestScalarTaskAwaitTest {
         String source = """
                 pub fnc main(): void {
                     let int x = 4;
-                    let lambda = || -> {
-                        let int result = await task { return x; };
+                    let handler = |int input| -> {
+                        let int result = await task { return input; };
                         return result;
                     };
                     return;
