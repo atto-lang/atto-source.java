@@ -1194,13 +1194,10 @@ public final class OresEvalRootNode extends RootNode {
                 if (blockBody != null) {
                     switch (flow.kind()) {
                         case NORMAL -> done(null);
-                        case RETURN -> {
-                            if (flow.value() != null) {
-                                throw new IllegalStateException(
-                                        "detached source continuation cannot return a value");
-                            }
-                            done(null);
-                        }
+                        // Both nb { ... } and task { ... } produce Task<T>.
+                        // The compiler proves return-value type and exhaustiveness.
+                        // Returning void yields null, matching Task<void>.
+                        case RETURN -> done(flow.value());
                         case THROW -> throw sourceFailure(flow.failure());
                         case BREAK, CONTINUE ->
                                 throw new IllegalStateException(
