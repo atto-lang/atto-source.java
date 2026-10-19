@@ -150,9 +150,16 @@ public final class GeneratorRuntime {
          * if callers issue more than one pull before an earlier pull completes.
          */
         public OresFuture<Step<T>> nextStep() {
-            if (engine.isClosed()) {
-                engine.awaitProducerExit();
-                return OresFuture.completed(Step.doneStep());
+            // Only a *settled* terminal generator can return an immediate
+            // Future. A terminal event can precede the physical guest exit;
+            // never park the caller (possibly an actor carrier) in this API.
+            if (engine.isTerminalReady()) {
+                // A producer admission denial remains an exceptional async
+                // result across repeated pulls; never launder it into DONE.
+                Throwable rejected = engine.terminalFailure();
+                return rejected == null
+                        ? OresFuture.completed(Step.doneStep())
+                        : OresFuture.failed(rejected);
             }
             // An async pull always returns an OresFuture, including when
             // scheduler admission itself rejects before any guest work starts.
@@ -186,6 +193,9 @@ public final class GeneratorRuntime {
         private final AtomicReference<OresFuture<Void>> producerTask = new AtomicReference<>();
         private final Object launchLock = new Object();
         private volatile boolean done;
+        // True only after the producer's actual guest turn has exited and
+        // the terminal observation may be published without any blocking.
+        private volatile boolean terminalReady;
         private volatile Throwable backingFailure;
 
         private Engine(AsyncRuntime runtime, Producer<T> producer) {
@@ -193,20 +203,37 @@ public final class GeneratorRuntime {
             this.producer = Objects.requireNonNull(producer, "producer");
         }
 
-        private boolean isClosed() {
-            return closed.get();
+        private boolean isTerminalReady() {
+            return terminalReady;
+        }
+
+        private Throwable terminalFailure() {
+            return closed.get() ? null : backingFailure;
         }
 
         private synchronized Step<T> next() {
-            // Reject a failed producer admission even on subsequent pulls.
-            // Otherwise a failed first launch can become a silent DONE or hang.
+            // Explicit close stops iteration; otherwise preserve the
+            // producer's terminal failure across every later pull.
+            if (closed.get()) {
+                awaitProducerExit();
+                terminalReady = true;
+                return Step.doneStep();
+            }
             throwIfBackingFailed();
-            if (done || closed.get()) { awaitProducerExit(); return Step.doneStep(); }
+            if (done) {
+                awaitProducerExit();
+                terminalReady = true;
+                return Step.doneStep();
+            }
             startIfNeeded();
             throwIfBackingFailed();
             putResume();
             Event<T> event = takeEvent();
-            if (closed.get()) { awaitProducerExit(); return Step.doneStep(); }
+            if (closed.get()) {
+                awaitProducerExit();
+                terminalReady = true;
+                return Step.doneStep();
+            }
             throwIfBackingFailed();
             if (event instanceof YieldEvent<?> yielded) {
                 @SuppressWarnings("unchecked")
@@ -216,11 +243,12 @@ public final class GeneratorRuntime {
             done = true;
             awaitProducerExit();
             if (event instanceof FailedEvent<?> failed) {
-                Throwable failure = failed.failure();
-                if (failure instanceof RuntimeException runtimeFailure) throw runtimeFailure;
-                if (failure instanceof Error error) throw error;
-                throw new RuntimeException(failure);
+                // The published failure is an immutable terminal observation,
+                // not a one-shot event to forget after its first consumer.
+                backingFailure = failed.failure();
+                throwIfBackingFailed();
             }
+            terminalReady = true;
             return Step.doneStep();
         }
 
@@ -230,24 +258,24 @@ public final class GeneratorRuntime {
                 OresFuture<Void> task;
                 try {
                     task = runtime.submit(() -> {
-                    try {
-                        takeResume();
-                        if (!closed.get()) {
-                            producer.run(this::emit);
+                        try {
+                            takeResume();
+                            if (!closed.get()) {
+                                producer.run(this::emit);
+                            }
+                            publish(new DoneEvent<>());
+                        } catch (CancellationException cancelled) {
+                            if (!closed.get()) publish(new FailedEvent<>(cancelled));
+                        } catch (Throwable failure) {
+                            if (!closed.get()) publish(new FailedEvent<>(failure));
                         }
-                        publish(new DoneEvent<>());
-                    } catch (CancellationException cancelled) {
-                        if (!closed.get()) publish(new FailedEvent<>(cancelled));
-                    } catch (Throwable failure) {
-                        if (!closed.get()) publish(new FailedEvent<>(failure));
-                    }
-                    return null;
+                        return null;
                     });
-                } catch (RuntimeException | Error admissionFailure) {
-                    // No producer exists to publish an Event. Retain the
-                    // original rejection and make every pull fail before it
-                    // can wait indefinitely on the empty event queue.
-                    backingFailure = admissionFailure;
+                } catch (RuntimeException | Error rejection) {
+                    // The producer never started, so no event can arrive.
+                    // Persist the denial rather than leaving a started
+                    // activation waiting indefinitely on an empty queue.
+                    backingFailure = rejection;
                     return;
                 }
                 producerTask.set(task);
@@ -275,6 +303,7 @@ public final class GeneratorRuntime {
             if (failure == null) return;
             done = true;
             awaitProducerExit();
+            terminalReady = true;
             if (failure instanceof RuntimeException runtimeFailure) throw runtimeFailure;
             if (failure instanceof Error error) throw error;
             throw new RuntimeException(failure);
@@ -344,6 +373,7 @@ public final class GeneratorRuntime {
                 events.offer(new DoneEvent<>());
             }
             awaitProducerExit();
+            terminalReady = true;
         }
     }
 }
