@@ -28,6 +28,13 @@ final class SendSyncAndRegionPlannerTest {
                 List.of(new Ast.ModuleDecl("send_sync", List.of(classes)))));
     }
 
+    private static SendSyncTraits trusted(Ast.ClassDecl... classes) {
+        return new SendSyncTraits(new Ast.Program(
+                List.of(new Ast.ModuleDecl("send_sync", List.of(classes)))),
+                java.util.Set.of("Arc", "Weak", "Shared", "Mutex", "RwLock",
+                        "Array", "List", "InvertedArray"));
+    }
+
     @Test
     void structuralScalarGenericAndBorrowRules() {
         SendSyncTraits checker = traits(
@@ -46,14 +53,14 @@ final class SendSyncAndRegionPlannerTest {
 
     @Test
     void standardReferenceWrappersAndInteriorCells() {
-        SendSyncTraits checker = traits(klass("Mutable", List.of(),
+        SendSyncTraits checker = trusted(klass("Mutable", List.of(),
                 field("v", t("int"), true)));
         assertTrue(checker.isSync(t("Arc", t("int"))));
         assertFalse(checker.isSend(t("Arc", t("Mutable"))));
         assertTrue(checker.isSync(t("Mutex", t("Mutable"))));
         assertFalse(checker.isSync(t("RwLock", t("Mutable"))));
         assertFalse(checker.isSend(t("Rc", t("int"))));
-        assertTrue(checker.isSend(t("Cell", t("int"))));
+        assertFalse(checker.isSend(t("Cell", t("int"))));
         assertFalse(checker.isSync(t("Cell", t("int"))));
         assertTrue(checker.isSend(t("Array", t("int"))));
         assertFalse(checker.isSync(t("InvertedArray", t("int"))));
@@ -178,5 +185,48 @@ final class SendSyncAndRegionPlannerTest {
                 }
             }
         }
+    }
+
+    @Test
+    void unloweredIntrinsicsAndUserDefinedNameSpoofingFailClosed() {
+        SendSyncTraits defaultChecker = traits();
+        for (String intrinsic : List.of("Arc", "Weak", "Shared", "Mutex",
+                "RwLock", "Array", "List", "InvertedArray")) {
+            assertFalse(defaultChecker.isSend(t(intrinsic, t("int"))),
+                    "unlowered " + intrinsic + " cannot claim Send");
+        }
+        SendSyncTraits spoofed = trusted(
+                klass("Arc", List.of("T"), field("hostPtr", t("NativeHandle"), false)),
+                klass("Mutex", List.of("T"), field("hostPtr", t("NativeHandle"), false)));
+        assertFalse(spoofed.isSend(t("Arc", t("int"))));
+        assertFalse(spoofed.isSync(t("Mutex", t("int"))));
+        assertThrows(IllegalArgumentException.class, () ->
+                new SendSyncTraits(new Ast.Program(List.of()),
+                        java.util.Set.of("ForgedCompilerIntrinsic")));
+    }
+
+    @Test
+    void staleGenerationsCannotHideBehindEarlierConflict() {
+        var first = new RegionAccessPlanner.SystemAccess("first", List.of(
+                new RegionAccessPlanner.Access(11, 3, "x", 0, 10, RegionAccessPlanner.Mode.WRITE),
+                new RegionAccessPlanner.Access(12, 4, "y", 0, 10, RegionAccessPlanner.Mode.WRITE)));
+        var stale = new RegionAccessPlanner.SystemAccess("stale", List.of(
+                new RegionAccessPlanner.Access(11, 3, "x", 0, 10, RegionAccessPlanner.Mode.READ),
+                new RegionAccessPlanner.Access(12, 5, "y", 20, 30, RegionAccessPlanner.Mode.READ)));
+        // The x write/read conflicts first; that cannot conceal the stale y generation.
+        assertThrows(IllegalArgumentException.class,
+                () -> RegionAccessPlanner.conflicts(first, stale));
+        assertThrows(IllegalArgumentException.class,
+                () -> RegionAccessPlanner.plan(List.of(first, stale)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new RegionAccessPlanner.SystemAccess("self-conflict", List.of(
+                        new RegionAccessPlanner.Access(11, 3, "x", 0, 10, RegionAccessPlanner.Mode.WRITE),
+                        new RegionAccessPlanner.Access(11, 3, "x", 2, 5, RegionAccessPlanner.Mode.READ))));
+        // A read/read overlap is harmless; a half-open adjacent write is disjoint.
+        var valid = new RegionAccessPlanner.SystemAccess("valid", List.of(
+                new RegionAccessPlanner.Access(11, 3, "x", 0, 10, RegionAccessPlanner.Mode.READ),
+                new RegionAccessPlanner.Access(11, 3, "x", 2, 5, RegionAccessPlanner.Mode.READ),
+                new RegionAccessPlanner.Access(11, 3, "x", 10, 20, RegionAccessPlanner.Mode.WRITE)));
+        assertEquals(3, valid.accesses().size());
     }
 }
