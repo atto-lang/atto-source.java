@@ -167,6 +167,87 @@ final class ActorPhysicalFinalizationPublicationTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void physicalRetirementCannotPrecedeExactReceiptFailureCallbacks()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+
+            // Inject an exact receipt reservation into the live idle ActorCell.
+            // This isolates the terminal-settlement ordering without racing
+            // the scheduler's normal user-message processing.
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            var actors = (java.util.Map<Object, Object>) actorsField.get(runtime);
+            Object cell = actors.get(actor.id());
+            assertNotNull(cell);
+            var ledgerField = cell.getClass().getDeclaredField(
+                    "pendingPhysicalReceipts");
+            ledgerField.setAccessible(true);
+            var receipts = (java.util.Map<Long, ActorRuntime.PhysicalMailReceipt>)
+                    ledgerField.get(cell);
+            var receiptConstructor = ActorRuntime.PhysicalMailReceipt.class
+                    .getDeclaredConstructor(ActorRuntime.ActorRef.class,
+                            long.class, OresFuture.class);
+            receiptConstructor.setAccessible(true);
+            var pending = new OresFuture<Void>(() -> false, () -> { });
+            var receipt = receiptConstructor.newInstance(actor, 77L, pending);
+            assertNull(receipts.putIfAbsent(77L, receipt));
+
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var deniedSelfJoin = new AtomicBoolean();
+            var callbackError = new AtomicReference<Throwable>();
+            receipt.terminal().whenCompleteRuntime((ignored, failure) -> {
+                try {
+                    assertNotNull(failure, "stopped mail must fail, not PROCESSED");
+                    assertThrows(IllegalStateException.class,
+                            () -> actor.awaitTermination(5, TimeUnit.SECONDS),
+                            "settling a receipt cannot join its own actor stop");
+                    deniedSelfJoin.set(true);
+                    entered.countDown();
+                    if (!release.await(5, TimeUnit.SECONDS))
+                        throw new AssertionError("receipt callback not released");
+                } catch (Throwable error) {
+                    callbackError.compareAndSet(null, error);
+                    entered.countDown();
+                }
+            });
+
+            var stopError = new AtomicReference<Throwable>();
+            Thread stopper = Thread.ofPlatform().start(() -> {
+                try {
+                    actor.stop();
+                } catch (Throwable failure) {
+                    stopError.set(failure);
+                }
+            });
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS),
+                        "stop never published the exact receipt terminal");
+                assertNull(callbackError.get());
+                assertTrue(deniedSelfJoin.get());
+                assertFalse(runtime.physicallyFinalizedForHotUpgrade(actor),
+                        "generation retirement must wait for terminal receipt observer");
+                assertFalse(actor.awaitTermination(30, TimeUnit.MILLISECONDS),
+                        "external host waiter cannot pass an unfinished observer");
+            } finally {
+                release.countDown();
+                stopper.join(5000);
+            }
+            assertFalse(stopper.isAlive());
+            assertNull(stopError.get());
+            assertNull(callbackError.get());
+            assertEquals(ActorRuntime.PhysicalMailDisposition.STOPPED,
+                    receipt.terminalDisposition());
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(runtime.physicallyFinalizedForHotUpgrade(actor));
+        }
+    }
+
+    @Test
     void recordedPhysicalFinalizerCannotSynchronouslyWaitForItself()
             throws Exception {
         try (var runtime = new ActorRuntime()) {
