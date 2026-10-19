@@ -202,7 +202,9 @@ public final class Types {
         if (from instanceof BoolLiteral && to == Primitive.BOOL) return true;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
-        if (from.equals(to)) return true;
+        if (from.equals(to)) {
+            return !containsMalformedNominalName(from, 0, new int[] {100_000});
+        }
         if (from instanceof SelfType source) {
             if (to instanceof SelfType target) {
                 return isAssignable(source.bound(), target.bound())
@@ -275,6 +277,46 @@ public final class Types {
     private static boolean hasMalformedNominalName(Type type) {
         return type instanceof Named named
                 && (named.name() == null || named.name().isBlank());
+    }
+
+    private static boolean containsMalformedNominalName(
+            Type type, int depth, int[] budget) {
+        // This guards the equality fast path. Without it, two identical outer
+        // aggregates could compare equal before assignability ever visits a
+        // malformed nominal nested inside them. Exhaustion denies the shortcut.
+        if (depth > 256 || --budget[0] < 0) return true;
+        if (hasMalformedNominalName(type)) return true;
+        if (type instanceof Named named) {
+            for (Type argument : named.arguments()) {
+                if (containsMalformedNominalName(argument, depth + 1, budget)) return true;
+            }
+        } else if (type instanceof SelfType self) {
+            return containsMalformedNominalName(self.bound(), depth + 1, budget);
+        } else if (type instanceof Borrow borrow) {
+            return containsMalformedNominalName(borrow.target(), depth + 1, budget);
+        } else if (type instanceof Record record) {
+            for (Type member : record.members().values()) {
+                if (containsMalformedNominalName(member, depth + 1, budget)) return true;
+            }
+        } else if (type instanceof Function function) {
+            for (Type parameter : function.parameters()) {
+                if (containsMalformedNominalName(parameter, depth + 1, budget)) return true;
+            }
+            return containsMalformedNominalName(function.result(), depth + 1, budget);
+        } else if (type instanceof ListType list) {
+            return containsMalformedNominalName(list.element(), depth + 1, budget);
+        } else if (type instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) {
+                if (containsMalformedNominalName(element, depth + 1, budget)) return true;
+            }
+        } else if (type instanceof Union union) {
+            for (Type option : union.options()) {
+                if (containsMalformedNominalName(option, depth + 1, budget)) return true;
+            }
+        } else if (type instanceof Not not) {
+            return containsMalformedNominalName(not.excluded(), depth + 1, budget);
+        }
+        return false;
     }
 
     private static boolean numericWidening(Type from, Type to) {
