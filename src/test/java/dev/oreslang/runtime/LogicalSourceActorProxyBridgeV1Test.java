@@ -248,6 +248,75 @@ final class LogicalSourceActorProxyBridgeV1Test {
     }
 
     @Test
+    void nestedScopeCloseJoinsPhysicalChildrenAndReconcilesOwnerSlots()
+            throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit());
+             OresScheduler scheduler = new OresScheduler(2)) {
+            var generation = manager.stageActorGeneration(
+                    "scope-physical-retirement.ores", V1);
+            try (var bridge = LogicalSourceActorProxyBridgeV1.spawnShared(
+                    generation, "Counter", WAIT, 2, 8, 16)) {
+                var root = bridge.childHostTaskScopeForUpgrade();
+                var child = root.childScope();
+                var grandchild = child.childScope();
+                var entered = new java.util.concurrent.CountDownLatch(2);
+                var releaseCarriers = new java.util.concurrent.atomic.AtomicBoolean();
+                var closeError =
+                        new java.util.concurrent.atomic.AtomicReference<Throwable>();
+                var first = child.start(scheduler, resume -> {
+                    entered.countDown();
+                    while (!releaseCarriers.get()) Thread.onSpinWait();
+                    return OresScheduler.done(1);
+                });
+                var second = grandchild.start(scheduler, resume -> {
+                    entered.countDown();
+                    while (!releaseCarriers.get()) Thread.onSpinWait();
+                    return OresScheduler.done(2);
+                });
+                assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                Thread closer = Thread.ofPlatform().start(() -> {
+                    try {
+                        root.close();
+                    } catch (Throwable failure) {
+                        closeError.set(failure);
+                    }
+                });
+                try {
+                    long until = System.nanoTime()
+                            + java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
+                    while ((!first.isDone() || !second.isDone())
+                            && System.nanoTime() < until) {
+                        Thread.sleep(2);
+                    }
+                    assertTrue(first.isCancelled());
+                    assertTrue(second.isCancelled());
+                    assertFalse(root.physicallyQuiescent(),
+                            "cancelled result Futures cannot retire running carriers");
+                    assertTrue(closer.isAlive(),
+                            "parent must join all physical child/grandchild exits");
+                } finally {
+                    releaseCarriers.set(true);
+                    closer.join(7000);
+                }
+                assertFalse(closer.isAlive(), "bounded close must finish");
+                assertNull(closeError.get());
+                assertTrue(root.physicallyQuiescent(),
+                        "close return must reconcile owned slot records");
+                assertTrue(child.physicallyQuiescent());
+                assertTrue(grandchild.physicallyQuiescent());
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> grandchild.start(scheduler,
+                                resume -> OresScheduler.done(3)));
+                assertTrue(bridge.upgradeTo(
+                        manager.stageActorGeneration(
+                                "scope-retired-next.ores", V2), WAIT),
+                        "released child generation pins must allow migration");
+            }
+        }
+    }
+
+    @Test
     void physicalTaskOwnerCloseWaitsForExecutingCancelledCarrier()
             throws Exception {
         try (HotReloadManager manager = new HotReloadManager(
