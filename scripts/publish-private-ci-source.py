@@ -43,7 +43,9 @@ REVIEWED_SNAPSHOTS_ROUTE = (
     SOURCE_METADATA_ROUTE + "/contents/"
     ".github/private-ci-approved-source-snapshots.txt?ref=main"
 )
-SOURCE_SNAPSHOT_ENTRY = re.compile(r"^([a-f0-9]{40}) ([a-f0-9]{40}) ([1-9][0-9]{0,19})$")
+SOURCE_SNAPSHOT_ENTRY = re.compile(
+    r"^([a-f0-9]{40}) ([a-f0-9]{40}) ([1-9][0-9]{0,19}) ([a-f0-9]{40}) ([a-f0-9]{40})$"
+)
 PROTECTED_REVIEWS_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection/required_pull_request_reviews"
 CODEOWNERS_ROUTE = SOURCE_METADATA_ROUTE + "/contents/.github/CODEOWNERS?ref=main"
 CODEOWNERS_ERRORS_ROUTE = SOURCE_METADATA_ROUTE + "/codeowners/errors?ref=main"
@@ -67,8 +69,46 @@ REQUIRED_CODEOWNER = "@ORESoftware"
 PROTECTED_RULES_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection"
 
 
-
 class Denied(RuntimeError):
+    pass
+
+
+def require_hardened_branch_rules(rules, label):
+    """Require strict, app-bound CI and immutable protected-branch semantics."""
+    if not isinstance(rules, dict):
+        raise Denied(label + " protection metadata is unavailable")
+    if (not isinstance(rules.get("enforce_admins"), dict)
+            or rules["enforce_admins"].get("enabled") is not True):
+        raise Denied(label + " must enforce rules for administrators")
+    required = rules.get("required_status_checks")
+    if (not isinstance(required, dict)
+            or required.get("strict") is not True
+            or not isinstance(required.get("contexts"), list)
+            or not required["contexts"]
+            or not all(isinstance(c, str) and c for c in required["contexts"])):
+        raise Denied(label + " must require strict CI checks")
+    checks = required.get("checks")
+    if (not isinstance(checks, list) or not checks
+            or not all(isinstance(item, dict)
+                       and isinstance(item.get("context"), str)
+                       and item["context"]
+                       and type(item.get("app_id")) is int
+                       and item["app_id"] > 0
+                       for item in checks)):
+        raise Denied(label + " required checks must be bound to explicit GitHub App IDs")
+    bound_contexts = [item["context"] for item in checks]
+    if (len(bound_contexts) != len(set(bound_contexts))
+            or set(bound_contexts) != set(required["contexts"])):
+        raise Denied(label + " required check contexts are ambiguous or not app-bound")
+    for key, description in (("allow_force_pushes", "force pushes"),
+                             ("allow_deletions", "branch deletion")):
+        control = rules.get(key)
+        if not isinstance(control, dict) or control.get("enabled") is not False:
+            raise Denied(label + " must explicitly disable " + description)
+    return tuple(sorted((item["context"], item["app_id"]) for item in checks))
+
+
+
     pass
 
 
@@ -420,16 +460,7 @@ def require_protected_main_policy(approved_policy):
         raise Denied("source main branch is not protected")
     protected_main_sha = valid_sha(branch["commit"].get("sha"))
     rules = gh_api(PROTECTED_RULES_ROUTE)
-    if (not isinstance(rules.get("enforce_admins"), dict)
-            or rules["enforce_admins"].get("enabled") is not True):
-        raise Denied("protected main must enforce rules for administrators")
-    required_checks = rules.get("required_status_checks")
-    if (not isinstance(required_checks, dict)
-            or required_checks.get("strict") is not True
-            or not isinstance(required_checks.get("contexts"), list)
-            or not required_checks["contexts"]
-            or not all(isinstance(c, str) and c for c in required_checks["contexts"])):
-        raise Denied("protected main must require strict source CI checks")
+    require_hardened_branch_rules(rules, "protected source main")
     # An unresolved security review thread must be able to block the policy
     # change before the private publisher trusts it. Do not infer this from
     # required approving reviews: GitHub exposes the gate separately.
@@ -568,11 +599,10 @@ def verify_source_commit(expected_source_commit, expected_source_tree):
 
 def require_reviewed_source_snapshot(expected_commit, expected_tree, destination_id,
                                      reviewed_blob_sha=None):
-    """Require exact immutable source tuple from a protected-main approval file.
+    """Require source + destination + exact protected carrier-main revision.
 
-    An approved destination is NOT blanket permission to export arbitrary
-    branch contents. The requested source commit/tree must have its own
-    independently code-owner-reviewed entry on protected source main.
+    Source authorization is invalid if the carrier workflows/root tree change:
+    a new protected carrier main commit/tree requires fresh source-side review.
     """
     valid_sha(expected_commit)
     valid_sha(expected_tree)
@@ -596,20 +626,25 @@ def require_reviewed_source_snapshot(expected_commit, expected_tree, destination
         raise Denied("reviewed source-snapshot policy blob SHA does not match its bytes")
     if reviewed_blob_sha is not None and digest != reviewed_blob_sha:
         raise Denied("reviewed source-snapshot approval changed during transfer")
-    approved = set()
+    approvals = {}
     for line in lines:
         if not line or line.startswith("#"):
             continue
         match = SOURCE_SNAPSHOT_ENTRY.fullmatch(line)
         if match is None:
             raise Denied("invalid reviewed source-snapshot policy entry")
-        entry = (match.group(1), match.group(2), int(match.group(3)))
-        if entry in approved:
-            raise Denied("duplicate source-snapshot approval")
-        approved.add(entry)
-    if (expected_commit, expected_tree, destination_id) not in approved:
+        key = (match.group(1), match.group(2), int(match.group(3)))
+        carrier = (match.group(4), match.group(5))
+        if key in approvals:
+            raise Denied("duplicate or ambiguous source-snapshot approval")
+        approvals[key] = carrier
+    key = (expected_commit, expected_tree, destination_id)
+    carrier = approvals.get(key)
+    if carrier is None:
         raise Denied("immutable source snapshot is not independently approved")
-    return digest
+    valid_sha(carrier[0])
+    valid_sha(carrier[1])
+    return digest, carrier[0], carrier[1]
 
 
 def collect_source(root, trusted_root):
@@ -911,8 +946,10 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     approved_destination_id = require_preflight(repository, trusted_root)
     if approved_policy[1] != approved_destination_id:
         raise Denied("destination numeric ID differs from reviewed approval policy")
-    reviewed_snapshot_sha = require_reviewed_source_snapshot(
-        expected_source_commit, expected_source_tree, approved_destination_id)
+    reviewed_snapshot_sha, approved_carrier_main_sha, approved_carrier_tree = (
+        require_reviewed_source_snapshot(
+            expected_source_commit, expected_source_tree, approved_destination_id)
+    )
     verify_source_commit(expected_source_commit, expected_source_tree)
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
@@ -925,7 +962,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     # workflow definitions execute with the destination repository's token.
     if base.get("default_branch") != "main":
         raise Denied("private carrier default branch is not trusted main")
-    def require_pinned_carrier_main(expected_sha=None):
+    def require_pinned_carrier_main(expected_sha=None, expected_tree=None):
         ref = gh_api(f"repos/{repository}/git/ref/heads/main")
         current_sha = nested_sha(ref, "object")
         if (ref.get("ref") != "refs/heads/main"
@@ -948,15 +985,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         # CI branch, so require an enforced two-party review boundary before
         # reading or uploading even one private source byte.
         carrier_rules = gh_api(f"repos/{repository}/branches/main/protection")
-        checks = carrier_rules.get("required_status_checks")
-        if (not isinstance(carrier_rules.get("enforce_admins"), dict)
-                or carrier_rules["enforce_admins"].get("enabled") is not True
-                or not isinstance(checks, dict)
-                or checks.get("strict") is not True
-                or not isinstance(checks.get("contexts"), list)
-                or not checks["contexts"]
-                or not all(isinstance(c, str) and c for c in checks["contexts"])):
-            raise Denied("private carrier main lacks enforced administrator and CI protections")
+        require_hardened_branch_rules(carrier_rules, "private carrier main")
         conversations = carrier_rules.get("required_conversation_resolution")
         if (not isinstance(conversations, dict)
                 or conversations.get("enabled") is not True):
@@ -975,8 +1004,15 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
                     for key in ("users", "teams", "apps")):
                 raise Denied("private carrier main allows review bypass")
         require_protected_carrier_codeowners(repository)
+        if expected_tree is not None:
+            valid_sha(expected_tree)
+            carrier_commit = gh_api(f"repos/{repository}/git/commits/{current_sha}")
+            if (carrier_commit.get("sha") != current_sha
+                    or nested_sha(carrier_commit, "tree") != expected_tree):
+                raise Denied("private carrier main tree differs from reviewed source approval")
         return current_sha
-    base_sha = require_pinned_carrier_main()
+    base_sha = require_pinned_carrier_main(
+        approved_carrier_main_sha, approved_carrier_tree)
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = nested_sha(base_commit, "tree")
     if base_commit.get("sha") != base_sha:
@@ -998,13 +1034,16 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
             raise Denied("private CI destination approval policy changed during transfer")
         if require_protected_main_policy(approved_policy) != reviewed_main_sha:
             raise Denied("reviewed protected source main changed during transfer")
-        require_reviewed_source_snapshot(expected_source_commit, expected_source_tree,
-                                         approved_destination_id, reviewed_snapshot_sha)
+        snapshot = require_reviewed_source_snapshot(
+            expected_source_commit, expected_source_tree, approved_destination_id,
+            reviewed_snapshot_sha)
+        if snapshot[1:] != (approved_carrier_main_sha, approved_carrier_tree):
+            raise Denied("reviewed carrier revision changed during transfer")
         verify_source_commit(expected_source_commit, expected_source_tree)
         current = checked_repo(repository, expected_id=approved_destination_id)
         if current.get("default_branch") != "main":
             raise Denied("private carrier default branch changed during transfer")
-        require_pinned_carrier_main(base_sha)
+        require_pinned_carrier_main(base_sha, approved_carrier_tree)
 
     isolated_sha = None
     for batch in batches:
