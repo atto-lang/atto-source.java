@@ -1122,6 +1122,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final PrivateMemoryBlock privateBlock;
         private final long sharedBytes;
         private final AtomicBoolean revoked = new AtomicBoolean();
+        private ActorShardColumns attachedShard;
 
         private ActorShardLease(ActorCell<?> cell, PrivateMemoryBlock block, long bytes) {
             this.cell = cell;
