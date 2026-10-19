@@ -345,6 +345,21 @@ public class TaskCancellationTest {
         }
     }
 
+    @Test void parentRetirementCannotOrphanLiveChildren() {
+        for (int i = 0; i < 100; i++) {
+            TaskCancellation parent = new TaskCancellation();
+            TaskCancellation child = parent.child();
+            assertThrows(IllegalStateException.class, parent::retire);
+            assertTrue(child.isOwnedBy(parent),
+                    "rejected retirement must not detach a live child");
+            assertEquals(1, parent.ownedChildCount());
+            assertTrue(parent.cancel("shutdown"));
+            assertTrue(child.isCancelled());
+            parent.retire(); // Cancellation already cleared child ownership.
+            assertFalse(parent.cancel("too late"));
+        }
+    }
+
     private static void await(CountDownLatch latch) {
         try { if (!latch.await(3, TimeUnit.SECONDS)) throw new AssertionError("timed out"); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
