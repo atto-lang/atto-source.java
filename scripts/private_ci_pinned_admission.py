@@ -192,4 +192,19 @@ def verify_snapshot(trusted_root, source_root, files, source_sha, *, run=subproc
         digest = hashlib.sha1(b'blob ' + str(len(data)).encode('ascii') + b'\0' + data).hexdigest()
         if digest != reference[name][1]:
             raise AdmissionDenied('exported source bytes differ from pinned Git object')
-    return True
+    # Pin the *assembled* tree identity as well as its individual blobs.
+    # GitHub must return this exact Git subtree SHA before it can publish
+    # a commit or branch. A different directory layout must not pass.
+    revision = source_sha + (':' + relative.as_posix() if relative.parts else '^{tree}')
+    try:
+        resolved = run(['git', '-C', str(trusted), 'rev-parse', '--verify', revision],
+                       capture_output=True, timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        raise AdmissionDenied('source subtree identity unavailable') from None
+    if resolved.returncode != 0:
+        raise AdmissionDenied('source subtree identity unavailable')
+    try:
+        sha = resolved.stdout.decode('ascii').strip()
+    except (AttributeError, UnicodeError):
+        raise AdmissionDenied('source subtree identity is invalid') from None
+    return require_sha(sha, 'source subtree identity')
