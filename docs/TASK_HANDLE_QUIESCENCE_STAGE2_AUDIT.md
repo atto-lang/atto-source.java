@@ -726,3 +726,40 @@ failed with **zero steps executed**. The source `main` branch lacks
 required protection and the private cross-org destination allowlist
 is empty. Keep the issue and PR open/draft until authorized exact-source
 Maven/GraalVM tests verify this new descendant-join behavior.
+
+
+## Compiler ownership release barrier regression — 2026-10-19
+
+The TaskScope runtime already had the correct primitive for compiler-managed
+ownership release: `TaskScope.getDone()` publishes only after the scope is
+sealed and every admitted child has reached scheduler-confirmed physical
+quiescence (including owned descendants).
+
+A dedicated production-source JUnit regression,
+`compilerOwnedReleaseWaitsForPhysicalScopeQuiescence`, now models the
+compiler/runtime ownership bridge explicitly:
+
+- a child enters guest code and blocks;
+- a release callback is registered on the scope's `getDone()` barrier;
+- scope cancellation is requested while the child is still physically running;
+- cancellation is observed, but the compiler-owned release flag must remain
+  false and the scope done Future must remain pending;
+- only after the guest turn exits may `getDone()` publish and the release
+  callback run.
+
+This deliberately adds no second lifecycle API: future Task lowering should
+attach ownership/loan reclamation to the existing physical quiescence witness,
+not to `cancel()`, `result()`, or logical terminal state.
+
+Exact regression blob:
+- `TaskScopeTest.java`: `dc5724d7a2f8487f6792a8a48c904fbc5fb4aa1f`
+
+The current TaskScope test file contains **18 JUnit methods**. The latest
+source-org fast-ci and concurrency workflows for head
+`e7d09ac2e3f13afd283e2383e2b56ac848efabe3` again reported jobs with
+zero recorded steps, so this regression is committed but not execution-proven.
+
+Cross-branch integration target: #1452's compiler-minted
+`TaskTransferProvenance` must eventually be consumed only by lowering that
+also owns a #1407 TaskScope/TaskHandle lifetime. Source cancellation is never
+permission to release a transferred allocation or scoped loan early.
