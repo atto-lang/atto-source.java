@@ -59,7 +59,11 @@ environments. In particular, an attacker-supplied `HTTPS_PROXY`,
 metadata checks or private Git blob requests. For each authenticated `gh api` request, it also creates an ephemeral
 private HOME/XDG configuration root, preventing an inherited `HOME` from
 selecting a caller-controlled `~/.config/gh/hosts.yml` credential profile.
-The temporary root is cleaned up even on request failure. GitHub CLI must
+The temporary root is cleaned up even on request failure. On supported
+Linux runners the parent is pinned to a system-owned or runner-owned sticky
+`/tmp` directory, rather than caller-controlled `TMPDIR`/`TMP`/`TEMP`.
+Missing, non-directory, non-sticky, or unexpectedly owned `/tmp` must deny
+GitHub API access before spawning a subprocess. GitHub CLI must
 authenticate through noninteractive runner-supplied credentials; an interactive
 or HOME-backed CLI login is no longer sufficient.
 The publisher resolves child executables from system directories. These checks
