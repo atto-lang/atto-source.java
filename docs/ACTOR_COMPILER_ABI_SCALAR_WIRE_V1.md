@@ -77,14 +77,14 @@ exactly-once external side-effects are claimed.
 - `LogicalSourceActorProxyBridgeV1Test` exercises genuine source-compiled
   SHARED actor V1/V2 upgrades with queued ABI-bound mail and atomic route
   epochs, plus tampered ABI rejection before physical send.
-- An exact copy of the **Git blob** `31f99f4be4531c8c16f3a5a69ead3f7ee37e6832`
+- An exact copy of the **Git blob** `442260316ef1f4db313ca0b1001ea44e37b6e6db`
   for `SourceActorScalarWireV1.java` compiled locally using
   **OpenJDK 21**, `javac --release 21 -Xlint:all -Werror`.
   A standalone harness against that exact blob passed **400,000**
   deterministic checks: 100,000 i64 round trips, 100,000 header
   corruptions, 100,000 foreign ABI rejections and 100,000 rejection
   checks for legacy eight-byte payloads in ABI-framed mode.
-  This is the real standalone codec class, not a full Oreslang runtime,
+  The current codec uses allocation-free, full-header digest comparison\n  instead of per-dispatch digest/UUID temporary objects. The **new exact\n  optimized blob** was recompiled and the same 400,000 checks rerun.\n  This is the real standalone codec class, not a full Oreslang runtime,
   compiler, JUnit or GraalVM run.
 - **Release gate:** execute the new JUnit tests and the full actor/runtime
   suite on exact-head JDK25/GraalVM, Native Image, and validated Linux
