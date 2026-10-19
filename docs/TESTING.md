@@ -71,7 +71,10 @@ pub routine main(): void {
 
 The Java/Graal launcher now recognizes an explicit `test` subcommand. This
 runs a real `stdlib/testing.ores` entrypoint; a process that prints no native
-`ORES_TEST|SUMMARY|` is **not** considered a passing test suite.
+`ORES_TEST|SUMMARY|`, reports zero passed cases (including all-skipped
+suites), or disagrees with PASS/FAIL/SKIP case counts is **not** considered
+a passing test suite. `--trace-output` is limited to one iteration and cannot
+overwrite the test entrypoint or a replay input.
 
 ```sh
 oreslang test examples/native-testing.ores --deadlock
