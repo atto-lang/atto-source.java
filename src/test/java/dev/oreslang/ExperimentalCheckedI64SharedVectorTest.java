@@ -119,7 +119,7 @@ final class ExperimentalCheckedI64SharedVectorTest {
             };
             for (int index = 0; index < fields.length; index++) {
                 digest.update(fields[index].getBytes(StandardCharsets.UTF_8));
-                digest.update((byte) (index == fields.length - 1 ? '\\n' : 0));
+                digest.update((byte) (index == fields.length - 1 ? '\n' : 0));
             }
         }
         assertEquals(PINNED_MAPPED_MATRIX_SHA256,
