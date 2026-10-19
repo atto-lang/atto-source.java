@@ -182,6 +182,35 @@ final class DynamicPropertyAccessRuntimeFailureTest {
     }
 
     @Test
+    void inheritedParentMethodCannotWriteChildOnlyFieldAtRuntime() {
+        runtimeRejected("""
+                define class Parent as
+                    pub let int id = 1;
+
+                    pub fnc write(string key, int value): int {
+                        self[key] = value;
+                        return self.id;
+                    }
+                end
+
+                define class Child extends Parent as
+                    pub let string label = "child";
+                end
+
+                fnc selector(): string { return "label"; }
+
+                pub fnc main(): void {
+                    val Child child = new Child();
+                    const string key = selector();
+                    stdio.println(child.write(key, 9));
+                    return;
+                }
+                """,
+                "dynamic-parent-method-child-only-write.ores",
+                "unknown class field key Parent.label");
+    }
+
+    @Test
     void dynamicTupleIndexOverflowFailsAtRuntime() {
         runtimeRejected("""
                 fnc selector(): int { return 2147483648; }
