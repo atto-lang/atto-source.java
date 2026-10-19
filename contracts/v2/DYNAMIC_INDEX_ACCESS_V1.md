@@ -24,6 +24,7 @@ Every closed-record/class IndexExpr is checked by the frontend and receives a we
 
 - An immutable `const` string or integer binding initialized by a literal, or an immutable alias of another proven key, may be specialized without evaluating guest code at compile time.
 - Structural/class `object[key]` is certified for precisely the selected visible field when the string key is proven. A runtime mismatch still fails the closed-view key guard; mutable/rebound keys never inherit constant-key privileges.
+- Signed, immutable integer aliases are folded conservatively; known negative and out-of-range tuple slots are rejected at compile time.
 - Tuple `tuple[index]` uses a checked positional slot when its integer key is proven and in range. The proof is AST-identity bound, propagated only through compiler-maintained rewrites, and **also checked against the runtime-evaluated index**. This prevents a stale rewrite from selecting a different affine slot.
 - Field-key and tuple-slot proofs are incompatible at any one indexing site. A compiler optimization must preserve exact proof semantics or retypecheck the rewritten expression.
 - This v1 proof store uses synchronized weak identity lookup on indexed reads. A future profiling-guided implementation may cache immutable checked plans per evaluator to reduce hot-path synchronization without changing the fail-closed contract.
