@@ -122,6 +122,58 @@ final class InvertedColumnStoreTest {
     }
 
     @Test
+    void handlesAreStoreIssuedCapabilitiesNotForgeableNumericCoordinates() throws Exception {
+        try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32);
+             var foreign = new InvertedColumnStore(InvertedColumnStore.Kind.I32)) {
+            var valid = store.push(17);
+            var foreignHandle = foreign.push(17);
+            assertThrows(IllegalArgumentException.class, () -> store.get(foreignHandle, 0));
+
+            var constructor = java.util.Arrays.stream(InvertedColumnStore.Handle.class
+                            .getDeclaredConstructors())
+                    .filter(candidate -> candidate.getParameterCount() == 4)
+                    .findFirst().orElseThrow();
+            assertTrue(java.lang.reflect.Modifier.isPrivate(constructor.getModifiers()),
+                    "guest code must not be able to mint a handle from owner/slot/generation");
+            constructor.setAccessible(true);
+            var forged = (InvertedColumnStore.Handle) constructor.newInstance(
+                    new Object(), valid.owner(), valid.slot(), valid.generation());
+            assertThrows(IllegalArgumentException.class, () -> store.get(forged, 0));
+            assertEquals(17, store.get(valid, 0));
+        }
+    }
+
+    @Test
+    void deletingRowsScrubsVacatedTailAndClosingClearsRemainingBackingBytes() throws Exception {
+        var store = new InvertedColumnStore(
+                InvertedColumnStore.Kind.I64, InvertedColumnStore.Kind.BOOL);
+        var first = store.push(0x123456789ABCDEFL, true);
+        var second = store.push(0x2FEDCBA98765432L, false);
+        var columnsField = InvertedColumnStore.class.getDeclaredField("columns");
+        columnsField.setAccessible(true);
+        byte[][] backing = (byte[][]) columnsField.get(store);
+        try {
+            store.eraseSwap(first);
+            assertArrayEquals(new Object[]{0x2FEDCBA98765432L, false}, store.snapshot(second));
+            assertThrows(IllegalArgumentException.class, () -> store.get(first, 0));
+            // Row 1 was vacated by swap-delete and must no longer contain the
+            // bytes of either deleted or moved data.
+            for (int column = 0; column < backing.length; column++) {
+                int stride = column == 0 ? Long.BYTES : 1;
+                for (int offset = stride; offset < 2 * stride; offset++) {
+                    assertEquals((byte) 0, backing[column][offset]);
+                }
+            }
+        } finally {
+            store.close();
+        }
+        for (byte[] bytes : backing) {
+            for (byte value : bytes) assertEquals((byte) 0, value);
+        }
+        assertThrows(IllegalStateException.class, () -> store.get(second, 0));
+    }
+
+    @Test
     void deterministicHandleStressPreservesRows() {
         try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32,
                                                  InvertedColumnStore.Kind.BOOL)) {
