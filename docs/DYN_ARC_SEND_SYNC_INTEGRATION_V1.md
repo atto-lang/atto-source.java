@@ -19,6 +19,17 @@ exclusive borrow `&mut T` can be Send iff T is Send. The borrow checker must
 *separately* prove scope/outlives, exclusivity, physical quiescence, and
 no cross-await guard escape. Trait derivation is not an ownership transfer.
 
+**Trusted intrinsics:** type spelling alone is not permission. The compiler
+must provide `NominalProof.trustedIntrinsic(Named)` for Option, Result,
+Channel, IteratorResult and OptionUnwrapError only after resolving the
+actual declaration and excluding a guest class, interface or alias with the
+same name. The default nominal callback grants **no intrinsic proof**.
+Built-in Send derivation for named containers is otherwise rejected, even if
+a nominal callback declares the name Send. This prevents async boundary
+admission through name impersonation. The source AST inference from #1447
+must converge on the same resolved identity check, not independently infer
+privileges from constructor spelling.
+
 **Erased views:** current `Types.Dyn` carries nominal interface witness but
 no independently proved auto-trait bounds. Consequently *both* Send and Sync
 return false for `dyn I`, `&dyn I`, and containers holding them, regardless of
