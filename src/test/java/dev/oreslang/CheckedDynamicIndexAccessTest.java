@@ -421,6 +421,12 @@ final class CheckedDynamicIndexAccessTest {
                 () -> Ast.CheckedIndexKeys.propagate(checked, forbidden));
         assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedIndexKeys.requirePlan(forbidden));
+        Ast.IndexExpr wrongType = new Ast.IndexExpr(
+                new Ast.NameExpr("record"), new Ast.LiteralExpr(0L));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedIndexKeys.propagate(checked, wrongType));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedIndexKeys.requirePlan(wrongType));
 
         Ast.IndexExpr allowed = new Ast.IndexExpr(
                 new Ast.NameExpr("record"), new Ast.LiteralExpr("public"));
@@ -440,6 +446,11 @@ final class CheckedDynamicIndexAccessTest {
         assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedIndexKeys.propagate(checked, bad));
         assertEquals(null, Ast.CheckedIndexKeys.knownTupleSlot(bad));
+        Ast.IndexExpr wrongType = new Ast.IndexExpr(
+                new Ast.NameExpr("tuple"), new Ast.LiteralExpr("0"));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedIndexKeys.propagate(checked, wrongType));
+        assertEquals(null, Ast.CheckedIndexKeys.knownTupleSlot(wrongType));
 
         Ast.IndexExpr good = new Ast.IndexExpr(
                 new Ast.NameExpr("tuple"), new Ast.LiteralExpr(0L));
