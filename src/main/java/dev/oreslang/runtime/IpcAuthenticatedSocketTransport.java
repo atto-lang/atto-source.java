@@ -157,6 +157,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
      * for diagnostics, never use it as replay authorization.</p>
      */
     SendSubmission send(IpcReceiptCorrelation.Envelope message, byte[] payload) {
+        RuntimeBlockingGuard.requireBlockingHostThread("IPC socket send");
         Objects.requireNonNull(message, "message");
         byte[] source = Objects.requireNonNull(payload, "payload");
         requireTrustedEpoch(message);
@@ -202,6 +203,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
      * Local-only verdicts are rejected both by codec policy and the ledger.
      */
     IpcReceiptCorrelation.Stage readVerifiedReceipt() throws IOException {
+        RuntimeBlockingGuard.requireBlockingHostThread("IPC receipt read");
         try {
             final byte[] frame;
             synchronized (readGate) {
