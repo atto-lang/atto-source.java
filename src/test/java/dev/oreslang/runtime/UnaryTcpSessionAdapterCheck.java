@@ -442,6 +442,48 @@ public final class UnaryTcpSessionAdapterCheck {
         }
     }
 
+    private static void responseBudgetIsPerConnection() throws Exception {
+        BindingAuthenticator auth = new BindingAuthenticator();
+        ManualDispatcher dispatcher = new ManualDispatcher();
+
+        try (var adapter = new UnaryTcpSessionAdapter(
+                        limits(2, 2, 4, 16, 1000), auth, dispatcher);
+             var server = new ServerSocket(0, 8, InetAddress.getLoopbackAddress());
+             var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> served = pool.submit(() -> {
+                try { adapter.serve(server.accept()); }
+                catch (IOException failure) { throw new AssertionError(failure); }
+            });
+
+            try (Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                client.setSoTimeout(1500);
+                Binding b = binding(client);
+                send(client, request(b, 1, new byte[0]));
+                TestHandle handle = dispatcher.await(b.sessionId(), 1);
+                handle.reply((byte) 1, (byte) 2, (byte) 3);
+
+                var terminal = read(client);
+                check(terminal.kind() == UnaryTransportFrame.Kind.ERROR
+                                && terminal.correlationId() == 1
+                                && terminal.payload().length == 0,
+                        "response exceeding per-connection byte budget must fail closed");
+                awaitTrue(() -> adapter.activeGlobalWorkItems() == 0
+                                && adapter.activeGlobalPayloadBytes() == 0,
+                        1000, "oversized response credit release");
+
+                send(client, request(b, 2, new byte[] {8, 9}));
+                TestHandle second = dispatcher.await(b.sessionId(), 2);
+                second.reply();
+                var reply = read(client);
+                check(reply.kind() == UnaryTransportFrame.Kind.REPLY
+                                && reply.correlationId() == 2,
+                        "per-connection response budget must be reclaimed after delivery");
+            }
+
+            served.get(3, TimeUnit.SECONDS);
+        }
+    }
+
     private static void authenticationFailureAndConnectionCapacity() throws Exception {
         BindingAuthenticator failing = new BindingAuthenticator(true);
         AtomicInteger dispatches = new AtomicInteger();
@@ -656,11 +698,12 @@ public final class UnaryTcpSessionAdapterCheck {
         overloadCancelAndRecovery();
         deadlineCancelsDispatch();
         globalBudgetAcrossConnections();
+        responseBudgetIsPerConnection();
         authenticationFailureAndConnectionCapacity();
         completionCancelRaces();
         terminalWriteDeadlineClosesSlowReader();
         sessionCloseCancelsPending();
         adapterCloseUnblocksAuthentication();
-        System.out.println("PASS: authenticated unary TCP sessions, budgets, deadlines and 250 completion/cancel races");
+        System.out.println("PASS: authenticated unary TCP sessions, request/response budgets, deadlines and 250 completion/cancel races");
     }
 }
