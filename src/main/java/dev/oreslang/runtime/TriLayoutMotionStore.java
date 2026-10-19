@@ -209,6 +209,18 @@ public final class TriLayoutMotionStore implements AutoCloseable {
         return read(layout, row); // Explicit one-row copy, not a mutable alias.
     }
 
+    /**
+     * Select the sole writable representation. This is an explicit versioned
+     * authority transfer, not an extra writable copy; the selected resident
+     * buffer is made current before publishing the new epoch.
+     */
+    public synchronized void selectLayout(Layout layout) {
+        requireResident(layout);
+        requireNextEpoch();
+        ensure(layout);
+        advance(layout);
+    }
+
     public synchronized void set(Handle handle, Layout layout, Motion value) {
         int row = checkedRow(handle);
         Objects.requireNonNull(value, "value");
