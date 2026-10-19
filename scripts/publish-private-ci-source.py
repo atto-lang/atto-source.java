@@ -28,6 +28,9 @@ PREFIX = "private-oreslang-source"
 POLICY_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
 POLICY_REF = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
+# Immutable Git blob reviewed in this security PR. Protected-main/ruleset
+# introspection is not assumed to be available to the publisher.
+EXPECTED_POLICY_BLOB_SHA = "7f06fd603fb385273ccd6ef47b3c7ec4c6a40604"
 MAX_POLICY_BYTES = 16 * 1024
 
 
@@ -158,7 +161,10 @@ def checked_protected_policy_fingerprint(repository):
         f"repos/{POLICY_REPOSITORY}/contents/{POLICY_PATH}?ref={POLICY_REF}")
     if response.get("type") != "file" or response.get("encoding") != "base64":
         raise Denied("protected private CI approval policy has unexpected shape")
-    valid_sha(response.get("sha"))
+    policy_blob = valid_sha(response.get("sha"))
+    if policy_blob != EXPECTED_POLICY_BLOB_SHA:
+        raise Denied(
+            "main private CI approval policy differs from reviewed policy blob")
     encoded = response.get("content")
     if not isinstance(encoded, str):
         raise Denied("protected private CI approval policy is missing content")
