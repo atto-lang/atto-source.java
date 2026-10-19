@@ -25,10 +25,20 @@ final class ActorHotUpgradeTaskBridgeV1 {
      * settlement and trusted physical retirement. Never use the former as
      * evidence for code-image unload or successful TaskScope joining.
      */
-    record PinnedTask<T>(OresFuture<T> result, OresFuture<Void> physicallyExited) {
-        PinnedTask {
-            Objects.requireNonNull(result, "result");
-            Objects.requireNonNull(physicallyExited, "physicallyExited");
+    static final class PinnedTask<T> {
+        // Allocate this whole physical-exit witness BEFORE Task admission.
+        // Constructing a record AFTER scheduler.start() could throw OOME
+        // after the frame became runnable; that path must never unpin code.
+        private final OresFuture<Void> physicallyExited = new OresFuture<>();
+        private OresFuture<T> result;
+
+        OresFuture<T> result() { return result; }
+        OresFuture<Void> physicallyExited() { return physicallyExited; }
+
+        void attach(OresFuture<T> admittedResult) {
+            // scheduler.start guarantees a non-null result. Assignment is
+            // allocation-free, and no new fallible post-admission work runs.
+            result = admittedResult;
         }
     }
 
@@ -62,25 +72,29 @@ final class ActorHotUpgradeTaskBridgeV1 {
 
         // Same lifecycle lock as freezeUserIngressForHotUpgrade(): a freeze
         // either rejects this new child or observes its pin until physical exit.
+        PinnedTask<T> tracked = new PinnedTask<>();
         ActorRuntime.HotUpgradeExternalLease generation =
                 runtime.pinExternalWorkForHotUpgrade(actor);
         try {
-            var physicallyExited = new OresFuture<Void>();
-            var result = scheduler.start(frame, () -> {
+            // Task metadata and exit witness were allocated before admission.
+            // The scheduler callback retains the old generation until the
+            // final physical carrier turn has exited.
+            OresFuture<T> result = scheduler.start(frame, () -> {
                 // Invoke this only from the scheduler's final physical
                 // retirement callback; cancelled Future settlement may occur
                 // earlier while a frame is still executing on its carrier.
                 try {
                     generation.close();
-                    physicallyExited.completeFromRuntime(null);
+                    tracked.physicallyExited().completeFromRuntime(null);
                 } catch (RuntimeException | Error retirementFailure) {
                     // Do NOT forge a completed generation release. Keep the
                     // failure observable by the structured Task owner; the
                     // ActorRuntime pin remains live if its debit failed.
-                    physicallyExited.failFromRuntime(retirementFailure);
+                    tracked.physicallyExited().failFromRuntime(retirementFailure);
                 }
             });
-            return new PinnedTask<>(result, physicallyExited);
+            tracked.attach(result);
+            return tracked;
         } catch (RuntimeException | Error rejectedBeforeAdmission) {
             // Scheduler.start throws only before registering the TaskRunner;
             // post-registration enqueue failures settle via onQuiescent.
