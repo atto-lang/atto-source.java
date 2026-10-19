@@ -990,7 +990,11 @@ public final class OresEvalRootNode extends RootNode {
                     Ast.FunctionDecl function,
                     List<?> arguments) {
                 this.function = Objects.requireNonNull(function, "function");
+                // Consume the VM launch mark exactly once. A nested/reentrant
+                // call to an exported fnc named main must never reuse the
+                // initial source frame's Task authority.
                 this.provenRootMainLaunch = launchingRootMain.get() == function;
+                if (this.provenRootMainLaunch) launchingRootMain.remove();
                 this.method = null;
                 this.receiver = null;
                 this.blockBody = null;
