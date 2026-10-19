@@ -950,6 +950,52 @@ final class LogicalSourceActorProxyBridgeV1Test {
     }
 
     @Test
+    void rejectedSupervisorUpgradeNeverLoadsAnUnauthorizedCandidate()
+            throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("preflight-v1.ores", V1);
+            // Well-formed source with no "Counter" actor. Linking it as
+            // Counter would fail; the security gate must reject first,
+            // without invoking the compiler's actor linking path.
+            var invalid = manager.stageActorGeneration(
+                    "preflight-no-counter.ores",
+                    V2.replace("actor Counter as", "actor OtherCounter as"));
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                         first, ActorRuntime.ActorKind.SHARED, "Counter", WAIT);
+                 var mailbox = new LogicalActorProxyMailboxV1(2, 8, 16);
+                 var foreign = new LogicalActorProxyMailboxV1(2, 8, 16)) {
+                router.bindProxyMailboxForSupervisor(mailbox);
+                var valid = mailbox.freezeDispatchForUpgrade();
+                var foreignTicket = foreign.freezeDispatchForUpgrade();
+                try {
+                    assertThrows(SecurityException.class,
+                            () -> router.upgradeTo(invalid, WAIT),
+                            "unproxied requests must fail before candidate linking");
+                    assertThrows(SecurityException.class,
+                            () -> router.upgradeToForProxy(
+                                    invalid, WAIT, foreign, foreignTicket),
+                            "foreign mailbox must fail before candidate linking");
+                    assertThrows(IllegalStateException.class,
+                            () -> router.upgradeToForProxy(
+                                    invalid, WAIT, mailbox, foreignTicket),
+                            "foreign ticket must fail before candidate linking");
+                    assertEquals(1L, router.ref().routeEpoch());
+                    assertEquals(1L, mailbox.snapshot().routeEpoch());
+                    assertTrue(mailbox.snapshot().dispatchFrozen(),
+                            "refused calls must leave the true freeze untouched");
+                } finally {
+                    foreignTicket.rollback();
+                    valid.rollback();
+                }
+                // Unauthorized requests neither pin nor retain the candidate.
+                manager.retire(invalid.id());
+                assertTrue(invalid.closed());
+            }
+        }
+    }
+
+    @Test
     void boundRouterRejectsForeignFreezeAndUnproxiedUpgrade()
             throws Exception {
         try (HotReloadManager manager = new HotReloadManager(
