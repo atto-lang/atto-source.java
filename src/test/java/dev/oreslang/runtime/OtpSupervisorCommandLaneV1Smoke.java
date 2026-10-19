@@ -67,6 +67,27 @@ public final class OtpSupervisorCommandLaneV1Smoke {
                 null).routeEpoch() == 5, "valid stop rejected");
     }
 
+    private static void retryFairnessBetweenActors() {
+        var lane = new OtpSupervisorCommandLaneV1(2);
+        var first = lane.submit(target(1), 2,
+                OtpSupervisorCommandLaneV1.Kind.PREPARE_UPGRADE, DIGEST);
+        var second = lane.submit(target(2), 2,
+                OtpSupervisorCommandLaneV1.Kind.PREPARE_UPGRADE, DIGEST);
+        try (var lease = lane.poll().orElseThrow()) {
+            check(lease.command() == first, "FIFO initial order violated");
+            lease.retry();
+        }
+        try (var lease = lane.poll().orElseThrow()) {
+            check(lease.command() == second, "repeated retry starved unrelated actor");
+            lease.ack();
+        }
+        try (var lease = lane.poll().orElseThrow()) {
+            check(lease.command() == first, "retry must retain exact command identity");
+            lease.ack();
+        }
+        check(lane.snapshot().outstanding() == 0, "fair retry leaked credits");
+    }
+
     private static void invalidInput() {
         var lane = new OtpSupervisorCommandLaneV1(2);
         try { lane.submit(target(1), 1, OtpSupervisorCommandLaneV1.Kind.PREPARE_UPGRADE,
@@ -110,6 +131,7 @@ public final class OtpSupervisorCommandLaneV1Smoke {
         lifecycleAndCapacity();
         epochAndAbort();
         invalidInput();
+        retryFairnessBetweenActors();
         abortRace();
         System.out.println("PASS: lease idempotence/retry/duplicate admission/capacity/epoch fencing");
         System.out.println("PASS: 512 concurrent ack-vs-explicit-abort races");
