@@ -151,7 +151,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_duplicate_destination_policy_fails_closed(self):
         self.approval.write_text(
-            "trusted/ci@12345\ntrusted/ci@67890\n")
+            "trusted/ci@12345\nTRUSTED/CI@67890\n")
         with self.assertRaisesRegex(pub.Denied, "duplicate destination"):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
