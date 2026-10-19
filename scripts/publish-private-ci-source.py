@@ -251,14 +251,16 @@ def collect_source(root, trusted_root):
 def publish(repository, source, branch, trusted_root):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
-    # Approval comes before reading potentially sensitive source files.
-    require_preflight(repository, trusted_root)
-    # Source and reviewed destination identities must be verified BEFORE
-    # reading any source file or creating even an unreferenced Git object.
+    # Do not invoke the legacy shell guard before checking source provenance:
+    # the guard is code loaded from the checkout under inspection. This gate
+    # is still not an independent launcher trust root (#962).
     try:
         attestation = pinned.verify(repository, trusted_root, gh_api)
     except pinned.AdmissionDenied as exc:
         raise Denied("reviewed source and destination identity gate refused") from exc
+    # Only after pinned provenance admission may this script execute the
+    # legacy policy guard. Both approvals are necessary, never alternatives.
+    require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
