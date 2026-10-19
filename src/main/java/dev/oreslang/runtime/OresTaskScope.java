@@ -77,53 +77,64 @@ public final class OresTaskScope implements AutoCloseable {
 
     public <T> OresTask<T> submit(AsyncRuntime.Task<T> work) {
         Objects.requireNonNull(work, "work");
-        synchronized (treeAdmissionGate) {
-            synchronized (gate) {
-            ensureAdmitting();
-            if (runtime == null)
-                throw new RejectedExecutionException(
-                        "compiler-owned TaskScope has no ordinary AsyncRuntime admission");
+        if (runtime == null) {
+            throw new RejectedExecutionException(
+                    "compiler-owned TaskScope has no ordinary AsyncRuntime admission");
+        }
 
-            OwnershipSlot slot = new OwnershipSlot();
-            // Any allocation/growth failure occurs before runtime submission.
-            if (!tasks.add(slot))
-                throw new IllegalStateException("duplicate Task ownership slot");
-
-            final OresTask<T> child;
-            try {
-                child = runtime.submitTask(work);
-                slot.task = child; // allocation-free publication into owner
-            } catch (RuntimeException | Error admissionFailure) {
-                discardUnadmittedSlot(slot, admissionFailure);
-                throw admissionFailure;
-            }
-
-            try {
-                OwnershipSlot owned = slot;
-                child.quiescenceFence().whenCompleteRuntime((value, failure) -> {
-                    if (failure == null) {
-                        synchronized (gate) {
-                            tasks.remove(owned);
-                        }
+        // Prepare the exact runtime physical-exit fence before publishing
+        // scope ownership. After this reservation, cancel()/close() can always
+        // observe a concrete Task shell even if executor admission blocks.
+        AsyncRuntime.PreparedTask<T> prepared = runtime.prepareTask();
+        OresTask<T> child = prepared.owner();
+        OwnershipSlot slot = new OwnershipSlot();
+        slot.task = child;
+        boolean reserved = false;
+        try {
+            child.quiescenceFence().whenCompleteRuntime((value, failure) -> {
+                if (failure == null) {
+                    synchronized (gate) {
+                        tasks.remove(slot);
                     }
-                });
-            } catch (RuntimeException | Error observerFailure) {
-                // The Task is already admitted and remains in its pre-reserved
-                // slot. Seal this scope and request cancellation; close() can
-                // still join the physical fence even without the optimization
-                // callback that normally prunes the slot.
-                cancelled = true;
-                try {
-                    child.cancel();
-                } catch (RuntimeException | Error cancelFailure) {
-                    if (cancelFailure != observerFailure)
-                        observerFailure.addSuppressed(cancelFailure);
                 }
-                throw observerFailure;
+            });
+            synchronized (treeAdmissionGate) {
+                synchronized (gate) {
+                    ensureAdmitting();
+                    if (!tasks.add(slot)) {
+                        throw new IllegalStateException(
+                                "duplicate Task ownership slot");
+                    }
+                    reserved = true;
+                }
             }
-            return child;
+        } catch (RuntimeException | Error preparationFailure) {
+            if (reserved) {
+                synchronized (gate) {
+                    tasks.remove(slot);
+                }
+            }
+            try {
+                runtime.discardPreparedTask(prepared);
+            } catch (RuntimeException | Error retirementFailure) {
+                if (retirementFailure != preparationFailure) {
+                    preparationFailure.addSuppressed(retirementFailure);
+                }
+            }
+            throw preparationFailure;
         }
-        }
+
+        // Never call executor/runtime admission while holding either scope
+        // monitor. A cancellation racing this window is recorded on the
+        // provisional shell and the wrapper below prevents a cancellation that
+        // already won from granting a later guest entry.
+        return runtime.submitPreparedTask(() -> {
+            if (isCancelRequested()) {
+                throw new java.util.concurrent.CancellationException(
+                        "Task scope cancelled before guest turn");
+            }
+            return work.run();
+        }, prepared);
     }
 
     /**
