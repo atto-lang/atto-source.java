@@ -14,4 +14,13 @@ final class DynInheritedObjectSafetyTest {
             () -> TypeChecker.check(Parser.parse(source)));
         assertTrue(e.getMessage().contains("generic method"), e::getMessage);
     }
+    @Test void rejectsInheritedField() {
+        String source = "define interface Base as val count: int; end "
+            + "define interface Child extends Base as end "
+            + "fnc use(dyn Child x): void { return; }";
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+            () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(e.getMessage().contains("instance field"), e::getMessage);
+    }
+
 }
