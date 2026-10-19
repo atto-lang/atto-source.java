@@ -36,6 +36,32 @@ def valid_sha(value):
     return value
 
 
+def trusted_git_binary():
+    """Never launch Git through a caller-controlled PATH with API credentials."""
+    for name in ("/", "/usr", "/usr/bin"):
+        try:
+            info = os.lstat(name)
+        except OSError as exc:
+            raise Denied("trusted Git directory unavailable") from exc
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0
+                or info.st_mode & 0o022):
+            raise Denied("trusted Git executable parent is not root-controlled")
+    try:
+        info = os.lstat("/usr/bin/git")
+    except OSError as exc:
+        raise Denied("trusted Git binary unavailable") from exc
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
+            or info.st_mode & 0o022 or not info.st_mode & 0o111):
+        raise Denied("trusted Git executable is not root-controlled")
+    return "/usr/bin/git"
+
+
+def trusted_git_env():
+    """No tokens, proxy overrides, GIT_* redirects or caller PATH."""
+    return {"PATH": "/usr/bin:/bin", "HOME": "/",
+            "XDG_CONFIG_HOME": "/nonexistent", "LC_ALL": "C.UTF-8"}
+
+
 def trusted_github_cli():
     """Only invoke a root-owned /usr/bin/gh via nonwritable parent directories."""
     for directory in ("/", "/usr", "/usr/bin"):
@@ -297,12 +323,11 @@ def committed_source_tree(source, trusted_root):
     # Git environment overlays must not redirect HEAD/index/worktree attestation
     # to a caller-selected repository. The regular inherited environment is
     # otherwise retained (e.g. PATH, locale). No source content is logged.
-    git_env = {key: value for key, value in os.environ.items()
-               if not key.startswith("GIT_")}
+    git_env = trusted_git_env()
 
     def git(*args):
         try:
-            result = subprocess.run(["git", *args], cwd=trusted, env=git_env,
+            result = subprocess.run([trusted_git_binary(), *args], cwd=trusted, env=git_env,
                                     capture_output=True, text=True,
                                     timeout=30, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -322,7 +347,7 @@ def committed_source_tree(source, trusted_root):
         raise Denied("trusted source verifier missing or symlinked")
     try:
         result = subprocess.run(
-            ["bash", str(verifier), expected, relative.as_posix()],
+            ["/usr/bin/bash", str(verifier), expected, relative.as_posix()],
             cwd=trusted, env=git_env, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, timeout=120, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -426,13 +451,13 @@ def check_main_file_bytes(root, expected):
 
 def committed_main_file_blobs(root, main_sha):
     """Bind the policy and executable source bytes to a specific main tree."""
-    env = {key: value for key, value in os.environ.items()
-           if not key.startswith("GIT_")}
+    env = trusted_git_env()
     expected = {}
     for name in TRUSTED_MAIN_FILES:
         try:
             result = subprocess.run(
-                ["git", "rev-parse", "--verify", main_sha + ":" + name],
+                [trusted_git_binary(), "rev-parse", "--verify",
+                 main_sha + ":" + name],
                 cwd=root, env=env, text=True, capture_output=True,
                 timeout=30, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -446,10 +471,10 @@ def committed_main_file_blobs(root, main_sha):
 
 def checked_trusted_main_checkout(trusted_root):
     """Caller must execute reviewed policy + publisher from protected main."""
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env = trusted_git_env()
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--verify", "HEAD"],
+            [trusted_git_binary(), "rev-parse", "--verify", "HEAD"],
             cwd=trusted_root, env=env, capture_output=True, text=True,
             timeout=30, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
