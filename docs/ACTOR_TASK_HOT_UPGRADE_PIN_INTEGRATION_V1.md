@@ -60,6 +60,15 @@ reconciliation must remove **OwnershipSlot** entries by their associated
 `PinnedTask` identity; removing raw `PinnedTask` values from a
 `Set<OwnershipSlot>` was a no-op.
 
+A child scope now captures the authoritative **physical route epoch** at
+creation. Start admission verifies that epoch under the same router lock as
+the ActorRuntime generation pin; a child from v1 cannot run its captured
+frame against v2 after a successful source upgrade. The trusted supervisor
+root is epoch-dynamic and can mint a fresh v2 child scope. The stale-scope
+regression explicitly rejects both direct children and grandchildren and
+then proves a fresh v2 child executes successfully. This is only a host
+structural safeguard, not compiler-issued task/code identity attestation.
+
 These are JUnit **sources only**, not execution evidence until Maven/JDK25
 tests run on the exact Git head. The Tasks are intentionally host frames and
 do not claim source-compiled `task {}` exists.
