@@ -31,14 +31,17 @@ public final class OresTaskScope {
 
     private static final class Child {
         private volatile OresFuture<?> future;
+        // Guarded by the enclosing scope lock.
+        private boolean quiescent;
+        private boolean terminal;
     }
 
     private final OresScheduler scheduler;
     private final Object lock = new Object();
     private final Set<Child> children =
             Collections.newSetFromMap(new IdentityHashMap<>());
-    // Runtime barrier: cancellation must not let a caller mistake logical
-    // settlement for physical child quiescence.
+    // Runtime barrier: it is intentionally non-cancellable. Cancelling the
+    // barrier itself must never manufacture a false reclamation witness.
     private final OresFuture<Void> drained =
             new OresFuture<>(() -> false, () -> { });
     private State state = State.OPEN;
@@ -50,8 +53,11 @@ public final class OresTaskScope {
     /**
      * Start one child Task owned by this scope.
      *
-     * <p>The scope keeps the child live until OresScheduler's trusted
-     * onQuiescent callback fires after the final carrier turn has unwound.</p>
+     * <p>A child retires from the scope only after both of these independent
+     * conditions hold: the scheduler reports physical quiescence, and the child
+     * Future's terminal notification is observable. The latter matters because
+     * OresScheduler intentionally invokes onQuiescent immediately before
+     * publishing the terminal Future outcome.</p>
      */
     public <T> OresFuture<T> fork(OresScheduler.Task<T> task) {
         Objects.requireNonNull(task, "task");
@@ -62,23 +68,25 @@ public final class OresTaskScope {
 
             Child child = new Child();
             children.add(child);
+            final OresFuture<T> future;
             try {
-                OresFuture<T> future =
-                        scheduler.start(task, () -> childQuiescent(child));
-                child.future = future;
-                return future;
+                future = scheduler.start(task, () -> childQuiescent(child));
             } catch (RuntimeException | Error failure) {
                 // Admission can fail before TaskRunner ownership exists, in which
                 // case no onQuiescent callback will arrive.
                 children.remove(child);
                 throw failure;
             }
+
+            child.future = future;
+            future.whenCompleteRuntime((value, failure) -> childTerminal(child));
+            return future;
         }
     }
 
     /**
      * Seal the scope against new children and complete only after every admitted
-     * child has physically quiesced. Existing children are not cancelled.
+     * child is terminal and physically quiescent. Existing children are not cancelled.
      */
     public OresFuture<Void> quiesce() {
         boolean complete = false;
@@ -97,7 +105,8 @@ public final class OresTaskScope {
 
     /**
      * Seal the scope, request cancellation of all remaining children, and complete
-     * only after scheduler-confirmed physical quiescence of every child.
+     * only after every child's terminal state and scheduler-confirmed physical
+     * quiescence have both been observed.
      *
      * <p>Cancellation is a request for logical termination, not a reclamation
      * witness. A running child's Future can become cancelled before this barrier
@@ -112,8 +121,10 @@ public final class OresTaskScope {
                 state = State.CANCELLING;
                 ArrayList<OresFuture<?>> snapshot = new ArrayList<>(children.size());
                 for (Child child : children) {
-                    OresFuture<?> future = child.future;
-                    if (future != null) snapshot.add(future);
+                    // fork() holds the same lock through start + Future binding,
+                    // so every child visible here has a handle.
+                    snapshot.add(Objects.requireNonNull(
+                            child.future, "Task scope child missing Future"));
                 }
                 cancel = List.copyOf(snapshot);
             }
@@ -146,14 +157,35 @@ public final class OresTaskScope {
     }
 
     private void childQuiescent(Child child) {
-        boolean complete = false;
+        boolean complete;
         synchronized (lock) {
-            if (!children.remove(child)) return;
-            if (state != State.OPEN && children.isEmpty() && state != State.CLOSED) {
-                state = State.CLOSED;
-                complete = true;
-            }
+            child.quiescent = true;
+            complete = retireChildIfReadyLocked(child);
         }
         if (complete) drained.completeFromRuntime(null);
+    }
+
+    private void childTerminal(Child child) {
+        boolean complete;
+        synchronized (lock) {
+            child.terminal = true;
+            complete = retireChildIfReadyLocked(child);
+        }
+        if (complete) drained.completeFromRuntime(null);
+    }
+
+    /**
+     * @return true when this transition closes the entire scope and the barrier
+     *         must be completed after releasing the lock.
+     */
+    private boolean retireChildIfReadyLocked(Child child) {
+        if (!child.quiescent || !child.terminal || !children.remove(child)) {
+            return false;
+        }
+        if (state != State.OPEN && children.isEmpty() && state != State.CLOSED) {
+            state = State.CLOSED;
+            return true;
+        }
+        return false;
     }
 }
