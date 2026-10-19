@@ -238,6 +238,41 @@ are bitwise deterministic.
   allowlists remain empty. The security and independent-review gates in
   issues #904 and #962, plus draft PR #954, remain mandatory.
 
+## Actual JDK runner probe — 2026-10-19
+
+A **source-free** private repository runner probe at
+[`fiducia-cloud-test/java-client-consumer` run 39303046642](https://github.com/fiducia-cloud-test/java-client-consumer/actions/runs/39303046642)
+completed **both** matrix jobs (`compiler-toolchain (21)` and
+`compiler-toolchain (25)`) successfully. Each job executed `setup-java`,
+`java -version`, `javac -version` and `mvn -version` without
+checking out or uploading Oreslang source.
+
+A separate [synthetic Git subtree integrity proof, run
+39303046313](https://github.com/fiducia-cloud-test/java-client-consumer/actions/runs/39303046313),
+also executed and passed its tamper/digest checks. The synthetic fixtures
+contain no private Oreslang source and do **not** establish exact-tree
+Oreslang Maven correctness.
+
+The source PR's immutable Git tree `62eefd6adee67009db2117cbd85e27afb96427a1`
+was enumerated through authenticated Git metadata: **667 file blobs,
+75 directories, 6,573,982 aggregate blob bytes**, zero submodule symlink
+entries and a nontruncated tree listing. The current private publisher's
+file/size ceilings (1,024 files, 40 MiB aggregate) should not reject this
+source tree for those two quotas alone. This metadata check does not
+replace publisher-specific admission or exact-tree readback.
+
+The source `concurrency-contract` job was retried once (run
+39293907590, attempt 2); it again failed with **zero executed steps**.
+This is runner/job admission failure, **not** an observed failing
+compiler/JUnit test.
+
+**Private-source mirror remains blocked**: neither source nor candidate
+carrier `main` has independently enforceable branch protection, and
+the protected source destination/snapshot allowlists authorize no source
+transfer. Issues #904 and #962 and publisher PR #954 must be
+independently resolved before any private Git object export. The
+capacity probe is not a substitute for that authorization.
+
 ## Planned actor/ECS design
 
 Actor isolation should remain the outer fault and networking boundary.
