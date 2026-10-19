@@ -1207,12 +1207,6 @@ public final class OwnershipChecker {
                     throw error("unknown record field '" + member.member() + "'");
                 }
                 ValueKind valueKind = kindOfType(valueType);
-                if (consuming && valueKind == ValueKind.MOVE_ONLY) {
-                    throw error("cannot consume move-only record field projection '"
-                            + member.member()
-                            + "' until projection-level move tracking exists; "
-                            + "consume or replace the whole owner instead");
-                }
                 return new ValueInfo(valueType, valueKind, null);
             }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
@@ -1223,15 +1217,9 @@ public final class OwnershipChecker {
                             ownershipFieldType(target.field()),
                             genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
                     ValueKind fieldKind = kindOfType(fieldType);
-                    if (consuming && fieldKind == ValueKind.MOVE_ONLY) {
-                        if (isRootedAtActorSelf(member.receiver(), scope)) {
-                            throw error("cannot move actor-owned field '" + member.member()
-                                    + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
-                        }
-                        throw error("cannot consume move-only class field projection '"
-                                + target.owner().name() + "." + member.member()
-                                + "' until projection-level move tracking exists; "
-                                + "consume or replace the whole owner instead");
+                    if (consuming && isRootedAtActorSelf(member.receiver(), scope) && fieldKind != ValueKind.COPY) {
+                        throw error("cannot move actor-owned field '" + member.member()
+                                + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
                     }
                     return new ValueInfo(fieldType, fieldKind, null);
                 }
@@ -1248,13 +1236,8 @@ public final class OwnershipChecker {
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = collectionElementType(receiver.type);
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
-            if (consuming && elementKind == ValueKind.MOVE_ONLY) {
-                if (isRootedAtActorSelf(indexed.receiver(), scope)) {
-                    throw error("cannot move actor-owned indexed state out of its mailbox turn");
-                }
-                throw error("cannot consume move-only indexed projection until "
-                        + "projection-level move tracking exists; consume or "
-                        + "replace the whole owner instead");
+            if (consuming && isRootedAtActorSelf(indexed.receiver(), scope) && elementKind != ValueKind.COPY) {
+                throw error("cannot move actor-owned indexed state out of its mailbox turn");
             }
             return new ValueInfo(elementType, elementKind, null);
         }
