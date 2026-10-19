@@ -70,6 +70,7 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
      * The bridge must not leak a bypass around its bounded proxy credits.
      */
     public LogicalSourceActorRouterV1.LogicalAddress address() {
+        requireHost();
         // Do not expose the router's new epoch while upgradeTo() still holds
         // an uncommitted proxy mailbox freeze ticket.
         synchronized (dispatchLock) {
@@ -88,6 +89,7 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
             LogicalActorProxyMailboxV1.Snapshot mailbox) { }
 
     public Publication publication() {
+        requireHost();
         synchronized (dispatchLock) {
             var address = router.ref().address();
             var snapshot = mailbox.snapshot();
@@ -131,6 +133,7 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
     }
 
     public LogicalActorProxyMailboxV1.Snapshot snapshot() {
+        requireHost();
         synchronized (dispatchLock) {
             return mailbox.snapshot();
         }
@@ -140,6 +143,7 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
 
     // Test-only coherent observation under the physical route monitor.
     boolean routeEpochsAlignedForTesting() {
+        requireHost();
         return router.proxyRouteEpochAlignedForTesting(mailbox);
     }
 
