@@ -87,6 +87,30 @@ remain unique within each active session generation.
   payload admission is capped at 1 MiB. Full streaming uses a distinct
   bounded chunk/credit protocol, not an unbounded single unary envelope.
 
+## Bounded per-session admission and terminal credit release
+
+`UnaryRequestRegistry` is a synchronized, supervisor-owned bounded registry,
+separate from the per-request `UnaryReplySlot`. It permits at most the configured
+1–65,536 active request IDs per authenticated transport/session/generation.
+The registry mints monotonically increasing positive IDs (never reuses an ID in
+the same session), rejects admission at capacity, and denies new work after
+session closure. ID exhaustion requires a fresh session rather than rollover.
+
+Each successful REPLY/ERROR or cancellation consumes precisely one pending
+entry; duplicate/late replies are ignored, while forged future IDs, wrong
+protocol, wrong session, and stale generations fail closed. Closing a session
+retires all remaining entries and returns all admission credits. Registry
+methods invoke neither guest callbacks nor socket I/O while holding their
+monitor; a future network adapter must handle actual task cancellation,
+reply delivery and timeout scheduling outside this lock.
+
+This is bounded **per-session** admission, not a proof of a bounded global
+listener/session count. The supervisor must additionally limit simultaneous
+connections, total active bytes and actor in-flight work; the reply writer
+must publish terminal outcomes without a second send. A terminal slot only
+means the local runtime selected one outcome, not that bytes were delivered
+to the remote peer.
+
 ## Other unary transports — opt-in, not inferred
 
 Unix-domain sockets and IPC may reuse the length-prefixed envelope **only
@@ -101,15 +125,16 @@ conversion is allowed without an explicit typed transport codec.
 ## Implemented and tested versus still missing
 
 The feature branch adds `UnaryTransportFrame`, `UnaryReplySlot`,
-`UnaryTransportFrameCheck`, standalone script and a Maven JUnit wrapper.
+`UnaryRequestRegistry`, their dedicated standalone test checks, one
+repeatable script and Maven JUnit wrappers.
 Three consecutive local Java 21 runs passed real loopback TCP split/coalesced
 writes, WebSocket binary envelope roundtrips, malicious size/version/type/
-generation probes, defensive copying, wrong-session replay rejection and
-1,000 cancellation-versus-reply races per run (3,000 total).
+generation probes, defensive copying, wrong-session replay rejection,
+3,000 frame-level cancellation/reply races, and 3,000 additional registry
+completion/cancellation races with exact credit reclamation.
 
 **Not implemented or validated:** a TCP listener/session actor adapter;
-RFC 6455 upgrade and WebSocket network I/O; transport authentication;
-bounded multiplexed in-flight request registry; guest AST/typechecker
+RFC 6455 upgrade and WebSocket network I/O; transport authentication; global listener/connection admission; guest AST/typechecker
 handling of `unary tcp/websocket`; reply codec/type lowering; producer
 stream backpressure; actor panic/deadline/close cleanup; LLVM parity; or
 full JDK25 Graal Native Image. Existing HTTP PR #1399 is separate and
