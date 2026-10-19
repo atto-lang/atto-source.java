@@ -230,4 +230,33 @@ final class OresTaskScopeCancelTreeAdmissionTest {
         assertTrue(root.physicallyQuiescent());
     }
 
+
+    @Test
+    void closeCannotJoinUnsealedTreeWhenCancellationPreflightFails()
+            throws Exception {
+        var root = OresTaskScope.compilerOwned();
+        var child = root.childScope();
+        var grandchild = child.childScope();
+        Field field = OresTaskScope.class.getDeclaredField("tasks");
+        field.setAccessible(true);
+        Object original = field.get(grandchild);
+        field.set(grandchild, new java.util.HashSet<Object>() {
+            @Override public java.util.Iterator<Object> iterator() {
+                throw new OutOfMemoryError("injected preflight error during close");
+            }
+        });
+        try {
+            assertThrows(OutOfMemoryError.class, root::close);
+            assertFalse(root.isCancelRequested());
+            assertFalse(grandchild.isCancelRequested());
+            assertNotNull(grandchild.childScope(),
+                    "failed close must not claim sealed lifecycle ownership");
+        } finally {
+            field.set(grandchild, original);
+        }
+        root.close();
+        assertTrue(root.isCancelRequested());
+        assertTrue(grandchild.isCancelRequested());
+    }
+
 }
