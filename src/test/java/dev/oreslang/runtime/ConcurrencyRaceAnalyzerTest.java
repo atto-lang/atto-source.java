@@ -135,6 +135,75 @@ final class ConcurrencyRaceAnalyzerTest {
     }
 
     @Test
+    void forkAndJoinEstablishOnlyActualLifecycleHappensBeforeEdges() {
+        var checker = new ConcurrencyRaceAnalyzer();
+        checker.write("parent", "shared");
+        checker.fork("parent", "child");
+        checker.read("child", "shared"); // pre-fork parent write is visible
+        checker.write("child", "result");
+        checker.finish("child");
+        checker.join("parent", "child");
+        checker.read("parent", "result"); // completed child work is visible
+        assertEquals(0, checker.conflictCount());
+    }
+
+    @Test
+    void siblingsAndUnjoinedChildRemainConcurrent() {
+        var checker = new ConcurrencyRaceAnalyzer();
+        checker.fork("parent", "child-1");
+        checker.fork("parent", "child-2");
+        checker.write("child-1", "shared");
+        checker.write("child-2", "shared");
+        assertEquals(1, checker.conflictCount());
+        checker.write("child-1", "separate");
+        checker.read("parent", "separate"); // no join yet
+        assertEquals(2, checker.conflictCount());
+    }
+
+    @Test
+    void invalidOrRepeatedJoinsCannotForgeSynchronization() {
+        var checker = new ConcurrencyRaceAnalyzer();
+        checker.fork("parent", "child");
+        int before = checker.eventCount();
+        assertThrows(IllegalStateException.class, () -> checker.join("parent", "child"));
+        assertThrows(IllegalStateException.class, () -> checker.join("stranger", "child"));
+        assertEquals(before, checker.eventCount());
+        checker.write("child", "shared");
+        checker.finish("child");
+        assertThrows(IllegalStateException.class, () -> checker.write("child", "shared"));
+        assertThrows(IllegalStateException.class, () -> checker.send("child", "late-message"));
+        checker.join("parent", "child");
+        assertThrows(IllegalStateException.class, () -> checker.join("parent", "child"));
+        assertThrows(IllegalStateException.class, () -> checker.fork("parent", "child"));
+    }
+
+    @Test
+    void finishingWithOwnedLockIsRejectedWithoutConsumingEvent() {
+        var checker = new ConcurrencyRaceAnalyzer();
+        checker.acquire("owner", "mutex");
+        int before = checker.eventCount();
+        assertThrows(IllegalStateException.class, () -> checker.finish("owner"));
+        assertEquals(before, checker.eventCount());
+        checker.release("owner", "mutex");
+        checker.finish("owner");
+        assertThrows(IllegalStateException.class, () -> checker.acquire("owner", "mutex"));
+    }
+
+    @Test
+    void invalidMessageReceivePreservesTokenAndEventBudget() {
+        var checker = new ConcurrencyRaceAnalyzer();
+        checker.send("a", "once");
+        int before = checker.eventCount();
+        assertThrows(IllegalArgumentException.class,
+                () -> checker.receive("bad" + (char) 10, "once"));
+        assertThrows(IllegalStateException.class, () -> checker.receive("b", "not-issued"));
+        assertThrows(IllegalStateException.class, () -> checker.send("a", "once"));
+        assertEquals(before, checker.eventCount());
+        checker.receive("b", "once");
+        assertEquals(before + 1, checker.eventCount());
+    }
+
+    @Test
     void consumedMessageTokenCannotBeReusedToForgeOrdering() {
         var checker = new ConcurrencyRaceAnalyzer();
         checker.send("a", "message-1");
