@@ -584,6 +584,31 @@ final class ThreadSafetyTraitsTest {
 
     @Test
     @org.junit.jupiter.api.Timeout(5)
+    void unionCanonicalizationDoesNotExpandSharedDagRecordMethods() {
+        Type left = Types.Primitive.INT;
+        Type equivalent = Types.Primitive.INT;
+        Type different = Types.Primitive.STRING;
+        for (int i = 0; i < 70; i++) {
+            left = new Types.Tuple(List.of(left, left));
+            equivalent = new Types.Tuple(List.of(equivalent, equivalent));
+            different = new Types.Tuple(List.of(different, different));
+        }
+
+        Type firstOrder = Types.unionOf(List.of(left, equivalent, different));
+        Type reverseOrder = Types.unionOf(List.of(different, equivalent, left));
+        assertInstanceOf(Types.Union.class, firstOrder);
+        assertInstanceOf(Types.Union.class, reverseOrder);
+        Types.Union first = (Types.Union) firstOrder;
+        Types.Union reverse = (Types.Union) reverseOrder;
+        assertEquals(2, first.options().size(),
+                "equivalent shared DAGs must deduplicate without record equals recursion");
+        assertTrue(Types.isAssignable(first, reverse));
+        assertTrue(Types.isAssignable(reverse, first),
+                "canonical ordering must not depend on input order");
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(5)
     void structuralTypeRelationsMemoizeSharedDagPairs() {
         Type equalLeft = Types.Primitive.INT;
         Type equalRight = Types.Primitive.INT;
