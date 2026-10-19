@@ -93,8 +93,9 @@ final class InvertedRowMethod {
         if (depth > MAX_EXPRESSION_DEPTH) {
             throw new IllegalArgumentException("inverted method expression nesting exceeds limit");
         }
-        if (value instanceof Ast.LiteralExpr literal && literal.value() instanceof Number number) {
-            double fixed = number.doubleValue();
+        // No implicit int/decimal -> f64 cast until source type promotion and
+        // overflow/precision semantics are proven by the semantic checker.
+        if (value instanceof Ast.LiteralExpr literal && literal.value() instanceof Double fixed) {
             return (row, args) -> fixed;
         }
         if (value instanceof Ast.NameExpr name) {
