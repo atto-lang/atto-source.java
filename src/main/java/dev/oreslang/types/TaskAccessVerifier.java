@@ -131,6 +131,13 @@ final class TaskAccessVerifier {
                 throw new IllegalArgumentException(
                         "nested borrowed referents require an explicit outlives proof");
             }
+            // Keep scoped erased-interface borrowing behind its own proof gate.
+            // A future dyn I + Send/Sync trait proof must not silently grant
+            // concrete-layout, implementation identity, or loan lifetime proof.
+            if (Types.containsDynWitness(type)) {
+                throw new IllegalArgumentException(
+                        "scoped dyn referents require concrete implementation and lifetime proof");
+            }
         }
     }
 
