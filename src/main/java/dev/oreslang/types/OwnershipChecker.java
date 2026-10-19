@@ -1396,7 +1396,8 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.MemberExpr qualified
-                && qualified.receiver() instanceof Ast.NameExpr namespace) {
+                && qualified.receiver() instanceof Ast.NameExpr namespace
+                && scope.lookup(namespace.name()) == null) {
             Ast.FunctionDecl fn = findFunction(
                     namespace.name() + "." + qualified.member(), arity);
             if (fn != null) {
