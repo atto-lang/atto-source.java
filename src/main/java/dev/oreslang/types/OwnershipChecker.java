@@ -98,6 +98,18 @@ public final class OwnershipChecker {
     /** Reuse only public, explicitly linked class layouts for cross-file loans. */
     public static Ast.Program checkWithImportedClasses(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses) {
+        return checkWithImportedClassesAndTaskTransferProvenance(
+                program, linkedClasses).program();
+    }
+
+    /**
+     * Linked-class ownership admission with the same sealed Task transfer
+     * provenance returned by the ordinary checker. Future lowering must not
+     * silently lose provenance merely because a field layout came from an
+     * explicitly linked compilation unit.
+     */
+    public static CheckResult checkWithImportedClassesAndTaskTransferProvenance(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses) {
         if (linkedClasses == null) {
             throw new IllegalArgumentException("linked public classes cannot be null");
         }
@@ -120,7 +132,9 @@ public final class OwnershipChecker {
             checker.classes.put(name, declaration);
         }
         checker.validate(program);
-        return program;
+        return new CheckResult(
+                program,
+                checker.taskTransferProvenance.seal());
     }
 
     private void index(Ast.Program program) {
