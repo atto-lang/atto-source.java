@@ -1675,8 +1675,15 @@ public final class TypeChecker {
     }
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
-        if (stmt instanceof Ast.TaskBlockStmt
-                || (stmt instanceof Ast.BindingStmt binding && binding.initializer() instanceof Ast.TaskExpr)) {
+        if (stmt instanceof Ast.TaskBlockStmt task) {
+            validateDetachedTaskBodyCaptures(
+                    task.body(), env, "fire-and-continue Task capture");
+            throw new IllegalArgumentException("nb Task blocks require ownership-safe capture and scheduler lowering; source execution is not enabled");
+        }
+        if (stmt instanceof Ast.BindingStmt binding
+                && binding.initializer() instanceof Ast.TaskExpr task) {
+            validateDetachedTaskBodyCaptures(
+                    task.body(), env, "Task expression capture");
             throw new IllegalArgumentException("nb Task blocks require ownership-safe capture and scheduler lowering; source execution is not enabled");
         }
         if (stmt instanceof Ast.BindingStmt binding) {
@@ -2072,13 +2079,21 @@ public final class TypeChecker {
         if (expr instanceof Ast.SuspendsLambdaExpr) {
             throw new IllegalArgumentException("suspends lambda requires suspension-effect callable typing and continuation lowering; this callable does not create a Task or Future");
         }
-        if (expr instanceof Ast.TaskLambdaExpr) {
+        if (expr instanceof Ast.TaskLambdaExpr taskLambda) {
+            validateScheduledLambdaBoundary(
+                    taskLambda.lambda(), null, env, generics, self,
+                    "async task lambda");
             throw new IllegalArgumentException("async task lambda requires Task<T> return inference, owned argument captures, and scheduled continuation lowering; executable source is not enabled");
         }
-        if (expr instanceof Ast.AsyncLambdaExpr) {
+        if (expr instanceof Ast.AsyncLambdaExpr asyncLambda) {
+            validateScheduledLambdaBoundary(
+                    asyncLambda.lambda(), null, env, generics, self,
+                    "async lambda");
             throw new IllegalArgumentException("async lambda requires Future<T> lowering; returning nb Task<T> would produce Future<Task<T>> without implicit flattening");
         }
-        if (expr instanceof Ast.TaskExpr) {
+        if (expr instanceof Ast.TaskExpr task) {
+            validateDetachedTaskBodyCaptures(
+                    task.body(), env, "Task expression capture");
             throw new IllegalArgumentException("nb Task blocks require ownership-safe capture and scheduler lowering; source execution is not enabled");
         }
         if (expr instanceof Ast.LiteralExpr literal) {
@@ -2415,6 +2430,20 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.TaskLambdaExpr taskLambda) {
+                validateScheduledLambdaBoundary(
+                        taskLambda.lambda(), call.arguments(), env, generics, self,
+                        "invoked async task lambda");
+                throw new IllegalArgumentException(
+                        "async task lambda requires Task<T> return inference, owned argument captures, and scheduled continuation lowering; executable source is not enabled");
+            }
+            if (call.callee() instanceof Ast.AsyncLambdaExpr asyncLambda) {
+                validateScheduledLambdaBoundary(
+                        asyncLambda.lambda(), call.arguments(), env, generics, self,
+                        "invoked async lambda");
+                throw new IllegalArgumentException(
+                        "async lambda requires Future<T> lowering; returning nb Task<T> would produce Future<Task<T>> without implicit flattening");
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
@@ -4991,6 +5020,113 @@ public final class TypeChecker {
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
     }
 
+    /**
+     * Canonical resolved-type Send authority for detached work. OwnershipChecker
+     * still proves affine move/exclusivity; this method only answers whether the
+     * resolved semantic type is eligible for owned transfer.
+     */
+    private boolean isThreadSend(Type type) {
+        return ThreadSafetyTraits.isOwnedSend(
+                type,
+                new ThreadSafetyTraits.NominalProof() {
+                    @Override
+                    public boolean has(
+                            Named nominal,
+                            ThreadSafetyTraits.Trait trait) {
+                        return trait == ThreadSafetyTraits.Trait.SEND
+                                && isSharedSafe(
+                                        nominal,
+                                        new LinkedHashSet<>(),
+                                        Map.of());
+                    }
+
+                    @Override
+                    public boolean trustedIntrinsic(Named named) {
+                        if (!Set.of(
+                                "Option", "Result", "Channel",
+                                "OptionUnwrapError", "IteratorResult")
+                                .contains(named.name())) {
+                            return false;
+                        }
+                        return findClass(named.name()) == null
+                                && findInterface(named.name()) == null
+                                && findTypeAlias(named.name()) == null;
+                    }
+                });
+    }
+
+    private void validateDetachedTaskType(Type type, String where) {
+        if (type instanceof Named named
+                && named.name().equals("Channel")
+                && named.arguments().size() == 1
+                && isSharedSafe(
+                        named.arguments().getFirst(),
+                        new LinkedHashSet<>(),
+                        Map.of())
+                && isThreadSend(type)) {
+            return;
+        }
+        if (type == Primitive.VOID
+                || !isThreadSend(type)
+                || !isSharedSafe(type, new LinkedHashSet<>(), Map.of())) {
+            throw new IllegalArgumentException(
+                    where + " must resolve to concrete owned Send data; "
+                            + "borrows, futures, mutexes, functions, actor values, "
+                            + "host capabilities, readonly aliases, and unresolved "
+                            + "generics cannot cross a detached Task boundary");
+        }
+    }
+
+    private void validateDetachedTaskBodyCaptures(
+            List<Ast.Stmt> body, Env env, String where) {
+        for (TaskCaptureAnalysis.Use use :
+                TaskCaptureAnalysis.taskBody(body)) {
+            Env.Binding binding = env.lookup(use.name());
+            if (binding != null) {
+                validateDetachedTaskType(
+                        binding.type(),
+                        where + " '" + use.name() + "'");
+            }
+        }
+    }
+
+    private void validateScheduledLambdaBoundary(
+            Ast.LambdaExpr lambda,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> generics,
+            Type self,
+            String where) {
+        if (!lambda.nonLexical()) {
+            for (TaskCaptureAnalysis.Use use :
+                    TaskCaptureAnalysis.lambda(lambda, null)) {
+                Env.Binding binding = env.lookup(use.name());
+                if (binding != null) {
+                    validateDetachedTaskType(
+                            binding.type(),
+                            where + " capture '" + use.name() + "'");
+                }
+            }
+        }
+
+        for (Ast.Param parameter : lambda.parameters()) {
+            Type parameterType = resolve(parameter.type(), generics, self);
+            validateDetachedTaskType(
+                    parameterType,
+                    where + " parameter '" + parameter.name() + "'");
+        }
+
+        if (arguments != null) {
+            for (int i = 0; i < arguments.size(); i++) {
+                Type argumentType =
+                        typeOf(arguments.get(i), env, generics, self);
+                validateDetachedTaskType(
+                        argumentType,
+                        where + " argument " + i);
+            }
+        }
+    }
+
     private void validateAsyncBoundaryType(
             Type type,
             boolean returnPosition,
@@ -5002,10 +5138,12 @@ public final class TypeChecker {
         // their stricter rule and continue to reject Channel<T> entirely.
         if (type instanceof Named named && named.name().equals("Channel")
                 && named.arguments().size() == 1
-                && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
+                && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())
+                && isThreadSend(type)) {
             return;
         }
         if (type == Primitive.VOID
+                || !isThreadSend(type)
                 || !isSharedSafe(type, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
                     where + " must be concrete owned task-safe data; borrows, futures, mutexes, functions, actor values, host capabilities, and unresolved generics cannot cross an async task boundary");
