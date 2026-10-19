@@ -209,3 +209,56 @@ heads failed with no executed steps, while requests for job logs returned
 missing-blob errors. This does not establish a Java compiler failure or
 prove the cause is exhausted GitHub Actions minutes. Security issue #962
 remains open; no private-source cross-organization mirror was attempted.
+
+
+## Terminal-witness consistency hardening — current pass
+
+Auditing the post-unlock actor finalizer found a second correctness issue:
+`ActorRef.awaitTermination(timeout, unit)` previously treated the absence
+of an `ActorCell` from the runtime actor map as a successfully finalized
+actor. But `completeFinalizationOutsideLock()` first unregisters the actor
+and only later publishes the non-cancellable `ref.doneFuture`. A different
+host thread could therefore get `true` from `awaitTermination` while
+`ref.getDone().isDone()` was still false. A similar gap existed when
+`ActorCell.finalized` was set before `doneFuture` publication.
+
+The fix waits for the actual `ref.doneFuture` terminal state, both while an
+`ActorCell` remains registered and after registry removal. The helper
+handles failed actor outcomes as completed terminations, preserves bounded
+timeouts and interruptions, and avoids joining from the actor's own host
+finalizer callback. This also updates supervisor/host `stop` and runtime
+`close` paths that use `ActorCell.awaitFinalized`.
+
+Three real-runtime JUnit tests were added to
+`ActorTaskTerminationCascadeTest` (now eight methods) for successful
+`awaitTermination` followed by an immediately observable `done` Future
+over 100 actors, exceptional completion after actor failure, and zero-timeout
+polls during blocked exit hooks. Together with nine
+`ActorOwnedTaskScopeTest` methods, this stage now has **17 committed
+production-source JUnit tests**, all pending real JDK/GraalVM CI.
+
+A *standalone model*, which does **not** compile production ActorRuntime,
+used OpenJDK 21 to verify **800/800** registry-removal-vs-done-publication and
+exceptional-completion orderings. The Java 21 static-helper compilation
+check also passed. These are local ordering checks, not source CI evidence.
+
+This Stage-3 branch was cleanly rebuilt as a new commit on the latest
+Stage-2 TaskScope head, preserving the original four Stage-3 source/test/doc
+blob identities and inheriting the current Stage-2 source tree. Old
+Stage-3 revisions remain recoverable on
+`backup/actor-task-stage3-audit-20261018`. GitHub reported a four-file
+Stage-3-only diff immediately after the ref update.
+
+**CI:** At the rebased source head, 13 GitHub Actions workflows failed, and
+six sampled `ci`, `fast-ci`, and heap-placement jobs each had **zero
+executed steps**. No compiler verdict, runner-minute balance or actual
+Maven/JUnit execution can be inferred from those failures. The protected,
+reviewed cross-organization private-mirror authorization remains unresolved
+in #962; the previous source-leak incident is tracked by #832. No private
+source bytes were copied into a different GitHub organization.
+
+**Further review required:** the finalizer's one-virtual-thread-per-actor
+admission needs stress/failure-injection coverage; actual host terminal
+callback dispatch should be tested under large actor teardown storms.
+Stage-1 and Stage-2 cancellation changes continue independently and must
+be kept synchronized before merge.
