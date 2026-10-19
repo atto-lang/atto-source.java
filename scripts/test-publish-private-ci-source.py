@@ -38,7 +38,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "destination_id": 779})
         self.provenance.start()
         self.addCleanup(self.provenance.stop)
-        self.snapshot = patch.object(pub.pinned, "verify_snapshot", return_value=True)
+        self.snapshot = patch.object(pub.pinned, "verify_snapshot", return_value=D)
         self.snapshot.start()
         self.addCleanup(self.snapshot.stop)
 
@@ -447,6 +447,20 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
         writes = [route for method, route, _ in self.route_calls if method == "POST"]
         self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+
+    def test_mirror_tree_sha_mismatch_blocks_commit_and_ref(self):
+        original = self.fake_api
+        def wrong_tree(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/trees" and "base_tree" not in payload:
+                self.route_calls.append((method, route, payload))
+                return {"sha": C}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=wrong_tree):
+            with self.assertRaisesRegex(pub.Denied, "subtree SHA"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
+        writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs",
+                                   "repos/trusted/ci/git/trees"])
 
     def test_missing_pinned_admission_denies_before_private_blob_writes(self):
         with patch.object(pub.pinned, "verify", side_effect=pub.pinned.AdmissionDenied("no review")):
