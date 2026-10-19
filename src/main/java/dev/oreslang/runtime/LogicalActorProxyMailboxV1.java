@@ -71,6 +71,13 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                     impossible);
         }
     }
+    private static void requirePayloadIntegrity(Envelope envelope) {
+        if (!envelope.payloadIntegrityValid()) {
+            throw new SecurityException(
+                    "logical proxy envelope payload identity mismatch");
+        }
+    }
+
 
     public record Snapshot(
             long routeEpoch,
@@ -350,6 +357,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                         "cannot requeue a physically attempted message without an "
                                 + "authenticated proof of non-acceptance");
             }
+            requirePayloadIntegrity(envelope);
             // ArrayDeque may grow here. Enqueue before mutating outstanding
             // state so allocation failure leaves the delivery authoritative
             // and its credits intact, never half-requeued.
@@ -381,6 +389,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                 throw new SecurityException(
                         "foreign, completed or stale logical proxy envelope");
             }
+            requirePayloadIntegrity(envelope);
         }
     }
 
@@ -413,10 +422,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             // the one-shot physical-send authority. This normally cannot fail
             // through the public API because payload() returns a clone, but it
             // catches accidental/reflection corruption before actor admission.
-            if (!envelope.payloadIntegrityValid()) {
-                throw new SecurityException(
-                        "logical proxy envelope payload identity mismatch");
-            }
+            requirePayloadIntegrity(envelope);
             // HashSet growth can fail before send; never submit in that case.
             physicalSendAttempted.add(envelope.messageSequence());
         }
@@ -446,6 +452,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                 throw new SecurityException(
                         "missing, foreign or stale physical completion authority");
             }
+            requirePayloadIntegrity(envelope);
             completeLocked(envelope.messageSequence());
         }
     }
