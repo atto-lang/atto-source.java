@@ -644,20 +644,33 @@ public final class OresEvalRootNode extends RootNode {
 
         @Override
         public boolean actorReceivesProxyLong(String actorTypeName) {
-            // Use the linked compiler's resolved receive declaration, never a
-            // caller-provided digest or a reflective guess over guest values.
+            return actorProxyWireScalarKind(actorTypeName).orElse(null)
+                    == ActorRuntime.ProxyWireScalarKind.INT;
+        }
+
+        @Override
+        public Optional<ActorRuntime.ProxyWireScalarKind> actorProxyWireScalarKind(
+                String actorTypeName) {
+            // Only the linked AST of the exact receive declaration can grant
+            // primitive-mail admission. Digest agreement alone is insufficient.
             Ast.ClassDecl klass = requireLocalActorClass(actorTypeName);
             Ast.MethodDecl receive = findMethod(
                     klass, CallableSelector.instance("receive", 1));
-            if (receive == null || receive.parameters().size() != 1) return false;
+            if (receive == null || receive.parameters().size() != 1)
+                return Optional.empty();
             Ast.TypeRef mail = receive.parameters().getFirst().type();
             if (mail == null || mail.inferArguments()
                     || !mail.name().equals("ActorMail")
-                    || mail.arguments().size() != 1) return false;
+                    || mail.arguments().size() != 1) return Optional.empty();
             Ast.TypeRef value = mail.arguments().getFirst();
-            return !value.inferArguments()
-                    && value.name().equals("int")
-                    && value.arguments().isEmpty();
+            if (value == null || value.inferArguments()
+                    || !value.arguments().isEmpty()) return Optional.empty();
+            return switch (value.name()) {
+                case "int" -> Optional.of(ActorRuntime.ProxyWireScalarKind.INT);
+                case "bool" -> Optional.of(ActorRuntime.ProxyWireScalarKind.BOOL);
+                case "string" -> Optional.of(ActorRuntime.ProxyWireScalarKind.STRING);
+                default -> Optional.empty(); // no erased, aliased or dynamic wire
+            };
         }
 
         @Override
