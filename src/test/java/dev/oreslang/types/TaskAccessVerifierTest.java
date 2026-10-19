@@ -177,6 +177,26 @@ final class TaskAccessVerifierTest {
         assertTrue(TaskAccessVerifier.mayAlias(b, root));
     }
 
+    @Test void unprovenIntermediateFieldCannotCreateDisjointNestedLoans() {
+        var root = TaskAccessVerifier.Place.whole(WORLD);
+        var uncertainParent = root.field("opaque_union", false);
+        var left = uncertainParent.field("x", true);
+        var right = uncertainParent.field("y", true);
+        assertTrue(TaskAccessVerifier.mayAlias(left, right));
+        var ledger = new TaskAccessVerifier();
+        ledger.admit(List.of(write(left)));
+        assertThrows(IllegalArgumentException.class,
+                () -> ledger.admit(List.of(write(right))));
+    }
+
+    @Test void unprovenIntermediateRangeCannotCreateDisjointNestedLoans() {
+        var root = TaskAccessVerifier.Place.whole(WORLD);
+        var uncertainRange = root.range(0, 1024, false);
+        assertTrue(TaskAccessVerifier.mayAlias(
+                uncertainRange.field("position", true),
+                uncertainRange.field("velocity", true)));
+    }
+
     @Test void typedTaskAdmissionUsesSendForWriteAndSyncForRead() {
         var ledger = new TaskAccessVerifier();
         var unique = TaskAccessVerifier.Place.whole(WORLD);
