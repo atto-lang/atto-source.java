@@ -48,8 +48,13 @@ public final class IpcReceiptCompletionBridgeSelfTest {
                 one, IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
         check(!first.toCompletableFuture().isDone());
         check(gate.invariant());
-        gate.acceptVerified(two, IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
+        denied(() -> gate.acceptVerified(two,
+                IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE));
+        check(!second.toCompletableFuture().isDone());
+        gate.rejectBeforeRemote(two);
         check(result(second) == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
+        denied(() -> gate.rejectBeforeRemote(one));
+        check(!first.toCompletableFuture().isDone());
         check(gate.transportLost("old") == 1);
         check(result(first) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
         check(gate.transportLost("old") == 0);
