@@ -125,3 +125,36 @@ mvn -B -ntp test
 Then reconcile #1411's `OresTaskScope` with this ActorRuntime bridge and
 exercise old-code unload quarantine. Treat zero-step GitHub Actions failures
 as **no execution evidence**, not a successful or failed test assertion.
+
+
+## October 19 — canonical OresTaskScope reconciliation
+
+The SHARED hot-upgrade proof no longer maintains a parallel Task ownership
+implementation. Runtime Task primitives from draft #1411 are now present on
+this branch, and `ActorHotUpgradeTaskOwnerV1` is reduced to an actor
+route-epoch capability wrapper around canonical `OresTaskScope`.
+
+The source-actor router performs one admission transaction under
+`routeLock`: validate the expected route epoch, acquire the real
+`ActorRuntime.HotUpgradeExternalLease`, then transfer release responsibility
+to `OresTaskScope.startCompilerFrame(..., onPhysicalExit)`. A stale child
+scope is rejected before pin or scheduler admission. An accepted frame keeps
+the exact actor generation pinned until the scheduler's physical-quiescence
+callback, never merely until its result Future settles.
+
+The reconciliation also strengthens #1411's ownership allocation order.
+`OresTaskScope` preallocates and inserts an ownership slot, physical-exit
+Future, Task handle, and retirement observer **before** `OresScheduler.start`.
+Allocation/HashSet growth failure invokes the unused generation-release
+callback and admits no executable frame. After scheduler admission, publishing
+the already-created Task handle is an allocation-free reference assignment.
+The existing source-actor OOME regression now faults this canonical ownership
+set rather than a separate hot-reload owner set.
+
+This is still a trusted-host/compiler runtime seam. Source `task {}`,
+`async task`, and `suspends` execution gates MUST remain closed until the
+compiler can attest the lowered frame's logical actor, incarnation, route
+epoch/code image, capture ownership and child-scope authority. The old
+`ActorHotUpgradeTaskBridgeV1` remains only as a low-level lease/scheduler
+fault-test seam and is no longer the structured owner used by the SHARED
+proxy bridge.
