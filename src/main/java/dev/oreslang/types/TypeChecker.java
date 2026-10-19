@@ -3380,7 +3380,8 @@ public final class TypeChecker {
             Set<String> generics,
             Type self) {
         if (!(call.callee() instanceof Ast.NameExpr name)
-                || !ML_SCALAR_INTRINSICS.contains(name.name())) {
+                || !ML_SCALAR_INTRINSICS.contains(name.name())
+                || env.lookup(name.name()) != null) {
             return null;
         }
         if (call.typeArgumentsPresent()) {
