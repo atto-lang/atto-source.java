@@ -266,4 +266,15 @@ final class SendSyncAndRegionPlannerTest {
         assertFalse(checker.isSend(t("Expanding", t("int"))));
         assertFalse(checker.isSync(t("Expanding", t("int"))));
     }
+
+    @Test
+    void excessivelyDeepLinkedTypesFailBeforeRecursiveHashing() {
+        Ast.TypeRef depthBomb = t("int");
+        for (int i = 0; i < 12_000; i++) {
+            depthBomb = t("Option", depthBomb);
+        }
+        SendSyncTraits checker = trusted();
+        assertFalse(checker.isSend(depthBomb));
+        assertFalse(checker.isSync(depthBomb));
+    }
 }
