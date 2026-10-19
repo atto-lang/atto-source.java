@@ -314,7 +314,7 @@ def inspect(repo, run_id, expected_sha, fetch=get_json, pr_number=None):
     return {"repository": repo, "run_id": run_id, "head_sha": expected_sha,
             "run_attempt": run["run_attempt"], "pr_number": pr_number,
             "pr_head_verified": bool(pr_path),
-            "job_provenance_verified": bool(pr_path),
+            "job_provenance_verified": bool(pr_path and jobs),
             "conclusion": run.get("conclusion"), **outcome}
 
 
