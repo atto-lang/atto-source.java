@@ -146,7 +146,7 @@ final class LogicalActorUpgradeCoordinatorV1Test {
             assertEquals(1L,gate.epoch());
             assertEquals(1L,proxy.snapshot().routeEpoch());
             assertEquals(1L,proxy.pollDispatch().messageSequence());
-            proxy.complete(1L);
+            LogicalActorProxyMailboxTestAccess.complete(proxy, 1L);
             assertThrows(IllegalStateException.class,tx::commit);
         }
     }
