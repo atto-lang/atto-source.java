@@ -74,24 +74,39 @@ public final class OptionalCallScalarAbiFrame {
      * carrying a verified original declaration and source-origin mapping.
      */
     public static final class Frame {
+        private final CheckedScalarInvocationWitness checked;
         private final Ast.FunctionDecl selected;
         private final List<Slot> slots;
 
-        private Frame(Ast.FunctionDecl selected, List<Slot> slots) {
-            this.selected = Objects.requireNonNull(selected, "selected callable");
+        private Frame(CheckedScalarInvocationWitness checked, List<Slot> slots) {
+            this.checked = Objects.requireNonNull(checked, "checked callsite origin");
+            this.selected = checked.selectedDeclaration();
             this.slots = List.copyOf(slots);
-            if (this.slots.size() != selected.parameters().size()) {
-                throw new IllegalArgumentException("frame must cover selected declaration");
+            var recipe = checked.lexical().tempRecipe();
+            if (recipe.bound().selectedDeclaration() != selected
+                    || this.slots.size() != selected.parameters().size()
+                    || recipe.abiSlots().size() != this.slots.size()) {
+                throw new IllegalArgumentException("frame must cover original selected declaration");
             }
             for (int i = 0; i < this.slots.size(); i++) {
-                if (this.slots.get(i).formalIndex() != i
-                        || !this.slots.get(i).value().abiType()
-                                .equals(selected.parameters().get(i).calleeType())) {
-                    throw new IllegalArgumentException("frame ABI differs from selected formal");
+                Slot slot = this.slots.get(i);
+                var origin = recipe.abiSlots().get(i);
+                if (slot.formalIndex() != i
+                        || !slot.value().abiType().equals(selected.parameters().get(i).calleeType())
+                        || slot.originalCallItemIndex() != origin.rawCallItemIndex()
+                        || slot.evaluatedSourceIndex() != origin.tempIndex()
+                        || (origin.action() == OptionalCallAbiPreview.Action.INJECT_NONE)
+                                != (slot.value() instanceof None)
+                        || (origin.action() == OptionalCallAbiPreview.Action.WRAP_SOME)
+                                != (slot.value() instanceof Some)) {
+                    throw new IllegalArgumentException(
+                            "frame ABI value/origin diverged from checked source and formal");
                 }
             }
         }
 
+        /** Exact lexical source/selected declaration evidence (still non-executable). */
+        public CheckedScalarInvocationWitness checkedSource() { return checked; }
         public Ast.FunctionDecl selected() { return selected; }
         public List<Slot> slots() { return slots; }
         public BoundInvocation.Readiness readiness() {
@@ -184,7 +199,7 @@ public final class OptionalCallScalarAbiFrame {
             int evaluatedSource = source;
             ordered.add(new Slot(i, abi.rawCallItemIndex(), evaluatedSource, value));
         }
-        return new Frame(checked.selectedDeclaration(), ordered);
+        return new Frame(checked, ordered);
     }
 
     private static Ast.TypeRef optionPayload(Ast.TypeRef option) {
