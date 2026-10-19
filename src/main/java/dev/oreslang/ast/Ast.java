@@ -271,6 +271,10 @@ public final class Ast {
             if (annotations.size() > 1) {
                 throw new IllegalArgumentException("duplicate @Default on formal '" + name + "'");
             }
+            if (!annotations.isEmpty() && (structural || mutable)) {
+                throw new IllegalArgumentException(
+                        "@Default requires an immutable by-value non-structural formal");
+            }
             if (structural && type.isOmittableFormal()) {
                 throw new IllegalArgumentException(
                         "structural borrowed formal cannot be an optional T? slot");
