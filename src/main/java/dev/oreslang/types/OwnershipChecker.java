@@ -1480,9 +1480,10 @@ public final class OwnershipChecker {
                             new LinkedHashSet<>());
             if (resolved != null) {
                 Ast.MethodDecl method = resolved.method();
-                String targetName = resolved.owner().name() + "." + method.name();
+                String targetName = method.name();
+                String targetLabel = resolved.owner().name() + "." + method.name();
                 requireStagedTarget(proof, "method", targetName);
-                proof.requireFormalNames(method.parameters(), "method " + targetName);
+                proof.requireFormalNames(method.parameters(), "method " + targetLabel);
                 if (!method.genericParameters().isEmpty()) {
                     throw error(
                             "generic method required named call reached ownership before generic lowering");
@@ -1516,7 +1517,7 @@ public final class OwnershipChecker {
                     receiverReadReservations.merge(root, 1, Integer::sum);
                     try {
                         checkStagedArguments(
-                                call, proof, params, scope, "method " + targetName);
+                                call, proof, params, scope, "method " + targetLabel);
                     } finally {
                         int left = receiverReadReservations.get(root) - 1;
                         if (left == 0) receiverReadReservations.remove(root);
@@ -1533,12 +1534,12 @@ public final class OwnershipChecker {
                     VarState root = ownershipRoot(receiver);
                     if (receiverReadReservations.containsKey(root)) {
                         checkStagedArguments(
-                                call, proof, params, scope, "method " + targetName);
+                                call, proof, params, scope, "method " + targetLabel);
                     } else {
                         beginPersistentBorrow(receiver, false);
                         try {
                             checkStagedArguments(
-                                    call, proof, params, scope, "method " + targetName);
+                                    call, proof, params, scope, "method " + targetLabel);
                         } finally {
                             if (root.immutableBorrows <= 0) {
                                 throw new IllegalStateException(
@@ -1549,7 +1550,7 @@ public final class OwnershipChecker {
                     }
                 } else {
                     checkStagedArguments(
-                            call, proof, params, scope, "method " + targetName);
+                            call, proof, params, scope, "method " + targetLabel);
                 }
 
                 Ast.TypeRef result = resultType.name().equals("self")
