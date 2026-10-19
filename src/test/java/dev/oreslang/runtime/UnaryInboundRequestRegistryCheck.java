@@ -53,23 +53,29 @@ public final class UnaryInboundRequestRegistryCheck {
         catch (IllegalStateException expected) { }
     }
 
-    private static void capacityDoesNotConsumeId() {
+    private static void capacityRejectionConsumesId() {
         var ledger = new UnaryInboundRequestRegistry(201, 1, 1, 2);
         check(ledger.admit(201, 1, 1, 2), "fills admission");
         check(!ledger.admit(201, 1, 2, 0), "count capacity rejects without admission");
-        check(ledger.highWaterRequestId() == 1,
-                "rejected capacity request must not advance replay high-water mark");
+        check(ledger.highWaterRequestId() == 2,
+                "terminal capacity rejection must consume replay high-water mark");
         check(ledger.complete(201, 1, 1), "release first");
-        check(ledger.admit(201, 1, 2, 0), "same candidate ID can retry after backpressure");
+        try { ledger.admit(201, 1, 2, 0);
+              throw new AssertionError("capacity-rejected peer ID was replayed"); }
+        catch (SecurityException expected) { }
+        check(ledger.admit(201, 1, 3, 0), "retry must use a fresh peer request ID");
         ledger.close();
 
         var bytes = new UnaryInboundRequestRegistry(202, 1, 2, 2);
         check(bytes.admit(202, 1, 1, 2), "fills byte budget");
         check(!bytes.admit(202, 1, 2, 1), "byte capacity rejects");
-        check(bytes.highWaterRequestId() == 1,
-                "byte-rejected request must not advance replay high-water mark");
+        check(bytes.highWaterRequestId() == 2,
+                "byte-rejected request must consume replay high-water mark");
         check(bytes.complete(202, 1, 1), "release byte budget");
-        check(bytes.admit(202, 1, 2, 1), "retry succeeds");
+        try { bytes.admit(202, 1, 2, 1);
+              throw new AssertionError("byte-rejected peer ID was replayed"); }
+        catch (SecurityException expected) { }
+        check(bytes.admit(202, 1, 3, 1), "fresh retry succeeds");
         bytes.close();
     }
 
@@ -114,7 +120,7 @@ public final class UnaryInboundRequestRegistryCheck {
 
     public static void main(String[] args) throws Exception {
         basic();
-        capacityDoesNotConsumeId();
+        capacityRejectionConsumesId();
         terminalRaces();
         System.out.println("PASS: inbound monotonic replay fencing and 1000 close/complete/cancel races");
     }
