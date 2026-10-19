@@ -13,7 +13,7 @@ final class SendSyncContractsTest {
     private static final SendSyncContracts.NominalProof NONE = (type, marker) -> false;
 
     @Test void primitiveAndStructuralValuesAreSendAndSync() {
-        var particle = new Record(Map.of(
+        var particle = new Types.Record(Map.of(
                 "x", Primitive.FLOAT, "velocity", new ListType(Primitive.FLOAT)));
         assertTrue(SendSyncContracts.isSend(particle, NONE));
         assertTrue(SendSyncContracts.isSync(particle, NONE));
