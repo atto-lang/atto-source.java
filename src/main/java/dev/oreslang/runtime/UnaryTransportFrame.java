@@ -47,6 +47,7 @@ final class UnaryTransportFrame {
             payload = payload.clone();
         }
         @Override public byte[] payload() { return payload.clone(); }
+        int payloadLength() { return payload.length; }
     }
 
     private UnaryTransportFrame() { }
@@ -109,12 +110,21 @@ final class UnaryTransportFrame {
     }
 
     static Envelope readTcp(InputStream input) throws IOException {
+        return readTcp(input, MAX_PAYLOAD_BYTES);
+    }
+
+    /**
+     * Reads one TCP unary frame with a peer/session payload budget.
+     * The length is rejected before payload allocation or payload reads.
+     */
+    static Envelope readTcp(InputStream input, int maxPayloadBytes) throws IOException {
         Objects.requireNonNull(input, "input");
+        checkBudget(maxPayloadBytes);
         DataInputStream reader = new DataInputStream(input);
         int length = reader.readInt(); // EOF is a transport terminal, not an empty request.
-        if (length < ENVELOPE_BYTES || length > MAX_ENVELOPE_BYTES)
-            throw new IOException("invalid TCP unary frame length");
-        byte[] payload = new byte[length]; // Bound length BEFORE allocation.
+        if (length < ENVELOPE_BYTES || length > ENVELOPE_BYTES + maxPayloadBytes)
+            throw new IOException("TCP unary frame exceeds request byte limit");
+        byte[] payload = new byte[length]; // Peer budget checked BEFORE allocation.
         try { reader.readFully(payload); }
         catch (EOFException incomplete) { throw new EOFException("truncated TCP unary frame"); }
         return parse(payload);
