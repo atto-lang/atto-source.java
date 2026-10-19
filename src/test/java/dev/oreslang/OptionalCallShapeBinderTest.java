@@ -134,6 +134,27 @@ final class OptionalCallShapeBinderTest {
     }
 
     @Test
+    void reconstructedRestTailCannotFollowImplicitOrTrailingOmission() {
+        // To reach positional rest elements, every fixed formal must have
+        // consumed a source call item, including explicit '_' omissions.
+        assertThrows(IllegalArgumentException.class,
+                () -> new Plan(List.of(-1, -1), 1, List.of(0),
+                        List.of(), List.of(0)));
+        // Claiming that an explicit omit occurred *after* a rest item
+        // violates call grammar even if dense evaluated indexes look valid.
+        assertThrows(IllegalArgumentException.class,
+                () -> new Plan(List.of(-1, -1), 1, List.of(0),
+                        List.of(0), List.of(0)));
+
+        // The same fixed omission, placed before the first rest element,
+        // preserves both raw and dense indexes.
+        Plan valid = new Plan(List.of(-1, -1), 1, List.of(0),
+                List.of(0), List.of(1));
+        assertEquals(List.of(0), valid.omittedCallItemIndices());
+        assertEquals(List.of(1), valid.callItemIndexByEvaluatedSource());
+    }
+
+    @Test
     void ordinaryBinderPreservesVariadicElementSequenceAfterOptionalOmission() {
         List<Parameter> params = List.of(
                 Parameter.required("a"), Parameter.optional("b"),
