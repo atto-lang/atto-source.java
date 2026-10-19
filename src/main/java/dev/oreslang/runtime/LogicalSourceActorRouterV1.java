@@ -1472,33 +1472,29 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         synchronized (closeLock) {
             final Route route;
             synchronized (routeLock) {
-                if (!closed) {
-                    awaitUpgradeLocked();
-                    closed = true;
-                    routeLock.notifyAll();
-                } else if (activeRouteLeaseReleased
+                if (!closed) awaitUpgradeLocked();
+                if (closed && activeRouteLeaseReleased
                         && retiredRoutes.isEmpty()
                         && retiredCandidates.isEmpty()) {
                     return;
                 }
                 route = active;
+                // Reserve the active route's retirement owner BEFORE sealing
+                // logical admission or calling stop(). List growth can throw
+                // OOME. An allocation failure here leaves the router open and
+                // its physical actor/pin unchanged, so cleanup is retryable.
+                if (!activeRouteLeaseReleased && !retiredRoutes.contains(route))
+                    retiredRoutes.add(route);
+                if (!closed) {
+                    closed = true;
+                    routeLock.notifyAll();
+                }
             }
 
-            // ActorRuntime.stop() has a bounded host wait and can throw after
-            // requesting stop. The generation must remain pinned even when
-            // that wait times out. Record it before propagating the failure,
-            // rather than leaving a sealed, unreapable logical router.
-            try {
-                route.physical.stop();
-            } catch (RuntimeException | Error stopFailure) {
-                synchronized (routeLock) {
-                    if (!activeRouteLeaseReleased
-                            && !retiredRoutes.contains(route)) {
-                        retiredRoutes.add(route);
-                    }
-                }
-                throw stopFailure;
-            }
+            // Physical stop may throw after a partial shutdown. Retirement
+            // ownership already exists; no allocation or registration is
+            // needed in the error path. Never silently release this pin.
+            route.physical.stop();
 
             boolean interrupted = false;
             boolean activeTerminated = false;
@@ -1545,12 +1541,18 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             synchronized (routeLock) {
                 reapRetiredLocked();
                 if (activeTerminated && !activeRouteLeaseReleased) {
+                    // A termination wait is NOT by itself permission to
+                    // unload code. Match the source upgrade and reaper's
+                    // independent physical-finalization check before debit.
+                    if (!route.view.runtime().physicallyFinalizedForHotUpgrade(
+                            route.physical)) {
+                        throw new IllegalStateException(
+                                "logical actor terminated without verified "
+                                        + "physical finalization; generation stays pinned");
+                    }
                     route.generationLease.close();
                     activeRouteLeaseReleased = true;
                     retiredRoutes.remove(route);
-                } else if (!activeTerminated && !activeRouteLeaseReleased
-                        && !retiredRoutes.contains(route)) {
-                    retiredRoutes.add(route);
                 }
                 if (interrupted) Thread.currentThread().interrupt();
                 if (!activeTerminated
