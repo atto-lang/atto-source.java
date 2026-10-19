@@ -65,6 +65,21 @@ final class LogicalSourceActorRetiredLeaseRecoveryTest {
                                     () -> router.upgradeTo(newGeneration, WAIT));
                     assertTrue(failure.getMessage().contains("route-pin underflow"),
                             "inject the known post-publication release fault");
+                    // After an irreversible publication, the old generation
+                    // has NOT been retired successfully. The new route may
+                    // be observed for diagnosis, but neither further
+                    // upgrades nor physical admissions may proceed.
+                    Field quarantine = LogicalSourceActorRouterV1.class
+                            .getDeclaredField("retirementQuarantined");
+                    quarantine.setAccessible(true);
+                    assertTrue(quarantine.getBoolean(router),
+                            "postcommit lease failure must quarantine route admission");
+                    assertThrows(IllegalStateException.class,
+                            () -> router.upgradeTo(newGeneration, WAIT),
+                            "quarantined supervisor must refuse a second upgrade");
+                    assertThrows(IllegalStateException.class,
+                            () -> router.ref().send(4L),
+                            "new physical delivery must not bypass pending retirement");
                 } finally {
                     // Restore the damaged lease accounting before invoking
                     // any route observation that may opportunistically reap.
@@ -73,6 +88,11 @@ final class LogicalSourceActorRetiredLeaseRecoveryTest {
 
                 assertEquals(1, router.reapRetired(),
                         "published old route must remain discoverable and retryable");
+                Field quarantineAfterReap = LogicalSourceActorRouterV1.class
+                        .getDeclaredField("retirementQuarantined");
+                quarantineAfterReap.setAccessible(true);
+                assertFalse(quarantineAfterReap.getBoolean(router),
+                        "verified retirement and lease debit must clear quarantine");
                 assertEquals(0, pins.getInt(oldGeneration),
                         "the recovered retirement must debit the old pin once");
                 assertEquals(2L, router.ref().routeEpoch(),
@@ -82,6 +102,63 @@ final class LogicalSourceActorRetiredLeaseRecoveryTest {
             }
         }
     }
+    @Test
+    void pendingRetiredPhysicalActorFencesSendsOutputsTasksAndUpgrade()
+            throws Exception {
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration(
+                    "retired-quarantine-pending.ores", SOURCE);
+            var second = manager.stageActorGeneration(
+                    "retired-quarantine-candidate.ores",
+                    SOURCE.replace(
+                            "self.count = self.count + mail.value;",
+                            "self.count = self.count + mail.value + 1;"));
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                    first, ActorRuntime.ActorKind.SHARED, "Counter", WAIT)) {
+                Field active = LogicalSourceActorRouterV1.class
+                        .getDeclaredField("active");
+                Field retired = LogicalSourceActorRouterV1.class
+                        .getDeclaredField("retiredRoutes");
+                Field quarantine = LogicalSourceActorRouterV1.class
+                        .getDeclaredField("retirementQuarantined");
+                active.setAccessible(true);
+                retired.setAccessible(true);
+                quarantine.setAccessible(true);
+
+                // Test-only synthetic pending retirement: leave this live
+                // physical actor and its generation pin untouched. This
+                // injects the post-publication *fence state*, not an upgrade
+                // transaction; the real postcommit path is tested above.
+                Object stillExecuting = active.get(router);
+                @SuppressWarnings("unchecked")
+                var owners = (List<Object>) retired.get(router);
+                owners.add(stillExecuting);
+                quarantine.setBoolean(router, true);
+                try {
+                    assertEquals(0, router.reapRetired(),
+                            "a live actor is not physical finalization");
+                    assertTrue(quarantine.getBoolean(router));
+                    assertThrows(IllegalStateException.class,
+                            () -> router.ref().send(10L));
+                    assertThrows(IllegalStateException.class,
+                            () -> router.ref().nextOutput(WAIT));
+                    assertThrows(IllegalStateException.class,
+                            () -> router.upgradeTo(second, WAIT));
+                    assertEquals(1, owners.size(),
+                            "failed admission must retain retirement ownership");
+                } finally {
+                    // Restore synthetic test ownership before try-with-resources
+                    // invokes real actor stop / generation-pin retirement.
+                    owners.remove(stillExecuting);
+                    quarantine.setBoolean(router, false);
+                }
+                assertDoesNotThrow(() -> router.ref().send(10L),
+                        "restored live source actor may accept work");
+            }
+        }
+    }
+
     @Test
     void retirementReservationOomeCannotPublishRouteOrMailbox()
             throws Exception {
