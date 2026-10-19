@@ -144,7 +144,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     "require_code_owner_reviews": True,
                     "dismiss_stale_reviews": True,
                     "bypass_pull_request_allowances": {}}
-        if route == pub.at_ref(pub.CODEOWNERS_ROUTE, A):
+        if (route.startswith(pub.CODEOWNERS_ROUTE + "?ref=")
+                and pub.SHA.fullmatch(route.removeprefix(pub.CODEOWNERS_ROUTE + "?ref="))):
             raw = self.codeowners_text.encode("utf-8")
             blob_sha = hashlib.sha1(
                 b"blob " + str(len(raw)).encode("ascii")
@@ -153,15 +154,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return {"type": "file", "encoding": "base64", "size": len(raw),
                     "sha": self.codeowners_fake_sha or blob_sha,
                     "content": base64.b64encode(raw).decode("ascii")}
-        if route == pub.at_ref(pub.CODEOWNERS_ERRORS_ROUTE, A):
+        if (route.startswith(pub.CODEOWNERS_ERRORS_ROUTE + "?ref=")
+                and pub.SHA.fullmatch(route.removeprefix(pub.CODEOWNERS_ERRORS_ROUTE + "?ref="))):
             return {"errors": self.codeowners_errors}
         if route == pub.CODEOWNER_PERMISSION_ROUTE:
             return {"permission": self.codeowner_permission,
                     "user": {"login": self.codeowner_login,
                              "type": self.codeowner_type}}
-        if route == pub.at_ref(pub.PROTECTED_POLICY_ROUTE, A):
+        if (route.startswith(pub.PROTECTED_POLICY_ROUTE + "?ref=")
+                and pub.SHA.fullmatch(route.removeprefix(pub.PROTECTED_POLICY_ROUTE + "?ref="))):
             return {"type": "file", "sha": self.protected_policy_sha}
-        if route == pub.at_ref(pub.REVIEWED_SNAPSHOTS_ROUTE, A):
+        if (route.startswith(pub.REVIEWED_SNAPSHOTS_ROUTE + "?ref=")
+                and pub.SHA.fullmatch(route.removeprefix(pub.REVIEWED_SNAPSHOTS_ROUTE + "?ref="))):
             raw = self.reviewed_snapshot.encode("utf-8")
             return {"type": "file", "encoding": "base64",
                     "size": len(raw), "sha": self.snapshot_sha,
