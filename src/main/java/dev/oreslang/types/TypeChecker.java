@@ -2664,9 +2664,10 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             factory.name() + "<T> requires owned data; borrowed values cannot become mutex state");
                 }
-                if (factory.name().equals("SharedMutex") && !isSharedSafe(element, new LinkedHashSet<>(), Map.of())) {
+                if (factory.name().equals("SharedMutex")
+                        && (!isSharedSafe(element, new LinkedHashSet<>(), Map.of()) || !isThreadSend(element))) {
                     throw new IllegalArgumentException(
-                            "SharedMutex<T> requires shared-safe owned data; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
+                            "SharedMutex<T> requires shared-safe, Send owned data; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
                 }
                 return new Named(factory.name(), List.of(element));
             }
@@ -4991,6 +4992,13 @@ public final class TypeChecker {
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
     }
 
+    /** A Send proof is necessary but not sufficient for an async/task boundary. */
+    private boolean isThreadSend(Type type) {
+        return ThreadSafetyTraits.has(type, ThreadSafetyTraits.Trait.SEND,
+                (nominal, trait) -> trait == ThreadSafetyTraits.Trait.SEND
+                        && isSharedSafe(nominal, new LinkedHashSet<>(), Map.of()));
+    }
+
     private void validateAsyncBoundaryType(
             Type type,
             boolean returnPosition,
@@ -5002,13 +5010,16 @@ public final class TypeChecker {
         // their stricter rule and continue to reject Channel<T> entirely.
         if (type instanceof Named named && named.name().equals("Channel")
                 && named.arguments().size() == 1
-                && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
+                && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())
+                && isThreadSend(named.arguments().getFirst())
+                && isThreadSend(type)) {
             return;
         }
         if (type == Primitive.VOID
-                || !isSharedSafe(type, new LinkedHashSet<>(), Map.of())) {
+                || !isSharedSafe(type, new LinkedHashSet<>(), Map.of())
+                || !isThreadSend(type)) {
             throw new IllegalArgumentException(
-                    where + " must be concrete owned task-safe data; borrows, futures, mutexes, functions, actor values, host capabilities, and unresolved generics cannot cross an async task boundary");
+                    where + " must be concrete owned Send task-safe data; borrows, futures, mutexes, functions, actor values, host capabilities, and unresolved generics cannot cross an async task boundary");
         }
     }
 
@@ -5062,15 +5073,33 @@ public final class TypeChecker {
                     where + " cannot use " + named.name()
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
         }
+        if (named.name().equals("ActorRef")) {
+            // ActorRef is a sealed, generation-bound routing capability, not
+            // an ordinary nominal object or an automatically Send/Sync value.
+            // Runtime transport enforces actor-runtime ownership and epoch.
+            // Only a concrete, declared actor target may be carried; nested
+            // mailbox payloads are checked by this method recursively.
+            actorClassForRef(named);
+            return;
+        }
         if (named.name().equals("SharedMutex")) {
             if (actorKind == Ast.ActorKind.PRIVATE || actorKind == Ast.ActorKind.UNTRUSTED) {
                 throw new IllegalArgumentException(
                         where + " cannot use SharedMutex<T> with isoactor/private actors");
             }
-            if (named.arguments().size() != 1
-                    || !isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
+            // A private/untrusted sender cannot grant a live shared-memory
+            // capability even when the destination actor is SHARED. Match
+            // ActorRuntime.requireMutexTransport's sender-domain check.
+            if (currentActorKind == Ast.ActorKind.PRIVATE
+                    || currentActorKind == Ast.ActorKind.UNTRUSTED) {
                 throw new IllegalArgumentException(
-                        where + " requires SharedMutex<T> to contain shared-safe owned data");
+                        where + " cannot send SharedMutex<T> from a private/untrusted actor");
+            }
+            if (named.arguments().size() != 1
+                    || !isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())
+                    || !isThreadSend(named.arguments().getFirst())) {
+                throw new IllegalArgumentException(
+                        where + " requires SharedMutex<T> to contain shared-safe, Send owned data");
             }
             return;
         }
@@ -5087,11 +5116,17 @@ public final class TypeChecker {
 
         Ast.ClassDecl klass = findClass(named.name());
         if (klass == null) {
-            // Runtime capability types (for example ActorId/ActorRef) are
-            // validated again by transport. Do not silently admit known
-            // mutable/suspending primitives above, but avoid rejecting opaque
-            // capability types solely because they have no source class body.
-            return;
+            // ActorId and ActorKind are compiler-defined scalar metadata with
+            // no guest-owned fields. Unknown nominal classes, host wrappers,
+            // pointers and arbitrary actor routing capabilities cannot acquire
+            // a mailbox transport contract simply by lacking a source class.
+            if (named.arguments().isEmpty()
+                    && (named.name().equals("ActorId") || named.name().equals("ActorKind"))) {
+                return;
+            }
+            throw new IllegalArgumentException(
+                    where + " cannot transport unknown nominal type '" + named.name()
+                            + "'; only compiler-recognized actor metadata and data-only values are supported");
         }
         if (klass.actorKind() != Ast.ActorKind.NONE) {
             throw new IllegalArgumentException(
@@ -5114,25 +5149,33 @@ public final class TypeChecker {
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
+        return isSharedSafe(type, seen, genericBindings, 0);
+    }
+
+    private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen,
+            Map<String, Type> genericBindings, int depth) {
+        // Bound recursive field, sum, collection and parent-graph walks.
+        // This protects callers that inspect shared-safety before Send.
+        if (depth > 256) return false;
         if (type == Unknown.INSTANCE || type instanceof SelfType || type instanceof Borrow
                 || type instanceof Function || type instanceof ClassNamespace) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
         if (type instanceof StringLiteral) return true;
         if (type instanceof Generic generic) {
             Type bound = genericBindings.get(generic.name());
-            return bound != null && bound != type && isSharedSafe(bound, seen, genericBindings);
+            return bound != null && bound != type && isSharedSafe(bound, seen, genericBindings, depth + 1);
         }
-        if (type instanceof ListType list) return isSharedSafe(list.element(), seen, genericBindings);
+        if (type instanceof ListType list) return isSharedSafe(list.element(), seen, genericBindings, depth + 1);
         if (type instanceof Union union) {
-            for (Type option : union.options()) if (!isSharedSafe(option, seen, genericBindings)) return false;
+            for (Type option : union.options()) if (!isSharedSafe(option, seen, genericBindings, depth + 1)) return false;
             return true;
         }
         if (type instanceof Tuple tuple) {
-            for (Type element : tuple.elements()) if (!isSharedSafe(element, seen, genericBindings)) return false;
+            for (Type element : tuple.elements()) if (!isSharedSafe(element, seen, genericBindings, depth + 1)) return false;
             return true;
         }
         if (type instanceof Record record) {
-            for (Type member : record.members().values()) if (!isSharedSafe(member, seen, genericBindings)) return false;
+            for (Type member : record.members().values()) if (!isSharedSafe(member, seen, genericBindings, depth + 1)) return false;
             return true;
         }
         if (!(type instanceof Named named)) return false;
@@ -5142,22 +5185,25 @@ public final class TypeChecker {
                 || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
-            return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
+            return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings, depth + 1);
         }
         if (named.name().equals("Result")) {
             return named.arguments().size() == 2
-                    && isSharedSafe(named.arguments().get(0), seen, genericBindings)
-                    && isSharedSafe(named.arguments().get(1), seen, genericBindings);
+                    && isSharedSafe(named.arguments().get(0), seen, genericBindings, depth + 1)
+                    && isSharedSafe(named.arguments().get(1), seen, genericBindings, depth + 1);
         }
 
         for (Type argument : named.arguments()) {
-            if (!isSharedSafe(argument, seen, genericBindings)) return false;
+            if (!isSharedSafe(argument, seen, genericBindings, depth + 1)) return false;
         }
 
         Ast.ClassDecl klass = findClass(named.name());
         if (klass == null) return false;
         if (klass.actorKind() != Ast.ActorKind.NONE) return false;
-        if (!seen.add(klass)) return true;
+        // A repeated nominal class is not an established Send/Sync proof.
+        // Reject until a separate cycle-aware, instantiated fixed-point
+        // analysis can establish all recursive storage and aliasing edges.
+        if (!seen.add(klass)) return false;
 
         try {
             Map<String, Type> classBindings = new HashMap<>(genericBindings);
@@ -5177,7 +5223,7 @@ public final class TypeChecker {
                 Type fieldType = resolveSharedGeneric(
                         resolve(field.type(), classGenerics, nominal),
                         classBindings);
-                if (!isSharedSafe(fieldType, seen, classBindings)) return false;
+                if (!isSharedSafe(fieldType, seen, classBindings, depth + 1)) return false;
             }
 
             // Recurse into each parent after substituting the child's generic
@@ -5185,7 +5231,7 @@ public final class TypeChecker {
             for (Ast.TypeRef parentRef : klass.parents()) {
                 if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
                 Type parentType = resolveSharedGeneric(resolve(parentRef, classGenerics, nominal), classBindings);
-                if (!isSharedSafe(parentType, seen, classBindings)) return false;
+                if (!isSharedSafe(parentType, seen, classBindings, depth + 1)) return false;
             }
 
             return true;
@@ -8201,9 +8247,9 @@ public final class TypeChecker {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("SharedMutex requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
                 if (element == Primitive.VOID) throw new IllegalArgumentException("SharedMutex<void> is invalid");
-                if (!isSharedSafe(element, new LinkedHashSet<>(), Map.of())) {
+                if (!isSharedSafe(element, new LinkedHashSet<>(), Map.of()) || !isThreadSend(element)) {
                     throw new IllegalArgumentException(
-                            "SharedMutex<T> requires a concrete shared-safe type; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
+                            "SharedMutex<T> requires a concrete shared-safe, Send type; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
                 }
                 yield new Named("SharedMutex", List.of(element));
             }
