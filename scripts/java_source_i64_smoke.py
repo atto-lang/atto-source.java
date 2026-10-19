@@ -85,7 +85,7 @@ def main():
             neg=run([sys.executable,str(probe),str(source)])
             diagnostics=neg.stderr.decode("utf-8","replace")
             require(neg.returncode==1 and not neg.stdout and
-                    re.search(r"\\b(error|invalid|unsupported|overflow|out of range|type mismatch|cannot|failed)\\b",
+                    re.search(r"\b(error|invalid|unsupported|overflow|out of range|type mismatch|cannot|failed)\b",
                               diagnostics,re.IGNORECASE) is not None and
                     re.search(r"Traceback|NoClassDefFoundError|ClassNotFoundException|OutOfMemoryError",
                               diagnostics,re.IGNORECASE) is None,
