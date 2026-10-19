@@ -80,15 +80,31 @@ final class ActorPhysicalTurnGate {
             try {
                 Pending accepted = item;
                 item.submit.accept(() -> {
+                    boolean cancelledOnClose;
                     synchronized (accepted) {
                         if (accepted.claim != 0) {
-                            // The executor threw after enqueueing us. Its
-                            // rejection has already relinquished admission;
-                            // a late callback must not enter actor code or
-                            // release the transferred permit a second time.
+                            // A submitter rejected this runnable after enqueueing.
+                            // The rejection already transferred its permit.
                             return;
                         }
-                        accepted.claim = 1;
+                        // Serialize the decision to BEGIN a guest turn with
+                        // close(). A dispatch handed to a stalled executor
+                        // must not start guest code after the gate has closed.
+                        synchronized (ActorPhysicalTurnGate.this) {
+                            cancelledOnClose = closed;
+                            accepted.claim = cancelledOnClose ? 2 : 1;
+                        }
+                    }
+                    if (cancelledOnClose) {
+                        try {
+                            accepted.reject.accept(new RejectedExecutionException(
+                                    "actor turn gate closed before dispatch started"));
+                        } catch (Throwable ignored) {
+                            // Revocation must not strand the transferred permit.
+                        } finally {
+                            release();
+                        }
+                        return;
                     }
                     try {
                         accepted.task.run();
