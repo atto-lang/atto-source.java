@@ -4,6 +4,7 @@ import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -29,8 +30,12 @@ final class SealedActorMlScalarPublicationTest {
                     // Real host scalar forward/backward: y = w * x,
                     // loss = (y - target)^2, dLoss/dWeight = 2*x*(y-target).
                     // Compute all numerical operations AFTER releasing READ loan.
-                    long w = state.critical(false, read ->
-                            ((Number) read.read("weight")).longValue());
+                    var inputRevision = new AtomicLong(-1);
+                    long w = state.critical(false, read -> {
+                        inputRevision.set(read.revision());
+                        return ((Number) read.read("weight")).longValue();
+                    });
+                    assertEquals(0L, inputRevision.get());
                     long x = 2, target = 8, learningRateDenominator = 8;
                     long prediction = Math.multiplyExact(w, x);
                     long gradient = Math.multiplyExact(
@@ -40,19 +45,19 @@ final class SealedActorMlScalarPublicationTest {
                             w, gradient / learningRateDenominator);
                     assertEquals(4L, nextWeight);
                     // Candidate computation/staging occurs with no loan.
-                    var first = state.prepareScalarPublication("version", 1,
+                    var first = state.prepareScalarPublication("version", 1, inputRevision.get(),
                             Map.of("version", 2L, "weight", nextWeight, "optimizer", 1L));
                     assertThrows(IllegalStateException.class,
                             () -> state.critical(false, read -> {
-                                state.prepareScalarPublication("version", 1,
+                                state.prepareScalarPublication("version", 1, 0,
                                         Map.of("version", 2L));
                                 return null;
                             }));
                     assertThrows(IllegalArgumentException.class,
-                            () -> state.prepareScalarPublication("version", 1,
+                            () -> state.prepareScalarPublication("version", 1, 0,
                                     Map.of("version", 3L, "weight", 4L)));
                     assertThrows(IllegalArgumentException.class,
-                            () -> state.prepareScalarPublication("version", 1,
+                            () -> state.prepareScalarPublication("version", 1, 0,
                                     Map.of("version", 2L, "weight", "bad")));
 
                     state.critical(false, read -> {
@@ -73,7 +78,7 @@ final class SealedActorMlScalarPublicationTest {
                     assertThrows(SecurityException.class,
                             () -> state.critical(true, write -> write.publishScalars(first)));
 
-                    var invalidPublish = state.prepareScalarPublication("version", 2,
+                    var invalidPublish = state.prepareScalarPublication("version", 2, 1,
                             Map.of("version", 3L, "weight", 3L,
                                    "name", "x".repeat(64 * 1024 + 1)));
                     assertThrows(IllegalArgumentException.class,
@@ -86,7 +91,7 @@ final class SealedActorMlScalarPublicationTest {
                         return null;
                     });
 
-                    var stale = state.prepareScalarPublication("version", 2,
+                    var stale = state.prepareScalarPublication("version", 2, 1,
                             Map.of("version", 3L, "weight", 3L, "optimizer", 2L));
                     state.critical(true, write -> {
                         write.write("weight", 77L);  // bumps mutation revision
@@ -101,13 +106,13 @@ final class SealedActorMlScalarPublicationTest {
                         return null;
                     });
 
-                    var retry = state.prepareScalarPublication("version", 2,
+                    var retry = state.prepareScalarPublication("version", 2, 2,
                             Map.of("version", 3L, "weight", 3L, "optimizer", 2L));
                     // Different issuer, even if it has same logical ActorId.
                     var other = new SealedActorState(context.self().id(),
                             Map.of("version", "int", "weight", "int"),
                             Map.of("version", 2L, "weight", 99L));
-                    var foreign = other.prepareScalarPublication("version", 2,
+                    var foreign = other.prepareScalarPublication("version", 2, 0,
                             Map.of("version", 3L, "weight", 98L));
                     assertThrows(SecurityException.class,
                             () -> state.critical(true, write -> write.publishScalars(foreign)));
@@ -115,7 +120,7 @@ final class SealedActorMlScalarPublicationTest {
                     assertEquals(3L, state.critical(false, read -> read.read("version")));
                     assertEquals(3L, state.critical(false, read -> read.read("weight")));
                     assertThrows(IllegalArgumentException.class,
-                            () -> state.prepareScalarPublication("version", Long.MAX_VALUE,
+                            () -> state.prepareScalarPublication("version", Long.MAX_VALUE, 2,
                                     Map.of("version", 1L)));
                     other.retireFromRuntime(context.self().id());
                     state.retireFromRuntime(context.self().id());
