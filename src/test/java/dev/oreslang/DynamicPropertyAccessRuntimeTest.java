@@ -15,6 +15,42 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /** Guest runtime coverage for computed fixed-product property/index reads and writes. */
 final class DynamicPropertyAccessRuntimeTest {
     @Test
+    void awaitedDynamicStructKeyUsesSuspendableComputedWritePath() {
+        String source = """
+                async fnc select_key(): string {
+                    return "x";
+                }
+
+                pub async fnc main(): void {
+                    const Vec2 seed = infer<Vec2> struct{x: 1, y: 2};
+                    val Vec2 current = infer struct{x: 3, y: 4};
+                    current[await select_key()] = 9;
+                    stdio.println(current["x"]);
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(OresLanguage.ID, source, "dynamic-property-awaited-write.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(output)
+                    .build()) {
+                context.eval(program);
+            }
+        });
+
+        String text = output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
+        assertEquals("9\n", text);
+    }
+
+    @Test
     void dynamicAggregateAndClassIndexingExecutesWithCheckedSemantics() {
         String source = """
                 define class Point as
