@@ -94,7 +94,7 @@ class PrivateCiGitTreeTest(unittest.TestCase):
                     root, SOURCE_COMMIT)
         self.assertEqual(SOURCE_TREE, tree)
         self.assertEqual(
-            [(path, mode, data) for path, data, mode, _ in entries],
+            [(path, data, mode) for path, data, mode, _ in entries],
             [
                 ("README.md", b"hello\n", "100644"),
                 ("scripts/run.sh", b"#!/bin/sh\nexit 0\n", "100755"),
