@@ -185,6 +185,11 @@ final class TaskAccessVerifier {
     }
 
     public static boolean conflicts(Claim a, Claim b) {
+        Objects.requireNonNull(a, "first claim");
+        Objects.requireNonNull(b, "second claim");
+        // A read/read pair is compatible only *within* one admitted domain.
+        // Do not let a direct caller of conflicts() bypass scope admission.
+        if (!a.place().root().domain().equals(b.place().root().domain())) return true;
         return (a.mode() == Mode.WRITE || b.mode() == Mode.WRITE)
                 && mayAlias(a.place(), b.place());
     }
