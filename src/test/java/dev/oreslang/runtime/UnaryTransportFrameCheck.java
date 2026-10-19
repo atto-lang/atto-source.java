@@ -1,8 +1,8 @@
 package dev.oreslang.runtime;
 
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -34,6 +34,25 @@ public final class UnaryTransportFrameCheck {
         catch (IOException expected) { }
     }
 
+    private static final class PrefixOnlyInputStream extends InputStream {
+        private final byte[] prefix;
+        private int index;
+        private boolean payloadReadAttempted;
+
+        PrefixOnlyInputStream(int announcedEnvelopeBytes) {
+            prefix = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN)
+                    .putInt(announcedEnvelopeBytes).array();
+        }
+
+        @Override public int read() {
+            if (index < prefix.length) return Byte.toUnsignedInt(prefix[index++]);
+            payloadReadAttempted = true;
+            throw new AssertionError("oversized TCP payload was read after prefix rejection point");
+        }
+
+        boolean payloadReadAttempted() { return payloadReadAttempted; }
+    }
+
     private static void framing() throws Exception {
         byte[] input = "hello".getBytes(StandardCharsets.UTF_8);
         var request = new UnaryTransportFrame.Envelope(UnaryTransportFrame.Kind.REQUEST, 5, 7, 81, input);
@@ -41,6 +60,8 @@ public final class UnaryTransportFrameCheck {
         check(new String(request.payload(), StandardCharsets.UTF_8).equals("hello"), "input must be copied");
         byte[] leaked = request.payload(); leaked[1] = 'X';
         check(new String(request.payload(), StandardCharsets.UTF_8).equals("hello"), "getter must copy");
+        check(request.payloadLength() == 5, "payload length must not require exposing payload storage");
+
         byte[] wire = UnaryTransportFrame.encodeTcp(request);
         check(ByteBuffer.wrap(wire).getInt() == wire.length - 4, "TCP length prefix");
         var decoded = UnaryTransportFrame.readTcp(new ByteArrayInputStream(wire));
@@ -56,12 +77,14 @@ public final class UnaryTransportFrameCheck {
         }
         invalidTcp(Arrays.copyOf(wire, wire.length - 1));
         invalidTcp(new byte[] { 0, 0 });
+
         byte[] wsBad = UnaryTransportFrame.encodeWebSocketBinary(request);
         wsBad[0] = 2; invalidWs(wsBad);
         wsBad[0] = 1; wsBad[1] = 99; invalidWs(wsBad);
         wsBad[1] = 1; Arrays.fill(wsBad, 2, 10, (byte) 0); invalidWs(wsBad);
         byte[] badCancel = UnaryTransportFrame.encodeWebSocketBinary(request);
         badCancel[1] = 4; invalidWs(badCancel); // CANCEL may not carry the original payload.
+
         try { new UnaryTransportFrame.Envelope(UnaryTransportFrame.Kind.REQUEST, 1, 1, 1,
                     new byte[UnaryTransportFrame.MAX_PAYLOAD_BYTES + 1]);
               throw new AssertionError("oversized payload accepted"); }
@@ -74,6 +97,47 @@ public final class UnaryTransportFrameCheck {
         try { new UnaryTransportFrame.Envelope(UnaryTransportFrame.Kind.REQUEST, 1, 0, 1, new byte[0]);
               throw new AssertionError("zero generation accepted"); }
         catch (IllegalArgumentException expected) { }
+    }
+
+    private static void peerBudgets() throws Exception {
+        var fiveBytes = new UnaryTransportFrame.Envelope(
+                UnaryTransportFrame.Kind.REQUEST, 17, 2, 1, new byte[] {1, 2, 3, 4, 5});
+        byte[] tcp = UnaryTransportFrame.encodeTcp(fiveBytes);
+        check(UnaryTransportFrame.readTcp(new ByteArrayInputStream(tcp), 5).payloadLength() == 5,
+                "TCP peer budget accepts exact payload limit");
+        try { UnaryTransportFrame.readTcp(new ByteArrayInputStream(tcp), 4);
+              throw new AssertionError("TCP peer budget accepted oversized payload"); }
+        catch (IOException expected) { }
+
+        var empty = new UnaryTransportFrame.Envelope(
+                UnaryTransportFrame.Kind.REQUEST, 17, 2, 2, new byte[0]);
+        check(UnaryTransportFrame.readTcp(
+                new ByteArrayInputStream(UnaryTransportFrame.encodeTcp(empty)), 0).payloadLength() == 0,
+                "zero TCP peer budget must allow empty payloads");
+        try { UnaryTransportFrame.readTcp(new ByteArrayInputStream(tcp), -1);
+              throw new AssertionError("negative TCP peer budget accepted"); }
+        catch (IllegalArgumentException expected) { }
+        try { UnaryTransportFrame.readTcp(new ByteArrayInputStream(tcp),
+                    UnaryTransportFrame.MAX_PAYLOAD_BYTES + 1);
+              throw new AssertionError("oversized TCP peer budget accepted"); }
+        catch (IllegalArgumentException expected) { }
+
+        var prefixOnly = new PrefixOnlyInputStream(UnaryTransportFrame.ENVELOPE_BYTES + 6);
+        try { UnaryTransportFrame.readTcp(prefixOnly, 5);
+              throw new AssertionError("over-budget TCP prefix accepted"); }
+        catch (IOException expected) { }
+        check(!prefixOnly.payloadReadAttempted(),
+                "TCP peer limit must reject after prefix and before reading payload bytes");
+
+        byte[] ws = UnaryTransportFrame.encodeWebSocketBinary(fiveBytes);
+        check(UnaryTransportFrame.decodeWebSocketBinary(ws, 5).payloadLength() == 5,
+                "WebSocket peer budget accepts exact payload limit");
+        try { UnaryTransportFrame.decodeWebSocketBinary(ws, 4);
+              throw new AssertionError("WebSocket peer budget accepted oversized payload"); }
+        catch (IOException expected) { }
+        check(UnaryTransportFrame.decodeWebSocketBinary(
+                UnaryTransportFrame.encodeWebSocketBinary(empty), 0).payloadLength() == 0,
+                "zero WebSocket peer budget must allow empty payloads");
     }
 
     private static void loopbackTcp() throws Exception {
@@ -157,7 +221,7 @@ public final class UnaryTransportFrameCheck {
     }
 
     public static void main(String[] args) throws Exception {
-        framing(); loopbackTcp(); exactlyOnce();
-        System.out.println("PASS: strict TCP/WS envelopes, split TCP loopback and 1000 cancel/reply races");
+        framing(); peerBudgets(); loopbackTcp(); exactlyOnce();
+        System.out.println("PASS: strict TCP/WS envelopes, peer byte budgets, split TCP loopback and 1000 cancel/reply races");
     }
 }
