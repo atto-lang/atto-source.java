@@ -297,6 +297,31 @@ public final class InvertedColumnStore implements AutoCloseable {
         for (int i = 0; i < kinds.length; i++) store(i, row, values[i]);
     }
 
+    /**
+     * Internal checked lowering hook for a compiler-verified pure row update.
+     * The callback sees a detached scalar snapshot, not the physical columns.
+     * Validation and commit occur under the same store lock so concurrent
+     * methods cannot lose updates or expose partially modified rows.
+     *
+     * Never pass arbitrary guest callbacks here: the compiler must first
+     * prove the generated transform is pure, bounded and non-suspending.
+     */
+    synchronized void transformRow(
+            Handle handle, java.util.function.UnaryOperator<Object[]> verifiedTransform) {
+        int row = resolve(handle);
+        unborrowed();
+        Objects.requireNonNull(verifiedTransform, "verified row transform");
+        Object[] snapshot = new Object[kinds.length];
+        for (int i = 0; i < snapshot.length; i++) snapshot[i] = load(i, row);
+        Object[] updated = verifiedTransform.apply(snapshot);
+        open();
+        if (updated == null || updated.length != kinds.length) {
+            throw new IllegalStateException("invalid compiler row transform result");
+        }
+        for (int i = 0; i < kinds.length; i++) validateValue(kinds[i], updated[i]);
+        for (int i = 0; i < kinds.length; i++) store(i, row, updated[i]);
+    }
+
     public synchronized ColumnLoan borrowRead(int field) {
         open();
         int i = column(field);
