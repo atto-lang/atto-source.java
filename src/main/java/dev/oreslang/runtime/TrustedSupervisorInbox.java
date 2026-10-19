@@ -47,7 +47,13 @@ final class TrustedSupervisorInbox implements AutoCloseable {
         long childId() { return sender.childId; }
         long incarnation() { return sender.incarnation; }
         long sequence() { return sequence; }
-        byte[] payloadCopy() { return payload.clone(); }
+        byte[] payloadCopy() {
+            synchronized (origin) {
+                if (!dispatched || !origin.unsettled.containsKey(this) || origin.closed)
+                    throw new IllegalStateException("delivery is not live");
+                return payload.clone();
+            }
+        }
     }
 
     private final int controlLimit;
