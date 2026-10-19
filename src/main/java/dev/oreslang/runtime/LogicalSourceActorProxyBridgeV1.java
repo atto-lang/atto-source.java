@@ -152,6 +152,17 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
                 throw new IllegalStateException(
                         "inconsistent code-image and proxy route publication");
             }
+            // Compiler-ABI-bound retained mail belongs to one nominal
+            // receive contract for the entire logical incarnation. The
+            // supervisor must not certify a successor whose linked message
+            // ABI has drifted even when route/mailbox epochs still agree.
+            if (!poisoned && scalarWireBinding != null
+                    && !scalarWireBinding.messageAbiSha256()
+                            .equals(witness.messageAbiSha256())) {
+                poisonAndSealAdmission();
+                throw new SecurityException(
+                        "compiler message ABI differs from immutable proxy binding");
+            }
             return new Publication(
                     witness.address(), witness.mailbox(),
                     witness.generationId(), witness.codeSha256(),
