@@ -3791,6 +3791,10 @@ public final class TypeChecker {
                 Ast.ClassDecl klass = findClass(named.name());
                 if (klass != null) {
                     requireAssignable(index, Primitive.STRING, "class field key");
+                    if (!klass.actorKind().equals(Ast.ActorKind.NONE)) {
+                        throw new IllegalArgumentException(
+                                "computed indexing requires an ordinary class instance");
+                    }
                     if (index instanceof StringLiteral key) {
                         ResolvedField field = findFieldTarget(
                                 klass, named, key.value(), new LinkedHashSet<>());
