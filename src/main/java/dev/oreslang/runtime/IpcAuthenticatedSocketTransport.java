@@ -95,11 +95,12 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
      */
     SendSubmission send(IpcReceiptCorrelation.Envelope message, byte[] payload) {
         Objects.requireNonNull(message, "message");
-        byte[] body = Objects.requireNonNull(payload, "payload").clone();
+        byte[] source = Objects.requireNonNull(payload, "payload");
         requireTrustedEpoch(message);
-        if (body.length > MAX_PAYLOAD_BYTES) {
+        if (source.length > MAX_PAYLOAD_BYTES) {
             throw new IllegalArgumentException("IPC payload too large");
         }
+        byte[] body = source.clone();
         String digest = sha256Hex(body);
         if (!digest.equals(message.payloadSha256())) {
             throw new IllegalArgumentException("IPC payload digest mismatch");
