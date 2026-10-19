@@ -3634,6 +3634,46 @@ public final class OwnershipChecker {
         return typeAliases.get(name);
     }
 
+    /**
+     * Normalize both tuple-literal types ($tuple$) and the public finite
+     * sequence spelling Tuple[T1, T2, ...] to one ownership shape. TypeChecker
+     * has already validated collection metadata and sequence-shape legality;
+     * ownership still must preserve the exact slots for copy-vs-move indexing.
+     */
+    private Ast.TypeRef indexedTupleType(Ast.TypeRef type) {
+        if (type.isTupleType()) return type;
+        if (!type.name().equals("Tuple")) return null;
+
+        Ast.TypeRef shape = null;
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (argument.isSequenceShape()) {
+                if (shape != null) return null;
+                shape = argument;
+            } else if (!argument.isNamedParameter()) {
+                // Legacy positional Tuple<T> is rejected by TypeChecker; keep
+                // ownership conservative if invoked independently.
+                return null;
+            }
+        }
+        if (shape == null) return null;
+
+        List<Ast.TypeRef> slots = new ArrayList<>();
+        for (Ast.TypeRef pattern : shape.arguments()) {
+            if (pattern.isRepeatMany()) return null;
+            if (pattern.isRepeatExact()) {
+                long count = pattern.repeatExactCount();
+                if (count > 1_000_000L || pattern.arguments().size() != 1) return null;
+                Ast.TypeRef repeated = pattern.arguments().getFirst();
+                if (repeated.isRepeatMany() || repeated.isRepeatExact()
+                        || repeated.isSequenceShape()) return null;
+                for (long i = 0; i < count; i++) slots.add(repeated);
+            } else {
+                slots.add(pattern);
+            }
+        }
+        return slots.isEmpty() ? null : Ast.TypeRef.tupleType(slots);
+    }
+
     private Ast.TypeRef indexedElementType(
             Ast.IndexExpr indexed, Ast.TypeRef receiverType, Scope scope) {
         if (receiverType == null) return Ast.TypeRef.inferred();
@@ -3651,13 +3691,14 @@ public final class OwnershipChecker {
             return Ast.TypeRef.union(new ArrayList<>(members.values()));
         }
 
-        if (concrete.isTupleType()) {
+        Ast.TypeRef tupleType = indexedTupleType(concrete);
+        if (tupleType != null) {
             Long raw = constantTupleIndex(indexed.index(), scope);
-            if (raw != null && raw >= 0 && raw < concrete.arguments().size()) {
-                return concrete.arguments().get(raw.intValue());
+            if (raw != null && raw >= 0 && raw < tupleType.arguments().size()) {
+                return tupleType.arguments().get(raw.intValue());
             }
-            if (concrete.arguments().isEmpty()) return Ast.TypeRef.inferred();
-            return Ast.TypeRef.union(concrete.arguments());
+            if (tupleType.arguments().isEmpty()) return Ast.TypeRef.inferred();
+            return Ast.TypeRef.union(tupleType.arguments());
         }
 
         if ((concrete.name().equals("Array") || concrete.name().equals("List"))
