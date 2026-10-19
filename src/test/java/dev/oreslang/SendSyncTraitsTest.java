@@ -30,6 +30,17 @@ final class SendSyncTraitsTest {
             assertTrue(SendSyncTraits.isSync(type, NO_NOMINAL), type.toString());
         }
         assertFalse(SendSyncTraits.isSend(Unknown.INSTANCE, NO_NOMINAL));
+        assertTrue(SendSyncTraits.isOwnedSend(ints, NO_NOMINAL));
+        assertFalse(SendSyncTraits.isOwnedSend(
+                new Borrow(Primitive.INT, false), NO_NOMINAL));
+        assertFalse(SendSyncTraits.isOwnedSend(
+                new Tuple(List.of(Primitive.INT, new Borrow(Primitive.INT, false))),
+                NO_NOMINAL));
+        assertFalse(SendSyncTraits.isOwnedSend(
+                named("Option", new Borrow(Primitive.INT, true)), NO_NOMINAL));
+        assertFalse(SendSyncTraits.isOwnedSend(
+                new Record(Map.of("loan", new Borrow(Primitive.INT, false))),
+                NO_NOMINAL));
         assertFalse(SendSyncTraits.isSync(named("UnverifiedClass"), NO_NOMINAL));
     }
 
@@ -99,7 +110,7 @@ final class SendSyncTraitsTest {
                         return 1;
                     }
                     """)));
-        assertTrue(future.getMessage().contains("not Send"), future.getMessage());
+        assertTrue(future.getMessage().contains("owned Send"), future.getMessage());
         var guard = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                     async fnc bad(Mutex<int> lock): int {
