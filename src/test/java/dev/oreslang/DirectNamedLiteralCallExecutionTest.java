@@ -1,0 +1,131 @@
+package dev.oreslang;
+
+import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.ExecutionProfile;
+import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * First executable named-value-argument subset. Only direct non-generic local
+ * functions/routines with a full set of primitive scalar literal arguments
+ * are enabled. Nothing here enables omission, Option<T>, defaults, dynamic
+ * argument evaluation, constructors or varargs.
+ */
+final class DirectNamedLiteralCallExecutionTest {
+
+    @Test
+    void directNamedLiteralCallUsesOrdinaryRuntimeAndStaticChecks() throws Exception {
+        String source = """
+                pub fnc pick(int a, string b, bool c): int {
+                    return a + (c ? 1 : 0);
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(pick(c: true, a: 3, b: "hi"));
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(pick(8, c: false, b: "there"));
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = IsolatePolicy.developer()
+                .restrictedContextBuilder(ExecutionProfile.serverJit()).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, "named-literal-v1.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("4:8", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void missingRequiredNamedSlotIsACompileTimeError() {
+        String source = """
+                pub fnc pick(int a, bool c): int { return a; }
+                pub routine main(): void {
+                    stdio.stdout.write(pick(a: 3));
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void unknownOrDuplicateLabelsAreRejected() {
+        for (String call : java.util.List.of("pick(x: 3, c: true)",
+                "pick(a: 3, a: 4, c: true)")) {
+            String source = """
+                    pub fnc pick(int a, bool c): int { return a; }
+                    pub routine main(): void {
+                        const int result = %s;
+                        return;
+                    }
+                    """.formatted(call);
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), call);
+        }
+    }
+
+    @Test
+    void effectfulNamedValueAndSuppliedNoneRemainDisabled() {
+        for (String argument : java.util.List.of("effect()", "None", "value")) {
+            String source = """
+                    pub fnc pick(int a): int { return a; }
+                    pub fnc effect(): int { return 7; }
+                    pub routine main(): void {
+                        const int value = 9;
+                        const int result = pick(a: %s);
+                        return;
+                    }
+                    """.formatted(argument);
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), argument);
+        }
+    }
+
+    @Test
+    void localShadowingCannotBeMistakenForResolvedCallable() {
+        String source = """
+                pub fnc pick(int a): int { return a; }
+                pub routine main(): void {
+                    const int pick = 9;
+                    const int value = pick(a: 3);
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void optionalFormalsAndNamedConstructorsRemainFailClosed() {
+        String optional = """
+                pub fnc pick(int a, string? b, bool c): int { return a; }
+                pub routine main(): void {
+                    const int value = pick(a: 3, c: true);
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(optional)));
+        String constructor = """
+                define class Box as
+                    val int value;
+                    constructor(int value) { self.value = value; }
+                end
+                pub routine main(): void {
+                    val box = new Box(value: 3);
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(constructor)));
+    }
+}
