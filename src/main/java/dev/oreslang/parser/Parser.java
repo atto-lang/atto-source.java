@@ -1394,7 +1394,7 @@ public final class Parser {
             }
 
             FormalType parsedType = parseFormalType();
-                Ast.TypeRef type = parsedType.type();
+            Ast.TypeRef type = parsedType.type();
             boolean mutable = match(MUT);
             String name = consume(IDENT, "lambda-style callable declaration parameters require canonical 'Type name'").lexeme();
             if (structural && mutable) {
@@ -1510,7 +1510,7 @@ public final class Parser {
             }
 
             FormalType parsedType = parseFormalType();
-                Ast.TypeRef type = parsedType.type();
+            Ast.TypeRef type = parsedType.type();
             boolean mutable = match(MUT);
             String name = consume(IDENT, "expected parameter name after type").lexeme();
             if (structural && mutable) {
@@ -3787,6 +3787,15 @@ public final class Parser {
     private Ast.LambdaExpr parseLambda(boolean nonLexical) {
         consume(LPAREN, "expected '('");
         List<Ast.Param> params = parseParametersUntil(RPAREN);
+        // Lambda ASTs have no declaration-default metadata or checked
+        // source-to-formal omission plan. Do not allow '?'-staged formals
+        // to bypass the named/default declaration admission gate.
+        for (Ast.Param param : params) {
+            if (param.omittable() || param.optionTypeSugar()) {
+                throw error(previous(),
+                        "optional lambda parameters are staged and cannot execute before typed lowering");
+            }
+        }
         consume(RPAREN, "expected ')' after lambda parameters");
         consume(ARROW, "expected '->' after lambda parameters");
         return parseLambdaBody(params, nonLexical);
