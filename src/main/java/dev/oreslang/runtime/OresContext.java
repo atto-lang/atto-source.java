@@ -192,7 +192,9 @@ public final class OresContext implements AutoCloseable {
      * expression in trusted VM root main. Although that main executes inside
      * the root scheduler, its child owns no parent pointers, borrows or code
      * closures: the context's structured Task scope retains its independent
-     * frame through physical completion, including root cancellation.
+     * frame through physical completion. Root cancellation does not yet
+     * propagate to child Task scope cancellation: this v0 frame owns no guest
+     * memory or borrowed state, and context teardown must still drain it.
      *
      * <p>This method is not a general nested Task or detached spawn API.
      */
