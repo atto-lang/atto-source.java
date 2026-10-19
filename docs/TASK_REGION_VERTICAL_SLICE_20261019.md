@@ -20,9 +20,11 @@ not `main`. The base's existing `nb` TypeChecker **execution rejection remains u
    claim quotas, atomic admission, disjoint field/range conflicts and a
    cancellation that NEVER releases leases. A new
    `admitCoherentTyped` proof admits only when source AST **and**
-   resolved internal types match a small trusted ABI subset AND both
-   agree on `Send` for WRITE or `Sync` for READ. Unsupported nominal,
-   foreign, recursive and unproven container layout conversions deny.
+   resolved internal types match a deliberately narrow provisional
+   scalar/Array/List subset AND both agree on `Send` for WRITE or
+   `Sync` for READ. Named Option/Result wrappers, borrowed references,
+   foreign, recursive and unsupported nominal layouts **deny without a
+   trusted resolved-identity/lifetime witness**.
 4. Copied the existing parser+ownership and loan verifier JUnit tests;
    added `ScopedTaskTypeBridgeTest` with two disjoint writes,
    overlapping denial, parent-access blocking, cancellation without
@@ -78,6 +80,51 @@ not `main`. The base's existing `nb` TypeChecker **execution rejection remains u
   `ExecutionPermit<Region,AccessSet>` from MIR; bind physical callback
   to release of opaque runtime region pins; then add a real two-Task
   `.ores` program and LLVM parity. ECS can consume the common footprint.
+
+## October 19 follow-up: alias-unit, lifetime and identity audit
+
+- **Fixed:** `admitCoherentTyped` previously matched a `Types.Named`
+  `Option`/`Result` by spelling only. An imported nominal class with
+  that spelling could impersonate a compiler builtin. Named wrappers now
+  deny until a compiler-authenticated resolved symbol/intrinsic identity
+  exists. This intentionally narrows accepted static claims.
+- **Fixed:** a borrowed source type and matching lowered
+  `Types.Borrow` formerly passed structural correspondence, despite no
+  lifetime/outlives or real Task physical-completion witness. ALL borrowed
+  source/resolved types now deny this provisional route. Scoped borrows
+  require a separate compiler-minted temporal privilege.
+- **Fixed:** byte-based ranges and element-index ranges formerly shared
+  one numeric coordinate space. `RangeUnit.ELEMENTS` vs
+  `RangeUnit.BYTES` is now explicit; mismatched units always alias
+  conservatively. The existing 3-argument `Range` and `Place.range`
+  APIs remain **element-index only**; byte callers use
+  `Place.byteRange`. Trusted MIR must still prove units and lengths.
+- **Tests added (committed, not JUnit-executed):** intrinsic
+  name-spoof regression, source/resolved borrowed lifetime rejection,
+  byte/element overlap denial, and a host `OresTaskScope` + static
+  Task loan ledger test that waits for both physical `getDone`
+  completions before discharging static tickets. This is not a
+  compiler-emitted runtime ticket binding.
+- **Local executable evidence:** the byte/element interval rule passed
+  120,000 seed-stable randomized Java 21 model cases, with 120,000
+  symmetry checks. This is a **standalone model**, not the actual
+  `TaskAccessVerifier` compiled against the production AST.
+- **Native sibling evidence:** exact LLVM #661 header Git blob
+  `4410aa5f4f14679935ca5e5fd228fad7a6283e56` and test blob
+  `a7f3086512201efe52787002bb57b38a54069ef8` ran locally:
+  GCC and Clang strict C++20/ASan/UBSan **PASS**. These native
+  tests cannot establish Java PR #1466 correctness or LLVM guest parity.
+- **Private GitHub Actions transfer gate:** source main file
+  `.github/private-ci-approved-repositories.txt` has **no approved
+  destinations**. Issue #962 requires pinned protected source provenance,
+  reviewed destination numeric ID, and security approvals. No private
+  source bytes were sent to any alternate organization.
+- **Important remaining authority gap:** `admitCoherentTyped` receives
+  provisional source trait objects and a `Types.ListType`, not a
+  nonforgeable compiler-resolved builtin/region identity. Source-level
+  `Array/List` admission must remain disabled in executable guest
+  lowering until the resolver supplies a trusted identity witness.
+  Its tests demonstrate static footprint logic only.
 
 ## Related pull requests
 
