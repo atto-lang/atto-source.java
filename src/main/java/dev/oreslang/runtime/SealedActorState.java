@@ -29,16 +29,21 @@ public final class SealedActorState {
     private final ActorRuntime.ActorId owner;
     private final LinkedHashMap<String, String> schema;
     // Swappable as a unit: scalar ML publication never exposes partial field updates.
-    private LinkedHashMap<String, Object> values;
-    private Access current;
+    private volatile LinkedHashMap<String, Object> values;
+    // Nonparking, physical-carrier-exclusive state callback admission.
+    // Nested loans on the same carrier are permitted, but two distinct
+    // actor carriers must never race on state even if actor maxThreads=3.
+    private final java.util.concurrent.atomic.AtomicReference<Thread> stateCarrier =
+            new java.util.concurrent.atomic.AtomicReference<>();
+    private volatile Access current;
     private long serial;
-    private long mutationRevision;
+    private volatile long mutationRevision;
     private int retainedStringBytes;
     private int retainedOwnedBytes;
     private int pendingOwnedBytes;
     private final Set<OwnedBytes> pendingOwned =
             Collections.newSetFromMap(new IdentityHashMap<>());
-    private boolean retired;
+    private volatile boolean retired;
 
     public SealedActorState(ActorRuntime.ActorId owner,
                             Map<String, String> schema,
@@ -233,14 +238,16 @@ public final class SealedActorState {
     public final class Access {
         private final long token;
         private final boolean writable;
+        private final Thread carrier;
         private boolean live = true;
         private Access(long token, boolean writable) {
             this.token = token;
             this.writable = writable;
+            this.carrier = Thread.currentThread();
         }
         private void check() {
             requireOwner();
-            if (!live || current != this || token <= 0) {
+            if (Thread.currentThread() != carrier || !live || current != this || token <= 0) {
                 throw new IllegalStateException("expired or fenced actor state loan");
             }
         }
@@ -381,10 +388,15 @@ public final class SealedActorState {
         Objects.requireNonNull(callback, "critical state callback");
         requireOwner();
         if (serial == Long.MAX_VALUE) throw new IllegalStateException("actor loan serial exhausted");
+        final Thread carrier = Thread.currentThread();
+        final boolean newlyAdmitted = stateCarrier.compareAndSet(null, carrier);
+        if (!newlyAdmitted && stateCarrier.get() != carrier)
+            throw new IllegalStateException("ML_STATE_LOAN_CONCURRENT_CARRIER");
         Access previous = current;
         // A read grant must never be upgraded while it is live, even through
         // indirect calls that evade source-level interprocedural inference.
         if (previous != null && !previous.writable && writable) {
+            if (newlyAdmitted) stateCarrier.compareAndSet(carrier, null);
             throw new SecurityException("cannot upgrade a live critical read loan to write");
         }
         Access access = new Access(++serial, writable);
@@ -398,6 +410,8 @@ public final class SealedActorState {
         } finally {
             access.live = false;
             current = previous;
+            if (newlyAdmitted && !stateCarrier.compareAndSet(carrier, null))
+                throw new IllegalStateException("ML_STATE_LOAN_CARRIER_CORRUPT");
         }
     }
 
