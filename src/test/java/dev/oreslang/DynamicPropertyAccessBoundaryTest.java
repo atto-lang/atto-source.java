@@ -180,6 +180,18 @@ final class DynamicPropertyAccessBoundaryTest {
     }
 
     @Test
+    void stringSplitResultsRetainCopyableElementOwnershipForIndexing() {
+        accepted("""
+                fnc parse(String line): String {
+                    const parts = line.split_literal("=");
+                    const String left = parts[0];
+                    const String right = parts[1];
+                    return left + right;
+                }
+                """);
+    }
+
+    @Test
     void mutableSelectorBindingsRemainDynamic() {
         rejected("""
                 define class Box as
