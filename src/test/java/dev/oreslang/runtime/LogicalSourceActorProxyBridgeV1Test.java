@@ -243,7 +243,7 @@ final class LogicalSourceActorProxyBridgeV1Test {
             assertFalse(closer.isAlive(), "bounded host close should finish");
             assertNull(closeError.get(), "physical retirement must not fail");
             assertTrue(closed.get());
-            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+            assertThrows(IllegalStateException.class,
                     () -> bridge.startHostPinnedTaskForUpgrade(
                             scheduler, resume -> OresScheduler.done(2)));
         }
@@ -281,6 +281,11 @@ final class LogicalSourceActorProxyBridgeV1Test {
                 });
                 try {
                     start.countDown();
+                    long observedBy = System.nanoTime()
+                            + java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
+                    while (seen.get() == 0 && System.nanoTime() < observedBy)
+                        Thread.sleep(2);
+                    assertTrue(seen.get() > 0, "observer must start before publication");
                     assertTrue(bridge.upgradeTo(next, WAIT));
                     var publication = bridge.publication();
                     assertEquals(2L, publication.address().routeEpoch());
