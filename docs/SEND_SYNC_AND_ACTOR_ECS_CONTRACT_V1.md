@@ -65,6 +65,37 @@ before any planned batch may execute concurrently. Deterministic ordering of
 planned batches is not a guarantee that unordered floating-point reductions
 are bitwise deterministic.
 
+## Security hardening / execution-admission requirements
+
+* A compiler-trusted nominal `Send`/`Sync` callback does not excuse unknown,
+  non-Send/non-Sync or runtime-capability **generic arguments**. Every generic
+  argument is checked transitively before nominal trait proof is accepted.
+  Phantom/variance exemptions, if ever needed, require a separately audited
+  compiler-internal representation rather than caller-supplied assertions.
+* An empty system access list is **unknown effects**, not evidence of purity.
+  Both static planners treat it as a serialization barrier. Even a nonempty
+  footprint must be emitted only after verifying all reads/writes and external
+  effects (FFI, I/O, atomics, global aliases, interior mutation and actor
+  callback entry). Any effect not representable as a verified region access
+  must force a barrier.
+* A single system may legitimately read and write the **same** region. This
+  is not a contradictory footprint: conflicts with other systems treat it as
+  a write, and the system's own sequential operations retain ordinary
+  intra-task borrow checking. Do not reject valid read-modify-write systems.
+* The native descriptor constructor validates half-open intervals and access
+  mode, then exposes read-only views. Its pointer-shaped allocation identity
+  is **not** a provenance proof or authority token. Interpreting two distinct
+  pointers as two disjoint allocations requires a trusted compiler-side
+  allocation and aliasing proof; identity must not be reused across actor
+  generations, rollback or region reclamation.
+* Static planner batches grant no runtime access. A later runtime must
+  independently issue epoch-bound affine region loans, enforce full worker
+  quiescence before reconstitution, and retire all loans on cancellation,
+  panic, STOP and hot reload.
+* Host smoke/property tests are not real compiler or runtime evidence.
+  Keep both PRs as drafts until exact-head Java JUnit and native LLVM CTest,
+  plus cross-backend source conformance, execute on authenticated source.
+
 ## Planned actor/ECS design
 
 Actor isolation should remain the outer fault and networking boundary.
