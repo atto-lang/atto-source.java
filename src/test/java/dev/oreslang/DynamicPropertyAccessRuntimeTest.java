@@ -204,6 +204,50 @@ final class DynamicPropertyAccessRuntimeTest {
     }
 
     @Test
+    void destructuredParentFieldPreservesStaticClassView() {
+        String source = """
+                define class Parent as
+                    pub let int id = 1;
+                end
+
+                define class Child extends Parent as
+                    pub let string label = "child";
+                end
+
+                define class Box as
+                    pub val Parent item = new Child();
+                end
+
+                pub fnc main(): void {
+                    const Box box = new Box();
+                    const {item} = box;
+                    stdio.println(item["id"]);
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(OresLanguage.ID, source, "dynamic-destructure-parent-view.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(output)
+                    .build()) {
+                context.eval(program);
+            }
+        });
+
+        assertEquals(
+                "1\n",
+                output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
+    }
+
+    @Test
     void parentStaticViewAllowsInheritedDomainOnChildObjects() {
         String source = """
                 define class Parent as
