@@ -44,6 +44,17 @@ public final class SoaSnapshotSmoke {
         denied(() -> snapshot.toRows().get(0).put("age", 99), "immutable rows");
         denied(() -> snapshot.schema().clear(), "immutable schema");
 
+        Map<String, List<?>> mutableColumns = new LinkedHashMap<>();
+        List<Integer> mutableAges = new ArrayList<>(List.of(10, 20));
+        mutableColumns.put("age", mutableAges);
+        mutableColumns.put("first name", new ArrayList<>(List.of("Alice", "Bob")));
+        mutableColumns.put("active?", new ArrayList<>(List.of(true, false)));
+        SoaSnapshot fromMutableColumns = SoaSnapshot.fromColumns(schema, mutableColumns);
+        mutableAges.set(0, 500);
+        mutableColumns.clear();
+        expect(fromMutableColumns.column("age").equals(List.of(10, 20)),
+                "column input copy isolation");
+
         denied(() -> SoaSnapshot.fromRows(schema, List.of(Map.of("age", 37))),
                 "missing shape");
         denied(() -> SoaSnapshot.fromRows(schema, List.of(Map.of(
