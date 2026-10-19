@@ -1028,24 +1028,51 @@ public final class Parser {
         // Ordinary methods without either form receive read-only self.
         int parameterStart = current;
         boolean explicitReceiver = false;
+        boolean inlineReceiver = false;
         if (mutableReceiver) {
             advance(); // mut
             consume(SELF, "mutable receiver syntax is 'mut self'");
-            Ast.TypeRef target = check(RPAREN) ? Ast.TypeRef.simple("self") : parseTypeRef();
-            receiverType = Ast.TypeRef.borrowed(target, true);
-            explicitReceiver = true;
+            // A leading bare 'mut self' can share the user-argument list:
+            //   foo(mut self, int x), or foo(mut self).
+            // Preserve the existing two-list form foo(mut self)(int x).
+            if (check(COMMA) || (check(RPAREN) && !checkNext(LPAREN))) {
+                receiverType = Ast.TypeRef.borrowed(Ast.TypeRef.simple("self"), true);
+                inlineReceiver = true;
+            } else {
+                Ast.TypeRef target = check(RPAREN) ? Ast.TypeRef.simple("self") : parseTypeRef();
+                receiverType = Ast.TypeRef.borrowed(target, true);
+                explicitReceiver = true;
+            }
         } else if (check(SELF)) {
             advance();
-            Ast.TypeRef candidateReceiver = parseTypeRef();
-            if (check(RPAREN) && checkNext(LPAREN)) {
-                receiverType = candidateReceiver;
-                explicitReceiver = true;
+            // 'self' is a receiver ONLY in the first declaration position
+            // when it is a whole call item. A typed 'self peer' remains an
+            // ordinary user-visible parameter and consumes an arity slot.
+            if (check(COMMA) || (check(RPAREN) && !checkNext(LPAREN))) {
+                receiverType = Ast.TypeRef.simple("self");
+                inlineReceiver = true;
             } else {
-                current = parameterStart;
+                Ast.TypeRef candidateReceiver = parseTypeRef();
+                if (check(RPAREN) && checkNext(LPAREN)) {
+                    receiverType = candidateReceiver;
+                    explicitReceiver = true;
+                } else {
+                    current = parameterStart;
+                }
             }
         }
 
-        if (explicitReceiver) {
+        if (inlineReceiver) {
+            if (match(COMMA)) {
+                if (check(RPAREN)) {
+                    throw error(peek(), "expected a user-visible parameter after the self receiver");
+                }
+                params = parseParametersUntil(RPAREN);
+            } else {
+                params = List.of();
+            }
+            consume(RPAREN, "expected ')' after inline self receiver and method parameters");
+        } else if (explicitReceiver) {
             consume(RPAREN, "expected ')' after explicit self receiver");
             consume(LPAREN, mutableReceiver
                     ? "explicit mutable receiver form is method(mut self)(params)"
