@@ -327,8 +327,9 @@ public final class ActorRuntime implements AutoCloseable {
             String sizing = System.getProperty("ores.runtime.actor.pool-sizing", "legacy").trim();
             if ("cpu-budget".equals(sizing)) {
                 String requested = System.getProperty("ores.runtime.actor.shared.parallelism");
-                Integer shared = requested == null ? null : Integer.valueOf(requested);
-                ActorPoolSizing.Plan plan = ActorPoolSizing.cpuBudgeted(cpus, shared);
+                Integer shared = requested == null ? null : Integer.valueOf(requested.trim());
+                int budgetCpus = ActorCpuAffinityConfig.budgetCpuCount(cpus);
+                ActorPoolSizing.Plan plan = ActorPoolSizing.cpuBudgeted(budgetCpus, shared);
                 return new DispatcherConfig(
                         plan.privateWorkers(), plan.sharedWorkers(), 64, 16_384);
             }
@@ -6660,18 +6661,9 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private static ExecutorService newActorDispatcher(int parallelism, int capacity, String prefix) {
-        String mode = System.getProperty("ores.actor.affinity", "lane").trim();
+        String mode = ActorCpuAffinityConfig.mode();
         if (mode.equals("none")) return newDispatcher(parallelism, capacity, prefix);
-        if (!mode.equals("lane") && !mode.equals("cpu")) {
-            throw new IllegalArgumentException("ores.actor.affinity must be lane, cpu, or none");
-        }
-        int[] cpus = new int[0];
-        if (mode.equals("cpu")) {
-            String configured = System.getProperty("ores.actor.cpus", "").trim();
-            if (configured.isEmpty()) throw new IllegalArgumentException("CPU affinity requires ores.actor.cpus");
-            cpus = java.util.Arrays.stream(configured.split(",", -1))
-                    .map(String::trim).mapToInt(Integer::parseInt).toArray();
-        }
+        int[] cpus = mode.equals("cpu") ? ActorCpuAffinityConfig.configuredCpus() : new int[0];
         return new ActorAffinityDispatcher(parallelism, capacity, cpus,
                 lane -> newDispatcher(1, capacity, prefix + "lane-" + lane + "-"));
     }
