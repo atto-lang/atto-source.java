@@ -12,6 +12,7 @@ MODULE = Path(__file__).with_name("publish-private-ci-source.py")
 spec = importlib.util.spec_from_file_location("private_publisher", MODULE)
 pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
+REAL_ADMISSION_GATE = pub.require_independent_source_authorization
 A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
 
 
@@ -31,6 +32,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
+        # Positive transport tests exercise the bounded object writer with a
+        # simulated, independently authorized source. Production deliberately
+        # refuses this bypass until protected provenance is implemented.
+        self.authorized_fixture = patch.object(pub, "require_independent_source_authorization")
+        self.authorized_fixture.start()
+        self.addCleanup(self.authorized_fixture.stop)
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
@@ -57,6 +64,30 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root)
+
+    def test_untrusted_local_approval_cannot_enable_real_private_export(self):
+        # The local allowlist claims an approval, and a fake private
+        # destination is available. That is still NOT a reviewed protected
+        # source commit/tree or a pinned numeric destination identity.
+        # Restore the real immutable kill-switch for this negative test.
+        with patch.object(pub, "require_independent_source_authorization",
+                          REAL_ADMISSION_GATE):
+            with patch.object(pub, "gh_api", side_effect=self.fake_api):
+                with self.assertRaisesRegex(pub.Denied, "independent protected source"):
+                    pub.publish("trusted/ci", self.source,
+                                "ci/oreslang-test", self.root)
+        self.assertEqual(self.route_calls, [],
+                         "denied transfers cannot even begin API reads or writes")
+
+    def test_unapproved_runtime_gate_precedes_legacy_destination_preflight(self):
+        with patch.object(pub, "require_independent_source_authorization",
+                          REAL_ADMISSION_GATE):
+            with patch.object(pub, "require_preflight",
+                              side_effect=AssertionError("legacy preflight must not run")):
+                with self.assertRaisesRegex(pub.Denied, "security #962"):
+                    pub.publish("trusted/ci", self.source,
+                                "ci/oreslang-test", self.root)
+        self.assertEqual(self.route_calls, [])
 
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
         sha, count = self.publish()
