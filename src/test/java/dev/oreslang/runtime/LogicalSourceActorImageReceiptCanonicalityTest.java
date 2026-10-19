@@ -26,8 +26,8 @@ final class LogicalSourceActorImageReceiptCanonicalityTest {
         for (String bad : new String[] {
                 null, "", "0".repeat(63), "0".repeat(65),
                 "A".repeat(64), "g".repeat(64),
-                "0".repeat(63) + " ", "0".repeat(63) + "\u00e9",
-                "0".repeat(63) + "\u0000"}) {
+                "0".repeat(63) + " ", "0".repeat(63) + Character.toString((char) 233),
+                "0".repeat(63) + Character.toString((char) 0)}) {
             assertThrows(IllegalArgumentException.class,
                     () -> new LogicalSourceActorRouterV1.ImageReceipts(
                             bad, VALID, VALID),
