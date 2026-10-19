@@ -80,8 +80,8 @@ final class InferredRecordRuntimeTest {
                 ctx.eval(program);
             }
         });
-        assertEquals("payload\\n3\\n3.0\\n",
-                out.toString(StandardCharsets.UTF_8).replace("\\r\\n", "\\n"));
+        assertEquals("payload\n3\n3.0\n",
+                out.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
     }
 
     @Test
