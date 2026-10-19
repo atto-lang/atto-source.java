@@ -1,15 +1,13 @@
 package dev.oreslang.launcher;
 
 import dev.oreslang.runtime.OresTestExploration;
+import dev.oreslang.runtime.LinkedProgramRunner;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
 import java.util.Map;
 import java.util.HashMap;
 
@@ -18,23 +16,27 @@ import java.util.HashMap;
  * This is NOT a record of arbitrary guest scheduling or VM nondeterminism.
  */
 final class OresTestTrace {
-    private static final String HEADER = "oreslang-critical-exploration-v1";
-    record Data(String sourceHash, long seed, int runs, boolean modelCheck,
+    private static final String HEADER = "oreslang-critical-exploration-v2";
+    record Data(String closureHash, long seed, int runs, boolean modelCheck,
                 long states, long rejectedCycles, long stressCases,
                 long inputFingerprint) { }
 
     private OresTestTrace() { }
 
+    /**
+     * Digest the complete compiler import closure. The v1 trace format only
+     * fingerprinted the entry file and is intentionally not replay-compatible.
+     */
     static String hash(Path source) throws IOException {
         if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)
                 || Files.size(source) > 16L * 1024 * 1024) {
             throw new IOException("source is not a bounded regular file for replay");
         }
         try {
-            MessageDigest hash = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(hash.digest(Files.readAllBytes(source)));
-        } catch (NoSuchAlgorithmException missing) {
-            throw new IllegalStateException("SHA-256 unavailable", missing);
+            return LinkedProgramRunner.sourceClosureSha256(source);
+        } catch (IllegalArgumentException | SecurityException invalid) {
+            throw new IOException("could not fingerprint source closure: "
+                    + invalid.getMessage(), invalid);
         }
     }
 
@@ -44,7 +46,7 @@ final class OresTestTrace {
             throw new IOException("trace already exists; never overwrite a failure artifact");
         }
         String encoded = HEADER + "\n"
-                + "source_sha256=" + hash(source) + "\n"
+                + "source_closure_sha256=" + hash(source) + "\n"
                 + "seed=" + seed + "\n"
                 + "runs=" + runs + "\n"
                 + "model_check=" + modelCheck + "\n"
@@ -73,15 +75,15 @@ final class OresTestTrace {
                 throw new IOException("duplicate/invalid trace field");
             }
         }
-        if (!entries.keySet().equals(java.util.Set.of("source_sha256","seed","runs",
+        if (!entries.keySet().equals(java.util.Set.of("source_closure_sha256","seed","runs",
                 "model_check","states","rejected_cycles","stress_cases",
                 "input_fingerprint"))) {
             throw new IOException("unknown or missing trace field");
         }
         try {
-            String hash = entries.get("source_sha256");
+            String hash = entries.get("source_closure_sha256");
             if (!hash.matches("[0-9a-f]{64}") || !hash.equals(hash(source))) {
-                throw new IOException("source SHA-256 differs; replay requires exact bytes");
+                throw new IOException("source closure SHA-256 differs; replay requires exact imports and bytes");
             }
             String modelFlag = entries.get("model_check");
             if (!modelFlag.equals("true") && !modelFlag.equals("false")) {
