@@ -407,11 +407,15 @@ public final class HotReloadManager implements AutoCloseable {
 
             @Override public void close() {
                 synchronized (Generation.this) {
-                    if (!released.compareAndSet(false, true)) return;
+                    if (released.get()) return;
+                    // Do not consume the lease token before validating its
+                    // accounting debit. A failed release must be retryable;
+                    // otherwise code retirement could be certified falsely.
                     if (actorRoutePins <= 0)
                         throw new IllegalStateException(
                                 "hot-reload generation route-pin underflow");
                     actorRoutePins--;
+                    released.set(true);
                 }
             }
         }
@@ -437,8 +441,11 @@ public final class HotReloadManager implements AutoCloseable {
                     if (actorRoutePins == Integer.MAX_VALUE)
                         throw new IllegalStateException(
                                 "generation route-pin budget exhausted");
+                    // Construct the lease before charging its count: if an
+                    // allocation fails, no unowned generation pin remains.
+                    ActorRouteLease lease = new ActorRouteLease();
                     actorRoutePins++;
-                    return new ActorRouteLease();
+                    return lease;
                 }
             }
         }
