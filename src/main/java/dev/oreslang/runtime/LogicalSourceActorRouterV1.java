@@ -454,20 +454,22 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         private final Route routed;
         private final LogicalActorProxyMailboxV1 mailbox;
         private final LogicalActorProxyMailboxV1.Envelope envelope;
-        private final ActorRuntime.PhysicalMailReceipt physicalReceipt;
+        // Bound exactly once after ActorRuntime returns its already-prepared
+        // exact receipt. The shell itself is allocated before physical-send
+        // reservation/admission, so successful physical acceptance is followed
+        // only by this volatile reference publication and method return.
+        private volatile ActorRuntime.PhysicalMailReceipt physicalReceipt;
         private boolean consumed;
 
         private ProxyDrainReceipt(
                 LogicalSourceActorRouterV1 owner,
                 Route routed,
                 LogicalActorProxyMailboxV1 mailbox,
-                LogicalActorProxyMailboxV1.Envelope envelope,
-                ActorRuntime.PhysicalMailReceipt physicalReceipt) {
+                LogicalActorProxyMailboxV1.Envelope envelope) {
             this.owner = owner;
             this.routed = routed;
             this.mailbox = mailbox;
             this.envelope = envelope;
-            this.physicalReceipt = physicalReceipt;
         }
 
         void awaitAndComplete(
@@ -484,11 +486,15 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             if (exactEnvelope != envelope)
                 throw new SecurityException("foreign immutable proxy envelope receipt");
 
+            ActorRuntime.PhysicalMailReceipt exactPhysical = physicalReceipt;
+            if (exactPhysical == null)
+                throw new IllegalStateException(
+                        "physical mail receipt shell was published before binding");
             // Only the target runtime can mint the accepted physical
             // sequence. It is not the proxy sequence: distinct physical
             // incarnations have independent counters after hot upgrade.
-            if (physicalReceipt.physical() != routed.physical()
-                    || physicalReceipt.acceptedSequence() < 0)
+            if (exactPhysical.physical() != routed.physical()
+                    || exactPhysical.acceptedSequence() < 0)
                 throw new SecurityException("foreign physical mail receipt");
             // Claim this capability BEFORE waiting. In particular timeout,
             // interruption and terminal failure are ambiguous physical work:
@@ -513,9 +519,9 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             // Completion may run guest turns: NEVER wait while holding the
             // route monitor. After any failed wait, supervisor reconciliation
             // is mandatory; this receipt must NOT be retried.
-            physicalReceipt.terminal().get(
+            exactPhysical.terminal().get(
                     toNanosSaturated(timeout), TimeUnit.NANOSECONDS);
-            if (physicalReceipt.terminalDisposition()
+            if (exactPhysical.terminalDisposition()
                     != ActorRuntime.PhysicalMailDisposition.PROCESSED) {
                 throw new IllegalStateException(
                         "successful physical terminal Future lacks PROCESSED disposition");
@@ -576,6 +582,13 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                     decoded = (decoded << Byte.SIZE) | (octet & 255L);
                 value = decoded;
             }
+            // Allocate every router-owned receipt object BEFORE recording a
+            // physical-send attempt. An OOME here therefore leaves the logical
+            // envelope definitely unsent and eligible for exact-envelope
+            // rollback; it cannot strand an attempted/accepted delivery.
+            ProxyDrainReceipt receipt =
+                    new ProxyDrainReceipt(this, current, mailbox, envelope);
+
             // Physical submission is reserved exactly once under the owning
             // mailbox's lock BEFORE touching the real actor mailbox. A second
             // trusted caller cannot deliver the same logical envelope while
@@ -584,10 +597,12 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             ActorRuntime.PhysicalMailReceipt physical =
                     current.view.runtime().sendWithPhysicalReceipt(
                             current.physical, value);
-            // Source ActorRuntime registers the exact accepted sequence's
-            // terminal observer at the mailbox admission linearization.
-            return new ProxyDrainReceipt(
-                    this, current, mailbox, envelope, physical);
+            // ActorRuntime constructs/registers its own exact terminal witness
+            // before physical admission. After a successful return, bind that
+            // already-owned witness into the preallocated router shell using
+            // only a volatile reference write: no router allocation remains.
+            receipt.physicalReceipt = physical;
+            return receipt;
         }
     }
 
