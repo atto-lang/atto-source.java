@@ -48,6 +48,29 @@ final class TaskResolvedSendBridgeTest {
     }
 
     @Test
+    void erasedDynIsDeniedByCanonicalTaskAndSharedSafetyAuthorities()
+            throws Exception {
+        var ctor = TypeChecker.class.getDeclaredConstructor();
+        ctor.setAccessible(true);
+        var checker = ctor.newInstance();
+        var threadSend = TypeChecker.class.getDeclaredMethod(
+                "isThreadSend", Types.Type.class);
+        threadSend.setAccessible(true);
+        var sharedSafe = TypeChecker.class.getDeclaredMethod(
+                "isSharedSafe",
+                Types.Type.class,
+                java.util.Set.class,
+                java.util.Map.class);
+        sharedSafe.setAccessible(true);
+
+        Types.Type dyn = new Types.Dyn(
+                new Types.Named("Worker", java.util.List.of()));
+        assertEquals(Boolean.FALSE, threadSend.invoke(checker, dyn));
+        assertEquals(Boolean.FALSE, sharedSafe.invoke(
+                checker, dyn, new java.util.LinkedHashSet<>(), Map.of()));
+    }
+
+    @Test
     void scalarTaskCapturePassesSemanticSendAndStopsAtLoweringBarrier() {
         IllegalArgumentException failure = reject("""
             pub fnc main(): void {
