@@ -4951,15 +4951,23 @@ public final class TypeChecker {
         // an actor/mailbox capability. Async tasks may receive the handle when
         // its payload is concrete, owned and task-safe. Actor boundaries retain
         // their stricter rule and continue to reject Channel<T> entirely.
+        SendSyncContracts.NominalProof layoutProof = (named, marker) ->
+                isSharedSafe(named, new LinkedHashSet<>(), Map.of());
+        // Task migration is a Send boundary, not automatically a Sync boundary.
+        // A Channel<T> is synchronized and may move owned T across workers
+        // even when T is not Sync. Existing shared-safe checks remain the
+        // conservative host/allocator gate until the full region proof ships.
         if (type instanceof Named named && named.name().equals("Channel")
                 && named.arguments().size() == 1
-                && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
+                && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())
+                && SendSyncContracts.isSend(type, layoutProof)) {
             return;
         }
-        if (type == Primitive.VOID
+        if (type == Primitive.VOID || type instanceof Borrow
+                || !SendSyncContracts.isSend(type, layoutProof)
                 || !isSharedSafe(type, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
-                    where + " must be concrete owned task-safe data; borrows, futures, mutexes, functions, actor values, host capabilities, and unresolved generics cannot cross an async task boundary");
+                    where + " requires concrete owned Send task-safe data; borrows, futures, mutexes, functions, actor values, host capabilities, and unresolved generics cannot cross an async task boundary");
         }
     }
 
