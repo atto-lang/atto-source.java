@@ -88,6 +88,12 @@ final class LogicalSourceActorProxyBridgeV1Test {
 
                 var receipt = router.sendAndDrainForProxy(
                         proxy, dispatched, proxy.snapshot().routeEpoch());
+                assertThrows(IllegalStateException.class,
+                        () -> router.sendAndDrainForProxy(
+                                proxy, dispatched, proxy.snapshot().routeEpoch()),
+                        "one accepted physical send cannot be submitted twice "
+                                + "before its drain acknowledgment");
+                assertEquals(1, proxy.snapshot().retainedMessages());
                 var forged = new LogicalActorProxyMailboxV1.Envelope(
                         dispatched.messageSequence(), dispatched.payload());
                 assertThrows(SecurityException.class,
