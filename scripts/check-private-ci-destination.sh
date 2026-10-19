@@ -8,6 +8,7 @@ fail() {
 [[ $# -eq 1 ]] || fail 'usage: check-private-ci-destination.sh owner/repo'
 target="$1"
 slug_pattern='^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$'
+id_pattern='^[1-9][0-9]*$'
 [[ "$target" =~ $slug_pattern ]] || fail 'destination must be an owner/repo slug'
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 policy_dir="$script_dir/../.github"
@@ -16,19 +17,31 @@ policy_dir="$script_dir/../.github"
 policy="$policy_dir/private-ci-approved-repositories.txt"
 [[ -f "$policy" && -r "$policy" && ! -L "$policy" ]] ||
   fail 'reviewed policy file is missing, unreadable or symlinked'
+
 allowed=false
-while IFS= read -r candidate || [[ -n "$candidate" ]]; do
-  [[ -z "$candidate" || "$candidate" =~ ^# ]] && continue
-  [[ "$candidate" =~ $slug_pattern ]] || fail 'repository policy contains an invalid entry'
-  if [[ "${candidate,,}" == "${target,,}" ]]; then allowed=true; fi
+pinned_id=''
+while IFS= read -r line || [[ -n "$line" ]]; do
+  [[ -z "$line" || "$line" =~ ^# ]] && continue
+  IFS=' ' read -r candidate candidate_id extra <<< "$line"
+  [[ -n "$candidate" && "$candidate" =~ $slug_pattern
+      && -n "$candidate_id" && "$candidate_id" =~ $id_pattern
+      && -z "${extra:-}" ]] ||
+    fail 'repository policy contains an invalid entry'
+  if [[ "${candidate,,}" == "${target,,}" ]]; then
+    [[ "$allowed" == false ]] || fail 'repository policy contains duplicate destination entries'
+    allowed=true
+    pinned_id="$candidate_id"
+  fi
 done < "$policy"
 [[ "$allowed" == true ]] || fail 'destination is absent from reviewed repository policy'
+
 command -v gh >/dev/null 2>&1 || fail 'GitHub CLI is required'
-metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.full_name, .visibility, (.private|tostring)] | @tsv' 2>/dev/null)" ||
+metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.full_name, (.id|tostring), .visibility, (.private|tostring)] | @tsv' 2>/dev/null)" ||
   fail 'cannot verify repository identity and visibility from live GitHub API'
 [[ -n "$metadata" && "$metadata" != *$'\n'* ]] ||
   fail 'API returned empty or multiline repository metadata'
-IFS=$'\t' read -r actual_name visibility private_flag <<< "$metadata"
+IFS=$'\t' read -r actual_name actual_id visibility private_flag <<< "$metadata"
 [[ "${actual_name,,}" == "${target,,}" ]] || fail 'API identity differs from requested destination'
+[[ "$actual_id" == "$pinned_id" ]] || fail 'API repository ID differs from reviewed policy'
 [[ "$visibility" == private && "$private_flag" == true ]] || fail 'destination is not private'
-printf 'PRIVATE_CI_DESTINATION_APPROVED: %s (private)\n' "$target"
+printf 'PRIVATE_CI_DESTINATION_APPROVED: %s id=%s (private)\n' "$target" "$pinned_id"
