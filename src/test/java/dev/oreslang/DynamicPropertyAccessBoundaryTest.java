@@ -317,6 +317,53 @@ final class DynamicPropertyAccessBoundaryTest {
     }
 
     @Test
+    void inheritedClassFieldsParticipateInDynamicAccessSafety() {
+        accepted("""
+                define class Base as
+                    pub val int inherited = 1;
+                end
+
+                define class Child extends Base as
+                    pub val int own = 2;
+                end
+
+                fnc read(Child value, string key): int {
+                    return value[key];
+                }
+                """);
+
+        rejected("""
+                define class Base as
+                    private val int hidden = 1;
+                end
+
+                define class Child extends Base as
+                    pub val int shown = 2;
+                end
+
+                fnc bad(Child value, string key): int {
+                    return value[key];
+                }
+                """);
+
+        rejected("""
+                define class Base as
+                    pub val int fixed = 1;
+                end
+
+                define class Child extends Base as
+                    pub let int mutable = 2;
+                end
+
+                fnc bad(string key): void {
+                    val Child value = new Child();
+                    value[key] = 3;
+                    return;
+                }
+                """);
+    }
+
+    @Test
     void computedClassWritesSupportInitializerInferredFieldTypes() {
         accepted("""
                 define class InferredPoint as
