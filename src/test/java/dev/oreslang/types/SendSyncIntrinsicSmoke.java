@@ -101,6 +101,26 @@ public final class SendSyncIntrinsicSmoke {
             }
         }
 
+        // Public semantic Type records can be instantiated by embedding code.
+        // Reject malformed values before any nominal callback grants authority.
+        for (Trait trait : Trait.values()) {
+            expect(!supports(new Types.Named(null, List.of()), trait, SPOOF_WITH_CORE),
+                    "null nominal name must fail closed " + trait);
+            expect(!supports(new Types.Named("   ", List.of()), trait, SPOOF_WITH_CORE),
+                    "blank nominal name must fail closed " + trait);
+            expect(!supports(new Types.StringLiteral(null), trait, SPOOF_WITH_CORE),
+                    "null string literal must fail closed " + trait);
+            expect(!supports(new Types.Record(Map.of("", integer)), trait, SPOOF_WITH_CORE),
+                    "blank record member must fail closed " + trait);
+        }
+        expect(!ThreadSafetyTraits.isOwnedSend(
+                new Types.Record(Map.of(" ", integer)), SPOOF_WITH_CORE),
+                "blank record member must not enter a detached Task");
+        expect(!ThreadSafetyTraits.isOwnedSend(
+                new Types.Named("Option", List.of(
+                        new Types.Record(Map.of(" ", integer)))), SPOOF_WITH_CORE),
+                "nested blank record member cannot gain owned Send");
+
         Type mutableList = new Types.ListType(integer);
         Type immutableTuple = new Types.Tuple(List.of(integer, Types.Primitive.STRING));
         Type immutableRecord = new Types.Record(Map.of("hp", integer), true);
