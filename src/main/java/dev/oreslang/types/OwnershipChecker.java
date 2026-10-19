@@ -2687,7 +2687,10 @@ public final class OwnershipChecker {
             return containsUntrackedProjection(test.value());
         }
         if (expression instanceof Ast.CallExpr call) {
-            if (containsUntrackedProjection(call.callee())) return true;
+            // Member syntax in callee position selects a callable; it is not
+            // itself an affine field extraction. Only ownership-bearing call
+            // arguments can hide an untracked projection here. The ordinary
+            // call checker separately validates receiver/member effects.
             for (Ast.Expr argument : call.arguments()) {
                 if (containsUntrackedProjection(argument)) return true;
             }
