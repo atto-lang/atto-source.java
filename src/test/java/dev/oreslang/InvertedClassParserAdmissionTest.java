@@ -99,6 +99,42 @@ final class InvertedClassParserAdmissionTest {
     }
 
     @Test
+    void annotationExpansionCannotEraseInvertedLayoutAndCheckerEntrypointsRejectIt() {
+        Ast.Program original = Parser.parse("""
+                define inverted class Particle as
+                    x: float;
+                end
+                """);
+        Ast.Program rewritten = dev.oreslang.ast.AnnotationExpander.expand(original);
+        Ast.ClassDecl after = (Ast.ClassDecl) rewritten.modules().getFirst()
+                .declarations().getFirst();
+        assertTrue(after.inverted(), "AST rewrite must preserve physical layout intent");
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(original));
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.checkTypesWithDiagnostics(original));
+    }
+
+    @Test
+    void linkedInvertedClassCannotSlipThroughImportedSignatureChecking() {
+        Ast.Program ordinary = Parser.parse("""
+                define class Ordinary as
+                    x: int;
+                end
+                """);
+        Ast.Program declaration = Parser.parse("""
+                define pub inverted class RemoteSoa as
+                    x: int;
+                end
+                """);
+        Ast.ClassDecl linked = (Ast.ClassDecl) declaration.modules().getFirst()
+                .declarations().getFirst();
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.checkTypesWithImportedClasses(
+                        ordinary, java.util.Map.of("RemoteSoa", linked),
+                        java.util.Map.of()));
+    }
+
+    @Test
     void oldAstConstructorsDefaultToOrdinaryLayout() {
         Ast.ClassDecl classDecl = new Ast.ClassDecl(
                 "Legacy", Ast.Visibility.PRIVATE, false, Ast.ActorKind.NONE,
