@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.ReturnCleanupChecker;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
@@ -114,6 +115,35 @@ final class DopComputeCallSurfaceSyntaxTest {
                         || failure.getMessage().contains("type-qualified")
                         || failure.getMessage().contains("compound-place"),
                 failure::toString);
+    }
+
+    @Test
+    void cleanupAnalysisRejectsGenericTypeQualifierEvenWithoutNamedArguments() {
+        Ast.Program program = Parser.parse("""
+                pub fnc main(): void {
+                    Region<Motion>.new();
+                    return;
+                }
+                """);
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> ReturnCleanupChecker.check(program));
+        assertTrue(failure.getMessage().contains("type-qualified"), failure::toString);
+    }
+
+    @Test
+    void cleanupAnalysisRejectsCompoundPlaceBeforeSkippingItsEffects() {
+        Ast.Program program = Parser.parse("""
+                pub fnc main(): void {
+                    let x = 1;
+                    x += side_effect();
+                    return;
+                }
+                """);
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> ReturnCleanupChecker.check(program));
+        assertTrue(failure.getMessage().contains("compound-place"), failure::toString);
     }
 
     @Test
