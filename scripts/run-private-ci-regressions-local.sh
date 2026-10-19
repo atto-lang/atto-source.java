@@ -110,7 +110,7 @@ cases = list(each_test(suite))
 ids = [case.id() for case in cases]
 publisher = sum(".DestinationBoundPublisherTests." in identifier for identifier in ids)
 merged = sum(".MergedMainProvenanceTests." in identifier for identifier in ids)
-if (len(ids) < 121 or publisher < 111 or merged < 10
+if (len(ids) < 126 or publisher < 116 or merged < 10
         or publisher + merged != len(ids) or len(set(ids)) != len(ids)):
     raise SystemExit(
         "PRIVATE_CI_TEST_INVENTORY_REJECTED: "
@@ -130,6 +130,11 @@ required_publisher = {
     "test_unavailable_source_branch_protection_api_blocks_before_source_read",
     "test_unavailable_destination_branch_protection_api_blocks_first_blob",
     "test_destination_branch_protection_api_revoked_mid_upload",
+    "test_missing_source_main_codeowner_denies_before_source_read",
+    "test_source_main_codeowner_override_denies_before_source_read",
+    "test_source_main_codeowner_blob_tampering_denied",
+    "test_source_main_codeowner_api_unavailable_denied_before_source_read",
+    "test_source_codeowner_revocation_stops_next_private_blob",
     "test_github_api_absolute_cli_and_sanitized_environment",
     "test_github_api_rejects_missing_or_ambiguous_explicit_auth",
     "test_github_api_supports_single_actions_token_without_config",
