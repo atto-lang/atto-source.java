@@ -340,4 +340,14 @@ final class V3DefaultArgValsAdmissionTest {
                         f.parameters(), f.annotations()).stream()
                         .map(OptionalCallShapeBinder.Parameter::optional).toList());
     }
+
+    @Test
+    void forgedSelfCannotBecomeAUserDefaultArgument() {
+        var formal = new Ast.Param(Ast.TypeRef.simple("int"), "self");
+        var annotation = new Ast.Annotation("DefaultArgVals", List.of(),
+                List.of(new Ast.NamedDefault("self", Ast.TypeRef.intLiteral("5"))));
+        assertThrows(IllegalArgumentException.class, () ->
+                V3DefaultArgValsPolicy.validateDeclaration(
+                        List.of(formal), List.of(annotation)));
+    }
 }
