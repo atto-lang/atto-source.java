@@ -1200,7 +1200,9 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.AwaitExpr awaited) {
             checkSuspensionBorrows(scope, "await");
             ValueInfo awaitedValue = checkExpr(awaited.expression(), scope, consuming);
-            if (awaitedValue.type.name().equals("Future") && awaitedValue.type.arguments().size() == 1) {
+            if ((awaitedValue.type.name().equals("Future")
+                    || awaitedValue.type.name().equals("Task"))
+                    && awaitedValue.type.arguments().size() == 1) {
                 Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
                 return new ValueInfo(result, kindOfType(result), null);
             }
@@ -1354,7 +1356,7 @@ public final class OwnershipChecker {
             // No whole-frame Env snapshot or implicit actor-private aliases.
             task.bindCaptures(new ArrayList<>(captures.values.keySet()));
             return new ValueInfo(
-                    new Ast.TypeRef("Task", List.of(Ast.TypeRef.simple("void")), false),
+                    new Ast.TypeRef("Task", List.of(task.checkedResultType()), false),
                     ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
