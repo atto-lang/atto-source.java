@@ -47,10 +47,17 @@ final class ActorFinalizationCallbackIsolationTest {
                 assertTrue(factoryEntered.await(2, TimeUnit.SECONDS));
                 Object monitor = lifecycleLock(runtime, actor);
                 AtomicBoolean observedUnderMonitor = new AtomicBoolean(true);
-                actor.ready().whenCompleteRuntime((value, failure) ->
-                        observedUnderMonitor.set(Thread.holdsLock(monitor)));
+                CountDownLatch readyCallbackFinished = new CountDownLatch(1);
+                actor.ready().whenCompleteRuntime((value, failure) -> {
+                    try {
+                        observedUnderMonitor.set(Thread.holdsLock(monitor));
+                    } finally {
+                        readyCallbackFinished.countDown();
+                    }
+                });
                 releaseFactory.countDown();
                 actor.ready().get(3, TimeUnit.SECONDS);
+                assertTrue(readyCallbackFinished.await(2, TimeUnit.SECONDS));
                 assertFalse(observedUnderMonitor.get(),
                         "actor ready callback must execute without lifecycleLock");
             } finally {
@@ -69,15 +76,23 @@ final class ActorFinalizationCallbackIsolationTest {
             AtomicBoolean callbackHeldMonitor = new AtomicBoolean(true);
             AtomicBoolean hookHeldMonitor = new AtomicBoolean(true);
             AtomicInteger exits = new AtomicInteger();
+            CountDownLatch doneCallbackFinished = new CountDownLatch(1);
 
-            actor.done().whenCompleteRuntime((value, error) ->
-                    callbackHeldMonitor.set(Thread.holdsLock(monitor)));
+            actor.done().whenCompleteRuntime((value, error) -> {
+                try {
+                    callbackHeldMonitor.set(Thread.holdsLock(monitor));
+                } finally {
+                    doneCallbackFinished.countDown();
+                }
+            });
             runtime.setActorExitHook(domain -> {
                 hookHeldMonitor.set(Thread.holdsLock(monitor));
                 exits.incrementAndGet();
             });
             actor.stop();
             assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(doneCallbackFinished.await(2, TimeUnit.SECONDS),
+                    "terminal Future listener must run before assertions");
             assertEquals(1, exits.get(), "exit hook must run exactly once");
             assertFalse(hookHeldMonitor.get(), "exit hook under lifecycleLock");
             assertFalse(callbackHeldMonitor.get(), "done callback under lifecycleLock");
@@ -117,8 +132,14 @@ final class ActorFinalizationCallbackIsolationTest {
             });
             Object monitor = lifecycleLock(runtime, actor);
             AtomicBoolean callbackUnderMonitor = new AtomicBoolean(true);
-            actor.done().whenCompleteRuntime((value, error) ->
-                    callbackUnderMonitor.set(Thread.holdsLock(monitor)));
+            CountDownLatch doneCallbackFinished = new CountDownLatch(1);
+            actor.done().whenCompleteRuntime((value, error) -> {
+                try {
+                    callbackUnderMonitor.set(Thread.holdsLock(monitor));
+                } finally {
+                    doneCallbackFinished.countDown();
+                }
+            });
             actor.send("stop");
             try {
                 assertTrue(guestFinished.await(2, TimeUnit.SECONDS));
@@ -128,6 +149,7 @@ final class ActorFinalizationCallbackIsolationTest {
                 releaseContext.countDown();
             }
             assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(doneCallbackFinished.await(2, TimeUnit.SECONDS));
             assertFalse(callbackUnderMonitor.get());
         }
     }
