@@ -222,7 +222,7 @@ public final class ConcurrencyTestProbe {
             throw new IllegalArgumentException("invalid concurrency trace seed", invalid);
         }
         for (int i = 1; i < lines.size(); i++) {
-            if (!lines.get(i).matches("[a-z][a-z0-9-]{0,47}\\\\|[012]")) {
+            if (!lines.get(i).matches("[a-z][a-z0-9-]{0,47}\\|[012]")) {
                 throw new IllegalArgumentException("invalid concurrency event at " + i);
             }
         }
