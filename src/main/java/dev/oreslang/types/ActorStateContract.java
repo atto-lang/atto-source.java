@@ -221,6 +221,10 @@ public final class ActorStateContract {
                 && node instanceof Ast.CallExpr scalarIntrinsic
                 && scalarIntrinsic.callee() instanceof Ast.NameExpr intrinsicName
                 && intrinsicName.name().equals("state_snapshot")) {
+            if (nestedClosure) {
+                throw new IllegalArgumentException(
+                        "state_snapshot cannot capture an actor state loan in a nested closure");
+            }
             if (scalarIntrinsic.typeArgumentsPresent()
                     || scalarIntrinsic.arguments().size() < 3
                     || !(scalarIntrinsic.arguments().getFirst() instanceof Ast.NameExpr loan)
@@ -243,6 +247,10 @@ public final class ActorStateContract {
                 && node instanceof Ast.CallExpr scalarIntrinsic
                 && scalarIntrinsic.callee() instanceof Ast.NameExpr intrinsicName
                 && intrinsicName.name().equals("publish_scalar_publication")) {
+            if (nestedClosure) {
+                throw new IllegalArgumentException(
+                        "publish_scalar_publication cannot capture an actor state loan in a nested closure");
+            }
             if (scalarIntrinsic.typeArgumentsPresent()
                     || scalarIntrinsic.arguments().size() != 2
                     || !(scalarIntrinsic.arguments().getFirst() instanceof Ast.NameExpr loan)
