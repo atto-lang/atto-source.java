@@ -23,6 +23,14 @@ def job(conclusion="failure", steps=None, **kwargs):
 
 
 class ClassifierTests(unittest.TestCase):
+    def test_non_string_run_status_and_conclusion_fail_closed(self):
+        for field in ("status", "conclusion"):
+            for bad in ([], {}, 17, True):
+                with self.subTest(field=field, bad=bad):
+                    damaged = dict(RUN, **{field: bad})
+                    with self.assertRaises(m.TriageError):
+                        m.classify(damaged, [job(steps=[])], SHA)
+
     def test_explicit_empty_vs_null_vs_missing(self):
         self.assertEqual(m.classify(RUN, [job(steps=[])], SHA),
                          "observed_no_step_failure")
