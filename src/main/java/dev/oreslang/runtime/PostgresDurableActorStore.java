@@ -101,8 +101,27 @@ public final class PostgresDurableActorStore implements DurableActorStore {
         });
     }
 
-    /** Returned owner is a host-only fencing credential, not a guest actor value. */
-    public record LeaseActivation(Activation activation, UUID owner) { }
+    /**
+     * A host-only, store-issued activation capability. Unlike a public record,
+     * callers cannot manufacture an owner credential or detach one activation
+     * from the tenant-scoped address at which its lease was acquired.
+     * Never expose this object to untrusted guest code.
+     */
+    public static final class LeaseActivation {
+        private final Address address;
+        private final Activation activation;
+        private final UUID owner;
+
+        private LeaseActivation(Address address, Activation activation, UUID owner) {
+            this.address = Objects.requireNonNull(address, "address");
+            this.activation = Objects.requireNonNull(activation, "activation");
+            this.owner = Objects.requireNonNull(owner, "owner");
+        }
+
+        public Address address() { return address; }
+        public Activation activation() { return activation; }
+        public UUID owner() { return owner; }
+    }
 
     private static final Duration LEASE_LENGTH = Duration.ofSeconds(30);
 
@@ -175,7 +194,7 @@ public final class PostgresDurableActorStore implements DurableActorStore {
                     while (rs.next()) outbox.add(new Outbound(rs.getString(1), rs.getString(2), rs.getBytes(3)));
                 }
             }
-            return new LeaseActivation(new Activation(current + 1, snap, inbox, outbox), owner);
+            return new LeaseActivation(key, new Activation(current + 1, snap, inbox, outbox), owner);
         });
     }
 
