@@ -75,8 +75,10 @@ def checked_repo(repository, expected_id):
             or not isinstance(result.get("full_name"), str)
             or result["full_name"].casefold() != repository.casefold()
             or result.get("visibility") != "private"
-            or result.get("private") is not True):
-        raise Denied("destination identity, immutable ID, or private visibility changed")
+            or result.get("private") is not True
+            or result.get("permissions", {}).get("push") is not True):
+        raise Denied(
+            "destination identity, immutable ID, private visibility, or write permission changed")
     return result
 
 
