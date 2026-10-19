@@ -89,8 +89,7 @@ public final class ActorShardColumns implements AutoCloseable {
     }
 
     @Override public void close() {
-        requireOwner();
-        reservation.close();
+        reservation.close(); // owner-checked and idempotent; reads remain revoked
     }
 
     private int offset(int row, int field) {
