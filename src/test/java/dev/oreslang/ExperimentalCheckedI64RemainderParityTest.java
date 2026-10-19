@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.compiler.ExperimentalHirV1Exporter;
 import dev.oreslang.runtime.CheckedI64DivisionByZeroException;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -54,6 +55,15 @@ final class ExperimentalCheckedI64RemainderParityTest {
     void minimumRemainderMinusOneIsZeroNotOverflow() throws Exception {
         assertEquals(43, expression(
             "(((-9223372036854775807 - 1) % -1) == 0) ? 43 : 1"));
+    }
+
+    @Test
+    void checkedRuntimeRemainderIsNotYetRepresentableAsExperimentalCommonHir() {
+        String src = HEADER + "pub fnc main(): int {return 43 % 2;}\n";
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> ExperimentalHirV1Exporter.fromSource(src));
+        assertTrue(error.getMessage().contains("experimental HIR v1 rejects"),
+                "HIR must not silently advertise unsupported '%' as checked MIR");
     }
 
     @Test
