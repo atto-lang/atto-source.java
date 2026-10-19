@@ -97,25 +97,18 @@ the standalone static index; the executable enum frontend remains gated.
   private enum schemas belonging to the ancestor's defining module.
   Unrelated private classes and enums remain outside that dependency set. These fingerprints enable
   cache invalidation; they are **not** authenticated call-site metadata.
-- `ImportGraph.validateLinkedImports` currently **rejects** cross-source
-  import of any public callable carrying `@CallerRole` **or** `@CallableBy`,
-  as well as public class/actor static methods bearing either annotation.
-  A role grant is security-relevant provenance, not merely metadata:
-  importing an annotated grant through an erased signature is unsafe
-  even when the callable itself has no `@CallableBy` restriction.
-  This includes role-bearing inherited public methods selected through
-  class imports and module/wildcard selectors. It also rejects
-  import of a protected public function or class static method, and module or
-  wildcard imports that expose one, including protected public static
-  class methods reachable through whole-module imports and imported
-  subclasses inheriting protected public methods. The import actor selector
-  also checks guarded public static functions of imported actor classes.
-  Inherited method
-  resolution requires verified local parent identities; unresolved
-  ancestors fail closed until authenticated cross-file class ancestry
-  contracts are available. A plain exported
-  sibling function can still be imported. This deliberately blocks a loss of `@CallableBy` when
-  an importer only sees an erased function signature.
+- `ImportGraph.validateLinkedImports` currently **rejects** unauthenticated
+  cross-source imports exposing a public `@CallerRole` **grant** or
+  `@CallableBy` **restriction**. Both are security-relevant callable metadata.
+  Named function imports, module/wildcard selectors and exported class/actor
+  static functions are covered, including public inherited callable surfaces.
+  Whole-module/wildcard scans also inspect role-bearing public actor callables.
+  A private class ancestor can expose an annotated public static method
+  through a public subclass; unknown/cyclic parent identity fails closed.
+  This blocks both role-grant and role-restriction erasure through imported
+  signatures or record-like namespace projections until an authenticated
+  declaration/role-enum import binder exists. Unannotated unrelated public
+  sibling functions remain importable under their normal visibility rules.
 - Future policy-bearing imported declarations require exact source identity,
   authenticated linker-bound symbol IDs, verified role enum provenance and
   override-compatible policy. Do not relax the import rejection based on a
