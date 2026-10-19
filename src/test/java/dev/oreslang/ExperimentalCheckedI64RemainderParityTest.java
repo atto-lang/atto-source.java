@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.ExperimentalHirV1Exporter;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.runtime.CheckedI64DivisionByZeroException;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -200,5 +201,32 @@ final class ExperimentalCheckedI64RemainderParityTest {
             checked++;
         }
         assertEquals(27, checked);
+    }
+
+    @Test
+    void arithmeticFailuresMustPassCompilationBeforeRuntimeClassification() {
+        for (String expression : new String[] {
+            "43 % 0",
+            "(-9223372036854775807 - 1) % 0",
+            "(9223372036854775807 + 1) % 3",
+            "43 % (9223372036854775807 + 1)"
+        }) {
+            String source = HEADER + "pub fnc main(): int { return "
+                    + expression + "; }\n";
+            assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source),
+                    "correctly formed checked runtime failure should not be a parse/type diagnostic: "
+                    + expression);
+            RuntimeException failure = assertThrows(RuntimeException.class,
+                    () -> run(source), "linked guest must classify arithmetic failure");
+            boolean expectedOverflow = expression.contains("9223372036854775807 + 1");
+            boolean found = false;
+            for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+                String message = String.valueOf(cause.getMessage());
+                found |= expectedOverflow
+                        ? message.contains("ORES_I64_OVERFLOW")
+                        : message.contains("ORES_I64_DIVISION_BY_ZERO");
+            }
+            assertTrue(found, "wrong runtime error category for " + expression);
+        }
     }
 }
