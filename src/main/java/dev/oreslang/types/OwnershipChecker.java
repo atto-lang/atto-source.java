@@ -39,9 +39,11 @@ public final class OwnershipChecker {
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    private final Set<String> ambiguousTypeAliases = new HashSet<>();
     /** Only bindings admitted as new short aliases by the type checker. */
     private final Map<Ast.BindingStmt, String> validatedShortAliases;
     private int mutexCriticalSectionDepth;
@@ -114,6 +116,9 @@ public final class OwnershipChecker {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
                 else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    index(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias);
+                }
             }
         }
     }
@@ -859,12 +864,15 @@ public final class OwnershipChecker {
                         || binding.mutableReferent()
                         || binding.declaredType() == null
                         || !binding.declaredType().name().equals(shortAlias)
-                        || !(binding.initializer() instanceof Ast.ObjectExpr object
-                             && object.inferredAggregate()))) {
+                        || !((binding.initializer() instanceof Ast.ObjectExpr object
+                             && object.inferredAggregate())
+                             || (binding.initializer() instanceof Ast.TupleExpr tuple
+                                 && !tuple.elements().isEmpty())))) {
                 throw error("invalid validated short inferred type alias");
             }
             if (value.type.name().equals("$infer$")
-                    || shortAlias != null && !value.type.isClosedAggregateType()) {
+                    || shortAlias != null && !(value.type.isClosedAggregateType()
+                            || value.type.isTupleType())) {
                 throw error("cannot bind inferred alias '" + inferredAlias
                         + "' to an unknown or non-aggregate ownership type");
             }
@@ -3591,11 +3599,77 @@ public final class OwnershipChecker {
         return captured;
     }
 
+    private Ast.TypeRef expandIndexedTypeAlias(
+            Ast.TypeRef type, Set<Ast.TypeAliasDecl> seen) {
+        if (type == null) return Ast.TypeRef.inferred();
+        Ast.TypeAliasDecl alias = findOwnershipTypeAlias(type.name());
+        if (alias == null) return type;
+        if (!seen.add(alias)) {
+            throw error("type alias cycle involving '" + alias.name()
+                    + "' during indexed ownership analysis");
+        }
+        try {
+            if (alias.genericParameters().size() != type.arguments().size()) {
+                throw error("type alias '" + alias.name() + "' expects "
+                        + alias.genericParameters().size() + " type argument(s), got "
+                        + type.arguments().size());
+            }
+            Map<String, Ast.TypeRef> bindings = new HashMap<>();
+            for (int i = 0; i < alias.genericParameters().size(); i++) {
+                bindings.put(alias.genericParameters().get(i), type.arguments().get(i));
+            }
+            return expandIndexedTypeAlias(substituteType(alias.target(), bindings), seen);
+        } finally {
+            seen.remove(alias);
+        }
+    }
+
+    private Ast.TypeAliasDecl findOwnershipTypeAlias(String name) {
+        if (ambiguousTypeAliases.contains(name)) {
+            throw error("ambiguous type alias '" + name
+                    + "'; qualify it with its module");
+        }
+        return typeAliases.get(name);
+    }
+
+    private Ast.TypeRef indexedTupleType(Ast.TypeRef type) {
+        if (type.isTupleType()) return type;
+        if (!type.name().equals("Tuple")) return null;
+
+        Ast.TypeRef shape = null;
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (argument.isSequenceShape()) {
+                if (shape != null) return null;
+                shape = argument;
+            } else if (!argument.isNamedParameter()) {
+                return null;
+            }
+        }
+        if (shape == null) return null;
+
+        List<Ast.TypeRef> slots = new ArrayList<>();
+        for (Ast.TypeRef pattern : shape.arguments()) {
+            if (pattern.isRepeatMany()) return null;
+            if (pattern.isRepeatExact()) {
+                long count = pattern.repeatExactCount();
+                if (count > 1_000_000L || pattern.arguments().size() != 1) return null;
+                Ast.TypeRef repeated = pattern.arguments().getFirst();
+                if (repeated.isRepeatMany() || repeated.isRepeatExact()
+                        || repeated.isSequenceShape()) return null;
+                for (long i = 0; i < count; i++) slots.add(repeated);
+            } else {
+                slots.add(pattern);
+            }
+        }
+        return slots.isEmpty() ? null : Ast.TypeRef.tupleType(slots);
+    }
+
     private Ast.TypeRef indexedElementType(
             Ast.IndexExpr indexed, Ast.TypeRef receiverType, Scope scope) {
         if (receiverType == null) return Ast.TypeRef.inferred();
         Ast.TypeRef concrete = receiverType.isBorrow()
                 ? receiverType.borrowedTarget() : receiverType;
+        concrete = expandIndexedTypeAlias(concrete, new HashSet<>());
 
         Object constantIndex = computedIndexConstant(indexed.index(), scope);
 
@@ -3608,13 +3682,14 @@ public final class OwnershipChecker {
             return Ast.TypeRef.union(new ArrayList<>(members.values()));
         }
 
-        if (concrete.isTupleType()) {
+        Ast.TypeRef tupleType = indexedTupleType(concrete);
+        if (tupleType != null) {
             if (constantIndex instanceof Long raw
-                    && raw >= 0 && raw < concrete.arguments().size()) {
-                return concrete.arguments().get(raw.intValue());
+                    && raw >= 0 && raw < tupleType.arguments().size()) {
+                return tupleType.arguments().get(raw.intValue());
             }
-            if (concrete.arguments().isEmpty()) return Ast.TypeRef.inferred();
-            return Ast.TypeRef.union(concrete.arguments());
+            if (tupleType.arguments().isEmpty()) return Ast.TypeRef.inferred();
+            return Ast.TypeRef.union(tupleType.arguments());
         }
 
         if ((concrete.name().equals("Array") || concrete.name().equals("List"))
