@@ -52,17 +52,17 @@ final class ActorTransportSendSyncParityTest {
 
     @Test
     void trustedActorMailboxesRetainExplicitActorRefRouting() {
-        for (String kind : new String[] { "shared", "private" }) {
+        for (String actorKeyword : new String[] { "actor", "isoactor" }) {
             String source = """
                     define actor Endpoint as
                       receive(ActorMail<String> mail): void { return; }
                     end
 
-                    define %s actor Router as
+                    define %s Router as
                       receive(ActorMail<ActorRef<Endpoint>> mail): void { return; }
                     end
-                    """.formatted(kind);
-            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)), kind);
+                    """.formatted(actorKeyword);
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)), actorKeyword);
         }
     }
 
