@@ -271,6 +271,84 @@ final class ActorRuntimePhysicalMailReceiptTest {
         }
     }
 
+    /**
+     * A broken embedder/dispatcher may fail with more than the conventional
+     * RejectedExecutionException. Even if its execute() method enqueues a
+     * runnable and then throws, physical mailbox admission must fail-stop the
+     * actor and never let that old dispatch ticket run after termination.
+     */
+    private static void assertUnexpectedCarrierSubmissionFailure(Throwable injected)
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var processed = new AtomicInteger();
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> processed.incrementAndGet());
+            actor.getReady().get(5, TimeUnit.SECONDS);
+
+            var dispatcherField = ActorRuntime.class.getDeclaredField(
+                    "sharedDispatcher");
+            dispatcherField.setAccessible(true);
+            var original = (java.util.concurrent.ExecutorService)
+                    dispatcherField.get(runtime);
+            var captured = new AtomicReference<Runnable>();
+            java.util.concurrent.ExecutorService faulted =
+                    new java.util.concurrent.AbstractExecutorService() {
+                private volatile boolean stopped;
+
+                @Override public void execute(Runnable command) {
+                    captured.set(command);
+                    if (injected instanceof Error fatal) throw fatal;
+                    throw (RuntimeException) injected;
+                }
+
+                @Override public void shutdown() { stopped = true; }
+                @Override public java.util.List<Runnable> shutdownNow() {
+                    stopped = true;
+                    return java.util.List.of();
+                }
+                @Override public boolean isShutdown() { return stopped; }
+                @Override public boolean isTerminated() { return stopped; }
+                @Override public boolean awaitTermination(
+                        long timeout, TimeUnit unit) { return stopped; }
+            };
+            dispatcherField.set(runtime, faulted);
+            try {
+                // The physical mailbox already accepted this mail before
+                // schedule() asks the deliberately broken executor to run it.
+                Throwable actual = assertThrows(Throwable.class,
+                        () -> runtime.sendWithPhysicalReceipt(actor, 1));
+                assertSame(injected, actual);
+            } finally {
+                dispatcherField.set(runtime, original);
+            }
+
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
+                    "a failed carrier submission must terminally close the actor");
+            assertEquals(0, processed.get());
+            assertNotNull(captured.get(),
+                    "the executor captured a possibly accepted dispatch");
+            captured.get().run(); // delayed stale runnable must remain inert
+            assertEquals(0, processed.get(),
+                    "failed dispatch cannot revive a stopped physical actor");
+            assertThrows(IllegalStateException.class,
+                    () -> runtime.sendWithPhysicalReceipt(actor, 2));
+        }
+    }
+
+    @Test
+    void unexpectedDispatchRuntimeFailureFailsStopAcceptedPhysicalMail()
+            throws Exception {
+        assertUnexpectedCarrierSubmissionFailure(
+                new IllegalStateException("injected executor implementation failure"));
+    }
+
+    @Test
+    void unexpectedDispatchErrorFailsStopAcceptedPhysicalMail()
+            throws Exception {
+        assertUnexpectedCarrierSubmissionFailure(
+                new AssertionError("injected carrier callback allocation failure"));
+    }
+
     @Test
     void physicalSequencesArePerActorNotLogicalProxySequenceNumbers()
             throws Exception {
