@@ -1657,6 +1657,73 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_noncanonical_policy_line_separators_cannot_grant_approval(self):
+        # Unicode-aware splitlines must never create an approving entry from
+        # a comment. No private source bytes or destination writes are allowed.
+        pinned = self.expected_source_tree()
+        for separator in (b"\r", b"\x0b", b"\x0c", b"\xc2\x85",
+                          b"\xe2\x80\xa8", b"\xe2\x80\xa9"):
+            with self.subTest(separator=separator):
+                self.route_calls.clear()
+                self.approval.write_bytes(b"# comment" + separator + b"trusted/ci\n")
+                with patch.object(pub, "gh_api", side_effect=self.fake_api):
+                    with patch.object(pub, "collect_source",
+                                      side_effect=AssertionError("source read")):
+                        with self.assertRaisesRegex(pub.Denied, "noncanonical ASCII LF"):
+                            pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                        self.root, pinned, 1286, A)
+                self.assertFalse(any(method == "POST"
+                                     for method, _, _ in self.route_calls))
+
+    def test_source_codeowners_line_separators_are_denied_before_source_read(self):
+        pinned = self.expected_source_tree()
+        good = self.source_codeowners
+        for separator in (b"\r", b"\x0b", b"\x0c", b"\xc2\x85",
+                          b"\xe2\x80\xa8", b"\xe2\x80\xa9"):
+            with self.subTest(separator=separator):
+                self.route_calls.clear()
+                self.source_codeowners = b"# comment" + separator + good
+                with patch.object(pub, "gh_api", side_effect=self.fake_api):
+                    with patch.object(pub, "collect_source",
+                                      side_effect=AssertionError("source read")):
+                        with self.assertRaisesRegex(pub.Denied, "noncanonical ASCII LF"):
+                            pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                        self.root, pinned, 1286, A)
+                self.assertFalse(any(method == "POST"
+                                     for method, _, _ in self.route_calls))
+        self.source_codeowners = good
+
+    def test_destination_codeowners_line_separators_are_denied_before_upload(self):
+        pinned = self.expected_source_tree()
+        good = self.destination_codeowners
+        for separator in (b"\r", b"\x0b", b"\x0c", b"\xc2\x85",
+                          b"\xe2\x80\xa8", b"\xe2\x80\xa9"):
+            with self.subTest(separator=separator):
+                self.route_calls.clear()
+                self.destination_codeowners = b"# comment" + separator + good
+                with patch.object(pub, "gh_api", side_effect=self.fake_api):
+                    with self.assertRaisesRegex(pub.Denied, "noncanonical ASCII LF"):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root, pinned, 1286, A)
+                self.assertFalse(any(method == "POST"
+                                     for method, _, _ in self.route_calls))
+        self.destination_codeowners = good
+
+    def test_invalid_utf8_and_control_byte_records_fail_closed(self):
+        pinned = self.expected_source_tree()
+        for byte in (b"\x00", b"\x01", b"\t", b"\x7f", b"\xff"):
+            with self.subTest(byte=byte):
+                self.route_calls.clear()
+                self.approval.write_bytes(b"# comment" + byte + b"trusted/ci\n")
+                with patch.object(pub, "gh_api", side_effect=self.fake_api):
+                    with patch.object(pub, "collect_source",
+                                      side_effect=AssertionError("source read")):
+                        with self.assertRaisesRegex(pub.Denied, "noncanonical ASCII LF"):
+                            pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                        self.root, pinned, 1286, A)
+                self.assertFalse(any(method == "POST"
+                                     for method, _, _ in self.route_calls))
+
     def test_symlinked_approval_policy_fails_before_upload(self):
         self.approval.unlink()
         self.approval.symlink_to(self.source / "hello.ores")
