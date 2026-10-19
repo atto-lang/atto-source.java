@@ -360,6 +360,62 @@ public class TaskCancellationTest {
         }
     }
 
+    @Test void retirementDuringRevocationDeliversPreAdmittedObserver()
+            throws Exception {
+        for (int i = 0; i < 100; i++) {
+            TaskCancellation token = new TaskCancellation();
+            CountDownLatch revokerStarted = new CountDownLatch(1);
+            CountDownLatch finishRevocation = new CountDownLatch(1);
+            AtomicInteger notifications = new AtomicInteger();
+            java.util.concurrent.atomic.AtomicReference<Throwable> error =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+
+            token.onRevoke(() -> {
+                revokerStarted.countDown();
+                await(finishRevocation);
+            });
+            token.onCancel(notifications::incrementAndGet);
+            Thread cancellation = new Thread(() -> {
+                try { token.cancel("shutdown"); }
+                catch (Throwable failure) { error.set(failure); }
+            });
+            cancellation.start();
+            try {
+                assertTrue(revokerStarted.await(3, TimeUnit.SECONDS),
+                        "revocation never reached the blocking hook");
+                assertTrue(token.isCancelled());
+                token.retire();
+                assertEquals(0, notifications.get(),
+                        "observer must await the revocation barrier");
+                assertFalse(token.cancel("after retirement"));
+                token.onCancel(() -> notifications.addAndGet(100));
+            } finally {
+                finishRevocation.countDown();
+            }
+            cancellation.join(3000);
+            assertFalse(cancellation.isAlive());
+            assertNull(error.get());
+            assertEquals(1, notifications.get(),
+                    "retirement must not discard observers admitted before cancel");
+        }
+    }
+
+    @Test void reentrantRetirementCannotDropCancellationObserver() {
+        for (int i = 0; i < 100; i++) {
+            TaskCancellation token = new TaskCancellation();
+            AtomicInteger notifications = new AtomicInteger();
+            token.onCancel(notifications::incrementAndGet);
+            token.onRevoke(token::retire);
+            assertTrue(token.cancel("stop"));
+            assertEquals(1, notifications.get(),
+                    "retiring inside a revoker must preserve committed observers");
+            assertFalse(token.cancel("again"));
+            token.onCancel(() -> notifications.addAndGet(100));
+            assertEquals(1, notifications.get(),
+                    "post-retirement subscribers must not be called");
+        }
+    }
+
     private static void await(CountDownLatch latch) {
         try { if (!latch.await(3, TimeUnit.SECONDS)) throw new AssertionError("timed out"); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
