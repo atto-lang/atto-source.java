@@ -673,6 +673,11 @@ Bracket access is also the computed-property form for fixed products. It does
 - Dynamic class access never bypasses visibility. If an arbitrary runtime key
   could select an inaccessible field, the access is rejected rather than
   creating a private-field side channel.
+- Class computed access is bounded by the receiver's **static class view**, not
+  by the most-derived runtime object. If a `Parent` reference holds a `Child`,
+  `parent[key]` may select only fields admitted by `Parent`; child-only fields
+  remain inaccessible through that view. The same rule applies to computed
+  writes and inherited parent methods executing on child instances.
 - Structural records are readonly, and tuples are immutable product values.
   Indexed writes are therefore rejected for both.
 - Concrete structs may be written through `[]` only through a mutable
