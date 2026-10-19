@@ -5120,9 +5120,21 @@ public final class TypeChecker {
             validateActorCallableBoundaryType(argument, actorKind, false, where + " type argument", depth + 1, budget);
         }
 
-        // Built-in sum/container values are data-only when their arguments pass.
-        if (named.name().equals("Option") || named.name().equals("Result")
-                || named.name().equals("OptionUnwrapError")) {
+        // Built-in sum/container values are data-only only with their
+        // canonical generic arities. A forged Named type must not acquire an
+        // actor transport contract merely by using a built-in's spelling.
+        int expectedDataArity = switch (named.name()) {
+            case "Option" -> 1;
+            case "Result" -> 2;
+            case "OptionUnwrapError" -> 0;
+            default -> -1;
+        };
+        if (expectedDataArity >= 0) {
+            if (named.arguments().size() != expectedDataArity) {
+                throw new IllegalArgumentException(
+                        where + " requires " + named.name() + " to have "
+                                + expectedDataArity + " type arguments");
+            }
             return;
         }
 
