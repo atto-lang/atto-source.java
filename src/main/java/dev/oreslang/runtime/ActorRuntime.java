@@ -7343,7 +7343,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // dispatcher supports physical CPU pinning.
                 if (dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes) {
                     int cpu = lanes.cpuForLane(dispatchLane);
-                    if (cpu >= 0) NativeCarrierExecutor.bindCurrentThreadToCpu(cpu);
+                    if (cpu >= 0) NativeCarrierExecutor.ensureCurrentCarrierCpu(cpu);
                 }
                 // TurnExecutor is a synchronous host context boundary, not
                 // an independent scheduler. A broken host must not suppress a
