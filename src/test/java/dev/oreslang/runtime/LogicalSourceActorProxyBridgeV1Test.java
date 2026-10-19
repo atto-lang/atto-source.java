@@ -657,6 +657,57 @@ final class LogicalSourceActorProxyBridgeV1Test {
     }
 
     @Test
+    void terminalUpgradeFailureCannotPublishPoisonAheadOfAnAdmissionLockHolder()
+            throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("poison-lock-v1.ores", V1);
+            try (var bridge = LogicalSourceActorProxyBridgeV1.spawnShared(
+                    first, "Counter", WAIT, 2, 8, 16)) {
+                var field = LogicalSourceActorProxyBridgeV1.class
+                        .getDeclaredField("admissionLock");
+                field.setAccessible(true);
+                Object admission = field.get(bridge);
+                var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+                Thread upgrader;
+                synchronized (admission) {
+                    upgrader = Thread.ofPlatform().start(() -> {
+                        try {
+                            // Exact current generation is a forbidden
+                            // replacement. The failure must seal ingress.
+                            bridge.upgradeTo(first, WAIT);
+                            failure.set(new AssertionError(
+                                    "same-generation upgrade should reject"));
+                        } catch (IllegalArgumentException expected) {
+                            failure.set(expected);
+                        } catch (Throwable unexpected) {
+                            failure.set(unexpected);
+                        }
+                    });
+                    long deadline = System.nanoTime()
+                            + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+                    while (upgrader.getState() != Thread.State.BLOCKED
+                            && System.nanoTime() < deadline) {
+                        Thread.sleep(2);
+                    }
+                    assertEquals(Thread.State.BLOCKED, upgrader.getState(),
+                            "upgrade must await the authoritative admission-lock seal");
+                    assertFalse(bridge.failSealed(),
+                            "poison cannot become observable ahead of admission fence");
+                }
+                upgrader.join(10000);
+                assertFalse(upgrader.isAlive());
+                assertInstanceOf(IllegalArgumentException.class, failure.get());
+                assertTrue(bridge.failSealed());
+                assertThrows(IllegalStateException.class,
+                        () -> bridge.admitLong(1L),
+                        "no envelope may enter after terminal poisoning");
+                assertEquals(0, bridge.snapshot().retainedMessages());
+            }
+        }
+    }
+
+    @Test
     void schedulerTerminalCarrierCannotBlockOnProxyEpochOrAdmissionMonitors()
             throws Exception {
         try (HotReloadManager manager = new HotReloadManager(
