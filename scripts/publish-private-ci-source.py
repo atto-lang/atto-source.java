@@ -37,11 +37,11 @@ SOURCE_METADATA_ROUTE = "repos/" + SOURCE_REPOSITORY
 PROTECTED_BRANCH_ROUTE = SOURCE_METADATA_ROUTE + "/branches/main"
 PROTECTED_POLICY_ROUTE = (
     SOURCE_METADATA_ROUTE + "/contents/"
-    ".github/private-ci-approved-repositories.txt?ref=main"
+    ".github/private-ci-approved-repositories.txt"
 )
 REVIEWED_SNAPSHOTS_ROUTE = (
     SOURCE_METADATA_ROUTE + "/contents/"
-    ".github/private-ci-approved-source-snapshots.txt?ref=main"
+    ".github/private-ci-approved-source-snapshots.txt"
 )
 SOURCE_SNAPSHOT_ENTRY = re.compile(
     r"^([a-f0-9]{40}) ([a-f0-9]{40}) ([1-9][0-9]{0,19}) ([a-f0-9]{40}) ([a-f0-9]{40})$"
@@ -51,8 +51,8 @@ CARRIER_SOURCE_ENTRY = re.compile(
     r"^([a-f0-9]{40}) ([a-f0-9]{40}) ([1-9][0-9]{0,19}) ([1-9][0-9]{0,19})$"
 )
 PROTECTED_REVIEWS_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection/required_pull_request_reviews"
-CODEOWNERS_ROUTE = SOURCE_METADATA_ROUTE + "/contents/.github/CODEOWNERS?ref=main"
-CODEOWNERS_ERRORS_ROUTE = SOURCE_METADATA_ROUTE + "/codeowners/errors?ref=main"
+CODEOWNERS_ROUTE = SOURCE_METADATA_ROUTE + "/contents/.github/CODEOWNERS"
+CODEOWNERS_ERRORS_ROUTE = SOURCE_METADATA_ROUTE + "/codeowners/errors"
 CODEOWNER_PERMISSION_ROUTE = SOURCE_METADATA_ROUTE + "/collaborators/ORESoftware/permission"
 # The last matching CODEOWNERS entry wins. Require a terminal set of exact
 # entries so a later wildcard or missing entry cannot silently undo ownership.
@@ -125,6 +125,11 @@ def nested_sha(response, member):
     if not isinstance(value, dict):
         raise Denied("GitHub returned malformed object metadata")
     return valid_sha(value.get("sha"))
+
+
+def at_ref(route, revision):
+    """Bind security-sensitive GitHub content reads to one immutable commit."""
+    return route + "?ref=" + valid_sha(revision)
 
 
 # Executables are resolved only from controlled system directories; a caller's
@@ -340,14 +345,14 @@ def checked_policy_fingerprint(root, repository):
     return hashlib.sha256(contents).digest(), approved_id, git_blob_sha
 
 
-def require_protected_source_codeowners():
-    """Require terminal, exact security owners from the source's protected main.
+def require_protected_source_codeowners(reviewed_main_sha):
+    """Require terminal, exact security owners from the authenticated source commit.
 
     GitHub's require_code_owner_reviews=true is insufficient when no
     CODEOWNERS entry matches the private exporter or the snapshot policy.
     A final explicitly owned entry overrides any earlier wildcard.
     """
-    metadata = gh_api(CODEOWNERS_ROUTE)
+    metadata = gh_api(at_ref(CODEOWNERS_ROUTE, reviewed_main_sha))
     if (metadata.get("type") != "file" or metadata.get("encoding") != "base64"
             or not isinstance(metadata.get("content"), str)
             or len(metadata["content"]) > 24 * 1024
@@ -377,7 +382,7 @@ def require_protected_source_codeowners():
     # The CODEOWNERS text can be syntactically well-formed yet ignored by
     # GitHub (for example, a non-existent owner or invalid pattern). Ask
     # GitHub's CODEOWNERS validator about the protected main revision.
-    errors = gh_api(CODEOWNERS_ERRORS_ROUTE)
+    errors = gh_api(at_ref(CODEOWNERS_ERRORS_ROUTE, reviewed_main_sha))
     if not isinstance(errors.get("errors"), list) or errors["errors"]:
         raise Denied("protected source CODEOWNERS is invalid according to GitHub")
     # An @username entry counts only when the referenced GitHub user has
@@ -392,15 +397,15 @@ def require_protected_source_codeowners():
 
 
 
-def require_protected_carrier_codeowners(repository):
-    """Prove carrier workflows have an effective independent security owner.
+def require_protected_carrier_codeowners(repository, carrier_main_sha):
+    """Prove carrier workflows at the pinned main commit have a security owner.
 
     GitHub's require_code_owner_reviews flag can be true even when no
     CODEOWNERS rule covers the inherited Actions workflows. An unreviewed
     workflow would execute on a transferred private-source branch.
     """
     route = f"repos/{repository}"
-    metadata = gh_api(route + "/contents/.github/CODEOWNERS?ref=main")
+    metadata = gh_api(at_ref(route + "/contents/.github/CODEOWNERS", carrier_main_sha))
     if (metadata.get("type") != "file" or metadata.get("encoding") != "base64"
             or not isinstance(metadata.get("content"), str)
             or len(metadata["content"]) > 24 * 1024
@@ -427,7 +432,7 @@ def require_protected_carrier_codeowners(repository):
                 "/.github/workflows/ " + REQUIRED_CODEOWNER]
     if effective[-len(expected):] != expected:
         raise Denied("private carrier workflows lack terminal security CODEOWNER coverage")
-    errors = gh_api(route + "/codeowners/errors?ref=main")
+    errors = gh_api(at_ref(route + "/codeowners/errors", carrier_main_sha))
     if not isinstance(errors.get("errors"), list) or errors["errors"]:
         raise Denied("private carrier CODEOWNERS has GitHub validation errors")
     access = gh_api(route + "/collaborators/ORESoftware/permission")
@@ -440,11 +445,13 @@ def require_protected_carrier_codeowners(repository):
 
 
 def require_carrier_source_approval(repository, expected_commit, expected_tree,
-                                    reviewed_blob_sha=None):
-    """Require an independently reviewed exact source tuple on carrier main."""
+                                    carrier_main_sha, reviewed_blob_sha=None):
+    """Require an exact source tuple from the authenticated carrier-main commit."""
     valid_sha(expected_commit)
     valid_sha(expected_tree)
-    route = f"repos/{repository}/contents/{CARRIER_APPROVAL_PATH}?ref=main"
+    route = at_ref(
+        f"repos/{repository}/contents/{CARRIER_APPROVAL_PATH}",
+        carrier_main_sha)
     metadata = gh_api(route)
     if (metadata.get("type") != "file" or metadata.get("encoding") != "base64"
             or not isinstance(metadata.get("content"), str)
@@ -565,8 +572,8 @@ def require_protected_main_policy(approved_policy):
                 not isinstance(allowances.get(key, []), list)
                 or allowances.get(key) for key in ("users", "teams", "apps")):
             raise Denied("branch review bypass allowances are not permitted")
-    require_protected_source_codeowners()
-    metadata = gh_api(PROTECTED_POLICY_ROUTE)
+    require_protected_source_codeowners(protected_main_sha)
+    metadata = gh_api(at_ref(PROTECTED_POLICY_ROUTE, protected_main_sha))
     if (metadata.get("type") != "file"
             or valid_sha(metadata.get("sha")) != approved_policy[2]):
         raise Denied("destination policy is not approved on protected source main")
@@ -683,8 +690,8 @@ def verify_source_commit(expected_source_commit, expected_source_tree):
 
 
 def require_reviewed_source_snapshot(expected_commit, expected_tree, destination_id,
-                                     reviewed_blob_sha=None):
-    """Require source + destination + exact protected carrier-main revision.
+                                     reviewed_main_sha, reviewed_blob_sha=None):
+    """Require source + destination + carrier revision from one reviewed source commit.
 
     Source authorization is invalid if the carrier workflows/root tree change:
     a new protected carrier main commit/tree requires fresh source-side review.
@@ -693,7 +700,7 @@ def require_reviewed_source_snapshot(expected_commit, expected_tree, destination
     valid_sha(expected_tree)
     if type(destination_id) is not int or destination_id <= 0:
         raise Denied("expected numeric destination repository ID is invalid")
-    metadata = gh_api(REVIEWED_SNAPSHOTS_ROUTE)
+    metadata = gh_api(at_ref(REVIEWED_SNAPSHOTS_ROUTE, reviewed_main_sha))
     if metadata.get("type") != "file" or metadata.get("encoding") != "base64":
         raise Denied("reviewed source-snapshot policy is absent or malformed")
     encoded = metadata.get("content")
@@ -1036,7 +1043,8 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         raise Denied("destination numeric ID differs from reviewed approval policy")
     reviewed_snapshot_sha, approved_carrier_main_sha, approved_carrier_tree = (
         require_reviewed_source_snapshot(
-            expected_source_commit, expected_source_tree, approved_destination_id)
+            expected_source_commit, expected_source_tree, approved_destination_id,
+            reviewed_main_sha)
     )
     verify_source_commit(expected_source_commit, expected_source_tree)
     trusted = trusted_root.resolve(strict=True)
@@ -1091,7 +1099,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
                     not isinstance(bypass.get(key, []), list) or bypass.get(key)
                     for key in ("users", "teams", "apps")):
                 raise Denied("private carrier main allows review bypass")
-        require_protected_carrier_codeowners(repository)
+        require_protected_carrier_codeowners(repository, current_sha)
         if expected_tree is not None:
             valid_sha(expected_tree)
             carrier_commit = gh_api(f"repos/{repository}/git/commits/{current_sha}")
@@ -1102,7 +1110,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     base_sha = require_pinned_carrier_main(
         approved_carrier_main_sha, approved_carrier_tree)
     carrier_approval_sha, carrier_ruleset_id = require_carrier_source_approval(
-        repository, expected_source_commit, expected_source_tree)
+        repository, expected_source_commit, expected_source_tree, base_sha)
     require_carrier_source_ruleset(repository, carrier_ruleset_id)
     # The ledger read itself must come from the same carrier main revision
     # that the source-side approval pinned.
@@ -1130,7 +1138,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
             raise Denied("reviewed protected source main changed during transfer")
         snapshot = require_reviewed_source_snapshot(
             expected_source_commit, expected_source_tree, approved_destination_id,
-            reviewed_snapshot_sha)
+            reviewed_main_sha, reviewed_snapshot_sha)
         if snapshot[1:] != (approved_carrier_main_sha, approved_carrier_tree):
             raise Denied("reviewed carrier revision changed during transfer")
         verify_source_commit(expected_source_commit, expected_source_tree)
@@ -1139,7 +1147,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
             raise Denied("private carrier default branch changed during transfer")
         carrier_approval = require_carrier_source_approval(
             repository, expected_source_commit, expected_source_tree,
-            carrier_approval_sha)
+            base_sha, carrier_approval_sha)
         if carrier_approval[1] != carrier_ruleset_id:
             raise Denied("private carrier source ruleset approval changed during transfer")
         require_carrier_source_ruleset(repository, carrier_ruleset_id)
