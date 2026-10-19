@@ -109,8 +109,14 @@ before each write. The destination carrier must independently approve the
 same source commit/tree/source-repository-ID tuple plus the reviewed carrier
 repository ruleset ID in
 `.github/private-oreslang-approved-source-snapshots.txt` on protected carrier
-`main`; that carrier ledger and ruleset are revalidated before every Git write. A missing, unmerged, altered, or revoked tuple denies
-publication; authorization cannot come from the working PR branch.
+`main`; that carrier ledger and ruleset are revalidated before every Git write.
+All security-sensitive source-side content reads (destination policy,
+source-snapshot ledger, CODEOWNERS and CODEOWNERS diagnostics) are fetched with
+`?ref=<authenticated-source-main-commit>`, never a floating `main` ref.
+Carrier CODEOWNERS, its diagnostics, and the carrier source-approval ledger are
+likewise fetched with `?ref=<approved-carrier-main-commit>`. A missing,
+unmerged, altered, revoked, or commit-mismatched tuple denies publication;
+authorization cannot come from the working PR branch.
 
 The source-snapshot ledger starts **empty**. To grant one approved run,
 maintainers must separately review and merge one exact
@@ -170,15 +176,23 @@ protection metadata is not proof of a safe workflow: independent reviewers
 must still audit the carrier's effective rulesets and executable workflow
 definitions for exfiltration and unsafe privilege escalation.
 
-### Pending carrier execution-isolation review (2026-10-19)
+### Carrier execution-isolation gate (2026-10-19)
 
 Main-branch CODEOWNERS approval alone does **not** protect a newly created
 `ci/oreslang-*` branch from later pushes, force updates, unsafe dispatches, or
-privileged workflow execution on that branch. The publisher authenticates
-`main` and verifies the newly created source subtree, but **does not yet prove**
-that CI branch refs are immutable or that a workflow execution uses only the
-verified new commit. No successful source-free tree check cures this gap.
-Before authorizing any private source transfer, the security owner must:
+privileged workflow execution on that branch. The production publisher now
+requires the carrier approval row to bind an active repository ruleset that
+makes exactly `refs/heads/ci/oreslang-*` immutable after initial creation:
+no bypass actors, no deletion, and no update (including fetch-and-merge
+updates). It revalidates that exact ruleset before every destination write.
+Carrier CI additionally binds the source-bearing ref to the exact full source
+commit and verifies the nested source tree before compilation.
+
+These checks remain **non-authorizing** until an administrator/security owner
+proves the ruleset and protected carrier main are actually enforceable on the
+private repository. Current plan/API limitations still make that repository-
+level proof fail closed. Before authorizing any private source transfer, the
+security owner must:
 
 1. Prove effective private carrier branch/ruleset protection for the CI ref
    namespace or use an independently reviewed execution design that prevents
@@ -322,6 +336,25 @@ The Bash test uses a temporary policy checkout; Python tests mock all GitHub
 API operations. The real policy remains empty and **no destination is
 authorized** unless separately reviewed.
 
+### Exact production-module verification — 2026-10-19
+
+The current draft publisher was materialized locally from GitHub and its bytes
+were independently checked with `git hash-object` against GitHub blob
+`35261930af295997b8f50dda9e6224184b49e1d9`. Python 3.13
+`py_compile` succeeded. Against that **exact production module**, eight
+focused adversarial tests passed for immutable source/carrier revision binding,
+including split-authority cases where floating `main` contains an approval
+that the authenticated commit does not. A further sixteen focused admission
+checks passed for the carrier source-ref ruleset and strict app-bound branch
+protection, including negative bypass, broad-ref, deletion/update, creation,
+source-identity, target, strictness and app-ID cases.
+
+This is exact production-code evidence, but it is **not** execution of the
+complete checked-in Python/Bash publisher suites and does not authorize source
+transfer. The source organization's exact-head Actions jobs still fail before
+runner allocation; the complete suite, independent review, and repository-level
+protection proof remain release gates.
+
 ## Active disclosure incident
 
 Private issue #832 tracks source-bearing commits in a public CI repository.
@@ -353,9 +386,12 @@ ownership line, and no private export is authorized. CODEOWNERS checks
 cannot prove that a repository owner configured GitHub permissions correctly,
 or that later users with administrative access cannot alter settings.
 
-The publisher also consults GitHub's protected-main
-`GET /repos/{owner}/{repo}/codeowners/errors?ref=main` endpoint and
+The publisher also consults GitHub's CODEOWNERS diagnostics at the exact
+authenticated protected-main revision,
+`GET /repos/{owner}/{repo}/codeowners/errors?ref=<reviewed-main-SHA>`, and
 `GET /repos/{owner}/{repo}/collaborators/ORESoftware/permission`.
+GitHub documents `ref` here as accepting a branch, tag, or commit name, so
+the publisher deliberately supplies the already authenticated commit SHA.
 The first must return an empty `errors` array; the second must identify
 the expected GitHub **User** with effective `write` or `admin` access.
 These checks must reject missing API permissions or unavailable endpoints,
