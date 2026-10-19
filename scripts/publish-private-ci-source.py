@@ -26,6 +26,7 @@ MAX_SINGLE = 10 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
+MIRROR_DESTINATION = "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra"
 
 
 class Denied(RuntimeError):
@@ -77,18 +78,51 @@ def checked_repo(repository, expected_id):
     return result
 
 
-def require_preflight(repository, root):
+def require_preflight(repository, root, source_pr, source_commit, source_tree,
+                      maintainer_comment=None, security_comment=None):
+    """Run the authoritative export preflight before any source-byte read.
+
+    This publisher is intentionally destination-bound while the reviewed policy
+    contains a single approved mirror target. The shell preflight independently
+    revalidates the live PR/head/tree, authoritative main blobs, dual
+    attestations when needed, and destination identity.
+    """
+    if repository != MIRROR_DESTINATION:
+        raise Denied("publisher is bound to the reviewed private mirror destination")
+    if (not isinstance(source_pr, int) or source_pr <= 0
+            or not isinstance(source_commit, str) or not SHA.fullmatch(source_commit)
+            or not isinstance(source_tree, str) or not SHA.fullmatch(source_tree)):
+        raise Denied("exact source PR, commit and tree authorization is required")
+    if (maintainer_comment is None) != (security_comment is None):
+        raise Denied("both review-attested comment IDs must be supplied together")
+    for value in (maintainer_comment, security_comment):
+        if value is not None and (not isinstance(value, int) or value <= 0):
+            raise Denied("invalid review-attested comment ID")
+
+    preflight = root / "scripts" / "preflight-private-ci-mirror.sh"
     guard = root / "scripts" / "check-private-ci-destination.sh"
-    if guard.is_symlink() or not guard.is_file():
-        raise Denied("trusted destination approval guard missing")
+    for program in (preflight, guard):
+        if program.is_symlink() or not program.is_file():
+            raise Denied("trusted private CI authorization program missing")
+
+    argv = ["bash", str(preflight), str(source_pr), source_commit, source_tree]
+    if maintainer_comment is not None:
+        argv.extend([str(maintainer_comment), str(security_comment)])
     try:
-        p = subprocess.run(["bash", str(guard), repository],
+        p = subprocess.run(argv, cwd=root, capture_output=True, text=True,
+                           timeout=45, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Denied("private source export preflight unavailable") from exc
+    if p.returncode != 0:
+        raise Denied("private source export preflight denied")
+
+    try:
+        p = subprocess.run(["bash", str(guard), repository], cwd=root,
                            capture_output=True, text=True, timeout=30, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("destination policy check unavailable") from exc
     if p.returncode != 0:
         raise Denied("destination not approved by checked-in private policy")
-
 
 def checked_policy_fingerprint(root, repository):
     """Read and bind approval to one immutable GitHub repository ID.
@@ -267,11 +301,14 @@ def collect_source(root, trusted_root):
     return sorted(entries, key=lambda item: item[0])
 
 
-def publish(repository, source, branch, trusted_root):
+def publish(repository, source, branch, trusted_root, source_pr=None,
+            source_commit=None, source_tree=None, maintainer_comment=None,
+            security_comment=None):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
     # Approval comes before reading potentially sensitive source files.
-    require_preflight(repository, trusted_root)
+    require_preflight(repository, trusted_root, source_pr, source_commit,
+                      source_tree, maintainer_comment, security_comment)
     approved_policy, expected_id = checked_policy_fingerprint(
         trusted_root, repository)
     trusted = trusted_root.resolve(strict=True)
@@ -345,11 +382,22 @@ def main(argv=None):
     p.add_argument("repository", help="approved private owner/repo")
     p.add_argument("--source-dir", required=True, type=Path)
     p.add_argument("--branch", required=True)
+    p.add_argument("--source-pr", required=True, type=int)
+    p.add_argument("--source-commit", required=True)
+    p.add_argument("--source-tree", required=True)
+    p.add_argument("--maintainer-approval-comment", type=int)
+    p.add_argument("--security-approval-comment", type=int)
     args = p.parse_args(argv)
+    if ((args.maintainer_approval_comment is None)
+            != (args.security_approval_comment is None)):
+        p.error("both approval comment IDs must be supplied together")
     # Policy and code are taken from the same trusted checkout as this script.
     root = Path(__file__).resolve().parent.parent
     try:
-        commit, count = publish(args.repository, args.source_dir, args.branch, root)
+        commit, count = publish(
+            args.repository, args.source_dir, args.branch, root,
+            args.source_pr, args.source_commit, args.source_tree,
+            args.maintainer_approval_comment, args.security_approval_comment)
     except Denied as exc:
         print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
         return 1
