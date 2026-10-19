@@ -220,6 +220,10 @@ final class TaskAccessVerifier {
         Objects.requireNonNull(nominalProof, "nominalProof");
         List<TypedClaim> typed =
                 List.copyOf(Objects.requireNonNull(requested, "claims"));
+        if (typed.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "scoped Task access requires at least one loan claim");
+        }
         for (TypedClaim claim : typed) {
             if (claim.claim().mode() == Mode.WRITE
                     && containsReadonlyRecordCapability(claim.type())) {
@@ -370,6 +374,10 @@ final class TaskAccessVerifier {
     private synchronized Ticket admitClaims(List<Claim> requested) {
         if (sealed) throw new IllegalStateException("TaskScope is sealed");
         List<Claim> claims = List.copyOf(Objects.requireNonNull(requested, "claims"));
+        if (claims.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "scoped Task access requires at least one loan claim");
+        }
         if (live.size() >= MAX_CHILDREN || claims.size() > MAX_CLAIMS_PER_CHILD) {
             throw new IllegalStateException("TaskScope access capacity exceeded");
         }
