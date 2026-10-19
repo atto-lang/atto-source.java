@@ -268,6 +268,92 @@ final class CallerRoleIncrementalAbiTest {
     }
 
     @Test
+    void crossModulePrivateParentGuardChangeInvalidatesPublicSubclassAbi() {
+        String a = IncrementalCompiler.abiDigest(Parser.parse("""
+                define module Guards as
+                    define enum Roles as A, B end
+                    define class Base as
+                        @CallableBy(Roles.A)
+                        pub static fnc guarded(): void {}
+                    end
+                end
+                define module Api as
+                    define pub class Child extends Guards.Base as end
+                end
+                """));
+        String b = IncrementalCompiler.abiDigest(Parser.parse("""
+                define module Guards as
+                    define enum Roles as A, B end
+                    define class Base as
+                        @CallableBy(Roles.B)
+                        pub static fnc guarded(): void {}
+                    end
+                end
+                define module Api as
+                    define pub class Child extends Guards.Base as end
+                end
+                """));
+        assertNotEquals(a, b,
+                "public subclasses must depend on cross-module private-parent guards");
+    }
+
+    @Test
+    void crossModulePrivateParentRoleRetaggingInvalidatesPublicAbi() {
+        String a = IncrementalCompiler.abiDigest(Parser.parse("""
+                define module Guards as
+                    define enum Roles as A = 1 end
+                    define class Base as
+                        @CallableBy(Roles.A)
+                        pub static fnc guarded(): void {}
+                    end
+                end
+                define module Api as
+                    define pub class Child extends Guards.Base as end
+                end
+                """));
+        String b = IncrementalCompiler.abiDigest(Parser.parse("""
+                define module Guards as
+                    define enum Roles as A = 9 end
+                    define class Base as
+                        @CallableBy(Roles.A)
+                        pub static fnc guarded(): void {}
+                    end
+                end
+                define module Api as
+                    define pub class Child extends Guards.Base as end
+                end
+                """));
+        assertNotEquals(a, b,
+                "private role enum schema must be reachable across module-qualified ancestry");
+    }
+
+    @Test
+    void unrelatedCrossModulePrivateClassChangesDoNotInvalidatePublicAbi() {
+        String a = IncrementalCompiler.abiDigest(Parser.parse("""
+                define module Internal as
+                    define class Unused as
+                        pub static fnc method(): int { return 1; }
+                    end
+                end
+                define module Api as
+                    define pub class Child as end
+                end
+                """));
+        String b = IncrementalCompiler.abiDigest(Parser.parse("""
+                define module Internal as
+                    define class Unused as
+                        pub static fnc method(): int { return 2; }
+                    end
+                end
+                define module Api as
+                    define pub class Child as end
+                end
+                """));
+        assertEquals(a, b,
+                "ABI fingerprinting must not include unreachable private implementation details");
+    }
+
+    @Test
     void implementationChangesDoNotModifyExportedPolicyAbi() {
         String first = fingerprint("""
                 @CallableBy(Callers.A)
