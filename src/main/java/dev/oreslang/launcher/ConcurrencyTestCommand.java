@@ -39,6 +39,7 @@ final class ConcurrencyTestCommand {
         String platform = "server";
         int iterations = 1;
         long seed = 1;
+        boolean seedSpecified = false;
 
         try {
             for (String arg : args) {
@@ -47,7 +48,10 @@ final class ConcurrencyTestCommand {
                 else if (arg.equals("--schedule-fuzz")) scheduleFuzz = true;
                 else if (arg.equals("--race")) race = true;
                 else if (arg.equals("--model-check")) modelCheck = true;
-                else if (arg.startsWith("--seed=")) seed = Long.parseLong(arg.substring(7));
+                else if (arg.startsWith("--seed=")) {
+                    seed = Long.parseLong(arg.substring(7));
+                    seedSpecified = true;
+                }
                 else if (arg.startsWith("--iterations="))
                     iterations = Integer.parseInt(arg.substring("--iterations=".length()));
                 else if (arg.startsWith("--replay=")) replayArg = arg.substring("--replay=".length());
@@ -83,8 +87,20 @@ final class ConcurrencyTestCommand {
             System.err.println("oreslang test: not a file: " + entryPath);
             return 2;
         }
-        List<String> replay = replayArg == null ? null
-                : ConcurrencyTestProbe.readTrace(Path.of(replayArg));
+        List<String> replay = null;
+        if (replayArg != null) {
+            var trace = ConcurrencyTestProbe.readTraceData(Path.of(replayArg));
+            if (seedSpecified && seed != trace.seed()) {
+                System.err.println("oreslang test: replay seed differs from recorded trace seed");
+                return 2;
+            }
+            seed = trace.seed();
+            replay = trace.events();
+        }
+        if (iterations > 1 && seed > Long.MAX_VALUE - (iterations - 1L)) {
+            System.err.println("oreslang test: seed range overflows signed 64-bit integer");
+            return 2;
+        }
         ExecutionProfile profile = ExecutionProfile.parse(mode, platform);
         IsolatePolicy policy = IsolatePolicy.developer();
         for (int iteration = 0; iteration < iterations; iteration++) {
