@@ -324,6 +324,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "CURL_CA_BUNDLE": str(self.root / "forged-ca.pem"),
             "REQUESTS_CA_BUNDLE": str(self.root / "forged-ca.pem"),
             "NODE_EXTRA_CA_CERTS": str(self.root / "forged-ca.pem"),
+            "TMPDIR": str(self.root / "untrusted-tmp"),
+            "TMP": str(self.root / "untrusted-tmp"),
+            "TEMP": str(self.root / "untrusted-tmp"),
         }
         with patch.dict(os.environ, suspicious):
             child = pub.verified_child_env()
@@ -350,6 +353,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.assertNotEqual(env["HOME"], str(attacker_home))
             self.assertEqual(Path(env["HOME"]).parent, Path("/tmp"))
             self.assertEqual(env["XDG_CONFIG_HOME"], env["HOME"])
+            self.assertEqual(env["TMPDIR"], "/tmp")
+            self.assertNotIn("TMP", env)
+            self.assertNotIn("TEMP", env)
             self.assertTrue(Path(env["HOME"]).is_dir())
             self.assertFalse((Path(env["HOME"]) / ".config" / "gh" / "hosts.yml").exists())
             self.assertNotIn("HTTPS_PROXY", env)
