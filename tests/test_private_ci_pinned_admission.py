@@ -99,3 +99,32 @@ class Tests(unittest.TestCase):
         with self.assertRaisesRegex(g.AdmissionDenied,'schema'):self.verify()
 
 if __name__=='__main__':unittest.main()
+
+
+class SnapshotTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root=Path(self.tmp.name)
+        self.src=self.root / 'src'
+        self.src.mkdir()
+        self.data=b'example exact bytes\n'
+        import hashlib
+        digest=hashlib.sha1(b'blob '+str(len(self.data)).encode()+b'\0'+self.data).hexdigest()
+        self.listing=(b'100644 blob '+digest.encode()+b'\tsrc/a.ores\0')
+
+    def fake_run(self,argv,**kwargs):
+        self.assertEqual(argv[-2:],['--','src'])
+        return type('Proc',(),{'returncode':0,'stdout':self.listing})()
+
+    def test_exact_source_blob_admitted(self):
+        self.assertTrue(g.verify_snapshot(self.root,self.src,[('a.ores',self.data,'100644')],SRC,run=self.fake_run))
+
+    def test_mutated_source_bytes_before_write_denied(self):
+        with self.assertRaisesRegex(g.AdmissionDenied,'bytes differ'):
+            g.verify_snapshot(self.root,self.src,[('a.ores',b'changed','100644')],SRC,run=self.fake_run)
+
+    def test_different_or_missing_file_or_mode_denied(self):
+        for files in ([],[('evil.ores',self.data,'100644')],[('a.ores',self.data,'100755')]):
+            with self.subTest(files=files),self.assertRaises(g.AdmissionDenied):
+                g.verify_snapshot(self.root,self.src,files,SRC,run=self.fake_run)
