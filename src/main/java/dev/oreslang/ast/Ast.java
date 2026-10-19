@@ -865,9 +865,24 @@ public final class Ast {
         }
     }
 
+    /**
+     * Tracked static selection in expression position. Its winning branch
+     * completes a Future<void> after source-task cleanup; it is distinct from
+     * both procedural SelectStmt and dynamic select-from-cases.
+     */
+    public record StaticSelectExpr(SelectStmt select) implements Expr {
+        public StaticSelectExpr {
+            if (select == null || select.explicitDo()
+                    || select.mode() != WaitMode.NONBLOCKING) {
+                throw new IllegalArgumentException(
+                        "static select expression requires nonblocking value mode");
+            }
+        }
+    }
+
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
-            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
+            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, StaticSelectExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
