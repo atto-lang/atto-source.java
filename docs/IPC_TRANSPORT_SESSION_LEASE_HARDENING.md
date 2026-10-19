@@ -163,7 +163,7 @@ after authoritative retirement.
 ## Current-head adapter hardening (latest audit)
 
 At the latest audit, the current source blobs are:
-- `IpcTransportSessionLease.java`: `5dbd5be89a14c1a593bc8498a300b083f0fc6fa7`
+- `IpcTransportSessionLease.java`: `e9157c6c117e1739dc13145035b90af8fb1bcbb6`
 - `IpcAuthenticatedSocketTransport.java`: `f769058d156aad580d9ca24d2af103208aea5f92`
 - `RuntimeBlockingGuard.java`: `caebbceb9ef294994c35b6cb6fc0a5c124c8c33a`
 - authenticated socket self-test: `4f1afae4578c48e8f31fa3be6ccd2e5c3649bbf5`
@@ -182,7 +182,7 @@ The socket adapter now:
 
 The current source self-test includes real localhost kernel I/O, pressured 8 MiB blocked writers, off-carrier abort, cleanup queue rejection, explicit active-abort recovery, deliberately withheld abort/deadline quarantine, caller-runs denial, prior-version valid-MAC rejection, and pre-auth receipt allocation limits.
 
-**Current-head execution remains unverified in source CI** until a source-org runner actually records steps. Static/source inspection is not a substitute for `javac`, Maven, GraalVM or LLVM execution.
+**Current-head execution remains unverified in source CI** until a source-org runner actually records steps. The lease-level regressions also cover direct package-local actor-carrier attempts so future adapters cannot bypass the outer socket guard. Static/source inspection is not a substitute for `javac`, Maven, GraalVM or LLVM execution.
 
 
 ## Physical receipt-bridge ownership and close/admission linearization

@@ -13,6 +13,8 @@ import java.util.concurrent.CompletionStage;
  * Never dispatch on an actor carrier or route UNTRUSTED NETWORK through here.
  * Synchronous send/write/wait entry points enforce that carrier boundary before
  * receipt mutation, writer invocation, or monitor acquisition for blocking waits.
+ * The authenticated socket adapter repeats the outer check, while this lease
+ * is the non-bypassable package-local enforcement point.
  */
 final class IpcTransportSessionLease {
     enum Phase { OPEN, CLOSING, FINALIZING, RETIRED, QUARANTINED }
