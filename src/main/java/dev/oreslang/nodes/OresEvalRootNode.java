@@ -1580,6 +1580,13 @@ public final class OresEvalRootNode extends RootNode {
                 return runtime.arguments().stream()
                         .anyMatch(argument -> expressionContainsPotentialSuspension(argument, seen));
             }
+            if (expr instanceof Ast.StagedCallExpr call) {
+                // Required named calls may contain await/channel work in their
+                // receiver or source-ordered argument expressions. Route the
+                // whole call through the resumable evaluator conservatively;
+                // this is also safe for fully synchronous calls.
+                return true;
+            }
             if (expr instanceof Ast.CallExpr call) {
                 for (Ast.Expr argument : call.arguments()) {
                     if (expressionContainsPotentialSuspension(argument, seen)) return true;
@@ -3532,6 +3539,15 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
 
+                if (expr instanceof Ast.StagedCallExpr call) {
+                    evalSuspendableStagedCall(
+                            task,
+                            call,
+                            env,
+                            continuation);
+                    return;
+                }
+
                 if (expr instanceof Ast.CallExpr call) {
                     evalSuspendableCall(
                             task,
@@ -4162,6 +4178,251 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, ownershipFailure);
                         }
                     });
+        }
+
+        private void evalSuspendableStagedCall(
+                SourceTask task,
+                Ast.StagedCallExpr call,
+                Env env,
+                SourceValueCont continuation) {
+            Ast.NamedCallProof proof = Ast.CheckedNamedCallPlan.require(call);
+            List<Ast.Expr> sourceExpressions = stagedSourceExpressions(call);
+
+            if (call.callee() instanceof Ast.NameExpr name
+                    && env.lookup(name.name()) == Env.MISSING) {
+                Ast.FunctionDecl direct =
+                        findFunction(name.name(), call.arguments().size());
+                if (direct != null) {
+                    requireExplicitClassCallableImport(env, name.name());
+                    verifyStagedFunctionTarget(
+                            proof, "function", direct.name(), direct.parameters());
+                    evalSuspendableArguments(
+                            task,
+                            sourceExpressions,
+                            env,
+                            (t, sourceValues, failure) -> {
+                                if (failure != null) {
+                                    continuation.accept(t, null, failure);
+                                    return;
+                                }
+                                try {
+                                    List<Object> args =
+                                            proof.valuesInFormalOrder(sourceValues);
+                                    Invocation invocation =
+                                            functionInvocation(direct, args);
+                                    completeSourceInvocation(
+                                            t,
+                                            invocation,
+                                            invocationDeclaresAsync(invocation),
+                                            env,
+                                            continuation);
+                                } catch (RuntimeException | Error failure2) {
+                                    continuation.accept(t, null, failure2);
+                                }
+                            });
+                    return;
+                }
+            }
+
+            if (call.callee() instanceof Ast.MemberExpr member) {
+                evalSuspendableExpr(
+                        task,
+                        member.receiver(),
+                        env,
+                        (t, receiver, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            evalSuspendableArguments(
+                                    t,
+                                    sourceExpressions,
+                                    env,
+                                    (t2, sourceValues, failure2) -> {
+                                        if (failure2 != null) {
+                                            continuation.accept(t2, null, failure2);
+                                            return;
+                                        }
+                                        try {
+                                            List<Object> args =
+                                                    proof.valuesInFormalOrder(sourceValues);
+                                            Invocation invocation =
+                                                    prepareStagedInvocationEvaluated(
+                                                            call,
+                                                            proof,
+                                                            receiver,
+                                                            args,
+                                                            env);
+                                            completeSourceInvocation(
+                                                    t2,
+                                                    invocation,
+                                                    invocationDeclaresAsync(invocation),
+                                                    env,
+                                                    continuation);
+                                        } catch (RuntimeException | Error failure3) {
+                                            continuation.accept(t2, null, failure3);
+                                        }
+                                    });
+                        });
+                return;
+            }
+
+            continuation.accept(
+                    task,
+                    null,
+                    new IllegalStateException(
+                            "checked named-call target no longer has a supported static shape"));
+        }
+
+        private List<Ast.Expr> stagedSourceExpressions(Ast.StagedCallExpr call) {
+            ArrayList<Ast.Expr> expressions =
+                    new ArrayList<>(call.arguments().size());
+            for (Ast.CallArgument item : call.arguments()) {
+                if (item.value() == null || item.omitted() || item.spread()) {
+                    throw new IllegalStateException(
+                            "required named-call proof contains a non-evaluable call item");
+                }
+                expressions.add(item.value());
+            }
+            return List.copyOf(expressions);
+        }
+
+        private Invocation prepareStagedInvocation(
+                Ast.StagedCallExpr call,
+                Env env) {
+            Ast.NamedCallProof proof = Ast.CheckedNamedCallPlan.require(call);
+            List<Ast.Expr> sourceExpressions = stagedSourceExpressions(call);
+
+            if (call.callee() instanceof Ast.NameExpr name
+                    && env.lookup(name.name()) == Env.MISSING) {
+                Ast.FunctionDecl direct =
+                        findFunction(name.name(), call.arguments().size());
+                if (direct != null) {
+                    requireExplicitClassCallableImport(env, name.name());
+                    verifyStagedFunctionTarget(
+                            proof, "function", direct.name(), direct.parameters());
+                    List<Object> sourceValues =
+                            evaluateArguments(sourceExpressions, env);
+                    return functionInvocation(
+                            direct,
+                            proof.valuesInFormalOrder(sourceValues));
+                }
+            }
+
+            if (call.callee() instanceof Ast.MemberExpr member) {
+                Object receiver = eval(member.receiver(), env);
+                List<Object> sourceValues =
+                        evaluateArguments(sourceExpressions, env);
+                return prepareStagedInvocationEvaluated(
+                        call,
+                        proof,
+                        receiver,
+                        proof.valuesInFormalOrder(sourceValues),
+                        env);
+            }
+
+            throw new IllegalStateException(
+                    "checked named-call target no longer has a supported static shape");
+        }
+
+        private Invocation prepareStagedInvocationEvaluated(
+                Ast.StagedCallExpr call,
+                Ast.NamedCallProof proof,
+                Object receiver,
+                List<Object> args,
+                Env env) {
+            Ast.MemberExpr member = (Ast.MemberExpr) call.callee();
+
+            if (receiver instanceof OresObject object) {
+                Ast.MethodDecl method = object.owner.findMethod(
+                        object.klass,
+                        CallableSelector.instance(member.member(), args.size()));
+                if (method == null) {
+                    throw new IllegalStateException(
+                            "checked named method no longer resolves at runtime");
+                }
+                Ast.ClassDecl owner = object.owner.declaringClass(method);
+                verifyStagedFunctionTarget(
+                        proof,
+                        "method",
+                        method.name(),
+                        method.parameters());
+                object.owner.requireClassMemberVisible(
+                        method.visibility(),
+                        owner,
+                        env.accessClass(),
+                        "method",
+                        method.name());
+                return object.owner.methodInvocation(object, method, args);
+            }
+
+            if (receiver instanceof ClassFacade klass) {
+                Ast.MethodDecl method = klass.owner().findStaticFunction(
+                        klass.klass(),
+                        CallableSelector.staticFunction(
+                                member.member(), args.size()));
+                if (method == null) {
+                    throw new IllegalStateException(
+                            "checked named static function no longer resolves at runtime");
+                }
+                Ast.ClassDecl owner = klass.owner().declaringClass(method);
+                verifyStagedFunctionTarget(
+                        proof,
+                        "static-function",
+                        owner.name() + "." + method.name(),
+                        method.parameters());
+                klass.owner().requireClassMemberVisible(
+                        method.visibility(),
+                        owner,
+                        env.accessClass(),
+                        "static function",
+                        method.name());
+                return klass.owner().staticFunctionInvocation(method, args);
+            }
+
+            if (receiver instanceof ModuleFacade module) {
+                Ast.FunctionDecl function = null;
+                for (Ast.Decl declaration : module.module().declarations()) {
+                    if (declaration instanceof Ast.FunctionDecl candidate
+                            && candidate.name().equals(member.member())
+                            && candidate.parameters().size() == args.size()
+                            && candidate.visibility() == Ast.Visibility.PUBLIC) {
+                        if (function != null) {
+                            throw new IllegalStateException(
+                                    "duplicate checked module callable slot at runtime");
+                        }
+                        function = candidate;
+                    }
+                }
+                if (function == null) {
+                    throw new IllegalStateException(
+                            "checked named module function no longer resolves at runtime");
+                }
+                verifyStagedFunctionTarget(
+                        proof,
+                        "module-function",
+                        module.module().name() + "." + function.name(),
+                        function.parameters());
+                return module.owner().functionInvocation(function, args);
+            }
+
+            throw new IllegalStateException(
+                    "checked named member call resolved to an unsupported runtime receiver");
+        }
+
+        private void verifyStagedFunctionTarget(
+                Ast.NamedCallProof proof,
+                String targetKind,
+                String targetName,
+                List<Ast.Param> parameters) {
+            if (!proof.targetKind().equals(targetKind)
+                    || !proof.targetName().equals(targetName)) {
+                throw new IllegalStateException(
+                        "checked named-call target changed before runtime: "
+                                + proof.targetKind() + " " + proof.targetName()
+                                + " vs " + targetKind + " " + targetName);
+            }
+            proof.requireFormalNames(parameters, targetName);
         }
 
         private void evalSuspendableCall(
@@ -6111,6 +6372,21 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.StagedCallExpr call) {
+                return invoke(prepareStagedInvocation(call, env));
+            }
+            if (expr instanceof Ast.StagedNewExpr) {
+                throw new IllegalArgumentException(
+                        "named constructor/actor calls have no runtime lowering");
+            }
+            if (expr instanceof Ast.TypeExpr) {
+                throw new IllegalArgumentException(
+                        "generic type qualifier has no standalone runtime value");
+            }
+            if (expr instanceof Ast.CompoundAssignExpr) {
+                throw new IllegalArgumentException(
+                        "compound-place assignment has no checked runtime lowering");
+            }
             if (expr instanceof Ast.MatchExpr valueMatch) {
                 Object subject = eval(valueMatch.subject(), env);
                 for (Ast.MatchValueArm arm : valueMatch.arms()) {
