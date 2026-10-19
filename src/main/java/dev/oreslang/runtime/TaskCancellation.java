@@ -83,9 +83,17 @@ final class TaskCancellation {
             if (owner != null) owner.children.remove(this);
             owner = null;
             detached.addAll(revokers);
-            detached.addAll(observers);
             revokers.clear();
-            observers.clear();
+            // Cancellation may have marked this token while a synchronous
+            // revoker is still executing. Its pre-admitted observers are
+            // entitled to exactly one notification once revocation finishes,
+            // even if physical task quiescence races ahead of that callback.
+            // Never discard them here: the cancellation dispatch drains them
+            // after publishing revocationComplete under GRAPH_LOCK.
+            if (!cancelled || revocationComplete) {
+                detached.addAll(observers);
+                observers.clear();
+            }
         }
         // Release retained callback captures even when the caller keeps a
         // Subscription reference after task completion. Do not invoke hooks.
