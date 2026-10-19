@@ -13,6 +13,67 @@ import java.util.Objects;
 final class OresContextTeardown {
     private OresContextTeardown() { }
 
+    /**
+     * One context shutdown has exactly one physical retirement attempt.
+     * Concurrent callers join it, including its terminal failure. A failed
+     * resource retirement must not be attempted again on already-mutated
+     * provider/VM state; that could double-release a generation or arena.
+     */
+    static final class Once {
+        private final Object gate = new Object();
+        private final java.util.concurrent.CountDownLatch finished =
+                new java.util.concurrent.CountDownLatch(1);
+        private boolean started;
+        private Thread owner;
+        private volatile Throwable failure;
+
+        void close(Runnable shutdown) {
+            Objects.requireNonNull(shutdown, "shutdown");
+            boolean first;
+            synchronized (gate) {
+                first = !started;
+                if (first) {
+                    started = true;
+                    owner = Thread.currentThread();
+                } else if (owner == Thread.currentThread()
+                        && finished.getCount() != 0) {
+                    throw new IllegalStateException(
+                            "recursive OresContext.close would deadlock during retirement");
+                }
+            }
+            if (first) {
+                try {
+                    shutdown.run();
+                } catch (RuntimeException | Error problem) {
+                    failure = problem;
+                    throw problem;
+                } finally {
+                    finished.countDown();
+                }
+                return;
+            }
+
+            boolean interrupted = false;
+            try {
+                for (;;) {
+                    try {
+                        finished.await();
+                        break;
+                    } catch (InterruptedException ignored) {
+                        interrupted = true;
+                    }
+                }
+            } finally {
+                if (interrupted) Thread.currentThread().interrupt();
+            }
+            Throwable problem = failure;
+            if (problem instanceof RuntimeException runtime) throw runtime;
+            if (problem instanceof Error error) throw error;
+        }
+    }
+
+
+
     static void close(
             Runnable tasks,
             Runnable async,
