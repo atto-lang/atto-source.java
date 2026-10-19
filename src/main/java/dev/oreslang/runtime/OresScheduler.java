@@ -495,21 +495,31 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void enqueueTurn() {
-            // Reserve physical dispatch authority *before* handing the turn
-            // to the executor. Cancellation cannot retire critical state while
-            // an accepted turn may still enter the Truffle context.
+            // Reserve physical dispatch authority BEFORE handing a turn to the
+            // executor. Inline executors can propagate a fatal guest failure
+            // after their finally/afterTurn boundary has already retired it.
+            // Both paths must arbitrate the same reservation exactly once.
             inFlightDispatches.incrementAndGet();
+            AtomicBoolean retired = new AtomicBoolean();
+            Runnable afterTurnOnce = () -> {
+                if (retired.compareAndSet(false, true)) afterCarrierTurn();
+            };
             try {
                 executeTurn(() -> {
                     try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
                         runTurn();
                     }
-                }, this::afterCarrierTurn, this::failTerminal);
+                }, afterTurnOnce, this::failTerminal);
             } catch (RuntimeException | Error rejected) {
                 failTerminal(rejected);
-                inFlightDispatches.decrementAndGet();
-                publishPhysicalRetirementIfReady();
-                publishTerminalIfReady();
+                if (retired.compareAndSet(false, true)) {
+                    // Only an unentered/rejected dispatch belongs to this
+                    // catch path. Never subtract a reservation already retired
+                    // by an inline executor's physical exit.
+                    inFlightDispatches.decrementAndGet();
+                    publishPhysicalRetirementIfReady();
+                    publishTerminalIfReady();
+                }
                 throw rejected;
             }
         }
