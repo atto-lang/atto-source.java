@@ -537,7 +537,7 @@ public final class SealedActorState {
      * quiesced, not by arbitrary guest code. The owner ID fences accidental
      * cross-actor finalization or stale actor incarnation references.
      */
-    public void retireFromRuntime(ActorRuntime.ActorId confirmedOwner) {
+    void retireFromRuntime(ActorRuntime.ActorId confirmedOwner) {
         if (!owner.equals(confirmedOwner)) {
             throw new SecurityException("cannot retire state for a foreign actor");
         }
