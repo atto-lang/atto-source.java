@@ -94,7 +94,7 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
             var address = router.ref().address();
             var snapshot = mailbox.snapshot();
             if (!poisoned && address.routeEpoch() != snapshot.routeEpoch()) {
-                poisoned = true;
+                poisonAndSealAdmission();
                 throw new IllegalStateException(
                         "inconsistent code-image and proxy route publication");
             }
@@ -198,7 +198,7 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
                 return true;
             } catch (InterruptedException | ExecutionException | TimeoutException
                     | RuntimeException | Error uncertain) {
-                poisoned = true;
+                poisonAndSealAdmission();
                 throw uncertain;
             }
         }
@@ -236,7 +236,7 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
                     return false;
                 }
                 if (mailbox.snapshot().routeEpoch() != router.ref().routeEpoch()) {
-                    poisoned = true;
+                    poisonAndSealAdmission();
                     throw new IllegalStateException(
                             "logical proxy and physical route publication epochs disagree");
                 }
@@ -246,7 +246,7 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
                 // An exception after physical publication is not a rollback
                 // permit. Leave the active ticket frozen and require supervisor
                 // retirement/reconciliation.
-                poisoned = true;
+                poisonAndSealAdmission();
                 throw uncertain;
             }
         }
@@ -261,6 +261,19 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
             // cleared. They are still not a trusted blocking supervisor.
             throw new SecurityException(
                     "bounded logical source proxy bridge is a HOST-only API");
+        }
+    }
+
+    /**
+     * Commit the terminal failure fence under the SAME lock as admission.
+     * The invoking dispatch/upgrade/publication holds dispatchLock first,
+     * preserving the established dispatch -> admission lock order.
+     * A producer that observed the pre-failure flag cannot publish a
+     * newly admitted envelope after this terminal seal.
+     */
+    private void poisonAndSealAdmission() {
+        synchronized (admissionLock) {
+            poisoned = true;
         }
     }
 
