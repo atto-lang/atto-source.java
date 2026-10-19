@@ -150,6 +150,38 @@ final class DynamicPropertyAccessRuntimeFailureTest {
     }
 
     @Test
+    void dynamicParentViewCannotExposeChildOnlyFieldAtRuntime() {
+        runtimeRejected("""
+                define class Parent as
+                    pub val int id = 1;
+
+                    pub fnc read(string key): int {
+                        return self[key];
+                    }
+                end
+
+                define class Child extends Parent as
+                    pub val string label = "child";
+                end
+
+                fnc selector(): string { return "label"; }
+
+                fnc read_through_parent(Parent value, string key): int {
+                    return value[key];
+                }
+
+                pub fnc main(): void {
+                    const Parent value = new Child();
+                    const string key = selector();
+                    stdio.println(read_through_parent(value, key));
+                    return;
+                }
+                """,
+                "dynamic-parent-view-child-only-field.ores",
+                "unknown class field key Parent.label");
+    }
+
+    @Test
     void dynamicTupleIndexOverflowFailsAtRuntime() {
         runtimeRejected("""
                 fnc selector(): int { return 2147483648; }
