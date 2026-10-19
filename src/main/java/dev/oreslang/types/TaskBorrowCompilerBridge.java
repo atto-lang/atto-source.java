@@ -79,6 +79,17 @@ final class TaskBorrowCompilerBridge {
         return ledger.admitScopedTyped(typed, (type, trait) -> false, resolved::get);
     }
 
+    /**
+     * Runtime-facing form of the physical retirement capability. Lowering may
+     * pass this Runnable to OresTaskScope.startCompilerFrame; it carries no
+     * ticket, place, type, or cancellation authority.
+     */
+    static Runnable physicalExitCallback(
+            TaskAccessVerifier.Admission admission) {
+        Objects.requireNonNull(admission, "admission");
+        return admission.completion()::releaseAfterPhysicalQuiescence;
+    }
+
     private static Types.Type provenScalar(Ast.TypeRef source) {
         if (source == null || source.isBorrow() || source.inferArguments()
                 || !source.arguments().isEmpty()) {
