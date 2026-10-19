@@ -7372,11 +7372,12 @@ public final class TypeChecker {
         }
 
         Type concrete = resolve(param.type(), generics, self);
-        if (concrete instanceof Record) {
-            // Inline structural shapes are already the canonical read-only
-            // structural contract. They do not need a nominal class/interface
-            // lookup and may safely view readonly inferred records.
-            return concrete;
+        if (concrete instanceof Record record) {
+            // The explicit structural modifier converts an inline record
+            // spelling into a non-storable contract view. Do not leave it as
+            // ordinary RECORD data: concrete structs are allowed to satisfy
+            // structural contracts without becoming records.
+            return new Record(record.members(), true, AggregateKind.CONTRACT);
         }
         Ast.InterfaceDecl iface = findInterface(param.type().name());
         if (iface != null) {
