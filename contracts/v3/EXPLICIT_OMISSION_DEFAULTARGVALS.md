@@ -102,6 +102,20 @@ Overload identity remains caller-visible value arity (constructor's leading `sel
 
 Ordinary explicit constructors use the same binder/default checks, constructor self isolation and exact-once immutable field initialization. Actor constructors remain forbidden. Unknown/opaque function values and unverified generic/foreign/dynamic targets fail closed on named, omitted or defaulted calls until stable static signatures are available.
 
+## Implemented parsing milestone (October 19, 2026)
+
+Java draft PR #1512 now recognizes the **closed literal** `@DefaultArgVals(a: 5, b: "charlie")`
+annotation in the ordinary AST. Its parser requires parentheses, colon-separated
+distinct keys and int/bool/string/`None` constants (including signed negative
+integers). It rejects malformed, nonliteral and duplicate-key annotations,
+then preserves named constants as `Ast.Annotation` metadata.
+
+Critically, `UnloweredDefaultArgValsGuard` rejects any staged declaration
+before normal `TypeChecker.collect` and at direct `OresEvalRootNode` construction.
+Parser acceptance here is NOT an executable language feature, and the
+`T?` type/parameter distinction and omission ABI are still TODO.
+The new regression tests are committed source, NOT an executed Maven/JUnit pass.
+
 ## Existing implementation status and hardening gates
 
 - Java #1335 already stages per-formal `@Default(literal)` parser/AST and a pure `DefaultArgumentPolicy`, but blocks unlowered guest execution; it currently models a **different** T?/Option omission contract.
