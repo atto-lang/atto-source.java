@@ -15,7 +15,7 @@ import java.util.TreeMap;
  */
 public final class IpcReceiptCorrelation {
     public enum Stage {
-        LOCAL_ADMITTED, REMOTE_ACCEPTED, HANDLER_COMMITTED,
+        LOCAL_ADMITTED, DISPATCH_COMMITTED, REMOTE_ACCEPTED, HANDLER_COMMITTED,
         HANDLER_FAILED, REJECTED_BEFORE_REMOTE, OUTCOME_UNKNOWN
     }
 
@@ -108,6 +108,26 @@ public final class IpcReceiptCorrelation {
     }
 
     /**
+     * Trusted LOCAL dispatch commitment. The caller must acquire and validate
+     * transport session/capability authority immediately before committing,
+     * then use that same fenced transport ownership to issue the actual send.
+     * No network side effects are permitted before this call succeeds.
+     *
+     * A failure after the commitment is indeterminate unless an authenticated
+     * remote terminal result arrives: it MUST NOT be turned into a definitive
+     * never-sent rejection. This ledger by itself cannot fence a real socket.
+     */
+    synchronized void commitDispatch(Envelope message) {
+        Objects.requireNonNull(message, "message");
+        Entry entry = pending.get(message.messageSequence());
+        if (entry == null || !entry.envelope.equals(message)
+                || entry.stage != Stage.LOCAL_ADMITTED) {
+            throw new IllegalArgumentException("invalid or duplicate IPC dispatch commitment");
+        }
+        entry.stage = Stage.DISPATCH_COMMITTED;
+    }
+
+    /**
      * Only authenticated peer adapters may call this. THIS METHOD DOES NOT
      * AUTHENTICATE. OUTCOME_UNKNOWN is exclusively a *local* trusted
      * disconnect decision, never a remotely asserted ACK/terminal receipt.
@@ -125,7 +145,7 @@ public final class IpcReceiptCorrelation {
         if (entry == null || !entry.envelope.equals(message)) {
             throw new IllegalArgumentException("forged/stale/unmatched receipt");
         }
-        if (entry.stage == Stage.LOCAL_ADMITTED) {
+        if (entry.stage == Stage.DISPATCH_COMMITTED) {
             if (next == Stage.REMOTE_ACCEPTED) {
                 entry.stage = next;
                 --transportCredits;
@@ -141,8 +161,10 @@ public final class IpcReceiptCorrelation {
     }
 
     /**
-     * Trusted LOCAL dispatcher rejects a message before remote publication.
-     * Never invoke this through a peer-derived message or guest actor DATA.
+     * Trusted LOCAL dispatcher rejects a message before dispatch commitment.
+     * The same monitor serializes this with commitDispatch: once dispatch
+     * wins, rejecting as never-sent is forbidden, even if send subsequently
+     * fails. Never invoke this through a peer-derived message or guest DATA.
      * This deliberately does not accept a Stage argument, preventing callers
      * from relabeling local admission failure as a remote handler result.
      */
@@ -178,7 +200,8 @@ public final class IpcReceiptCorrelation {
         // No allocation or user callbacks in the mutation/commit phase.
         for (LostCorrelation loss : immutableLosses) {
             Entry removed = pending.remove(loss.envelope().messageSequence());
-            if (removed.stage == Stage.LOCAL_ADMITTED) --transportCredits;
+            if (removed.stage == Stage.LOCAL_ADMITTED
+                    || removed.stage == Stage.DISPATCH_COMMITTED) --transportCredits;
         }
         return immutableLosses;
     }
@@ -192,7 +215,8 @@ public final class IpcReceiptCorrelation {
                 || pending.size() > capacity) return false;
         int awaitingReceipt = 0;
         for (Entry entry : pending.values()) {
-            if (entry.stage == Stage.LOCAL_ADMITTED) ++awaitingReceipt;
+            if (entry.stage == Stage.LOCAL_ADMITTED
+                    || entry.stage == Stage.DISPATCH_COMMITTED) ++awaitingReceipt;
             else if (entry.stage != Stage.REMOTE_ACCEPTED) return false;
         }
         return transportCredits == awaitingReceipt;
