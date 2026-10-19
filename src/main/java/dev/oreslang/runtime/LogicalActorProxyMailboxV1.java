@@ -307,13 +307,16 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                 throw new IllegalStateException(
                         "physical dispatch rollback requires the latest outstanding sequence");
             }
-            Envelope envelope = outstanding.get(messageSequence);
+            // Prepare boxed map/set key before any queue mutation. For
+            // sequences outside Long's cache, autoboxing here may allocate.
+            Long key = Long.valueOf(messageSequence);
+            Envelope envelope = outstanding.get(key);
             // ArrayDeque may grow here. Enqueue before mutating outstanding
             // state so allocation failure leaves the delivery authoritative
             // and its credits intact, never half-requeued.
             queued.addFirst(envelope);
-            outstanding.remove(messageSequence);
-            physicalSendAttempted.remove(messageSequence);
+            outstanding.remove(key);
+            physicalSendAttempted.remove(key);
             highestDispatchedSequence--;
             // This is not logical completion: retain all message/byte credits
             // and preserve the original admission sequence for the next send.
@@ -378,10 +381,14 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
     void complete(long messageSequence) {
         synchronized (lock) {
             requireOpenLocked();
-            Envelope envelope = outstanding.get(messageSequence);
+            // A boxed sequence key may allocate outside Java's Long cache.
+            // Reserve it before the first completion/accounting mutation and
+            // reuse it for every map and set operation on this message.
+            Long key = Long.valueOf(messageSequence);
+            Envelope envelope = outstanding.get(key);
             if (envelope == null) {
                 if (messageSequence <= completionWatermark
-                        || completedBeyondWatermark.contains(messageSequence)) {
+                        || completedBeyondWatermark.contains(key)) {
                     throw new IllegalStateException(
                             "duplicate logical message completion");
                 }
@@ -406,7 +413,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                     throw new IllegalStateException(
                             "logical completion gap metadata exceeded bounded dispatch window");
                 }
-                if (completedBeyondWatermark.contains(messageSequence)) {
+                if (completedBeyondWatermark.contains(key)) {
                     throw new IllegalStateException(
                             "duplicate sparse logical completion");
                 }
@@ -422,23 +429,27 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             // TreeSet insertion may allocate. Reserve sparse-completion
             // metadata before refunding credits/removing the delivery: if an
             // allocation fails, it must remain outstanding and retryable.
-            if (sparseCompletion && !completedBeyondWatermark.add(messageSequence)) {
+            if (sparseCompletion && !completedBeyondWatermark.add(key)) {
                 throw new IllegalStateException(
                         "duplicate sparse logical completion");
             }
 
             // No allocation-bearing insertion remains on the commit path.
-            outstanding.remove(messageSequence);
-            physicalSendAttempted.remove(messageSequence);
+            outstanding.remove(key);
+            physicalSendAttempted.remove(key);
             retainedMessages = nextRetainedMessages;
             retainedBytes = nextRetainedBytes;
 
             if (advancesWatermark) {
                 completionWatermark = messageSequence;
+                // first()/pollFirst() reuse TreeSet's existing Long keys;
+                // do not allocate a fresh boxed next-sequence key after
+                // completion has already refunded its transport credits.
                 while (completionWatermark != Long.MAX_VALUE
-                        && completedBeyondWatermark.remove(
-                                completionWatermark + 1L)) {
-                    completionWatermark++;
+                        && !completedBeyondWatermark.isEmpty()
+                        && completedBeyondWatermark.first().longValue()
+                                == completionWatermark + 1L) {
+                    completionWatermark = completedBeyondWatermark.pollFirst();
                 }
             }
             checkStructuralInvariantsLocked();
