@@ -10,10 +10,11 @@ javac --release 21 -d "$out" \
   src/test/java/dev/oreslang/runtime/HttpResponseBodyOpenGateCheck.java \
   src/test/java/dev/oreslang/runtime/HttpResponseBodyOpenSchedulingCheck.java \
   src/test/java/dev/oreslang/runtime/HttpResponseBodyOpenWireCheck.java \
+  src/test/java/dev/oreslang/runtime/HttpResponseWireCommitCheck.java \
   src/test/java/dev/oreslang/runtime/HttpResponseAbortRaceWireCheck.java \
   src/test/java/dev/oreslang/runtime/HttpResponseSupplierFailureCheck.java \
   src/test/java/dev/oreslang/runtime/HttpResponsePreflightCheck.java \
   src/test/java/dev/oreslang/runtime/HttpResponseDraftStandaloneCheck.java
-for test in HttpResponseBodyOpenSchedulingCheck HttpResponseBodyOpenGateCheck HttpResponseBodyOpenWireCheck HttpResponseCloseRaceCheck HttpResponseAbortRaceWireCheck HttpResponseSupplierFailureCheck HttpResponsePreflightCheck HttpResponseDraftStandaloneCheck; do
+for test in HttpResponseWireCommitCheck HttpResponseBodyOpenSchedulingCheck HttpResponseBodyOpenGateCheck HttpResponseBodyOpenWireCheck HttpResponseCloseRaceCheck HttpResponseAbortRaceWireCheck HttpResponseSupplierFailureCheck HttpResponsePreflightCheck HttpResponseDraftStandaloneCheck; do
   java -cp "$out" "dev.oreslang.runtime.$test"
 done
