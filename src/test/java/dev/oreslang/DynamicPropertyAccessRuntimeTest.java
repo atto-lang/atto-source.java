@@ -31,6 +31,10 @@ final class DynamicPropertyAccessRuntimeTest {
                     return pair[index];
                 }
 
+                fnc dynamic_key(): string {
+                    return "x";
+                }
+
                 pub fnc main(): void {
                     const Row row = record{x: 3.0, y: 4.0};
                     stdio.println(record_get(row, "y"));
@@ -40,12 +44,12 @@ final class DynamicPropertyAccessRuntimeTest {
 
                     const Vec2 seed = infer<Vec2> struct{x: 7.0, y: 8.0};
                     val Vec2 current = infer struct{x: 9.0, y: 10.0};
-                    const field = "x";
+                    const field = dynamic_key();
                     current[field] = 11.0;
                     stdio.println(current[field]);
 
                     val Point point = new Point();
-                    const classKey = "y";
+                    const classKey = dynamic_key();
                     point[classKey] = 12;
                     stdio.println(point[classKey]);
                     return;
