@@ -103,10 +103,11 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
                 requireStage(this);
                 Objects.requireNonNull(validatedState, "validated checkpoint");
                 Objects.requireNonNull(readyPhysicalRoute, "ready physical route");
-                if (readyPhysicalRoute == prior.physicalRoute())
+                if (Objects.equals(readyPhysicalRoute, prior.physicalRoute()))
                     throw new IllegalArgumentException("replacement must be a new physical route");
                 if (!validatedState.schemaSha256().equals(image.stateSchemaSha256()))
                     throw new SecurityException("checkpoint schema mismatch");
+                return preflight.withPreparedAuthority(() -> {
                 if (!preflight.quiescentSnapshot()) return false;
                 var snapshot = mailbox.snapshot();
                 if (snapshot.closed() || !snapshot.dispatchFrozen()
@@ -148,6 +149,7 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
                             failure);
                 }
                 return true;
+                });
             }
         }
 
@@ -179,12 +181,16 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
                             StateSnapshot initialState, R initialPhysicalRoute) {
         Objects.requireNonNull(initial, "initial generation authority");
         this.mailbox = Objects.requireNonNull(mailbox, "logical mailbox");
+        if (!initial.admissionOpen() || initial.livePins() != 0)
+            throw new IllegalStateException("initial Task generation must be unpinned and open");
         if (initial.placement().actorKind() != ActorUpgradeEpochGate.ActorKind.SHARED)
             throw new SecurityException(
                     "PRIVATE/UNTRUSTED require independently attested protected workers");
         var snapshot = mailbox.snapshot();
         if (snapshot.closed() || snapshot.dispatchFrozen()
-                || snapshot.routeEpoch() != 1L || snapshot.highestDispatchedSequence() != 0L)
+                || snapshot.routeEpoch() != 1L || snapshot.highestDispatchedSequence() != 0L
+                || snapshot.nextMessageSequence() != 1L
+                || snapshot.retainedMessages() != 0 || snapshot.completionWatermark() != 0L)
             throw new IllegalStateException("new logical authority requires unused mailbox");
         this.active = new Published<>(
                 initial.actorIdentity(), 1L, 1L, initial.image(),
