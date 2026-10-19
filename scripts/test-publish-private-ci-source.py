@@ -31,12 +31,22 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
+        # Existing publisher tests isolate transfer mechanics. The full
+        # admission logic is exercised independently with adversarial fakes.
+        self.provenance = patch.object(pub.pinned, "verify", return_value={
+            "source_sha": A, "source_tree": C, "policy_sha": B,
+            "destination_id": 779})
+        self.provenance.start()
+        self.addCleanup(self.provenance.stop)
+        self.snapshot = patch.object(pub.pinned, "verify_snapshot", return_value=True)
+        self.snapshot.start()
+        self.addCleanup(self.snapshot.stop)
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
         if route == "repos/trusted/ci":
             return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
-                        private=True, default_branch="main")
+                        private=True, default_branch="main", id=779)
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
             return {"sha": hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
@@ -45,6 +55,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             # A fresh file tree and its parent root tree must be distinct.
             return {"sha": E if "base_tree" in payload else D}
         mapping = {
+            "repos/" + pub.pinned.SOURCE_REPO + "/git/ref/heads/main": {"object": {"sha": B}},
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": A},
@@ -403,6 +414,19 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             (outside / "outside.ores").unlink()
             outside.rmdir()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_missing_pinned_admission_denies_before_private_blob_writes(self):
+        with patch.object(pub.pinned, "verify", side_effect=pub.pinned.AdmissionDenied("no review")):
+            with self.assertRaisesRegex(pub.Denied, "identity gate refused"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_source_snapshot_mutation_denies_before_private_blob_writes(self):
+        with patch.object(pub.pinned, "verify_snapshot",
+                          side_effect=pub.pinned.AdmissionDenied("wrong source bytes")):
+            with self.assertRaisesRegex(pub.Denied, "bytes do not match"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_denied_preflight_halts_before_api(self):
         with patch.object(pub, "require_preflight", side_effect=pub.Denied("not approved")):
