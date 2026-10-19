@@ -69,13 +69,25 @@ public final class ThreadSafetyTraits {
                 return has(borrow.target(), required, nominalProof, visiting);
             }
             if (type instanceof ListType list) {
-                return has(list.element(), trait, nominalProof, visiting);
+                // Array/List/Vector/Slice expose mutable storage. Moving the
+                // owning container is Send when its elements are Send, but
+                // sharing &List<T> does not provide a Sync proof merely because
+                // T is Sync. A future immutable buffer gets its own type.
+                return trait == Trait.SEND
+                        && has(list.element(), Trait.SEND, nominalProof, visiting);
             }
             if (type instanceof Tuple tuple) {
+                // FixedArray/FixedList are mutable aggregate storage. The
+                // ordinary Tuple is immutable under shared access.
+                if (trait == Trait.SYNC && tuple.kind() != Types.TupleKind.TUPLE) return false;
                 return tuple.elements().stream().allMatch(
                         member -> has(member, trait, nominalProof, visiting));
             }
             if (type instanceof Record record) {
+                // Structural records are writable by default. Only the
+                // explicitly readonly record type can establish shared
+                // access, and every nested field must independently be Sync.
+                if (trait == Trait.SYNC && !record.readOnly()) return false;
                 return record.members().values().stream().allMatch(
                         member -> has(member, trait, nominalProof, visiting));
             }
