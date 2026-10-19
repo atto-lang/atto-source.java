@@ -39,7 +39,10 @@ final class ActorCpuAffinityConfig {
 
     static int cpuForLane(int[] cpus, long cpuLaneOffset, int lane) {
         if (cpus.length == 0) return -1;
-        int index = (int) Math.floorMod(cpuLaneOffset + (long) lane, (long) cpus.length);
+        long modulus = cpus.length;
+        long base = Math.floorMod(cpuLaneOffset, modulus);
+        long lanePart = Math.floorMod((long) lane, modulus);
+        int index = (int) ((base + lanePart) % modulus);
         return cpus[index];
     }
 
