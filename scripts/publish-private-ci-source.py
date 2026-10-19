@@ -30,6 +30,27 @@ TRUSTED_SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
 TRUSTED_SOURCE_REF = "main"
 TRUSTED_SOURCE_REVIEWER = "ORESoftware"
 MAX_PR_REVIEWS = 100
+# Every executable/policy file that can approve or attest private-source export
+# must remain effectively owned by the independently reviewed source CODEOWNER.
+# These paths mirror the source-free review-coverage inventory.
+SOURCE_SECURITY_PATHS = (
+    ".github/CODEOWNERS",
+    ".github/private-ci-approved-repositories.txt",
+    ".github/workflows/private-ci-mirror-preflight.yml",
+    "docs/security/CI_PRIVATE_SOURCE_MIRRORING.md",
+    "scripts/check-private-ci-destination.sh",
+    "scripts/publish-private-ci-source.py",
+    "scripts/run-in-private-ci-destination.sh",
+    "scripts/run-private-ci-regressions-local.sh",
+    "scripts/test-run-private-ci-regressions-local.sh",
+    "scripts/test-private-ci-destination.sh",
+    "scripts/test-private-ci-merged-main.py",
+    "scripts/test-private-ci-review-coverage.py",
+    "scripts/test-publish-private-ci-source.py",
+    "tools/verify-exact-source-tree.sh",
+    "tools/test-verify-exact-source-tree.sh",
+)
+
 
 
 class Denied(RuntimeError):
@@ -229,7 +250,67 @@ def require_trusted_branch_controls():
     for actors in bypass.values():
         if not isinstance(actors, list) or actors:
             raise Denied("source main allows actor bypass of security reviews")
+    require_source_codeowner_coverage()
 
+
+
+def require_source_codeowner_coverage():
+    """Check effective source security ownership from authenticated main bytes.
+
+    Enforced CODEOWNER reviews alone do not secure an unowned script, or a
+    later rule that redirects ownership to a different principal.
+    """
+    route = (f"repos/{TRUSTED_SOURCE_REPOSITORY}/contents/"
+             f".github/CODEOWNERS?ref={TRUSTED_SOURCE_REF}")
+    response = gh_api(route)
+    encoded = response.get("content")
+    declared = response.get("size")
+    if (response.get("type") != "file"
+            or response.get("encoding") != "base64"
+            or not isinstance(encoded, str) or len(encoded) > 24 * 1024
+            or not isinstance(declared, int) or isinstance(declared, bool)
+            or declared < 1 or declared > 16 * 1024):
+        raise Denied("source main CODEOWNERS file is missing or malformed")
+    try:
+        raw = base64.b64decode("".join(encoded.split()), validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise Denied("source main CODEOWNERS cannot be decoded") from exc
+    if len(raw) != declared:
+        raise Denied("source main CODEOWNERS size differs")
+    blob = hashlib.sha1(
+        b"blob " + str(len(raw)).encode("ascii") + bytes([0]) + raw
+    ).hexdigest()
+    if valid_sha(response.get("sha")) != blob:
+        raise Denied("source main CODEOWNERS Git blob differs")
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise Denied("source main CODEOWNERS is not UTF-8") from exc
+
+    rules = []
+    for line in content.splitlines():
+        fields = line.split()
+        if not fields or line.lstrip().startswith("#"):
+            continue
+        if (len(fields) != 2 or not fields[1].startswith("@")
+                or fields[0] != "*"
+                and (not fields[0].startswith("/")
+                     or any(char in fields[0] for char in "*?![]\\")
+                     or ".." in fields[0].split("/"))):
+            raise Denied("source main CODEOWNERS contains unsupported security rule")
+        rules.append((fields[0], fields[1]))
+    if not rules:
+        raise Denied("source main CODEOWNERS trust root is empty")
+    for path in SOURCE_SECURITY_PATHS:
+        applicable = [
+            principal for pattern, principal in rules
+            if (pattern == "*" or pattern == "/" + path
+                or (pattern.endswith("/") and
+                    path.startswith(pattern.lstrip("/"))))
+        ]
+        if not applicable or applicable[-1].casefold() != (
+                "@" + TRUSTED_SOURCE_REVIEWER).casefold():
+            raise Denied("source main security file lacks effective CODEOWNER: " + path)
 
 
 def require_destination_workflow_owners(repository, expected_head):
