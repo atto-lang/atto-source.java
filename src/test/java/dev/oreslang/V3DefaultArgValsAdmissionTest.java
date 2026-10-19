@@ -536,4 +536,36 @@ final class V3DefaultArgValsAdmissionTest {
         assertTrue(Ast.TypeRef.stagedV3Option(explicitOption).isStagedV3Option());
     }
 
+    @Test
+    void stagedDefaultAndOmissionCannotLaunderBorrowedGenericOption() {
+        Ast.TypeRef borrowed = Ast.TypeRef.borrowed(Ast.TypeRef.simple("int"), false);
+        Ast.TypeRef nested = new Ast.TypeRef("List", List.of(borrowed), false);
+        Ast.TypeRef option = new Ast.TypeRef("Option", List.of(nested), false);
+        Ast.Param implicitNone = new Ast.Param(option, "value",
+                false, false, List.of(), true);
+        assertThrows(IllegalArgumentException.class,
+                () -> V3DefaultArgValsPolicy.validateDeclaration(
+                        List.of(implicitNone), List.of()));
+
+        Ast.Param defaulted = new Ast.Param(option, "value");
+        Ast.Annotation annotatedNone = new Ast.Annotation(
+                "DefaultArgVals", List.of(),
+                List.of(new Ast.NamedDefault("value", Ast.TypeRef.simple("None"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> V3DefaultArgValsPolicy.validateDeclaration(
+                        List.of(defaulted), List.of(annotatedNone)));
+
+        Ast.TypeRef unresolved = new Ast.TypeRef("Option",
+                List.of(new Ast.TypeRef("List", List.of(), true)), false);
+        Ast.Param unresolvedDefault = new Ast.Param(unresolved, "value");
+        assertThrows(IllegalArgumentException.class,
+                () -> V3DefaultArgValsPolicy.validateDeclaration(
+                        List.of(unresolvedDefault), List.of(annotatedNone)));
+
+        // Required Option<List<borrow int>> is not a default argument:
+        // remain staged; normal ownership/type resolution controls it.
+        assertFalse(V3DefaultArgValsPolicy.validateDeclaration(
+                List.of(defaulted), List.of()).getFirst().omittable());
+    }
+
 }
