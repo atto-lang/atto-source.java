@@ -171,7 +171,10 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
          * matching generation, ABI and route epochs.
          */
         public boolean authoritativeForDispatch() {
-            return !failSealed && !mailbox.closed()
+            // A fully coherent diagnostic may still represent a legitimate
+            // in-progress supervisor freeze. Frozen dispatch is NOT an
+            // authority to submit physical work, even before fail sealing.
+            return !failSealed && !mailbox.closed() && !mailbox.dispatchFrozen()
                     && address.routeEpoch() == mailbox.routeEpoch();
         }
     }
@@ -201,6 +204,16 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
                 poisonAndSealAdmission();
                 throw new SecurityException(
                         "compiler message ABI differs from immutable proxy binding");
+            }
+            // ORM2 has its own compiler-bound nominal receive contract.
+            // A healthy code/route epoch must not certify an ActorMail<T>
+            // frame under a foreign or drifted receive ABI.
+            if (!poisoned && typedWireBinding != null
+                    && !typedWireBinding.identity().messageAbiSha256()
+                            .equals(witness.messageAbiSha256())) {
+                poisonAndSealAdmission();
+                throw new SecurityException(
+                        "ORM2 compiler message ABI differs from immutable proxy binding");
             }
             return new Publication(
                     witness.address(), witness.mailbox(),
