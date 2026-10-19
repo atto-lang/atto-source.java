@@ -20,9 +20,67 @@ public final class IpcReceiptCompletionBridge {
     private final IpcReceiptCorrelation correlations;
     private final Map<Long, CompletableFuture<IpcReceiptCorrelation.Stage>> completions =
             new HashMap<>();
+    // A production physical transport may claim this bridge exactly once.
+    // Never clear/rebind these fields: reconnect must allocate a fresh bridge,
+    // preventing delayed generation-N close from retiring generation-N+1 work.
+    private Object physicalOwner;
+    private IpcReceiptCorrelation.Envelope physicalEpoch;
+    private long physicalGeneration;
 
     public IpcReceiptCompletionBridge(int capacity) {
         correlations = new IpcReceiptCorrelation(capacity);
+    }
+
+    /**
+     * Bind this empty bridge to exactly one physical transport incarnation.
+     * The owner is an opaque host object identity, never guest data. This
+     * binding is intentionally irreversible even after retirement.
+     */
+    void claimPhysicalTransport(Object owner,
+                                IpcReceiptCorrelation.Envelope trustedEpoch,
+                                long generation) {
+        Objects.requireNonNull(owner, "owner");
+        Objects.requireNonNull(trustedEpoch, "trustedEpoch");
+        if (generation <= 0) {
+            throw new IllegalArgumentException("physical generation must be positive");
+        }
+        synchronized (gate) {
+            if (physicalOwner != null) {
+                throw new IllegalStateException("IPC receipt bridge already bound");
+            }
+            if (!completions.isEmpty() || correlations.counters().pending() != 0) {
+                throw new IllegalStateException(
+                        "IPC receipt bridge must be empty before physical binding");
+            }
+            physicalOwner = owner;
+            physicalEpoch = trustedEpoch;
+            physicalGeneration = generation;
+        }
+    }
+
+    private static boolean sameTransportEpoch(
+            IpcReceiptCorrelation.Envelope a,
+            IpcReceiptCorrelation.Envelope b) {
+        return a.domain().equals(b.domain())
+                && a.sender().equals(b.sender())
+                && a.destination().equals(b.destination())
+                && a.session().equals(b.session())
+                && a.senderIncarnation() == b.senderIncarnation()
+                && a.destinationIncarnation() == b.destinationIncarnation()
+                && a.routeEpoch() == b.routeEpoch()
+                && a.capabilityGeneration() == b.capabilityGeneration();
+    }
+
+    private void requirePhysicalTransport(
+            Object owner,
+            IpcReceiptCorrelation.Envelope trustedEpoch,
+            long generation) {
+        if (physicalOwner == null || physicalOwner != owner
+                || physicalGeneration != generation
+                || !sameTransportEpoch(physicalEpoch, trustedEpoch)) {
+            throw new IllegalArgumentException(
+                    "foreign/stale IPC physical transport authority");
+        }
     }
 
     public CompletionStage<IpcReceiptCorrelation.Stage> admit(
@@ -103,6 +161,27 @@ public final class IpcReceiptCompletionBridge {
      * string session id or a peer-provided EOF claim.
      */
     int transportLost(IpcReceiptCorrelation.Envelope trustedEpoch) {
+        synchronized (gate) {
+            if (physicalOwner != null) {
+                throw new IllegalStateException(
+                        "bound IPC bridge requires physical owner/generation");
+            }
+        }
+        return transportLostInternal(trustedEpoch);
+    }
+
+    int transportLost(Object owner,
+                      IpcReceiptCorrelation.Envelope trustedEpoch,
+                      long generation) {
+        Objects.requireNonNull(owner, "owner");
+        Objects.requireNonNull(trustedEpoch, "trustedEpoch");
+        synchronized (gate) {
+            requirePhysicalTransport(owner, trustedEpoch, generation);
+        }
+        return transportLostInternal(trustedEpoch);
+    }
+
+    private int transportLostInternal(IpcReceiptCorrelation.Envelope trustedEpoch) {
         ArrayList<CompletableFuture<IpcReceiptCorrelation.Stage>> done = new ArrayList<>();
         synchronized (gate) {
             // Reserve all notification capacity BEFORE the native-equivalent
