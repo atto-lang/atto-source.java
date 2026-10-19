@@ -1023,9 +1023,8 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         raise Denied("invalid destination or isolated CI branch name")
     valid_sha(expected_source_tree)
     valid_sha(expected_source_commit)
-    expected_branch = "ci/oreslang-" + expected_source_commit
-    if branch != expected_branch:
-        raise Denied("isolated CI branch must encode the full approved source commit SHA")
+    # The exact ref also binds the carrier-main revision, but that revision is
+    # authenticated below. Syntax checks above still fail before source reads.
     # This function previously ran the checkout-local Bash preflight BEFORE
     # authenticating the checkout. A modified PR checkout could execute an
     # attacker-controlled guard even though source export would later deny.
@@ -1109,6 +1108,10 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         return current_sha
     base_sha = require_pinned_carrier_main(
         approved_carrier_main_sha, approved_carrier_tree)
+    expected_branch = "ci/oreslang-" + expected_source_commit + "-" + base_sha
+    if branch != expected_branch:
+        raise Denied(
+            "isolated CI branch must encode the full approved source and carrier-main SHAs")
     carrier_approval_sha, carrier_ruleset_id = require_carrier_source_approval(
         repository, expected_source_commit, expected_source_tree, base_sha)
     require_carrier_source_ruleset(repository, carrier_ruleset_id)
