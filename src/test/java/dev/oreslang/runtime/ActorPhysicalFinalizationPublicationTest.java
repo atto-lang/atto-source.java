@@ -98,6 +98,51 @@ final class ActorPhysicalFinalizationPublicationTest {
         }
     }
 
+    @SuppressWarnings("unchecked")
+    private static ThreadLocal<Boolean> booleanCarrier(
+            Class<?> runtimeType, String field) throws Exception {
+        var declared = runtimeType.getDeclaredField(field);
+        declared.setAccessible(true);
+        return (ThreadLocal<Boolean>) declared.get(null);
+    }
+
+    @Test
+    void orphanedCarrierMarkersCannotBlockOnActorFinalization()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            assertFalse(actor.awaitTermination(0, TimeUnit.NANOSECONDS),
+                    "an ordinary host may observe an unfinished actor");
+
+            // No active CURRENT actor or scheduler Task is present. Each
+            // carrier marker alone must be sufficient to deny a blocking
+            // physical join that could stall its executor indefinitely.
+            record Marker(Class<?> owner, String field) { }
+            var carriers = java.util.List.of(
+                    new Marker(ActorRuntime.class, "ACTOR_CARRIER"),
+                    new Marker(OresScheduler.class, "SCHEDULER_CARRIER"),
+                    new Marker(AsyncRuntime.class, "ASYNC_CARRIER"));
+            for (var carrier : carriers) {
+                var local = booleanCarrier(carrier.owner(), carrier.field());
+                Boolean before = local.get();
+                try {
+                    local.set(Boolean.TRUE);
+                    assertFalse(ActorRuntime.inActorExecution());
+                    assertThrows(SecurityException.class,
+                            () -> actor.awaitTermination(5, TimeUnit.SECONDS),
+                            "carrier-only thread may not join actor: " + carrier.field());
+                } finally {
+                    if (before == null) local.remove();
+                    else local.set(before);
+                }
+            }
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
     @Test
     void recordedPhysicalFinalizerCannotSynchronouslyWaitForItself()
             throws Exception {
