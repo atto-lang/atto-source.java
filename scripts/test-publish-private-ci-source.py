@@ -89,6 +89,35 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                 "ci/oreslang-test", self.root)
         self.assertEqual(self.route_calls, [])
 
+    def test_environment_cannot_enable_real_private_export(self):
+        env = {
+            "ORESLANG_PRIVATE_CI_SOURCE_AUTHORIZED": "1",
+            "PRIVATE_CI_SOURCE_AUTHORIZED": "1",
+            "CI_ALLOW_PRIVATE_SOURCE_EXPORT": "1",
+        }
+        with patch.dict(pub.os.environ, env, clear=False):
+            with patch.object(pub, "require_independent_source_authorization",
+                              REAL_ADMISSION_GATE):
+                with patch.object(pub, "gh_api",
+                                  side_effect=AssertionError("API must not run")):
+                    with self.assertRaisesRegex(pub.Denied,
+                                                "independent protected source"):
+                        pub.publish("trusted/ci", self.source,
+                                    "ci/oreslang-test", self.root)
+        self.assertEqual(self.route_calls, [])
+
+    def test_unapproved_runtime_gate_precedes_source_access(self):
+        with patch.object(pub, "require_independent_source_authorization",
+                          REAL_ADMISSION_GATE):
+            with patch.object(Path, "resolve",
+                              side_effect=AssertionError("source path must not be resolved")):
+                with patch.object(pub, "collect_source",
+                                  side_effect=AssertionError("source must not be read")):
+                    with self.assertRaisesRegex(pub.Denied, "security #962"):
+                        pub.publish("trusted/ci", self.source,
+                                    "ci/oreslang-test", self.root)
+        self.assertEqual(self.route_calls, [])
+
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
         sha, count = self.publish()
         self.assertEqual((sha, count), (A, 1))
