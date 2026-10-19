@@ -70,8 +70,13 @@ public final class OwnershipChecker {
         for (Ast.ModuleDecl module : program.modules()) {
             modules.add(module.name());
             for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.FunctionDecl fn) index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
-                else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                if (decl instanceof Ast.FunctionDecl fn) {
+                    if (ML_SCALAR_INTRINSICS.contains(fn.name())) {
+                        throw error("module function '" + fn.name()
+                                + "' is reserved by the sealed actor scalar publication API");
+                    }
+                    index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
+                } else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
             }
         }
     }
