@@ -149,7 +149,7 @@ final class SharedDomainArenaTest {
             foreignCompletion.start();
             foreignCompletion.join(3000);
             assertFalse(foreignCompletion.isAlive());
-            assertInstanceOf(IllegalStateException.class, foreignCloseFailure.get(),
+            assertInstanceOf(SecurityException.class, foreignCloseFailure.get(),
                     "off-carrier must not prematurely release a lexical critical loan");
             // The actor itself may release an already leaked loan during a
             // later trusted cleanup turn, but cannot use its prior byte scope.
