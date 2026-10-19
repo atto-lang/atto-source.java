@@ -124,6 +124,8 @@ final class DynSendSyncConvergenceTest {
         // readOnly is a view, not proof of a frozen allocation.
         assertTrue(ThreadSafetyTraits.has(immutable, Trait.SEND, NO_NOMINAL));
         assertFalse(ThreadSafetyTraits.has(immutable, Trait.SYNC, NO_NOMINAL));
+        assertFalse(ThreadSafetyTraits.isOwnedSend(immutable, NO_NOMINAL),
+                "readonly view has no frozen/exclusive backing proof for detached Task");
         assertFalse(ThreadSafetyTraits.has(new Types.Borrow(immutable, false),
                 Trait.SEND, NO_NOMINAL));
         for (Trait trait : Trait.values()) {
@@ -227,11 +229,50 @@ final class DynSendSyncConvergenceTest {
     }
 
     @Test
+    void detachedOwnedSendRejectsReadonlyRecordViewsEvenWhenNested() {
+        Types.Type view = new Types.Record(
+                Map.of("value", Types.Primitive.INT), true);
+        assertTrue(ThreadSafetyTraits.has(view, Trait.SEND, TRUSTED_CORE),
+                "raw Send remains a structural trait query");
+        for (Types.Type candidate : List.of(
+                view,
+                new Types.ListType(view),
+                new Types.Tuple(List.of(Types.Primitive.INT, view)),
+                new Types.Record(Map.of("nested", view)),
+                new Types.Union(List.of(Types.Primitive.INT, view)),
+                new Types.Named("Option", List.of(view)),
+                new Types.Named("Result", List.of(Types.Primitive.INT, view)))) {
+            assertFalse(ThreadSafetyTraits.isOwnedSend(candidate, TRUSTED_CORE),
+                    "detached Task admitted readonly alias without backing proof: " + candidate);
+        }
+    }
+
+    @Test
     void ownedSendPreflightRejectsTypeDepthBombWithoutPoisoningQueries() {
         Types.Type deep = Types.Primitive.INT;
         for (int i = 0; i < 10000; i++) deep = new Types.ListType(deep);
         assertFalse(ThreadSafetyTraits.isOwnedSend(deep, TRUSTED_CORE));
         assertTrue(ThreadSafetyTraits.isOwnedSend(Types.Primitive.INT, TRUSTED_CORE));
+    }
+
+    @Test
+    void traitProofMemoizesSharedDagAndRejectsWideBudgetBomb() {
+        Types.Type shared = Types.Primitive.INT;
+        for (int i = 0; i < 200; i++) shared = new Types.ListType(shared);
+        java.util.ArrayList<Types.Type> repeated = new java.util.ArrayList<>();
+        for (int i = 0; i < 1000; i++) repeated.add(shared);
+        assertTrue(ThreadSafetyTraits.has(
+                new Types.Tuple(repeated), Trait.SEND, TRUSTED_CORE),
+                "shared DAG should reuse a completed proof within the bounded query");
+
+        java.util.ArrayList<Types.Type> wide = new java.util.ArrayList<>();
+        for (int i = 0; i < 100_100; i++) wide.add(Types.Primitive.INT);
+        assertFalse(ThreadSafetyTraits.has(
+                new Types.Tuple(wide), Trait.SEND, TRUSTED_CORE),
+                "wide attacker-controlled type must exhaust the global proof budget");
+        assertTrue(ThreadSafetyTraits.has(
+                Types.Primitive.INT, Trait.SEND, TRUSTED_CORE),
+                "budget exhaustion must not poison the next independent query");
     }
 
     @Test
