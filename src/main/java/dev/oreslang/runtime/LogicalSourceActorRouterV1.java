@@ -433,6 +433,50 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         }
     }
 
+    /**
+     * Canonical compiler-Task admission for a source actor. Route epoch
+     * validation and ActorRuntime generation-pin acquisition happen under the
+     * same route monitor that serializes hot publication. OresTaskScope then
+     * owns the frame and releases the exact pin only from scheduler physical
+     * quiescence (or an independently proven pre-admission rejection).
+     */
+    <T> OresTask<T> startCompilerTaskForUpgrade(
+            OresTaskScope scope,
+            OresScheduler scheduler,
+            OresScheduler.Task<T> frame,
+            long expectedRouteEpoch) {
+        requireBlockingHostSurface("start compiler-owned source actor Task");
+        Objects.requireNonNull(scope, "scope");
+        Objects.requireNonNull(scheduler, "scheduler");
+        Objects.requireNonNull(frame, "frame");
+        if (expectedRouteEpoch < 0L)
+            throw new IllegalArgumentException("invalid Task scope route epoch");
+        synchronized (routeLock) {
+            awaitUpgradeLocked();
+            requireOpenLocked();
+            reapRetiredLocked();
+            if (expectedRouteEpoch != 0L
+                    && active.routeEpoch != expectedRouteEpoch) {
+                throw new java.util.concurrent.RejectedExecutionException(
+                        "old actor generation Task scope cannot launch in new route epoch");
+            }
+
+            ActorRuntime runtime = active.view.runtime();
+            ActorRuntime.ActorRef<Object> physical = active.physical;
+            // Same lifecycle fence used by hot-upgrade transfer. If the pin
+            // wins, transfer must observe it; if transfer already froze
+            // ingress, this acquisition fails before scheduler admission.
+            ActorRuntime.HotUpgradeExternalLease generation =
+                    runtime.pinExternalWorkForHotUpgrade(physical);
+
+            // From this point the canonical scope owns release responsibility.
+            // Its pre-admission preparation path invokes this callback on every
+            // rejection/failure before a TaskRunner becomes executable.
+            return scope.startCompilerFrame(
+                    scheduler, frame, generation::close);
+        }
+    }
+
     public HotReloadManager.Generation generation() {
         synchronized (routeLock) {
             requireOpenLocked();
