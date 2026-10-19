@@ -67,6 +67,20 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 + ": " + transport.snapshot());
     }
 
+    private static void offCallerCleanup(Runnable cleanup) {
+        Thread worker = new Thread(cleanup, "ipc-test-cleanup-off-caller");
+        worker.start();
+        try {
+            worker.join(3000);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("cleanup test interrupted", interrupted);
+        }
+        if (worker.isAlive()) {
+            throw new IllegalStateException("cleanup test worker did not finish");
+        }
+    }
+
     private static byte[] peerLocalVerdictWithValidMac(
             IpcReceiptCorrelation.Envelope message,
             long physicalGeneration,
@@ -426,6 +440,29 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             check(peerFailure.get() == null);
         }
 
+        // A caller-runs cleanup scheduler is invalid for a physical transport.
+        // The lease detects it before socket close/key destruction and fails closed.
+        byte[] inlinePayload = "inline cleanup".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var inlineMessage = envelope(1, "inlineCleanupAdapter", 3, 4, inlinePayload);
+        try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
+             Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort());
+             Socket peer = server.accept()) {
+            peer.setSoTimeout(3000);
+            var bridge = new IpcReceiptCompletionBridge(1);
+            var transport = new IpcAuthenticatedSocketTransport(
+                    client, bridge, inlineMessage, 88, 1, key, Runnable::run);
+            var submission = transport.send(inlineMessage, inlinePayload);
+            check(!submission.writeAttemptFailed());
+            IpcAuthenticatedSocketTransport.readDataWireFrame(peer.getInputStream());
+            transport.requestClose();
+            check(transport.snapshot().phase()
+                    == IpcTransportSessionLease.Phase.QUARANTINED);
+            check(!transport.keyMaterialDestroyed());
+            check(!submission.outcome().toCompletableFuture().isDone());
+            check(bridge.invariant());
+        }
+
         // Cleanup scheduler rejection quarantines the connection. Only an
         // explicit supervisor retry may finish physical-close confirmation and
         // trusted receipt retirement; no automatic reopen or replay occurs.
@@ -442,7 +479,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 if (schedules.incrementAndGet() == 1) {
                     throw new IllegalStateException("cleanup queue saturated");
                 }
-                cleanup.run(); // deterministic host-supervisor retry fixture
+                offCallerCleanup(cleanup); // deterministic host-supervisor retry fixture
             };
             var transport = new IpcAuthenticatedSocketTransport(
                     client, bridge, quarantineMessage, 89, 1, key, scheduler);
@@ -507,7 +544,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 reader.start();
                 Thread.sleep(30);
                 check(reader.isAlive());
-                transport.requestClose();
+                check(transport.requestCloseAndAwait(3000));
                 reader.join(3000);
                 check(!reader.isAlive());
                 check(readFailure.get() instanceof IOException);
@@ -563,8 +600,8 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 check(observedPinnedWrite);
                 Thread.sleep(40);
                 check(sender.isAlive());
-                transport.requestClose();
-                sender.join(4000);
+                check(transport.requestCloseAndAwait(3000));
+                sender.join(1000);
                 check(!sender.isAlive());
                 check(sendFailure.get() == null);
                 check(sendResult.get() != null);
