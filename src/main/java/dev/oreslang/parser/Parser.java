@@ -3620,10 +3620,12 @@ public final class Parser {
             return new Ast.ListExpr(items);
         }
         if (match(NLEX)) {
+            if (match(FNC)) return parseAnonymousFncLambda(true);
             if (check(PIPE)) return parsePipeLambda(true);
             if (check(LPAREN) && looksLikeLambda()) return parseLambda(true);
             throw error(previous(), "'nlex' in expression position must prefix a lambda");
         }
+        if (match(FNC)) return parseAnonymousFncLambda(false);
         if (check(PIPE)) return parsePipeLambda(false);
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
         if (match(LPAREN)) {
@@ -3704,23 +3706,40 @@ public final class Parser {
 
     private Ast.LambdaExpr parsePipeLambda(boolean nonLexical) {
         consume(PIPE, "expected '|'");
-        List<Ast.Param> params = new ArrayList<>();
-        if (!check(PIPE)) {
-            do {
-                if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
-                    String name = advance().lexeme();
-                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
-                } else {
-                    Ast.TypeRef type = parseTypeRef();
-                    boolean mutable = match(MUT);
-                    String name = consume(IDENT, "expected lambda parameter name").lexeme();
-                    params.add(new Ast.Param(type, name, false, mutable));
-                }
-            } while (match(COMMA));
-        }
+        List<Ast.Param> params = parseInferredOrTypedLambdaParametersUntil(PIPE);
         consume(PIPE, "expected closing '|' after lambda parameters");
         consume(ARROW, "lambdas use the slim arrow '->'");
         return parseLambdaBody(params, nonLexical);
+    }
+
+    // The anonymous fnc spelling is a LambdaExpr, not a nested function
+    // declaration. Share parameter inference and capture semantics with |x| -> {}.
+    // Require a block so 'fnc(x)' cannot masquerade as a call or expression lambda.
+    private Ast.LambdaExpr parseAnonymousFncLambda(boolean nonLexical) {
+        consume(LPAREN, "expected '(' after anonymous fnc");
+        List<Ast.Param> params = parseInferredOrTypedLambdaParametersUntil(RPAREN);
+        consume(RPAREN, "expected ')' after anonymous fnc parameters");
+        if (!check(LBRACE)) {
+            throw error(peek(), "anonymous fnc requires a braced '{ ... }' body");
+        }
+        return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+    }
+
+    private List<Ast.Param> parseInferredOrTypedLambdaParametersUntil(Token.Type terminator) {
+        if (check(terminator)) return List.of();
+        List<Ast.Param> params = new ArrayList<>();
+        do {
+            if (check(IDENT) && (checkNext(COMMA) || checkNext(terminator))) {
+                String name = advance().lexeme();
+                params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
+            } else {
+                Ast.TypeRef type = parseTypeRef();
+                boolean mutable = match(MUT);
+                String name = consume(IDENT, "expected lambda parameter name").lexeme();
+                params.add(new Ast.Param(type, name, false, mutable));
+            }
+        } while (match(COMMA));
+        return params;
     }
 
     private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical) {
