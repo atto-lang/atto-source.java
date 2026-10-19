@@ -255,10 +255,25 @@ The publisher then queries GitHub's active-rules endpoint for the **exact**
 percent-encoded `ci/oreslang-<source>-<carrier>` branch name (the branch does
 not need to exist yet). It requires that the reviewed repository ruleset ID
 actually contributes one immutable `update` rule and one `deletion` rule to
-that exact ref. This second proof rejects a stored ruleset whose pattern or
-effective applicability has drifted even when the standalone ruleset object
-still looks plausible. The effective-rule proof is also repeated immediately
-before every destination write.
+that exact ref. It also rejects **any** effective `creation` rule, including
+one contributed by another active ruleset, because a predictable final ref
+creation failure after blob/tree uploads would leave unreachable private Git
+objects in the carrier.
+
+Before reading source bytes and again before every pre-ref destination write,
+the publisher also queries GitHub's matching-refs endpoint for the exact
+reserved branch prefix and requires an empty result. This rejects retries or
+prefix collisions before private objects are uploaded. The absence check is
+repeated immediately before the atomic ref-create POST. A narrow distributed
+race still exists if another authorized repository writer creates the same ref
+between that final GET and GitHub's create operation; the create remains
+fail-closed, but already-created unreachable private Git objects can remain.
+Closing that residual race requires an independently reviewed nonce/reservation
+protocol or repository-lifecycle isolation rather than weakening ref
+immutability.
+
+These proofs reject a stored ruleset whose pattern/effective applicability has
+drifted and reject deterministic stale-ref retries before source export.
 
 Carrier CI independently requires the source-bearing ref to be exactly one
 snapshot commit above a carrier base that did not already contain
