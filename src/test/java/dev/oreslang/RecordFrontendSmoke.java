@@ -239,6 +239,30 @@ public final class RecordFrontendSmoke {
         OwnershipChecker.check(checkedTuple.program(), checkedTuple.shortInferredAliases());
         accepted(shortTuple);
         denied(() -> TypeChecker.check(Parser.parse("""
+                fnc bad(): void {
+                    const Empty value = tuple();
+                    return;
+                }
+                """)), "empty short tuple alias must match explicit infer<T> tuple admission");
+        Ast.Program forgedEmptyTuple = Parser.parse("""
+                fnc bad(): void {
+                    const Empty value = tuple();
+                    return;
+                }
+                """);
+        Ast.BindingStmt forgedEmptyBinding = forgedEmptyTuple.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .flatMap(fn -> fn.body().stream())
+                .filter(Ast.BindingStmt.class::isInstance)
+                .map(Ast.BindingStmt.class::cast)
+                .findFirst()
+                .orElseThrow();
+        denied(() -> OwnershipChecker.check(
+                forgedEmptyTuple, Map.of(forgedEmptyBinding, "Empty")),
+                "ownership must reject a forged empty-tuple short-alias proof");
+        denied(() -> TypeChecker.check(Parser.parse("""
                 fnc bad(int index): int {
                     const Pair p = tuple(3.0, "second");
                     return p[index];

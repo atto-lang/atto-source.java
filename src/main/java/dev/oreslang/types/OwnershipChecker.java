@@ -861,7 +861,8 @@ public final class OwnershipChecker {
                         || !binding.declaredType().name().equals(shortAlias)
                         || !((binding.initializer() instanceof Ast.ObjectExpr object
                              && object.inferredAggregate())
-                             || binding.initializer() instanceof Ast.TupleExpr))) {
+                             || (binding.initializer() instanceof Ast.TupleExpr tuple
+                                 && !tuple.elements().isEmpty())))) {
                 throw error("invalid validated short inferred type alias");
             }
             if (value.type.name().equals("$infer$")
@@ -892,6 +893,9 @@ public final class OwnershipChecker {
                 Origin.LOCAL);
         state.borrowSource = value.borrowSource;
         state.borrowLease = value.borrowLease;
+        if (binding.kind() == Ast.BindingKind.CONST) {
+            state.constantInteger = constantIntegerLiteral(binding.initializer());
+        }
         scope.define(binding.name(), state);
     }
 
@@ -3502,6 +3506,30 @@ public final class OwnershipChecker {
         return continuation;
     }
 
+    /** Match TypeChecker's deliberately small constant tuple-index proof. */
+    private Long constantIntegerLiteral(Ast.Expr expression) {
+        if (expression instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long index) return index;
+        if (expression instanceof Ast.UnaryExpr unary
+                && unary.operator().equals("-")
+                && unary.operand() instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long index) {
+            if (index == Long.MIN_VALUE) return null;
+            return -index;
+        }
+        return null;
+    }
+
+    private Long constantTupleIndex(Ast.Expr expression, Scope scope) {
+        Long literal = constantIntegerLiteral(expression);
+        if (literal != null) return literal;
+        if (expression instanceof Ast.NameExpr name) {
+            VarState state = scope.lookup(name.name());
+            return state == null ? null : state.constantInteger;
+        }
+        return null;
+    }
+
     private Ast.TypeRef indexedElementType(
             Ast.IndexExpr indexed, Ast.TypeRef receiverType, Scope scope) {
         if (receiverType == null) return Ast.TypeRef.inferred();
@@ -3519,9 +3547,8 @@ public final class OwnershipChecker {
         }
 
         if (concrete.isTupleType()) {
-            if (indexed.index() instanceof Ast.LiteralExpr literal
-                    && literal.value() instanceof Long raw
-                    && raw >= 0 && raw < concrete.arguments().size()) {
+            Long raw = constantTupleIndex(indexed.index(), scope);
+            if (raw != null && raw >= 0 && raw < concrete.arguments().size()) {
                 return concrete.arguments().get(raw.intValue());
             }
             if (concrete.arguments().isEmpty()) return Ast.TypeRef.inferred();
@@ -3862,6 +3889,8 @@ public final class OwnershipChecker {
         private boolean mutableBorrowed;
         private VarState borrowSource;
         private boolean borrowLease;
+        /** Stable const integer used only for finite tuple index proof parity. */
+        private Long constantInteger;
         /** Narrowing/pattern alias: ownership operations are forwarded to this root place. */
         private VarState aliasSource;
         /** Synthetic aggregate aliases, currently used by the implicit arguments tuple. */

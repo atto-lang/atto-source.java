@@ -125,6 +125,36 @@ final class ComputedAggregateIndexBoundaryTest {
     }
 
     @Test
+    void shortTupleAliasRejectsEmptyInferenceAndPreservesOwnershipConstantNarrowing() {
+        denied("""
+                fnc bad(): void {
+                    const Empty value = tuple();
+                    return;
+                }
+                """);
+        accepted("""
+                define class Box as
+                    pub val int value = 9;
+                end
+                fnc get(): int {
+                    const Pair pair = tuple(3, new Box());
+                    const index = 0;
+                    return pair[index];
+                }
+                """);
+        denied("""
+                define class Box as
+                    pub val int value = 9;
+                end
+                fnc bad(): Box {
+                    const Pair pair = tuple(3, new Box());
+                    const index = 1;
+                    return pair[index];
+                }
+                """);
+    }
+
+    @Test
     void emptyClosedAggregateCannotBecomeUncheckedUnknownValue() {
         denied("""
                 fnc bad(string key): int {

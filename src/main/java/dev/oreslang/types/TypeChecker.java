@@ -1681,7 +1681,8 @@ public final class TypeChecker {
         if (binding.inferredTypeName() != null || binding.kind() != Ast.BindingKind.CONST
                 || binding.mutableReferent()
                 || !((binding.initializer() instanceof Ast.ObjectExpr object && object.inferredAggregate())
-                     || binding.initializer() instanceof Ast.TupleExpr)) {
+                     || (binding.initializer() instanceof Ast.TupleExpr tuple
+                         && !tuple.elements().isEmpty()))) {
             return false;
         }
         Ast.TypeRef ref = binding.declaredType();

@@ -60,6 +60,10 @@ and an entry is a `{key, value}` record *shape*; nominal third-party
 The Java parser/type checker/ownership smoke and JUnit boundary tests must
 pass at one exact Git tree, including short tuple alias proof identity,
 readonly and visibility rules, inherited fields and runtime bounds errors.
+Short tuple aliases follow explicit `infer<T> tuple(...)` admission and do not
+manufacture an alias for the empty product. Ownership consumes the same proven
+constant integer tuple index used by type checking, while move-only indexed
+projections remain fail-closed until projection-level move tracking exists.
 Guest tests use nonconstant function-derived keys for runtime error cases,
 so constant folding does not reject them at compilation.
 Rust formatter, AOT, LLVM and Wasm parity need independent execution proof.
