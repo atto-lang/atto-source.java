@@ -160,7 +160,15 @@ final class MlScalarPublicationGuestLoweringTest {
             }
             """);
         assertRejected("""
-            val int prepare_scalar_publication = 3;
+            pub fnc bad(): int {
+                val int prepare_scalar_publication = 3;
+                return prepare_scalar_publication;
+            }
+            """);
+        assertRejected("""
+            pub fnc bad(int state_snapshot): int {
+                return state_snapshot;
+            }
             """);
     }
 
