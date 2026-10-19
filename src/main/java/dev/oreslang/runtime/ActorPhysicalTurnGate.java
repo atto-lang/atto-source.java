@@ -5,7 +5,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 /**
@@ -18,8 +17,18 @@ import java.util.function.Consumer;
  * does not yet include independently owned OresScheduler Task dispatches.</p>
  */
 final class ActorPhysicalTurnGate {
-    private record Pending(
-            Runnable task, Consumer<Runnable> submit, Consumer<Throwable> reject) { }
+    private static final class Pending {
+        final Runnable task;
+        final Consumer<Runnable> submit;
+        final Consumer<Throwable> reject;
+        volatile boolean started; // same allocation as the queue entry
+
+        Pending(Runnable task, Consumer<Runnable> submit, Consumer<Throwable> reject) {
+            this.task = task;
+            this.submit = submit;
+            this.reject = reject;
+        }
+    }
 
     private final int maximum;
     private final int queuedLimit;
@@ -65,11 +74,10 @@ final class ActorPhysicalTurnGate {
         // stack growth if thousands of queued dispatches encounter shutdown.
         Pending item = first;
         for (;;) {
-            AtomicBoolean taskStarted = new AtomicBoolean();
             try {
                 Pending accepted = item;
                 item.submit.accept(() -> {
-                    taskStarted.set(true);
+                    accepted.started = true;
                     try {
                         accepted.task.run();
                     } finally {
@@ -78,7 +86,7 @@ final class ActorPhysicalTurnGate {
                 });
                 return;
             } catch (RuntimeException | Error failure) {
-                if (taskStarted.get()) {
+                if (item.started) {
                     // A direct/reentrant executor ran the guest callback and
                     // its finally already released the physical permit. Do
                     // NOT treat its exception as executor admission failure.
