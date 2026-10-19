@@ -141,6 +141,24 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             }
             check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.OPEN);
             check(!client.isClosed());
+
+            // Blocking supervisor waits are forbidden on actor carriers. The
+            // guard must fail before close intent, socket abort, or key erasure.
+            RuntimeBlockingGuard.enterActorCarrier();
+            try {
+                try {
+                    transport.requestCloseAndAwait(1);
+                    throw new AssertionError("actor carrier was allowed to block on IPC close");
+                } catch (IllegalStateException expected) {
+                    check(expected.getMessage().contains("cannot block an actor carrier"));
+                }
+                check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.OPEN);
+                check(!client.isClosed());
+                check(!transport.keyCloneZeroized());
+            } finally {
+                RuntimeBlockingGuard.exitActorCarrier();
+            }
+            check(!RuntimeBlockingGuard.actorCarrierMarked());
             check(transport.requestCloseAndAwait(3000));
             check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
         }
