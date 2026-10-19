@@ -30,12 +30,29 @@ final class TaskAccessVerifier {
      * prove nonaliasing only when BOTH roots have compiler-verified uniqueness.
      * A binding name, OS thread ID or value-equal user token cannot supply it.
      */
-    public record Root(String domain, long allocationId, long generation,
+    public record Root(String domain, String ownerId, long allocationId, long generation,
                        boolean uniqueAllocationProven) {
         public Root {
-            if (domain == null || domain.isBlank() || allocationId <= 0 || generation <= 0) {
+            if (domain == null || domain.isBlank() || ownerId == null || ownerId.isBlank()
+                    || allocationId <= 0 || generation <= 0) {
                 throw new IllegalArgumentException("invalid allocation provenance");
             }
+            if (!domain.equals("PROCESS") && ownerId.equals(domain)) {
+                // A category such as ACTOR_PRIVATE or UNTRUSTED is not an
+                // isolation identity. Its per-actor/tenant allocation owner and
+                // execution epoch must be proven by the compiler.
+                throw new IllegalArgumentException(
+                        "non-process allocations require a distinct owner identity");
+            }
+        }
+
+        /**
+         * Compatibility only for process-local compiler storage. Actor and
+         * untrusted allocations must supply owner identity explicitly.
+         */
+        public Root(String domain, long allocationId, long generation,
+                    boolean uniqueAllocationProven) {
+            this(domain, domain, allocationId, generation, uniqueAllocationProven);
         }
     }
 
@@ -129,7 +146,8 @@ final class TaskAccessVerifier {
         Child(List<Claim> claims) { this.claims = claims; }
     }
 
-    private record AllocationKey(String domain, long id) { }
+    private record AllocationKey(String domain, String ownerId, long id) { }
+    private record ScopeKey(String domain, String ownerId) { }
 
     // Bounded compiler analysis: rejecting a huge scope is safer than unbounded
     // memory use or integer overflow. A future MIR implementation can shard.
@@ -140,7 +158,7 @@ final class TaskAccessVerifier {
     private final Map<Ticket, Child> live = new LinkedHashMap<>();
     private final Map<AllocationKey, Long> knownGenerations = new HashMap<>();
     /** Single trusted allocation/trust domain per scope, including READ-only claims. */
-    private String scopeDomain;
+    private ScopeKey scopeDomain;
     private long nextId = 1;
     private boolean sealed;
 
@@ -153,7 +171,8 @@ final class TaskAccessVerifier {
         Objects.requireNonNull(b, "second place");
         Root left = a.root();
         Root right = b.root();
-        if (!left.domain().equals(right.domain())) return true; // no cross-domain permit
+        if (!left.domain().equals(right.domain())
+                || !left.ownerId().equals(right.ownerId())) return true; // no cross-owner permit
         if (left.allocationId() != right.allocationId()) {
             return !(left.uniqueAllocationProven() && right.uniqueAllocationProven());
         }
@@ -189,7 +208,8 @@ final class TaskAccessVerifier {
         Objects.requireNonNull(b, "second claim");
         // A read/read pair is compatible only *within* one admitted domain.
         // Do not let a direct caller of conflicts() bypass scope admission.
-        if (!a.place().root().domain().equals(b.place().root().domain())) return true;
+        if (!a.place().root().domain().equals(b.place().root().domain())
+                || !a.place().root().ownerId().equals(b.place().root().ownerId())) return true;
         return (a.mode() == Mode.WRITE || b.mode() == Mode.WRITE)
                 && mayAlias(a.place(), b.place());
     }
@@ -205,12 +225,13 @@ final class TaskAccessVerifier {
             throw new IllegalStateException("TaskScope access capacity exceeded");
         }
         Map<AllocationKey, Long> incomingGenerations = new HashMap<>();
-        String requestedDomain = scopeDomain;
+        ScopeKey requestedDomain = scopeDomain;
         for (Claim claim : claims) {
             Root root = claim.place().root();
-            if (requestedDomain == null) requestedDomain = root.domain();
-            if (!requestedDomain.equals(root.domain())) {
-                throw new IllegalArgumentException("TaskScope cannot mix allocation/trust domains");
+            ScopeKey claimScope = new ScopeKey(root.domain(), root.ownerId());
+            if (requestedDomain == null) requestedDomain = claimScope;
+            if (!requestedDomain.equals(claimScope)) {
+                throw new IllegalArgumentException("TaskScope cannot mix allocation owner identities");
             }
             Objects.requireNonNull(claim, "claim");
             AllocationKey key = new AllocationKey(
@@ -252,7 +273,7 @@ final class TaskAccessVerifier {
         for (Claim claim : claims) {
             Root root = claim.place().root();
             knownGenerations.putIfAbsent(
-                    new AllocationKey(root.domain(), root.allocationId()), root.generation());
+                    new AllocationKey(root.domain(), root.ownerId(), root.allocationId()), root.generation());
         }
         return ticket;
     }
@@ -270,7 +291,8 @@ final class TaskAccessVerifier {
         Objects.requireNonNull(claim, "claim");
         if (sealed) return false; // scope teardown never grants fresh authority
         Root root = claim.place().root();
-        if (scopeDomain == null || !scopeDomain.equals(root.domain())) return false;
+        if (scopeDomain == null || !scopeDomain.equals(
+                new ScopeKey(root.domain(), root.ownerId()))) return false;
         Long current = knownGenerations.get(new AllocationKey(root.domain(), root.allocationId()));
         if (current == null || current != root.generation()) return false;
         for (Child child : live.values()) {
@@ -301,10 +323,10 @@ final class TaskAccessVerifier {
         if (newGeneration <= oldRoot.generation()) {
             throw new IllegalArgumentException("generation must advance");
         }
-        if (!oldRoot.domain().equals(scopeDomain)) {
+        if (!new ScopeKey(oldRoot.domain(), oldRoot.ownerId()).equals(scopeDomain)) {
             throw new IllegalArgumentException("structural barrier outside TaskScope domain");
         }
-        AllocationKey key = new AllocationKey(oldRoot.domain(), oldRoot.allocationId());
+        AllocationKey key = new AllocationKey(oldRoot.domain(), oldRoot.ownerId(), oldRoot.allocationId());
         Long current = knownGenerations.get(key);
         if (current == null || current != oldRoot.generation()) {
             throw new IllegalStateException("stale structural generation");
