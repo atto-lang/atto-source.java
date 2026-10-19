@@ -2392,6 +2392,11 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object authorityLock = new Object();
         private final ActorEventBus eventBus;
         private final AtomicReference<GroupMailmanState<?>> mailmanState = new AtomicReference<>();
+        // One in-flight field-major collection per cooperation group. Epochs
+        // never expose raw actor-owned memory to other group members.
+        private final AtomicReference<ActorGroupColumnarEpoch> activeColumnarEpoch =
+                new AtomicReference<>();
+        private final AtomicLong nextColumnarEpochId = new AtomicLong();
         private UUID joinSecret = UUID.randomUUID();
 
         private ActorGroup(
@@ -2543,6 +2548,119 @@ public final class ActorRuntime implements AutoCloseable {
                 managedWorkers.remove(worker.id(), worker);
                 return true;
             }
+        }
+
+        /**
+         * Begin a bounded scalar SoA collection of the CURRENT cooperating
+         * members. The caller coordinates mailbox requests separately.
+         * Member departure/termination and group close fail the entire epoch.
+         * This is a host/runtime API, not yet an Oreslang guest-language builtin.
+         */
+        public ActorGroupColumnarEpoch beginDoubleEpoch(List<String> fields) {
+            requireManager("begin an ActorGroup columnar epoch");
+            ActorGroupColumnarEpoch epoch;
+            ActorGroupColumnarEpoch.Snapshot empty;
+            synchronized (groupMembershipLock) {
+                synchronized (authorityLock) {
+                    requireOpen();
+                    epoch = installColumnarEpochLocked(new ArrayList<>(members), fields);
+                    empty = epoch.emptySnapshot();
+                }
+            }
+            if (empty != null) epoch.succeed(empty);
+            return epoch;
+        }
+
+        /**
+         * One group-level request to typed ActorRefs, using ordinary mailbox
+         * transport (including private/untrusted isolation checks). The
+         * factory receives the new epoch ID and creates ONE command; each
+         * target receives it through ActorRef.send. There is no atomic
+         * multi-recipient delivery: failed admission fails the collection,
+         * but earlier mailbox sends may already have succeeded.
+         */
+        public <M> ActorGroupColumnarEpoch requestDoubleEpoch(
+                List<ActorRef<M>> recipients,
+                Function<Long, M> commandFactory,
+                List<String> fields) {
+            requireManager("request an ActorGroup columnar epoch");
+            Objects.requireNonNull(commandFactory, "commandFactory");
+            List<ActorRef<M>> targets = List.copyOf(recipients);
+            ActorGroupColumnarEpoch epoch;
+            ActorGroupColumnarEpoch.Snapshot empty;
+            synchronized (groupMembershipLock) {
+                synchronized (authorityLock) {
+                    requireOpen();
+                    List<ActorId> selected = new ArrayList<>(targets.size());
+                    Set<ActorId> unique = new java.util.HashSet<>();
+                    for (ActorRef<M> ref : targets) {
+                        if (!ref.ownedBy(ActorRuntime.this)) {
+                            throw new IllegalArgumentException("cross-runtime ActorRef in batch");
+                        }
+                        ActorCell<?> cell = actors.get(ref.id());
+                        if (cell == null || cell.ref != ref || cell.stopped.get()
+                                || !members.contains(ref.id())) {
+                            throw new IllegalStateException(
+                                    "batch recipient is not a live group member");
+                        }
+                        if (!unique.add(ref.id())) {
+                            throw new IllegalArgumentException("duplicate batch recipient");
+                        }
+                        selected.add(ref.id());
+                    }
+                    epoch = installColumnarEpochLocked(selected, fields);
+                    empty = epoch.emptySnapshot();
+                }
+            }
+            if (empty != null) {
+                epoch.succeed(empty);
+                return epoch;
+            }
+            try {
+                M command = Objects.requireNonNull(
+                        commandFactory.apply(epoch.epochId()), "batch command");
+                for (ActorRef<M> ref : targets) {
+                    if (groupClosed.get() || epoch.terminal()) {
+                        throw new IllegalStateException("columnar epoch revoked during dispatch");
+                    }
+                    ref.send(command);
+                }
+            } catch (RuntimeException | Error dispatchFailure) {
+                if (epoch.abort()) epoch.fail(dispatchFailure);
+                throw dispatchFailure;
+            }
+            return epoch;
+        }
+
+        private ActorGroupColumnarEpoch installColumnarEpochLocked(
+                List<ActorId> selected, List<String> fields) {
+            ActorGroupColumnarEpoch prior = activeColumnarEpoch.get();
+            if (prior != null && !prior.terminal()) {
+                throw new IllegalStateException("ActorGroup already has an active columnar epoch");
+            }
+            selected.sort((left, right) -> left.value().compareTo(right.value()));
+            long epochId = nextColumnarEpochId.incrementAndGet();
+            if (epochId <= 0) throw new IllegalStateException("columnar epoch ID exhausted");
+            ActorGroupColumnarEpoch next =
+                    new ActorGroupColumnarEpoch(epochId, selected, fields);
+            activeColumnarEpoch.set(next);
+            return next;
+        }
+
+        /** Called ONLY by a participating actor from its own scheduled turn. */
+        public void publishDoubleEpoch(long epochId, double... row) {
+            ActorGroupColumnarEpoch active;
+            ActorGroupColumnarEpoch.Snapshot result;
+            synchronized (groupMembershipLock) {
+                ActorId publisher = requireCurrentMember("publish ActorGroup epoch data");
+                active = activeColumnarEpoch.get();
+                if (active == null || active.epochId() != epochId) {
+                    throw new IllegalStateException("stale or unknown columnar epoch");
+                }
+                result = active.publish(publisher, row);
+            }
+            // Future notification is outside all group/membership locks.
+            if (result != null) active.succeed(result);
         }
 
         /** Live managed workers at a point in time; never exposes cancellation authority. */
@@ -2850,6 +2968,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void leaveId(ActorId actorId) {
+            ActorGroupColumnarEpoch revoked = null;
             synchronized (groupMembershipLock) {
                 if (!members.remove(actorId)) return;
                 Set<ActorGroupId> joined = groupMemberships.get(actorId);
@@ -2857,10 +2976,16 @@ public final class ActorRuntime implements AutoCloseable {
                     joined.remove(id);
                     if (joined.isEmpty()) groupMemberships.remove(actorId);
                 }
+                ActorGroupColumnarEpoch epoch = activeColumnarEpoch.get();
+                if (epoch != null && epoch.expects(actorId) && epoch.abort()) {
+                    revoked = epoch;
+                }
                 // Rejoin must not overtake subscription draining for the old
                 // membership and inadvertently inherit a previous channel.
                 eventBus.removeActor(actorId);
             }
+            if (revoked != null) revoked.fail(new IllegalStateException(
+                    "ActorGroup member left or terminated during columnar epoch"));
         }
 
         private void actorTerminated(ActorId actorId) {
@@ -2916,6 +3041,10 @@ public final class ActorRuntime implements AutoCloseable {
                         if (created.isEmpty()) createdGroupsByActor.remove(creator);
                     }
                 }
+            }
+            ActorGroupColumnarEpoch epoch = activeColumnarEpoch.get();
+            if (epoch != null && epoch.abort()) {
+                epoch.fail(new IllegalStateException("ActorGroup closed during columnar epoch"));
             }
             // Attach completion handlers before requesting cancellation: an
             // actor might finalize synchronously during the first stop call.
