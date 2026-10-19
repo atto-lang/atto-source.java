@@ -5024,6 +5024,15 @@ public final class TypeChecker {
                     where + " cannot use " + named.name()
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
         }
+        if (named.name().equals("ActorRef")) {
+            // ActorRef is a sealed, generation-bound routing capability, not
+            // an ordinary nominal object or an automatically Send/Sync value.
+            // Runtime transport enforces actor-runtime ownership and epoch.
+            // Only a concrete, declared actor target may be carried; nested
+            // mailbox payloads are checked by this method recursively.
+            actorClassForRef(named);
+            return;
+        }
         if (named.name().equals("SharedMutex")) {
             if (actorKind == Ast.ActorKind.PRIVATE || actorKind == Ast.ActorKind.UNTRUSTED) {
                 throw new IllegalArgumentException(
