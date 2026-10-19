@@ -32,8 +32,13 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
             TimeUnit.SECONDS.toNanos(5);
     private final LogicalSourceActorRouterV1 router;
     private final Object gate = new Object();
-    private final Set<ActorHotUpgradeTaskBridgeV1.PinnedTask<?>> active =
-            new HashSet<>();
+    // A scope must reserve its ownership record BEFORE asking the router
+    // to admit/pin a physical Task: HashSet growth can fail with OOME.
+    private static final class OwnershipSlot {
+        private ActorHotUpgradeTaskBridgeV1.PinnedTask<?> task;
+    }
+
+    private final Set<OwnershipSlot> active = new HashSet<>();
     private final Set<ActorHotUpgradeTaskOwnerV1> children = new HashSet<>();
     private boolean closed;
 
@@ -59,20 +64,40 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
         Objects.requireNonNull(frame, "frame");
         synchronized (gate) {
             ensureOpen();
+            // Reserve ownership first: failure to grow the set must occur
+            // before actor generation pinning and scheduler admission.
+            OwnershipSlot slot = new OwnershipSlot();
+            active.add(slot);
             // The router pins the current physical actor under routeLock;
             // ActorRuntime freezes ingress under the cell lifecycle lock.
-            var work = router.startHostPinnedTaskTrackedForUpgrade(
-                    scheduler, frame);
-            active.add(work);
-            work.physicallyExited().whenCompleteRuntime((ignored, failure) -> {
-                // A failed trusted generation release is NOT a successful
-                // retirement. Keep the record to make close() fail sealed.
-                if (failure == null) {
-                    synchronized (gate) {
-                        active.remove(work);
+            final ActorHotUpgradeTaskBridgeV1.PinnedTask<T> work;
+            try {
+                work = router.startHostPinnedTaskTrackedForUpgrade(
+                        scheduler, frame);
+            } catch (RuntimeException | Error admissionFailure) {
+                // Scheduler.start only throws before registering its runner;
+                // the actor bridge must retire that rejected generation pin.
+                active.remove(slot);
+                throw admissionFailure;
+            }
+            // No allocating ownership insertion remains after admission.
+            slot.task = work;
+            try {
+                work.physicallyExited().whenCompleteRuntime((ignored, failure) -> {
+                    // Result settlement is NOT physical retirement; only
+                    // successful onQuiescent generation release removes a slot.
+                    if (failure == null) {
+                        synchronized (gate) {
+                            active.remove(slot);
+                        }
                     }
-                }
-            });
+                });
+            } catch (RuntimeException | Error callbackFailure) {
+                // An admitted frame remains in its pre-reserved slot. Seal
+                // further starts and require supervisor close/reconciliation.
+                closed = true;
+                throw callbackFailure;
+            }
             return work.result();
         }
     }
@@ -124,7 +149,12 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
             visited.add(scope);
             synchronized (scope.gate) {
                 scope.closed = true;
-                records.addAll(scope.active);
+                for (OwnershipSlot slot : scope.active) {
+                    if (slot.task == null)
+                        throw new IllegalStateException(
+                                "actor Task owner has an uncommitted admission slot");
+                    records.add(slot.task);
+                }
                 pending.addAll(scope.children);
             }
         }
