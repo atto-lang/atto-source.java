@@ -412,7 +412,18 @@ public final class OresScheduler implements AutoCloseable {
      * Never use Future settlement alone to reclaim guest-owned resources.
      */
     <T> OresFuture<T> start(Task<T> task, Runnable onQuiescent) {
-        return startAdmitted(task, onQuiescent, null, 0L, () -> { });
+        return start(task, onQuiescent, () -> { });
+    }
+
+    /**
+     * Trusted runtime lifecycle hooks. onTerminalReady runs after terminal
+     * authority is irrevocable (and after cancellation revocation), but before
+     * ordinary Future subscribers are drained.
+     */
+    <T> OresFuture<T> start(
+            Task<T> task, Runnable onQuiescent, Runnable onTerminalReady) {
+        return startAdmitted(task, onQuiescent, onTerminalReady,
+                null, 0L, () -> { });
     }
 
     /**
@@ -434,22 +445,23 @@ public final class OresScheduler implements AutoCloseable {
             Throwable deadlineFailure, Runnable onNotificationDrained) {
         Objects.requireNonNull(deadlineFailure, "deadlineFailure");
         Objects.requireNonNull(onNotificationDrained, "onNotificationDrained");
-        return startAdmitted(task, onQuiescent, deadlineFailure,
+        return startAdmitted(task, onQuiescent, () -> { }, deadlineFailure,
                 Math.max(0L, remainingNanos), onNotificationDrained);
     }
 
     private <T> OresFuture<T> startAdmitted(
-            Task<T> task, Runnable onQuiescent,
+            Task<T> task, Runnable onQuiescent, Runnable onTerminalReady,
             Throwable deadlineFailure, long remainingNanos,
             Runnable onNotificationDrained) {
         Objects.requireNonNull(task, "task");
         Objects.requireNonNull(onQuiescent, "onQuiescent");
+        Objects.requireNonNull(onTerminalReady, "onTerminalReady");
         Objects.requireNonNull(onNotificationDrained, "onNotificationDrained");
         // Linearize open-check + live-set registration with close(), but do
         // NOT hold the lock while handing work to an arbitrary executor.
         // Shutdown must still cancel this task if enqueue blocks or rejects.
         TaskRunner<T> runner = new TaskRunner<>(task, onQuiescent,
-                deadlineFailure != null, onNotificationDrained);
+                onTerminalReady, deadlineFailure != null, onNotificationDrained);
         synchronized (taskAdmissionLock) {
             ensureOpen();
             if (deadlineFailure != null) {
@@ -651,13 +663,17 @@ public final class OresScheduler implements AutoCloseable {
         private volatile ActorTurnWatchdog.Lease watchdogLease;
 
         private TaskRunner(Task<T> task, Runnable onQuiescent,
+                Runnable onTerminalReady,
                 boolean timedAdmission, Runnable onNotificationDrained) {
             this.task = task;
             this.onQuiescent = onQuiescent;
             this.timedAdmission = timedAdmission;
             this.onNotificationDrained = onNotificationDrained;
             this.completion = new OresFuture<>(
-                    this::cancelFromFuture, this::notificationDrained);
+                    () -> true,
+                    this::cancelFromFuture,
+                    onTerminalReady,
+                    this::notificationDrained);
         }
 
         @Override
