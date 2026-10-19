@@ -121,6 +121,30 @@ final class InferredRecordBoundaryTest {
     }
 
     @Test
+    void ownershipCannotRegainMutationAcrossShortAliasReuse() {
+        String mutableField = """
+                fnc bad(): void {
+                    const Person first = infer record{age: 37};
+                    const Person second = first;
+                    second.age = 99;
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(mutableField));
+
+        String mutableReferent = """
+                fnc bad(): void {
+                    const Person first = infer record{age: 37};
+                    val Person second = first;
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(mutableReferent));
+    }
+
+    @Test
     void shortNamedRecordIntroducesStructuralAliasForUnknownType() {
         accepted("""
                 fnc read(): string {
