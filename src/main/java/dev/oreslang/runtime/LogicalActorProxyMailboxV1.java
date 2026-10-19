@@ -196,9 +196,12 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
 
             Envelope envelope =
                     new Envelope(nextMessageSequence, payload);
+            // ArrayDeque growth may allocate. Do not consume a sequence
+            // until insertion succeeds: a failed admission must leave the
+            // next successful envelope consecutive with the last admitted.
+            queued.addLast(envelope);
             nextMessageSequence =
                     Math.addExact(nextMessageSequence, 1L);
-            queued.addLast(envelope);
             retainedMessages++;
             retainedBytes = nextBytes;
             checkStructuralInvariantsLocked();
