@@ -14,6 +14,45 @@ import static org.junit.jupiter.api.Assertions.*;
 final class LogicalActorProxyMailboxV1Test {
 
     @Test
+    void nonCachedSequenceKeysPreserveAttemptLedgerAndSparseWatermarks() {
+        try (var mailbox = new LogicalActorProxyMailboxV1(4, 8, 32)) {
+            for (int i = 1; i <= 132; i++) {
+                var envelope = mailbox.admit(new byte[] {(byte) i});
+                assertEquals(i, envelope.messageSequence());
+                assertSame(envelope, mailbox.pollDispatch());
+                mailbox.beginPhysicalSendAttempt(envelope, 1L);
+                mailbox.complete(envelope.messageSequence());
+            }
+            assertEquals(132L, mailbox.snapshot().completionWatermark());
+
+            var a = mailbox.admit(new byte[] {1});
+            var b = mailbox.admit(new byte[] {2});
+            var c = mailbox.admit(new byte[] {3});
+            for (var envelope : new LogicalActorProxyMailboxV1.Envelope[] {a, b, c}) {
+                assertSame(envelope, mailbox.pollDispatch());
+                mailbox.beginPhysicalSendAttempt(envelope, 1L);
+            }
+            mailbox.complete(c.messageSequence());
+            mailbox.complete(b.messageSequence());
+            assertEquals(132L, mailbox.snapshot().completionWatermark());
+            assertEquals(2, mailbox.snapshot().sparseCompletedMessages());
+            mailbox.complete(a.messageSequence());
+            assertEquals(135L, mailbox.snapshot().completionWatermark());
+            assertEquals(0, mailbox.snapshot().sparseCompletedMessages());
+
+            var later = mailbox.admit(new byte[] {4});
+            mailbox.pollDispatch();
+            mailbox.beginPhysicalSendAttempt(later, 1L);
+            mailbox.requeueProvenUnsent(later.messageSequence());
+            assertSame(later, mailbox.pollDispatch());
+            mailbox.beginPhysicalSendAttempt(later, 1L);
+            mailbox.complete(later.messageSequence());
+            assertEquals(136L, mailbox.snapshot().completionWatermark());
+            assertEquals(0, mailbox.snapshot().retainedMessages());
+        }
+    }
+
+    @Test
     void physicalAdmissionReservationRejectsReplayAndRequiresProvenUnsentRollback() {
         try (var mailbox = new LogicalActorProxyMailboxV1(2, 16, 32)) {
             var envelope = mailbox.admit(bytes("first"));
