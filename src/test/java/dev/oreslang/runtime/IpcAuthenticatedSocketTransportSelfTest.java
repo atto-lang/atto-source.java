@@ -617,6 +617,73 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             }
         }
 
+        // If the bounded host cleanup domain accepts but does not run the
+        // active-write abort before the supervisor deadline, shutdown returns
+        // false and the physical generation is quarantined. No retry/replay is
+        // inferred; an explicit supervisor recovery is required after the pin drains.
+        var deadlineMessage = envelope(1, "blockedDeadline", 3, 4, blockedPayload);
+        try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
+             Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort());
+             Socket peer = server.accept()) {
+            client.setSendBufferSize(1024);
+            peer.setReceiveBufferSize(1024);
+            AtomicInteger scheduled = new AtomicInteger();
+            AtomicReference<Runnable> withheldAbort = new AtomicReference<>();
+            IpcTransportSessionLease.CleanupScheduler scheduler = cleanup -> {
+                if (scheduled.incrementAndGet() == 1) {
+                    withheldAbort.set(cleanup);
+                    return;
+                }
+                offCallerCleanup(cleanup);
+            };
+            var bridge = new IpcReceiptCompletionBridge(1);
+            var transport = new IpcAuthenticatedSocketTransport(
+                    client, bridge, deadlineMessage, 92, 1, key, scheduler);
+            AtomicReference<IpcAuthenticatedSocketTransport.SendSubmission> result =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            Thread sender = new Thread(() -> {
+                try {
+                    result.set(transport.send(deadlineMessage, blockedPayload));
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                }
+            }, "ipc-test-deadline-data-writer");
+            sender.start();
+            boolean pinned = false;
+            for (int i = 0; i < 400; ++i) {
+                if (transport.snapshot().activeWrites() == 1 && sender.isAlive()) {
+                    pinned = true;
+                    break;
+                }
+                Thread.sleep(5);
+            }
+            check(pinned);
+            check(!transport.requestCloseAndAwait(40));
+            check(transport.snapshot().phase()
+                    == IpcTransportSessionLease.Phase.QUARANTINED);
+            check(transport.snapshot().activeWrites() == 1);
+            check(sender.isAlive());
+            check(withheldAbort.get() != null);
+            offCallerCleanup(withheldAbort.get());
+            sender.join(3000);
+            check(!sender.isAlive());
+            check(failure.get() == null);
+            check(result.get() != null && result.get().writeAttemptFailed());
+            check(transport.snapshot().activeWrites() == 0);
+            check(transport.snapshot().phase()
+                    == IpcTransportSessionLease.Phase.QUARANTINED);
+            check(!result.get().outcome().toCompletableFuture().isDone());
+            transport.retryQuarantinedClose();
+            check(transport.snapshot().phase()
+                    == IpcTransportSessionLease.Phase.RETIRED);
+            check(result.get().outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(transport.keyMaterialDestroyed());
+            check(scheduled.get() == 2);
+            check(bridge.invariant());
+        }
+
         System.out.println("JAVA_IPC_AUTHENTICATED_SOCKET_HOST_PASS checks=" + checks);
     }
 }
