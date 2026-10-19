@@ -40,6 +40,12 @@ public final class DurableActorBinding {
         this.address = Objects.requireNonNull(address, "address");
         this.coordinator = Objects.requireNonNull(coordinator, "coordinator");
         Objects.requireNonNull(lease, "lease");
+        // LeaseActivation can be issued only by PostgreSQL lease acquisition.
+        // Never reinterpret a valid owner+epoch for a different address.
+        if (!address.equals(lease.address())) {
+            throw new IllegalArgumentException(
+                    "durable activation belongs to a different tenant-scoped address");
+        }
         Objects.requireNonNull(executingGeneration, "executingGeneration");
         DurableActorStore.Activation activation =
                 Objects.requireNonNull(lease.activation(), "activation");
