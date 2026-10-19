@@ -366,8 +366,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
         private final Object writeLock = new Object();
         private final Map<Long, Pending> pending = new HashMap<>();
         private final Set<WorkCredit> responses = new HashSet<>();
-        private long lastCorrelationId;
-        private long requestPayloadBytes;
+        private final UnaryInboundRequestRegistry inbound;
         private long responsePayloadBytes;
         private volatile boolean ended;
 
@@ -378,6 +377,11 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             this.peer = peer;
             this.sessionId = sessionId;
             this.generation = generation;
+            this.inbound = new UnaryInboundRequestRegistry(
+                    sessionId,
+                    generation,
+                    limits.maxRequestsPerConnection(),
+                    limits.maxPayloadBytesPerConnection());
         }
 
         void run() throws IOException {
@@ -410,23 +414,31 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             Pending admitted;
             synchronized (lock) {
                 requireOpen();
-                if (head.correlationId() <= lastCorrelationId)
-                    throw new SecurityException("stale or duplicate unary TCP request correlation");
-                lastCorrelationId = head.correlationId();
 
-                if (pending.size() >= limits.maxRequestsPerConnection()
-                        || head.payloadBytes()
-                                > limits.maxPayloadBytesPerConnection()
-                                        - requestPayloadBytes - responsePayloadBytes) {
+                boolean sessionAdmitted = inbound.admit(
+                        head.sessionId(),
+                        head.generation(),
+                        head.correlationId(),
+                        head.payloadBytes());
+                if (!sessionAdmitted) {
+                    admitted = null;
+                } else if (inbound.activePayloadBytes() + responsePayloadBytes
+                        > limits.maxPayloadBytesPerConnection()) {
+                    if (!inbound.complete(sessionId, generation, head.correlationId()))
+                        throw new IllegalStateException(
+                                "unary TCP inbound ledger lost rejected request");
                     admitted = null;
                 } else {
                     WorkCredit globalCredit = global.tryWork(head.payloadBytes());
                     if (globalCredit == null) {
+                        if (!inbound.complete(sessionId, generation, head.correlationId()))
+                            throw new IllegalStateException(
+                                    "unary TCP inbound ledger lost global-rejected request");
                         admitted = null;
                     } else {
-                        admitted = new Pending(head.correlationId(), head.payloadBytes(), globalCredit);
+                        admitted = new Pending(
+                                head.correlationId(), head.payloadBytes(), globalCredit);
                         pending.put(head.correlationId(), admitted);
-                        requestPayloadBytes += head.payloadBytes();
                     }
                 }
             }
@@ -531,13 +543,11 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             Pending admitted;
             synchronized (lock) {
                 requireOpen();
-                if (correlationId > lastCorrelationId)
-                    throw new SecurityException("cancel references unissued unary TCP request");
+                if (!inbound.cancel(sessionId, generation, correlationId)) return;
                 admitted = pending.remove(correlationId);
-                if (admitted == null) return; // late/duplicate cancellation
-                requestPayloadBytes -= admitted.requestBytes;
-                if (requestPayloadBytes < 0)
-                    throw new IllegalStateException("unary TCP session byte accounting underflow");
+                if (admitted == null)
+                    throw new IllegalStateException(
+                            "unary TCP inbound ledger/request state diverged on cancellation");
                 if (admitted.deadline != null) admitted.deadline.cancel(false);
             }
             DispatchHandle handle = admitted.handle;
@@ -563,16 +573,16 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             synchronized (lock) {
                 if (ended || pending.get(admitted.correlationId) != admitted) return false;
                 pending.remove(admitted.correlationId);
-                requestPayloadBytes -= admitted.requestBytes;
-                if (requestPayloadBytes < 0)
-                    throw new IllegalStateException("unary TCP session byte accounting underflow");
+                if (!inbound.complete(sessionId, generation, admitted.correlationId))
+                    throw new IllegalStateException(
+                            "unary TCP inbound ledger/request state diverged on completion");
                 if (admitted.deadline != null) admitted.deadline.cancel(false);
                 handle = admitted.handle;
                 credit = admitted.credit;
 
                 if (body.length
                         > limits.maxPayloadBytesPerConnection()
-                                - requestPayloadBytes - responsePayloadBytes) {
+                                - inbound.activePayloadBytes() - responsePayloadBytes) {
                     reply = Reply.error();
                     body = reply.payload();
                 }
@@ -647,7 +657,9 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             DispatchHandle handle;
             synchronized (lock) {
                 if (pending.remove(admitted.correlationId, admitted)) {
-                    requestPayloadBytes -= admitted.requestBytes;
+                    if (!inbound.complete(sessionId, generation, admitted.correlationId))
+                        throw new IllegalStateException(
+                                "unary TCP inbound ledger/request state diverged on retirement");
                     if (admitted.deadline != null) admitted.deadline.cancel(false);
                 } else {
                     return;
@@ -663,7 +675,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
         }
 
         long activeRequestPayloadBytes() {
-            synchronized (lock) { return requestPayloadBytes; }
+            synchronized (lock) { return inbound.activePayloadBytes(); }
         }
 
         long activeResponsePayloadBytes() {
@@ -682,7 +694,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
                 ended = true;
                 toCancel = List.copyOf(pending.values());
                 pending.clear();
-                requestPayloadBytes = 0;
+                inbound.close();
                 responsePayloadBytes = 0;
                 toRelease = List.copyOf(responses);
                 responses.clear();
