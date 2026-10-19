@@ -134,11 +134,68 @@ public final class OresTestExploration {
             }
         }
 
+        // A separate adversarial real-thread interleaving, not a sequential
+        // model: cancellation races physical permit handoff. The seed fixes
+        // the test-input sequence, NOT the operating system's thread schedule.
+        for (int n = 0; n < Math.min(stressCases, 256); n++) {
+            checkConcurrentCancelHandoff(seed, n);
+        }
+
         int remaining = CriticalGate.waitingLogicalDomains();
         ThreadMXBean mxBean = ManagementFactory.getThreadMXBean();
         long[] stuck = mxBean.findDeadlockedThreads();
         return new Report(visited, cycleRejections, stressCases, remaining,
                 stuck == null ? 0 : stuck.length);
+    }
+
+    private static void checkConcurrentCancelHandoff(long seed, int iteration) {
+        CriticalGate gate = new CriticalGate();
+        CriticalGate.Ticket owner = gate.newTicket();
+        CriticalGate.Ticket contender = gate.newTicket();
+        CriticalGate.Ticket follower = gate.newTicket();
+        owner.enterAsync();
+        OresFuture<Void> queued = contender.enterAsync();
+        follower.enterAsync();
+        java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        Thread canceller = Thread.ofVirtual().start(() -> {
+            try {
+                start.await();
+                queued.cancel(false);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        try {
+            start.countDown();
+            owner.close();
+            canceller.join(5_000);
+            if (canceller.isAlive()) {
+                canceller.interrupt();
+                throw new AssertionError("cancellation-vs-handoff stuck: seed="
+                        + seed + " iteration=" + iteration);
+            }
+            if (queued.isCancelled() && contender.isHeld()) {
+                throw new AssertionError("cancelled ticket retained gate: seed="
+                        + seed + " iteration=" + iteration);
+            }
+            if (contender.isHeld()) contender.close();
+            if (!follower.isHeld()) {
+                throw new AssertionError("handoff lost successor: seed="
+                        + seed + " iteration=" + iteration);
+            }
+            follower.close();
+            if (gate.held() || gate.queuedCount() != 0) {
+                throw new AssertionError("permit or waiter stranded: seed="
+                        + seed + " iteration=" + iteration);
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("interrupted while probing critical race", interrupted);
+        } finally {
+            owner.close();
+            contender.close();
+            follower.close();
+        }
     }
 
     private static void enqueue(HashSet<State> seen, ArrayDeque<State> work, State value) {
