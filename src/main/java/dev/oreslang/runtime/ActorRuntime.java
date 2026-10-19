@@ -1117,7 +1117,14 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override
         public void close() {
-            if (released.compareAndSet(false, true)) slice.release(bytes);
+            // ActorMemorySlice.release is synchronized and may reject a corrupt
+            // local/global counter. Do not consume this reservation before a
+            // successful debit: a rejected close must remain retryable.
+            synchronized (slice) {
+                if (released.get()) return;
+                slice.release(bytes);
+                released.set(true);
+            }
         }
     }
 
@@ -5938,10 +5945,13 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override public void close() {
             synchronized (cell.lifecycleLock) {
-                if (!released.compareAndSet(false, true)) return;
+                if (released.get()) return;
+                // Validate accounting before retiring the only lease capable
+                // of releasing this pin. Failed close must remain retryable.
                 if (cell.hotUpgradeExternalPins <= 0)
                     throw new IllegalStateException("actor external upgrade pin underflow");
                 cell.hotUpgradeExternalPins--;
+                released.set(true);
                 cell.lifecycleLock.notifyAll();
             }
         }
@@ -6057,8 +6067,11 @@ public final class ActorRuntime implements AutoCloseable {
             if (cell.upgradeIngressTicket != null)
                 throw new IllegalStateException("actor hot-upgrade ingress is already frozen");
             final Object ticket = new Object();
+            // Allocation may fail; publish the freeze only after its
+            // supervisor rollback handle has been successfully allocated.
+            HotUpgradeIngressFreeze handle = new HotUpgradeIngressFreeze(cell, ticket);
             cell.upgradeIngressTicket = ticket;
-            return new HotUpgradeIngressFreeze(cell, ticket);
+            return handle;
         }
     }
 
