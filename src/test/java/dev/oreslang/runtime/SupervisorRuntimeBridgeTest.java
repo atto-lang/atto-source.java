@@ -27,12 +27,12 @@ final class SupervisorRuntimeBridgeTest {
             child.send("boom");
             assertThrows(Exception.class, () -> child.getDone().get(3, TimeUnit.SECONDS));
 
-            var notice = inbox.pollControl();
-            assertNotNull(notice);
+            var notice = awaitControl(inbox);
             assertEquals(child.generation(), notice.incarnation());
             assertTrue(notice.childId() > 0);
             assertTrue(notice.sequence() > 0);
             assertNull(inbox.pollControl());
+            awaitTableSize(table, 0);
         }
     }
 
@@ -47,6 +47,7 @@ final class SupervisorRuntimeBridgeTest {
 
             child.send("stop");
             child.getDone().get(3, TimeUnit.SECONDS);
+            awaitTableSize(table, 0);
 
             assertNull(inbox.pollControl());
             assertEquals(0, inbox.outstandingMessages());
@@ -72,27 +73,21 @@ final class SupervisorRuntimeBridgeTest {
             bridge.register(first);
             bridge.register(second);
 
-            // Leave the first terminal notice queued so the second authenticated
-            // failure must take the mandatory parent escalation path.
             first.send("x");
             assertThrows(Exception.class, () -> first.getDone().get(3, TimeUnit.SECONDS));
-            assertNotNull(inbox.pollControl());
-
-            // Refill and deliberately keep the CONTROL lane occupied.
-            var occupied = runtime.<String>spawnShared(() -> (message, context) -> {
-                throw new RuntimeException("occupied");
-            });
-            bridge.register(occupied);
-            occupied.send("x");
-            assertThrows(Exception.class, () -> occupied.getDone().get(3, TimeUnit.SECONDS));
+            awaitTableSize(table, 1);
 
             second.send("x");
             assertThrows(Exception.class, () -> second.getDone().get(3, TimeUnit.SECONDS));
+            awaitAtomicValue(escalations, 1);
+            awaitTableSize(table, 0);
 
             assertEquals(1, escalations.get());
             assertTrue(inbox.needsParentEscalation());
+            assertFalse(bridge.healthy());
         }
     }
+
     @Test
     void foreignRuntimeActorRefIsRejectedBeforeSupervisorAuthorityIsMinted() {
         try (var runtime = new ActorRuntime();
@@ -112,31 +107,23 @@ final class SupervisorRuntimeBridgeTest {
              var inbox = new TrustedSupervisorInbox(1, 8, 4096, 1024);
              var table = new SupervisorDenseTable(SupervisorDenseTable.Layout.AOSOA, 8, 8);
              var bridge = new SupervisorRuntimeBridge(runtime, inbox, table, notice -> false)) {
-            var occupied = runtime.<String>spawnShared(() -> (message, context) -> {
-                throw new IllegalStateException("occupy");
+            var first = runtime.<String>spawnShared(() -> (message, context) -> {
+                throw new IllegalStateException("first");
             });
             var overflow = runtime.<String>spawnShared(() -> (message, context) -> {
                 throw new IllegalArgumentException("overflow");
             });
-            bridge.register(occupied);
+            bridge.register(first);
             bridge.register(overflow);
 
-            occupied.send("x");
-            assertThrows(Exception.class, () -> occupied.getDone().get(3, TimeUnit.SECONDS));
-            assertNotNull(inbox.pollControl());
-
-            var refill = runtime.<String>spawnShared(() -> (message, context) -> {
-                throw new RuntimeException("refill");
-            });
-            bridge.register(refill);
-            refill.send("x");
-            assertThrows(Exception.class, () -> refill.getDone().get(3, TimeUnit.SECONDS));
+            first.send("x");
+            assertThrows(Exception.class, () -> first.getDone().get(3, TimeUnit.SECONDS));
+            awaitTableSize(table, 1);
 
             overflow.send("x");
             assertThrows(Exception.class, () -> overflow.getDone().get(3, TimeUnit.SECONDS));
+            awaitBridgeUnhealthy(bridge);
 
-            // Runtime completion callbacks may contain their own exception, so
-            // the durable assertion is the bridge's host-visible poison state.
             assertFalse(bridge.healthy());
             assertThrows(IllegalStateException.class, bridge::requireHealthy);
             assertEquals(1, table.size(),
@@ -164,6 +151,7 @@ final class SupervisorRuntimeBridgeTest {
 
                 child.send("stop");
                 child.getDone().get(3, TimeUnit.SECONDS);
+                awaitTableSize(table, 0);
 
                 assertEquals(0, table.size());
                 assertNull(inbox.pollControl());
@@ -171,5 +159,55 @@ final class SupervisorRuntimeBridgeTest {
         }
     }
 
+
+    private static TrustedSupervisorInbox.FailureNotice awaitControl(
+            TrustedSupervisorInbox inbox) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        for (;;) {
+            var notice = inbox.pollControl();
+            if (notice != null) return notice;
+            if (System.nanoTime() >= deadline) {
+                fail("timed out waiting for supervisor CONTROL notice");
+            }
+            Thread.sleep(1);
+        }
+    }
+
+    private static void awaitTableSize(
+            SupervisorDenseTable table, int expected) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        for (;;) {
+            int actual = table.size();
+            if (actual == expected) return;
+            if (System.nanoTime() >= deadline) {
+                fail("timed out waiting for supervisor metadata size "
+                        + expected + "; actual=" + actual);
+            }
+            Thread.sleep(1);
+        }
+    }
+
+    private static void awaitAtomicValue(
+            AtomicInteger value, int expected) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (value.get() != expected) {
+            if (System.nanoTime() >= deadline) {
+                fail("timed out waiting for value " + expected
+                        + "; actual=" + value.get());
+            }
+            Thread.sleep(1);
+        }
+    }
+
+    private static void awaitBridgeUnhealthy(
+            SupervisorRuntimeBridge bridge) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (bridge.healthy()) {
+            if (System.nanoTime() >= deadline) {
+                fail("timed out waiting for supervisor bridge terminal state");
+            }
+            Thread.sleep(1);
+        }
+    }
 
 }

@@ -26,9 +26,12 @@ final class SupervisorHardeningRegressionTest {
 
             first.send("x");
             assertThrows(Exception.class, () -> first.getDone().get(3, TimeUnit.SECONDS));
+            awaitTableSize(table, 1);
 
             second.send("x");
             assertThrows(Exception.class, () -> second.getDone().get(3, TimeUnit.SECONDS));
+            awaitBridgeUnhealthy(bridge);
+            awaitTableSize(table, 0);
 
             assertTrue(inbox.needsParentEscalation());
             assertFalse(bridge.healthy());
@@ -47,4 +50,29 @@ final class SupervisorHardeningRegressionTest {
             assertEquals(41, table.get(handle, SupervisorDenseTable.Field.ACTOR_ID));
         }
     }
+    private static void awaitTableSize(
+            SupervisorDenseTable table, int expected) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        for (;;) {
+            int actual = table.size();
+            if (actual == expected) return;
+            if (System.nanoTime() >= deadline) {
+                fail("timed out waiting for supervisor metadata size "
+                        + expected + "; actual=" + actual);
+            }
+            Thread.sleep(1);
+        }
+    }
+
+    private static void awaitBridgeUnhealthy(
+            SupervisorRuntimeBridge bridge) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (bridge.healthy()) {
+            if (System.nanoTime() >= deadline) {
+                fail("timed out waiting for supervisor bridge escalation state");
+            }
+            Thread.sleep(1);
+        }
+    }
+
 }
