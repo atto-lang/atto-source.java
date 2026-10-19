@@ -222,6 +222,48 @@ final class SameModuleLiteralInvocationTest {
     }
 
     @Test
+    void foreignModuleTargetCollisionRequiresUnqualifiedResolutionProof() {
+        Ast.Program parsed = program();
+        Ast.ModuleDecl app = parsed.modules().getFirst();
+        Ast.FunctionDecl calling = caller(parsed);
+        Ast.StagedCallExpr staged = call(calling);
+        Ast.ModuleDecl foreignSource = Parser.parse("""
+                define module foreign as
+                    pub fnc target(int a): int { return a; }
+                end
+                """).modules().getFirst();
+
+        for (Ast.Decl competing : List.<Ast.Decl>of(
+                foreignSource.declarations().getFirst(),
+                new Ast.FieldDecl("target", Ast.Visibility.PRIVATE,
+                        Ast.BindingKind.CONST, Ast.TypeRef.simple("int"),
+                        new Ast.LiteralExpr(5L)),
+                new Ast.ClassDecl("target", false, List.of(), List.of(), List.of()),
+                new Ast.TypeAliasDecl("target", List.of(),
+                        Ast.TypeRef.simple("int")))) {
+            Ast.Program ambiguous = new Ast.Program(List.of(
+                    app, new Ast.ModuleDecl("foreign", List.of(competing))));
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> SameModuleLiteralInvocation.inspect(
+                            ambiguous, calling, staged));
+            assertTrue(rejected.getMessage().contains(
+                    "cross-module unqualified target"), rejected::toString);
+        }
+
+        // Distinct module names and disjoint declarations are not sufficient
+        // grounds to reject an otherwise valid shape-only lexical preview.
+        Ast.Program disjoint = new Ast.Program(List.of(app,
+                new Ast.ModuleDecl("foreign", List.of(
+                        new Ast.TypeAliasDecl("Other", List.of(),
+                                Ast.TypeRef.simple("int"))))));
+        var preview = SameModuleLiteralInvocation.inspect(
+                disjoint, calling, staged);
+        assertEquals(BoundInvocation.Readiness.SHAPE_ONLY, preview.readiness());
+        assertThrows(IllegalStateException.class, preview::requireExecutable);
+    }
+
+    @Test
     void duplicateModuleNamesCannotForgeStaticSameModuleResolution() {
         Ast.Program original = program();
         Ast.ModuleDecl app = original.modules().getFirst();
