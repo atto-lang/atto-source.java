@@ -1,6 +1,9 @@
 package dev.oreslang;
 
 import dev.oreslang.types.OptionFormalPresencePolicy;
+import dev.oreslang.types.OptionalCallShapeBinder;
+import dev.oreslang.types.OptionalCallShapeBinder.Argument;
+import java.util.List;
 import dev.oreslang.types.OptionFormalPresencePolicy.ActualKind;
 import dev.oreslang.types.OptionFormalPresencePolicy.Formal;
 import dev.oreslang.types.OptionFormalPresencePolicy.LanguageMode;
@@ -106,6 +109,57 @@ final class OptionFormalPresencePolicyTest {
                 nested, NEXT, ActualKind.TYPED_OPTION));
         assertThrows(IllegalArgumentException.class, () -> OptionFormalPresencePolicy.classify(
                 nested, NEXT, ActualKind.UNDERLYING_VALUE));
+    }
+
+    @Test
+    void provenIntrinsicOptionFormalBindsInteriorOmissionAndRetainsFullAbiArity() {
+        List<OptionalCallShapeBinder.Parameter> formals =
+                OptionalCallShapeBinder.provenOptionParameterShapes(
+                        List.of(Formal.value("a"), Formal.option("b"), Formal.value("c")), NEXT);
+        var plan = OptionalCallShapeBinder.bind(formals,
+                List.of(Argument.named("c"), Argument.named("a")));
+        assertEquals(List.of(1, -1, 0), plan.sourceIndexByParameter());
+        assertEquals(3, plan.declaredArity());
+        assertEquals(2, plan.suppliedArgumentCount());
+    }
+
+    @Test
+    void requiredOptionRestoresPresenceChecksAndLegacyCompatibility() {
+        List<Formal> verified = List.of(
+                Formal.value("a"), Formal.requiredOption("b"), Formal.value("c"));
+        var required = OptionalCallShapeBinder.provenOptionParameterShapes(verified, NEXT);
+        assertThrows(IllegalArgumentException.class, () -> OptionalCallShapeBinder.bind(
+                required, List.of(Argument.named("a"), Argument.named("c"))));
+
+        var legacy = OptionalCallShapeBinder.provenOptionParameterShapes(
+                List.of(Formal.value("a"), Formal.option("b"), Formal.value("c")),
+                LanguageMode.LEGACY);
+        assertThrows(IllegalArgumentException.class, () -> OptionalCallShapeBinder.bind(
+                legacy, List.of(Argument.named("a"), Argument.named("c"))));
+    }
+
+    @Test
+    void inferredOptionRequiresCollisionRejectionAcrossEffectiveArities() {
+        var older = OptionalCallShapeBinder.provenOptionParameterShapes(
+                List.of(Formal.value("id")), NEXT);
+        var newer = OptionalCallShapeBinder.provenOptionParameterShapes(
+                List.of(Formal.value("id"), Formal.option("label")), NEXT);
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.requireNonOverlappingOptionalArityIntervals(
+                        List.of(older, newer)));
+    }
+
+    @Test
+    void provenOptionVariadicDoesNotInjectAbsentOption() {
+        var fixedAndRest = OptionalCallShapeBinder.provenOptionParameterShapes(
+                List.of(Formal.value("id"), new Formal(
+                        "options", TypeKind.INTRINSIC_OPTION, Presence.INFER_FROM_TYPE,
+                        true, false, false)), NEXT);
+        assertTrue(fixedAndRest.getLast().variadic());
+        assertFalse(fixedAndRest.getLast().optional());
+        var plan = OptionalCallShapeBinder.bind(
+                fixedAndRest, List.of(Argument.positional()));
+        assertTrue(plan.variadicSourceIndices().isEmpty());
     }
 
     @Test
