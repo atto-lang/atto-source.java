@@ -41,7 +41,11 @@ final class GraalI64RuntimeCharacterizationTest {
             new Probe("negative-remainder", "remainder(-5, 3)", -2L),
             new Probe("min-remainder-negative-one", "remainder(" + MIN + ", -1)", 0L),
             new Probe("max-minus-one", "subtract(" + MAX + ", 1)", Long.MAX_VALUE - 1),
-            new Probe("min-plus-one", "sum(" + MIN + ", 1)", Long.MIN_VALUE + 1)
+            new Probe("min-plus-one", "sum(" + MIN + ", 1)", Long.MIN_VALUE + 1),
+            new Probe("min-plus-min-wraps", "sum(" + MIN + ", " + MIN + ")", 0L),
+            new Probe("max-squared-wraps", "multiply(" + MAX + ", " + MAX + ")", 1L),
+            new Probe("min-minus-max-wraps", "subtract(" + MIN + ", " + MAX + ")", 1L),
+            new Probe("min-remainder-positive-three", "remainder(" + MIN + ", 3)", -2L)
     );
 
     private static String source(String expression) {
@@ -69,9 +73,22 @@ final class GraalI64RuntimeCharacterizationTest {
 
     @Test
     void zeroDivisorThrowsFromActualGuestEvaluation() {
-        try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
-            assertThrows(PolyglotException.class, () ->
-                    context.eval("ores", source("remainder(1, 0)")));
+        // A syntax error, missing function or runtime initialization crash
+        // cannot satisfy this numeric error regression.
+        for (String expression : List.of(
+                "remainder(1, 0)",
+                "remainder(1, subtract(1, 1))")) {
+            try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
+                PolyglotException failure = assertThrows(PolyglotException.class,
+                        () -> context.eval("ores", source(expression)), expression);
+                assertTrue(failure.isGuestException(),
+                        expression + " must reach the guest numeric evaluator");
+                assertFalse(failure.isSyntaxError(), expression + " must not fail parsing");
+                assertFalse(failure.isInternalError(), expression + " must not crash the host");
+                assertNotNull(failure.getMessage(), expression + " requires a diagnostic");
+                assertTrue(failure.getMessage().toLowerCase(java.util.Locale.ROOT).contains("zero"),
+                        expression + " requires a zero-divisor diagnostic: " + failure.getMessage());
+            }
         }
     }
 }
