@@ -74,6 +74,9 @@ final class LogicalSourceActorRetiredLeaseRecoveryTest {
                     quarantine.setAccessible(true);
                     assertTrue(quarantine.getBoolean(router),
                             "postcommit lease failure must quarantine route admission");
+                    assertFalse(router.reconcileFailedUpgradeRollback(),
+                            "no unpublished rollback owner cannot falsely certify "
+                                    + "unreaped postpublication retirement");
                     assertThrows(IllegalStateException.class,
                             () -> router.upgradeTo(newGeneration, WAIT),
                             "quarantined supervisor must refuse a second upgrade");
