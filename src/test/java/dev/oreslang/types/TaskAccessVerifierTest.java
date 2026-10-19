@@ -304,6 +304,7 @@ final class TaskAccessVerifierTest {
         var ready = new java.util.concurrent.CountDownLatch(8);
         var start = new java.util.concurrent.CountDownLatch(1);
         var release = new java.util.concurrent.CountDownLatch(1);
+        var admittedOrRejected = new java.util.concurrent.CountDownLatch(8);
         var winners = new java.util.concurrent.atomic.AtomicInteger();
         var losers = new java.util.concurrent.atomic.AtomicInteger();
         try {
@@ -321,8 +322,10 @@ final class TaskAccessVerifierTest {
                             winners.incrementAndGet();
                         } catch (IllegalArgumentException rejected) {
                             losers.incrementAndGet();
+                            admittedOrRejected.countDown();
                             return;
                         }
+                        admittedOrRejected.countDown();
                         if (!release.await(10, java.util.concurrent.TimeUnit.SECONDS)) {
                             throw new AssertionError("release gate timed out");
                         }
@@ -335,10 +338,9 @@ final class TaskAccessVerifierTest {
             }
             assertTrue(ready.await(10, java.util.concurrent.TimeUnit.SECONDS));
             start.countDown();
-            // Count the winner while its exclusive loan remains live.
-            for (int spin = 0; spin < 10000 && winners.get() + losers.get() < 8; spin++) {
-                Thread.yield();
-            }
+            // Every contender has attempted admission; the winner is held
+            // behind release so no rejected worker can acquire its loan.
+            assertTrue(admittedOrRejected.await(10, java.util.concurrent.TimeUnit.SECONDS));
             assertEquals(1, winners.get());
             assertEquals(7, losers.get());
             release.countDown();
