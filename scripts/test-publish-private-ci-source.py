@@ -62,6 +62,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.repository_ids = [123] * 100
         self.archived = [False] * 100
         self.disabled = [False] * 100
+        self.carrier_allow_forking = [False] * 100
+        self.carrier_actions_enabled = [True] * 100
+        self.carrier_allowed_actions = ["selected"] * 100
+        self.carrier_github_owned_actions = [True] * 100
+        self.carrier_verified_actions = [False] * 100
+        self.carrier_patterns_allowed = [[] for _ in range(100)]
+        self.carrier_workflow_permissions = ["read"] * 100
+        self.carrier_can_approve_pr_reviews = [False] * 100
+        self.carrier_retention_days = [7] * 100
+        self.carrier_max_retention_days = [90] * 100
         self.carrier_main_shas = [A] * 100
         self.carrier_ref_names = ["refs/heads/main"] * 100
         self.carrier_ref_types = ["commit"] * 100
@@ -181,7 +191,24 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         private=True, default_branch=self.carrier_default_branches.pop(0),
                         id=self.repository_ids.pop(0),
                         archived=self.archived.pop(0),
-                        disabled=self.disabled.pop(0))
+                        disabled=self.disabled.pop(0),
+                        allow_forking=self.carrier_allow_forking.pop(0))
+        if route == "repos/trusted/ci/actions/permissions":
+            return {"enabled": self.carrier_actions_enabled.pop(0),
+                    "allowed_actions": self.carrier_allowed_actions.pop(0)}
+        if route == "repos/trusted/ci/actions/permissions/selected-actions":
+            return {"github_owned_allowed": self.carrier_github_owned_actions.pop(0),
+                    "verified_allowed": self.carrier_verified_actions.pop(0),
+                    "patterns_allowed": self.carrier_patterns_allowed.pop(0)}
+        if route == "repos/trusted/ci/actions/permissions/workflow":
+            return {
+                "default_workflow_permissions": self.carrier_workflow_permissions.pop(0),
+                "can_approve_pull_request_reviews":
+                    self.carrier_can_approve_pr_reviews.pop(0),
+            }
+        if route == "repos/trusted/ci/actions/permissions/artifact-and-log-retention":
+            return {"days": self.carrier_retention_days.pop(0),
+                    "maximum_allowed_days": self.carrier_max_retention_days.pop(0)}
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
             return {"sha": hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
@@ -2875,6 +2902,62 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             pub.strict_github_api_json('{"data":' + '[' * 10000 +
                                        '0' + ']' * 10000 + '}')
 
+
+
+    def test_carrier_all_actions_denied_before_source_read(self):
+        self.carrier_allowed_actions = ["all"] * 100
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read too early")):
+            with self.assertRaisesRegex(pub.Denied, "must not allow all third-party Actions"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_write_token_denied_before_source_read(self):
+        self.carrier_workflow_permissions = ["write"] * 100
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read too early")):
+            with self.assertRaisesRegex(pub.Denied, "GITHUB_TOKEN permissions are too broad"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_pr_approval_token_denied_before_source_read(self):
+        self.carrier_can_approve_pr_reviews = [True] * 100
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read too early")):
+            with self.assertRaisesRegex(pub.Denied, "GITHUB_TOKEN permissions are too broad"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_long_retention_denied_before_source_read(self):
+        self.carrier_retention_days = [30] * 100
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read too early")):
+            with self.assertRaisesRegex(pub.Denied, "retention exceeds security limit"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_private_forking_denied_before_source_read(self):
+        self.carrier_allow_forking = [True] * 100
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read too early")):
+            with self.assertRaisesRegex(pub.Denied, "disable private repository forking"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_actions_posture_change_denies_before_first_write(self):
+        # Initial admission passes; the first per-write recheck observes drift.
+        self.carrier_retention_days = [7, 30] + [30] * 98
+        with self.assertRaisesRegex(pub.Denied, "retention exceeds security limit"):
+            self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_selected_actions_must_be_github_owned_only(self):
+        self.carrier_verified_actions = [True] * 100
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read too early")):
+            with self.assertRaisesRegex(pub.Denied, "selected Actions policy is too broad"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
 
 if __name__ == "__main__":
