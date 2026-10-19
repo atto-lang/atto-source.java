@@ -357,6 +357,12 @@ def publish(repository, source, branch, trusted_root, source_pr=None,
     isolated = gh_api(f"repos/{repository}/git/trees", method="POST",
                       payload={"tree": elements})
     isolated_sha = valid_sha(isolated.get("sha"))
+    # This is the exact-tree oracle: the destination source subtree must be
+    # byte/mode/path-identical to the authorized source HEAD^{tree}. A partial
+    # source-dir, stale read, omitted file, or mode drift must never become a
+    # reachable carrier branch under an exact-tree authorization.
+    if isolated_sha != source_tree:
+        raise Denied("destination source subtree does not match authorized source tree")
     # Replace the entire PREFIX subtree atomically in the new root tree.
     # Preserve unrelated destination files and CI workflows from base_tree.
     authorize_write()
