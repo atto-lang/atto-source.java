@@ -86,17 +86,20 @@ public final class PostgresBindingSmoke {
                     "outbox intent committed in same transaction");
         }
 
-        // A forged owner may not mutate state or release the lease. The bridge
+        // A stale owner may not mutate state or release the lease. The bridge
         // fails its own actor closed after uncertain PostgreSQL rejection.
         var badKey = new DurableActorStore.Address(
                 "binding-tenant", "workflow", "run", UUID.randomUUID().toString());
         check(store.initialize(badKey, initial), "second actor registered");
         check(coordinator.deliver(badKey, new DurableActorStore.Inbound("input-2", bytes("input"))),
                 "second inbox persisted");
+        var oldOwner = UUID.randomUUID();
+        var leased = store.acquireLease(badKey, oldOwner);
+        // A store-issued lease remains address-bound, but may later become
+        // stale. Another healthy owner acquiring the next epoch fences it.
+        store.hibernateLease(badKey, leased.activation().epoch(), oldOwner);
         var validOwner = UUID.randomUUID();
-        var leased = store.acquireLease(badKey, validOwner);
-        var fake = new PostgresDurableActorStore.LeaseActivation(
-                leased.activation(), UUID.randomUUID());
+        var healthy = store.acquireLease(badKey, validOwner);
         var failedTurn = new DurableActorStore.Turn(
                 badKey, leased.activation().epoch(), 0, "input-2", next, List.of());
         try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
@@ -104,14 +107,17 @@ public final class PostgresBindingSmoke {
              var io = Executors.newSingleThreadExecutor()) {
             var ref = runtime.<String>spawnShared(() -> (mail, context) -> {});
             ref.ready().get(5, TimeUnit.SECONDS);
+            rejects(() -> DurableActorBinding.bind(
+                    runtime, ref, key, leased, "code-v1", coordinator),
+                    "a lease cannot be rebound to another tenant/address");
             var binding = DurableActorBinding.bind(
-                    runtime, ref, badKey, fake, "code-v1", coordinator);
+                    runtime, ref, badKey, leased, "code-v1", coordinator);
             try {
                 binding.commitAndHibernateAsync(failedTurn, io).get(10, TimeUnit.SECONDS);
-                throw new AssertionError("forged DB owner unexpectedly committed");
+                throw new AssertionError("stale DB owner unexpectedly committed");
             } catch (java.util.concurrent.ExecutionException expected) {
                 check(expected.getCause() instanceof PostgresDurableActorStore.StaleActivationException,
-                        "forged owner failed with DB fencing exception");
+                        "stale owner failed with DB fencing exception");
             }
             ref.done().get(5, TimeUnit.SECONDS); // cancel may fail done future: handled below
         } catch (java.util.concurrent.CancellationException
@@ -120,9 +126,9 @@ public final class PostgresBindingSmoke {
         }
         rejects(() -> store.acquireLease(badKey, UUID.randomUUID()),
                 "original owner remains healthy");
-        check(store.renewLease(badKey, leased.activation().epoch(), validOwner),
-                "original healthy owner retained lease");
-        store.hibernateLease(badKey, leased.activation().epoch(), validOwner);
+        check(store.renewLease(badKey, healthy.activation().epoch(), validOwner),
+                "new healthy owner retained lease");
+        store.hibernateLease(badKey, healthy.activation().epoch(), validOwner);
         var recovered = store.acquireLease(badKey, UUID.randomUUID()).activation();
         check(recovered.snapshot().stateVersion() == 0
                 && recovered.inbox().size() == 1
