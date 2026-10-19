@@ -4,6 +4,29 @@ Never transfer private Oreslang source into a public or internal GitHub
 repository, including temporary refs, dangling Git objects, Actions artifacts,
 cache entries, and logs.
 
+## Temporary unconditional publisher stop (October 19, 2026)
+
+**Private-source publication is disabled**, even if a local test checkout
+lists a private destination in `.github/private-ci-approved-repositories.txt`.
+`publish-private-ci-source.py` now calls
+`require_independent_source_authorization()` before the legacy destination
+preflight, source directory read, or any GitHub API call. This routine currently
+rejects every real transfer. The accompanying offline transport tests
+explicitly mock the unimplemented authorization step; their positive test cases
+verify object-writer behavior **only**, not permission to transfer Oreslang
+source.
+
+This is an intentional defense-in-depth restriction for open security
+[#962](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/962).
+Do not remove or replace it with a caller-controlled environment flag. Its
+removal requires an independently authenticated source repository ID,
+protected reviewed source commit and tree, trusted policy pin, reviewed
+destination numeric ID, privacy/active-state checks, and exact destination
+tree verification. Real protected-branch enforcement and CODEOWNER/security
+review must also be demonstrated. Until those conditions are met, use only
+**source-local CI** or truly source-free synthetic external probes. Do not
+copy the private compiler tree to a different organization.
+
 ## Destination approval
 
 The policy file `.github/private-ci-approved-repositories.txt` is **empty by
