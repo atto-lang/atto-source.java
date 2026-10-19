@@ -369,3 +369,19 @@ the Maven/GraalVM suite due to zero-step runner failures.
 checkpoints; check cancellation before entering the next guest frame and
 after the current turn unwinds. Add async cleanup unwinding and eventually
 task-local cancellation shielding only for short, bounded cleanup scopes.
+
+
+### Additional reentrancy test and local model evidence
+
+`TaskScopeTest.guestTurnCanCancelItsOwnScopeAndFinishFinally` verifies
+that a source Task can request scope cancellation reentrantly inside its
+running resume turn without publishing scope completion before the turn
+unwinds and its synchronous `finally` executes. Current stage-2 test
+inventory is **28 TaskHandleTest + 17 TaskScopeTest** JUnit methods,
+committed but not yet run by real Maven/GraalVM.
+
+An isolated OpenJDK 21 checkpoint-ordering model compiled under
+`javac -Xlint:all` and passed **3,600/3,600** iterations spanning
+cancel-while-running, guest exception versus cancellation and
+pre-admission cancellation. It is not the production TaskHandle source or
+scheduler, so this is supportive concurrency-model evidence only.
