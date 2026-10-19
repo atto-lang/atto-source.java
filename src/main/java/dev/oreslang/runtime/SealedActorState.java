@@ -160,12 +160,13 @@ public final class SealedActorState {
      */
     public ScalarPublication prepareScalarPublication(String versionField,
                                                        long expectedVersion,
+                                                       long expectedRevision,
                                                        Map<String, Object> replacements) {
         requireOwner();
         if (current != null || stateCarrier.get() != null)
             throw new IllegalStateException("ML_PREPARE_WITH_LIVE_STATE_LOAN");
         if (!"int".equals(schema.get(versionField)) || expectedVersion < 0
-                || expectedVersion == Long.MAX_VALUE)
+                || expectedVersion == Long.MAX_VALUE || expectedRevision < 0)
             throw new IllegalArgumentException("ML_INVALID_VERSION");
         Objects.requireNonNull(replacements, "scalar replacements");
         if (replacements.isEmpty() || replacements.size() > schema.size())
@@ -181,8 +182,11 @@ public final class SealedActorState {
         if (!(proposed instanceof Long next)
                 || next.longValue() != expectedVersion + 1)
             throw new IllegalArgumentException("ML_VERSION_ADVANCE_REQUIRED");
+        // Do not stamp this candidate with the *current* revision: another
+        // turn might have written newer state after the caller's read loan.
+        // The caller must carry the revision observed WITH its input snapshot.
         return new ScalarPublication(this, versionField, expectedVersion,
-                mutationRevision, staged);
+                expectedRevision, staged);
     }
 
     private long nextMutationRevision() {
@@ -254,6 +258,12 @@ public final class SealedActorState {
                 throw new IllegalStateException("expired or fenced actor state loan");
             }
         }
+        /** Observe the state revision in the SAME loan as model parameters. */
+        public long revision() {
+            check();
+            return mutationRevision;
+        }
+
         public Object read(String name) {
             check();
             if (!values.containsKey(name)) throw new IllegalArgumentException("unknown actor state key " + name);
