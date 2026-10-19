@@ -14,6 +14,8 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/scripts/check-record-parser.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/scripts/check-soa-snapshot.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/bin/mvn"
 chmod +x "$tmp/bin/mvn"
+# The gate sees this harmless synthetic Maven stub, never a real compiler.
+export PATH="$tmp/bin:$PATH"
 printf '*.java\n' > "$repo/.gitignore"
 
 git -C "$repo" init -q
