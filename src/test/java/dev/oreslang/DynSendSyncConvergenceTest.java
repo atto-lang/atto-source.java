@@ -52,7 +52,9 @@ final class DynSendSyncConvergenceTest {
                 "Arc", "Weak", "Rc", "RcWeak", "Cell", "RefCell",
                 "Mutex", "RwLock", "SharedMutex", "MutexGuard", "ReadGuard",
                 "WriteGuard", "RawPointer", "NativePointer", "ActorRef",
-                "ExecutionPermit", "ThreadLocal")) {
+                "ExecutionPermit", "ThreadLocal", "Task", "ActorGroup",
+                "ActorContext", "FfiHandle", "ThreadBound", "OresPointer",
+                "BorrowGuard", "AtomicRef", "Shared", "UnsafeCell")) {
             Type alleged = new Types.Named(name, List.of(Types.Primitive.INT));
             for (Trait trait : Trait.values()) {
                 assertFalse(ThreadSafetyTraits.has(alleged, trait, PERMISSIVE),
