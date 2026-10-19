@@ -174,6 +174,12 @@ final class TaskAccessVerifier {
         Objects.requireNonNull(resolvedNominals, "resolvedNominals");
         List<CoherentTypedClaim> typed = List.copyOf(
                 Objects.requireNonNull(requested, "claims"));
+        // An empty list is NOT evidence of a pure child: unchecked FFI,
+        // global effects and unknown aliases require a separate effect proof.
+        if (typed.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "empty scoped Task footprint requires a compiler-proven pure effect");
+        }
         for (CoherentTypedClaim entry : typed) {
             if (!corresponds(entry.sourceType(), entry.resolvedType(), 0)) {
                 throw new IllegalArgumentException(
