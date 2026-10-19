@@ -1,53 +1,140 @@
-name: Real Graal typed i64 characterization
+name: Real Graal typed i64 characterization - authorized source-local runner
 
+# Private source never crosses an org boundary. A draft/unprotected PR ref
+# must not run compiler source on a privileged or reusable worker.
 on:
-  pull_request:
-  workflow_dispatch:
+  push:
+    branches:
+      - audit/graal-i64-admission-20261019
+      - test/graal-i64-runtime-characterization-20261018
 
 permissions:
   contents: read
 
+concurrency:
+  group: oreslang-graal-i64-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  graal-i64-guest:
+  deny-unapproved:
+    if: ${{ !(github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.repository_id == '1400792274' && github.event.repository.private == true && github.event.repository.fork == false && github.ref_protected == true && vars.ORESLANG_I64_PRIVATE_RUNNER == 'true' && vars.ORESLANG_I64_APPROVED_SHA != '' && vars.ORESLANG_I64_APPROVED_SHA == github.sha && vars.ORESLANG_I64_APPROVED_TREE != '' && (github.ref == 'refs/heads/audit/graal-i64-admission-20261019' || github.ref == 'refs/heads/test/graal-i64-runtime-characterization-20261018')) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 2
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
-        with:
-          persist-credentials: false
-      - name: Print exact checked-out source identity
+      - name: Fail closed without independently approved source-local runner
         run: |
-          git rev-parse HEAD
-          git rev-parse 'HEAD^{tree}'
-          test -z "$(git status --porcelain)"
-      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+          echo 'DENIED: protected source ref, private repo, exact SHA/tree and authorized ephemeral runner are mandatory' >&2
+          exit 1
+
+  approved-graal-i64:
+    if: ${{ (github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.repository_id == '1400792274' && github.event.repository.private == true && github.event.repository.fork == false && github.ref_protected == true && vars.ORESLANG_I64_PRIVATE_RUNNER == 'true' && vars.ORESLANG_I64_APPROVED_SHA != '' && vars.ORESLANG_I64_APPROVED_SHA == github.sha && vars.ORESLANG_I64_APPROVED_TREE != '' && (github.ref == 'refs/heads/audit/graal-i64-admission-20261019' || github.ref == 'refs/heads/test/graal-i64-runtime-characterization-20261018')) }}
+    runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]
+    timeout-minutes: 120
+    env:
+      APPROVED_SHA: ${{ vars.ORESLANG_I64_APPROVED_SHA }}
+      APPROVED_TREE: ${{ vars.ORESLANG_I64_APPROVED_TREE }}
+      BASH_ENV: ''
+      ENV: ''
+      NODE_OPTIONS: ''
+      NODE_PATH: ''
+      LD_PRELOAD: ''
+      LD_AUDIT: ''
+      JAVA_TOOL_OPTIONS: ''
+      JDK_JAVA_OPTIONS: ''
+      MAVEN_OPTS: ''
+    steps:
+      - name: Check authorization before source checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REPOSITORY" = ores-truffle-oreslang/oreslang-source.java
+          test "$GITHUB_REPOSITORY_ID" = 1400792274
+          test "$GITHUB_REF_PROTECTED" = true
+          [[ "$GITHUB_REF" == refs/heads/audit/graal-i64-admission-20261019 || "$GITHUB_REF" == refs/heads/test/graal-i64-runtime-characterization-20261018 ]]
+          [[ "$APPROVED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$APPROVED_TREE" =~ ^[a-f0-9]{40}$ ]]
+          test "$APPROVED_SHA" = "$GITHUB_SHA"
+      - name: Checkout exact approved source inside original private repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          clean: true
+          fetch-depth: 1
+      - name: Verify pinned Git commit, full tree and clean workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -c core.fsmonitor=false rev-parse HEAD)" = "$APPROVED_SHA"
+          test "$(git -c core.fsmonitor=false rev-parse 'HEAD^{tree}')" = "$APPROVED_TREE"
+          test -z "$(git -c core.fsmonitor=false status --porcelain --untracked-files=all --ignore-submodules=none)"
+          if git -c core.fsmonitor=false ls-files -v | grep -v '^H '; then
+            echo 'DENIED: masked index entry' >&2
+            exit 1
+          fi
+      - name: Install pinned GraalVM JDK25 without shared Maven caches
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
           version: '25.3'
           java-version: '25'
-          distribution: 'graalvm'
-          cache: maven
-      - name: Run actual typed Graal guest boundary tests
-        run: mvn -B -ntp -Dtest=GraalI64RuntimeCharacterizationTest test
-      - name: Prepare real compiler fixture runner
+          distribution: graalvm
+      - name: Execute actual full-width Graal guest i64 tests
+        shell: bash
         run: |
-          mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=target/conformance-classpath.txt
-          python3 -m pip install --break-system-packages 'jsonschema>=4.20,<5'
-          python3 contracts/v1/semantics/run.py --validate
-      - name: Execute all required Graal compiler and guest fixtures
+          set -euo pipefail
+          java --version
+          mvn -B -ntp -Dmaven.repo.local="$RUNNER_TEMP/oreslang-i64-m2" -Dtest=GraalI64RuntimeCharacterizationTest -DfailIfNoTests=true test
+      - name: Execute real semantic compiler and guest suite
+        shell: bash
         run: |
-          python3 contracts/v1/semantics/run.py \
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/oreslang-i64-venv"
+          "$RUNNER_TEMP/oreslang-i64-venv/bin/pip" install --no-cache-dir 'jsonschema==4.25.1'
+          mvn -B -ntp -Dmaven.repo.local="$RUNNER_TEMP/oreslang-i64-m2" -q dependency:build-classpath -Dmdep.outputFile=target/conformance-classpath.txt
+          "$RUNNER_TEMP/oreslang-i64-venv/bin/python" contracts/v1/semantics/test_runner.py -v
+          "$RUNNER_TEMP/oreslang-i64-venv/bin/python" contracts/v1/semantics/run.py --validate
+          "$RUNNER_TEMP/oreslang-i64-venv/bin/python" contracts/v1/semantics/run.py \
             --backend graal \
             --command 'python3 contracts/v1/java_probe.py {source}' \
             --run-command 'python3 contracts/v1/java_probe.py {source} --execute' \
-            --revision "$(git rev-parse HEAD)" \
+            --revision "$APPROVED_SHA" \
             --report target/semantics-graal.json
-      - name: Preserve actual test and conformance evidence
+      - name: Fail closed on missing, skipped or malformed evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          report_path = Path("target/semantics-graal.json")
+          junit_path = Path("target/surefire-reports/TEST-dev.oreslang.GraalI64RuntimeCharacterizationTest.xml")
+          assert report_path.is_file() and junit_path.is_file(), "required evidence missing"
+          suite = ET.parse(junit_path).getroot()
+          assert int(suite.attrib.get("tests", "0")) >= 17, "fewer than 16 numeric + 1 divisor checks"
+          for field in ("errors", "failures", "skipped"):
+              assert int(suite.attrib.get(field, "-1")) == 0, f"JUnit {field} is nonzero or absent"
+          report = json.loads(report_path.read_text())
+          assert report["backend"] == "graal"
+          assert report["source_revision"] == os.environ["APPROVED_SHA"]
+          assert report["schema_version"] == "1.1.0"
+          assert len(report["suite_sha256"]) == 64
+          assert len(report["results"]) == 15, "incomplete canonical Java semantic suite"
+          ids = [item["id"] for item in report["results"]]
+          assert len(set(ids)) == 15
+          assert all(item["status"] == "pass" for item in report["results"]), "pending/failing case"
+          assert os.popen("git rev-parse 'HEAD^{tree}'").read().strip() == os.environ["APPROVED_TREE"]
+          print("GRAAL_I64_SOURCE_LOCAL_EVIDENCE_PASS; no cross-org source transfer")
+          PY
+      - name: Upload bounded private test receipts only
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: graal-typed-i64-evidence
+          name: graal-i64-private-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: error
           path: |
-            target/surefire-reports/GraalI64RuntimeCharacterizationTest*
+            target/surefire-reports/TEST-dev.oreslang.GraalI64RuntimeCharacterizationTest.xml
             target/semantics-graal.json
-            target/conformance-engine-logs/*.log
-          if-no-files-found: ignore
