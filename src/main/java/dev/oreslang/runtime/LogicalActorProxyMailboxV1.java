@@ -115,16 +115,16 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
         @Override
         public void close() {
             synchronized (lock) {
-                if (consumed) return;
-                if (activeFreeze == this && !closed) {
-                    dispatchFrozen = false;
-                    activeFreeze = null;
-                    consumed = true;
-                    checkStructuralInvariantsLocked();
-                    lock.notifyAll();
-                    return;
+                if (consumed || closed) return;
+                // Closing a handle is not proof that physical publication
+                // failed. An implicit rollback here could resume dispatch to
+                // the retired route after an ambiguous upgrade. Require an
+                // explicit, supervisor-authorized rollback() or commit().
+                if (activeFreeze == this) {
+                    throw new IllegalStateException(
+                            "active upgrade freeze requires explicit commit or rollback");
                 }
-                consumed = true;
+                throw new IllegalStateException("stale or foreign upgrade freeze ticket");
             }
         }
     }
