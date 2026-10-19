@@ -20,15 +20,13 @@ OresFuture rather than one per-member result future.
 ## Java host API
 
 ```java
-record Tick(long epochId, double dt) { }
-
 ActorGroupColumnarEpoch epoch = group.requestDoubleEpoch(
-    recipients,                       // List<ActorRef<Tick>>, live group members
-    id -> new Tick(id, 0.016),
+    recipients,                       // List<ActorRef<List<Long>>>, live members
+    id -> List.of(id, 16L),         // [epochId, dtMillis], supported payload
     List.of("x", "y", "energy"));
 
 // In each recipient actor's mailbox handler, after its own private update:
-group.publishDoubleEpoch(message.epochId(), x, y, energy);
+group.publishDoubleEpoch(message.get(0), x, y, energy);
 
 // Await outside the guest dispatcher, or through Oreslang's scheduler:
 ActorGroupColumnarEpoch.Snapshot finished = epoch.completion().join();
@@ -74,7 +72,9 @@ actors publish scalar copies; this API does not expose their heap pointers.
   This is a fixed admission cap, not yet integration with OresVM's aggregate
   actor-memory accounting or a global retained-snapshot budget.
 - No new thread, pool, actor per row, or unbounded queued callback per result.
-- ActorRef mailbox admission and isolation still apply independently.
+- ActorRef mailbox admission and isolation still apply independently. Use
+  transport-admitted immutable scalar/list/map messages; arbitrary Java records
+  are not Sendable in the current host transport.
 - No signed capability exported for zero-copy actor heap access.
 - Future work: group-owned memory reservations; cancellation/timeout policy;
   typed fixed-width primitive columns and runtime-native AoSoA shards;
