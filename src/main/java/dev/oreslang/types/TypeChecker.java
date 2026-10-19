@@ -123,6 +123,7 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        rejectUnloweredInvertedClasses(program);
         program = AnnotationExpander.expand(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
@@ -130,6 +131,24 @@ public final class TypeChecker {
         checker.collect(program);
         checker.validate(program);
         return new TypeCheckResult(program, checker.warnings);
+    }
+
+    /**
+     * Mandatory entry-point preflight, before annotation expansion or any
+     * AST rewrite can inadvertently downgrade an inverted layout to AoS.
+     * Keep this independent of checkClass(): some compiler callers perform
+     * checkTypes without invoking executable checking.
+     */
+    private static void rejectUnloweredInvertedClasses(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.ClassDecl klass && klass.inverted()) {
+                    throw new IllegalArgumentException("inverted class '" + klass.name()
+                            + "' requires typed InvertedArray ownership, columnar field lowering "
+                            + "and checked borrow effects; executable SoA classes are not yet enabled");
+                }
+            }
+        }
     }
 
     /**
@@ -143,6 +162,12 @@ public final class TypeChecker {
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases) {
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
+        }
+        rejectUnloweredInvertedClasses(program);
+        for (Ast.ClassDecl linked : linkedClasses.values()) {
+            if (linked != null && linked.inverted()) {
+                throw new IllegalArgumentException("linked inverted class requires checked SoA transport and lowering");
+            }
         }
         program = AnnotationExpander.expand(program);
         TypeChecker checker = new TypeChecker();
