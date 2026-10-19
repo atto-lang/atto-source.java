@@ -16,6 +16,7 @@ import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.Objects;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicBoolean;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
@@ -54,6 +55,8 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     private final byte[] macKey;
     private final InputStream input;
     private final OutputStream output;
+    private final IpcTransportSessionLease.CleanupScheduler cleanupScheduler;
+    private final AtomicBoolean abortScheduled = new AtomicBoolean();
     private final Object readGate = new Object();
     private final Object writeGate = new Object();
 
@@ -78,6 +81,8 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         this.physicalGeneration = physicalGeneration;
         this.input = socket.getInputStream();
         this.output = socket.getOutputStream();
+        this.cleanupScheduler = Objects.requireNonNull(
+                cleanupScheduler, "cleanupScheduler");
         this.sessionLease = new IpcTransportSessionLease(
                 trustedEpoch,
                 physicalGeneration,
@@ -98,7 +103,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                         Arrays.fill(this.macKey, (byte) 0);
                     }
                 },
-                Objects.requireNonNull(cleanupScheduler, "cleanupScheduler"));
+                this.cleanupScheduler);
     }
 
     /**
@@ -185,18 +190,52 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     }
 
     void requestClose() {
-        // First fence new send admission. Then actively close the Java Socket
-        // to interrupt a blocked physical read/write. The session lease still
-        // defers receipt retirement and reusable-generation status until all
-        // admitted write callbacks unwind and the authoritative close worker
-        // confirms physical closure.
+        // Fence new sends first. If a physical write is still pinned, submit
+        // the abort to the same bounded host cleanup domain; never run
+        // Socket.close() on the requesting/actor carrier.
         sessionLease.requestClose();
+        var snapshot = sessionLease.snapshot();
+        if (snapshot.phase() == IpcTransportSessionLease.Phase.CLOSING
+                && snapshot.activeWrites() > 0) {
+            schedulePhysicalAbort();
+        }
+    }
+
+    /**
+     * Host-supervisor bounded shutdown wait. A timeout never means closed:
+     * unresolved writes are quarantined and the generation remains unusable.
+     * Do not invoke this blocking wait from an actor carrier.
+     */
+    boolean requestCloseAndAwait(long timeoutMillis) throws InterruptedException {
+        requestClose();
+        if (sessionLease.awaitTerminal(timeoutMillis)) return true;
+        var snapshot = sessionLease.snapshot();
+        if (snapshot.phase() != IpcTransportSessionLease.Phase.RETIRED
+                && snapshot.phase() != IpcTransportSessionLease.Phase.QUARANTINED) {
+            sessionLease.quarantineIfUnsettled(
+                    new IOException("IPC transport close/drain deadline exceeded"));
+        }
+        return false;
+    }
+
+    private void schedulePhysicalAbort() {
+        if (!abortScheduled.compareAndSet(false, true)) return;
+        Thread caller = Thread.currentThread();
         try {
-            socket.close();
-        } catch (IOException ignoredAbortFailure) {
-            // Best-effort abort only. IpcTransportSessionLease owns the
-            // authoritative close confirmation/quarantine decision and will
-            // retry/record failure on its cleanup worker.
+            cleanupScheduler.enqueue(() -> {
+                if (Thread.currentThread() == caller) {
+                    sessionLease.quarantineIfUnsettled(new IllegalStateException(
+                            "IPC abort scheduler executed inline on requesting carrier"));
+                    return;
+                }
+                try {
+                    socket.close();
+                } catch (IOException abortFailure) {
+                    sessionLease.quarantineIfUnsettled(abortFailure);
+                }
+            });
+        } catch (RuntimeException | Error schedulingFailure) {
+            sessionLease.quarantineIfUnsettled(schedulingFailure);
         }
     }
 
