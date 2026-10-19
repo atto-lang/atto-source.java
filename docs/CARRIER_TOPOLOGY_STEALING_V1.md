@@ -19,3 +19,11 @@ Metrics distinguish preferred lane hits, same-LLC steals, same-NUMA steals and o
 **Out of scope:** forced per-Task pinning, dedicated OS thread per actor, SCHED_FIFO/RR/DEADLINE privileges, hard realtime, cacheline-packed SoA storage, strict group CPU reservation, cross-isolate heap sharing, LLVM CPU topology discovery, portable guest-source affinity syntax.
 
 See native LLVM sister work `feat/native-actor-carrier-locality-20261019` and cross-repo Java #303 / #1025 / LLVM #15.
+
+## Audit hardening — October 19, 2026
+
+- Periodic global sweeps use an **independent rotating cursor**, rather than sharing a cursor sampled only every 16th poll. This prevents fixed-step aliasing from indefinitely overlooking remote lanes when worker count is a multiple of 16.
+- Victim offset arithmetic is widened to 64-bit intermediate calculations before modulo, avoiding duplicate or omitted candidates when Java's signed 32-bit steal counter wraps.
+- Linux index3/id is treated as last-level cache identity only when the kernel reports **Unified level-3 cache** and a known physical package ID; otherwise treat it as unknown.
+- Mocked sysfs tests, Integer.MIN_VALUE/MAX_VALUE victim coverage, and bounded global-probe coverage for up to 128 workers were added.
+- Real CPU/NUMA performance and long-running fairness remain unqualified until source-exact CI and benchmarks complete.
