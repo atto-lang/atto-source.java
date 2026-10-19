@@ -64,6 +64,7 @@ public final class ThreadSafetyTraits {
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(trait, "trait");
         Objects.requireNonNull(nominalProof, "nominalProof");
+        if (!Types.isStructurallyWellFormed(type)) return false;
         return has(type, trait, nominalProof,
                 Collections.newSetFromMap(new IdentityHashMap<>()),
                 new IdentityHashMap<>(), new int[] {MAX_PROOF_STEPS}, 0);
