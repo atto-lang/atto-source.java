@@ -61,11 +61,22 @@ final class OresTestTrace {
     }
 
     static Data read(Path input, Path source) throws IOException {
-        if (!Files.isRegularFile(input, LinkOption.NOFOLLOW_LINKS)
-                || Files.size(input) > 4096) {
+        if (!Files.isRegularFile(input, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("not a bounded regular critical exploration trace");
         }
-        String content = Files.readString(input, StandardCharsets.UTF_8);
+        // Bound the actual read, not just a separate Files.size() check:
+        // a concurrent writer must not bypass the 4 KiB trace limit.
+        final byte[] traceBytes;
+        try (java.io.InputStream traceInput = Files.newInputStream(input)) {
+            traceBytes = traceInput.readNBytes(4096 + 1);
+        }
+        if (traceBytes.length > 4096) {
+            throw new IOException("not a bounded regular critical exploration trace");
+        }
+        final String content = StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                .decode(java.nio.ByteBuffer.wrap(traceBytes)).toString();
         String[] lines = content.split("\n", -1);
         if (lines.length != 10 || !HEADER.equals(lines[0]) || !lines[9].isEmpty()) {
             throw new IOException("unsupported trace header or malformed field count");
