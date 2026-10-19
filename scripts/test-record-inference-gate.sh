@@ -47,6 +47,20 @@ assert_exit 0 bash scripts/check-record-inference.sh "$head"
 assert_exit 0 bash scripts/check-record-inference.sh --commit "$head"
 assert_exit 0 bash scripts/check-record-inference.sh --tree "$tree"
 
+# Validate the missing-tool guard without depending on whether CI happens
+# to have a global Maven binary. Give the test only the required early tools.
+mkdir -p "$tmp/no-maven"
+for tool in git java javac dirname; do
+  ln -s "$(command -v "$tool")" "$tmp/no-maven/$tool"
+done
+assert_exit 5 env PATH="$tmp/no-maven" /bin/bash scripts/check-record-inference.sh --tree "$tree"
+
+# A nested script checkout must not accidentally test the parent Git tree.
+mkdir -p "$repo/nested/scripts"
+cp "$repo/scripts/check-record-inference.sh" "$repo/nested/scripts/"
+assert_exit 3 bash nested/scripts/check-record-inference.sh --tree "$tree"
+rm -rf "$repo/nested"
+
 printf 'untracked\n' > "$repo/untracked.txt"
 assert_exit 4 bash scripts/check-record-inference.sh --tree "$tree"
 rm "$repo/untracked.txt"
