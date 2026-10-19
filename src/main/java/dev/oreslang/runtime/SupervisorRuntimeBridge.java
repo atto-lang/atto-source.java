@@ -25,6 +25,7 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
     private final Map<ActorRuntime.ActorRef<?>, TrustedSupervisorInbox.ChildBinding> bindings =
             new IdentityHashMap<>();
     private final AtomicLong sequence = new AtomicLong();
+    private final AtomicLong childIds = new AtomicLong();
     private boolean closed;
 
     SupervisorRuntimeBridge(
@@ -44,7 +45,7 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
         if (bindings.containsKey(child)) {
             throw new IllegalArgumentException("child already registered");
         }
-        long childId = stableChildId(child.id());
+        long childId = nextChildId();
         TrustedSupervisorInbox.ChildBinding binding =
                 inbox.bindVerifiedChild(childId, child.generation());
         bindings.put(child, binding);
@@ -73,7 +74,7 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
         if (result == TrustedSupervisorInbox.Admission.ESCALATE_TO_PARENT) {
             TrustedSupervisorInbox.FailureNotice notice =
                     new TrustedSupervisorInbox.FailureNotice(
-                            stableChildId(child.id()), child.generation(), seq, faultCode);
+                            bindingChildId(binding), child.generation(), seq, faultCode);
             if (!escalation.escalate(notice)) {
                 throw new IllegalStateException(
                         "supervisor CONTROL overflow escalation was not durably accepted");
@@ -98,9 +99,20 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
         return value;
     }
 
-    private static long stableChildId(ActorRuntime.ActorId id) {
-        long value = id.value().getMostSignificantBits() ^ id.value().getLeastSignificantBits();
-        return value == Long.MIN_VALUE ? 1L : Math.max(1L, Math.abs(value));
+    private long nextChildId() {
+        long value = childIds.incrementAndGet();
+        if (value <= 0) throw new IllegalStateException("supervisor child identity exhausted");
+        return value;
+    }
+
+    private static long bindingChildId(TrustedSupervisorInbox.ChildBinding binding) {
+        try {
+            var field = TrustedSupervisorInbox.ChildBinding.class.getDeclaredField("childId");
+            field.setAccessible(true);
+            return field.getLong(binding);
+        } catch (ReflectiveOperationException failure) {
+            throw new IllegalStateException("trusted child identity unavailable", failure);
+        }
     }
 
     private static long stableFaultCode(Throwable failure) {
