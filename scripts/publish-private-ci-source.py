@@ -254,8 +254,12 @@ def gh_api(route, method="GET", payload=None):
     effective_rules_route = re.fullmatch(
         r"repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/rules/branches/"
         r"ci%2Foreslang-[a-f0-9]{40}-[a-f0-9]{40}", route)
+    matching_refs_route = re.fullmatch(
+        r"repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/git/matching-refs/heads/"
+        r"ci/oreslang-[a-f0-9]{40}-[a-f0-9]{40}\\?per_page=1&page=1", route)
+    array_route = effective_rules_route is not None or matching_refs_route is not None
     return strict_github_api_json(
-        p.stdout, root_type=list if effective_rules_route is not None else dict)
+        p.stdout, root_type=list if array_route else dict)
 
 
 def checked_repo(repository, expected_id=None):
@@ -552,6 +556,12 @@ def require_effective_carrier_source_rules(repository, branch, ruleset_id):
         f"repos/{repository}/rules/branches/{encoded_branch}")
     if not effective or not all(isinstance(rule, dict) for rule in effective):
         raise Denied("effective private carrier source-branch rules are unavailable")
+    # A second active ruleset can independently block branch creation even
+    # when the reviewed immutable ruleset itself allows it. Detect that before
+    # reading or uploading private source; otherwise the final ref POST can
+    # fail predictably after private blobs/trees have already been created.
+    if any(rule.get("type") == "creation" for rule in effective):
+        raise Denied("effective private carrier policy blocks reviewed branch creation")
     matched = [
         rule for rule in effective
         if type(rule.get("ruleset_id")) is int
@@ -569,6 +579,18 @@ def require_effective_carrier_source_rules(repository, branch, ruleset_id):
             or params.get("update_allows_fetch_and_merge") is not False):
         raise Denied("effective private carrier update rule is not immutable")
     return ruleset_id
+
+
+def require_absent_carrier_source_ref(repository, branch):
+    """Reject a pre-existing or prefix-colliding CI ref before private writes."""
+    if not isinstance(branch, str) or BRANCH.fullmatch(branch) is None:
+        raise Denied("private carrier source-ref branch is invalid")
+    matches = gh_api(
+        f"repos/{repository}/git/matching-refs/heads/{branch}?per_page=1&page=1")
+    if not isinstance(matches, list):
+        raise Denied("private carrier source-ref lookup is unavailable")
+    if matches:
+        raise Denied("private carrier source ref already exists or collides with reserved prefix")
 
 
 def require_protected_main_policy(approved_policy):
@@ -1159,6 +1181,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     require_carrier_source_ruleset(repository, carrier_ruleset_id)
     require_effective_carrier_source_rules(
         repository, branch, carrier_ruleset_id)
+    require_absent_carrier_source_ref(repository, branch)
     # The ledger read itself must come from the same carrier main revision
     # that the source-side approval pinned.
     require_pinned_carrier_main(base_sha, approved_carrier_tree)
@@ -1178,7 +1201,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     blob_writes = sum(text is None for batch in batches for _, _, _, text in batch)
     reserved_writes = max(1, blob_writes + len(batches) - 1)
     require_private_ci_api_budget(len(files), reserved_writes)
-    def authorize_write():
+    def authorize_write(require_absent_ref=True):
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
         if require_protected_main_policy(approved_policy) != reviewed_main_sha:
@@ -1200,6 +1223,8 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         require_carrier_source_ruleset(repository, carrier_ruleset_id)
         require_effective_carrier_source_rules(
             repository, branch, carrier_ruleset_id)
+        if require_absent_ref:
+            require_absent_carrier_source_ref(repository, branch)
         require_pinned_carrier_main(base_sha, approved_carrier_tree)
 
     isolated_sha = None
@@ -1292,8 +1317,10 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
                        for item in tree_items)):
         raise Denied("committed CI source subtree differs from pinned source SHA")
     # Readback may take time: check protected-main approval, destination
-    # repository identity and private visibility again before success.
-    authorize_write()
+    # repository identity and private visibility again before success. The ref
+    # must exist now, so retain every other authorization check but skip the
+    # pre-write absence assertion.
+    authorize_write(require_absent_ref=False)
     return commit_sha, len(files)
 
 

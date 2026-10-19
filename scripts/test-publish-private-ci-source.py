@@ -259,6 +259,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                  "ruleset_source_type": "Repository",
                  "ruleset_source": "trusted/ci"},
             ]
+        if route == ("repos/trusted/ci/git/matching-refs/heads/"
+                     + TEST_BRANCH + "?per_page=1&page=1"):
+            return []
         if route == pub.at_ref("repos/trusted/ci/codeowners/errors", A):
             return {"errors": self.carrier_codeowners_errors}
         if route == "repos/trusted/ci/collaborators/ORESoftware/permission":
@@ -2462,6 +2465,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         duplicate = json.loads(json.dumps(valid))
         duplicate.append(json.loads(json.dumps(valid[1])))
         failures.append(duplicate)
+        creation_conflict = json.loads(json.dumps(valid))
+        creation_conflict.append({
+            "type": "creation", "ruleset_id": 888,
+            "ruleset_source_type": "Repository",
+            "ruleset_source": "trusted/ci",
+        })
+        failures.append(creation_conflict)
         for response in failures:
             with self.subTest(response=response):
                 with patch.object(pub, "gh_api", return_value=response):
@@ -2515,6 +2525,54 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "full approved source commit SHA"):
                 self.publish(branch="ci/oreslang-" + E + "-" + A)
         self.assertEqual(self.route_calls, [])
+
+    def test_effective_creation_rule_denies_before_source_read(self):
+        original = self.fake_api
+        effective_route = (
+            "repos/trusted/ci/rules/branches/"
+            + TEST_BRANCH.replace("/", "%2F"))
+
+        def block_creation(route, method="GET", payload=None):
+            response = original(route, method, payload)
+            if route == effective_route:
+                response = json.loads(json.dumps(response))
+                response.append({
+                    "type": "creation", "ruleset_id": 888,
+                    "ruleset_source_type": "Repository",
+                    "ruleset_source": "trusted/ci",
+                })
+            return response
+
+        with patch.object(pub, "gh_api", side_effect=block_creation):
+            with patch.object(pub, "collect_source",
+                              side_effect=AssertionError("private source read too early")):
+                with self.assertRaisesRegex(pub.Denied, "blocks reviewed branch creation"):
+                    pub.publish("trusted/ci", self.source, TEST_BRANCH,
+                                self.root, self.expected_tree, D)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_existing_source_ref_denies_before_source_read(self):
+        original = self.fake_api
+        matching_route = (
+            "repos/trusted/ci/git/matching-refs/heads/"
+            + TEST_BRANCH + "?per_page=1&page=1")
+
+        def existing_ref(route, method="GET", payload=None):
+            if route == matching_route:
+                self.route_calls.append((method, route, payload))
+                return [{
+                    "ref": "refs/heads/" + TEST_BRANCH,
+                    "object": {"sha": C, "type": "commit"},
+                }]
+            return original(route, method, payload)
+
+        with patch.object(pub, "gh_api", side_effect=existing_ref):
+            with patch.object(pub, "collect_source",
+                              side_effect=AssertionError("private source read too early")):
+                with self.assertRaisesRegex(pub.Denied, "source ref already exists"):
+                    pub.publish("trusted/ci", self.source, TEST_BRANCH,
+                                self.root, self.expected_tree, D)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_carrier_source_approval_missing_denies_before_source_read(self):
         self.carrier_reviewed_snapshot = "# no approvals\n"
