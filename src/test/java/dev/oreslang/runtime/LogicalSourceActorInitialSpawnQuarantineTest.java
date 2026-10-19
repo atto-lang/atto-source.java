@@ -288,4 +288,59 @@ final class LogicalSourceActorInitialSpawnQuarantineTest {
         }
     }
 
+
+    @Test
+    void realCompiledInitialSpawnRegistryFailureAfterInsertionRefundsGenerationPin()
+            throws Exception {
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var generation = manager.stageActorGeneration(
+                    "real-initial-post-register-fault.ores", ACTOR);
+            var runtime = generation.linkActorGeneration("Counter").runtime();
+            Field registryField = ActorRuntime.class.getDeclaredField("actors");
+            registryField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            java.util.Map<Object, Object> original =
+                    (java.util.Map<Object, Object>) registryField.get(runtime);
+            assertTrue(original.isEmpty());
+            var injected = new java.util.concurrent.atomic.AtomicBoolean(true);
+            var mutated = new java.util.concurrent.ConcurrentHashMap<Object, Object>() {
+                @Override public Object put(Object key, Object value) {
+                    Object previous = super.put(key, value);
+                    if (injected.getAndSet(false))
+                        throw new OutOfMemoryError(
+                                "source actor registry failure after insertion");
+                    return previous;
+                }
+            };
+            Field pins = HotReloadManager.Generation.class
+                    .getDeclaredField("actorRoutePins");
+            pins.setAccessible(true);
+            registryField.set(runtime, mutated);
+            try {
+                assertThrows(OutOfMemoryError.class,
+                        () -> LogicalSourceActorRouterV1.spawn(
+                                generation, ActorRuntime.ActorKind.SHARED,
+                                "Counter", Duration.ofSeconds(5)));
+                assertTrue(mutated.isEmpty(),
+                        "failed compiler-linked physical actor must be unregistered");
+                assertEquals(0, pins.getInt(generation),
+                        "failed pre-return physical admission must not strand a route pin");
+                assertEquals(0, LogicalSourceActorRouterV1.reapFailedInitialSpawns(),
+                        "a finished failed construction cannot be retired twice");
+            } finally {
+                registryField.set(runtime, original);
+            }
+            try (var recovered = LogicalSourceActorRouterV1.spawn(
+                    generation, ActorRuntime.ActorKind.SHARED,
+                    "Counter", Duration.ofSeconds(5))) {
+                recovered.ref().send(41L);
+                var output = recovered.ref().nextOutput(Duration.ofSeconds(5));
+                assertFalse(output.done());
+                assertEquals(42L,
+                        assertInstanceOf(Long.class, output.value().value()));
+            }
+            assertEquals(0, pins.getInt(generation));
+        }
+    }
 }
