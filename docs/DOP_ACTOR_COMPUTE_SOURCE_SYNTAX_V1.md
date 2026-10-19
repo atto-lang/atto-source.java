@@ -1,11 +1,13 @@
 # CPU data-oriented actor compute call surface — syntax admission contract (proposal)
 
-Status (2026-10-19): **not an executable Oreslang API**. The parser change in this
-branch admits only anonymous `fnc(chunk) { ... }` as the existing `LambdaExpr`.
-Inline `[...]` and `#symbol` literals already parse on Java main. Generic
-type-qualified factory calls, named runtime arguments, typed `Motion.field`
-descriptors, `+=`, scheduler policy and `Region<T>` compute lowering remain
-independent milestones. Do not mark this end-to-end example as passing.
+Status (2026-10-19): **not an executable end-to-end Oreslang API**. Anonymous
+`fnc(chunk) { ... }`, inline lists and Symbols are parser/runtime surfaces, and
+the stacked Java branch now executes the exact-required subset of named calls
+for statically resolved source functions and methods. The full example remains
+blocked by named factory construction, static generic `TypeExpr` factory
+resolution, typed `Motion.field` descriptors, checked compound-place lowering,
+and the Scheduler/Region/ActorGroup runtime. Do not mark the end-to-end example
+as passing.
 
 ## Target source (future, with deliberate trailing-closure exception)
 
@@ -60,16 +62,18 @@ subset of tokens as ordinary expressions is **not** evidence of working code.
    The list elements are evaluated in source order. A typed consumer must
    decide whether a particular array is a borrowed slice, owned list or
    fixed-size configuration. `[#aos, #soa]` is *not* a special enum syntax.
-3. **Runtime named arguments:** this stacked branch now parses `name: expression`
-   into a first-class staged call-item AST and preserves lexical source order.
-   Type/ownership/runtime paths deliberately reject the staged node, so named
-   calls are **not yet executable**. The broader optional/default/rest binder
-   work remains in Java PR #1335. AST must preserve label, source position,
-   omission and spread; binding is case-sensitive, statically checked and
-   lowered to formal positional ABI slots. Evaluate each actual exactly once
-   in lexical source order, then permute temporary values, never expressions.
-   Preserve ownership/effects/cancellation, class overrides and overload-arity
-   semantics. Named type metadata `<name=value>` is separate.
+3. **Runtime named arguments:** the stacked Java lowering branch executes the
+   exact-required subset for statically resolved source functions,
+   module-qualified functions, static class functions and instance methods.
+   `NamedCallBindingPlan` binds labels without evaluating expressions;
+   TypeChecker records an identity-bound proof only after source-ordered checks.
+   Runtime evaluates the receiver first, then every actual exactly once in
+   lexical source order into temporaries, and only then permutes values to the
+   formal ABI order. Ownership uses the same source order and keeps borrow loans
+   live across the entire invocation. Generic callable inference,
+   imported/dynamic callables, function-valued fields, named constructors,
+   actor spawn and optional/default/rest remain fail-closed. Named type metadata
+   `<name=value>` remains separate.
 4. **Symbols:** `#auto`, `#numa_aware` and `#aosoa` already lex and parse
    as bounded, NFC-normalized, immutable **process Symbol values** on Java.
    `#"compound-name"` is the quoted spelling. Symbols are *not* identifiers,
@@ -77,14 +81,16 @@ subset of tokens as ordinary expressions is **not** evidence of working code.
    Policy APIs must validate an exhaustively enumerated set of Symbol values
    with typed rejection for misspellings; `#unsafe_setting` cannot be silently
    accepted, and an untrusted caller cannot thereby acquire scheduler authority.
-5. **Named + final anonymous callback:** this stacked branch recognizes one
-   source-marked final anonymous `fnc`/pipe closure after named arguments, but
-   keeps it fail-closed until signature binding proves the final callable formal. The target
-   `compute(..., writes: [...], fnc(chunk) {...})` needs an explicit,
-   narrowly-scoped **trailing-closure** rule: allow exactly one final,
-   syntactically anonymous callable (`fnc(...) {...}` or `|...| -> {...}`)
-   only if static overload resolution proves the single remaining final formal
-   is a callback parameter. All other positional-after-named calls are errors;
+5. **Named + final anonymous callback:** the Java required-call lowering now
+   executes one source-marked final anonymous `fnc`/pipe closure after named
+   arguments **when** the exact-required binder proves that the sole remaining
+   slot is the final direct `Fnc` formal. The target
+   `compute(..., writes: [...], fnc(chunk) {...})` therefore has the intended
+   narrowly-scoped trailing-closure rule at the call layer, but cannot execute
+   end-to-end until `ActorGroup.compute` and its typed callback contract exist.
+   Allow exactly one final syntactically anonymous callable
+   (`fnc(...) {...}` or `|...| -> {...}`) only if static resolution proves
+   the single remaining final formal is a callback parameter. All other positional-after-named calls are errors;
    no spreads or omissions in this v1 exception. A well-defined implementation
    must introduce source-anchored `TRAILING_CLOSURE` call-item metadata
    rather than silently treating all unlabeled arguments as legal. A completely
