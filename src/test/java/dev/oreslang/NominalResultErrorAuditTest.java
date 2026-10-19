@@ -75,14 +75,41 @@ final class NominalResultErrorAuditTest {
     }
 
     @Test void payloadBearingCaseRequiresRealTypeAndOwnershipChecking() {
-        assertThrows(IllegalArgumentException.class, () -> audit("""
+        String program = ERRORS + """
             define enum PayloadError as
-                BAD_NUMBER struct{value: int} 10
+                BAD_NUMBER: int = 10
             end
             fnc failure(): Result<int, PayloadError> {
                 return Err(PayloadError.BAD_NUMBER("not a number"));
             }
-            """));
+            """;
+        Ast.Program ast = assertDoesNotThrow(() -> Parser.parse(program));
+        TaggedMessageContracts.Registry types =
+                assertDoesNotThrow(() -> TaggedMessageContracts.forTypes(ast));
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class,
+                () -> NominalResultErrorAudit.verify(ast, types));
+        assertTrue(rejected.getMessage().contains(
+                "unverified nominal case payload type or ownership"));
+    }
+
+    @Test void validPayloadShapeIsStillNotTypeOrOwnershipCertified() {
+        String program = ERRORS + """
+            define enum PayloadError as
+                BAD_NUMBER: int = 10
+            end
+            fnc failure(): Result<int, PayloadError> {
+                return Err(PayloadError.BAD_NUMBER(17));
+            }
+            """;
+        Ast.Program ast = assertDoesNotThrow(() -> Parser.parse(program));
+        TaggedMessageContracts.Registry types =
+                assertDoesNotThrow(() -> TaggedMessageContracts.forTypes(ast));
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class,
+                () -> NominalResultErrorAudit.verify(ast, types));
+        assertTrue(rejected.getMessage().contains(
+                "unverified nominal case payload type or ownership"));
     }
 
     @Test void typeOnlyAcceptanceDoesNotUnlockRuntime() {

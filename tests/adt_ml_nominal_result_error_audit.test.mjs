@@ -43,6 +43,10 @@ test("payload-bearing nominal case is not certified from arity alone",()=>{
   assert.match(helper,/unverified nominal case payload type or ownership/);
   assert.match(junit,/payloadBearingCaseRequiresRealTypeAndOwnershipChecking/);
   assert.match(junit,/PayloadError\.BAD_NUMBER\("not a number"\)/);
+  assert.match(junit,/BAD_NUMBER: int = 10/);
+  assert.match(junit,/assertDoesNotThrow\(\(\) -> Parser\.parse\(program\)\)/);
+  assert.match(junit,/validPayloadShapeIsStillNotTypeOrOwnershipCertified/);
+  assert.match(junit,/unverified nominal case payload type or ownership/);
 });
 
 test("all relevant statement/control-flow forms have bounded nonrecursive traversal",()=>{
