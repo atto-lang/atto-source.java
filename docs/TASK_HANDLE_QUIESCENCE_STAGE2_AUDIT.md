@@ -540,3 +540,42 @@ approved cross-org private CI destination list is empty; require
 independent security review and a provenance-pinned allowed destination
 before any full-tree transfer. Source-local Actions must execute genuine
 compiler/test steps before either draft can be merged.
+
+
+## Checkpoint cancellation source-Future consistency
+
+Further audit found a concrete split-brain terminal-state edge:
+`TaskHandle.getDone()` could classify an internal `CancelledAtResume`
+exception as Cancelled while `TaskHandle.result()` was **failed**, not
+`isCancelled()`. A second variant affected inline runtime dispatch:
+the entire guest turn could finish synchronously before TaskHandle.start()
+bound its result Future, so a post-resume `cancelResultIfBound()` had
+no Future to revoke and a self-cancelling Task could accidentally publish
+Success.
+
+The runtime-private cancellation marker now records its actual
+TaskCancellation authority and exact scheduler logical Task domain.
+`OresScheduler.TaskRunner.runTurn` identifies a marker as cooperative
+cancellation **only if** its own domain matches and its authority has
+truly been cancelled; it then calls `completion.cancel(false)` rather
+than treating the marker as an ordinary failure. TaskHandle's
+`onSettled` also verifies the marker's authority for its fallback
+classification. Replaying a saved marker in any other Task therefore
+remains Failed, not a cancellation capability.
+
+At a normal post-resume cancellation boundary, the wrapper throws
+the same authenticated marker **after** synchronous Java cleanup
+instead of calling `cancelResultIfBound()`. This works even when an
+inline executor finishes a Task before its result Future is bound and
+keeps checkpoint semantics coherent:
+- `TaskHandle.result().isCancelled() == true` after authentic checkpoint;
+- `TaskHandle.getDone()` settles to `Cancelled(reason)` only after
+  scheduler-confirmed physical quiescence;
+- a real guest exception or cleanup failure remains `Failed`;
+- no unrelated Task can replay another Task's marker as authority.
+
+Committed source tests now assert source-Future cancellation at explicit
+checkpoints and after inline self-cancellation, while the marker replay
+test captures a true checkpoint exception in its original Task and
+rethrows it in a distinct Task. These tests have **not yet executed
+in production Maven/GraalVM CI**. Keep the PR draft.
