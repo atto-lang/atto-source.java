@@ -357,6 +357,29 @@ final class ThreadSafetyTraitsTest {
 
     @Test
     @org.junit.jupiter.api.Timeout(5)
+    void traitCacheCannotReuseShallowProofPastMaximumNestingDepth() {
+        // The same identity appears first at depth 1, then at depth 2.
+        // Shallow success must not mask an over-depth leaf on the second path.
+        Type shared = Types.Primitive.INT;
+        for (int i = 0; i < 255; i++) {
+            shared = new Types.ListType(shared);
+        }
+        Type shallower = shared;
+        Type twoPaths = new Types.Tuple(List.of(
+                shallower, new Types.ListType(shallower)));
+        assertTrue(ThreadSafetyTraits.has(
+                shallower, Trait.SEND, (type, trait) -> false));
+        assertFalse(ThreadSafetyTraits.has(
+                twoPaths, Trait.SEND, (type, trait) -> false),
+                "memoizing only node identity and trait bypasses depth admission");
+
+        // The healthy short path must remain valid in a fresh invocation.
+        assertTrue(ThreadSafetyTraits.has(
+                shallower, Trait.SEND, (type, trait) -> false));
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(5)
     void sharedDagTypeGraphDoesNotTriggerExponentialProofWork() {
         // Only 71 physical nodes, but a naive recursive proof would expand
         // 2^70 visits. Identity memoization must keep this bounded.
