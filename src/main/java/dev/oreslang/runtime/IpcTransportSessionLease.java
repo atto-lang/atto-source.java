@@ -11,6 +11,8 @@ import java.util.concurrent.CompletionStage;
  * implementation or zero-copy ABI. The caller supplies an independently
  * authenticated, synchronous host frame writer and a physical close callback.
  * Never dispatch on an actor carrier or route UNTRUSTED NETWORK through here.
+ * Synchronous send/write/wait entry points enforce that carrier boundary before
+ * receipt mutation, writer invocation, or monitor acquisition for blocking waits.
  */
 final class IpcTransportSessionLease {
     enum Phase { OPEN, CLOSING, FINALIZING, RETIRED, QUARANTINED }
