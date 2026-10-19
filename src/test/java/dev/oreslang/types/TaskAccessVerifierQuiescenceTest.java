@@ -46,6 +46,15 @@ final class TaskAccessVerifierQuiescenceTest {
     }
 
     @Test
+    void emptyLoanSetCannotCreateMeaninglessAdmission() {
+        var verifier = new TaskAccessVerifier();
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> verifier.admitScopedTyped(List.of(), CORE));
+        assertEquals(0, verifier.activeChildren());
+    }
+
+    @Test
     void cancellationDoesNotReleaseScopedLoan() {
         var verifier = new TaskAccessVerifier();
         var place = TaskAccessVerifier.Place.whole(ROOT);
