@@ -18,6 +18,37 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(30)
 final class ActorPhysicalFinalizationPublicationTest {
     @Test
+    @SuppressWarnings("unchecked")
+    void temporaryRegistryAbsenceIsNotProofOfPhysicalFinalization()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            var registry = (java.util.Map<Object, Object>) actorsField.get(runtime);
+            Object cell = registry.get(actor.id());
+            assertNotNull(cell);
+            // Inject precisely the registry-absence window that used to
+            // certify physical termination without checking a durable ref
+            // witness. Restore it before asking the runtime to stop.
+            assertSame(cell, registry.remove(actor.id()));
+            try {
+                assertFalse(runtime.physicallyFinalizedForHotUpgrade(actor),
+                        "missing ActorCell cannot release a live generation");
+                assertFalse(actor.awaitTermination(0, TimeUnit.NANOSECONDS),
+                        "unknown registry entry is not a terminal barrier");
+            } finally {
+                assertNull(registry.putIfAbsent(actor.id(), cell));
+            }
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(runtime.physicallyFinalizedForHotUpgrade(actor));
+        }
+    }
+
+    @Test
     void blockedTerminalObserverCannotPublishEarlyCodeImageRetirement()
             throws Exception {
         try (var runtime = new ActorRuntime()) {
