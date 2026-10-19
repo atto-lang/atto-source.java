@@ -248,15 +248,15 @@ def gh_api(route, method="GET", payload=None):
     if p.returncode != 0:
         # Never echo stderr: a client can include private file bytes in errors.
         raise Denied("authenticated GitHub API request failed")
-    # GitHub's effective-rules endpoint is the only security API used here
-    # whose documented top-level response is an array. Keep every other route
-    # object-only so unexpected response shapes still fail closed.
+    # Only the two narrowly allowlisted security reads below have documented
+    # top-level array responses. Keep every other route object-only so an
+    # unexpected response shape still fails closed.
     effective_rules_route = re.fullmatch(
         r"repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/rules/branches/"
         r"ci%2Foreslang-[a-f0-9]{40}-[a-f0-9]{40}", route)
     matching_refs_route = re.fullmatch(
         r"repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/git/matching-refs/heads/"
-        r"ci/oreslang-[a-f0-9]{40}-[a-f0-9]{40}\\?per_page=1&page=1", route)
+        r"ci/oreslang-[a-f0-9]{40}-[a-f0-9]{40}\?per_page=1&page=1", route)
     array_route = effective_rules_route is not None or matching_refs_route is not None
     return strict_github_api_json(
         p.stdout, root_type=list if array_route else dict)

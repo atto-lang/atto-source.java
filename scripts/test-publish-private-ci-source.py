@@ -2504,6 +2504,22 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                             self.root, self.expected_tree, D)
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
+    def test_gh_api_accepts_only_exact_matching_ref_array_route(self):
+        exact = (
+            "repos/trusted/ci/git/matching-refs/heads/"
+            + TEST_BRANCH + "?per_page=1&page=1")
+        near_miss = (
+            "repos/trusted/ci/git/matching-refs/heads/"
+            + TEST_BRANCH + "?per_page=2&page=1")
+
+        def fake_run(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+
+        with patch.object(pub.subprocess, "run", side_effect=fake_run):
+            self.assertEqual(pub.gh_api(exact), [])
+            with self.assertRaisesRegex(pub.Denied, "unexpected GitHub response shape"):
+                pub.gh_api(near_miss)
+
     def test_api_json_accepts_explicit_top_level_rule_array(self):
         raw = (
             '[{"type":"update","ruleset_id":777},'
