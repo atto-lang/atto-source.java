@@ -95,4 +95,139 @@ final class OresTaskScopeCancelTreeAdmissionTest {
             assertTrue(listenerObservedFullRevocation.get());
         }
     }
+
+    @Test
+    void preflightOomeLeavesAllDescendantAdmissionOpenAndRetryable()
+            throws Exception {
+        try (var root = OresTaskScope.compilerOwned()) {
+            var child = root.childScope();
+            var grandchild = child.childScope();
+            Field tasksField = OresTaskScope.class.getDeclaredField("tasks");
+            tasksField.setAccessible(true);
+            Object original = tasksField.get(grandchild);
+            tasksField.set(grandchild, new java.util.HashSet<Object>() {
+                @Override public java.util.Iterator<Object> iterator() {
+                    throw new OutOfMemoryError("injected third-level cancellation snapshot");
+                }
+            });
+            try {
+                assertThrows(OutOfMemoryError.class, root::cancel);
+                assertFalse(root.isCancelRequested(),
+                        "preflight allocation failure cannot publish a partial root seal");
+                assertFalse(child.isCancelRequested());
+                assertFalse(grandchild.isCancelRequested());
+                assertNotNull(grandchild.childScope(),
+                        "a failed cancellation plan must preserve admission for retry");
+            } finally {
+                tasksField.set(grandchild, original);
+            }
+            assertTrue(root.cancel(), "a repaired snapshot can retry cancellation");
+            assertTrue(root.isCancelRequested());
+            assertTrue(child.isCancelRequested());
+            assertTrue(grandchild.isCancelRequested());
+            assertThrows(RejectedExecutionException.class, grandchild::childScope);
+        }
+    }
+
+    @Test
+    void concurrentGrandchildCreationWaitsForWholeTreeSnapshotCommit()
+            throws Exception {
+        try (var root = OresTaskScope.compilerOwned()) {
+            var child = root.childScope();
+            var grandchild = child.childScope();
+            var entered = new java.util.concurrent.CountDownLatch(1);
+            var allowSeal = new java.util.concurrent.CountDownLatch(1);
+            Field field = OresTaskScope.class.getDeclaredField("tasks");
+            field.setAccessible(true);
+            Object original = field.get(grandchild);
+            field.set(grandchild, new java.util.HashSet<Object>() {
+                @Override public java.util.Iterator<Object> iterator() {
+                    entered.countDown();
+                    try {
+                        if (!allowSeal.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                            throw new AssertionError("test preflight gate was not released");
+                    } catch (InterruptedException failure) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(failure);
+                    }
+                    return super.iterator();
+                }
+            });
+            var cancelFailure =
+                    new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            var admissionFailure =
+                    new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            var admissionReturned = new java.util.concurrent.atomic.AtomicBoolean();
+            Thread canceller = Thread.ofPlatform().start(() -> {
+                try {
+                    root.cancel();
+                } catch (Throwable failure) {
+                    cancelFailure.set(failure);
+                }
+            });
+            Thread contender = null;
+            try {
+                assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                contender = Thread.ofPlatform().start(() -> {
+                    try {
+                        grandchild.childScope();
+                        admissionReturned.set(true);
+                    } catch (Throwable failure) {
+                        admissionFailure.set(failure);
+                    }
+                });
+                long deadline = System.nanoTime()
+                        + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+                while (contender.getState() != Thread.State.BLOCKED
+                        && !admissionReturned.get()
+                        && admissionFailure.get() == null
+                        && System.nanoTime() < deadline) {
+                    Thread.sleep(1);
+                }
+                assertEquals(Thread.State.BLOCKED, contender.getState(),
+                        "descendant admission must wait on the tree-wide preflight gate");
+            } finally {
+                allowSeal.countDown();
+                canceller.join(7000);
+                if (contender != null) contender.join(7000);
+                field.set(grandchild, original);
+            }
+            assertFalse(canceller.isAlive());
+            if (contender != null) assertFalse(contender.isAlive());
+            assertNull(cancelFailure.get());
+            assertFalse(admissionReturned.get(),
+                    "a descendant must not be admitted after root seal commits");
+            assertInstanceOf(RejectedExecutionException.class, admissionFailure.get());
+            assertTrue(root.isCancelRequested());
+            assertTrue(grandchild.isCancelRequested());
+        }
+    }
+
+    @Test
+    void closeSnapshotOomeCannotPublishUnjoinableJoiningState()
+            throws Exception {
+        var root = OresTaskScope.compilerOwned();
+        Field field = OresTaskScope.class.getDeclaredField("tasks");
+        field.setAccessible(true);
+        Object original = field.get(root);
+        var iterations = new java.util.concurrent.atomic.AtomicInteger();
+        field.set(root, new java.util.HashSet<Object>() {
+            @Override public java.util.Iterator<Object> iterator() {
+                if (iterations.incrementAndGet() == 2)
+                    throw new OutOfMemoryError("injected close-frame preparation failure");
+                return super.iterator();
+            }
+        });
+        try {
+            assertThrows(OutOfMemoryError.class, root::close,
+                    "the second snapshot fails before the join claim");
+            assertTrue(root.isCancelRequested());
+        } finally {
+            field.set(root, original);
+        }
+        // This must not join a permanently uncounted fullyJoined latch.
+        root.close();
+        assertTrue(root.physicallyQuiescent());
+    }
+
 }
