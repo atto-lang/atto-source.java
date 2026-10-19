@@ -164,12 +164,17 @@ public final class OresTestExploration {
         OresFuture<Void> queued = contender.enterAsync();
         follower.enterAsync();
         java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> cancellationFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
         Thread canceller = Thread.ofVirtual().start(() -> {
             try {
                 start.await();
                 queued.cancel(false);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
+                cancellationFailure.set(interrupted);
+            } catch (RuntimeException | Error error) {
+                cancellationFailure.set(error);
             }
         });
         try {
@@ -180,6 +185,10 @@ public final class OresTestExploration {
                 canceller.interrupt();
                 throw new AssertionError("cancellation-vs-handoff stuck: seed="
                         + seed + " iteration=" + iteration);
+            }
+            if (cancellationFailure.get() != null) {
+                throw new AssertionError("canceller task failed: seed="
+                        + seed + " iteration=" + iteration, cancellationFailure.get());
             }
             if (queued.isCancelled() && contender.isHeld()) {
                 throw new AssertionError("cancelled ticket retained gate: seed="
