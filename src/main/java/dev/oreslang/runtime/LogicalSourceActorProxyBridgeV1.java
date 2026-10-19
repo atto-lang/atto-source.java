@@ -37,9 +37,7 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
         this.router = Objects.requireNonNull(router);
         this.mailbox = Objects.requireNonNull(mailbox);
         this.taskOwner = new ActorHotUpgradeTaskOwnerV1(router);
-        if (router.ref().routeEpoch() != mailbox.snapshot().routeEpoch()) {
-            throw new IllegalStateException("proxy and physical route epochs differ");
-        }
+        router.bindProxyMailboxForSupervisor(mailbox);
     }
 
     public static LogicalSourceActorProxyBridgeV1 spawnShared(
@@ -140,6 +138,11 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
 
     public boolean failSealed() { return poisoned; }
 
+    // Test-only coherent observation under the physical route monitor.
+    boolean routeEpochsAlignedForTesting() {
+        return router.proxyRouteEpochAlignedForTesting(mailbox);
+    }
+
     /**
      * Admission is bounded and remains available while the upgrade holds
      * dispatchLock. It stores canonical, endian-stable immutable scalar bytes.
@@ -217,11 +220,13 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
                     ticket.rollback();
                     return false;
                 }
-                if (!router.upgradeTo(candidate, timeout)) {
+                // Physical Route and mailbox epoch publish under one router
+                // monitor, after construction and validation of the new route.
+                if (!router.upgradeToForProxy(
+                        candidate, timeout, mailbox, ticket)) {
                     ticket.rollback();
                     return false;
                 }
-                ticket.commit();
                 if (mailbox.snapshot().routeEpoch() != router.ref().routeEpoch()) {
                     poisoned = true;
                     throw new IllegalStateException(
