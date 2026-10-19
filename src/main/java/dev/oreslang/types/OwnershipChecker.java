@@ -862,6 +862,19 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
+        if (expr instanceof Ast.StagedCallExpr named
+                && OptionalCallShapeBinder.isDirectScalarLiteralNamedCall(named)) {
+            Ast.NameExpr name = (Ast.NameExpr) named.callee();
+            if (scope.lookup(name.name()) != null) {
+                throw new IllegalArgumentException(
+                        "named literal call target is shadowed by a local owner");
+            }
+            Ast.FunctionDecl target = findFunction(name.name(), named.arguments().size());
+            Ast.CallExpr lowered = OptionalCallShapeBinder.lowerDirectScalarLiteralNamedCall(
+                    named, target);
+            // Reuse the authoritative consuming/move/borrow argument checks.
+            return checkCall(lowered, scope);
+        }
         if (expr instanceof Ast.StagedCallExpr || expr instanceof Ast.StagedNewExpr) {
             throw new IllegalArgumentException(
                     "staged named/optional calls cannot bypass ownership admission");
