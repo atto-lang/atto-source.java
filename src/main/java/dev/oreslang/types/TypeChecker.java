@@ -162,6 +162,10 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "Task semantic admission requires a program and sealed ownership provenance");
         }
+        if (provenance.programIdentity() != program) {
+            throw new IllegalArgumentException(
+                    "Task ownership provenance belongs to a different program instance");
+        }
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
