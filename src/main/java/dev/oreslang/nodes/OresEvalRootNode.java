@@ -4489,6 +4489,10 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object indexValue(Object receiver, Object index, Env env) {
             if (receiver instanceof OresObject object) {
+                if (!object.klass.actorKind().equals(Ast.ActorKind.NONE)) {
+                    throw new IllegalArgumentException(
+                            "computed indexing requires an ordinary class instance");
+                }
                 if (!(index instanceof String key)) {
                     throw new IllegalArgumentException(
                             "class field index must be a String");
