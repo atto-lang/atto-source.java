@@ -155,6 +155,20 @@ def verify_protected_origin(repository, expected_policy_digest):
     if (branch.get("name") != SOURCE_PROTECTED_BRANCH
             or branch.get("protected") is not True):
         raise Denied("source main is not protected; CODEOWNER approval is unenforced")
+    # A "protected" branch might enforce only status checks, without
+    # mandatory CODEOWNER approval, or allow administrators to bypass review.
+    # Require the actual classic branch-protection settings to be readable.
+    # On plans/credentials where GitHub denies this API, fail closed.
+    protection = gh_api(
+        f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}/protection")
+    reviews = protection.get("required_pull_request_reviews")
+    administrators = protection.get("enforce_admins")
+    if (not isinstance(reviews, dict)
+            or reviews.get("require_code_owner_reviews") is not True
+            or reviews.get("dismiss_stale_reviews") is not True
+            or not isinstance(administrators, dict)
+            or administrators.get("enabled") is not True):
+        raise Denied("origin main does not enforce fresh CODEOWNER review for administrators")
     commit_sha = valid_sha(branch.get("commit", {}).get("sha"))
     policy = gh_api(f"repos/{SOURCE_REPO}/contents/{POLICY_PATH}?ref={commit_sha}")
     if (policy.get("path") != POLICY_PATH or policy.get("type") != "file"
