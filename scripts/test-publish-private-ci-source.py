@@ -625,10 +625,10 @@ class CommittedSourceTreeTests(unittest.TestCase):
             "GIT_WORK_TREE": str(self.root / "untrusted-worktree"),
             "GIT_INDEX_FILE": str(self.root / "untrusted-index"),
         }
+        clean_head = self.git("rev-parse", "HEAD")
         with patch.dict(os.environ, poison):
             self.assertEqual(
-                pub.committed_main_file_blobs(
-                    self.root, self.git("rev-parse", "HEAD")),
+                pub.committed_main_file_blobs(self.root, clean_head),
                 expected)
 
     def test_snapshot_commit_binding_rejects_untrusted_main_or_dirty_bytes(self):
