@@ -48,7 +48,8 @@ final class OtpSupervisorCommandLaneV1 {
 
     record Snapshot(int capacity, int outstanding, int queued, int inFlight,
                     long sent, long acknowledged, long retried, long aborted,
-                    long admissionRejected, long duplicateTargetRejected) { }
+                    long admissionRejected, long duplicateTargetRejected,
+                    long quarantined) { }
 
     private static final class Slot {
         final Command command;
@@ -83,6 +84,8 @@ final class OtpSupervisorCommandLaneV1 {
     private long aborted;
     private long admissionRejected;
     private long duplicateTargetRejected;
+    private long quarantined;
+    private boolean sealed;
 
     OtpSupervisorCommandLaneV1(int capacity) {
         if (capacity <= 0 || capacity > 1_000_000)
@@ -99,6 +102,7 @@ final class OtpSupervisorCommandLaneV1 {
     synchronized Command submit(Target target, long routeEpoch, Kind kind, String candidateDigest) {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(kind, "kind");
+        if (sealed) throw new IllegalStateException("actor CONTROL command lane terminated");
         if (outstanding.containsKey(target)) {
             duplicateTargetRejected++;
             throw new IllegalStateException("CONTROL command already outstanding for target incarnation");
@@ -190,8 +194,33 @@ final class OtpSupervisorCommandLaneV1 {
         return Optional.of(slot.command);
     }
 
+    /**
+     * Physical actor termination is NOT an upgrade commit/rollback.
+     * Revoke pending/in-flight command leases and account them as quarantined,
+     * never ACK. The trusted host must separately settle rollback/cleanup.
+     * The fatal actor failure still follows its independently reserved lane.
+     */
+    synchronized int quarantineOnTermination() {
+        if (sealed) return 0;
+        sealed = true;
+        int count = outstanding.size();
+        for (var slot : outstanding.values()) {
+            if (slot.activeLease != null) {
+                slot.activeLease.settled = true;
+                slot.activeLease = null;
+            }
+            slot.queued = false;
+        }
+        queue.clear();
+        outstanding.clear();
+        inFlight = null;
+        quarantined += count;
+        return count;
+    }
+
     synchronized Snapshot snapshot() {
         return new Snapshot(capacity, outstanding.size(), queue.size(), inFlight == null ? 0 : 1,
-                sent, acknowledged, retried, aborted, admissionRejected, duplicateTargetRejected);
+                sent, acknowledged, retried, aborted, admissionRejected,
+                duplicateTargetRejected, quarantined);
     }
 }
