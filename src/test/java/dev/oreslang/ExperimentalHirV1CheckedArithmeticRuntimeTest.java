@@ -1,0 +1,354 @@
+package dev.oreslang;
+
+import dev.oreslang.compiler.ExperimentalHirV1Exporter;
+import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.runtime.ExecutionProfile;
+import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.LinkedProgramRunner;
+import java.io.ByteArrayOutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/** Host-only, source-unit opt-in checked signed-64-bit arithmetic.
+ * No actor, AOT native-image or arbitrary cross-backend error ABI is claimed.
+ */
+final class ExperimentalHirV1CheckedArithmeticRuntimeTest {
+    @TempDir Path directory;
+    private static final String HEADER = "// oreslang:checked-i64-v1\n";
+
+    private int exit(String source) throws Exception {
+        Path path = directory.resolve("checked-" + Integer.toHexString(source.hashCode()) + ".ores");
+        Files.writeString(path, source);
+        return LinkedProgramRunner.runWithExitStatus(path, IsolatePolicy.developer(),
+            ExecutionProfile.serverJit(), new ByteArrayOutputStream(),
+            new ByteArrayOutputStream()).exitStatus();
+    }
+
+    private static String scale(int value) {
+        return """
+            pub fnc scale(int count): int { return count * 43; }
+            pub fnc main(): int { return scale(%d); }
+            """.formatted(value);
+    }
+
+    @Test
+    void checkedModeAcceptsDynamicMultiplicationAndProduces43() throws Exception {
+        String source = HEADER + scale(1);
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        String hir = ExperimentalHirV1Exporter.fromSource(source);
+        assertTrue(hir.contains("\"checked-i64.v1\""));
+        assertTrue(hir.contains("\"op\":\"mul\""));
+        assertEquals(43, exit(source));
+    }
+
+    @Test
+    void defaultWrappingRuntimeIsNotRedefined() throws Exception {
+        String legacy = """
+            pub fnc main(): int {
+              return 9223372036854775807 + 1 < 0 ? 43 : 1;
+            }
+            """;
+        assertEquals(43, exit(legacy));
+        assertEquals(43, exit(HEADER + """
+            pub fnc main(): int { return 40 + 3; }
+            """));
+    }
+
+    @Test
+    void overflowFailsInsteadOfReturningWrappedValue() {
+        String[] bad = {
+            HEADER + """
+                pub fnc main(): int { return 9223372036854775807 + 1; }
+                """,
+            HEADER + """
+                pub fnc main(): int { return 9223372036854775807 * 2; }
+                """,
+            HEADER + """
+                pub fnc main(): int { return (-9223372036854775807 - 1) - 1; }
+                """,
+            HEADER + """
+                pub fnc main(): int { return -(-9223372036854775807 - 1); }
+                """
+        };
+        for (String source : bad) {
+            RuntimeException failure = assertThrows(RuntimeException.class, () -> exit(source), source);
+            boolean found = false;
+            for (Throwable cursor = failure; cursor != null; cursor = cursor.getCause()) {
+                if (String.valueOf(cursor.getMessage()).contains("ORES_I64_OVERFLOW")) {
+                    found = true;
+                    break;
+                }
+            }
+            assertTrue(found, () -> "Guest must expose checked overflow diagnostic: " + failure);
+        }
+    }
+
+
+    @Test
+    void checkedArithmeticCoversSubtractionAndCrossFunctionPropagation() throws Exception {
+        assertEquals(43, exit(HEADER + """
+            pub fnc subtract(int left, int right): int { return left - right; }
+            pub fnc main(): int { return subtract(44, 1); }
+            """));
+        assertEquals(43, exit(HEADER + """
+            pub fnc multiply(int left, int right): int { return left * right; }
+            pub fnc main(): int { return multiply(43, 1); }
+            """));
+        String[] bad = {
+            HEADER + """
+                pub fnc overflow(int value): int { return value * 2; }
+                pub fnc main(): int { return overflow(9223372036854775807); }
+                """,
+            HEADER + """
+                pub fnc overflow(int value): int { return value + 1; }
+                pub fnc main(): int { return overflow(9223372036854775807); }
+                """
+        };
+        for (String source : bad) {
+            RuntimeException failure = assertThrows(RuntimeException.class,
+                    () -> exit(source), source);
+            boolean expected = false;
+            for (Throwable error = failure; error != null; error = error.getCause()) {
+                if (String.valueOf(error.getMessage()).contains("ORES_I64_OVERFLOW")) {
+                    expected = true;
+                    break;
+                }
+            }
+            assertTrue(expected, "checked operations across calls must trap instead of wrap");
+        }
+    }
+
+    @Test
+    void malformedDirectiveCannotSilentlyExecuteWrappingSemantics() {
+        String body = "pub fnc main(): int { return 9223372036854775807 + 1 < 0 ? 43 : 1; }\n";
+        String[] forbidden = {
+            "// oreslang:checked-i64-v1\r\n" + body, // CRLF is not exact LF opt-in
+            " // oreslang:checked-i64-v1\n" + body, // indentation
+            "\n// oreslang:checked-i64-v1\n" + body, // displaced line
+            "// oreslang:checked-i64-v2\n" + body, // unsupported version
+            "// oreslang:checked-i64-v1 extra\n" + body, // trailing text
+            "// oreslang:checked-i64-v1\n// oreslang:checked-i64-v1\n" + body,
+            "\uFEFF// oreslang:checked-i64-v1\n" + body // BOM
+        };
+        for (String source : forbidden) {
+            RuntimeException failure = assertThrows(RuntimeException.class,
+                    () -> exit(source), "malformed directive must fail closed");
+            boolean classified = false;
+            for (Throwable e = failure; e != null; e = e.getCause()) {
+                classified |= String.valueOf(e.getMessage()).contains("checked-i64-v1");
+            }
+            assertTrue(classified,
+                    "do not execute legacy wrapping when checked source was requested: " + failure);
+        }
+    }
+
+    @Test
+    void unmarkedPotentialOverflowStillFailsHIRAdmission() {
+        String legacy = scale(1);
+        assertThrows(IllegalArgumentException.class,
+            () -> ExperimentalHirV1Exporter.fromSource(legacy));
+        assertDoesNotThrow(() -> ExperimentalHirV1Exporter.fromSource(HEADER + legacy));
+    }
+
+    @Test
+    void overflowUsesTypedSignalAndGuestBoundaryPreservesCode() {
+        var typed = dev.oreslang.runtime.CheckedI64OverflowException.forOperator('+');
+        assertEquals("ORES_I64_OVERFLOW", typed.errorCode());
+        assertEquals("ArithmeticOverflowError", typed.guestErrorName());
+        assertEquals("add", typed.operation());
+        assertNull(typed.getCause(), "Host ArithmeticException must not escape the checked signal");
+
+        String source = HEADER + "pub fnc main(): int { return 9223372036854775807 + 1; }";
+        RuntimeException thrown = assertThrows(RuntimeException.class, () -> exit(source));
+        boolean classified = false;
+        for (Throwable cursor = thrown; cursor != null; cursor = cursor.getCause()) {
+            classified |= String.valueOf(cursor.getMessage()).contains("ORES_I64_OVERFLOW");
+            assertFalse(cursor instanceof ArithmeticException,
+                    "Host arithmetic throwable cannot cross the guest boundary");
+        }
+        // LinkedProgramRunner currently preserves the code, not a stable
+        // typed guest Error object. A typed guest ABI needs its own end-to-end
+        // conformance suite before declaring exception-class parity.
+        assertTrue(classified, "Guest must preserve ORES_I64_OVERFLOW");
+    }
+
+
+    @Test
+    void checkedProfileFailsClosedForUnsupportedClassAndActorSources() {
+        String classSource = HEADER + """
+                define class Box as end
+                pub fnc main(): int { return 43; }
+                """;
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> exit(classSource));
+        boolean admitted = false;
+        for (Throwable cursor = failure; cursor != null; cursor = cursor.getCause()) {
+            admitted |= String.valueOf(cursor.getMessage()).contains("checked-i64-v1");
+        }
+        assertTrue(admitted, "Must reject checked class code at runtime admission");
+    }
+
+
+    @Test
+    void checkedProfileRemainderWorksAcrossNestedBranches() throws Exception {
+        // The profile validator and evaluator MUST accept the same safe
+        // integral remainder surface; this catches previous validator drift.
+        assertEquals(1, exit(HEADER + "pub fnc main(): int { return 43 % 2; }"));
+        assertEquals(43, exit(HEADER + "pub fnc main(): int { return true ? 43 : (9223372036854775807 % 2); }"));
+        assertEquals(43, exit(HEADER + "pub fnc main(): int { return false ? (43 % 0) : 43; }"));
+        // Unmarked programs retain their original arithmetic semantics.
+        assertEquals(1, exit("pub fnc main(): int { return 43 % 2; }"));
+    }
+
+    @Test
+    void checkedModeRejectsUnverifiedNumericFallbacks() throws Exception {
+        // i64 +, -, *, %, and unary minus are verified. Integer division
+        // remains a separate floating-result operation and is NOT admitted.
+        assertEquals(43, exit("pub fnc main(): int { return 86 % 43 + 43; }"));
+        assertEquals(43, exit(HEADER + "pub fnc main(): int { return 86 % 43 + 43; }"));
+        String[] unsupported = {
+            HEADER + "pub fnc main(): int { return 43 / 1; }",
+            HEADER + "pub fnc main(): int { return 40.0 + 3.0; }",
+            HEADER + "pub fnc main(): int { return -43.0; }",
+            HEADER + "pub fnc main(): int { return \"forty\" + \"three\"; }",
+        };
+        for (String source : unsupported) {
+            assertThrows(RuntimeException.class, () -> exit(source),
+                    "checked guest must reject non-i64 arithmetic instead of downgrading: " + source);
+        }
+    }
+
+
+    @Test
+    void checkedProfileRejectsUnboundedOrRecursiveScalarCallGraphs() throws Exception {
+        // The source parser may reject some of these earlier than the
+        // checked-runtime gate. Either way they must never execute as checked
+        // scalar code, call uncontrolled recursively, or silently wrap.
+        String[] forbidden = {
+            HEADER + """
+                pub fnc leaf(): int { return 43; }
+                """,
+            HEADER + """
+                pub fnc main(int input): int { return input; }
+                """,
+            HEADER + """
+                pub fnc again(int value): int { return again(value); }
+                pub fnc main(): int { return again(1); }
+                """,
+            HEADER + """
+                pub fnc left(int value): int { return right(value); }
+                pub fnc right(int value): int { return left(value); }
+                pub fnc main(): int { return left(1); }
+                """,
+            HEADER + """
+                pub fnc echo(int value): int { return value; }
+                pub fnc echo(): int { return 43; }
+                pub fnc main(): int { return echo(); }
+                """
+        };
+        for (String source : forbidden) {
+            assertThrows(RuntimeException.class, () -> exit(source),
+                    "unchecked call graph/entrypoint unexpectedly executed: " + source);
+        }
+        // Legal direct scalar chains remain valid after graph validation.
+        assertEquals(43, exit(HEADER + """
+                pub fnc first(int x): int { return x + 1; }
+                pub fnc second(int x): int { return first(x) + 1; }
+                pub fnc main(): int { return second(41); }
+                """));
+    }
+
+
+    @Test
+    void checkedProfileRejectsOversizedOrNonPortableParameterContracts() {
+        StringBuilder parameters = new StringBuilder();
+        for (int i = 0; i < 33; i++) {
+            if (i != 0) parameters.append(", ");
+            parameters.append("int x").append(i);
+        }
+        String oversized = HEADER + "pub fnc too_many(" + parameters + "): int { return x0; }\n"
+                + "pub fnc main(): int { return 43; }\n";
+        assertThrows(RuntimeException.class, () -> exit(oversized),
+                "experimental scalar call ABI cannot silently admit 33 parameters");
+
+        String[] invalidNames = {
+            HEADER + "pub fnc café(int x): int { return x; }\npub fnc main(): int { return 43; }",
+            HEADER + "pub fnc helper(int café): int { return café; }\npub fnc main(): int { return 43; }"
+        };
+        for (String source : invalidNames) {
+            assertThrows(RuntimeException.class, () -> exit(source),
+                    "checked profile must require portable ASCII identifiers");
+        }
+    }
+
+
+
+    @Test
+    void checkedProfileRejectsNativeSymbolAliasesAndBooleanMain() {
+        String[] invalid = {
+            HEADER + """
+                pub fnc puts(int value): int { return value; }
+                pub fnc main(): int { return puts(43); }
+                """,
+            HEADER + """
+                pub fnc __oreslang_guest_main(): int { return 43; }
+                pub fnc main(): int { return __oreslang_guest_main(); }
+                """,
+            HEADER + """
+                pub fnc main(): bool { return true; }
+                """,
+            HEADER + """
+                pub fnc echoed(int value, int value): int { return value; }
+                pub fnc main(): int { return echoed(43, 0); }
+                """
+        };
+        for (String source : invalid) {
+            assertThrows(RuntimeException.class, () -> exit(source),
+                    "checked source must reject native-symbol/entry/parameter ABI ambiguity");
+        }
+        assertEquals(43, assertDoesNotThrow(() -> exit(HEADER + """
+                pub fnc identity(int value): int { return value; }
+                pub fnc main(): int { return identity(43); }
+                """)));
+    }
+
+
+    @Test
+    void parserRejectsMalformedCheckedHeadersBeforeLexing() {
+        String program = "pub fnc main(): int { return 43; }";
+        String[] malformed = {
+            "\uFEFF// oreslang:checked-i64-v1\n" + program,
+            "// oreslang:checked-i64-v1\r\n" + program,
+            "\n// oreslang:checked-i64-v1\n" + program,
+            " // oreslang:checked-i64-v1\n" + program,
+            "// oreslang:checked-i64-v2\n" + program,
+            "/* note */ // oreslang:checked-i64-v1\n" + program,
+            "pub fnc helper(): int { return 1; } // oreslang:checked-i64-v1\n" + program,
+            "/* outer /* nested */ final */ // oreslang:checked-i64-v2\n" + program
+        };
+        for (String source : malformed) {
+            var parsed = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.parser.Parser.parse(source));
+            assertTrue(parsed.getMessage().contains("checked-i64-v1"),
+                    "Lexer must not obscure checked-profile admission");
+            var diagnostic = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.parser.Parser.parseWithWarnings(source));
+            assertTrue(diagnostic.getMessage().contains("checked-i64-v1"));
+        }
+    }
+    @Test
+    void quotedCheckedProfileMarkerDoesNotRejectUnmarkedSource() {
+        String source = "pub fnc message(): string { "
+                + "return \"// oreslang:checked-i64-v1\"; }\n";
+        assertFalse(dev.oreslang.parser.CheckedI64SourceHeader.isEnabled(source));
+        assertFalse(dev.oreslang.parser.CheckedI64SourceHeader.isEnabled(
+                "pub fnc main(): int { return 43; }\n"));
+        assertTrue(dev.oreslang.parser.CheckedI64SourceHeader.isEnabled(
+                HEADER + "pub fnc main(): int { return 43; }\n"));
+    }
+
+}

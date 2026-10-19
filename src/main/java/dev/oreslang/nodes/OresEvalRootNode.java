@@ -1,5 +1,7 @@
 package dev.oreslang.nodes;
 
+import dev.oreslang.runtime.CheckedI64OverflowException;
+
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.interop.InteropLibrary;
@@ -51,16 +53,23 @@ public final class OresEvalRootNode extends RootNode {
 
     private final Ast.Program program;
     private final String codeUnitId;
+    private final boolean experimentalCheckedI64;
     private volatile Evaluator evaluator;
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program) {
-        this(language, program, "<anonymous>");
+        this(language, program, "<anonymous>", false);
     }
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId) {
+        this(language, program, codeUnitId, false);
+    }
+
+    public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId,
+                            boolean experimentalCheckedI64) {
         super(language);
         this.program = program;
         this.codeUnitId = codeUnitId;
+        this.experimentalCheckedI64 = experimentalCheckedI64;
     }
 
     @Override public String getName() { return "ores-eval"; }
@@ -117,7 +126,7 @@ public final class OresEvalRootNode extends RootNode {
         if (current != null) return current;
         synchronized (this) {
             current = evaluator;
-            if (current == null) evaluator = current = new Evaluator(program, context, codeUnitId);
+            if (current == null) evaluator = current = new Evaluator(program, context, codeUnitId, experimentalCheckedI64);
             return current;
         }
     }
@@ -131,6 +140,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Ast.Program program;
         private final OresContext context;
         private final String codeUnitId;
+        private final boolean experimentalCheckedI64;
         // Actor carriers may enter the same evaluator concurrently. The
         // identity map only retains call nodes already owned by this program.
         private final Map<Ast.CallExpr, Integer> optionDepthCache =
@@ -211,10 +221,12 @@ public final class OresEvalRootNode extends RootNode {
         }
 
 
-        private Evaluator(Ast.Program program, OresContext context, String codeUnitId) {
+        private Evaluator(Ast.Program program, OresContext context, String codeUnitId,
+                          boolean experimentalCheckedI64) {
             this.program = program;
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
+            this.experimentalCheckedI64 = experimentalCheckedI64;
             indexImports();
             indexDeclarations();
             indexCallableSlots();
@@ -8709,11 +8721,31 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object add(Object left, Object right) {
+            // Checked-i64 cannot bypass numeric overflow admission through
+            // the legacy string-concatenation fast path.
+            if (experimentalCheckedI64 && (left instanceof String || right instanceof String)) {
+                throw new IllegalArgumentException("checked-i64-v1 rejects string addition");
+            }
             if (left instanceof String && right instanceof String) return ((String) left) + right;
             return numeric(left, right, '+');
         }
 
         private Object numeric(Object left, Object right, char op) {
+            // The checked profile has only signed-i64 add/sub/mul. Do not
+            // silently run its arithmetic in the floating-point, complex or
+            // legacy remainder/division paths when the frontend misses a
+            // type or expression admission case.
+            if (experimentalCheckedI64) {
+                if (op != '+' && op != '-' && op != '*' && op != '%') {
+                    throw new IllegalArgumentException(
+                            "checked-i64-v1 rejects arithmetic operator " + op);
+                }
+                if (!(left instanceof Number a && isIntegral(a))
+                        || !(right instanceof Number b && isIntegral(b))) {
+                    throw new IllegalArgumentException(
+                            "checked-i64-v1 requires signed i64 operands");
+                }
+            }
             if (left instanceof Complex || right instanceof Complex) {
                 Complex a = asComplex(left), b = asComplex(right);
                 return switch (op) {
@@ -8725,6 +8757,23 @@ public final class OresEvalRootNode extends RootNode {
             boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
+                if (experimentalCheckedI64 && op == '%' && y == 0L) {
+                    // Never leak a JVM-specific "/ by zero" message into the
+                    // checked-i64 cross-backend diagnostic contract.
+                    throw dev.oreslang.runtime.CheckedI64DivisionByZeroException.forRemainder();
+                }
+                if (experimentalCheckedI64 && (op == '+' || op == '-' || op == '*')) {
+                    try {
+                        return switch (op) {
+                            case '+' -> Math.addExact(x, y);
+                            case '-' -> Math.subtractExact(x, y);
+                            case '*' -> Math.multiplyExact(x, y);
+                            default -> throw new IllegalStateException("invalid checked i64 operator");
+                        };
+                    } catch (ArithmeticException overflow) {
+                        throw CheckedI64OverflowException.forOperator(op);
+                    }
+                }
                 return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
             }
             double x = a.doubleValue(), y = b.doubleValue();
@@ -8747,8 +8796,23 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object negate(Object value) {
+            if (experimentalCheckedI64
+                    && !(value instanceof Byte || value instanceof Short
+                            || value instanceof Integer || value instanceof Long)) {
+                throw new IllegalArgumentException(
+                        "checked-i64-v1 requires a signed i64 negation operand");
+            }
             if (value instanceof Complex c) return new Complex(-c.real, -c.imaginary);
-            if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return -((Number) value).longValue();
+            if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) {
+                long x = ((Number) value).longValue();
+                if (experimentalCheckedI64) {
+                    try { return Math.negateExact(x); }
+                    catch (ArithmeticException overflow) {
+                        throw CheckedI64OverflowException.forNegation();
+                    }
+                }
+                return -x;
+            }
             if (value instanceof Number number) return -number.doubleValue();
             throw new IllegalArgumentException("unary - requires a number");
         }
