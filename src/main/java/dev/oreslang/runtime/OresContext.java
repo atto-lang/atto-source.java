@@ -34,6 +34,8 @@ public final class OresContext implements AutoCloseable {
     private final AsyncRuntime asyncRuntime;
     /** Context-owned child-Task lifetime; physically joined before VM teardown. */
     private final OresTaskScope compilerTaskScope;
+    /** At most one physical shutdown; concurrent host callers join it. */
+    private final OresContextTeardown.Once teardownOnce = new OresContextTeardown.Once();
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
     public AsyncNativeIo nativeIo() { return nativeIo; }
@@ -468,7 +470,17 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
-        OresContextTeardown.close(
+        // A guest Task/actor cannot synchronously join teardown. Reject it
+        // before claiming the exactly-once host shutdown gate; otherwise an
+        // invalid guest call could permanently poison context shutdown.
+        if (ActorRuntime.inActorExecution()
+                || AsyncRuntime.isAsyncCarrierThread()
+                || OresScheduler.isSchedulerCarrierThread()
+                || OresScheduler.current() != null) {
+            throw new IllegalStateException(
+                    "OresContext.close cannot block an actor or scheduler task turn");
+        }
+        teardownOnce.close(() -> OresContextTeardown.close(
                 compilerTaskScope::close,
                 asyncRuntime::close,
                 nativeIo::close,
@@ -483,6 +495,6 @@ public final class OresContext implements AutoCloseable {
                     }
                 },
                 garbageCollector::close,
-                output::flush);
+                output::flush));
     }
 }
