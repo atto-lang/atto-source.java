@@ -2,7 +2,6 @@ package dev.oreslang.runtime;
 
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.Objects;
 
@@ -141,7 +140,7 @@ final class ActorUpgradeAtomicPublicationV1 implements AutoCloseable {
             throw new SecurityException(
                     "atomic host route V1 requires trusted SHARED placement");
         var snapshot = mailbox.snapshot();
-        if (snapshot.closed() || snapshot.dispatchFrozen()
+        if (generation.isClosed() || snapshot.closed() || snapshot.dispatchFrozen()
                 || snapshot.routeEpoch() != generation.epoch()
                 || generation.frozen() || generation.livePins() != 0
                 || snapshot.outstandingMessages() != 0
@@ -228,8 +227,20 @@ final class ActorUpgradeAtomicPublicationV1 implements AutoCloseable {
                     mailboxState.highestDispatchedSequence());
             var freeze = ActorUpgradePreflightV1.prepare(
                     generation, mailbox, proposedImage);
-            staged = new Staged(this, active, next, freeze);
-            return staged;
+            try {
+                staged = new Staged(this, active, next, freeze);
+                return staged;
+            } catch (RuntimeException | Error allocationFailure) {
+                // Even allocation failure between freeze and ticket ownership
+                // must not leave an unowned, permanently frozen actor.
+                try {
+                    freeze.close();
+                } catch (RuntimeException | Error rollbackFailure) {
+                    poisoned = true;
+                    allocationFailure.addSuppressed(rollbackFailure);
+                }
+                throw allocationFailure;
+            }
         }
     }
 
@@ -287,6 +298,22 @@ final class ActorUpgradeAtomicPublicationV1 implements AutoCloseable {
     private void requireOpen() {
         if (closed || poisoned)
             throw new IllegalStateException("logical actor authority closed/quarantined");
+        // Fail closed if any legacy host caller independently publishes
+        // either epoch, or terminally tears down one authority. Single-route
+        // dispatch MUST never trust a divergent image/physical pairing.
+        var mailboxState = mailbox.snapshot();
+        boolean expectedFreeze = staged != null;
+        if (generation.isClosed() || mailboxState.closed()
+                || generation.actorIdentity() != active.actorIdentity()
+                || generation.epoch() != active.routeEpoch()
+                || mailboxState.routeEpoch() != active.routeEpoch()
+                || !generation.image().equals(active.image())
+                || generation.frozen() != expectedFreeze
+                || mailboxState.dispatchFrozen() != expectedFreeze) {
+            poisoned = true;
+            throw new IllegalStateException(
+                    "actor route, image and mailbox authority diverged; dispatch quarantined");
+        }
     }
 
     @Override public void close() {
@@ -302,6 +329,13 @@ final class ActorUpgradeAtomicPublicationV1 implements AutoCloseable {
                     closed = true;
                     throw rollbackFailure;
                 }
+            }
+            // The CONTROL ledger owns terminal logical admission. Do not
+            // leave separately accessible legacy primitives dispatchable
+            // after its sole authoritative route is closed.
+            synchronized (generation) {
+                generation.close();
+                mailbox.close();
             }
             closed = true;
         }
