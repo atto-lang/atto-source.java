@@ -117,6 +117,22 @@ final class InferredStructBoundaryTest {
     }
 
     @Test
+    void canonicalRecordDoesNotImplicitlyCreateANamedTypeAlias() {
+        accepted("""
+                fnc read(): int {
+                    const row = record{x: 1, y: 2};
+                    return row.x;
+                }
+                """);
+        rejected("""
+                fnc bad(): void {
+                    const Row row = record{x: 1, y: 2};
+                    return;
+                }
+                """);
+    }
+
+    @Test
     void recordsRemainStructuralAndCanonicalRecordBracesParse() {
         accepted("""
                 fnc read(): int {
