@@ -162,4 +162,28 @@ final class TaskScopeInvariantTest {
         }
     }
 
+    @Test
+    void cancelledParentDoesNotReleaseStillRunningDescendant() throws Exception {
+        TaskScope scope = new TaskScope();
+        TaskScope.Registration parent = scope.reserve();
+        TaskScope.Registration descendant = scope.reserve(parent);
+        OresFuture<Void> parentFuture = new OresFuture<>();
+        OresFuture<Void> descendantFuture = new OresFuture<>();
+        parent.attach(parentFuture);
+        descendant.attach(descendantFuture);
+        OresFuture<Void> joined = scope.close();
+
+        assertTrue(parentFuture.cancel(false));
+        parent.quiesced();
+        assertFalse(joined.isDone(), "descendant still holds a scope ticket");
+        assertThrows(IllegalStateException.class, () -> scope.reserve(parent));
+
+        descendantFuture.completeFromRuntime(null);
+        assertFalse(joined.isDone(), "terminal descendant has not quiesced");
+        descendant.quiesced();
+        assertTrue(joined.isCompletedExceptionally());
+        assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> joined.get(2, TimeUnit.SECONDS));
+    }
+
 }
