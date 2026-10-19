@@ -145,6 +145,43 @@ final class InferredRecordBoundaryTest {
     }
 
     @Test
+    void allClosedFieldEntryPointsRejectMalformedUnicodeAndOversizeNames() {
+        String[] invalid = {
+            "embedded" + (char) 0 + "nul",
+            "unpaired-high" + (char) 0xD800,
+            "unpaired-low" + (char) 0xDC00,
+            "x".repeat(1025)
+        };
+        for (String key : invalid) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Ast.TypeRef.recordType(Map.of(key, Ast.TypeRef.simple("string"))),
+                    "record type accepted invalid key");
+            assertThrows(IllegalArgumentException.class,
+                    () -> Ast.TypeRef.readonlyRecordType(Map.of(key, Ast.TypeRef.simple("string"))),
+                    "readonly record type accepted invalid key");
+            assertThrows(IllegalArgumentException.class,
+                    () -> new Ast.ObjectField(key, new Ast.LiteralExpr("value")),
+                    "object field accepted invalid key");
+            assertThrows(IllegalArgumentException.class,
+                    () -> new Ast.StructFieldSpec(key, Ast.TypeRef.simple("string")),
+                    "struct field specification accepted invalid key");
+        }
+    }
+
+    @Test
+    void allClosedFieldEntryPointsPreserveValidQuotedKeys() {
+        for (String key : new String[] { "", "  ", "first name", "emoji🚀", "x".repeat(1024) }) {
+            Ast.TypeRef row = assertDoesNotThrow(
+                    () -> Ast.TypeRef.recordType(Map.of(key, Ast.TypeRef.simple("string"))));
+            assertEquals(Ast.TypeRef.simple("string"), row.recordMembers().get(key));
+            assertEquals(key, assertDoesNotThrow(
+                    () -> new Ast.ObjectField(key, new Ast.LiteralExpr("value"))).name());
+            assertEquals(key, assertDoesNotThrow(
+                    () -> new Ast.StructFieldSpec(key, Ast.TypeRef.simple("string"))).name());
+        }
+    }
+
+    @Test
     void shortNamedRecordIntroducesStructuralAliasForUnknownType() {
         accepted("""
                 fnc read(): string {
