@@ -43,9 +43,12 @@ final class LogicalActorProxyMailboxV1Test {
             var later = mailbox.admit(new byte[] {4});
             mailbox.pollDispatch();
             mailbox.beginPhysicalSendAttempt(later, 1L);
-            mailbox.requeueProvenUnsent(later.messageSequence());
-            assertSame(later, mailbox.pollDispatch());
-            mailbox.beginPhysicalSendAttempt(later, 1L);
+            // A bare sequence number is never proof that the physical
+            // actor mailbox rejected an attempted send, including >127.
+            var retained = mailbox.snapshot();
+            assertThrows(IllegalStateException.class,
+                    () -> mailbox.requeueProvenUnsent(later.messageSequence()));
+            assertEquals(retained, mailbox.snapshot());
             mailbox.complete(later.messageSequence());
             assertEquals(136L, mailbox.snapshot().completionWatermark());
             assertEquals(0, mailbox.snapshot().retainedMessages());
@@ -53,7 +56,7 @@ final class LogicalActorProxyMailboxV1Test {
     }
 
     @Test
-    void physicalAdmissionReservationRejectsReplayAndRequiresProvenUnsentRollback() {
+    void physicalAdmissionReservationRejectsReplayAndUnprovenRequeue() {
         try (var mailbox = new LogicalActorProxyMailboxV1(2, 16, 32)) {
             var envelope = mailbox.admit(bytes("first"));
             assertEquals(envelope, mailbox.pollDispatch());
@@ -68,16 +71,44 @@ final class LogicalActorProxyMailboxV1Test {
                     () -> mailbox.beginPhysicalSendAttempt(envelope, 1L),
                     "frozen dispatch may only settle already attempted sends");
             freeze.rollback();
-            // This API is intentionally trusted-only. The caller must possess
-            // an independent proof that the transport rejected this send.
-            mailbox.requeueProvenUnsent(envelope.messageSequence());
-            assertEquals(1, mailbox.snapshot().queuedMessages());
-            assertEquals(envelope, mailbox.pollDispatch());
-            mailbox.beginPhysicalSendAttempt(envelope, 1L);
+            // Package-private authority is not an authenticated physical
+            // non-acceptance receipt. Retain the attempt until terminal
+            // completion; never restore bytes to the dispatch queue.
+            assertThrows(IllegalStateException.class,
+                    () -> mailbox.requeueProvenUnsent(envelope.messageSequence()));
+            assertEquals(charged, mailbox.snapshot());
+            assertEquals(0, mailbox.snapshot().queuedMessages());
             mailbox.complete(envelope.messageSequence());
             assertEquals(0, mailbox.snapshot().retainedMessages());
             assertThrows(SecurityException.class,
                     () -> mailbox.beginPhysicalSendAttempt(envelope, 1L));
+        }
+    }
+
+    @Test
+    void sequenceOnlyRequeueWorksBeforeButNotAfterPhysicalSendReservation() {
+        try (var mailbox = new LogicalActorProxyMailboxV1(2, 8, 16)) {
+            var envelope = mailbox.admit(new byte[] {41});
+            assertSame(envelope, mailbox.pollDispatch());
+            mailbox.requeueProvenUnsent(envelope.messageSequence());
+            assertEquals(1, mailbox.snapshot().queuedMessages());
+
+            assertSame(envelope, mailbox.pollDispatch());
+            mailbox.beginPhysicalSendAttempt(envelope, 1L);
+            var attempted = mailbox.snapshot();
+            for (int retry = 0; retry < 4; ++retry) {
+                assertThrows(IllegalStateException.class,
+                        () -> mailbox.requeueProvenUnsent(envelope.messageSequence()));
+                assertEquals(attempted, mailbox.snapshot());
+            }
+            var freeze = mailbox.freezeDispatchForUpgrade();
+            assertFalse(freeze.drained());
+            freeze.rollback();
+            assertThrows(IllegalStateException.class,
+                    () -> mailbox.requeueProvenUnsent(envelope.messageSequence()));
+            mailbox.complete(envelope.messageSequence());
+            assertEquals(1L, mailbox.snapshot().completionWatermark());
+            assertEquals(0, mailbox.snapshot().retainedMessages());
         }
     }
 
