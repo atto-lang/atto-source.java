@@ -100,6 +100,12 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
                 "hard CPU affinity failed for CPU " + cpu + " (OS error " + error + ")");
     }
 
+    /** Bind once per physical worker and reassert at bounded intervals, not each actor turn. */
+    static void ensureCurrentCarrierCpu(int cpu) {
+        CarrierCpuBinding.ensureBound(cpu, NativeCarrierExecutor::bindCurrentThreadToCpu,
+                System::nanoTime);
+    }
+
     static int currentCpu() {
         ensureNativeLibraryLoaded();
         return nativeCurrentCpu();
@@ -190,6 +196,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         } finally {
             carrierThreads.set(slot, null);
             CURRENT_NATIVE_THREAD_ID.remove();
+            CarrierCpuBinding.clearCurrentCarrier();
             CURRENT_SLOT.remove();
             CURRENT_EXECUTOR.remove();
         }
