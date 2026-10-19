@@ -8133,6 +8133,11 @@ public final class ActorRuntime implements AutoCloseable {
             final Throwable stopCause;
             final PhysicalMailDisposition receiptDisposition;
             boolean physicalTeardownPrepared;
+            // Once reservation-draining begins, an exception may leave a
+            // removed envelope whose quota-release/close callback is not
+            // independently replayable. Do not mistake two certified channel
+            // closes for proof that this separate drain has completed.
+            boolean mailboxReservationDrainStarted;
             // A channel close may mark itself closed before all pending
             // completion callbacks run. Never replay an ambiguous partial
             // close as though all notifications had settled.
@@ -9345,10 +9350,23 @@ public final class ActorRuntime implements AutoCloseable {
                 try {
                     if (!batch.physicalTeardownPrepared) {
                         if (batch.physicalTeardownAmbiguous) {
-                            throw new IllegalStateException(
-                                    "physical mailbox teardown previously failed after "
-                                            + "a possibly irreversible close; retirement "
-                                            + "requires independent reconciliation");
+                            // A channel may set closed=true before its
+                            // arbitration and callbacks settle. Only its
+                            // original selector-free, normally completed
+                            // close witness may prove that retrying the
+                            // *remaining* teardown cannot lose a notification.
+                            // A partial reservation drain is separately
+                            // ambiguous and never automatically replayed.
+                            if (batch.mailboxReservationDrainStarted
+                                    || !mailbox.closeSettledWithoutSelectorsForTeardown()
+                                    || (continuationMailbox.isClosed()
+                                        && !continuationMailbox
+                                                .closeSettledWithoutSelectorsForTeardown())) {
+                                throw new IllegalStateException(
+                                        "physical mailbox teardown previously failed after "
+                                                + "a possibly irreversible close; retirement "
+                                                + "requires independent reconciliation");
+                            }
                         }
                         Runnable injected = terminalTeardownFaultForTesting;
                         if (injected != null) injected.run();
@@ -9363,6 +9381,10 @@ public final class ActorRuntime implements AutoCloseable {
                                 terminalTeardownAfterFirstCloseFaultForTesting;
                         if (afterFirstClose != null) afterFirstClose.run();
                         continuationMailbox.close(batch.stopCause);
+                        // Drain is not transactionally replayable: advance
+                        // the durable fence BEFORE removing the first slot.
+                        // If anything throws, old actor code remains pinned.
+                        batch.mailboxReservationDrainStarted = true;
                         drainMailboxReservations();
                         batch.physicalTeardownPrepared = true;
                         batch.physicalTeardownAmbiguous = false;
