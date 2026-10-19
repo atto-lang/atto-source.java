@@ -359,9 +359,21 @@ public final class CapabilityChecker {
     }
 
     private void checkExpr(Ast.Expr expr, IsolatePolicy policy) {
-        if (expr instanceof Ast.StagedCallExpr || expr instanceof Ast.StagedNewExpr) {
+        if (expr instanceof Ast.StagedCallExpr call) {
+            // A caller invoking CapabilityChecker directly without semantic
+            // checking must not turn staged syntax into an authority bypass.
+            Ast.CheckedNamedCallPlan.require(call);
+            checkExpr(call.callee(), policy);
+            for (Ast.CallArgument argument : call.arguments()) {
+                if (argument.value() != null) {
+                    checkExpr(argument.value(), policy);
+                }
+            }
+            return;
+        }
+        if (expr instanceof Ast.StagedNewExpr) {
             throw new SecurityException(
-                    "staged named/trailing-closure calls require checked lowering before capability admission");
+                    "named constructor/actor calls require checked lowering before capability admission");
         }
         if (expr instanceof Ast.TypeExpr) {
             throw new SecurityException(
