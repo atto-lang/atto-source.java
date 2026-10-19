@@ -1194,12 +1194,15 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                     txn.prior.incarnation);
             if (started.isEmpty()) return false;
             synchronized (routeLock) {
+                // Publish acquired cleanup ownership before any invariant check
+                // that can throw. Even a corrupted transaction state must not
+                // strand the old actor ingress freeze outside this txn.
+                txn.transfer = started.get();
                 requireActiveUpgradeLocked(txn);
                 if (txn.phase != UpgradePhase.STAGING) {
                     throw new IllegalStateException(
                             "source transfer acquired outside staging transaction");
                 }
-                txn.transfer = started.get();
             }
 
             ActorRuntime.ActorRef<Object> replacement =
@@ -1207,14 +1210,17 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                             txn.transfer,
                             candidate.executor());
             synchronized (routeLock) {
+                // The physical candidate exists now. Store it into BOTH cleanup
+                // owners before any validation that can fail; otherwise a
+                // faulted invariant could leave executable candidate code with
+                // no stop/finalization path in the transaction.
+                txn.replacement = replacement;
+                txn.candidateRetirement.physical = replacement;
                 requireActiveUpgradeLocked(txn);
-                if (txn.phase != UpgradePhase.STAGING
-                        || txn.candidateRetirement.physical != null) {
+                if (txn.phase != UpgradePhase.STAGING) {
                     throw new IllegalStateException(
                             "candidate physical publication outside staging transaction");
                 }
-                txn.replacement = replacement;
-                txn.candidateRetirement.physical = replacement;
             }
             replacement.getReady().get(
                     toNanosSaturated(readyTimeout),
