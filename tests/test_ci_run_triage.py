@@ -34,8 +34,10 @@ class TriageTests(unittest.TestCase):
         self.assertEqual(m.classify(dict(RUN, status="queued"), [], SHA), "not_terminal")
 
     def test_missing_steps_is_not_false_evidence(self):
-        with self.assertRaisesRegex(m.TriageError, "metadata"):
-            m.classify(RUN, [{"conclusion": "failure"}], SHA)
+        self.assertEqual(m.classify(RUN, [{"conclusion": "failure"}], SHA),
+                         "steps_metadata_unavailable")
+        self.assertEqual(m.classify(RUN, [{"conclusion": "failure", "steps": None}], SHA),
+                         "steps_metadata_unavailable")
 
     def test_wrong_source_and_incomplete_pagination_fail(self):
         with self.assertRaisesRegex(m.TriageError, "head SHA"):
@@ -49,6 +51,28 @@ class TriageTests(unittest.TestCase):
         with self.assertRaisesRegex(m.TriageError, "pagination"):
             m.inspect("org/repo", 42, SHA, fetch=fetch)
         self.assertEqual(len(seen), 2)
+
+    def test_real_unstarted_job_shape_and_invalid_steps(self):
+        def fetch(path):
+            if path.endswith("/jobs?per_page=100"):
+                return {"total_count": 1, "jobs": [{"conclusion": "failure", "id": 123}]}
+            return RUN
+        report = m.inspect("org/repo", 42, SHA, fetch=fetch)
+        self.assertEqual(report["category"], "steps_metadata_unavailable")
+        self.assertIsNone(report["executed_steps"])
+        with self.assertRaisesRegex(m.TriageError, "step metadata"):
+            m.classify(RUN, [{"steps": ["unexpected string"]}], SHA)
+        with self.assertRaisesRegex(m.TriageError, "steps collection"):
+            m.classify(RUN, [{"steps": "not a list"}], SHA)
+
+    def test_invalid_job_total_count_fails_closed(self):
+        for total in (None, -1, "1", True, 0, 2):
+            def fetch(path):
+                if path.endswith("/jobs?per_page=100"):
+                    return {"total_count": total, "jobs": [{"steps": []}]}
+                return RUN
+            with self.subTest(total=total), self.assertRaisesRegex(m.TriageError, "pagination"):
+                m.inspect("org/repo", 42, SHA, fetch=fetch)
 
     def test_rejects_input_before_api_and_does_not_write(self):
         for name in ("../repo", "a/../repo", "org/repo?cmd=x", "a/repo/other"):
