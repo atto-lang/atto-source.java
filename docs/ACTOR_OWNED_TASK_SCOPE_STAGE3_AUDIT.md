@@ -149,3 +149,63 @@ source transfer without independently reviewed two-repository identity
 preflight, pinned source/ref and destination IDs, and the approved protected
 allowlist. No private source snapshot is transferred as part of this PR.
 Resetting a temporary Git ref alone cannot erase historical private bytes.
+
+
+## Actor finalization lock-order hardening — October 18, later pass
+
+Review found an additional pre-existing lock-order hazard in `ActorCell.finalizeStopLocked()`:
+it called `sourceScheduler.close()`, the actor exit hook, output closure, actor
+group deregistration, and terminal `OresFuture` subscribers while holding
+`lifecycleLock`. A synchronous host callback could therefore block another
+thread from acquiring the actor lifecycle monitor or create a cross-actor
+deadlock during termination.
+
+**Correction on the stage-3 draft branch:**
+
+- `finalizeStopLocked()` now only evaluates existing physical carrier,
+  continuation, managed child-actor, TaskScope and cancellation-cascade gates
+  under `lifecycleLock`, then claims a single `finalizationClaimed` transition.
+- After the lock is released, one **host virtual finalizer per terminating
+  actor** performs scheduler close and runtime-owned teardown independently
+  of dispatchers being shut down. No thread is created per Task, continuation,
+  or TaskScope. Normal Task scheduling is unchanged.
+- Output closure, exit hook, actor deregistration, and terminal Future
+  notifications are also outside the actor lifecycle monitor.
+- A concurrent stop observes `finalizationClaimed` and cannot duplicate
+  cleanup or overwrite the actor's terminal cause.
+- A trusted exit hook calling `stop()` on its own actor does not wait on
+  its own finalizer: `awaitFinalized` recognizes the current finalizer thread.
+- Source scheduler shutdown retains its earlier best-effort RuntimeException
+  handling. A graceful actor is not converted into a guest failure solely
+  because closing an already-quiescent scheduler throws.
+- The actor's `finalized` witness remains gated on runtime teardown rather
+  than just on Task cancellation requests.
+
+**Five real-runtime JUnit tests now exist in**
+`src/test/java/dev/oreslang/runtime/ActorTaskTerminationCascadeTest.java`
+(the earlier two cascade tests plus three new lock/finalizer tests). The
+stage-3 ActorOwnedTaskScopeTest still contains nine tests. New cases assert
+that a blocked actor exit hook does not hold the lifecycle monitor, two
+concurrent host stops run only one exit hook, and a reentrant stop from the
+exit hook does not self-deadlock.
+
+**Local verification:** a standalone OpenJDK 21 asynchronous-finalization
+model compiled with `javac -Xlint:all` and passed **2,000/2,000** cases
+(blocking hook/monitor isolation and finalizer self-reentrancy). Earlier
+synthetic cascade-model exercises passed 25,000 iterations. These models do
+**not** compile production ActorRuntime, do not replace the 14 new actual
+source JUnit cases, and are not Maven/GraalVM integration evidence.
+
+**Known follow-up risks:** Creating one host virtual finalizer per actor
+termination should be capacity/storm-tested; finalizer thread-creation
+failure is not yet covered by a fallback. Abnormally slow host Future
+subscribers may still delay terminal callback draining. Audit
+`ActorRef.awaitTermination` versus the temporary actor-registry removal and
+`doneFuture` publication interval under real scheduling stress. Untrusted
+Task admission continues to use the existing quota-checked implementation.
+
+**CI evidence:** The latest inspected jobs on the stage-2 and stage-3 PR
+heads failed with no executed steps, while requests for job logs returned
+missing-blob errors. This does not establish a Java compiler failure or
+prove the cause is exhausted GitHub Actions minutes. Security issue #962
+remains open; no private-source cross-organization mirror was attempted.
