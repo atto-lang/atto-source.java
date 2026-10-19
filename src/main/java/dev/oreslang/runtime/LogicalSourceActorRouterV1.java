@@ -114,6 +114,12 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
          * definitively abandoned and the ledger becomes the sole owner.
          */
         boolean retirementEligible;
+        /**
+         * Once true, the newly published active/retired Route owns this lease.
+         * This staging entry becomes bookkeeping ONLY; the reaper must never
+         * close that lease a second time. Protected by routeLock.
+         */
+        boolean publishedToRoute;
 
         CandidateRetirement(
                 HotReloadManager.Generation generation,
@@ -1204,6 +1210,16 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                             "active route already registered for retirement");
                 retiredRoutes.add(txn.prior);
                 try {
+                    // All owner validation must precede the irreversible
+                    // mailbox/route publication. Never throw an ownership
+                    // invariant exception after active becomes authoritative.
+                    if (!retiredCandidates.contains(txn.candidateRetirement)
+                            || txn.candidateRetirement.retirementEligible
+                            || txn.candidateRetirement.publishedToRoute
+                            || txn.candidateRetirement.physical != replacement) {
+                        throw new IllegalStateException(
+                                "candidate staging authority lost before route commit");
+                    }
                     if (txn.proxyTicket != null) {
                         txn.proxyMailbox.requireFreezeTicketForRouteEpoch(
                                 txn.proxyTicket, txn.prior.routeEpoch);
@@ -1214,13 +1230,14 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                     // physical route publish while this txn exclusively owns
                     // routeLock and all candidate/retirement authority.
                     active = next;
+                    txn.candidateRetirement.publishedToRoute = true;
                     txn.candidateLeaseTransferred = true;
                     txn.phase = UpgradePhase.PUBLISHED;
-                    if (!retiredCandidates.remove(
-                            txn.candidateRetirement)) {
-                        throw new IllegalStateException(
-                                "published candidate lost its supervisor owner");
-                    }
+                    // Do not remove staging bookkeeping after the point of
+                    // no return. Even a fault-injected remove() exception
+                    // cannot invalidate a successfully published route. The
+                    // next supervisor reap drops this entry WITHOUT touching
+                    // the active/retired Route's generation lease.
                 } finally {
                     if (!txn.published()) retiredRoutes.remove(txn.prior);
                 }
@@ -1468,6 +1485,12 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         }
         for (int i = retiredCandidates.size() - 1; i >= 0; --i) {
             CandidateRetirement old = retiredCandidates.get(i);
+            if (old.publishedToRoute) {
+                // A successful commit transferred this lease to the live
+                // Route. This is NOT an independently retired candidate.
+                retiredCandidates.remove(i);
+                continue;
+            }
             ActorRuntime.ActorRef<Object> physical = old.physical;
             if (old.retirementEligible
                     && (physical == null
