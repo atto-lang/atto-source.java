@@ -1,5 +1,7 @@
 package dev.oreslang.types;
 
+import dev.oreslang.ast.Ast;
+
 import java.util.List;
 import java.util.Objects;
 
@@ -51,6 +53,40 @@ public final class DefaultArgumentPolicy {
         public static Annotation defaultOf(Literal value) {
             return new Annotation("Default", List.of(Objects.requireNonNull(value)), true);
         }
+    }
+
+    /**
+     * AST-to-policy bridge: normalize a parsed formal's *closed literal* into
+     * a compiler-owned immutable witness. This does not inspect the formal's
+     * declared type, resolve the intrinsic Option symbol, or permit execution.
+     * Those checks must happen in the independent typed-signature phase.
+     */
+    public static Literal stagedLiteralFromAst(Ast.Param formal) {
+        Objects.requireNonNull(formal, "formal");
+        if (!formal.hasDefault()) return null;
+        if (formal.annotations().size() != 1) {
+            throw new IllegalArgumentException("invalid @Default formal annotation count");
+        }
+        Ast.Annotation annotation = formal.annotations().getFirst();
+        if (!annotation.name().equals("Default") || annotation.arguments().size() != 1) {
+            throw new IllegalArgumentException("invalid @Default AST witness");
+        }
+        Ast.TypeRef value = annotation.arguments().getFirst();
+        if (value.isIntLiteral()) {
+            try {
+                return Literal.integer(value.intLiteralValue());
+            } catch (NumberFormatException overflow) {
+                throw new IllegalArgumentException(
+                        "@Default integer literal is outside the checked int64 range", overflow);
+            }
+        }
+        if (value.isBoolLiteral()) return Literal.bool(value.boolLiteralValue());
+        if (value.isStringLiteral()) return Literal.string(value.stringLiteralValue());
+        if (value.name().equals("None")
+                && value.arguments().isEmpty() && !value.inferArguments()) {
+            return Literal.none();
+        }
+        throw new IllegalArgumentException("@Default AST is not a closed literal");
     }
 
     /** Null means no default is declared, never a default None. */
