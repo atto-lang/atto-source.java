@@ -73,6 +73,25 @@ jobs:
             echo 'DENIED: masked index entry' >&2
             exit 1
           fi
+      - name: Execute adversarial evidence-admission tests before compiler tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I - <<'PY'
+          from pathlib import Path
+          import unittest
+          suite = unittest.defaultTestLoader.discover(
+              str(Path("scripts/ci").resolve()),
+              pattern="test_graal_i64_evidence.py")
+          case_count = suite.countTestCases()
+          if case_count < 27:
+              raise SystemExit(f"DENIED: evidence-admission regression inventory shrank: {case_count}")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if (not result.wasSuccessful() or result.testsRun != case_count
+                  or result.skipped or result.expectedFailures or result.unexpectedSuccesses):
+              raise SystemExit("DENIED: evidence-admission tests incomplete")
+          print(f"GRAAL_I64_ADMISSION_REGRESSIONS_PASS={case_count}; NOT_GUEST_EVIDENCE")
+          PY
       - name: Install pinned GraalVM JDK25 without shared Maven caches
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
@@ -100,41 +119,16 @@ jobs:
             --run-command 'python3 contracts/v1/java_probe.py {source} --execute' \
             --revision "$APPROVED_SHA" \
             --report target/semantics-graal.json
-      - name: Fail closed on missing, skipped or malformed evidence
+      - name: Independently verify canonical guest report and JUnit receipts
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          import xml.etree.ElementTree as ET
-          report_path = Path("target/semantics-graal.json")
-          junit_path = Path("target/surefire-reports/TEST-dev.oreslang.GraalI64RuntimeCharacterizationTest.xml")
-          assert report_path.is_file() and junit_path.is_file(), "required evidence missing"
-          assert not report_path.is_symlink() and not junit_path.is_symlink(), "symlink evidence denied"
-          assert report_path.stat().st_size <= 1024 * 1024, "oversize conformance report"
-          assert junit_path.stat().st_size <= 1024 * 1024, "oversize JUnit report"
-          suite = ET.parse(junit_path).getroot()
-          assert int(suite.attrib.get("tests", "0")) >= 17, "fewer than 16 numeric + 1 divisor checks"
-          for field in ("errors", "failures", "skipped"):
-              assert int(suite.attrib.get(field, "-1")) == 0, f"JUnit {field} is nonzero or absent"
-          report = json.loads(report_path.read_text())
-          assert report["backend"] == "graal"
-          assert report["source_revision"] == os.environ["APPROVED_SHA"]
-          assert report["schema_version"] == "1.1.0"
-          assert len(report["suite_sha256"]) == 64
-          assert len(report["results"]) == 15, "incomplete canonical Java semantic suite"
-          ids = [item["id"] for item in report["results"]]
-          assert len(set(ids)) == 15
-          assert all(item["status"] == "pass" for item in report["results"]), "pending/failing case"
-          import subprocess
-          observed_tree = subprocess.check_output(
-              ["git", "-c", "core.fsmonitor=false", "rev-parse", "HEAD^{tree}"],
-              text=True).strip()
-          assert observed_tree == os.environ["APPROVED_TREE"], "source tree changed"
-          print("GRAAL_I64_SOURCE_LOCAL_EVIDENCE_PASS; no cross-org source transfer")
-          PY
+          "$RUNNER_TEMP/oreslang-i64-venv/bin/python" scripts/ci/verify_graal_i64_evidence.py \
+            --source-root "$GITHUB_WORKSPACE" \
+            --report target/semantics-graal.json \
+            --junit target/surefire-reports/TEST-dev.oreslang.GraalI64RuntimeCharacterizationTest.xml \
+            --expected-commit "$APPROVED_SHA" \
+            --expected-tree "$APPROVED_TREE"
       - name: Upload bounded private test receipts only after all evidence gates pass
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
