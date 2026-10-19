@@ -18,5 +18,8 @@ java -version >&2
 # The Maven build uses the real compiled sources and test classes, not
 # a reconstructed fixture. Failures must prevent the receipt from printing.
 mvn -B -Dtest=ConcurrencyRaceAnalyzerTest,ConcurrencyTestProbeTest,ConcurrencySourceFingerprintTest,ConcurrencyTestCommandTest test
+if [[ "${RUN_FULL_SUITE:-0}" == "1" ]]; then
+  mvn -B test
+fi
 git diff --quiet HEAD -- || { echo "Tracked files modified during test" >&2; exit 2; }
 echo "ORES_CONCURRENCY_CI|backend=graal|source_tree=${actual}|result=PASS|scope=targeted"
