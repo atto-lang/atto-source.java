@@ -65,7 +65,7 @@ final class TaskScopeTest {
             }
             // The cancellation may have won the Future race, but retirement
             // must not be published until the carrier actually returns.
-            assertThrows(RuntimeException.class,
+            assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> scope.close().get(5, TimeUnit.SECONDS));
         } finally {
             release.countDown();
