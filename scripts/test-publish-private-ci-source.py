@@ -344,12 +344,12 @@ class PublishTest(unittest.TestCase):
     def api(self, route, method="GET", payload=None):
         self.calls.append((method, route, payload))
         if route == "repos/" + REPOSITORY:
+            visibility = self.visibility.pop(0)
             return {
                 "full_name": REPOSITORY,
                 "id": self.repo_ids.pop(0),
-                "visibility": self.visibility.pop(0),
-                "private": self.visibility[0] == "private"
-                    if self.visibility else True,
+                "visibility": visibility,
+                "private": visibility == "private",
                 "default_branch": "main",
             }
         if route == f"repos/{REPOSITORY}/git/ref/heads/main":
