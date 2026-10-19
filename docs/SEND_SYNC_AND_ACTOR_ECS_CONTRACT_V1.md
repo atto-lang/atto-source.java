@@ -48,6 +48,23 @@ end-to-end contract, not evidence that parallel actor ECS already executes.
 * This does not yet expose `Send`/`Sync` source syntax, generic trait bounds,
   an ECS, a runtime thread pool grant, or region-disjoint parallel execution.
 
+## New pure ECS dependency-planner slice
+
+The compiler-side `EcsAccessPlanner` now accepts system read/write byte spans
+with allocation provenance identities, detects overlapping writes, and generates
+stable, order-preserving concurrent batches. It rejects invalid ranges and
+fails closed on unknown alias provenance. Disjoint columns and nonoverlapping
+chunks can be recognized, but the compiler must establish that two allocation
+identities really refer to distinct physical storage.
+
+**This is not executable ECS parallelism.** The planner grants no pointer,
+borrow, actor-state or thread capability. It does not split an actor's exclusive
+world loan or mint worker tickets. Runtime scoped-loan issuance, task
+join/cancellation, generation fencing and backend lowering remain mandatory
+before any planned batch may execute concurrently. Deterministic ordering of
+planned batches is not a guarantee that unordered floating-point reductions
+are bitwise deterministic.
+
 ## Planned actor/ECS design
 
 Actor isolation should remain the outer fault and networking boundary.
