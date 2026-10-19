@@ -1349,6 +1349,14 @@ public final class OwnershipChecker {
 
     private ValueInfo checkStagedCall(Ast.StagedCallExpr call, Scope scope) {
         Ast.NamedCallProof proof = Ast.CheckedNamedCallPlan.require(call);
+        if (call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.TypeExpr typeReceiver) {
+            if (!member.member().equals("new")) {
+                throw error("generic type-qualified staged call only supports .new");
+            }
+            return checkStagedTypeConstructor(
+                    call, proof, typeReceiver.type(), scope);
+        }
         if (call.typeArgumentsPresent()) {
             throw error("checked required named calls cannot carry call-site type arguments");
         }
@@ -1564,6 +1572,48 @@ public final class OwnershipChecker {
 
         throw error(
                 "checked named-call proof no longer resolves to its source declaration");
+    }
+
+    private ValueInfo checkStagedTypeConstructor(
+            Ast.StagedCallExpr call,
+            Ast.NamedCallProof proof,
+            Ast.TypeRef sourceType,
+            Scope scope) {
+        if (sourceType.inferArguments()) {
+            throw error("Type<>.new requires explicit type arguments");
+        }
+        Ast.ClassDecl klass = findClass(sourceType.name());
+        if (klass == null) {
+            throw error("Type<T>.new requires a statically known source class");
+        }
+        if (klass.actorKind() != Ast.ActorKind.NONE) {
+            throw error("actors cannot be constructed with Type<T>.new");
+        }
+        Ast.ConstructorDecl constructor = klass.constructor();
+        if (constructor == null) {
+            throw error(
+                    "Type<T>.new requires an explicit constructor on class '"
+                            + klass.name() + "'");
+        }
+
+        requireStagedTarget(proof, "constructor", klass.name());
+        proof.requireFormalNames(
+                constructor.parameters(), "constructor " + klass.name());
+
+        Map<String, Ast.TypeRef> bindings =
+                genericBindings(klass.genericParameters(), sourceType.arguments());
+        List<Ast.Param> params =
+                new ArrayList<>(constructor.parameters().size());
+        for (Ast.Param param : constructor.parameters()) {
+            params.add(new Ast.Param(
+                    substituteType(param.type(), bindings),
+                    param.name(),
+                    param.structural(),
+                    param.mutable()));
+        }
+        checkStagedArguments(
+                call, proof, params, scope, "constructor " + klass.name());
+        return new ValueInfo(sourceType, ValueKind.MOVE_ONLY, null);
     }
 
     private Ast.ClassDecl declaringClassOf(
