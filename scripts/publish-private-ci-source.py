@@ -246,9 +246,30 @@ def collect_source(root, trusted_root):
     return sorted(entries, key=lambda item: item[0])
 
 
+def require_independent_source_authorization():
+    """Transfer kill-switch pending independent security issue #962 approval.
+
+    A mutable local allowlist, a private destination, and a caller-selected
+    source directory do NOT establish protected source provenance. In
+    particular, this script must not accept an environment variable or an
+    unreviewed checkout flag as a substitute for independent policy proof.
+
+    Remove this stop only with reviewed end-to-end source/destination identity,
+    immutable commit/tree attestation, pinned numeric destination ID, and
+    protected-branch/CODEOWNER enforcement. Until then no private bytes move.
+    """
+    raise Denied(
+        "private source export disabled: independent protected source/tree "
+        "and numeric destination approval are not implemented (security #962)"
+    )
+
+
 def publish(repository, source, branch, trusted_root):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
+    # This must precede destination probing, local-policy reads, filesystem
+    # traversal, and ANY GitHub write, not merely the branch-ref creation.
+    require_independent_source_authorization()
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
