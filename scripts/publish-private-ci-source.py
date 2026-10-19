@@ -63,6 +63,18 @@ def valid_sha(value):
     return value
 
 
+def canonical_security_lines(contents, label):
+    """Security control files admit printable ASCII records delimited by LF only.
+
+    str.splitlines() silently accepts CR, VT and Unicode line separators as
+    separate authorization records; reject all noncanonical bytes instead.
+    """
+    if not isinstance(contents, bytes) or any(
+            byte != 10 and not 32 <= byte <= 126 for byte in contents):
+        raise Denied(label + " contains noncanonical ASCII LF bytes")
+    return contents.decode("ascii").split("\n")
+
+
 def trusted_github_cli():
     """Only execute the root-owned GitHub CLI and its root-owned path.
 
@@ -194,10 +206,7 @@ def checked_policy_fingerprint(root, repository):
         raise Denied("private CI approval policy cannot be opened safely") from exc
     if len(contents) > 16 * 1024:
         raise Denied("private CI approval policy exceeds size limit")
-    try:
-        lines = contents.decode("utf-8").splitlines()
-    except UnicodeDecodeError as exc:
-        raise Denied("private CI approval policy cannot be decoded") from exc
+    lines = canonical_security_lines(contents, "private CI approval policy")
     approved = False
     for line in lines:
         if not line or line.startswith("#"):
@@ -282,13 +291,8 @@ def require_source_codeowner_coverage():
     ).hexdigest()
     if valid_sha(response.get("sha")) != blob:
         raise Denied("source main CODEOWNERS Git blob differs")
-    try:
-        content = raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise Denied("source main CODEOWNERS is not UTF-8") from exc
-
     rules = []
-    for line in content.splitlines():
+    for line in canonical_security_lines(raw, "source main CODEOWNERS"):
         fields = line.split()
         if not fields or line.lstrip().startswith("#"):
             continue
@@ -342,11 +346,9 @@ def require_destination_workflow_owners(repository, expected_head):
     ).hexdigest()
     if valid_sha(response.get("sha")) != actual_blob:
         raise Denied("destination workflow CODEOWNERS Git blob differs")
-    try:
-        rules = [line.strip() for line in data.decode("utf-8").splitlines()
-                 if line.strip() and not line.lstrip().startswith("#")]
-    except UnicodeDecodeError as exc:
-        raise Denied("destination workflow CODEOWNERS is not UTF-8") from exc
+    rules = [line.strip()
+             for line in canonical_security_lines(data, "destination workflow CODEOWNERS")
+             if line.strip() and not line.lstrip().startswith("#")]
     # Matching the last two rules is insufficient: earlier rules can
     # override the global owner for security-sensitive scripts and policy.
     # Require the exact reviewed three-rule trust root.  This is the
