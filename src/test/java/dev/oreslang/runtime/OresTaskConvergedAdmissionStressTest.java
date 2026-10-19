@@ -79,4 +79,48 @@ final class OresTaskConvergedAdmissionStressTest {
             }
         }
     }
+
+    @Test
+    void physicalRetirementCallbackIsOneShotUnderCompetingTerminalPaths()
+            throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime()) {
+            for (int trial = 0; trial < 128; trial++) {
+                AsyncRuntime.TaskAdmission<Integer> admission =
+                        runtime.prepareTaskAdmission();
+                AtomicInteger retired = new AtomicInteger();
+                admission.installRetirement(retired::incrementAndGet);
+
+                // Fault-inject two competing terminal paths at the internal
+                // exit seam. This is deliberately host/reflection-only.
+                var exitField = AsyncRuntime.TaskAdmission.class
+                        .getDeclaredField("exit");
+                exitField.setAccessible(true);
+                Object exit = exitField.get(admission);
+                var retireMethod = exit.getClass().getDeclaredMethod("markExited");
+                retireMethod.setAccessible(true);
+                CountDownLatch begin = new CountDownLatch(1);
+                AtomicReference<Throwable> failed = new AtomicReference<>();
+                Runnable compete = () -> {
+                    try {
+                        if (!begin.await(5, TimeUnit.SECONDS))
+                            throw new AssertionError("retirement test latch timed out");
+                        retireMethod.invoke(exit);
+                    } catch (Throwable failure) {
+                        failed.compareAndSet(null, failure);
+                    }
+                };
+                Thread first = Thread.ofVirtual().start(compete);
+                Thread second = Thread.ofVirtual().start(compete);
+                begin.countDown();
+                first.join(5_000);
+                second.join(5_000);
+
+                assertFalse(first.isAlive());
+                assertFalse(second.isAlive());
+                assertNull(failed.get());
+                assertEquals(1, retired.get(), "physical callback is one-shot");
+                assertNull(AsyncRuntime.await(admission.owner.getDone()));
+            }
+        }
+    }
 }
