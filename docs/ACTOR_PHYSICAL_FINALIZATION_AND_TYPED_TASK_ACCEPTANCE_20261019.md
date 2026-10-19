@@ -26,7 +26,13 @@ registry entry, so no `actors.get(id)==null` shortcut remains on
 
 `ActorCell.finalized()` and `ActorCell.awaitFinalized()` observe this
 final reference marker, while the earlier internal `finalized` bit
-continues to fence duplicate shutdown and guest execution. If shutdown
+continues to fence duplicate shutdown and guest execution.
+A synchronous `getDone()` callback executes on the finalizing thread;
+calling `awaitTermination()` for its **own** actor would wait on the
+callback's own return. The finalizer thread is therefore recorded on its
+`ActorRef`, and same-thread physical self-join attempts fail immediately
+with `IllegalStateException`. Other host observers remain eligible to
+join once the final marker is published. If shutdown
 or a cleanup allocation throws before the final marker is set, code
 retirement is **not certified**. Such a failure still requires supervisor
 diagnosis/repair, not an unconditional unload. Existing ActorGroup
@@ -39,6 +45,8 @@ CONTROL/parent notification ordering stays unchanged.
   then race `physicallyFinalizedForHotUpgrade` and an
   `ActorRef.awaitTermination` waiter. Neither can certify completion
   before the blocked observer exits.
+- Verify that a synchronous terminal callback cannot await the finalization
+  of the exact actor it is currently finalizing (no same-thread deadlock).
 - Temporarily hide an initialized actor's registry record (test-only
   reflection) and prove registry absence alone cannot certify physical
   retirement. Restore the record before stopping the actor and require
