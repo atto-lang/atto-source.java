@@ -1,5 +1,15 @@
 # `oreslang test --race` and `--fuzz`: runtime contract (proposal)
 
+> **October 18, 2026 implementation update:** the stacked test-mode dispatch
+> PR now supports Oreslang-native `fuzz_int_cases` generated integer inputs,
+> bounded CriticalGate cancellation/handoff stress, a finite two-lock
+> reference model, explicit `--deadlock` runtime checks, and SHA-verified
+> replay of the generated CriticalGate test inputs. See
+> `docs/TESTING_COMMAND_MODES.md` for accepted commands and current coverage.
+> Full guest shadow-memory `--race`, coverage-guided fuzzing, deterministic
+> actor/Task schedule replay, and general source-level model checking remain
+> **unimplemented**; no clean general-concurrency result is implied.
+
 Status (2026-10-18): **not an implemented race detector or schedule fuzzer**.
 The Java launcher now provides `oreslang test <file.ores>` for existing
 Oreslang-native `TestSuite` execution, and deliberately exits **2** for
