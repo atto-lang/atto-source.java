@@ -7,6 +7,7 @@ set -euo pipefail
 readonly SOURCE_REPO="ores-truffle-oreslang/oreslang-source.java"
 readonly DEST_REPO="ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra"
 readonly DEST_ID="1412142815"
+readonly DEST_DEFAULT_BRANCH="main"
 readonly DEST_BASE_COMMIT="4d1d65445a09eb47f383bd5dc373d36056346056"
 readonly DEST_BASE_TREE="825c75a6b4cf84c62510f717290d6c87f4611b9a"
 readonly SOURCE_ID="1400792274"
@@ -88,7 +89,8 @@ actual_tree="$(git rev-parse --verify HEAD^{tree})" \
 [[ -z "$(git status --porcelain=v1 --untracked-files=all --ignored)" ]] \
   || die "dirty tracked, untracked or ignored source checkout"
 
-# Bind the checkout to the current head of an open, same-repository PR.
+# Bind the checkout to the current head of an open, same-repo pull request.
+# A caller-supplied but internally consistent commit/tree is insufficient.
 pr_head="$(gh_api "repos/$SOURCE_REPO/pulls/$source_pr" --jq '.head.sha')" \
   || die "cannot resolve authenticated source PR"
 pr_state="$(gh_api "repos/$SOURCE_REPO/pulls/$source_pr" --jq '.state')" \
@@ -101,7 +103,8 @@ pr_repo="$(gh_api "repos/$SOURCE_REPO/pulls/$source_pr" --jq '.head.repo.full_na
     && "$pr_base" == "main" && "$pr_repo" == "$SOURCE_REPO" ]] \
   || die "source checkout is not the live head of an open same-repo PR"
 
-# Authorization comes only from the authenticated current source main.
+# Consult authenticated main for the authoritative policy/export-program blobs.
+# The running source head must contain byte/mode-identical security programs.
 main_sha="$(gh_api "repos/$SOURCE_REPO/branches/main" --jq '.commit.sha')" \
   || die "cannot read authenticated source main"
 main_protected="$(gh_api "repos/$SOURCE_REPO/branches/main" --jq '.protected')" \
@@ -169,12 +172,12 @@ done <<< "$policy"
 [[ "$found" -eq 1 ]] \
   || die "destination is not uniquely approved on main"
 
-# Bind authorization to an immutable reviewed carrier Git object. Destination
-# main may move independently; only changing these reviewed constants changes
-# which carrier can receive a private source subtree.
-IFS=$'\t' read -r actual_id actual_name actual_private actual_push < <(
+# Bind authorization to the exact reviewed carrier content, not merely the
+# destination repository identity. A carrier-main change therefore invalidates
+# authorization before private source bytes can be read or uploaded.
+IFS=$'\t' read -r actual_id actual_name actual_private actual_push actual_default < <(
   gh_api "repos/$DEST_REPO" \
-    --jq '[.id, .full_name, .private, (.permissions.push // false)] | @tsv'
+    --jq '[.id, .full_name, .private, (.permissions.push // false), .default_branch] | @tsv'
 ) || die "cannot read authenticated destination repository"
 [[ "$actual_id" == "$DEST_ID" ]] \
   || die "destination GitHub repository ID mismatch"
@@ -184,17 +187,22 @@ IFS=$'\t' read -r actual_id actual_name actual_private actual_push < <(
   || die "destination must remain private"
 [[ "$actual_push" == "true" ]] \
   || die "insufficient destination permissions"
+[[ "$actual_default" == "$DEST_DEFAULT_BRANCH" ]] \
+  || die "destination default branch changed"
 
-IFS=$'\t' read -r dest_base_commit dest_base_tree < <(
-  gh_api "repos/$DEST_REPO/git/commits/$DEST_BASE_COMMIT" \
-    --jq '[.sha, .tree.sha] | @tsv'
-) || die "cannot resolve reviewed destination carrier object"
-[[ "$dest_base_commit" == "$DEST_BASE_COMMIT" \
-    && "$dest_base_tree" == "$DEST_BASE_TREE" ]] \
-  || die "reviewed destination carrier commit/tree mismatch"
+dest_base_commit="$(gh_api "repos/$DEST_REPO/git/ref/heads/$DEST_DEFAULT_BRANCH" --jq '.object.sha')" \
+  || die "cannot resolve destination carrier base commit"
+[[ "$dest_base_commit" =~ ^[0-9a-f]{40}$ && "$dest_base_commit" == "$DEST_BASE_COMMIT" ]] \
+  || die "destination carrier base commit is not the reviewed commit"
+dest_base_tree="$(gh_api "repos/$DEST_REPO/git/commits/$dest_base_commit" --jq '.tree.sha')" \
+  || die "cannot resolve destination carrier base tree"
+[[ "$dest_base_tree" =~ ^[0-9a-f]{40}$ && "$dest_base_tree" == "$DEST_BASE_TREE" ]] \
+  || die "destination carrier base tree is not the reviewed tree"
 
 auth_mode=""
 if [[ "$main_protected" == "true" ]]; then
+  # "protected=true" alone is not enough. Require concrete anti-bypass review
+  # properties for the security-owned files on authoritative main.
   protection="$(gh_api "repos/$SOURCE_REPO/branches/main/protection" --jq \
     '[
       (.required_pull_request_reviews.require_code_owner_reviews // false),
@@ -227,13 +235,15 @@ if [[ "$main_protected" == "true" ]]; then
     || die "protected main has pull-request review bypass actors"
   auth_mode="protected-main"
 elif [[ "$main_protected" == "false" ]]; then
-  # The fallback is allowed only when GitHub explicitly says both stronger
-  # repository controls are unavailable because of the current plan.
+  # Fallback is intentionally per-export and independently attested. It remains
+  # inert unless this fallback implementation itself has first been reviewed and
+  # merged to authoritative main. An unprotected branch by itself is NOT enough:
+  # prove that both classic protection and repository rulesets are unavailable
+  # specifically because of the current private-repository plan.
   require_plan_feature_unavailable \
     "repos/$SOURCE_REPO/branches/main/protection" "classic branch protection"
   require_plan_feature_unavailable \
     "repos/$SOURCE_REPO/rulesets" "repository rulesets"
-
   [[ "$#" -eq 6 ]] \
     || die "unprotected main requires review-attested-v1 comment IDs"
   maintainer_comment_id="$5"
@@ -280,33 +290,28 @@ else
   die "unexpected source branch protection state"
 fi
 
-# Revalidate the live destination identity and immutable carrier after approval
-# lookup. This closes rename/visibility/repository-replacement races without
-# depending on the mutable destination default branch.
-IFS=$'\t' read -r final_id final_name final_private final_push < <(
+# Revalidate destination identity and the exact carrier base after authorization.
+IFS=$'\t' read -r final_id final_name final_private final_push final_default < <(
   gh_api "repos/$DEST_REPO" \
-    --jq '[.id, .full_name, .private, (.permissions.push // false)] | @tsv'
+    --jq '[.id, .full_name, .private, (.permissions.push // false), .default_branch] | @tsv'
 ) || die "cannot re-read authenticated destination repository"
 [[ "$final_id" == "$actual_id" && "$final_id" == "$DEST_ID" \
     && "$final_name" == "$DEST_REPO" && "$final_private" == "true" \
-    && "$final_push" == "true" ]] \
-  || die "destination identity, privacy or permissions changed during authorization"
-
-IFS=$'\t' read -r final_base_commit final_base_tree < <(
-  gh_api "repos/$DEST_REPO/git/commits/$DEST_BASE_COMMIT" \
-    --jq '[.sha, .tree.sha] | @tsv'
-) || die "cannot re-resolve reviewed destination carrier object"
-[[ "$final_base_commit" == "$dest_base_commit" \
-    && "$final_base_commit" == "$DEST_BASE_COMMIT" \
-    && "$final_base_tree" == "$dest_base_tree" \
-    && "$final_base_tree" == "$DEST_BASE_TREE" ]] \
-  || die "reviewed destination carrier changed during authorization"
+    && "$final_push" == "true" && "$final_default" == "$DEST_DEFAULT_BRANCH" ]] \
+  || die "destination identity, privacy, permissions or default branch changed during authorization"
+final_base_commit="$(gh_api "repos/$DEST_REPO/git/ref/heads/$DEST_DEFAULT_BRANCH" --jq '.object.sha')" \
+  || die "cannot re-resolve destination carrier base commit"
+final_base_tree="$(gh_api "repos/$DEST_REPO/git/commits/$final_base_commit" --jq '.tree.sha')" \
+  || die "cannot re-resolve destination carrier base tree"
+[[ "$final_base_commit" == "$dest_base_commit" && "$final_base_commit" == "$DEST_BASE_COMMIT" \
+    && "$final_base_tree" == "$dest_base_tree" && "$final_base_tree" == "$DEST_BASE_TREE" ]] \
+  || die "destination carrier changed during authorization"
 
 printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_pr=%s source_commit=%s source_tree=%s destination_branch=%s destination_base_commit=%s destination_base_tree=%s main_sha=%s policy_blob=%s preflight_blob=%s guard_blob=%s wrapper_blob=%s publisher_blob=%s dest_repo_id=%s\n' \
   "$auth_mode" "$source_pr" "$actual_commit" "$actual_tree" "$destination_branch" \
   "$dest_base_commit" "$dest_base_tree" "$main_sha" \
   "$policy_blob" "$preflight_blob" "$guard_blob" "$wrapper_blob" "$publisher_blob" "$actual_id"
 
-# No transfer or workflow dispatch occurs here. Independent security approval,
-# exact destination workflow review, source-tree verification, retention and
-# executed test evidence remain separate mandatory gates.
+# No transfer or workflow dispatch occurs. Human security-owner approval,
+# workflow isolation, exact source-subtree verification, retention and actual
+# executed CI tests remain independent mandatory gates.
