@@ -190,11 +190,21 @@ final class OresTestCommand {
             int generators = 0;
             long generatedInputs = 0;
             while (fuzzEvents.find()) {
-                long guestSeed = Long.parseLong(fuzzEvents.group(1));
-                long cases = Long.parseLong(fuzzEvents.group(2));
-                if (cases < 1 || cases > 100_000
-                        || (seedSpecified && guestSeed != seed)) {
-                    return usage("fuzz seed/cases mismatch in ORES_TEST|FUZZ report");
+                final long guestSeed, cases;
+                try {
+                    guestSeed = Long.parseLong(fuzzEvents.group(1));
+                    cases = Long.parseLong(fuzzEvents.group(2));
+                } catch (NumberFormatException invalid) {
+                    return usage("invalid native input-fuzz report number");
+                }
+                if (guestSeed < 0 || guestSeed > 65520
+                        || cases < 1 || cases > 100_000
+                        || (seedSpecified && guestSeed != seed)
+                        || (runsSpecified && cases != runs)) {
+                    return usage("native fuzz seed/cases differ from requested --seed/--runs");
+                }
+                if (generatedInputs > 1_000_000 - cases) {
+                    return usage("native input-fuzz count exceeds aggregate limit");
                 }
                 generatedInputs += cases;
                 generators++;
