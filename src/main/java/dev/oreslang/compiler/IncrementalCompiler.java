@@ -231,7 +231,7 @@ public final class IncrementalCompiler {
             if (fn.generator()) abi.append("generator ");
             if (fn.structural()) abi.append("structural ");
             abi.append(fn.kind()).append(" pub ").append(fn.name());
-            appendGenerics(abi, fn.genericParameters());
+            appendGenericSpecs(abi, fn.genericSpecs());
             appendParams(abi, fn.parameters());
             abi.append("=>").append(typeRef(fn.returnType())).append('\n');
             return;
@@ -337,6 +337,20 @@ public final class IncrementalCompiler {
         appendParams(out, fn.parameters());
         out.append("=>").append(typeRef(fn.returnType())).append('\n');
         return out.toString();
+    }
+
+    /** Generic defaults are public source-ABI, even when execution is erased. */
+    private static void appendGenericSpecs(
+            StringBuilder abi, List<Ast.GenericParameter> specs) {
+        abi.append('<');
+        for (Ast.GenericParameter spec : specs) {
+            abi.append(spec.name());
+            if (spec.defaultType() != null) {
+                abi.append('=').append(typeRef(spec.defaultType()));
+            }
+            abi.append(',');
+        }
+        abi.append('>');
     }
 
     private static void appendGenerics(StringBuilder abi, List<String> generics) {

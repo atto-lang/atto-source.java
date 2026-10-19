@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import java.util.IdentityHashMap;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
@@ -123,6 +124,46 @@ public final class OresScheduler implements AutoCloseable {
 
         private static Resume completed(Object value, Throwable failure) {
             return new Resume(false, value, failure);
+        }
+    }
+
+    // Await dependencies are VM-wide, not scheduler-local: tasks on distinct
+    // schedulers may await each other. Identity is essential for Future tokens.
+    // Entries exist only while a task is suspended on a pending Future.
+    private static final Object AWAIT_GRAPH_LOCK = new Object();
+    private static final IdentityHashMap<OresFuture<?>, OresFuture<?>> AWAIT_GRAPH =
+            new IdentityHashMap<>();
+
+    private static boolean registerAwaitDependency(
+            OresFuture<?> owner, OresFuture<?> awaited) {
+        synchronized (AWAIT_GRAPH_LOCK) {
+            if (AWAIT_GRAPH.containsKey(owner)) {
+                throw new IllegalStateException("task already has an active Future await");
+            }
+            OresFuture<?> cursor = awaited;
+            int remaining = AWAIT_GRAPH.size() + 1;
+            while (cursor != null && remaining-- > 0) {
+                if (cursor == owner) return false;
+                cursor = AWAIT_GRAPH.get(cursor);
+            }
+            if (cursor != null) {
+                // A pre-existing cyclic graph is a runtime invariant violation.
+                throw new IllegalStateException("Future await graph contains a cycle");
+            }
+            AWAIT_GRAPH.put(owner, awaited);
+            return true;
+        }
+    }
+
+    private static void removeAwaitDependency(OresFuture<?> owner) {
+        synchronized (AWAIT_GRAPH_LOCK) {
+            AWAIT_GRAPH.remove(owner);
+        }
+    }
+
+    static boolean hasAwaitDependency(OresFuture<?> owner) {
+        synchronized (AWAIT_GRAPH_LOCK) {
+            return AWAIT_GRAPH.containsKey(owner);
         }
     }
 
@@ -797,11 +838,53 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void armAwait(OresFuture<?> awaited) {
+            // Awaiting the task's own completion creates an unresolvable
+            // dependency (including Future.flatten() cycles). Reject before
+            // publishing a waiter, rather than retaining the task forever.
+            if (awaited == completion) {
+                failTerminal(new IllegalStateException(
+                        "scheduler task cannot await its own completion Future"));
+                return;
+            }
             if (!phase.compareAndSet(RUNNING, WAITING)) {
                 return;
             }
 
             try {
+                // Settled futures need no dependency edge and cannot take
+                // part in a *pending* cycle. Keep their fast path lock-free.
+                Object alreadyTerminal = awaited.runtimeTerminalStateOrNull();
+                if (alreadyTerminal != null) {
+                    deliverAwaitCompletion(
+                            OresFuture.runtimeTerminalValue(alreadyTerminal),
+                            OresFuture.runtimeTerminalFailure(alreadyTerminal));
+                    return;
+                }
+                // Register before callback publication. Detect A -> B -> ... -> A
+                // under one lock, including cycles crossing scheduler instances.
+                // No user code executes while the graph lock is held.
+                if (!registerAwaitDependency(completion, awaited)) {
+                    // The producer may have settled while another task
+                    // published a dependency. Prefer the terminal outcome
+                    // over a now-obsolete await graph.
+                    Object terminal = awaited.runtimeTerminalStateOrNull();
+                    if (terminal != null) {
+                        deliverAwaitCompletion(
+                                OresFuture.runtimeTerminalValue(terminal),
+                                OresFuture.runtimeTerminalFailure(terminal));
+                        return;
+                    }
+                    failTerminal(new IllegalStateException(
+                            "cyclic Future await dependency detected"));
+                    return;
+                }
+                // Cancellation might have revoked this task before the graph
+                // edge was installed. Recheck admission before fast-path
+                // observation so terminal results cannot strand an edge.
+                if (phase.get() != WAITING) {
+                    removeAwaitDependency(completion);
+                    return;
+                }
                 // Hot path: terminal Futures are immutable. Observe their
                 // already-published terminal state directly and enqueue the
                 // continuation for a fresh dispatch without allocating a
@@ -848,7 +931,10 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void deliverAwaitCompletion(Object value, Throwable failure) {
-            if (phase.get() == TERMINAL) return;
+            if (phase.get() == TERMINAL) {
+                removeAwaitDependency(completion);
+                return;
+            }
 
             Resume resume = Resume.completed(
                     value,
@@ -859,6 +945,9 @@ public final class OresScheduler implements AutoCloseable {
                 return;
             }
 
+            // The awaited Future has settled: this is no longer a pending
+            // dependency, even though scheduling the continuation may lag.
+            removeAwaitDependency(completion);
             if (phase.get() == TERMINAL) {
                 pendingResume.compareAndSet(resume, null);
                 return;
@@ -884,6 +973,7 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void detachActiveAwaitRegistration() {
+            removeAwaitDependency(completion);
             OresFuture.RuntimeWaiterRegistration<?> registration =
                     activeAwaitRegistration.getAndSet(null);
             if (registration != null) registration.detach();
