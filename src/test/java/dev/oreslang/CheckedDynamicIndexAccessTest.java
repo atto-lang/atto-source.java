@@ -179,6 +179,7 @@ final class CheckedDynamicIndexAccessTest {
                   return record["items"];
                 }
                 """;
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)));
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(source)));
     }
@@ -194,6 +195,7 @@ final class CheckedDynamicIndexAccessTest {
                   return store[key];
                 }
                 """;
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)));
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(source)));
     }
@@ -206,6 +208,7 @@ final class CheckedDynamicIndexAccessTest {
                   return values[0];
                 }
                 """;
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)));
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(source)));
     }
