@@ -54,13 +54,30 @@ public final class AsyncRuntime implements AutoCloseable {
         // 0: not entered, 1: running, 2: guest turn exited/cancelled before entry.
         private final AtomicInteger state = new AtomicInteger();
         private final CountDownLatch exited = new CountDownLatch(1);
+        private final AtomicBoolean retirementClaimed = new AtomicBoolean();
         private volatile Thread thread;
         private volatile OresFuture<?> completion;
         private final OresFuture<Void> quiesced = new OresFuture<>();
+        // Installed before executor admission. For scoped host Tasks this
+        // removes their physical owner slot; ordinary detached Tasks need
+        // only the exit fence.
+        private volatile Runnable physicalRetirement = () -> { };
 
         private void markExited() {
-            exited.countDown();
-            quiesced.completeFromRuntime(null);
+            if (!retirementClaimed.compareAndSet(false, true)) return;
+            Throwable retirementFailure = null;
+            try {
+                physicalRetirement.run();
+            } catch (RuntimeException | Error failure) {
+                retirementFailure = failure;
+            } finally {
+                // The compatibility carrier has physically unwound (or never
+                // entered). Report retirement failures rather than publishing
+                // successful quiescence before owner-bookkeeping callbacks.
+                exited.countDown();
+            }
+            if (retirementFailure == null) quiesced.completeFromRuntime(null);
+            else quiesced.failFromRuntime(retirementFailure);
         }
     }
 
@@ -148,6 +165,14 @@ public final class AsyncRuntime implements AutoCloseable {
 
         OresTask<T> owner() {
             return owner;
+        }
+
+        /** Install an owned, nonblocking physical-retirement action BEFORE dispatch. */
+        void onPhysicalExit(Runnable retirement) {
+            Objects.requireNonNull(retirement, "retirement");
+            if (started.get())
+                throw new IllegalStateException("Task retirement hook after admission");
+            exit.physicalRetirement = retirement;
         }
 
         void start() {
