@@ -48,6 +48,16 @@ public final class OresScheduler implements AutoCloseable {
         void execute(Runnable turn);
     }
 
+    /**
+     * A dispatch reservation that may be removed from a queue without ever
+     * entering TurnExecutor. Dropping it must retire its in-flight counter:
+     * otherwise cancellation can strand physical cleanup and critical tickets.
+     * The two methods arbitrate exactly once using a dispatch-local CAS.
+     */
+    interface AbandonableTurn extends Runnable {
+        void abandoned();
+    }
+
     /** One compiler-generated async state-machine turn. */
     @FunctionalInterface
     public interface Task<T> {
@@ -360,25 +370,46 @@ public final class OresScheduler implements AutoCloseable {
         Objects.requireNonNull(turn, "turn");
         Objects.requireNonNull(afterTurn, "afterTurn");
         ensureOpen();
-        executor.execute(() -> {
-            boolean priorCarrier = Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
-            SCHEDULER_CARRIER.set(Boolean.TRUE);
-            try {
-                turnExecutor.execute(() -> runBound(turn));
-            } catch (RuntimeException | Error failure) {
-                // Context admission can fail before runTurn starts. Settle the
-                // owning task instead of leaving the host waiting forever.
-                admissionFailure.accept(failure);
-                if (failure instanceof VirtualMachineError fatal) throw fatal;
-                if (failure instanceof ThreadDeath fatal) throw fatal;
-                if (failure instanceof LinkageError fatal) throw fatal;
-            } finally {
-                if (priorCarrier) {
-                    SCHEDULER_CARRIER.set(Boolean.TRUE);
-                } else {
-                    SCHEDULER_CARRIER.remove();
+        AtomicInteger dispatchState = new AtomicInteger(); // 0=queued, 1=entered, 2=dropped
+        executor.execute(new AbandonableTurn() {
+            @Override
+            public void run() {
+                if (!dispatchState.compareAndSet(0, 1)) return;
+                boolean priorCarrier = Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
+                SCHEDULER_CARRIER.set(Boolean.TRUE);
+                try {
+                    turnExecutor.execute(() -> runBound(turn));
+                } catch (RuntimeException | Error failure) {
+                    // Context admission can fail before runTurn starts. Settle
+                    // the owning task, even if the guest continuation did not
+                    // enter Truffle's context.
+                    admissionFailure.accept(failure);
+                    if (failure instanceof VirtualMachineError fatal) throw fatal;
+                    if (failure instanceof ThreadDeath fatal) throw fatal;
+                    if (failure instanceof LinkageError fatal) throw fatal;
+                } finally {
+                    if (priorCarrier) {
+                        SCHEDULER_CARRIER.set(Boolean.TRUE);
+                    } else {
+                        SCHEDULER_CARRIER.remove();
+                    }
+                    afterTurn.run();
                 }
-                afterTurn.run();
+            }
+
+            @Override
+            public void abandoned() {
+                // A queued actor continuation can be removed during actor
+                // shutdown, and shutdownNow() can remove owned-executor work.
+                // Neither path runs TurnExecutor, so retire that reservation
+                // here. A turn that already entered cannot be abandoned.
+                if (!dispatchState.compareAndSet(0, 2)) return;
+                try {
+                    admissionFailure.accept(new java.util.concurrent.CancellationException(
+                            "scheduler turn abandoned before physical admission"));
+                } finally {
+                    afterTurn.run();
+                }
             }
         });
     }
@@ -405,7 +436,12 @@ public final class OresScheduler implements AutoCloseable {
         tasks.clear();
 
         if (ownedExecutor != null) {
-            ownedExecutor.shutdownNow();
+            // shutdownNow returns queued turns that never reached their
+            // finally/afterTurn boundary; retire them explicitly.
+            java.util.List<Runnable> abandoned = ownedExecutor.shutdownNow();
+            for (Runnable dropped : abandoned) {
+                if (dropped instanceof AbandonableTurn turn) turn.abandoned();
+            }
             if (CURRENT.get() != this) {
                 try {
                     if (!ownedExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
@@ -459,21 +495,31 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void enqueueTurn() {
-            // Reserve physical dispatch authority *before* handing the turn
-            // to the executor. Cancellation cannot retire critical state while
-            // an accepted turn may still enter the Truffle context.
+            // Reserve physical dispatch authority BEFORE handing a turn to the
+            // executor. Inline executors can propagate a fatal guest failure
+            // after their finally/afterTurn boundary has already retired it.
+            // Both paths must arbitrate the same reservation exactly once.
             inFlightDispatches.incrementAndGet();
+            AtomicBoolean retired = new AtomicBoolean();
+            Runnable afterTurnOnce = () -> {
+                if (retired.compareAndSet(false, true)) afterCarrierTurn();
+            };
             try {
                 executeTurn(() -> {
                     try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
                         runTurn();
                     }
-                }, this::afterCarrierTurn, this::failTerminal);
+                }, afterTurnOnce, this::failTerminal);
             } catch (RuntimeException | Error rejected) {
                 failTerminal(rejected);
-                inFlightDispatches.decrementAndGet();
-                publishPhysicalRetirementIfReady();
-                publishTerminalIfReady();
+                if (retired.compareAndSet(false, true)) {
+                    // Only an unentered/rejected dispatch belongs to this
+                    // catch path. Never subtract a reservation already retired
+                    // by an inline executor's physical exit.
+                    inFlightDispatches.decrementAndGet();
+                    publishPhysicalRetirementIfReady();
+                    publishTerminalIfReady();
+                }
                 throw rejected;
             }
         }

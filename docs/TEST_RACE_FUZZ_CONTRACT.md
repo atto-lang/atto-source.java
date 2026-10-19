@@ -10,11 +10,15 @@
 > actor/Task schedule replay, and general source-level model checking remain
 > **unimplemented**; no clean general-concurrency result is implied.
 
-Status (2026-10-18): **not an implemented race detector or schedule fuzzer**.
-The Java launcher now provides `oreslang test <file.ores>` for existing
-Oreslang-native `TestSuite` execution, and deliberately exits **2** for
-`--race`, `--fuzz`, `--seed`, `--runs`, or `--replay`. These modes must
-remain unavailable until the checks below run on compiled guest programs.
+Status (2026-10-19): **guest race detection and true guest schedule fuzzing remain unavailable**.
+The Java launcher executes Oreslang-native `TestSuite` programs.
+`--race` deliberately exits **2** until guest accesses are instrumented.
+`--fuzz` can check real seeded native `fuzz_int_cases` integer properties;
+`--seed` and `--runs` validate their reported input parameters, and
+`--replay` verifies only bounded CriticalGate input exploration (v2 source-
+closure fingerprint), **not** guest scheduling. The `--deadlock` and
+`--model-check` modes cover only a bounded CriticalGate graph/reference model.
+See `docs/TESTING_COMMAND_MODES.md` for the exact supported combinations.
 Do **not** mark an ordinary green test as race-free or deadlock-free.
 
 ## Target CLI
@@ -119,9 +123,11 @@ Record each choice with a stable resource ID and code-generation epoch.
    deterministic synthetic deadlock fixtures. Prove seed replay identical.
 5. Widen to actors, channels, select, timeouts, restarts, FFI boundaries and
    native LLVM/TSan-assisted backend verification.
-6. Only then enable `oreslang test --race` / `--fuzz` and a machine-readable
-   `ORES_TEST|RACE` / `ORES_TEST|DEADLOCK` / `ORES_TEST|FUZZ` report
-   protocol with explicit backend instrumentation coverage.
+6. Only then enable general guest `oreslang test --race` and true
+   scheduler/coverage-guided `--schedule-fuzz` modes with machine-readable
+   `ORES_TEST|RACE` / `ORES_TEST|DEADLOCK` / `ORES_TEST|FUZZ` reports.
+   Native bounded integer-property `--fuzz` is a separate, limited feature
+   and must never imply full guest scheduling or memory-race coverage.
 
 Interim Java host tests include `CriticalPhysicalRetirementTest`,
 `CriticalLogicalDeadlockTest`, `CriticalSeededTransitionFuzzTest`,
@@ -163,3 +169,64 @@ destination list at `.github/private-ci-approved-repositories.txt` on
 `main`: it contains no approved repositories. Source mirroring requires a
 reviewed allowlist entry and destination privacy/permission verification;
 availability of GitHub Actions minutes is not authorization to copy source.
+
+## October 19: actor two-phase shutdown and dropped-dispatch retirement
+
+A new audit found two additional runtime hazards beyond cancellation of a
+physically executing critical owner:
+
+1. **Callbacks under actor `lifecycleLock`:** finalization previously called
+   source scheduler close, mailbox/channel close and drain, output close, exit
+   hook, and Future completion under the actor's lifecycle monitor. The
+   two-phase path now publishes a lock-protected readiness gate, then runs
+   potentially callback-bearing release steps outside that monitor. Queued
+   mailbox draining also rejects callers holding the lifecycle monitor.
+   Terminal publication follows owned-future/child cancellation requests.
+2. **Permanently queued dispatch reservations:** scheduler actor continuation
+   envelopes can be dropped when an actor stops. The scheduler must receive a
+   single-shot `abandoned()` signal for every queued turn that is discarded
+   without execution. A dispatch-local CAS arbitrates `run()` vs
+   `abandoned()`, so physical-retirement accounting decrements exactly once.
+   The same signal is applied to work returned by `shutdownNow()` on owned
+   executors. This matters for `critical` ticket release after cancellation.
+
+Added exact-source JUnit regression classes:
+`ActorFinalizationCallbackIsolationTest` and
+`SchedulerAbandonedDispatchTest`. They assert that actor exit and terminal
+callbacks run outside lifecycleLock, parent/task cancellation precedes
+publication, actor turn completion obeys the physical boundary, abandoned
+queued source Tasks cannot execute guest code, and retirement runs exactly once.
+
+Independently, a standalone Java 21 state model passed 200,000 sequential
+trial orderings and 5,000 three-way concurrent cancel/run/abandon races.
+**This is model-only evidence.** It does not mean the exact Oreslang source
+compiled or executed. Source CI on this branch was still queued/no confirmed
+steps when the changes were recorded. Do not merge until exact-head
+compiler/JUnit/GraalVM workflows have actually run and passed.
+
+Private CI transfer is blocked by the unmerged allowlist proposal
+[PR #1472](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1472).
+Even a private destination with a successfully executed Actions workflow is
+not eligible for source mirroring until approved through protected main.
+
+
+## October 19 supplementary audit
+
+A host task dispatched to a synchronous/inlined executor can exit its guest
+turn and subsequently propagate a fatal Error back to the submitter. The
+`afterTurn` path and submission `catch` must share one single-shot
+reservation retirement flag; otherwise `inFlightDispatches` can go negative.
+Added `SchedulerInlineRetirementTest` for fatal guest turns and submission
+rejections, inspecting the exact in-flight counter.
+
+Actor mailbox Channel.tryRead is now invoked outside actor lifecycleLock.
+Channel selection can publish Future results and invoke completion listeners.
+The existing second pre-dispatch stop check prevents delivery after shutdown
+wins.
+
+A local Java 21 standalone design model completed 100,000 fatal inline,
+100,000 rejected submission, and 5,000 concurrent retirement scenarios,
+all passing. This is model-only evidence, not Oreslang Maven/JUnit execution.
+Latest exact-source GitHub Actions jobs still had no executed steps. Private
+cross-organization source mirroring remains pending the reviewed allowlist
+proposal in PR #1472.
