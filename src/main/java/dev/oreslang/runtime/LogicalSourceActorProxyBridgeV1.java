@@ -112,8 +112,9 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
     /**
      * Host-only verification hook: bind one resumable scheduler frame to the
      * current physical actor before its source generation can be retired.
-     * Unlike public admission, this is deliberately NOT an ActorRef method.
-     * The final compiler-owned TaskScope must replace this test seam.
+     * Ownership/cancellation/physical join now use canonical OresTaskScope;
+     * this bridge remains proof-only because the compiler has not yet issued
+     * an actor/route/code-affinity receipt for a lowered source Task frame.
      */
     <T> OresFuture<T> startHostPinnedTaskForUpgrade(
             OresScheduler scheduler, OresScheduler.Task<T> frame) {
