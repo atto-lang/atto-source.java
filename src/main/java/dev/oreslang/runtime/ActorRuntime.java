@@ -2136,7 +2136,7 @@ public final class ActorRuntime implements AutoCloseable {
             // Absence from the actors map, or finalized=true, must not forge
             // a successful await while terminal callbacks are still pending.
             if (cell != null) cell.awaitFinalized(unit.toNanos(timeout));
-            else awaitTerminalObservation(doneFuture, unit.toNanos(timeout));
+            else ActorCell.awaitTerminalObservation(doneFuture, unit.toNanos(timeout));
             return doneFuture.isDone();
         }
 
