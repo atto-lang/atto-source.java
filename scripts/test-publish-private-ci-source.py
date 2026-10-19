@@ -335,6 +335,39 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(child["GH_PROMPT_DISABLED"], "1")
         self.assertEqual(child["GIT_CONFIG_GLOBAL"], "/dev/null")
 
+    def test_gh_api_uses_ephemeral_home_instead_of_attacker_gh_credentials(self):
+        # GH_CONFIG_DIR scrubbing alone is insufficient: gh also reads
+        # ~/.config/gh/hosts.yml via an inherited HOME.
+        attacker_home = self.root / "attacker-home"
+        config = attacker_home / ".config" / "gh"
+        config.mkdir(parents=True)
+        (config / "hosts.yml").write_text("github.com:\\n  oauth_token: attacker-canary\\n")
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            env = kwargs["env"]
+            captured["home"] = env["HOME"]
+            self.assertNotEqual(env["HOME"], str(attacker_home))
+            self.assertEqual(env["XDG_CONFIG_HOME"], env["HOME"])
+            self.assertTrue(Path(env["HOME"]).is_dir())
+            self.assertFalse((Path(env["HOME"]) / ".config" / "gh" / "hosts.yml").exists())
+            self.assertNotIn("HTTPS_PROXY", env)
+            self.assertNotIn("GH_CONFIG_DIR", env)
+            self.assertEqual(env["GH_HOST"], "github.com")
+            self.assertEqual(env["GH_TOKEN"], "synthetic-ci-token")
+            return subprocess.CompletedProcess(argv, 0, stdout="{}", stderr="")
+
+        with patch.dict(os.environ, {
+                "HOME": str(attacker_home),
+                "GH_TOKEN": "synthetic-ci-token",
+                "HTTPS_PROXY": "http://attacker.invalid:8123",
+                "GH_CONFIG_DIR": str(config)}):
+            with patch.object(pub.subprocess, "run", side_effect=fake_run) as runner:
+                self.assertEqual(pub.gh_api("repos/trusted/ci"), {})
+                self.assertEqual(runner.call_count, 1)
+        self.assertFalse(Path(captured["home"]).exists(),
+                         "ephemeral gh config directory must be cleaned up")
+
     def test_real_preflight_never_executes_checkout_shell_or_inherited_bash_env(self):
         # Approval is now parsed strictly as data: even a script that
         # explicitly writes a marker must never be invoked by the publisher.
