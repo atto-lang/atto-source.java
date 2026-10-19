@@ -85,6 +85,36 @@ final class DefaultCallShapeV3Test {
                 new Bound(1, 1, 1, Origin.PROVIDED, Fill.EXPRESSION, null)), List.of(1, 1)));
     }
 
+    @Test void forgedPlanCannotSkipSourceItemsOrReuseOmissionMarkers() {
+        // The sole supplied expression cannot secretly refer to the second
+        // source item while silently ignoring the first.
+        assertThrows(IllegalArgumentException.class, () -> new Plan(List.of(
+                new Bound(0, 1, 0, Origin.PROVIDED, Fill.EXPRESSION, null)),
+                List.of(1)));
+
+        // An explicit omission and a provided expression cannot point at the
+        // same raw item; both source positions must be uniquely accounted for.
+        assertThrows(IllegalArgumentException.class, () -> new Plan(List.of(
+                new Bound(0, 0, -1, Origin.EXPLICIT_OMISSION, Fill.IMPLICIT_NONE, null),
+                new Bound(1, 0, 0, Origin.PROVIDED, Fill.EXPRESSION, null)),
+                List.of(0)));
+
+        // Two omission markers cannot alias the same source token.
+        assertThrows(IllegalArgumentException.class, () -> new Plan(List.of(
+                new Bound(0, 0, -1, Origin.EXPLICIT_OMISSION, Fill.IMPLICIT_NONE, null),
+                new Bound(1, 0, -1, Origin.EXPLICIT_OMISSION, Fill.IMPLICIT_NONE, null)),
+                List.of()));
+
+        Plan valid = DefaultCallShapeV3.bind(
+                List.of(new Formal("a", true, true, null),
+                        new Formal("b", true, true, null),
+                        new Formal("c", true, true, null)),
+                List.of(Item.omit(null), Item.value(null), Item.omit(null)));
+        assertEquals(List.of(1), valid.evaluatedRawIndices());
+        assertEquals(Origin.EXPLICIT_OMISSION, valid.abiSlots().get(0).origin());
+        assertEquals(Origin.EXPLICIT_OMISSION, valid.abiSlots().get(2).origin());
+    }
+
     @Test void randomizedAcceptedPlansPreserveEveryRawExpressionExactlyOnce() {
         Random rng = new Random(20261019);
         int accepted = 0;
