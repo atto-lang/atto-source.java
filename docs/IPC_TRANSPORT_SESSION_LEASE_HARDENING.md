@@ -108,3 +108,39 @@ The real localhost socket self-test is checked into the exact Java branch and
 wired into `scripts/check-ipc-receipt-parity.sh` and `IpcReceiptParityTest`.
 Source-org Actions still need to actually allocate a runner before those
 source files can be claimed as executed.
+
+
+## Replay, pre-authentication memory and key-lifetime hardening
+
+The authenticated framing layer now additionally treats transport ordering and
+pre-MAC resource use as security invariants:
+
+- \`messageSequence\` **and** \`frameSequence\` are independently strictly
+  increasing for one authenticated outbound stream. Advancing the logical
+  message number does not authorize frame-sequence rollback.
+- Authenticated DATA decode requires a per-connection
+  \`InboundReplayGate\`. The gate is constant-memory and rejects an exact
+  valid-MAC replay, message rollback, or frame rollback after full
+  MAC/digest/epoch/generation verification. Because this transport is a TCP
+  byte stream, authenticated decreasing sequence is stale/replayed state, not
+  benign network reordering.
+- DATA decoding is safe-by-default: callers cannot decode a frame without
+  supplying expected logical epoch, physical generation and replay gate.
+- Receipt reads use a **1024-byte pre-authentication frame cap** instead of the
+  DATA-size bound. A hostile length prefix is rejected before allocating or
+  reading the advertised body. DATA remains bounded to the 8 MiB payload limit
+  plus fixed framing headroom.
+- The adapter owns a private clone of broker key material. Its clone is
+  zero-filled by the authoritative physical-close callback only after admitted
+  physical writers have drained. The broker's input array is never modified.
+  A cleanup-scheduler rejection leaves the session quarantined and key clone
+  intact until explicit supervisor retry performs authoritative close; the
+  generation remains unusable throughout quarantine.
+- Source tests cover exact DATA replay, independent frame rollback, monotonic
+  next-frame acceptance, oversized unauthenticated receipt length, and key
+  destruction after retirement.
+
+The source-free funded canary independently exercises the corresponding
+properties without copying Oreslang source. Its current run is intentionally
+evidence about hosted JDK/socket behavior and the abstract security contract,
+not source-head certification.
