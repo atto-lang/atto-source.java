@@ -51,6 +51,26 @@ final class DynNominalWitnessTest {
     }
 
     @Test
+    void uncertainUnionAndContainerCannotForgeDynThroughAnAlternateArm() {
+        Types.Dyn witness = new Types.Dyn(new Types.Named("Deployable", List.of()));
+        Types.Type sourceUnion = new Types.Union(
+                List.of(Types.Unknown.INSTANCE, Types.Primitive.INT));
+        Types.Type targetUnion = new Types.Union(
+                List.of(witness, Types.Primitive.INT));
+
+        assertFalse(Types.isAssignable(sourceUnion, targetUnion),
+                "Unknown must not select the int arm to enter a union containing dyn");
+        assertFalse(Types.isAssignable(
+                new Types.Named("Option", List.of(Types.Unknown.INSTANCE)),
+                new Types.Named("Option", List.of(witness))));
+        assertFalse(Types.isAssignable(
+                new Types.Record(java.util.Map.of("value", Types.Unknown.INSTANCE)),
+                new Types.Record(java.util.Map.of("value", witness))));
+        assertTrue(Types.isAssignable(Types.Primitive.INT, targetUnion),
+                "proven ordinary values may still inhabit the non-dyn union arm");
+    }
+
+    @Test
     void ordinaryNonDynUnknownCompatibilityRemainsUnchanged() {
         assertTrue(Types.isAssignable(
                 Types.Unknown.INSTANCE,
