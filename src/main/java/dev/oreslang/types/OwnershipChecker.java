@@ -1432,6 +1432,10 @@ public final class OwnershipChecker {
                         staticClass, member.member(), arity, new LinkedHashSet<>());
                 if (fn != null) {
                     Ast.ClassDecl owner = declaringClassOf(staticClass, fn);
+                    if (owner == null) {
+                        throw new IllegalStateException(
+                                "cannot locate declaring class for checked static named call");
+                    }
                     String targetName = owner.name() + "." + fn.name();
                     requireStagedTarget(proof, "static-function", targetName);
                     proof.requireFormalNames(
