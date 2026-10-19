@@ -385,3 +385,52 @@ An isolated OpenJDK 21 checkpoint-ordering model compiled under
 cancel-while-running, guest exception versus cancellation and
 pre-admission cancellation. It is not the production TaskHandle source or
 scheduler, so this is supportive concurrency-model evidence only.
+
+
+## Revocation-versus-retirement observer barrier hardening
+
+During a 2026-10-18 follow-up audit, `TaskCancellation.retire()` was
+found to detach *pre-admitted* `onCancel` observers after the token had
+been marked cancelled but before a concurrently executing trusted
+`onRevoke` callback finished. The cancellation dispatcher subsequently
+had no observer to deliver, violating the promised revoker-before-observer
+ordering and losing the cancellation notification.
+
+**Fix:** Under `GRAPH_LOCK`, retirement still finalizes ownership and
+discards registrations on tokens that have not cancelled or whose
+revocation is complete. However, for `cancelled &&
+!revocationComplete`, it preserves already-admitted observers in the
+token's pending list. The active cancellation dispatcher owns their
+exactly-once delivery after all pre-admitted revokers complete. New
+subscriptions after retirement remain closed and are never delivered.
+No observer callback runs under `GRAPH_LOCK`.
+
+**Production source regression cases committed:**
+- `retirementDuringRevocationDeliversPreAdmittedObserver`: blocked
+  revoker, cross-thread retirement and notification once afterward.
+- `reentrantRetirementCannotDropCancellationObserver`: retirement
+  directly inside an active revoker.
+- `childRetirementDuringParentCancellationPreservesObserver`: parent
+  cancellation already marked the child and its revoker is blocked.
+
+The latest staged JUnit inventory has **65** methods
+(24 `TaskCancellationTest`, 24 `TaskHandleTest`, and
+17 `TaskScopeTest`) across the stage-2 branch, **not yet executed**
+as production Maven/JUnit.
+
+**Source-free alternate Actions proof:** private
+`opto-sync-test/go-java-validation` commit
+`2283bf205d2fac1821f7bcbdadc84742b2e21535`,
+[Actions run #39190035194](https://github.com/opto-sync-test/go-java-validation/actions/runs/39190035194):
+all **12** steps succeeded on Java 21.0.12.1, including
+2,250 task-admission model cases, 1,600 generic lifecycle cases,
+and 900 newly added cancellation/retirement barrier model cases:
+**4,750 source-free checks total**. These are independent models,
+not byte-for-byte Oreslang runtime source or GraalVM tests.
+
+The cross-org private-source mirror was *not* performed: source
+`main` remains unprotected and the reviewed destination allowlist
+is empty. Previously reported private-source exposure remains an
+open security-review gate. Use an independently approved exact-tree
+destination or restore original source-local runner to execute these
+committed JUnit methods before merging.
