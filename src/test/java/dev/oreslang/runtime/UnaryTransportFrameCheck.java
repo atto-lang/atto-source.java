@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetAddress;
@@ -64,6 +65,10 @@ public final class UnaryTransportFrameCheck {
 
         byte[] wire = UnaryTransportFrame.encodeTcp(request);
         check(ByteBuffer.wrap(wire).getInt() == wire.length - 4, "TCP length prefix");
+        ByteArrayOutputStream streamed = new ByteArrayOutputStream();
+        UnaryTransportFrame.writeTcp(streamed, request);
+        check(Arrays.equals(streamed.toByteArray(), wire),
+                "streaming TCP writer must match canonical encoded bytes");
         var decoded = UnaryTransportFrame.readTcp(new ByteArrayInputStream(wire));
         check(decoded.kind() == UnaryTransportFrame.Kind.REQUEST && decoded.generation() == 7
                 && decoded.correlationId() == 81 && Arrays.equals(decoded.payload(), request.payload()),
