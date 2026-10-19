@@ -156,6 +156,19 @@ final class LogicalSourceActorSupervisorUpgradeTxnTest {
                         "prepublication timeout must rollback transaction freeze");
                 assertEquals(1L, mailbox.snapshot().routeEpoch());
                 assertEquals(1L, router.ref().routeEpoch());
+                Field rollbackOwner = LogicalSourceActorRouterV1.class
+                        .getDeclaredField("pendingRollbackTransfer");
+                rollbackOwner.setAccessible(true);
+                Field quarantine = LogicalSourceActorRouterV1.class
+                        .getDeclaredField("retirementQuarantined");
+                quarantine.setAccessible(true);
+                assertNotNull(rollbackOwner.get(router),
+                        "failed candidate physical rollback must retain its old ingress freeze");
+                assertTrue(quarantine.getBoolean(router),
+                        "prepublication rollback failure must block future physical admissions");
+                assertThrows(IllegalStateException.class,
+                        () -> router.upgradeToForProxy(candidate, WAIT, mailbox),
+                        "unreconciled rollback must reject a second publication");
 
                 // Cleanup requested stop before the black-holed runnable ever
                 // entered the actor carrier. Executing that stale schedule now
@@ -170,6 +183,13 @@ final class LogicalSourceActorSupervisorUpgradeTxnTest {
                 }
                 assertEquals(1, reaped);
                 assertEquals(0, router.reapRetired());
+                assertNotNull(rollbackOwner.get(router),
+                        "retiring candidate code alone must not release old ingress freeze");
+                assertTrue(router.reconcileFailedUpgradeRollback(),
+                        "supervisor must retry exact retained transfer rollback");
+                assertNull(rollbackOwner.get(router));
+                assertFalse(quarantine.getBoolean(router));
+                assertFalse(mailbox.snapshot().dispatchFrozen());
             } finally {
                 dispatcherField.set(candidateRuntime, original);
                 blackHole.shutdownNow();
