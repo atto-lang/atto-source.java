@@ -47,7 +47,7 @@ final class LogicalActorProxyMailboxV1Test {
             // actor mailbox rejected an attempted send, including >127.
             var retained = mailbox.snapshot();
             assertThrows(IllegalStateException.class,
-                    () -> mailbox.requeueProvenUnsent(later.messageSequence()));
+                    () -> LogicalActorProxyMailboxTestAccess.requeueBySequence(mailbox, later.messageSequence()));
             assertEquals(retained, mailbox.snapshot());
             LogicalActorProxyMailboxTestAccess.complete(mailbox, later.messageSequence());
             assertEquals(136L, mailbox.snapshot().completionWatermark());
@@ -75,7 +75,7 @@ final class LogicalActorProxyMailboxV1Test {
             // non-acceptance receipt. Retain the attempt until terminal
             // completion; never restore bytes to the dispatch queue.
             assertThrows(IllegalStateException.class,
-                    () -> mailbox.requeueProvenUnsent(envelope.messageSequence()));
+                    () -> LogicalActorProxyMailboxTestAccess.requeueBySequence(mailbox, envelope.messageSequence()));
             assertEquals(charged, mailbox.snapshot());
             assertEquals(0, mailbox.snapshot().queuedMessages());
             LogicalActorProxyMailboxTestAccess.complete(mailbox, envelope.messageSequence());
@@ -90,7 +90,7 @@ final class LogicalActorProxyMailboxV1Test {
         try (var mailbox = new LogicalActorProxyMailboxV1(2, 8, 16)) {
             var envelope = mailbox.admit(new byte[] {41});
             assertSame(envelope, mailbox.pollDispatch());
-            mailbox.requeueProvenUnsent(envelope.messageSequence());
+            LogicalActorProxyMailboxTestAccess.requeueBySequence(mailbox, envelope.messageSequence());
             assertEquals(1, mailbox.snapshot().queuedMessages());
 
             assertSame(envelope, mailbox.pollDispatch());
@@ -98,14 +98,14 @@ final class LogicalActorProxyMailboxV1Test {
             var attempted = mailbox.snapshot();
             for (int retry = 0; retry < 4; ++retry) {
                 assertThrows(IllegalStateException.class,
-                        () -> mailbox.requeueProvenUnsent(envelope.messageSequence()));
+                        () -> LogicalActorProxyMailboxTestAccess.requeueBySequence(mailbox, envelope.messageSequence()));
                 assertEquals(attempted, mailbox.snapshot());
             }
             var freeze = mailbox.freezeDispatchForUpgrade();
             assertFalse(freeze.drained());
             freeze.rollback();
             assertThrows(IllegalStateException.class,
-                    () -> mailbox.requeueProvenUnsent(envelope.messageSequence()));
+                    () -> LogicalActorProxyMailboxTestAccess.requeueBySequence(mailbox, envelope.messageSequence()));
             LogicalActorProxyMailboxTestAccess.complete(mailbox, envelope.messageSequence());
             assertEquals(1L, mailbox.snapshot().completionWatermark());
             assertEquals(0, mailbox.snapshot().retainedMessages());
@@ -138,7 +138,7 @@ final class LogicalActorProxyMailboxV1Test {
                 Thread retry = Thread.ofPlatform().start(() -> {
                     try {
                         go.await();
-                        mailbox.requeueProvenUnsent(envelope.messageSequence());
+                        LogicalActorProxyMailboxTestAccess.requeueBySequence(mailbox, envelope.messageSequence());
                         requeued.set(true);
                     } catch (IllegalStateException lostRace) {
                         // Physical attempt won and may already be accepted.
@@ -157,7 +157,7 @@ final class LogicalActorProxyMailboxV1Test {
                     assertEquals(1, mailbox.snapshot().outstandingMessages());
                     assertEquals(0, mailbox.snapshot().queuedMessages());
                     assertThrows(IllegalStateException.class,
-                            () -> mailbox.requeueProvenUnsent(
+                            () -> LogicalActorProxyMailboxTestAccess.requeueBySequence(mailbox, 
                                     envelope.messageSequence()));
                 } else {
                     assertEquals(0, mailbox.snapshot().outstandingMessages());
@@ -375,7 +375,7 @@ final class LogicalActorProxyMailboxV1Test {
             assertEquals(second.messageSequence(),
                     mailbox.pollDispatch().messageSequence());
             var before = mailbox.snapshot();
-            mailbox.requeueProvenUnsent(second.messageSequence());
+            LogicalActorProxyMailboxTestAccess.requeueBySequence(mailbox, second.messageSequence());
             var after = mailbox.snapshot();
             assertEquals(before.retainedMessages(), after.retainedMessages());
             assertEquals(before.retainedBytes(), after.retainedBytes());
@@ -402,17 +402,17 @@ final class LogicalActorProxyMailboxV1Test {
             mailbox.pollDispatch();
             var before = mailbox.snapshot();
             assertThrows(IllegalStateException.class,
-                    () -> mailbox.requeueProvenUnsent(first.messageSequence()));
+                    () -> LogicalActorProxyMailboxTestAccess.requeueBySequence(mailbox, first.messageSequence()));
             assertEquals(before, mailbox.snapshot(),
                     "rejected older rollback cannot change queue or credits");
 
             var freeze = mailbox.freezeDispatchForUpgrade();
             assertThrows(IllegalStateException.class,
-                    () -> mailbox.requeueProvenUnsent(second.messageSequence()));
+                    () -> LogicalActorProxyMailboxTestAccess.requeueBySequence(mailbox, second.messageSequence()));
             freeze.rollback();
             LogicalActorProxyMailboxTestAccess.complete(mailbox, second.messageSequence());
             assertThrows(IllegalStateException.class,
-                    () -> mailbox.requeueProvenUnsent(second.messageSequence()),
+                    () -> LogicalActorProxyMailboxTestAccess.requeueBySequence(mailbox, second.messageSequence()),
                     "completed sends must never be admitted again");
             LogicalActorProxyMailboxTestAccess.complete(mailbox, first.messageSequence());
             assertEquals(0, mailbox.snapshot().retainedMessages());
@@ -429,9 +429,9 @@ final class LogicalActorProxyMailboxV1Test {
             LogicalActorProxyMailboxTestAccess.complete(mailbox, 2L);
             var before = mailbox.snapshot();
             assertThrows(IllegalStateException.class,
-                    () -> mailbox.requeueProvenUnsent(2L));
+                    () -> LogicalActorProxyMailboxTestAccess.requeueBySequence(mailbox, 2L));
             assertEquals(before, mailbox.snapshot());
-            mailbox.requeueProvenUnsent(last.messageSequence());
+            LogicalActorProxyMailboxTestAccess.requeueBySequence(mailbox, last.messageSequence());
             assertEquals(2L, mailbox.snapshot().highestDispatchedSequence());
             assertEquals(1L, mailbox.snapshot().queuedMessages());
             assertEquals(3L, mailbox.pollDispatch().messageSequence());
@@ -641,7 +641,7 @@ final class LogicalActorProxyMailboxV1Test {
                     try {
                         start.await();
                         try {
-                            mailbox.requeueProvenUnsent(1L);
+                            LogicalActorProxyMailboxTestAccess.requeueBySequence(mailbox, 1L);
                         } catch (IllegalStateException freezeWon) {
                             // Freeze acquired the lock before the trusted
                             // unsent rollback. It must not mutate the message.
@@ -679,7 +679,7 @@ final class LogicalActorProxyMailboxV1Test {
 
                 freeze.get().rollback();
                 if (snapshot.outstandingMessages() == 1) {
-                    mailbox.requeueProvenUnsent(1L);
+                    LogicalActorProxyMailboxTestAccess.requeueBySequence(mailbox, 1L);
                 }
                 assertEquals(1L, mailbox.pollDispatch().messageSequence());
                 LogicalActorProxyMailboxTestAccess.complete(mailbox, 1L);
@@ -717,7 +717,7 @@ final class LogicalActorProxyMailboxV1Test {
             mailbox.admit(bytes("ccc"));
 
             assertEquals(1L, mailbox.pollDispatch().messageSequence());
-            mailbox.requeueProvenUnsent(1L);
+            LogicalActorProxyMailboxTestAccess.requeueBySequence(mailbox, 1L);
             var requeued = mailbox.snapshot();
             assertEquals(0L, requeued.highestDispatchedSequence());
             assertEquals(3, requeued.queuedMessages());
@@ -748,18 +748,18 @@ final class LogicalActorProxyMailboxV1Test {
             mailbox.pollDispatch();
             mailbox.pollDispatch();
             assertThrows(IllegalStateException.class,
-                    () -> mailbox.requeueProvenUnsent(1L),
+                    () -> LogicalActorProxyMailboxTestAccess.requeueBySequence(mailbox, 1L),
                     "only the most recent dispatch can be proven unsent");
 
             var freeze = mailbox.freezeDispatchForUpgrade();
             assertThrows(IllegalStateException.class,
-                    () -> mailbox.requeueProvenUnsent(2L),
+                    () -> LogicalActorProxyMailboxTestAccess.requeueBySequence(mailbox, 2L),
                     "a frozen dispatch watermark cannot be rolled backwards");
             assertFalse(freeze.drained());
             freeze.rollback();
             LogicalActorProxyMailboxTestAccess.complete(mailbox, 2L);
             assertThrows(IllegalStateException.class,
-                    () -> mailbox.requeueProvenUnsent(2L),
+                    () -> LogicalActorProxyMailboxTestAccess.requeueBySequence(mailbox, 2L),
                     "a completed delivery must never be replayed");
             LogicalActorProxyMailboxTestAccess.complete(mailbox, 1L);
             assertEquals(0, mailbox.snapshot().retainedMessages());
