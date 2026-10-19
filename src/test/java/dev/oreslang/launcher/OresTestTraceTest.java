@@ -59,6 +59,37 @@ final class OresTestTraceTest {
     }
 
     @Test
+    void changedProjectManifestInvalidatesClosureTrace() throws Exception {
+        Path project = temporary.resolve("project-with-manifest");
+        Files.createDirectories(project);
+        Path source = project.resolve("main.ores");
+        Path manifest = project.resolve(".oreslangc.cfg.toml");
+        Path trace = project.resolve("project.trace");
+        Files.writeString(source, "pub routine main(): void { return; }\n");
+        Files.writeString(manifest, "schema_version = \"1\"\n"
+                + "[project]\nname = \"first\"\n");
+        var result = new OresTestExploration.Report(21, 4, 0, 0, 0, 123);
+        OresTestTrace.write(trace, source, 42, 0, true, result);
+        assertDoesNotThrow(() -> OresTestTrace.read(trace, source));
+        Files.writeString(manifest, "schema_version = \"1\"\n"
+                + "[project]\nname = \"second\"\n");
+        assertThrows(IOException.class, () -> OresTestTrace.read(trace, source));
+    }
+
+    @Test
+    void legacyEntryOnlyTraceVersionIsRejected() throws Exception {
+        Path source = temporary.resolve("legacy.ores");
+        Path trace = temporary.resolve("legacy.trace");
+        Files.writeString(source, "pub routine main(): void { return; }\n");
+        var result = new OresTestExploration.Report(0, 0, 1, 0, 0, 33);
+        OresTestTrace.write(trace, source, 5, 1, false, result);
+        String v2 = Files.readString(trace);
+        Files.writeString(trace, v2.replace("oreslang-critical-exploration-v2",
+                "oreslang-critical-exploration-v1"));
+        assertThrows(IOException.class, () -> OresTestTrace.read(trace, source));
+    }
+
+    @Test
     void rejectContradictoryTraceMetadataAtReadAndWrite() throws Exception {
         Path source = temporary.resolve("metadata.ores");
         Path trace = temporary.resolve("metadata.trace");
