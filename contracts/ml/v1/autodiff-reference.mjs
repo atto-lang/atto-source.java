@@ -7,6 +7,7 @@ const RESERVED_INPUT = '$input';
 const MAX_NODES = 128;
 const MAX_PARAMETER_SCALARS = 65536;
 const MAX_ACTIVATION_SCALARS = 65536;
+const MAX_INFLIGHT_ACTIVATION_SCALARS = 262144;
 const MAX_MICROBATCHES = 4096;
 const MAX_LEDGER_ENTRIES = 4096;
 function record(value, required, optional=[], name='record') {
@@ -101,7 +102,11 @@ function compileNodes(specs, output) {
     if (type === 'dense') {
       if (!Object.hasOwn(spec,'weights')||!Object.hasOwn(spec,'bias')) throw new TypeError(`${id} missing weights/bias`);
       const rows=dataArray(spec.weights,id+' weight rows',4096);
-      const weights=rows.map((row,i)=>vector(row,`${id}.weights[${i}]`));
+      // Budget before copying an adversarially large weight matrix.
+      const firstRow=vector(rows[0],`${id}.weights[0]`);
+      if(parameterScalars+rows.length*(firstRow.length+1)>MAX_PARAMETER_SCALARS)
+        throw new RangeError('PARAMETER_BUDGET_EXCEEDED');
+      const weights=[firstRow,...rows.slice(1).map((row,i)=>vector(row,`${id}.weights[${i+1}]`))];
       const bias=vector(spec.bias,`${id}.bias`);
       if (bias.length !== weights.length) throw new RangeError(`${id} bias rows mismatch`);
       for (const w of weights) same(w,weights[0],`${id} weight matrix`);
@@ -129,9 +134,9 @@ export class ActorAutodiffReference {
   constructor(config) {
     record(config,['nodes','output'],['maxInFlight','maxCommittedSteps'],'config');
     this.#nodes=compileNodes(config.nodes,config.output);
-    this.#maxInFlight=integer(config.maxInFlight??8,'maxInFlight',1);
+    this.#maxInFlight=integer(Object.hasOwn(config,'maxInFlight')?config.maxInFlight:8,'maxInFlight',1);
     if(this.#maxInFlight>MAX_MICROBATCHES) throw new RangeError('maxInFlight too large');
-    this.#maxCommittedSteps=integer(config.maxCommittedSteps??MAX_LEDGER_ENTRIES,'maxCommittedSteps',1);
+    this.#maxCommittedSteps=integer(Object.hasOwn(config,'maxCommittedSteps')?config.maxCommittedSteps:MAX_LEDGER_ENTRIES,'maxCommittedSteps',1);
     if(this.#maxCommittedSteps>MAX_LEDGER_ENTRIES) throw new RangeError('maxCommittedSteps too large');
   }
   get version() { return this.#modelVersion; }
@@ -148,7 +153,7 @@ export class ActorAutodiffReference {
     // Never evict replay tokens: refuse new steps once this in-memory ledger is full.
     if(this.#committedIds.size>=this.#maxCommittedSteps) throw new Error('REPLAY_LEDGER_EXHAUSTED');
     this.#step = {runId,stepId,expectedMicrobatches,version:this.#modelVersion,
-      frames:new Map(),completed:new Set(),gradients:new Map(),receipts:[]};
+      frames:new Map(),completed:new Set(),gradients:new Map(),receipts:[],activeActivationScalars:0};
     return {runId,stepId,parameterVersion:this.#modelVersion};
   }
   #match(message) {
@@ -190,7 +195,10 @@ export class ActorAutodiffReference {
         microbatchId,parameterVersion:s.version
       });
     }
-    s.frames.set(microbatchId,{activations,target:targetCopy});
+    if (s.activeActivationScalars+activationScalars>MAX_INFLIGHT_ACTIVATION_SCALARS)
+      throw new Error('ACTIVATION_CREDIT_EXHAUSTED');
+    s.frames.set(microbatchId,{activations,target:targetCopy,activationScalars});
+    s.activeActivationScalars+=activationScalars;
     s.receipts.push(...receipts);
     return {loss:activations.get(this.#nodes.at(-1).id)[0],runId,stepId,microbatchId,parameterVersion:s.version};
   }
@@ -251,6 +259,7 @@ export class ActorAutodiffReference {
     finite(dx,'input gradient');
     s.gradients=merged;
     s.frames.delete(microbatchId);
+    s.activeActivationScalars-=frame.activationScalars;
     s.completed.add(microbatchId);
     s.receipts.push(...receipts);
     return {inputGradient:dx.slice(),runId,stepId,microbatchId,parameterVersion:s.version};
