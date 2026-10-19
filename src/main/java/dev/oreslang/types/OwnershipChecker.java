@@ -849,6 +849,20 @@ public final class OwnershipChecker {
             throw error("readonly structural records cannot gain mutable bindings or aliases");
         }
 
+        // A whole move-only owner may transfer from a read-only binding into a
+        // new mutable owner. A field/index projection is different: ordinary
+        // projection is an aliasing read and does not invalidate the containing
+        // owner. Therefore a mutable projected alias needs mutable authority at
+        // the projection's receiver/root or it would launder write access
+        // through an immutable alias.
+        if (binding.mutableReferent() && value.kind != ValueKind.COPY) {
+            if (binding.initializer() instanceof Ast.MemberExpr member) {
+                ensureMutableReceiver(member.receiver(), scope, "mutable projected alias");
+            } else if (binding.initializer() instanceof Ast.IndexExpr indexed) {
+                ensureMutableReceiver(indexed.receiver(), scope, "mutable projected alias");
+            }
+        }
+
         value = retainBorrowForBinding(value);
         Ast.TypeRef storedType = binding.declaredType() == null ? value.type : binding.declaredType();
         String shortAlias = validatedShortAliases.get(binding);
