@@ -373,7 +373,9 @@ def publish(repository, source, branch, trusted_root, source_pr=None,
     new_tree_sha = valid_sha(new_tree.get("sha"))
     authorize_write()
     commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
-        "message": "ci: source snapshot from approved private Oreslang checkout",
+        "message": (
+            f"ci: exact private Oreslang tree {source_commit} tree {source_tree}"
+        ),
         "tree": new_tree_sha, "parents": [base_sha]
     })
     commit_sha = valid_sha(commit.get("sha"))
