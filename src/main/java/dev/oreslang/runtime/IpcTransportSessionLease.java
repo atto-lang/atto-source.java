@@ -43,6 +43,8 @@ final class IpcTransportSessionLease {
     private boolean physicalCloseConfirmed;
     private boolean receiptsRetired;
     private Throwable closeFailure;
+    private long cleanupAttempt;
+    private boolean cleanupExecuting;
 
     IpcTransportSessionLease(IpcReceiptCorrelation.Envelope trustedEpoch,
                              long generation, int limit,
@@ -155,22 +157,41 @@ final class IpcTransportSessionLease {
     }
 
     private void scheduleFinalization() {
+        final long attempt;
+        synchronized (this) {
+            if (phase != Phase.FINALIZING) return;
+            if (cleanupAttempt == Long.MAX_VALUE) {
+                closeFailure = new IllegalStateException("cleanup attempt overflow");
+                phase = Phase.QUARANTINED;
+                return;
+            }
+            attempt = ++cleanupAttempt;
+        }
         try {
-            scheduler.enqueue(this::finalizePhysicalClose);
+            scheduler.enqueue(() -> finalizePhysicalClose(attempt));
         } catch (RuntimeException | Error failure) {
             synchronized (this) {
-                closeFailure = failure;
-                phase = Phase.QUARANTINED;
+                if (phase == Phase.FINALIZING && cleanupAttempt == attempt
+                        && !cleanupExecuting) {
+                    closeFailure = failure;
+                    phase = Phase.QUARANTINED;
+                }
             }
         }
     }
 
-    private void finalizePhysicalClose() {
+    private void finalizePhysicalClose(long attempt) {
+        synchronized (this) {
+            if (phase != Phase.FINALIZING || cleanupAttempt != attempt
+                    || cleanupExecuting) return;
+            cleanupExecuting = true;
+        }
         try {
             if (!physicalCloseConfirmed) closer.closeAndConfirm();
         } catch (Exception | Error failure) {
             synchronized (this) {
                 closeFailure = failure;
+                cleanupExecuting = false;
                 phase = Phase.QUARANTINED;
             }
             return; // Never declare the descriptor reusable.
@@ -182,12 +203,14 @@ final class IpcTransportSessionLease {
         } catch (RuntimeException | Error failure) {
             synchronized (this) {
                 closeFailure = failure;
+                cleanupExecuting = false;
                 phase = Phase.QUARANTINED;
             }
             return;
         }
         synchronized (this) {
             receiptsRetired = true;
+            cleanupExecuting = false;
             phase = Phase.RETIRED;
         }
     }
@@ -204,6 +227,7 @@ final class IpcTransportSessionLease {
                 && (!physicalCloseConfirmed || activeWrites == 0)
                 && (phase != Phase.RETIRED || (physicalCloseConfirmed && receiptsRetired))
                 && (phase != Phase.OPEN || !physicalCloseConfirmed)
-                && (phase != Phase.FINALIZING || activeWrites == 0);
+                && (phase != Phase.FINALIZING || activeWrites == 0)
+                && (!cleanupExecuting || phase == Phase.FINALIZING);
     }
 }
