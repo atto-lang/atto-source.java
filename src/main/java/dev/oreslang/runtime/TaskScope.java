@@ -20,12 +20,19 @@ package dev.oreslang.runtime;
         }
 
         public synchronized Registration reserve() {
-            // Phase 1 allows a nested Task spawned while a previously
-            // admitted child remains active. The compiler has not yet
-            // installed provenance-carrying lifetime permits, so scoped
-            // borrowed captures must stay disabled.
-            if (closing && active == 0) {
-                throw new IllegalStateException("Task spawned after scope quiescence");
+            return reserve(null);
+        }
+
+        /**
+         * Root admissions are permitted only while the lexical scope is open.
+         * After close(), a child may admit descendants only while holding a
+         * live ticket to this exact scope. The ticket is not a guest value.
+         * Caller must pass the logical child continuation's own ticket.
+         */
+        public synchronized Registration reserve(Registration parent) {
+            if (closing && (parent == null || !parent.maySpawnInto(this))) {
+                throw new IllegalStateException(
+                        "Task spawned into closing scope without a live child permit");
             }
             if (active == Integer.MAX_VALUE) {
                 throw new IllegalStateException("Task scope admission exhausted");
@@ -72,6 +79,12 @@ package dev.oreslang.runtime;
             private Throwable failure;
 
             private Registration(TaskScope scope) { this.scope = scope; }
+
+            private synchronized boolean maySpawnInto(TaskScope expected) {
+                // Terminal cancellation revokes admissions even if the
+                // cancelled child has not yet physically left its carrier.
+                return scope == expected && !terminal && !quiescent && !notified;
+            }
 
             public void attach(OresFuture<?> future) {
                 java.util.Objects.requireNonNull(future, "child Future");
