@@ -335,14 +335,48 @@ public class TaskScopeTest {
         }
     }
 
-    @Test void schedulerRejectionDoesNotLeakScopeJoinSlots() throws Exception {
+    @Test void schedulerRejectionRetiresNeverStartedLoanExactlyOnce()
+            throws Exception {
         OresScheduler scheduler = new OresScheduler(1);
         TaskScope scope = scheduler.newTaskScope();
+        AtomicInteger retired = new AtomicInteger();
         scheduler.close();
+
         assertThrows(RejectedExecutionException.class,
-                () -> scope.startTask(r -> OresScheduler.done(4)));
+                () -> scope.startTask(
+                        r -> OresScheduler.done(4),
+                        retired::incrementAndGet));
+
+        assertEquals(1, retired.get(),
+                "never-started child must retire its pre-admitted loan once");
+        assertNull(scope.retirementFailure());
         scope.seal();
         scope.getDone().get(3, TimeUnit.SECONDS);
+        assertEquals(1, retired.get());
+    }
+
+    @Test void failedNeverStartedLoanRetirementPoisonsScope()
+            throws Exception {
+        OresScheduler scheduler = new OresScheduler(1);
+        TaskScope scope = scheduler.newTaskScope();
+        IllegalStateException retirementFailure =
+                new IllegalStateException("never-started retirement failed");
+        scheduler.close();
+
+        RejectedExecutionException admission = assertThrows(
+                RejectedExecutionException.class,
+                () -> scope.startTask(
+                        r -> OresScheduler.done(4),
+                        () -> { throw retirementFailure; }));
+
+        assertSame(retirementFailure, scope.retirementFailure());
+        assertTrue(java.util.Arrays.asList(admission.getSuppressed())
+                .contains(retirementFailure));
+        assertTrue(scope.isCancellationRequested());
+        assertFalse(scope.getDone().isDone(),
+                "failed retirement must keep the reserved join slot live");
+        assertThrows(RejectedExecutionException.class,
+                () -> scope.startTask(r -> OresScheduler.done(5)));
     }
     @Test void alreadyTerminalChildNeverPublishesScopeDoneUnderAdmissionLock()
             throws Exception {
