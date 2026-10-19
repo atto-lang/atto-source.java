@@ -4,6 +4,7 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.SendSyncTraits;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.Types.*;
+import dev.oreslang.types.Types.Record;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
