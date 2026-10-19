@@ -73,14 +73,24 @@ def gh_api(route, method="GET", payload=None):
             "--header", "Accept: application/vnd.github+json"]
     if payload is not None:
         argv.extend(["--input", "-"])
-    # Preserve GitHub auth, but do not forward loader hooks or executable
-    # lookup controlled by the calling checkout/process environment.
-    env = {key: value for key, value in os.environ.items()
-           if key not in ("LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT",
-                          "LD_DEBUG", "LD_PROFILE", "BASH_ENV", "ENV")
-           and not key.startswith("DYLD_")}
-    env.update(GH_HOST="github.com", GH_PROMPT_DISABLED="1",
-               PATH="/usr/bin:/bin")
+    # Never inherit the caller's arbitrary process environment: GH_TOKEN
+    # can be exfiltrated through an inherited HTTPS_PROXY/SSL_CERT_FILE trust
+    # override even when /usr/bin/gh itself is root-owned and pinned. Other
+    # GitHub CLI knobs (GH_CONFIG_DIR, GH_DEBUG, GH_ENTERPRISE_HOST, etc.)
+    # are equally outside this reviewed request contract.
+    credential_names = ("GH_TOKEN", "GITHUB_TOKEN")
+    provided = [key for key in credential_names if os.environ.get(key)]
+    if len(provided) != 1:
+        raise Denied("exactly one explicit GitHub API token is required")
+    env = {
+        provided[0]: os.environ[provided[0]],
+        "GH_HOST": "github.com",
+        "GH_PROMPT_DISABLED": "1",
+        "PATH": "/usr/bin:/bin",
+        "HOME": "/",
+        "XDG_CONFIG_HOME": "/nonexistent",
+        "LC_ALL": "C.UTF-8",
+    }
     try:
         p = subprocess.run(argv, input=json.dumps(payload) if payload is not None else None,
                            capture_output=True, text=True, env=env, timeout=45, check=False)
