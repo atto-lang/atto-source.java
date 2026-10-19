@@ -1680,7 +1680,7 @@ public final class TypeChecker {
             Ast.BindingStmt binding, Env env, Set<String> generics) {
         if (binding.inferredTypeName() != null || binding.kind() != Ast.BindingKind.CONST
                 || binding.mutableReferent()
-                || !(binding.initializer() instanceof Ast.ObjectExpr object && object.inferredStruct())) {
+                || !(binding.initializer() instanceof Ast.ObjectExpr object && object.inferredAggregate())) {
             return false;
         }
         Ast.TypeRef ref = binding.declaredType();
