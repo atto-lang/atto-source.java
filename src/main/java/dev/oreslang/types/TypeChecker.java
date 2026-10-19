@@ -5392,6 +5392,10 @@ public final class TypeChecker {
             return true;
         }
         if (type instanceof Record record) {
+            // readOnly is only a view capability. It may still alias writable
+            // backing storage left in another execution context, so it is not
+            // shared-safe without a separate frozen/exclusive provenance proof.
+            if (record.readOnly()) return false;
             for (Type member : record.members().values()) {
                 if (!isSharedSafe(member, seen, genericBindings, depth + 1, budget)) return false;
             }
