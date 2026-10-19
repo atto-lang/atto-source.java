@@ -24,6 +24,11 @@ final class IpcTransportSessionLease {
         void closeAndConfirm() throws Exception;
     }
 
+    @FunctionalInterface interface CleanupScheduler {
+        /** Bounded, nonparking, never caller-runs; host-owned worker only. */
+        void enqueue(Runnable cleanup);
+    }
+
     record Snapshot(long generation, Phase phase, int activeWrites,
                     boolean physicalCloseConfirmed, boolean receiptsRetired) { }
 
@@ -32,6 +37,7 @@ final class IpcTransportSessionLease {
     private final int limit;
     private final IpcReceiptCompletionBridge receipts;
     private final PhysicalCloser closer;
+    private final CleanupScheduler scheduler;
     private Phase phase = Phase.OPEN;
     private int activeWrites;
     private boolean physicalCloseConfirmed;
@@ -40,7 +46,7 @@ final class IpcTransportSessionLease {
 
     IpcTransportSessionLease(String session, long generation, int limit,
                              IpcReceiptCompletionBridge receipts,
-                             PhysicalCloser closer) {
+                             PhysicalCloser closer, CleanupScheduler scheduler) {
         if (session == null || session.isBlank() || session.length() > 96
                 || generation <= 0 || limit <= 0 || limit > 65536) {
             throw new IllegalArgumentException("invalid transport session policy");
@@ -50,6 +56,7 @@ final class IpcTransportSessionLease {
         this.limit = limit;
         this.receipts = Objects.requireNonNull(receipts, "receipts");
         this.closer = Objects.requireNonNull(closer, "closer");
+        this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
     }
 
     long generation() { return generation; }
@@ -91,14 +98,18 @@ final class IpcTransportSessionLease {
         }
     }
 
-    /** Non-parking close intent. Physical close runs only after all pins drain. */
+    /**
+     * Close intent does not wait for writes or run physical cleanup inline.
+     * An admitted last-writer release submits cleanup to a bounded host
+     * worker; on scheduler failure the session stays quarantined.
+     */
     void requestClose() {
         boolean finalize;
         synchronized (this) {
             if (phase == Phase.OPEN) phase = Phase.CLOSING;
             finalize = beginFinalization();
         }
-        if (finalize) finalizePhysicalClose();
+        if (finalize) scheduleFinalization();
     }
 
     /** An explicit supervisor retry never reopens a quarantined session. */
@@ -109,7 +120,7 @@ final class IpcTransportSessionLease {
             }
             phase = Phase.FINALIZING;
         }
-        finalizePhysicalClose();
+        scheduleFinalization();
     }
 
     private void releaseWrite() {
@@ -119,7 +130,7 @@ final class IpcTransportSessionLease {
             --activeWrites;
             finalize = beginFinalization();
         }
-        if (finalize) finalizePhysicalClose();
+        if (finalize) scheduleFinalization();
     }
 
     /** Only called while holding this monitor. */
@@ -129,6 +140,17 @@ final class IpcTransportSessionLease {
             return true;
         }
         return false;
+    }
+
+    private void scheduleFinalization() {
+        try {
+            scheduler.enqueue(this::finalizePhysicalClose);
+        } catch (RuntimeException | Error failure) {
+            synchronized (this) {
+                closeFailure = failure;
+                phase = Phase.QUARANTINED;
+            }
+        }
     }
 
     private void finalizePhysicalClose() {
