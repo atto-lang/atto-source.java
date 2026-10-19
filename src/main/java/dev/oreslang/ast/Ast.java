@@ -1012,6 +1012,75 @@ public final class Ast {
     public record MemberExpr(Expr receiver, String member) implements Expr { }
     public record IndexExpr(Expr receiver, Expr index) implements Expr { }
 
+    /**
+     * Compiler-certified visible field names for bracket access on a closed
+     * structural value or nominal class. An inferred record can be narrowed by
+     * a structural view without changing its backing storage: the runtime MUST
+     * reject keys hidden by that static view. Proofs are AST-identity scoped;
+     * structural equality is deliberately insufficient.
+     */
+    public static final class CheckedIndexKeys {
+        private CheckedIndexKeys() { }
+
+        private static final java.lang.ref.ReferenceQueue<IndexExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, java.util.Set<String>> KEYS =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey extends java.lang.ref.WeakReference<IndexExpr> {
+            private final int hash;
+
+            private IdentityKey(
+                    IndexExpr site, java.lang.ref.ReferenceQueue<IndexExpr> queue) {
+                super(site, queue);
+                hash = System.identityHashCode(site);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                IndexExpr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends IndexExpr> dead;
+            while ((dead = CLEARED.poll()) != null) KEYS.remove(dead);
+        }
+
+        /** Called only after the checker resolves visibility and the field set. */
+        public static synchronized void record(
+                IndexExpr site, java.util.Collection<String> visibleKeys) {
+            java.util.Objects.requireNonNull(site, "index site");
+            java.util.Objects.requireNonNull(visibleKeys, "visible keys");
+            java.util.Set<String> checked = java.util.Set.copyOf(visibleKeys);
+            expunge();
+            java.util.Set<String> previous = KEYS.putIfAbsent(
+                    new IdentityKey(site, CLEARED), checked);
+            if (previous != null && !previous.equals(checked)) {
+                throw new IllegalStateException(
+                        "same bracket access site has inconsistent visibility proofs");
+            }
+        }
+
+        /** Prevents an erased or widened runtime value from exposing hidden fields. */
+        public static synchronized void require(IndexExpr site, String key) {
+            java.util.Objects.requireNonNull(site, "index site");
+            java.util.Objects.requireNonNull(key, "index key");
+            expunge();
+            java.util.Set<String> visible = KEYS.get(new IdentityKey(site, null));
+            if (visible == null) {
+                throw new IllegalStateException(
+                        "record/class indexing requires a checked access plan");
+            }
+            if (!visible.contains(key)) {
+                throw new IllegalArgumentException(
+                        "unknown or inaccessible field '" + key + "' in indexed view");
+            }
+        }
+    }
+
     public record NewExpr(TypeRef type, List<Expr> arguments) implements Expr {
         public NewExpr { arguments = List.copyOf(arguments); }
     }
