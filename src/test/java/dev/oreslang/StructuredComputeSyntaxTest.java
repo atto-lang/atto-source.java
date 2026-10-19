@@ -138,6 +138,9 @@ final class StructuredComputeSyntaxTest {
     void rejectsForgedAstNodesThatBypassSourceParserShapeChecks() {
         Ast.NameExpr fn = new Ast.NameExpr("invoke");
         Ast.LiteralExpr one = new Ast.LiteralExpr(1L);
+        assertThrows(NullPointerException.class, () -> new Ast.CallExpr(null, List.of()));
+        assertThrows(NullPointerException.class, () ->
+                new Ast.CallExpr(null, List.of(Ast.TypeRef.simple("T")), List.of()));
         Ast.NamedArgumentExpr a = new Ast.NamedArgumentExpr("a", one);
         assertThrows(IllegalArgumentException.class,
                 () -> new Ast.CallExpr(fn, List.of(a, a)));
@@ -163,6 +166,26 @@ final class StructuredComputeSyntaxTest {
         Ast.CallExpr valid = assertDoesNotThrow(() -> new Ast.CallExpr(
                 fn, List.of(one, new Ast.NamedArgumentExpr("b", one))));
         assertEquals(2, valid.arguments().size());
+    }
+
+    @Test
+    void retainsIndexedCompoundWriteAsSingleOpaqueLvalue() {
+        Ast.Program program = Parser.parse("""
+                pub fnc main(): void {
+                    values[index()] += delta;
+                }
+                """);
+        Ast.FunctionDecl fn = assertInstanceOf(Ast.FunctionDecl.class,
+                program.modules().getFirst().declarations().getFirst());
+        Ast.CompoundAssignExpr compound = assertInstanceOf(Ast.CompoundAssignExpr.class,
+                ((Ast.ExprStmt) fn.body().getFirst()).expression());
+        Ast.IndexExpr target = assertInstanceOf(Ast.IndexExpr.class, compound.target());
+        assertEquals(new Ast.NameExpr("values"), target.receiver());
+        Ast.CallExpr index = assertInstanceOf(Ast.CallExpr.class, target.index());
+        assertEquals(new Ast.NameExpr("index"), index.callee());
+        assertEquals(new Ast.NameExpr("delta"), compound.value());
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(program));
+        assertThrows(RuntimeException.class, () -> OwnershipChecker.check(program));
     }
 
     @Test
