@@ -12,6 +12,9 @@ javac -encoding UTF-8 -d "$scratch" \
   "$root/src/main/java/dev/oreslang/runtime/CheckedI64Arithmetic.java" \
   "$root/src/main/java/dev/oreslang/runtime/CheckedI64OverflowException.java" \
   "$root/src/main/java/dev/oreslang/runtime/CheckedI64DivisionByZeroException.java" \
-  "$root/src/test/java/dev/oreslang/CheckedI64StandaloneSmoke.java"
+  "$root/src/main/java/dev/oreslang/parser/CheckedI64SourceHeader.java" \
+  "$root/src/test/java/dev/oreslang/CheckedI64StandaloneSmoke.java" \
+  "$root/src/test/java/dev/oreslang/CheckedI64HeaderStandaloneSmoke.java"
 
 java -cp "$scratch" dev.oreslang.CheckedI64StandaloneSmoke
+java -cp "$scratch" dev.oreslang.CheckedI64HeaderStandaloneSmoke
