@@ -77,7 +77,8 @@ Local JDK 21 `javac --release 21 -Xlint:all -Werror` checked a standalone
 synthetic actor owner/bridge implementation with stubs for scheduler,
 `OresFuture` and router. It executed **2,000** child-ownership,
 cancellation/close, last-exit and lease-drain checks, plus **900**
-fault-injected failed-generation-retirement checks. These checks were
+fault-injected failed-generation-retirement checks, and **500**
+pre-admission ownership reservation/OOME checks. These checks were
 adapted from the implementation but are **not** an exact compiler source
 checkout, GraalVM/JUnit receipt, or Native Image/LLVM proof.
 
