@@ -27,18 +27,18 @@ final class TaskBorrowCompilerBridgeTest {
     @Test void verifiedScalarReadersCoexistButWritersConflict() {
         var ledger = new TaskAccessVerifier();
         var a = TaskBorrowCompilerBridge.admitResolvedScalars(
-                ledger, List.of(read(place())), p -> Ast.TypeRef.simple("int"));
+                ledger, List.of(read(place())), p -> p.root(), p -> Ast.TypeRef.simple("int"));
         var b = TaskBorrowCompilerBridge.admitResolvedScalars(
-                ledger, List.of(read(place())), p -> Ast.TypeRef.simple("int"));
+                ledger, List.of(read(place())), p -> p.root(), p -> Ast.TypeRef.simple("int"));
         assertEquals(2, ledger.activeClaims());
         assertThrows(IllegalArgumentException.class, () ->
                 TaskBorrowCompilerBridge.admitResolvedScalars(
-                        ledger, List.of(write(place())), p -> Ast.TypeRef.simple("int")));
+                        ledger, List.of(write(place())), p -> p.root(), p -> Ast.TypeRef.simple("int")));
         assertEquals(2, ledger.activeChildren());
         ledger.quiescent(a);
         ledger.quiescent(b);
         var writer = TaskBorrowCompilerBridge.admitResolvedScalars(
-                ledger, List.of(write(place())), p -> Ast.TypeRef.simple("int"));
+                ledger, List.of(write(place())), p -> p.root(), p -> Ast.TypeRef.simple("int"));
         ledger.requestCancel(writer);
         assertFalse(ledger.parentMayAccess(read(place())),
                 "cancellation never returns the loan to the parent");
@@ -52,9 +52,9 @@ final class TaskBorrowCompilerBridgeTest {
         var other = TaskAccessVerifier.Place.whole(
                 new TaskAccessVerifier.Root("PROCESS", 102, 1, true));
         var first = TaskBorrowCompilerBridge.admitResolvedScalars(
-                ledger, List.of(write(place())), p -> Ast.TypeRef.simple("int"));
+                ledger, List.of(write(place())), p -> p.root(), p -> Ast.TypeRef.simple("int"));
         var second = TaskBorrowCompilerBridge.admitResolvedScalars(
-                ledger, List.of(write(other)), p -> Ast.TypeRef.simple("bool"));
+                ledger, List.of(write(other)), p -> p.root(), p -> Ast.TypeRef.simple("bool"));
         assertEquals(2, ledger.activeChildren());
         ledger.quiescent(first);
         ledger.quiescent(second);
@@ -72,12 +72,12 @@ final class TaskBorrowCompilerBridgeTest {
         for (Ast.TypeRef type : unsupported) {
             assertThrows(IllegalArgumentException.class, () ->
                     TaskBorrowCompilerBridge.admitResolvedScalars(
-                            ledger, List.of(read(place)), p -> type));
+                            ledger, List.of(read(place)), p -> p.root(), p -> type));
             assertEquals(0, ledger.activeChildren());
         }
         assertThrows(IllegalArgumentException.class, () ->
                 TaskBorrowCompilerBridge.admitResolvedScalars(
-                        ledger, List.of(read(place)), p -> null));
+                        ledger, List.of(read(place)), p -> p.root(), p -> null));
     }
 
     @Test void unsupportedFieldRangeAndActorStorageDoNotForgeProofs() {
@@ -88,10 +88,10 @@ final class TaskBorrowCompilerBridgeTest {
                         "ACTOR_PRIVATE", "actor-1:epoch-1", 5, 1, true));
         assertThrows(IllegalArgumentException.class, () ->
                 TaskBorrowCompilerBridge.admitResolvedScalars(
-                        ledger, List.of(write(projected)), p -> Ast.TypeRef.simple("int")));
+                        ledger, List.of(write(projected)), p -> p.root(), p -> Ast.TypeRef.simple("int")));
         assertThrows(IllegalArgumentException.class, () ->
                 TaskBorrowCompilerBridge.admitResolvedScalars(
-                        ledger, List.of(read(privateActor)), p -> Ast.TypeRef.simple("int")));
+                        ledger, List.of(read(privateActor)), p -> p.root(), p -> Ast.TypeRef.simple("int")));
         assertEquals(0, ledger.activeClaims());
     }
 
@@ -100,7 +100,7 @@ final class TaskBorrowCompilerBridgeTest {
         var resolverCalls = new AtomicInteger();
         assertThrows(IllegalStateException.class, () ->
                 TaskBorrowCompilerBridge.admitResolvedScalars(
-                        ledger, List.of(read(place()), read(place())),
+                        ledger, List.of(read(place()), read(place())), p -> p.root(),
                         p -> Ast.TypeRef.simple(
                                 resolverCalls.incrementAndGet() == 1 ? "int" : "bool")));
         assertEquals(0, ledger.activeChildren());
@@ -110,20 +110,20 @@ final class TaskBorrowCompilerBridgeTest {
     @Test void typeCannotChangeWithoutStructuralGenerationBarrier() {
         var ledger = new TaskAccessVerifier();
         var initial = TaskBorrowCompilerBridge.admitResolvedScalars(
-                ledger, List.of(read(place())), p -> Ast.TypeRef.simple("int"));
+                ledger, List.of(read(place())), p -> p.root(), p -> Ast.TypeRef.simple("int"));
         assertThrows(IllegalStateException.class, () ->
                 TaskBorrowCompilerBridge.admitResolvedScalars(
-                        ledger, List.of(read(place())), p -> Ast.TypeRef.simple("bool")));
+                        ledger, List.of(read(place())), p -> p.root(), p -> Ast.TypeRef.simple("bool")));
         ledger.quiescent(initial);
         // Even after a child leaves, the allocation is still generation 1.
         assertThrows(IllegalStateException.class, () ->
                 TaskBorrowCompilerBridge.admitResolvedScalars(
-                        ledger, List.of(read(place())), p -> Ast.TypeRef.simple("bool")));
+                        ledger, List.of(read(place())), p -> p.root(), p -> Ast.TypeRef.simple("bool")));
         ledger.structuralBarrier(ROOT, 2);
         var updated = TaskAccessVerifier.Place.whole(
                 new TaskAccessVerifier.Root("PROCESS", 101, 2, true));
         var ticket = TaskBorrowCompilerBridge.admitResolvedScalars(
-                ledger, List.of(read(updated)), p -> Ast.TypeRef.simple("bool"));
+                ledger, List.of(read(updated)), p -> p.root(), p -> Ast.TypeRef.simple("bool"));
         ledger.quiescent(ticket);
         ledger.finishScope();
     }
@@ -149,7 +149,7 @@ final class TaskBorrowCompilerBridgeTest {
                 new TaskAccessVerifier.Root("PROCESS", 103, 1, true));
         assertThrows(IllegalArgumentException.class, () ->
                 TaskBorrowCompilerBridge.admitResolvedScalars(
-                        ledger, List.of(write(place()), write(second)),
+                        ledger, List.of(write(place()), write(second)), p -> p.root(),
                         p -> p.equals(second) ? Ast.TypeRef.simple("Unsupported")
                                 : Ast.TypeRef.simple("int")));
         assertEquals(0, ledger.activeClaims());
