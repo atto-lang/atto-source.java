@@ -31,8 +31,8 @@ git -C "$repo" -c user.name=CI-Feature -c user.email=ci-feature@example.invalid 
 head="$(git -C "$repo" rev-parse HEAD)"
 tree="$(git -C "$repo" rev-parse HEAD^{tree})"
 dest_branch="ci/oreslang-test"
-dest_base_commit="ec6a5ddc39dd5524285fcc18902d777c4827c666"
-dest_base_tree="c7eba95c9abfc008e395194360327026cf33bd9c"
+dest_base_commit="fc49aa44726eac47301ae2d676c4b38954d3cc46"
+dest_base_tree="1e9dec690e45df80758547e991d37f6b18872e33"
 dest_cleanup_blob="02f62cd41b8995a6bc7eca9c6f6aff32e698b2f2"
 
 cat > "$tmp/bin/gh" <<'EOF'
@@ -123,10 +123,10 @@ case "$endpoint" in
       exit 1
     fi
     ;;
-  "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/git/commits/ec6a5ddc39dd5524285fcc18902d777c4827c666")
+  "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/git/commits/fc49aa44726eac47301ae2d676c4b38954d3cc46")
     printf '%s\t%s\n' \
-      "${SYNTH_DEST_BASE_COMMIT:-ec6a5ddc39dd5524285fcc18902d777c4827c666}" \
-      "${SYNTH_DEST_BASE_TREE:-c7eba95c9abfc008e395194360327026cf33bd9c}"
+      "${SYNTH_DEST_BASE_COMMIT:-fc49aa44726eac47301ae2d676c4b38954d3cc46}" \
+      "${SYNTH_DEST_BASE_TREE:-1e9dec690e45df80758547e991d37f6b18872e33}"
     ;;
   "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/contents/.github/workflows/private-oreslang-cleanup.yml?ref=main")
     printf '%s\n' "${SYNTH_DEST_CLEANUP_BLOB:-02f62cd41b8995a6bc7eca9c6f6aff32e698b2f2}"
