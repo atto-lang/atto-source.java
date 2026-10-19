@@ -23,6 +23,86 @@ final class InferredRecordBoundaryTest {
     }
 
     @Test
+    void shortNamedRecordIntroducesStructuralAliasForUnknownType() {
+        accepted("""
+                fnc read(): string {
+                    const Person user = infer record{"first name": "Ada", age: 37};
+                    const Person second = infer struct{age: 42, "first name": "Grace"};
+                    return second["first name"];
+                }
+                """);
+    }
+
+    @Test
+    void shortNamedStructAlsoIntroducesReadonlyAlias() {
+        accepted("""
+                fnc read(): string {
+                    const Profile profile = infer struct{name: "Ada", active: true};
+                    const Profile another = infer record{active: false, name: "Grace"};
+                    return another.name;
+                }
+                """);
+    }
+
+    @Test
+    void preexistingTypeAliasIsNotSilentlyRedeclared() {
+        accepted("""
+                type Person = {name: string, age: int};
+                fnc read(): string {
+                    const Person user = infer record{age: 37, name: "Ada"};
+                    return user.name;
+                }
+                """);
+    }
+
+    @Test
+    void shortAliasCannotBeRepeatedOrCapturedByLaterExplicitAlias() {
+        rejected("""
+                fnc bad(): void {
+                    const Person p = infer record{name: "Ada"};
+                    const Person q = infer record{name: "Grace"};
+                    return;
+                }
+                """, null);
+        rejected("""
+                fnc bad(): void {
+                    const T before = infer record{name: "first"};
+                    const T later = infer<T> record{name: "second"};
+                    return;
+                }
+                """, "before initialization");
+    }
+
+    @Test
+    void shortAliasDoesNotEscapeItsLexicalBlock() {
+        rejected("""
+                fnc bad(): void {
+                    block {
+                        const Inner value = infer record{name: "Ada"};
+                    }
+                    const Inner outside = infer struct{name: "Grace"};
+                    return;
+                }
+                """, null);
+    }
+
+    @Test
+    void genericAndBuiltinTypesAreNeverShortAliases() {
+        rejected("""
+                fnc bad<T>(T source): void {
+                    const T value = infer record{name: "Ada"};
+                    return;
+                }
+                """, "initializer for");
+        rejected("""
+                fnc bad(): void {
+                    const String value = infer record{name: "Ada"};
+                    return;
+                }
+                """, "initializer for");
+    }
+
+    @Test
     void namedRecordCarriesLexicalStructuralAliasAndQuotedKeys() {
         String source = """
                 fnc label(): string {
