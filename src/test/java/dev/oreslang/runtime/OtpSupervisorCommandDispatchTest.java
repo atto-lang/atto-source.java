@@ -51,6 +51,9 @@ final class OtpSupervisorCommandDispatchTest {
                                 ActorRuntime.ActorContext<String> context) {
                             assertEquals(ActorRuntime.SupervisorOperation.PREPARE_UPGRADE,
                                     command.operation());
+                            assertTrue(ActorRuntime.isActorCarrierThread());
+                            assertEquals(context.self().id(),
+                                    ActorRuntime.currentActorId().orElseThrow());
                             order.add("CONTROL");
                             commandSeen.countDown();
                         }
@@ -141,6 +144,44 @@ final class OtpSupervisorCommandDispatchTest {
             assertEquals(0, runtime.supervisorCommandStatsFor(parent).outstanding());
             parent.stop();
             assertTrue(parent.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void stoppingActorQuarantinesQueuedUpgradeWithoutInvokingItsCallback() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicInteger observed =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            var actor = runtime.<String>spawnShared(() ->
+                    new ActorRuntime.Behavior<String>() {
+                        @Override public void onMessage(
+                                String msg, ActorRuntime.ActorContext<String> context)
+                                throws Exception {
+                            entered.countDown();
+                            assertTrue(release.await(5, TimeUnit.SECONDS));
+                        }
+
+                        @Override public void onSupervisorCommand(
+                                ActorRuntime.SupervisorCommandNotice notice,
+                                ActorRuntime.ActorContext<String> context) {
+                            observed.incrementAndGet();
+                        }
+                    });
+            actor.send("hold");
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            runtime.submitSupervisorCommand(actor, 1,
+                    ActorRuntime.SupervisorOperation.PREPARE_UPGRADE, DIGEST);
+            assertEquals(1, runtime.supervisorCommandStatsFor(actor).queued());
+            try {
+                actor.stop();
+            } finally {
+                release.countDown();
+            }
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, observed.get(),
+                    "retired actor must not run a quarantined upgrade command");
         }
     }
 
