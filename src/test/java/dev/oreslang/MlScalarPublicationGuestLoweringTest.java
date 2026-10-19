@@ -186,6 +186,46 @@ final class MlScalarPublicationGuestLoweringTest {
             """);
     }
 
+    @Test void scalarCapabilitiesCannotUseGenericRuntimeOrIoSurfaces() {
+        assertRejected("""
+            define actor Bad as
+                state { version: int = 1; weight: int = 5; }
+                private bad(): int with state.read, alloc {
+                    val snapshot = self.handle_state(critical read |s| -> {
+                        return state_snapshot(s, "version", "weight");
+                    });
+                    val duplicate = rt copy snapshot;
+                    return 1;
+                }
+            end
+            """);
+
+        assertRejected("""
+            define actor Bad as
+                state { version: int = 1; weight: int = 5; }
+                private bad(): int with state.read, alloc {
+                    val snapshot = self.handle_state(critical read |s| -> {
+                        return state_snapshot(s, "version", "weight");
+                    });
+                    stdio.println(snapshot);
+                    return 1;
+                }
+            end
+            """);
+
+        assertRejected("""
+            define actor Bad as
+                state { version: int = 1; weight: int = 5; }
+                private bad(): bool with state.read, alloc {
+                    val snapshot = self.handle_state(critical read |s| -> {
+                        return state_snapshot(s, "version", "weight");
+                    });
+                    return snapshot == snapshot;
+                }
+            end
+            """);
+    }
+
     @Test void sealedIntrinsicNamesCannotBeReplacedByModuleValues() {
         assertRejected("""
             pub fnc state_snapshot(int x): int {
