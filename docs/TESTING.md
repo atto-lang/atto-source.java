@@ -115,7 +115,11 @@ deterministic guest scheduler:
   pinned through separate exact-tree CI evidence. Older V1/V2 traces may be
   examined diagnostically but are rejected for CLI replay.
 - `--trace-output` is single-iteration only; the CLI rejects traced symlinks
-  and source/replay aliases. Failures save traces under `.oreslang/failures`.
+  and source/replay aliases. Trace creation uses `CREATE_NEW`: an existing trace
+  file or symlink is never overwritten; choose a fresh output path per run.
+  Failures save traces under `.oreslang/failures`, and identical reruns may
+  fail rather than clobber prior evidence. Neither path checks nor a workspace
+  fingerprint are an authentication mechanism for concurrently mutable inputs.
 - A bounded host-only `ConcurrencyRaceAnalyzer` already supports vector-clock
   read/write conflict checking and happens-before edges for **owner-validated**
   lock release/acquire and globally single-use actor-message IDs, with
