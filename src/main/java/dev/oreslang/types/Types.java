@@ -9,8 +9,17 @@ public final class Types {
 
     public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
 
-    /** Distinguishes structural records from concrete closed struct shapes. */
-    public enum AggregateKind { RECORD, STRUCT }
+    /** Distinguishes runtime records, internal structural contracts, and concrete structs. */
+    public enum AggregateKind { RECORD, CONTRACT, STRUCT }
+
+    private static boolean compatibleAggregateKinds(AggregateKind left, AggregateKind right) {
+        // Concrete structs are a distinct exact-shape value domain. RECORD and
+        // CONTRACT share structural row semantics; CONTRACT only carries
+        // compiler-internal method-signature metadata in addition to data fields.
+        return left == AggregateKind.STRUCT || right == AggregateKind.STRUCT
+                ? left == right
+                : true;
+    }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -59,6 +68,9 @@ public final class Types {
         }
         public static Record struct(Map<String, Type> members) {
             return new Record(members, false, AggregateKind.STRUCT);
+        }
+        public static Record contract(Map<String, Type> members) {
+            return new Record(members, false, AggregateKind.CONTRACT);
         }
     }
 
@@ -167,7 +179,7 @@ public final class Types {
             return a != b && !(isNumeric(a) && isNumeric(b));
         }
         if (first instanceof Record a && second instanceof Record b) {
-            if (a.kind() != b.kind()) return true;
+            if (!compatibleAggregateKinds(a.kind(), b.kind())) return true;
             // Only conflicting *known* fields prove disjointness. Missing keys do not.
             for (var entry : a.members().entrySet()) {
                 Type candidate = b.members().get(entry.getKey());
@@ -248,8 +260,8 @@ public final class Types {
         }
 
         if (from instanceof Record source && to instanceof Record target) {
-            if (source.kind() != target.kind()) return false;
-            // Structs are closed concrete shapes: unlike records, they do not
+            if (!compatibleAggregateKinds(source.kind(), target.kind())) return false;
+            // Structs are closed concrete shapes: unlike records/contracts, they do not
             // participate in row-width subtyping. A lexical infer<T> alias can
             // therefore name the exact generated struct shape.
             if (source.kind() == AggregateKind.STRUCT
