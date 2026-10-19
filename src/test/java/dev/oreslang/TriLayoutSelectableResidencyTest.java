@@ -71,6 +71,33 @@ final class TriLayoutSelectableResidencyTest {
         }
     }
 
+    @Test void physicallyAbsentBuffersStayUnallocated() throws ReflectiveOperationException {
+        var aos = TriLayoutMotionStore.class.getDeclaredField("aos");
+        var soa = TriLayoutMotionStore.class.getDeclaredField("soa");
+        var aosoa = TriLayoutMotionStore.class.getDeclaredField("aosoa");
+        aos.setAccessible(true);
+        soa.setAccessible(true);
+        aosoa.setAccessible(true);
+        for (var resident : configurations()) {
+            try (var region = new TriLayoutMotionStore(3, 2, resident)) {
+                assertEquals(resident.contains(Layout.AOS), aos.get(region) != null);
+                assertEquals(resident.contains(Layout.SOA), soa.get(region) != null);
+                assertEquals(resident.contains(Layout.AOSOA), aosoa.get(region) != null);
+                if (resident.contains(Layout.AOS)) {
+                    assertEquals(12, ((double[]) aos.get(region)).length);
+                }
+                if (resident.contains(Layout.SOA)) {
+                    var columns = (double[][]) soa.get(region);
+                    assertEquals(4, columns.length);
+                    for (double[] column : columns) assertEquals(3, column.length);
+                }
+                if (resident.contains(Layout.AOSOA)) {
+                    assertEquals(16, ((double[]) aosoa.get(region)).length);
+                }
+            }
+        }
+    }
+
     @Test void allSevenCrossLayoutWriteSequencesAndTileBoundaries() {
         for (var resident : configurations()) {
             for (Layout first : resident) {
