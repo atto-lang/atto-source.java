@@ -380,6 +380,48 @@ chmod +x "$work/broken-index-bin/git"
   export PATH="$work/broken-index-bin:$PATH"
   assert_status 68 'duplicated committed-tree row denied' "$clean_tree" source
 )
+# Two simultaneous, successful, identically incomplete Git manifests can
+# agree with each other while misrepresenting HEAD's actual tree. In a wholly
+# synthetic child repo, remove the omitted file and lie consistently in BOTH
+# enumerators; only independent canonical tree-SHA reconstruction detects it.
+(
+  mkdir -p "$work/dual-manifest-oracle"
+  cd "$work/dual-manifest-oracle"
+  git init -q
+  git config user.name CI-Test
+  git config user.email ci-test@example.invalid
+  mkdir source
+  printf 'one\n' > source/one.ores
+  printf 'two\n' > source/two.ores
+  git add source
+  git commit -qm two-files
+  original_tree="$(git rev-parse 'HEAD:source')"
+  rm source/two.ores
+  mkdir -p "$work/dual-manifest-bin"
+  cat > "$work/dual-manifest-bin/git" <<'MOCK_DUAL_MANIFEST'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == ls-files && "$2" == --stage ]] || [[ "$1" == ls-tree ]]; then
+  "$REAL_GIT" "$@" | python3 -c '
+import sys
+rows = sys.stdin.buffer.read().split(b"\0")
+assert len(rows) >= 3 and rows[-1] == b""
+sys.stdout.buffer.write(rows[0] + b"\0")
+'
+  exit 0
+fi
+if [[ "$1" == diff ]]; then
+  exit 0
+fi
+if [[ "$1" == ls-files && "$2" == --others ]]; then
+  exit 0
+fi
+exec "$REAL_GIT" "$@"
+MOCK_DUAL_MANIFEST
+  chmod +x "$work/dual-manifest-bin/git"
+  export PATH="$work/dual-manifest-bin:$PATH"
+  assert_status 68 'matching partial index/tree listings cannot certify HEAD' "$original_tree" source
+)
 # Verify ordinary source works after removing the adversarial Git shim.
 assert_status 0 'clean source remains valid after index failure test' "$clean_tree" source
 echo 'SOURCE_TREE_GATE_TESTS_PASS'
