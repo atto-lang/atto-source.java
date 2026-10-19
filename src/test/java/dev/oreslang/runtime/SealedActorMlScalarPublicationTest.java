@@ -60,6 +60,19 @@ final class SealedActorMlScalarPublicationTest {
                     assertThrows(SecurityException.class,
                             () -> state.critical(true, write -> write.publishScalars(first)));
 
+                    var invalidPublish = state.prepareScalarPublication("version", 2,
+                            Map.of("version", 3L, "weight", 3L,
+                                   "name", "x".repeat(64 * 1024 + 1)));
+                    assertThrows(IllegalArgumentException.class,
+                            () -> state.critical(true,
+                                    write -> write.publishScalars(invalidPublish)));
+                    state.critical(false, read -> {
+                        assertEquals(2L, read.read("version"));
+                        assertEquals(4L, read.read("weight"));
+                        assertEquals(1L, read.read("optimizer"));
+                        return null;
+                    });
+
                     var stale = state.prepareScalarPublication("version", 2,
                             Map.of("version", 3L, "weight", 3L, "optimizer", 2L));
                     state.critical(true, write -> {
