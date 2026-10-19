@@ -2,7 +2,11 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -56,6 +60,48 @@ final class ActorAffinitySoftSpillTest {
             assertTrue(dispatcher.awaitTermination(5, TimeUnit.SECONDS));
         }
         assertEquals(2, completedOnPreferred.get());
+    }
+
+    @Test
+    void enqueuedThenRejectedLaneTurnCannotExecuteAfterAdmissionFailure() {
+        class EnqueueThenThrow extends AbstractExecutorService {
+            private boolean closed;
+            private final AtomicInteger submissions = new AtomicInteger();
+            private final AtomicReference<Runnable> rejectedRunnable = new AtomicReference<>();
+            @Override public void execute(Runnable command) {
+                if (submissions.getAndIncrement() == 0) {
+                    rejectedRunnable.set(command);
+                    throw new RejectedExecutionException("enqueued before failure");
+                }
+                command.run();
+            }
+            @Override public void shutdown() { closed = true; }
+            @Override public List<Runnable> shutdownNow() { closed = true; return List.of(); }
+            @Override public boolean isShutdown() { return closed; }
+            @Override public boolean isTerminated() { return closed; }
+            @Override public boolean awaitTermination(long timeout, TimeUnit unit) {
+                return closed;
+            }
+        }
+        EnqueueThenThrow lane = new EnqueueThenThrow();
+        ActorAffinityDispatcher dispatcher = new ActorAffinityDispatcher(
+                1, 1, new int[0], i -> lane);
+        AtomicInteger guestRuns = new AtomicInteger();
+        try {
+            assertThrows(RejectedExecutionException.class,
+                    () -> dispatcher.executeOnLane(0, guestRuns::incrementAndGet));
+            lane.rejectedRunnable.get().run();
+            assertEquals(0, guestRuns.get(),
+                    "executor rejection must fence even a retained stale runnable");
+            // The rejection must return its capacity; with cap=1, a second
+            // admission cannot proceed otherwise.
+            dispatcher.executeOnLane(0, guestRuns::incrementAndGet);
+            assertEquals(1, guestRuns.get());
+            lane.rejectedRunnable.get().run();
+            assertEquals(1, guestRuns.get());
+        } finally {
+            dispatcher.shutdownNow();
+        }
     }
 
     @Test
