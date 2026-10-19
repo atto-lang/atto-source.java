@@ -461,7 +461,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // No second scheduler can begin between proof validation and
                 // publication of the termination fence.
                 if (released.get() || cell.durableQuiescence != this
-                        || !cell.durableFreezeRequested || cell.carrierActive
+                        || !cell.durableFreezeRequested || !cell.mailbox.isEmpty()
+                        || !cell.continuationMailbox.isEmpty() || cell.carrierActive
                         || cell.scheduled.get() || cell.activeTurns != 0
                         || cell.stopped.get() || cell.finalized) {
                     throw new IllegalStateException("durable execution proof was revoked");
@@ -5045,7 +5046,10 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell == null || cell.stopped.get()) throw terminated(ref);
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
-            if (cell.sealing) throw new ActorSealedException(ref.id());
+            // The durable handoff has no in-memory mail exporter yet.
+            // Reject rather than acknowledge messages that stop() would drop.
+            if (cell.sealing || cell.durableFreezeRequested)
+                throw new ActorSealedException(ref.id());
             if (!cell.reserveMailboxSlot()) {
                 throw new ActorMailboxFullException(ref.id());
             }
@@ -5123,7 +5127,7 @@ public final class ActorRuntime implements AutoCloseable {
                     if (cell.stopped.get() || cell.finalized) {
                         throw terminated(ref);
                     }
-                    if (cell.sealing) {
+                    if (cell.sealing || cell.durableFreezeRequested) {
                         throw new ActorSealedException(ref.id());
                     }
                     if (cell.forceKillFenced) {
@@ -7681,7 +7685,11 @@ public final class ActorRuntime implements AutoCloseable {
                 future = durableFreezePending;
                 durableFreezePending = null;
                 if (stopped.get() || finalized || sourceReceiveSuspended
-                        || activeMail != null || !continuationMailbox.isEmpty()
+                        // A successful freeze must not discard accepted mail.
+                        // Earlier send() admissions are now known to have
+                        // drained before the supervisor can hibernate.
+                        || !mailbox.isEmpty() || activeMail != null
+                        || !continuationMailbox.isEmpty()
                         || !pendingOperations.isEmpty()
                         || activeUntrustedSourceTaskCount != 0
                         || activeUntrustedTimedAdmissions != 0) {
