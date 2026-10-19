@@ -2197,6 +2197,9 @@ public final class ActorRuntime implements AutoCloseable {
          * absent ActorCell for completed finalization.
          */
         private final AtomicBoolean physicallyFinalized = new AtomicBoolean();
+        // A runtime-owned synchronous terminal subscriber may run on the
+        // finalizer itself. It must not wait for its own pending completion.
+        private volatile Thread physicalFinalizationOwnerThread;
         private volatile ActorOutputStream<Object> outputStream;
 
         private ActorRef(ActorId id, ActorKind kind, long generation) {
@@ -2280,6 +2283,11 @@ public final class ActorRuntime implements AutoCloseable {
                     "synchronously wait for actor termination");
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
+            if (!physicallyFinalized.get()
+                    && physicalFinalizationOwnerThread == Thread.currentThread()) {
+                throw new IllegalStateException(
+                        "actor terminal callback cannot join its own physical finalization");
+            }
             ActorCell<?> cell = actors.get(id);
             if (cell == null) return physicallyFinalized.get();
             cell.awaitFinalized(unit.toNanos(timeout));
@@ -8416,6 +8424,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || carrierActive
                     || !children.isEmpty()) return;
             finalized = true;
+            ref.physicalFinalizationOwnerThread = Thread.currentThread();
             OresScheduler scheduler = sourceScheduler;
             sourceScheduler = null;
             if (scheduler != null) {
@@ -8464,6 +8473,7 @@ public final class ActorRuntime implements AutoCloseable {
             // work is complete. If cleanup throws, fail closed and pin code
             // instead of certifying retirement from an absent registry entry.
             ref.physicallyFinalized.set(true);
+            ref.physicalFinalizationOwnerThread = null;
             lifecycleLock.notifyAll();
         }
 
