@@ -575,4 +575,40 @@ final class DynamicPropertyAccessBoundaryTest {
                 """);
     }
 
+    @Test
+    void rhsMoveCannotInvalidateComputedAssignmentReceiver() {
+        rejected("""
+                define class Point as
+                    pub let int x = 1;
+                end
+
+                fnc consume(Point point): int {
+                    return 9;
+                }
+
+                fnc bad(): void {
+                    val Point point = new Point();
+                    const key = "x";
+                    point[key] = consume(point);
+                    return;
+                }
+                """);
+
+        rejected("""
+                define class Point as
+                    pub let int x = 1;
+                end
+
+                fnc consume(Point point): int {
+                    return 9;
+                }
+
+                fnc bad(): void {
+                    val Point point = new Point();
+                    point.x = consume(point);
+                    return;
+                }
+                """);
+    }
+
 }
