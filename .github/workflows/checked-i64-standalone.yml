@@ -9,6 +9,8 @@ on:
       - 'src/main/java/dev/oreslang/runtime/CheckedI64OverflowException.java'
       - 'src/main/java/dev/oreslang/runtime/CheckedI64DivisionByZeroException.java'
       - 'src/test/java/dev/oreslang/CheckedI64StandaloneSmoke.java'
+      - 'src/main/java/dev/oreslang/parser/CheckedI64SourceHeader.java'
+      - 'src/test/java/dev/oreslang/CheckedI64HeaderStandaloneSmoke.java'
   workflow_dispatch:
 
 permissions:
