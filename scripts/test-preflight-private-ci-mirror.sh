@@ -66,9 +66,13 @@ case "$endpoint" in
       *) exit 65 ;;
     esac
     ;;
+  "repos/ores-truffle-oreslang/oreslang-source.java/branches/main/protection")
+    printf 'true\t1\ttrue\ttrue\ttrue\tfalse\tfalse\t0\t0\t0\n'
+    ;;
   "repos/ores-truffle-oreslang/oreslang-source.java/issues/comments/101")
     printf '%s\n' \
       "${SYNTH_MAINT_LOGIN:-the1mills}" \
+      "${SYNTH_MAINT_ID:-2148448}" \
       "${SYNTH_MAINT_ASSOC:-MEMBER}" \
       "2026-10-19T19:00:00Z" \
       "${SYNTH_MAINT_UPDATED:-2026-10-19T19:00:00Z}" \
@@ -78,6 +82,7 @@ case "$endpoint" in
   "repos/ores-truffle-oreslang/oreslang-source.java/issues/comments/102")
     printf '%s\n' \
       "${SYNTH_SECURITY_LOGIN:-ORESoftware}" \
+      "${SYNTH_SECURITY_ID:-11139560}" \
       "${SYNTH_SECURITY_ASSOC:-MEMBER}" \
       "2026-10-19T19:00:00Z" \
       "${SYNTH_SECURITY_UPDATED:-2026-10-19T19:00:00Z}" \
@@ -139,6 +144,8 @@ assert_exit 1 run_preflight SYNTH_PROTECTED=false \
 
 # Wrong security identity, edited comments, or payload drift all fail closed.
 assert_exit 1 run_preflight SYNTH_PROTECTED=false SYNTH_SECURITY_LOGIN=someone-else \
+  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" 101 102
+assert_exit 1 run_preflight SYNTH_PROTECTED=false SYNTH_SECURITY_ID=999999 \
   bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" 101 102
 assert_exit 1 run_preflight SYNTH_PROTECTED=false SYNTH_SECURITY_UPDATED=2026-10-19T19:00:01Z \
   bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" 101 102
