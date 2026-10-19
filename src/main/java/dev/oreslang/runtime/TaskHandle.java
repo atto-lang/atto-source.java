@@ -42,8 +42,25 @@ public final class TaskHandle<T> {
      */
     private static final class CancelledAtResume extends CancellationException {
         CancelledAtResume() {
-            super("task cancelled before scheduler resume");
+            super("task cancelled at a cooperative scheduler checkpoint");
         }
+    }
+
+    // Only the executing host Task turn can install this token. It is restored
+    // after each resume, including nested inline scheduler dispatches, and is
+    // never exposed as an actor/tenant cancellation capability.
+    private static final ThreadLocal<TaskCancellation> CURRENT_CANCELLATION =
+            new ThreadLocal<>();
+
+    /** Polling is nonthrowing; no tracked Task context means no cancellation. */
+    static boolean currentCancellationRequested() {
+        TaskCancellation token = CURRENT_CANCELLATION.get();
+        return token != null && token.isCancelled();
+    }
+
+    /** Compiler/host safepoint only: never call while holding guest locks. */
+    static void checkCurrentCancellationCheckpoint() {
+        if (currentCancellationRequested()) throw new CancelledAtResume();
     }
 
     private final TaskCancellation cancellation;
@@ -146,6 +163,11 @@ public final class TaskHandle<T> {
             if (cancellation.isCancelled()) throw new CancelledAtResume();
             inResume = true;
         }
+        // An OresScheduler Task can be resumed by an inline executor. Restore
+        // the prior logical context so nested turns do not overwrite the
+        // cancellation authority of the caller.
+        TaskCancellation previous = CURRENT_CANCELLATION.get();
+        CURRENT_CANCELLATION.set(cancellation);
         boolean returnedNormally = false;
         try {
             // Invalid null Steps remain a guest failure rather than being
@@ -160,6 +182,8 @@ public final class TaskHandle<T> {
             }
             throw failure;
         } finally {
+            if (previous == null) CURRENT_CANCELLATION.remove();
+            else CURRENT_CANCELLATION.set(previous);
             synchronized (resumeBoundaryLock) {
                 inResume = false;
             }
