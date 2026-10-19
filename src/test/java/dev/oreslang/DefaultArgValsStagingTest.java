@@ -82,6 +82,26 @@ final class DefaultArgValsStagingTest {
     }
 
     @Test
+    void linkedClassMetadataCannotBypassTheDefaultArgumentGate() {
+        Ast.Program program = Parser.parse("""
+                define module m
+                  pub define class Linked as
+                    @DefaultArgVals(x: 3)
+                    pub method(int x): int { return x; }
+                  end
+                end
+                """);
+        Ast.ClassDecl linked = program.modules().stream()
+                .filter(m -> m.name().equals("m"))
+                .flatMap(m -> m.declarations().stream())
+                .filter(d -> d instanceof Ast.ClassDecl)
+                .map(d -> (Ast.ClassDecl) d).findFirst().orElseThrow();
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> UnloweredDefaultArgValsGuard.rejectClass(linked));
+        assertTrue(error.getMessage().contains("parse-only"));
+    }
+
+    @Test
     void stagedMetadataCannotSilentlyRunOnMethodsConstructorsOrFields() {
         Ast.Program program = Parser.parse("""
                 define module m
