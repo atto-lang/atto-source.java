@@ -142,8 +142,9 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
                 // exact envelope, route epoch and physical actor instance;
                 // only a successful physical drain may refund proxy credits.
                 long routeEpoch = mailbox.snapshot().routeEpoch();
-                var receipt = router.sendAndDrainForProxy(envelope, routeEpoch);
-                receipt.awaitAndComplete(mailbox, envelope, timeout);
+                var receipt = router.sendAndDrainForProxy(
+                        mailbox, envelope, routeEpoch);
+                receipt.awaitAndComplete(envelope, timeout);
                 return true;
             } catch (InterruptedException | ExecutionException | TimeoutException
                     | RuntimeException | Error uncertain) {
