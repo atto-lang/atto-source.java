@@ -208,9 +208,14 @@ public final class IncrementalCompiler {
     static String abiDigest(Ast.Program program) {
         // Version bump invalidates older cache entries whose ABI omitted
         // the authorization annotations on exported declarations.
-        StringBuilder abi = new StringBuilder("ores-abi-v6-inherited-role-contracts\n");
+        StringBuilder abi = new StringBuilder("ores-abi-v7-cross-module-inherited-role-contracts\n");
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
 
+        // Reachable private class dependencies may live in a DIFFERENT
+        // module of this source unit than the exported public subclass.
+        // Resolve the complete program graph before fingerprinting modules.
+        Map<String, List<Ast.ClassDecl>> inheritedByModule =
+                exportedPrivateAncestors(program);
         for (Ast.ModuleDecl module : program.modules()) {
             abi.append("module ").append(module.name()).append('\n');
             for (Ast.Annotation annotation : module.annotations()) {
@@ -224,7 +229,8 @@ public final class IncrementalCompiler {
             // callable explicitly references its cases in caller-role metadata.
             // Including every private enum causes needless invalidation and
             // exposes unrelated implementation-only schema changes.
-            List<Ast.ClassDecl> inheritedPrivateClasses = inheritedPrivateClasses(module);
+            List<Ast.ClassDecl> inheritedPrivateClasses =
+                    inheritedByModule.getOrDefault(module.name(), List.of());
             java.util.Set<String> roleEnums =
                     publicRoleEnumDependencies(module, inheritedPrivateClasses);
             for (Ast.Decl decl : module.declarations()) {
@@ -363,37 +369,59 @@ public final class IncrementalCompiler {
         }
     }
 
-    /** Private ancestor schemas reachable through public local subclasses. */
-    private static List<Ast.ClassDecl> inheritedPrivateClasses(Ast.ModuleDecl module) {
+    /**
+     * Private class dependencies reachable from ANY public class within the
+     * same source program. Class owners are nominal module-qualified names.
+     * Without a global scan, a public Child in module B extending module
+     * A's private Base misses role-policy changes to A.Base in the exported ABI.
+     */
+    private static Map<String, List<Ast.ClassDecl>> exportedPrivateAncestors(
+            Ast.Program program) {
         Map<String, Ast.ClassDecl> classes = new LinkedHashMap<>();
-        for (Ast.Decl declaration : module.declarations()) {
-            if (declaration instanceof Ast.ClassDecl klass) {
-                classes.putIfAbsent(klass.name(), klass);
+        java.util.ArrayDeque<String> pending = new java.util.ArrayDeque<>();
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (!(declaration instanceof Ast.ClassDecl klass)) continue;
+                String qualified = module.name() + "." + klass.name();
+                classes.putIfAbsent(qualified, klass);
+                if (klass.visibility() == Ast.Visibility.PUBLIC) {
+                    pending.addLast(qualified);
+                }
             }
         }
-        java.util.ArrayDeque<String> pending = new java.util.ArrayDeque<>();
+
+        Map<String, List<Ast.ClassDecl>> inherited = new LinkedHashMap<>();
         java.util.Set<String> visited = new java.util.HashSet<>();
-        for (Ast.ClassDecl klass : classes.values()) {
-            if (klass.visibility() == Ast.Visibility.PUBLIC) pending.add(klass.name());
-        }
-        List<Ast.ClassDecl> inherited = new ArrayList<>();
         while (!pending.isEmpty()) {
             String current = pending.removeFirst();
             if (!visited.add(current)) continue;
             Ast.ClassDecl klass = classes.get(current);
             if (klass == null) continue;
-            if (klass.visibility() != Ast.Visibility.PUBLIC) inherited.add(klass);
+            String ownerModule = current.substring(0, current.lastIndexOf('.'));
+            if (klass.visibility() != Ast.Visibility.PUBLIC) {
+                inherited.computeIfAbsent(ownerModule, ignored -> new ArrayList<>())
+                        .add(klass);
+            }
             for (Ast.TypeRef parent : klass.parents()) {
-                String name = parent.name();
-                if (name == null) continue;
-                String prefix = module.name() + ".";
-                if (name.startsWith(prefix)) name = name.substring(prefix.length());
-                else if (name.contains(".")) continue; // Not a local declaration.
-                if (classes.containsKey(name)) pending.addLast(name);
+                String rawName = parent.name();
+                if (rawName == null) continue;
+                String qualifiedParent = rawName.contains(".")
+                        ? rawName : ownerModule + "." + rawName;
+                if (classes.containsKey(qualifiedParent)) {
+                    pending.addLast(qualifiedParent);
+                }
+                // External ancestors still require the linker's fail-closed
+                // authenticated inheritance policy; the local ABI alone is
+                // not evidence that an external source is safe to import.
             }
         }
-        inherited.sort(java.util.Comparator.comparing(Ast.ClassDecl::name));
-        return List.copyOf(inherited);
+        Map<String, List<Ast.ClassDecl>> result = new LinkedHashMap<>();
+        for (Map.Entry<String, List<Ast.ClassDecl>> entry : inherited.entrySet()) {
+            entry.getValue().sort(
+                    java.util.Comparator.comparing(Ast.ClassDecl::name));
+            result.put(entry.getKey(), List.copyOf(entry.getValue()));
+        }
+        return Map.copyOf(result);
     }
 
     /** Exact local enum dependencies of exported caller-role annotations. */
