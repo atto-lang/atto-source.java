@@ -46,6 +46,23 @@ public final class IpcReceiptCompletionBridge {
         return publicView;
     }
 
+    /**
+     * Trusted transport publication fence. Caller MUST validate the same
+     * physical transport session and hold its generation/close ownership
+     * through actual send; the receipt ledger does not own socket I/O.
+     * If send can fail after this returns, retire on trusted session loss:
+     * never call rejectBeforeRemote after dispatch commitment.
+     */
+    void commitDispatch(IpcReceiptCorrelation.Envelope envelope) {
+        Objects.requireNonNull(envelope, "envelope");
+        synchronized (gate) {
+            if (!completions.containsKey(envelope.messageSequence())) {
+                throw new IllegalArgumentException("missing IPC dispatch correlation");
+            }
+            correlations.commitDispatch(envelope);
+        }
+    }
+
     /** Caller MUST verify the remote peer/frame/capability before this call. */
     public void acceptVerified(IpcReceiptCorrelation.Envelope envelope,
                                IpcReceiptCorrelation.Stage stage) {
@@ -63,7 +80,7 @@ public final class IpcReceiptCompletionBridge {
     }
 
     /**
-     * Trusted LOCAL send-path rejection, prior to remote publication.
+     * Trusted LOCAL send-path rejection, prior to dispatch commitment.
      * Do not route authenticated remote receipts or actor guest DATA here.
      * User callbacks complete only after releasing the correlation monitor.
      */
