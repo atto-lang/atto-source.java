@@ -106,6 +106,14 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         final long routeEpoch;
         final ImageReceipts image;
         ActorRuntime.ActorRef<Object> physical;
+        /**
+         * False while the originating upgrade still owns the right to publish
+         * this candidate. Reapers must never consume a staging lease merely
+         * because the physical actor finalized before the upgrade thread
+         * observed that fact. Cleanup flips this only when publication is
+         * definitively abandoned and the ledger becomes the sole owner.
+         */
+        boolean retirementEligible;
 
         CandidateRetirement(
                 HotReloadManager.Generation generation,
@@ -1212,7 +1220,18 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                                 replacement)) {
                             // Ownership was pre-registered before spawn. Do not
                             // allocate a Route or grow a ledger in this failure
-                            // path: merely retain the existing owner and pin.
+                            // path: merely transfer sole retry authority to the
+                            // existing owner and pin.
+                            synchronized (routeLock) {
+                                if (candidateRetirement == null
+                                        || !retiredCandidates.contains(
+                                                candidateRetirement)) {
+                                    throw new IllegalStateException(
+                                            "unpublished candidate lost its "
+                                                    + "pre-reserved retirement owner");
+                                }
+                                candidateRetirement.retirementEligible = true;
+                            }
                             candidateLeaseTransferred = true;
                         } else {
                             synchronized (routeLock) {
@@ -1233,7 +1252,19 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                         }
                         // We cannot prove reclamation. Fail closed by retaining
                         // the already-registered candidate owner; no allocation
-                        // or list growth is required after the failure.
+                        // or list growth is required after the failure. Publish
+                        // retirement eligibility only after publication has
+                        // been definitively abandoned.
+                        synchronized (routeLock) {
+                            if (candidateRetirement == null
+                                    || !retiredCandidates.contains(
+                                            candidateRetirement)) {
+                                throw new IllegalStateException(
+                                        "ambiguous candidate cleanup lost its "
+                                                + "pre-reserved retirement owner");
+                            }
+                            candidateRetirement.retirementEligible = true;
+                        }
                         candidateLeaseTransferred = true;
                     }
                 } else if (candidateRetirement != null) {
@@ -1343,7 +1374,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         for (int i = retiredCandidates.size() - 1; i >= 0; --i) {
             CandidateRetirement old = retiredCandidates.get(i);
             ActorRuntime.ActorRef<Object> physical = old.physical;
-            if (physical != null
+            if (old.retirementEligible
+                    && physical != null
                     && old.view.runtime().physicallyFinalizedForHotUpgrade(
                             physical)) {
                 old.generationLease.close();
@@ -1481,6 +1513,11 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             }
             if (!interrupted) {
                 for (CandidateRetirement old : oldCandidates) {
+                    if (!old.retirementEligible) {
+                        throw new IllegalStateException(
+                                "router close observed a staging candidate "
+                                        + "after upgrade serialization");
+                    }
                     ActorRuntime.ActorRef<Object> physical = old.physical;
                     if (physical == null) continue;
                     try {
