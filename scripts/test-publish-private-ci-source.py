@@ -230,7 +230,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "repos/trusted/ci/git/commits/"+C: {"sha": C, "tree": {"sha": E}},
             "repos/trusted/ci/git/refs": {
                 "ref": "refs/heads/" + TEST_BRANCH, "object": {"sha": C}},
-            "repos/trusted/ci/git/ref/heads/ci/oreslang-test": {
+            "repos/trusted/ci/git/ref/heads/" + TEST_BRANCH: {
                 "ref": "refs/heads/" + TEST_BRANCH,
                 "object": {"sha": C, "type": "commit"}},
             "repos/trusted/ci/git/trees/"+E: {
@@ -1109,7 +1109,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "repos/trusted/ci/git/ref/heads/main",
             "repos/trusted/ci/git/commits/" + A,
             "repos/trusted/ci/git/refs",
-            "repos/trusted/ci/git/ref/heads/ci/oreslang-test",
+            "repos/trusted/ci/git/ref/heads/" + TEST_BRANCH,
             "repos/trusted/ci/git/commits/" + C,
         )
         original = self.fake_api
@@ -1148,7 +1148,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.subTest(ref=ref, kind=kind):
                 self.route_calls.clear()
                 def wrong_ref(route, method="GET", payload=None):
-                    if route == "repos/trusted/ci/git/ref/heads/ci/oreslang-test":
+                    if route == "repos/trusted/ci/git/ref/heads/" + TEST_BRANCH:
                         self.route_calls.append((method, route, payload))
                         return {"ref": ref, "object": {"sha": C, "type": kind}}
                     return original(route, method, payload)
@@ -1192,7 +1192,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_branch_readback_must_point_to_created_commit(self):
         original = self.fake_api
         def changed_ref(route, method="GET", payload=None):
-            if route == "repos/trusted/ci/git/ref/heads/ci/oreslang-test":
+            if route == "repos/trusted/ci/git/ref/heads/" + TEST_BRANCH:
                 self.route_calls.append((method, route, payload))
                 return {"object": {"sha": A}}
             return original(route, method, payload)
@@ -1462,7 +1462,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                             self.root, self.expected_tree, D)
         self.assertEqual(attempted[-1], "repos/trusted/ci/git/refs")
         self.assertFalse(any(method == "GET"
-                             and route == "repos/trusted/ci/git/ref/heads/ci/oreslang-test"
+                             and route == "repos/trusted/ci/git/ref/heads/" + TEST_BRANCH
                              for method, route, _ in self.route_calls))
 
     def test_bulk_carrier_codeowner_revocation_blocks_next_batch(self):
