@@ -132,7 +132,10 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
             LogicalSourceActorRouterV1.LogicalAddress address,
             LogicalActorProxyMailboxV1.Snapshot mailbox,
             long generationId,
-            String codeSha256) { }
+            String codeSha256,
+            String linkedCodeSha256,
+            String stateSchemaSha256,
+            String messageAbiSha256) { }
 
     public Publication publication() {
         requireHost();
@@ -151,7 +154,10 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
             }
             return new Publication(
                     witness.address(), witness.mailbox(),
-                    witness.generationId(), witness.codeSha256());
+                    witness.generationId(), witness.codeSha256(),
+                    witness.linkedCodeSha256(),
+                    witness.stateSchemaSha256(),
+                    witness.messageAbiSha256());
         }
     }
 
