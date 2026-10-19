@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -41,6 +42,7 @@ final class OresTaskRuntimeAdmissionTest {
         CountDownLatch allowCleanup = new CountDownLatch(1);
         CountDownLatch closeFinished = new CountDownLatch(1);
         AtomicInteger cleaned = new AtomicInteger();
+        AtomicReference<Throwable> closeFailure = new AtomicReference<>();
         try (var runtime = new AsyncRuntime();
              var scope = new OresTaskScope(runtime)) {
             OresTask<Integer> child = scope.submit(() -> {
@@ -66,6 +68,7 @@ final class OresTaskRuntimeAdmissionTest {
             assertTrue(started.await(3, TimeUnit.SECONDS));
             Thread closer = Thread.ofVirtual().start(() -> {
                 try { scope.close(); }
+                catch (Throwable failure) { closeFailure.set(failure); }
                 finally { closeFinished.countDown(); }
             });
             try {
@@ -78,6 +81,7 @@ final class OresTaskRuntimeAdmissionTest {
             }
             assertTrue(closeFinished.await(4, TimeUnit.SECONDS));
             closer.join();
+            assertNull(closeFailure.get(), String.valueOf(closeFailure.get()));
             assertEquals(1, cleaned.get());
             assertTrue(child.isQuiescent());
             assertTrue(scope.physicallyQuiescent());
