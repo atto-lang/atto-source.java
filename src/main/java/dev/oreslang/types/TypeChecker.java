@@ -3557,6 +3557,18 @@ public final class TypeChecker {
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.IndexExpr indexed) {
+            // Constructor self is not yet a fully initialized published
+            // class value. Bracket reads cannot currently prove an exact
+            // field's definite initialization along every CFG predecessor.
+            // Until that proof exists, keep the more powerful indexed path
+            // unavailable inside constructors, even for literal string keys.
+            if (currentConstructorOwner != null
+                    && indexed.receiver() instanceof Ast.NameExpr name
+                    && name.name().equals("self")) {
+                throw new IllegalArgumentException(
+                        "constructor self cannot be indexed before definite "
+                                + "class-field initialization is proven");
+            }
             // A partially initialized explicit struct admits reads of a
             // *proven initialized* literal field, just like dot access.
             // A dynamic key could select any uninitialized field and must
