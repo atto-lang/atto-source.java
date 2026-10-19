@@ -482,4 +482,22 @@ final class V3DefaultArgValsAdmissionTest {
                 () -> V3CallLoweringPreview.plan(f.parameters(), f.annotations(), actual, reordered));
     }
 
+    @Test
+    void callableDefaultsCannotAttachToOrdinaryClassFieldSpellings() {
+        String[] fields = {
+                "val int id = 1;",
+                "let int id = 1;",
+                "id: int = 1;",
+                "int id: 1;"
+        };
+        for (String field : fields) {
+            String source = "define class Holder as\n"
+                    + "@DefaultArgVals(id: 2)\n"
+                    + field + "\nend";
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parseStagedV3(source),
+                    "class field must reject callable default annotation: " + field);
+        }
+    }
+
 }
