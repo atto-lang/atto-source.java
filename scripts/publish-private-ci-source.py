@@ -24,6 +24,9 @@ MAX_SINGLE = 10 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
+SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
+SOURCE_PROTECTED_BRANCH = "main"
+POLICY_PATH = ".github/private-ci-approved-repositories.txt"
 
 
 class Denied(RuntimeError):
@@ -134,6 +137,58 @@ def checked_policy_fingerprint(root, repository):
     if not approved:
         raise Denied("destination approval was revoked or absent")
     return hashlib.sha256(contents).digest()
+
+def verify_protected_origin(repository, expected_policy_digest):
+    """Fail closed unless local policy matches CODEOWNER-controlled protected main.
+
+    An unreviewed test checkout can add its own allowlist line; consulting
+    only the local file is not authorization. Always pin the remote policy
+    lookup to the HEAD commit of the official protected origin/main. A
+    GitHub "protected: false" branch is explicitly insufficient even when
+    CODEOWNERS exists (without branch protection, its review is optional).
+    """
+    origin = gh_api(f"repos/{SOURCE_REPO}")
+    if (origin.get("full_name") != SOURCE_REPO
+            or origin.get("private") is not True):
+        raise Denied("cannot attest identity and privacy of source origin")
+    branch = gh_api(f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}")
+    if (branch.get("name") != SOURCE_PROTECTED_BRANCH
+            or branch.get("protected") is not True):
+        raise Denied("source main is not protected; CODEOWNER approval is unenforced")
+    commit_sha = valid_sha(branch.get("commit", {}).get("sha"))
+    policy = gh_api(f"repos/{SOURCE_REPO}/contents/{POLICY_PATH}?ref={commit_sha}")
+    if (policy.get("path") != POLICY_PATH or policy.get("type") != "file"
+            or policy.get("encoding") != "base64"):
+        raise Denied("protected origin approval policy has invalid metadata")
+    encoded = policy.get("content")
+    if not isinstance(encoded, str):
+        raise Denied("protected origin approval policy has no content")
+    try:
+        # Whitespace may separate base64 lines in GitHub Contents responses,
+        # but any non-whitespace/non-base64 character must be rejected.
+        packed = "".join(encoded.split())
+        remote_contents = base64.b64decode(packed, validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise Denied("protected origin approval policy has invalid base64") from exc
+    if len(remote_contents) > 16 * 1024:
+        raise Denied("protected origin approval policy exceeds size limit")
+    if hashlib.sha256(remote_contents).digest() != expected_policy_digest:
+        raise Denied("source policy diverges from reviewed protected main")
+    try:
+        lines = remote_contents.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise Denied("protected origin approval policy is not UTF-8") from exc
+    approved = False
+    for line in lines:
+        if not line or line.startswith("#"):
+            continue
+        if not NAME.fullmatch(line):
+            raise Denied("protected origin approval policy has an invalid entry")
+        if line.casefold() == repository.casefold():
+            approved = True
+    if not approved:
+        raise Denied("destination absent from protected origin allowlist")
+
 
 def collect_source(root, trusted_root):
     """Snapshot regular files using descriptor-relative, no-follow traversal.
@@ -252,6 +307,8 @@ def publish(repository, source, branch, trusted_root):
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
+    # Must check the GitHub origin's protected main before reading private bytes.
+    verify_protected_origin(repository, approved_policy)
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
     try:
@@ -307,6 +364,9 @@ def publish(repository, source, branch, trusted_root):
     })
     commit_sha = valid_sha(commit.get("sha"))
     authorize_write()
+    # Re-verify protected origin at the publication boundary, after any
+    # uploaded blobs but before attaching them to an executable CI branch.
+    verify_protected_origin(repository, approved_policy)
     # CREATE a new CI ref, never UPDATE an existing branch, tag, or main.
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
         "ref": "refs/heads/" + branch, "sha": commit_sha
