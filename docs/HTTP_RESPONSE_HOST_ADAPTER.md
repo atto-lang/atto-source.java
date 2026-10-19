@@ -408,6 +408,60 @@ running steps. The approved private mirror list is empty and the protected
 branch security prerequisite remains unmet (#1368, #1409). No source was
 exported across organizations.
 
+## Production lifecycle guard and shutdown rejection recovery
+
+The current NativeHttp.State now uses the same
+`HttpResponseWirePhase` logic exercised by the independent concurrency
+regression. The phase remains protected by the State ownership monitor.
+An error-status response cannot race with a separate first successful-header
+attempt. A header send that threw still counts as an irreversible wire
+attempt: transport cleanup may close the socket but cannot synthesize
+another status. Header-send success is recorded separately from the attempt.
+
+Also, the old `State.finish()` silently returned when cancellation or a
+deadline had already set `terminal`. This could complete the pending
+`respond_response`/finish Future successfully for an aborted exchange.
+It now throws an `IOException` on that path, which the existing operation
+runner propagates as a failed Future. This is a correctness change requiring
+the full NativeHttp guest integration suite on the admitted JDK25 runner.
+
+Shutdown had another fail-open resource-accounting bug: if the I/O executor
+rejected the abort's transport-close task, the old catch called `release()`
+without setting `transportClosed`. Since `release()` explicitly checks
+`transportClosed`, request admission could remain permanently occupied.
+`HttpResponseCleanupDispatcher` now schedules cleanup on the normal I/O
+executor, with an independent virtual-thread fallback on rejection.
+Its once-only task guard also handles an executor that invokes a task and
+then throws rejection. Both abort-time producer close and socket close use
+this dispatcher, and Server.shutdown() uses it so a rejected drain task
+does not strand the shutdown Future.
+
+Standalone, exact-blob Java21 verification (3 complete runs):
+
+- `HttpResponseWirePhase.java` blob
+  `68348214d6c34a08f58dab89bc4d1852c5f2303c`.
+- `HttpResponseWirePhaseCheck.java` blob
+  `905b5d711d8ca33ac2ab7ac743e8bcb416c08271`.
+  1,000 competing abort/header attempts each run, 3,000 total.
+- `HttpResponseCleanupDispatcher.java` blob
+  `eed5519d815855603cefc241b34dc5f2f4ba6ece`.
+- `HttpResponseCleanupDispatcherCheck.java` blob
+  `31653a7fd7bf224a8e4b52510e2642cc233c3054`.
+  300 rejected cleanup tasks each run, 900 total, including normal
+  dispatch, rejection, and once-only fallback semantics.
+
+Both checks are committed into the standalone script
+`scripts/test-http-response-hardening.sh` and have JUnit entry points
+`HttpResponseWirePhaseJUnitTest` and
+`HttpResponseCleanupDispatcherJUnitTest`.
+
+These tests execute **the helper components used by NativeHttp.State**;
+they are not a full NativeHttp or GraalVM integration run. The changed
+NativeHttp.java file still requires real JDK25 Maven/JUnit/native-image and
+guest-language regression execution before merging. Main remains
+unprotected and the approved external private-source CI list is empty;
+no private source has been mirrored to another organization.
+
 ## Next implementation gates
 
 1. Establish a private, authorized CI runner; the source repository's checked-in
