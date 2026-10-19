@@ -52,7 +52,9 @@ final class SendSyncTraitsTest {
         assertFalse(SendSyncTraits.isSync(named("Arc", cell), NO_NOMINAL));
         assertTrue(SendSyncTraits.isSend(named("Mutex", cell), NO_NOMINAL));
         assertTrue(SendSyncTraits.isSync(named("Mutex", cell), NO_NOMINAL));
-        assertFalse(SendSyncTraits.isSend(named("RwLock", cell), NO_NOMINAL));
+        // Movable RwLock<Cell<int>> is safe, even though sharing readers
+        // would be unsafe because Cell<int> has interior mutation.
+        assertTrue(SendSyncTraits.isSend(named("RwLock", cell), NO_NOMINAL));
         assertFalse(SendSyncTraits.isSync(named("RwLock", cell), NO_NOMINAL));
         assertTrue(SendSyncTraits.isSync(named("Arc",
                 named("Mutex", cell)), NO_NOMINAL));
