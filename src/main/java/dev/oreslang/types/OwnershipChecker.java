@@ -1162,12 +1162,14 @@ public final class OwnershipChecker {
             actorStateLoanDepth++;
             actorStateLoanNames.push(loan.name());
             try {
-                checkLambda(checked, scope, null);
+                checkLambda(checked, scope, null, false, true);
             } finally {
                 actorStateLoanNames.pop();
                 actorStateLoanDepth--;
             }
-            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+            Ast.TypeRef callbackResult =
+                    sealedStateCallbackResultType(lambda, loan.name());
+            return new ValueInfo(callbackResult, ValueKind.MOVE_ONLY, null);
         }
 
         if (call.callee() instanceof Ast.NameExpr intrinsic) {
@@ -1899,7 +1901,7 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkLambda(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
-        return checkLambda(lambda, outer, recursiveBinding, false);
+        return checkLambda(lambda, outer, recursiveBinding, false, false);
     }
 
     private ValueInfo checkLambda(
@@ -1907,6 +1909,20 @@ public final class OwnershipChecker {
             Scope outer,
             String recursiveBinding,
             boolean allowActorSelfCapture) {
+        return checkLambda(
+                lambda,
+                outer,
+                recursiveBinding,
+                allowActorSelfCapture,
+                false);
+    }
+
+    private ValueInfo checkLambda(
+            Ast.LambdaExpr lambda,
+            Scope outer,
+            String recursiveBinding,
+            boolean allowActorSelfCapture,
+            boolean sealedActorStateCallback) {
         boolean nonLexical = lambda.nonLexical() || outer.descendantsNonLexical();
         CaptureSet captures = nonLexical ? new CaptureSet() : collectCaptures(lambda, outer, recursiveBinding);
         Scope closure = new Scope(null, nonLexical);
@@ -1915,6 +1931,14 @@ public final class OwnershipChecker {
             VarState source = capture.source;
             source.debugName = capture.name;
             requireUsable(source, capture.name, capture.write);
+
+            if (isMlScalarSnapshotType(source.type)) {
+                throw error("scalar state snapshots are lexical actor capabilities and cannot be captured by closures");
+            }
+            if (isMlScalarPublicationType(source.type)
+                    && !sealedActorStateCallback) {
+                throw error("scalar publications may only be captured by the immediate sealed handle_state callback that publishes them");
+            }
 
             if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW || source.type.isBorrow()) {
                 if (allowActorSelfCapture
@@ -1973,6 +1997,35 @@ public final class OwnershipChecker {
             closure.close();
         }
         return new ValueInfo(Ast.TypeRef.simple("Fnc"), ValueKind.MOVE_ONLY, null);
+    }
+
+    private static boolean isMlScalarSnapshotType(Ast.TypeRef type) {
+        return type != null && type.name().equals("$ActorScalarSnapshot");
+    }
+
+    private static boolean isMlScalarPublicationType(Ast.TypeRef type) {
+        return type != null && type.name().equals("$ActorScalarPublication");
+    }
+
+    private static Ast.TypeRef sealedStateCallbackResultType(
+            Ast.LambdaExpr lambda,
+            String loanName) {
+        Ast.Expr returned = lambda.expressionBody();
+        if (returned == null
+                && lambda.blockBody() != null
+                && !lambda.blockBody().isEmpty()
+                && lambda.blockBody().getLast() instanceof Ast.ReturnStmt ret) {
+            returned = ret.value();
+        }
+        if (returned instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.NameExpr intrinsic
+                && intrinsic.name().equals("state_snapshot")
+                && !call.arguments().isEmpty()
+                && call.arguments().getFirst() instanceof Ast.NameExpr loan
+                && loan.name().equals(loanName)) {
+            return Ast.TypeRef.simple("$ActorScalarSnapshot");
+        }
+        return Ast.TypeRef.inferred();
     }
 
     private CaptureSet collectCaptures(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
