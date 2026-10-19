@@ -233,6 +233,27 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void immutableKeyAliasCanReadOnlyAnInitializedPartialStructField() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc safe(): string {
+                  const mut point = struct{foo: string, ready: bool}{foo: "before"};
+                  const string key = "foo";
+                  const string observed = point[key];
+                  point.ready = true;
+                  return observed;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse("""
+                fnc bad(): bool {
+                  const mut point = struct{foo: string, ready: bool}{foo: "before"};
+                  const string key = "ready";
+                  return point[key];
+                }
+                """)));
+    }
+
+    @Test
     void closedRecordDoesNotDuplicateMoveOnlyFieldThroughLiteralIndex() {
         String source = """
                 fnc bad(): Array<int> {
