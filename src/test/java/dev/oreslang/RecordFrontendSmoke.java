@@ -118,6 +118,31 @@ public final class RecordFrontendSmoke {
                         shadowingImport, linked, Map.of()),
                 "imported class name must not become a short inferred alias");
 
+        // infer chooses struct type origin; binding capability controls mutation.
+        accepted("""
+                fnc update(): float {
+                    const Point seed = infer<Point> struct{x: 3.0, y: 4.0};
+                    val Point mutable = infer struct{x: 5.0, y: 6.0};
+                    mutable.x = 9.0;
+                    return mutable.x;
+                }
+                """);
+        denied(() -> TypeChecker.check(Parser.parse("""
+                fnc bad(): void {
+                    const Row row = infer<Row> record{x: 1, y: 2};
+                    const Point point = infer<Point> struct{x: 1, y: 2};
+                    const Row erased = point;
+                    return;
+                }
+                """)), "record/struct type boundary must not erase");
+        denied(() -> TypeChecker.check(Parser.parse("""
+                fnc bad(): void {
+                    const Point seed = infer<Point> struct{x: 1, y: 2};
+                    const Point wider = infer struct{x: 1, y: 2, z: 3};
+                    return;
+                }
+                """)), "concrete struct shapes require exact fields");
+
         // Failure gates must reach ownership analysis as well as type checking.
         denied(() -> TypeChecker.check(Parser.parse("""
                 fnc bad(): void {
