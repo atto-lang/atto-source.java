@@ -134,10 +134,12 @@ correlation IDs, rejects future/unissued CANCEL IDs, and treats late/duplicate
 CANCEL as already terminal. Envelope IDs are never treated as credentials.
 
 The adapter independently bounds active connections, per-connection request
-count and request payload bytes, global work items and global payload bytes.
-A global work credit is retained when a request becomes a queued terminal
-reply and is released only after that reply is written or dropped, so a slow
-writer cannot create an unbounded post-completion response queue. Read,
+count and **combined pending-request + queued-response payload bytes**, global
+work items and global payload bytes. A global work credit is retained when a
+request becomes a queued terminal reply and is released only after that reply
+is written or dropped. Response conversion also remains inside the
+per-connection byte budget, so one slow connection cannot monopolize the
+listener-wide response-memory allowance. Read,
 request-execution and terminal-write deadlines are distinct; a write deadline
 closes the whole TCP session because stream state is no longer trustworthy.
 Overload/protocol failures use an empty opaque ERROR and never serialize an
@@ -164,14 +166,18 @@ conversion is allowed without an explicit typed transport codec.
 ## Implemented and tested versus still missing
 
 The feature branch now adds `UnaryTransportFrame`, `UnaryReplySlot`,
-`UnaryRequestRegistry`, `UnaryTcpSessionAdapter` and
-`UnaryTcpActorDispatcher`, dedicated standalone/JUnit checks and a repeatable
-warning-clean Java 21 smoke script.
+`UnaryRequestRegistry`, `UnaryInboundRequestRegistry`,
+`UnaryTcpSessionAdapter` and `UnaryTcpActorDispatcher`, dedicated
+standalone/JUnit checks and a repeatable warning-clean Java 21 smoke script.
+The separate inbound registry captures the bounded strictly-monotonic
+peer-ID/replay contract independently of the transport loop so future TCP,
+WebSocket and IPC adapters can share the same fail-closed rule.
 
 The current TCP session regression uses real loopback sockets for successful
 dispatch, replay/session fencing, per-connection and cross-connection overload,
-CANCEL propagation, request deadlines, authentication failure, connection
-capacity and session-close cleanup. It also includes a deterministic blocked
+per-connection response-byte rejection/reclamation, CANCEL propagation,
+request deadlines, authentication failure, connection capacity and
+session-close cleanup. It also includes a deterministic blocked
 writer/reader socket proving that the terminal-write deadline closes the
 session and reclaims queued response credits. Ten local Java 21 passes of the
 session suite completed across this hardening cycle, including 2,500
