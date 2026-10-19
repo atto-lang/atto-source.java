@@ -2058,6 +2058,14 @@ public final class TypeChecker {
                     "named/trailing-closure call lowering is not yet enabled; "
                             + "static signature, ownership/effect and source-order ABI proofs are required");
         }
+        if (expr instanceof Ast.TypeExpr) {
+            throw new IllegalArgumentException(
+                    "generic type-qualified expression requires statically resolved type-member lowering");
+        }
+        if (expr instanceof Ast.CompoundAssignExpr) {
+            throw new IllegalArgumentException(
+                    "compound-place assignment requires checked single-evaluation ownership lowering");
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
             if (value == null) throw new IllegalArgumentException("standalone null values are forbidden; use Option<T>");
