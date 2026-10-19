@@ -434,6 +434,84 @@ final class DynamicPropertyAccessBoundaryTest {
     }
 
     @Test
+    void heterogeneousDynamicReadsReturnUnionsAndWritesMustFitEveryDestination() {
+        accepted("""
+                fnc struct_read(Mixed value, string key): int | string {
+                    return value[key];
+                }
+
+                const Mixed seed = infer<Mixed> struct{
+                    count: 1,
+                    label: "one"
+                };
+
+                define class MixedClass as
+                    pub let int count = 1;
+                    pub let string label = "one";
+                end
+
+                fnc class_read(MixedClass value, string key): int | string {
+                    return value[key];
+                }
+                """);
+
+        rejected("""
+                fnc bad_struct(string key): void {
+                    const Mixed seed = infer<Mixed> struct{
+                        count: 1,
+                        label: "one"
+                    };
+                    val Mixed value = infer struct{
+                        count: 2,
+                        label: "two"
+                    };
+                    value[key] = 7;
+                    return;
+                }
+                """);
+
+        rejected("""
+                define class MixedClass as
+                    pub let int count = 1;
+                    pub let string label = "one";
+                end
+
+                fnc bad_class(string key): void {
+                    val MixedClass value = new MixedClass();
+                    value[key] = 7;
+                    return;
+                }
+                """);
+
+        accepted("""
+                const Pair seed = infer<Pair> struct{
+                    left: 1,
+                    right: 2
+                };
+
+                fnc good_struct(string key): int {
+                    val Pair value = infer struct{
+                        left: 3,
+                        right: 4
+                    };
+                    value[key] = 9;
+                    return value[key];
+                }
+
+                define class PairClass as
+                    pub let int left = 1;
+                    pub let int right = 2;
+                end
+
+                fnc good_class(string key): int {
+                    val PairClass value = new PairClass();
+                    value[key] = 9;
+                    return value[key];
+                }
+                """);
+    }
+
+    @Test
     void computedClassWritesSupportInitializerInferredFieldTypes() {
         accepted("""
                 define class InferredPoint as
