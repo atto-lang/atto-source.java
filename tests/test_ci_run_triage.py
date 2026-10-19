@@ -161,5 +161,45 @@ class ClassifierTests(unittest.TestCase):
                                 "repos/org/repo/actions/runs/42/jobs?per_page=100"])
 
 
+
+class PaginationHardeningTests(unittest.TestCase):
+    def test_all_101_jobs_collected(self):
+        calls = []
+        def fetch(path):
+            calls.append(path)
+            if "jobs?" not in path:
+                return RUN
+            offset = 100 if "&page=2" in path else 0
+            length = 1 if offset else 100
+            return {"total_count": 101, "jobs": [
+                {"id": offset + i + 1, "status": "completed",
+                 "conclusion": "failure", "steps": []}
+                for i in range(length)]}
+        report = m.inspect("org/repo", 42, SHA, fetch=fetch)
+        self.assertEqual(report["job_count"], 101)
+        self.assertEqual(report["category"], "observed_no_step_failure")
+        self.assertEqual(len(calls), 3)
+
+    def test_racing_totals_and_duplicates_fail_closed(self):
+        def racing(path):
+            if "jobs?" not in path:
+                return RUN
+            if "&page=2" in path:
+                return {"total_count": 102, "jobs": [{"id": 1, "steps": []}]}
+            return {"total_count": 101, "jobs": [
+                {"id": i + 1, "steps": []} for i in range(100)]}
+        with self.assertRaisesRegex(m.TriageError, "pagination"):
+            m.inspect("org/repo", 42, SHA, fetch=racing)
+        def duplicate(path):
+            if "jobs?" not in path:
+                return RUN
+            if "&page=2" in path:
+                return {"total_count": 101, "jobs": [{"id": 1, "steps": []}]}
+            return {"total_count": 101, "jobs": [
+                {"id": i + 1, "steps": []} for i in range(100)]}
+        with self.assertRaisesRegex(m.TriageError, "pagination"):
+            m.inspect("org/repo", 42, SHA, fetch=duplicate)
+
+
 if __name__ == "__main__":
     unittest.main()
