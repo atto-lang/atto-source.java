@@ -173,4 +173,52 @@ final class AsyncRuntimeShutdownTest {
             assertTrue(AsyncRuntime.await(task.asFuture()));
         }
     }
+
+    @Test
+    void blockedCancellationObserverCannotStarveSiblingRevocation()
+            throws Exception {
+        AsyncRuntime runtime = new AsyncRuntime();
+        CountDownLatch started = new CountDownLatch(2);
+        CountDownLatch observerEntered = new CountDownLatch(1);
+        CountDownLatch releaseObserver = new CountDownLatch(1);
+        CountDownLatch closerReturned = new CountDownLatch(1);
+        AtomicReference<Throwable> closeError = new AtomicReference<>();
+        OresTask<Void> first = runtime.submitTask(() -> {
+            started.countDown();
+            Thread.sleep(30_000);
+            return null;
+        });
+        OresTask<Void> second = runtime.submitTask(() -> {
+            started.countDown();
+            Thread.sleep(30_000);
+            return null;
+        });
+        assertTrue(started.await(2, TimeUnit.SECONDS));
+        first.getAwaited().whenCompleteRuntime((value, failure) -> {
+            observerEntered.countDown();
+            try { releaseObserver.await(); }
+            catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        Thread closer = Thread.ofVirtual().start(() -> {
+            try { runtime.close(); }
+            catch (Throwable failure) { closeError.set(failure); }
+            finally { closerReturned.countDown(); }
+        });
+        try {
+            assertTrue(observerEntered.await(2, TimeUnit.SECONDS));
+            assertTrue(second.isCancelled(),
+                    "second producer must already be revoked before first listener");
+            assertFalse(closerReturned.await(100, TimeUnit.MILLISECONDS));
+        } finally {
+            releaseObserver.countDown();
+            closer.join(2_000);
+        }
+        assertEquals(0L, closerReturned.getCount());
+        assertNull(closeError.get());
+        assertTrue(first.isQuiescent());
+        assertTrue(second.isQuiescent());
+    }
+
 }
