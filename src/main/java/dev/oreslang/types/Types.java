@@ -227,7 +227,7 @@ public final class Types {
         // A partially unresolved union, container, or callable must not
         // manufacture dyn proof by selecting an unrelated non-dyn branch.
         // Equality above preserves an already-typed unchanged value.
-        if (containsUncertainType(from) && containsDynWitness(to)) return false;
+        if (containsDynWitness(to) && containsUncertainType(from)) return false;
         // A new direct dyn witness requires nominal proof in TypeChecker.
         if (from instanceof Dyn || to instanceof Dyn) return false;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
