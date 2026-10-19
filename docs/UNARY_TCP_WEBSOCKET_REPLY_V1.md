@@ -239,10 +239,16 @@ The JDK-only disposable-cert loopback gate is
 review of the TLS context/truststore, certificate-authorizer policy, transport
 permissions and certificate rotation/revocation behavior; it must not treat
 a subject DN or a successful handshake alone as application authorization.
-A supervisor-owned bound/accept listener and endpoint permissions remain
-unimplemented; persistent
-source-level `define unary tcp actor` AST/typechecker/lowering rather than the
-current one-shot host bridge; UNTRUSTED source-executor binding; RFC 6455
+An opt-in `UnaryTcpTlsListener` now owns a server TLS 1.3-only accept loop,
+mandatory client authentication and pre-accept connection slots, with an
+idempotent permit lease so shutdown and worker completion cannot double-release
+capacity. It requires a **pre-bound** host-provided `SSLServerSocket`; selection
+of address/backlog, network capabilities, per-peer rate limits, OS endpoint
+permissions and trusted SSLContext remain an audited deployment responsibility.
+The disposable-cert smoke script also runs a real listener/unary reply/shutdown
+check. Production still needs those host bindings and source-level
+`define unary tcp actor` AST/typechecker/lowering rather than the current
+one-shot host bridge; UNTRUSTED source-executor binding; RFC 6455
 upgrade/incremental-fragment WebSocket networking; LLVM parity; and full JDK25
 Maven/Graal Native Image validation. Existing HTTP work is separate and must
 still pass its own full CI. Never claim the guest declarations executable from
