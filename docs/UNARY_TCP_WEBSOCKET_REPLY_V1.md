@@ -154,9 +154,17 @@ absolute deadline closes the socket on expiration. It bounds socket I/O, not
 a custom authenticator doing non-cooperative CPU work; production authenticators
 must honor socket closure/cancellation themselves. A write deadline closes the
 whole TCP session because stream state is no longer trustworthy. Faulty actor
-cancellation hooks (including callbacks that throw) are treated as best-effort
-for cancellation; they cannot block host-owned response-credit reclamation or
-the cancellation attempts for other pending requests.
+cancellation hooks (including callbacks that throw or never return) are
+**advisory and isolated** from I/O and deadline threads. The adapter uses two
+daemon cancellation workers with a bounded queue of at most
+`min(maxGlobalWorkItems, 256)` tasks; request/response credits are reclaimed
+independently of those callbacks. If both workers and that queue are saturated,
+the callback is rejected rather than executing inline, and
+`rejectedCancellationTasks()` counts dropped cancellation attempts. This
+prevents timer starvation and unbounded cancellation-worker growth, but does
+**not** guarantee that a non-cooperative guest task stops after transport
+cancellation. The runtime's own cancellation/cooperation contract and
+operational observability for cancellation rejection are release requirements.
 Overload/protocol failures use an empty opaque ERROR and never serialize an
 arbitrary host exception, stack trace or `toString`.
 
