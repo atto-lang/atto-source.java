@@ -8107,6 +8107,9 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean terminalSettlementPending;
         private boolean terminalSettlementActive;
         private TerminalSettlementBatch terminalSettlementBatch;
+        // Package-runtime fault injection read only by product regression tests.
+        // Never installed for an ordinary production actor.
+        private Runnable terminalTeardownFaultForTesting;
 
         /**
          * Immutable teardown ownership plus mutable progress indices. This
@@ -8116,7 +8119,9 @@ public final class ActorRuntime implements AutoCloseable {
          */
         private final class TerminalSettlementBatch {
             final Throwable drainFailure;
+            final Throwable stopCause;
             final PhysicalMailDisposition receiptDisposition;
+            boolean physicalTeardownPrepared;
             final List<PhysicalMailReceipt> physicalReceipts;
             final List<DrainWaiter> drainWaiters;
             final List<OresFuture<?>> operations;
@@ -8128,12 +8133,14 @@ public final class ActorRuntime implements AutoCloseable {
 
             TerminalSettlementBatch(
                     Throwable drainFailure,
+                    Throwable stopCause,
                     PhysicalMailDisposition receiptDisposition,
                     List<PhysicalMailReceipt> physicalReceipts,
                     List<DrainWaiter> drainWaiters,
                     List<OresFuture<?>> operations,
                     List<ActorCell<?>> descendants) {
                 this.drainFailure = Objects.requireNonNull(drainFailure);
+                this.stopCause = stopCause;
                 this.receiptDisposition =
                         Objects.requireNonNull(receiptDisposition);
                 this.physicalReceipts =
@@ -9271,7 +9278,7 @@ public final class ActorRuntime implements AutoCloseable {
                     List<ActorCell<?>> descendants = List.copyOf(children);
                     List<OresFuture<?>> pending = List.copyOf(pendingOperations);
                     batch = new TerminalSettlementBatch(
-                            drainFailure, receiptDisposition,
+                            drainFailure, cause, receiptDisposition,
                             failedPhysicalReceipts, failedDrainWaiters,
                             pending, descendants);
 
@@ -9290,13 +9297,32 @@ public final class ActorRuntime implements AutoCloseable {
                     pendingDrains.clear();
                     pendingPhysicalReceipts.clear();
                     pendingOperations.clear();
-                    if (cause == null) mailbox.close();
-                    else mailbox.close(cause);
-                    continuationMailbox.close(cause);
-                    drainMailboxReservations();
+                }
+                // Teardown can itself fail after stopped/sealed publication:
+                // e.g. a channel-close listener or mailbox reservation release
+                // throws. Keep the same batch and permit a later supervisor
+                // stop to finish preparation, without re-snapshotting ledgers.
+                boolean preparationComplete = false;
+                try {
+                    if (!batch.physicalTeardownPrepared) {
+                        Runnable injected = terminalTeardownFaultForTesting;
+                        if (injected != null) injected.run();
+                        if (batch.stopCause == null) mailbox.close();
+                        else mailbox.close(batch.stopCause);
+                        continuationMailbox.close(batch.stopCause);
+                        drainMailboxReservations();
+                        batch.physicalTeardownPrepared = true;
+                    }
                     // terminalSettlementPending fences physical finalization
                     // until every out-of-monitor terminal observer completes.
                     finalizeStopLocked();
+                    preparationComplete = true;
+                } finally {
+                    if (!preparationComplete) {
+                        // A failed preparation must not permanently retain
+                        // exclusive settlement ownership: the batch is durable.
+                        terminalSettlementActive = false;
+                    }
                     lifecycleLock.notifyAll();
                 }
             }
