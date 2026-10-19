@@ -144,8 +144,17 @@ if not required_publisher <= discovered_publisher or not required_merged <= disc
 print(f"PRIVATE_CI_TEST_INVENTORY_OK publisher={publisher} "
       f"merged={merged} total={len(ids)}", flush=True)
 result = unittest.TextTestRunner(verbosity=2).run(suite)
-if not result.wasSuccessful() or result.testsRun != len(ids):
-    raise SystemExit("PRIVATE_CI_FULL_PYTHON_TEST_FAILURE")
+# unittest.wasSuccessful() still returns True if mandatory security cases are
+# skipped or marked expectedFailure. A complete suite must execute its
+# assertions, not merely discover the test IDs and count them as successful.
+if (not result.wasSuccessful() or result.testsRun != len(ids)
+        or result.skipped or result.expectedFailures or result.unexpectedSuccesses):
+    raise SystemExit(
+        "PRIVATE_CI_FULL_PYTHON_TEST_FAILURE: "
+        f"executed={result.testsRun} expected={len(ids)} "
+        f"skipped={len(result.skipped)} "
+        f"expectedFailures={len(result.expectedFailures)} "
+        f"unexpectedSuccesses={len(result.unexpectedSuccesses)}")
 FULL_SUITE
 done
 fingerprint > "$manifest_after"
