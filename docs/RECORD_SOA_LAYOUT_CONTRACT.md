@@ -1,7 +1,9 @@
 # Closed inferred records and data-oriented layout inversion
 
 Status (2026-10-19): canonical `record {...}` plus compatibility `infer record`
-and `infer<T> record` parse as closed readonly structural aggregates on this branch. **AoS/SoA is a design and
+and `infer<T> record` parse as closed readonly structural aggregates on this branch.
+Plain `record {...}` carries no type-capture intent; only explicit `infer` forms may introduce
+an inferred structural alias. **AoS/SoA is a design and
 admission contract, NOT an executable language feature.** No SIMD, GPU,
 native backend, or cross-actor support is claimed by this document.
 
