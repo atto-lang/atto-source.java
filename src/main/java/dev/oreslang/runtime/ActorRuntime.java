@@ -8120,6 +8120,7 @@ public final class ActorRuntime implements AutoCloseable {
         // Package-runtime fault injection read only by product regression tests.
         // Never installed for an ordinary production actor.
         private Runnable terminalTeardownFaultForTesting;
+        private Runnable terminalTeardownAfterFirstCloseFaultForTesting;
 
         /**
          * Immutable teardown ownership plus mutable progress indices. This
@@ -8132,6 +8133,10 @@ public final class ActorRuntime implements AutoCloseable {
             final Throwable stopCause;
             final PhysicalMailDisposition receiptDisposition;
             boolean physicalTeardownPrepared;
+            // A channel close may mark itself closed before all pending
+            // completion callbacks run. Never replay an ambiguous partial
+            // close as though all notifications had settled.
+            boolean physicalTeardownAmbiguous;
             final List<PhysicalMailReceipt> physicalReceipts;
             final List<DrainWaiter> drainWaiters;
             final List<OresFuture<?>> operations;
@@ -9339,13 +9344,28 @@ public final class ActorRuntime implements AutoCloseable {
                 boolean preparationComplete = false;
                 try {
                     if (!batch.physicalTeardownPrepared) {
+                        if (batch.physicalTeardownAmbiguous) {
+                            throw new IllegalStateException(
+                                    "physical mailbox teardown previously failed after "
+                                            + "a possibly irreversible close; retirement "
+                                            + "requires independent reconciliation");
+                        }
                         Runnable injected = terminalTeardownFaultForTesting;
                         if (injected != null) injected.run();
+                        // Once close begins, a failed Channel.close may have
+                        // committed select decisions whose callbacks were not
+                        // notified. A second close can be a no-op, so keep the
+                        // code pin rather than falsely certifying settlement.
+                        batch.physicalTeardownAmbiguous = true;
                         if (batch.stopCause == null) mailbox.close();
                         else mailbox.close(batch.stopCause);
+                        Runnable afterFirstClose =
+                                terminalTeardownAfterFirstCloseFaultForTesting;
+                        if (afterFirstClose != null) afterFirstClose.run();
                         continuationMailbox.close(batch.stopCause);
                         drainMailboxReservations();
                         batch.physicalTeardownPrepared = true;
+                        batch.physicalTeardownAmbiguous = false;
                     }
                     // terminalSettlementPending fences physical finalization
                     // until every out-of-monitor terminal observer completes.
