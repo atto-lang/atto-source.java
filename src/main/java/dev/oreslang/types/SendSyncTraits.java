@@ -48,7 +48,7 @@ public final class SendSyncTraits {
         this.trustedIntrinsicNames = Set.copyOf(
                 Objects.requireNonNull(trustedIntrinsicNames, "trustedIntrinsicNames"));
         if (!Set.of("Arc", "Weak", "Shared", "Mutex", "RwLock",
-                    "Array", "List", "InvertedArray").containsAll(this.trustedIntrinsicNames)) {
+                    "Array", "List", "InvertedArray", "Option", "Result").containsAll(this.trustedIntrinsicNames)) {
             throw new IllegalArgumentException("unrecognized trusted intrinsic");
         }
         Objects.requireNonNull(program, "program");
@@ -113,7 +113,7 @@ public final class SendSyncTraits {
                     && !shadowedTypeNames.contains(type.name());
             switch (type.name()) {
                 case "Option", "Array", "List", "InvertedArray" -> {
-                    if (args.size() != 1 || shadowedTypeNames.contains(type.name()))
+                    if (args.size() != 1 || !trusted)
                         return Traits.NONE;
                     Traits element = derive(args.getFirst(), substitutions, active);
                     if (type.name().equals("Option")) return element;
@@ -122,7 +122,7 @@ public final class SendSyncTraits {
                     return trusted ? new Traits(element.send(), false) : Traits.NONE;
                 }
                 case "Result" -> {
-                    return args.size() == 2 && !shadowedTypeNames.contains("Result")
+                    return args.size() == 2 && trusted
                             ? all(args, substitutions, active) : Traits.NONE;
                 }
                 case "Arc", "Weak", "Shared" -> {
@@ -140,9 +140,8 @@ public final class SendSyncTraits {
                     Traits inner = derive(args.getFirst(), substitutions, active);
                     return inner.send() && inner.sync() ? Traits.BOTH : Traits.NONE;
                 }
-                // A guest class with the same spelling cannot impersonate a
-                // runtime authority. None of these have a complete worker-
-                // transfer ABI or a compiler-verified actor/domain fence yet.
+                // Do not derive Task Send/Sync from an unverified runtime
+                // authority, including a user class spoofing its type name.
                 case "Rc", "MutexGuard", "RwLockGuard", "ActorState", "RawPointer",
                         "Pointer", "OresPointer", "ThreadLocal", "ThreadBound",
                         "NativeHandle", "FfiHandle", "ExecutionPermit",
