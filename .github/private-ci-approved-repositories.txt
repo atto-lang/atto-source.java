@@ -1,11 +1,21 @@
 # Private CI destinations explicitly approved for source transfers.
 # No repositories are approved by default.
-# Changes must be reviewed by maintainers and security owners on a protected branch.
-# Format: exact owner/repo@numeric-github-repository-id, ASCII LF only.
-# This draft does NOT approve a destination; independent protected-main review required.
 #
-# PROPOSED APPROVAL ONLY: this file is inert until reviewed and merged
-# into the protected default branch by authorized security owners.
+# Authorization mode A (preferred): this exact policy is effective on protected
+# main and has maintainer + security-owner review.
+#
+# Authorization mode B (review-attested-v1): ONLY when branch protection is
+# technically unavailable, each individual export must have two distinct,
+# unedited GitHub issue comments (maintainer + @ORESoftware) whose identical
+# canonical payload binds the exact source PR/head/tree, destination repo/ID,
+# and the exact policy + preflight script blob IDs currently on main.
+# Any source-head, destination, policy, or preflight change invalidates approval.
+# The fallback itself is inert until independently reviewed and merged.
+#
+# Format: exact owner/repo@numeric-github-repository-id, ASCII LF only.
+# This draft does NOT approve a destination; independent security review required.
+#
+# PROPOSED APPROVAL ONLY: this file is inert on this PR branch.
 # Before each transfer, reconfirm the exact private GitHub repo ID 1412142815,
 # approved confidential-use purpose, ACLs and hosted workflow isolation.
 # Do not infer approval from this PR branch or a successful Actions run.
