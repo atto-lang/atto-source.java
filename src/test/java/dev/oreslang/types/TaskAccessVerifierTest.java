@@ -227,6 +227,129 @@ final class TaskAccessVerifierTest {
         assertEquals(0, ledger.activeChildren());
     }
 
+    @Test void distinctReadOnlyDomainsCannotShareOneTaskScope() {
+        var verifier = new TaskAccessVerifier();
+        var process = TaskAccessVerifier.Place.whole(WORLD);
+        var actor = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("ACTOR_PRIVATE", 50, 1, true));
+        var first = verifier.admit(List.of(read(process)));
+        assertThrows(IllegalArgumentException.class,
+                () -> verifier.admit(List.of(read(actor))));
+        verifier.quiescent(first);
+        assertThrows(IllegalArgumentException.class,
+                () -> verifier.admit(List.of(read(actor))));
+        assertFalse(verifier.parentMayAccess(read(actor)));
+        assertEquals(0, verifier.activeChildren());
+    }
+
+    @Test void aSingleTaskCannotMixReadOnlyTrustDomains() {
+        var verifier = new TaskAccessVerifier();
+        var process = TaskAccessVerifier.Place.whole(WORLD);
+        var actor = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("ACTOR_PRIVATE", 50, 1, true));
+        assertThrows(IllegalArgumentException.class,
+                () -> verifier.admit(List.of(read(process), read(actor))));
+        assertEquals(0, verifier.activeChildren());
+        // Failed admission must not bind a partially selected domain.
+        assertNotNull(verifier.admit(List.of(read(actor))));
+        assertFalse(verifier.parentMayAccess(read(process)));
+    }
+
+    @Test void staleParentQueriesDoNotReturnAuthorityAfterLayoutGenerationAdvance() {
+        var verifier = new TaskAccessVerifier();
+        var before = TaskAccessVerifier.Place.whole(WORLD);
+        assertFalse(verifier.parentMayAccess(read(before)), "unbound scope is not a permit");
+        var ticket = verifier.admit(List.of(read(before)));
+        verifier.quiescent(ticket);
+        verifier.structuralBarrier(WORLD, 2);
+        assertFalse(verifier.parentMayAccess(read(before)));
+        var after = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("PROCESS", 31, 2, true));
+        assertTrue(verifier.parentMayAccess(write(after)));
+        assertFalse(verifier.parentMayAccess(read(TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("PROCESS", 987, 1, true)))));
+    }
+
+    @Test void structuralBarrierRejectsAllPotentiallyAliasingRoots() {
+        var verifier = new TaskAccessVerifier();
+        var owner = TaskAccessVerifier.Place.whole(WORLD);
+        var ticket = verifier.admit(List.of(read(owner)));
+        verifier.quiescent(ticket);
+        // A different numeric ID does not establish nonaliasing without
+        // independently verified unique-allocation provenance.
+        var uncertain = TaskAccessVerifier.Place.whole(UNKNOWN);
+        var unknownTicket = verifier.admit(List.of(read(uncertain)));
+        assertThrows(IllegalStateException.class,
+                () -> verifier.structuralBarrier(WORLD, 2));
+        verifier.quiescent(unknownTicket);
+        verifier.structuralBarrier(WORLD, 2);
+        assertFalse(verifier.parentMayAccess(read(owner)));
+    }
+
+    @Test void admissionCapacityErrorsAreAtomic() {
+        var verifier = new TaskAccessVerifier();
+        var requested = java.util.Collections.nCopies(
+                1025, read(TaskAccessVerifier.Place.whole(WORLD)));
+        assertThrows(IllegalStateException.class, () -> verifier.admit(requested));
+        assertEquals(0, verifier.activeChildren());
+        var a = verifier.admit(List.of(read(TaskAccessVerifier.Place.whole(WORLD))));
+        assertNotNull(a);
+        verifier.quiescent(a);
+    }
+
+    @Test void racingWritersNeverAcquireTwoLiveLoans() throws Exception {
+        var verifier = new TaskAccessVerifier();
+        var place = TaskAccessVerifier.Place.whole(WORLD);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(8);
+        var ready = new java.util.concurrent.CountDownLatch(8);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var winners = new java.util.concurrent.atomic.AtomicInteger();
+        var losers = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            java.util.List<java.util.concurrent.Future<?>> outcomes = new java.util.ArrayList<>();
+            for (int i = 0; i < 8; i++) {
+                outcomes.add(pool.submit(() -> {
+                    ready.countDown();
+                    try {
+                        if (!start.await(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                            throw new AssertionError("start gate timed out");
+                        }
+                        TaskAccessVerifier.Ticket ticket;
+                        try {
+                            ticket = verifier.admit(List.of(write(place)));
+                            winners.incrementAndGet();
+                        } catch (IllegalArgumentException rejected) {
+                            losers.incrementAndGet();
+                            return;
+                        }
+                        if (!release.await(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                            throw new AssertionError("release gate timed out");
+                        }
+                        verifier.quiescent(ticket);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(interrupted);
+                    }
+                }));
+            }
+            assertTrue(ready.await(10, java.util.concurrent.TimeUnit.SECONDS));
+            start.countDown();
+            // Count the winner while its exclusive loan remains live.
+            for (int spin = 0; spin < 10000 && winners.get() + losers.get() < 8; spin++) {
+                Thread.yield();
+            }
+            assertEquals(1, winners.get());
+            assertEquals(7, losers.get());
+            release.countDown();
+            for (var future : outcomes) future.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(0, verifier.activeChildren());
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
     @Test void illegalInputsFailClosed() {
         assertThrows(IllegalArgumentException.class,
                 () -> new TaskAccessVerifier.Root("", 1, 1, true));
