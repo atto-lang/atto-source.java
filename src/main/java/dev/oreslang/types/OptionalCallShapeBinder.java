@@ -398,11 +398,19 @@ public final class OptionalCallShapeBinder {
             requireNoUnloweredOptionalFormalsInExpr(e.callee());
             for (Ast.TypeRef type : e.typeArguments()) requireNoOmittableTypeOutsideFormal(type, "call type argument");
             for (Ast.Expr arg : e.arguments()) requireNoUnloweredOptionalFormalsInExpr(arg);
-        } else if (expr instanceof Ast.StagedCallExpr) {
-            // Reject before executing any declaration, initializer or side effect,
-            // including when a source call is hidden in an uncalled branch.
-            throw new IllegalArgumentException(
-                    "staged named/optional calls are not yet enabled without checked Option<T> ABI lowering");
+        } else if (expr instanceof Ast.StagedCallExpr e) {
+            if (!isDirectScalarLiteralNamedCall(e)) {
+                // Reject all unlowered optional, non-literal or dynamic calls
+                // before executing ANY initializer or guest side effect.
+                throw new IllegalArgumentException(
+                        "staged named/optional calls require checked Option<T> ABI lowering");
+            }
+            // This narrow exception is only syntactic. Type, ownership and
+            // runtime phases each independently resolve and recheck the target.
+            requireNoUnloweredOptionalFormalsInExpr(e.callee());
+            for (Ast.CallArgument item : e.arguments()) {
+                requireNoUnloweredOptionalFormalsInExpr(item.value());
+            }
         } else if (expr instanceof Ast.StagedNewExpr) {
             throw new IllegalArgumentException(
                     "staged named/optional construction is not yet enabled without checked Option<T> ABI lowering");
