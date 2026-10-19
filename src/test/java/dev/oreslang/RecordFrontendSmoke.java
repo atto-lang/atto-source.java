@@ -1,0 +1,145 @@
+package dev.oreslang;
+
+import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
+
+import java.util.Map;
+
+/**
+ * JDK-only executable front-end smoke: real Parser -> TypeChecker ->
+ * OwnershipChecker. No GraalVM, Maven, JUnit or guest interpreter required.
+ *
+ * This intentionally cannot establish native-image or interpreter parity.
+ */
+public final class RecordFrontendSmoke {
+    private RecordFrontendSmoke() { }
+
+    public static void main(String[] args) {
+        accepted("""
+                fnc read(): string {
+                    const Person first = infer record{name: "Ada", age: 37};
+                    const Person second = infer struct{age: 42, name: "Grace"};
+                    return second.name;
+                }
+                """);
+        accepted("""
+                fnc read(): string {
+                    const Contact contact = infer<Contact> record{
+                        "first name": "Linus", "work@email": "a@b"
+                    };
+                    const Contact other = infer struct{
+                        "work@email": "c@d", "first name": "Grace"
+                    };
+                    return other["first name"];
+                }
+                """);
+        accepted("""
+                type Person = {name: string};
+                fnc read(): string {
+                    const Person person = infer record{name: "Ada"};
+                    return person.name;
+                }
+                """);
+        accepted("""
+                fnc read(): int {
+                    const Pair first = infer<Pair> tuple("Ada", 37);
+                    const Pair other = tuple("Grace", 42);
+                    return other[1];
+                }
+                """);
+        String identicalInSiblings = """
+                fnc first(): string {
+                    const Profile profile = infer record{name: "Ada"};
+                    return profile.name;
+                }
+                fnc second(): string {
+                    const Profile profile = infer record{name: "Ada"};
+                    return profile.name;
+                }
+                """;
+        TypeChecker.TypeCheckResult result =
+                TypeChecker.checkTypesWithDiagnostics(Parser.parse(identicalInSiblings));
+        check(result.shortInferredAliases().size() == 2,
+                "distinct AST declarations must have distinct alias proofs");
+        denied(() -> result.shortInferredAliases().clear(),
+                "type-checker alias proof view must not be writable");
+        accepted(identicalInSiblings);
+
+        String existingType = """
+                type Person = {name: string};
+                fnc read(): string {
+                    const Person p = infer record{name: "Ada"};
+                    return p.name;
+                }
+                """;
+        check(TypeChecker.checkTypesWithDiagnostics(Parser.parse(existingType))
+                        .shortInferredAliases().isEmpty(),
+                "preexisting type is never implicitly redeclared");
+
+        // Failure gates must reach ownership analysis as well as type checking.
+        denied(() -> TypeChecker.check(Parser.parse("""
+                fnc bad(): void {
+                    const Person first = infer record{name: "Ada"};
+                    const Person other = first;
+                    other.name = "mutated";
+                    return;
+                }
+                """)), "readonly cannot be escalated");
+        denied(() -> TypeChecker.check(Parser.parse("""
+                fnc bad(): void {
+                    const Person first = infer record{name: "Ada", age: 37};
+                    const Person wrong = infer record{name: "Grace"};
+                    return;
+                }
+                """)), "required field mismatch");
+        denied(() -> TypeChecker.check(Parser.parse("""
+                fnc bad(): void {
+                    const Person before = infer record{name: "before"};
+                    const Person after = infer<Person> record{name: "after"};
+                    return;
+                }
+                """)), "forward explicit alias collision");
+        denied(() -> TypeChecker.check(Parser.parse("""
+                fnc bad(): void {
+                    const Profile first = infer record{name: "Ada"};
+                    val Profile second = first;
+                    return;
+                }
+                """)), "readonly alias into mutable binding");
+
+        // An attacker-constructed declaration must not use the alias-proof
+        // namespace for an arbitrary type. Verify that the emitted proof
+        // identities point at checked AST declarations, not reconstructed keys.
+        Ast.Program checked = result.program();
+        for (Map.Entry<Ast.BindingStmt, String> proof
+                : result.shortInferredAliases().entrySet()) {
+            check("Profile".equals(proof.getValue()), "unexpected alias type");
+            boolean found = checked.modules().stream()
+                    .flatMap(module -> module.declarations().stream())
+                    .filter(Ast.FunctionDecl.class::isInstance)
+                    .map(Ast.FunctionDecl.class::cast)
+                    .flatMap(fn -> fn.body().stream())
+                    .anyMatch(stmt -> stmt == proof.getKey());
+            check(found, "proof must refer to an actual checked AST binding");
+        }
+        System.out.println("RECORD_FRONTEND_SMOKE_PASS");
+    }
+
+    private static void accepted(String source) {
+        TypeChecker.check(Parser.parse(source));
+    }
+
+    private static void check(boolean condition, String message) {
+        if (!condition) throw new AssertionError(message);
+    }
+
+    private static void denied(Runnable action, String label) {
+        try {
+            action.run();
+        } catch (IllegalArgumentException | UnsupportedOperationException expected) {
+            return;
+        }
+        throw new AssertionError("unexpectedly accepted: " + label);
+    }
+}
