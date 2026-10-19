@@ -82,6 +82,9 @@ implemented here because #1407 lives on a different runtime stack.
   is Send, but not scoped READ while its Sync contract remains unproven.
 - Unsupported capabilities such as Future remain denied even if a permissive
   nominal callback is supplied.
+- Erased `dyn` witnesses are independently rejected by the scoped-loan
+  verifier, even if a future trait engine grants `dyn I + Send/Sync`; scoped
+  dyn requires its own concrete-implementation/layout and outlives proof.
 
 ## Tests and evidence boundary
 
