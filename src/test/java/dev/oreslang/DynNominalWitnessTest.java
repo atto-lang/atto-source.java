@@ -66,6 +66,44 @@ final class DynNominalWitnessTest {
     }
 
     @Test
+    void concreteGenericInterfaceSpecializationIsNominal() {
+        String source = """
+                define interface Store<T> as
+                    fnc get(): T;
+                end
+                define class IntStore implements Store<int> as
+                    pub get(): int { return 7; }
+                end
+                fnc getValue(dyn Store<int> store): int {
+                    return store.get();
+                }
+                fnc valid(): int {
+                    val dyn Store<int> store = new IntStore();
+                    return getValue(store);
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void incompatibleGenericInterfaceSpecializationIsRejected() {
+        String source = """
+                define interface Store<T> as
+                    fnc get(): T;
+                end
+                define class IntStore implements Store<int> as
+                    pub get(): int { return 7; }
+                end
+                fnc bad(): void {
+                    val dyn Store<bool> store = new IntStore();
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void runtimeCastCannotForgeDynWitness() {
         String source = API + """
                 fnc unsafe(Database database): dyn Deployable {
