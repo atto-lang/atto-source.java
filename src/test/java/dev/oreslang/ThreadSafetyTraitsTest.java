@@ -256,6 +256,38 @@ final class ThreadSafetyTraitsTest {
     }
 
 
+
+    @Test
+    void actorTransportCannotBeForgedByUnknownNominalTypes() throws Exception {
+        var constructor = TypeChecker.class.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        var checker = constructor.newInstance();
+        var validate = TypeChecker.class.getDeclaredMethod(
+                "validateActorCallableBoundaryType",
+                Types.Type.class, dev.oreslang.ast.Ast.ActorKind.class,
+                boolean.class, String.class);
+        validate.setAccessible(true);
+        for (String unknown : List.of(
+                "UnknownOpaque", "ActorRef", "TcpListener", "ExecutionPermit")) {
+            var exception = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                    () -> validate.invoke(checker,
+                            new Types.Named(unknown, List.of()),
+                            dev.oreslang.ast.Ast.ActorKind.SHARED, false, "message"));
+            assertInstanceOf(IllegalArgumentException.class, exception.getCause());
+            assertTrue(exception.getCause().getMessage().contains("cannot transport unknown nominal type"),
+                    exception.getCause().getMessage());
+        }
+        for (String admitted : List.of("ActorId", "ActorKind")) {
+            assertDoesNotThrow(() -> validate.invoke(checker,
+                    new Types.Named(admitted, List.of()),
+                    dev.oreslang.ast.Ast.ActorKind.SHARED, false, "message"));
+        }
+        assertThrows(java.lang.reflect.InvocationTargetException.class, () -> validate.invoke(
+                checker,
+                new Types.Named("ActorId", List.of(Types.Primitive.INT)),
+                dev.oreslang.ast.Ast.ActorKind.SHARED, false, "message"));
+    }
+
     @Test
     void sharedMutexAcceptsSendOwnedDataButRejectsUnprovenPayloads() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
