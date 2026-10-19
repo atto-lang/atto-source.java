@@ -56,7 +56,7 @@ public final class ActorGroupColumnarEpoch {
     private final List<ActorRuntime.ActorId> members;
     private final List<String> fields;
     private final Map<ActorRuntime.ActorId, Integer> indices;
-    private final double[][] columns;
+    private double[][] columns;
     private final boolean[] published;
     private final OresFuture<Snapshot> completion =
             new OresFuture<>(() -> false, () -> { });
@@ -136,6 +136,7 @@ public final class ActorGroupColumnarEpoch {
     synchronized boolean abort() {
         if (terminal) return false;
         terminal = true;
+        columns = null; // release unfinished result storage on revocation
         return true;
     }
 
