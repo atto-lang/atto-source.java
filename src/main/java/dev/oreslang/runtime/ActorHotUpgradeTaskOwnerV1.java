@@ -31,6 +31,9 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
     private static final long CLOSE_TIMEOUT_NANOS =
             TimeUnit.SECONDS.toNanos(5);
     private final LogicalSourceActorRouterV1 router;
+    // 0 denotes the privileged logical-supervisor root owner. Descendant
+    // scopes bind to the exact physical code epoch at scope creation.
+    private final long boundRouteEpoch;
     private final Object gate = new Object();
     // A scope must reserve its ownership record BEFORE asking the router
     // to admit/pin a physical Task: HashSet growth can fail with OOME.
@@ -43,15 +46,28 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
     private boolean closed;
 
     ActorHotUpgradeTaskOwnerV1(LogicalSourceActorRouterV1 router) {
+        this(router, 0L);
+    }
+
+    private ActorHotUpgradeTaskOwnerV1(
+            LogicalSourceActorRouterV1 router, long boundRouteEpoch) {
         this.router = Objects.requireNonNull(router, "router");
+        if (boundRouteEpoch < 0L)
+            throw new IllegalArgumentException("invalid Task owner route epoch");
+        this.boundRouteEpoch = boundRouteEpoch;
     }
 
     ActorHotUpgradeTaskOwnerV1 childScope() {
         requireHost();
         synchronized (gate) {
             ensureOpen();
+            // Root ownership spans logical actor incarnations, but each
+            // child scope is pinned to the current physical code epoch. An
+            // old child must never launch a captured frame on the successor.
+            long epoch = boundRouteEpoch == 0L
+                    ? router.ref().routeEpoch() : boundRouteEpoch;
             ActorHotUpgradeTaskOwnerV1 child =
-                    new ActorHotUpgradeTaskOwnerV1(router);
+                    new ActorHotUpgradeTaskOwnerV1(router, epoch);
             children.add(child);
             return child;
         }
@@ -73,7 +89,7 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
             final ActorHotUpgradeTaskBridgeV1.PinnedTask<T> work;
             try {
                 work = router.startHostPinnedTaskTrackedForUpgrade(
-                        scheduler, frame);
+                        scheduler, frame, boundRouteEpoch);
             } catch (RuntimeException | Error admissionFailure) {
                 // Scheduler.start only throws before registering its runner;
                 // the actor bridge must retire that rejected generation pin.
