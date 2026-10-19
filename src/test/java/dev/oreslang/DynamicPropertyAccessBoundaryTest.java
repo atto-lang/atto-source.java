@@ -157,6 +157,22 @@ final class DynamicPropertyAccessBoundaryTest {
     }
 
     @Test
+    void capturedNamedConstSelectorKeepsOwnershipPrecision() {
+        accepted("""
+                define class Box as
+                    pub val int payload = 1;
+                end
+
+                fnc build_getter(): void {
+                    const row = record{x: 7, box: new Box()};
+                    const key = "x";
+                    const getter = || -> row[key];
+                    return;
+                }
+                """);
+    }
+
+    @Test
     void classFieldsSupportStringIndexingButMethodsAreNotProperties() {
         accepted("""
                 define class Point as
