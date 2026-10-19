@@ -4758,7 +4758,7 @@ public final class TypeChecker {
     }
 
     private Ast.ClassDecl actorClassForRef(Named actorRef) {
-        if (!actorRef.name().equals("ActorRef") || actorRef.arguments().size() != 1) {
+        if (!"ActorRef".equals(actorRef.name()) || actorRef.arguments().size() != 1) {
             throw new IllegalArgumentException(
                     "ActorRef requires exactly one actor type argument");
         }
@@ -4766,6 +4766,10 @@ public final class TypeChecker {
         if (!(target instanceof Named namedTarget)) {
             throw new IllegalArgumentException(
                     "ActorRef target must be a concrete actor class; got " + target);
+        }
+        if (hasMalformedNominalName(namedTarget)) {
+            throw new IllegalArgumentException(
+                    "ActorRef target must have a nonblank actor class name");
         }
         Ast.ClassDecl actorClass = findClass(namedTarget.name());
         if (actorClass == null || actorClass.actorKind() == Ast.ActorKind.NONE) {
@@ -4959,6 +4963,10 @@ public final class TypeChecker {
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
     }
 
+    private static boolean hasMalformedNominalName(Named named) {
+        return named.name() == null || named.name().isBlank();
+    }
+
     /** A Send proof is necessary but not sufficient for an async/task boundary. */
     private boolean isThreadSend(Type type) {
         return ThreadSafetyTraits.has(type, ThreadSafetyTraits.Trait.SEND,
@@ -4975,7 +4983,7 @@ public final class TypeChecker {
         // an actor/mailbox capability. Async tasks may receive the handle when
         // its payload is concrete, owned and task-safe. Actor boundaries retain
         // their stricter rule and continue to reject Channel<T> entirely.
-        if (type instanceof Named named && named.name().equals("Channel")
+        if (type instanceof Named named && "Channel".equals(named.name())
                 && named.arguments().size() == 1
                 && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())
                 && isThreadSend(named.arguments().getFirst())
@@ -5001,6 +5009,9 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " exceeds actor result type nesting budget (depth or proof work)");
         }
         if (type instanceof Named named) {
+            if (hasMalformedNominalName(named)) {
+                throw new IllegalArgumentException(where + " contains malformed nominal type");
+            }
             if (named.name().equals("ActorRef") || named.name().equals("SharedMutex")) {
                 throw new IllegalArgumentException(
                         where + " cannot return live " + named.name()
@@ -5076,6 +5087,9 @@ public final class TypeChecker {
         }
         if (!(type instanceof Named named)) {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
+        }
+        if (hasMalformedNominalName(named)) {
+            throw new IllegalArgumentException(where + " contains malformed nominal type");
         }
 
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
@@ -5212,6 +5226,7 @@ public final class TypeChecker {
             return true;
         }
         if (!(type instanceof Named named)) return false;
+        if (hasMalformedNominalName(named)) return false;
 
         // These are sealed scalar metadata at runtime (ActorId is immutable,
         // ActorKind is an enum). Enforce canonical zero-arity before admitting.
