@@ -284,6 +284,7 @@ public final class AsyncRuntime implements AutoCloseable {
         // The first caller owns shutdown initiation, but EVERY caller owns an
         // independent physical-quiescence join. Merely observing closed=true
         // must never permit VM teardown while carriers are still executing.
+        Throwable notificationFailure = null;
         if (closed.compareAndSet(false, true)) {
             java.util.ArrayList<Runnable> notifications = new java.util.ArrayList<>();
             // Revoke sibling Task producers before delivering potentially
@@ -295,9 +296,15 @@ public final class AsyncRuntime implements AutoCloseable {
             }
             executor.shutdownNow();
             for (Runnable delivery : notifications) {
-                // Runtime waiters isolate observer failures; do not allow
-                // broken host accounting to suppress sibling delivery.
-                delivery.run();
+                // Failed host accounting must not suppress sibling delivery
+                // or prevent the physical termination join.
+                try {
+                    delivery.run();
+                } catch (RuntimeException | Error failure) {
+                    if (notificationFailure == null) notificationFailure = failure;
+                    else if (notificationFailure != failure)
+                        notificationFailure.addSuppressed(failure);
+                }
             }
         }
 
@@ -313,7 +320,7 @@ public final class AsyncRuntime implements AutoCloseable {
                 }
                 try {
                     if (executor.awaitTermination(Math.max(0L, remaining),
-                            TimeUnit.NANOSECONDS)) return;
+                            TimeUnit.NANOSECONDS)) break;
                 } catch (InterruptedException ignored) {
                     // An interrupt does not prove physical cleanup. Continue
                     // joining up to the configured deadline and restore the
@@ -324,6 +331,8 @@ public final class AsyncRuntime implements AutoCloseable {
         } finally {
             if (interrupted) Thread.currentThread().interrupt();
         }
+        if (notificationFailure instanceof RuntimeException failure) throw failure;
+        if (notificationFailure instanceof Error error) throw error;
     }
 
 }
