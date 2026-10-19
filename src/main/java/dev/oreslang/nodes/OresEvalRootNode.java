@@ -2509,6 +2509,97 @@ public final class OresEvalRootNode extends RootNode {
             runBlock(task, arm.body(), armEnv, continuation);
         }
 
+        /**
+         * A tracked static selection shares the atomic SelectSet coordinator
+         * with procedural selects. Only the winning arm is scheduled as an
+         * owner-actor source task, and its Future<void> settles after cleanup.
+         */
+        private OresFuture<Object> startTrackedVoidSelect(
+                Ast.StaticSelectExpr expression, Env env) {
+            if (!ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException("tracked nb select requires an actor turn");
+            }
+            if (env.hasLiveMutexGuards()) {
+                throw new IllegalStateException(
+                        "cannot arm tracked nb select while holding a MutexGuard");
+            }
+            Ast.SelectStmt select = expression.select();
+            ActorRuntime.ContinuationTarget target =
+                    context.actors().captureCurrentContinuationTarget();
+            Env captured = env.snapshot();
+            ChannelRuntime.SelectSet set = buildStaticSelectSet(select, env);
+            java.util.concurrent.atomic.AtomicReference<
+                    OresFuture<ChannelRuntime.SelectResult>> selection =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<OresFuture<Object>> running =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+
+            OresFuture<Object> tracked = OresFuture.fromCallback(completion -> {
+                OresFuture<ChannelRuntime.SelectResult> chosen =
+                        set.selectAsync(runtimeSelectPolicy(select.policy()));
+                selection.set(chosen);
+                try {
+                    context.actors().enqueueOnCompletion(chosen, target, (winner, failure) -> {
+                        if (completion.isDone()) return;
+                        if (failure != null) {
+                            if (chosen.isCancelled()) completion.cancel();
+                            else completion.reject(OresFuture.unwrap(failure));
+                            return;
+                        }
+                        try {
+                            if (winner.index() < 0 || winner.index() >= select.arms().size()) {
+                                throw new IllegalStateException(
+                                        "selected static arm index is out of range");
+                            }
+                            Ast.SelectArm arm = select.arms().get(winner.index());
+                            Env armEnv = new Env(captured);
+                            if ((arm.operation() == Ast.ChannelOperation.READ
+                                    || arm.operation() == Ast.ChannelOperation.AWAIT)
+                                    && arm.bindingName() != null) {
+                                armEnv.define(arm.bindingName(), winner.value(), arm.bindingKind());
+                            }
+                            OresFuture<Object> armTask =
+                                    startSourceBlockTask(arm.body(), armEnv);
+                            running.set(armTask);
+                            try {
+                                context.actors().enqueueOnCompletion(
+                                        armTask, target, (ignored, armFailure) -> {
+                                            running.compareAndSet(armTask, null);
+                                            if (completion.isDone()) return;
+                                            if (armFailure == null) {
+                                                // Internal zero-payload completion, not a guest value.
+                                                completion.resolve(null);
+                                            } else if (armTask.isCancelled()) {
+                                                completion.cancel();
+                                            } else {
+                                                completion.reject(OresFuture.unwrap(armFailure));
+                                            }
+                                        });
+                            } catch (RuntimeException | Error registrationFailure) {
+                                running.compareAndSet(armTask, null);
+                                armTask.cancel(false);
+                                throw registrationFailure;
+                            }
+                        } catch (RuntimeException | Error sourceFailure) {
+                            if (!completion.isDone()) completion.reject(sourceFailure);
+                        }
+                    });
+                } catch (RuntimeException | Error registrationFailure) {
+                    chosen.cancel(false);
+                    throw registrationFailure;
+                }
+            }, () -> {
+                OresFuture<ChannelRuntime.SelectResult> chosen = selection.get();
+                // Winning operations are committed. Consumer cancellation
+                // cannot retroactively undo a read or bypass arm cleanup.
+                return chosen != null && chosen.cancel(false);
+            }, () -> {
+                OresFuture<ChannelRuntime.SelectResult> chosen = selection.get();
+                if (chosen != null && !chosen.isDone()) chosen.cancel(false);
+            });
+            return context.actors().ownCurrentActorFuture(tracked);
+        }
+
         private void runSelectSuspendable(
                 SourceTask task,
                 Ast.SelectStmt select,
