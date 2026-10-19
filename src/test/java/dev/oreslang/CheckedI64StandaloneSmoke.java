@@ -33,6 +33,10 @@ public final class CheckedI64StandaloneSmoke {
                         "zero divisor error code");
                 require("DivisionByZeroError".equals(correct.guestErrorName()),
                         "zero divisor guest error label");
+                require("Throw".equals(correct.effectKind()),
+                        "zero divisor is a Throw effect");
+                require(!correct.getMessage().contains("/ by zero"),
+                        "host JVM division diagnostic must not leak");
                 checks++;
                 return;
             }
@@ -52,6 +56,14 @@ public final class CheckedI64StandaloneSmoke {
                 int tag = operator == '+' ? 1 : operator == '-' ? 2 : 3;
                 require(correct.operationTag() == tag, "wrong overflow tag");
                 require("ORES_I64_OVERFLOW".equals(correct.errorCode()), "overflow code");
+                require("ArithmeticOverflowError".equals(correct.guestErrorName()),
+                        "overflow guest error label");
+                require("Throw".equals(correct.effectKind()), "overflow effect kind");
+                require(correct.effectCode() == 0x494F0001,
+                        "overflow internal effect code");
+                String name = operator == '+' ? "add" : operator == '-' ? "subtract" : "multiply";
+                require(name.equals(correct.operation()),
+                        "overflow operation metadata");
                 checks++;
                 return;
             }
@@ -70,6 +82,13 @@ public final class CheckedI64StandaloneSmoke {
                 CheckedI64Arithmetic.negate(value);
             } catch (CheckedI64OverflowException correct) {
                 require(correct.operationTag() == 4, "wrong unary overflow tag");
+                require("negate".equals(correct.operation()),
+                        "unary overflow operation label");
+                require("ArithmeticOverflowError".equals(correct.guestErrorName()),
+                        "unary overflow guest error label");
+                require("Throw".equals(correct.effectKind())
+                        && correct.effectCode() == 0x494F0001,
+                        "unary overflow internal effect");
                 checks++;
                 return;
             }
