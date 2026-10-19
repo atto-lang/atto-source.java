@@ -83,6 +83,14 @@ final class DynamicPropertyAccessBoundaryTest {
                     return tuple[index];
                 }
                 """);
+        accepted("""
+                fnc exact_const_index(): string {
+                    const tuple = tuple(3.0, "boo");
+                    const index = 1;
+                    const string value = tuple[index];
+                    return value;
+                }
+                """);
         rejected("""
                 fnc bad(int index): void {
                     const tuple = tuple(3.0, "boo");
