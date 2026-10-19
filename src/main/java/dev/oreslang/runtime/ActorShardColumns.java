@@ -11,7 +11,7 @@ import java.util.Objects;
  * snapshotColumn returns a copy. No guest lowering or scoped Task permit is
  * implied by this host-only type.</p>
  */
-public final class ActorShardColumns {
+public final class ActorShardColumns implements AutoCloseable {
     public enum Layout { AOS, SOA, AOSOA }
     private static final int MAX_BYTES = 16 * 1024 * 1024;
 
@@ -21,6 +21,7 @@ public final class ActorShardColumns {
     private final int fields;
     private final int lanes;
     private final double[] storage;
+    private final ActorRuntime.ActorShardLease reservation;
 
     /**
      * Construct only inside a scheduled actor turn. AoSoA must use a power of
@@ -47,8 +48,27 @@ public final class ActorShardColumns {
         if (elements > MAX_BYTES / Double.BYTES) {
             throw new IllegalArgumentException("shard exceeds 16 MiB host allocation cap");
         }
-        this.storage = new double[(int) elements];
+        int bytes = Math.toIntExact(elements * Double.BYTES);
+        ActorRuntime runtime = ActorRuntime.currentActorRuntime();
+        if (runtime == null) {
+            throw new SecurityException("shard allocation requires an owning runtime");
+        }
+        ActorRuntime.ActorShardLease allocated = runtime.reserveActorShard(bytes);
+        double[] heap = null;
+        try {
+            if (!allocated.privateBacking()) heap = new double[(int) elements];
+        } catch (RuntimeException | Error failure) {
+            allocated.close();
+            throw failure;
+        }
+        this.reservation = allocated;
+        this.storage = heap;
     }
+
+    boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor) {
+        return reservation.ownedBy(runtime, actor);
+    }
+    boolean isPrivateBacked() { return reservation.privateBacking(); }
 
     public Layout layout() { return layout; }
     public int rows() { return rows; }
@@ -56,9 +76,21 @@ public final class ActorShardColumns {
     public int lanes() { return lanes; }
 
     private void requireOwner() {
-        if (!ActorRuntime.currentActorId().filter(owner::equals).isPresent()) {
-            throw new SecurityException("shard data is accessible only in its owning actor turn");
-        }
+        reservation.requireOwner();
+    }
+
+    private double get(int index) {
+        return reservation.privateBacking() ? reservation.read(index) : storage[index];
+    }
+
+    private void put(int index, double value) {
+        if (reservation.privateBacking()) reservation.write(index, value);
+        else storage[index] = value;
+    }
+
+    @Override public void close() {
+        requireOwner();
+        reservation.close();
     }
 
     private int offset(int row, int field) {
@@ -74,12 +106,12 @@ public final class ActorShardColumns {
 
     public double read(int row, int field) {
         requireOwner();
-        return storage[offset(row, field)];
+        return get(offset(row, field));
     }
 
     public void write(int row, int field, double value) {
         requireOwner();
-        storage[offset(row, field)] = value;
+        put(offset(row, field), value);
     }
 
     /**
@@ -96,7 +128,7 @@ public final class ActorShardColumns {
         if (!Double.isFinite(dt)) throw new IllegalArgumentException("nonfinite dt");
         for (int row = 0; row < rows; row++) {
             int p = offset(row, position);
-            storage[p] += storage[offset(row, velocity)] * dt;
+            put(p, get(p) + get(offset(row, velocity)) * dt);
         }
     }
 
@@ -107,7 +139,7 @@ public final class ActorShardColumns {
             throw new IndexOutOfBoundsException("invalid shard field");
         }
         double[] snapshot = new double[rows];
-        for (int row = 0; row < rows; row++) snapshot[row] = storage[offset(row, field)];
+        for (int row = 0; row < rows; row++) snapshot[row] = get(offset(row, field));
         return snapshot;
     }
 }
