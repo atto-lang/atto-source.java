@@ -182,6 +182,28 @@ class ClassifierTests(unittest.TestCase):
                 self.assertEqual(outcome["jobs"][0]["reported_failures_without_timing"], 1)
                 self.assertEqual(outcome["jobs"][0]["completed_build_test_failures"], 0)
 
+    def test_malformed_or_reversed_timestamps_are_unobserved(self):
+        for started, completed in (
+            ("banana", "2026-10-18T12:00:03Z"),
+            ("2026-10-18T12:00:03Z", "2026-10-18T12:00:00Z"),
+            ("2026-10-18T12:00:00", "2026-10-18T12:00:03"),
+            ("2026-99-99T12:00:00Z", "2026-10-18T12:00:03Z"),
+        ):
+            with self.subTest(started=started, completed=completed):
+                sample = step("Run tests", "failure")
+                sample["started_at"] = started
+                sample["completed_at"] = completed
+                out = m.assess(RUN, [job(steps=[sample])], SHA)
+                self.assertEqual(out["category"], "reported_failure_execution_unobserved")
+                self.assertEqual(out["jobs"][0]["completed_build_test_failures"], 0)
+
+    def test_valid_timezone_offsets_allow_execution_evidence(self):
+        sample = step("Run tests", "failure")
+        sample["started_at"] = "2026-10-18T08:00:00-04:00"
+        sample["completed_at"] = "2026-10-18T12:00:03Z"
+        self.assertEqual(m.classify(RUN, [job(steps=[sample])], SHA),
+                         "executed_build_test_failure")
+
     def test_missing_timestamps_never_prove_executed_success(self):
         run = dict(RUN, conclusion="success")
         sample = step("Run tests")
@@ -243,6 +265,15 @@ class PaginationHardeningTests(unittest.TestCase):
         self.assertEqual(report["job_count"], 101)
         self.assertEqual(report["category"], "observed_no_step_failure")
         self.assertEqual(len(calls), 4)
+
+    def test_short_nonfinal_page_is_rejected(self):
+        def fetch(path):
+            if "jobs?" not in path:
+                return RUN
+            return {"total_count": 101,
+                    "jobs": [{"id": i + 1, "steps": []} for i in range(50)]}
+        with self.assertRaisesRegex(m.TriageError, "pagination"):
+            m.inspect("org/repo", 42, SHA, fetch=fetch)
 
     def test_racing_totals_and_duplicates_fail_closed(self):
         def racing(path):
