@@ -71,7 +71,7 @@ public final class SendSyncContracts {
                     : borrowed.mutable() ? Marker.SEND : Marker.SYNC;
             return proves(borrowed.target(), required, nominal);
         }
-        if (type instanceof Record record) {
+        if (type instanceof Types.Record record) {
             return record.members().values().stream().allMatch(t -> proves(t, marker, nominal));
         }
         if (type instanceof Tuple tuple) {
