@@ -103,6 +103,74 @@ final class CallerRoleContractsTest {
     }
 
     @Test
+    void strippingAnnotationsFromRewrittenCallableNeverErasesAccessPolicy() {
+        Ast.Program program = Parser.parse(ROLES + """
+                @CallableBy(Callers.A)
+                pub fnc guarded(): void {}
+                @CallerRole(Callers.A)
+                pub fnc authorized(): void {}
+                pub fnc ordinary(): void {}
+                """);
+        var policy = CallerRoleContracts.validate(program);
+        Ast.FunctionDecl guarded = function(program, "guarded");
+        Ast.FunctionDecl authorized = function(program, "authorized");
+        Ast.FunctionDecl ordinary = function(program, "ordinary");
+
+        Ast.FunctionDecl stripped = new Ast.FunctionDecl(
+                guarded.name(), guarded.kind(), guarded.visibility(),
+                guarded.async(), guarded.suspends(), guarded.generator(),
+                guarded.structural(), guarded.nonLexical(), guarded.trapped(),
+                guarded.actorKind(), guarded.genericParameters(),
+                guarded.parameters(), guarded.returnType(), java.util.List.of(),
+                guarded.body(), guarded.genericSpecs());
+        assertFalse(stripped.annotations().stream().anyMatch(
+                a -> a.name().equals("CallableBy")));
+        assertTrue(policy.isRestricted(stripped),
+                "erased metadata is not a checked callable identity");
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> policy.requireDirectCall(stripped, authorized, "guarded"))
+                .getMessage().contains("not bound"));
+        assertThrows(IllegalArgumentException.class,
+                () -> policy.rejectReification(stripped, "guarded"));
+
+        // Legitimately unrestricted local declarations remain callable and
+        // reifiable when they retain their checked AST identities.
+        assertDoesNotThrow(() -> policy.requireDirectCall(
+                ordinary, null, "ordinary"));
+        assertDoesNotThrow(() -> policy.rejectReification(ordinary, "ordinary"));
+        Ast.FunctionDecl plainCopy = new Ast.FunctionDecl(
+                ordinary.name(), ordinary.kind(), ordinary.visibility(),
+                ordinary.async(), ordinary.suspends(), ordinary.generator(),
+                ordinary.structural(), ordinary.nonLexical(), ordinary.trapped(),
+                ordinary.actorKind(), ordinary.genericParameters(),
+                ordinary.parameters(), ordinary.returnType(),
+                ordinary.annotations(), ordinary.body(), ordinary.genericSpecs());
+        assertTrue(policy.isRestricted(plainCopy));
+        assertThrows(IllegalArgumentException.class,
+                () -> policy.requireDirectCall(plainCopy, null, "ordinary"));
+        assertThrows(IllegalArgumentException.class,
+                () -> policy.rejectReification(plainCopy, "ordinary"));
+    }
+
+    @Test
+    void duplicateCallableIdentityInRewrittenProgramFailsIndexValidation() {
+        Ast.Program parsed = Parser.parse(ROLES + """
+                pub fnc safe(): void {}
+                """);
+        Ast.FunctionDecl safe = function(parsed, "safe");
+        Ast.ModuleDecl root = parsed.modules().stream()
+                .filter(m -> m.declarations().contains(safe)).findFirst().orElseThrow();
+        Ast.ModuleDecl duplicate = new Ast.ModuleDecl(
+                root.name(), root.annotations(), root.contracts(),
+                java.util.List.of(safe, safe));
+        Ast.Program repeated = new Ast.Program(
+                parsed.namespace(), parsed.imports(), java.util.List.of(duplicate));
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> CallerRoleContracts.validate(repeated)).getMessage()
+                .contains("duplicate callable declaration identity"));
+    }
+
+    @Test
     void memberNamesInDifferentEnumsDoNotGrantEqualRoles() {
         Ast.Program program = Parser.parse("""
                 define enum Left as
