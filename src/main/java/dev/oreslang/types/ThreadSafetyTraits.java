@@ -38,12 +38,16 @@ public final class ThreadSafetyTraits {
     // Bound recursive compiler queries on attacker-controlled nested type input.
     private static final int MAX_TYPE_DEPTH = 256;
     private static final Set<String> UNPROVEN_CAPABILITIES = Set.of(
-            "Mutex", "MutexGuard", "SharedMutex", "Future",
-            "ActorRef", "ActorMail", "ActorOutput", "ActorOutputStream",
+            "Mutex", "MutexGuard", "SharedMutex", "Future", "Task",
+            "Channel", "ActorRef", "ActorMail", "ActorOutput",
+            "ActorOutputStream", "ActorGroup", "Supervisor", "ActorContext",
             "SelectCase", "SelectSet", "SelectResult",
             "Iterator", "AsyncIterator", "TcpConnection", "HttpExchange",
             "HttpServer", "HttpHandler", "ExecutionPermit",
-            "ReadLoan", "WriteLoan", "PartitionLoan");
+            "ReadLoan", "WriteLoan", "PartitionLoan", "BorrowGuard",
+            "RawPointer", "Pointer", "OresPointer",
+            "NativeHandle", "FfiHandle", "ThreadBound", "ThreadLocal",
+            "Rc", "RefCell", "Cell", "RwLockGuard");
 
     public enum Trait { SEND, SYNC }
 
@@ -125,14 +129,9 @@ public final class ThreadSafetyTraits {
                         && has(named.arguments().get(0), trait, nominalProof, visiting, depth + 1)
                         && has(named.arguments().get(1), trait, nominalProof, visiting, depth + 1);
             }
-            // Oreslang's Channel is an owned synchronized transport. The
-            // payload must be Send to cross its worker boundary. Do NOT claim
-            // Sync for the handle until the underlying runtime sharing proof
-            // and immutable-reference API have been audited separately.
-            if (name.equals("Channel")) {
-                return trait == Trait.SEND && named.arguments().size() == 1
-                        && has(named.arguments().getFirst(), Trait.SEND, nominalProof, visiting, depth + 1);
-            }
+            // Channel/Task/runtime handles are denied until a separately
+            // verified handle ownership ABI exists. Payload Send alone does
+            // NOT prove carrier transfer of the enclosing capability.
             if (UNPROVEN_CAPABILITIES.contains(name)) {
                 return false;
             }
