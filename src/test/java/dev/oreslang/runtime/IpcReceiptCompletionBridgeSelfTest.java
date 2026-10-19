@@ -61,6 +61,49 @@ public final class IpcReceiptCompletionBridgeSelfTest {
         check(gate.invariant());
         denied(() -> gate.acceptVerified(one, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED));
 
+        // Trusted pre-remote rejection is terminal exactly once and all
+        // dependent callbacks run outside the internal host correlation gate.
+        var localDenial = new IpcReceiptCompletionBridge(1);
+        var deniedEnvelope = env(1, "local");
+        var rejected = localDenial.admit(deniedEnvelope);
+        AtomicReference<Throwable> localCallbackFailure = new AtomicReference<>();
+        AtomicInteger localCallbackCount = new AtomicInteger();
+        rejected.thenAccept(stage -> {
+            CountDownLatch reentered = new CountDownLatch(1);
+            Thread probe = new Thread(() -> {
+                try {
+                    if (stage == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE
+                            && localDenial.invariant()) localCallbackCount.incrementAndGet();
+                } catch (Throwable error) {
+                    localCallbackFailure.compareAndSet(null, error);
+                } finally {
+                    reentered.countDown();
+                }
+            });
+            probe.start();
+            try {
+                if (!reentered.await(2, TimeUnit.SECONDS)) {
+                    localCallbackFailure.compareAndSet(null,
+                            new AssertionError("local rejection callback held bridge gate"));
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                localCallbackFailure.compareAndSet(null, interrupted);
+            }
+        });
+        denied(() -> localDenial.acceptVerified(deniedEnvelope,
+                IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE));
+        check(!rejected.toCompletableFuture().isDone());
+        localDenial.rejectBeforeRemote(deniedEnvelope);
+        check(result(rejected) == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
+        check(localCallbackFailure.get() == null);
+        check(localCallbackCount.get() == 1);
+        check(localDenial.invariant());
+        denied(() -> localDenial.rejectBeforeRemote(deniedEnvelope));
+        denied(() -> localDenial.acceptVerified(deniedEnvelope,
+                IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED));
+        check(localDenial.transportLost("local") == 0);
+
         var onTerminal = new IpcReceiptCompletionBridge(1);
         var three = env(1, "session");
         var completion = onTerminal.admit(three);
