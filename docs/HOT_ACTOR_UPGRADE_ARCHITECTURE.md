@@ -949,6 +949,16 @@ The ordinary fast path remains idempotent. Added a real source-actor
 JUnit regression with eight concurrent host closers that asserts a
 fully retired generation is unpinned and further closure is harmless.
 
+The bounded `LogicalSourceActorProxyBridgeV1` now mirrors that
+lifecycle distinction: closing seals admission immediately, but the
+bridge only records physical retirement after the router closes and the
+mailbox is released. A failed physical close leaves the bridge sealed
+and retryable; it must not silently become an idempotent no-op while
+a code generation remains pinned. A race regression checks that
+`admitLong` versus `close` either rejects admission or preserves
+accepted mail for actual delivery before shutdown. Multiple host
+closers, and repeated completed shutdowns, must be idempotent.
+
 These are committed **source-level changes and test cases, not yet
 executed JDK25/GraalVM proof**. A separate independent source-free
 Python model exercised 500,000 deterministic retirement/close transitions
