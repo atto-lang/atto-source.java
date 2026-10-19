@@ -698,3 +698,35 @@ trusted runner executes their complete checked-in revisions. Neither
 synthetic carrier availability nor this PR authorizes private source
 mirroring without reviewed immutable source/destination approvals and
 enforced protected branches.
+
+
+### 2026-10-19 destination Actions posture and retention gate
+
+Before reading private source, the publisher now independently queries repository
+Actions administration settings and fails closed unless all of the following are
+true:
+
+- private-repository forking is disabled;
+- Actions is enabled but third-party Actions are not globally allowed;
+- a `selected` Actions policy permits GitHub-owned Actions only, with verified
+  publishers disabled and no extra patterns (or the stricter `local_only` mode);
+- the default `GITHUB_TOKEN` permission is read-only and workflows cannot approve
+  pull requests;
+- artifact/log retention is explicitly readable and no greater than 7 days.
+
+The posture is fingerprinted before source collection and rechecked during
+per-write authorization. Any setting drift aborts the next write. API-budget
+reservation includes these additional authenticated reads.
+
+Source-free runner evidence only: dummy carrier PR #33, head
+`812d20defda9a1e2a10d38e566e25f472c7c08ab`, produced Actions run
+`39343253672`; its `verify` job executed checkout, Node contract tests and
+shell syntax steps successfully. This proves runner capacity only. The dummy
+carrier's `main` currently reports `protected=false`, and repository rulesets
+are unavailable on its current plan, so it remains ineligible for private
+Oreslang source transfer.
+
+Exact source PR #954 head after the code/test hardening still receives source-org
+workflow startup failures. Run `39343397605` concluded failure with the
+individually queried `preflight-regressions` job returning `steps=[]`. That is
+an observed no-step failure, not execution of the new Python regressions.
