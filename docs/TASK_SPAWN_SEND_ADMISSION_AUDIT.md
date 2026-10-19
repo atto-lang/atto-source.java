@@ -136,7 +136,28 @@ Current exact blobs:
 - `ResolvedTaskSendAuthorityTest.java`: `08dd36257672de0398a7cbae3b3f84ceb85d7ab9`
 - `TaskCaptureAnalysisTest.java`: `5df21d3a9b12cac6403fc695aa8de3ba5d10a043`
 
-Committed targeted test methods in these three suites: **22** (13 + 4 + 5).
-They have not executed under Maven/JUnit on this exact head. Exact-head
-fast-ci #39315110973 / job #118274421514 and concurrency-contract
-#39315110871 / job #118274422388 again failed with zero recorded steps.
+Committed targeted test methods in these three suites: **23** (13 + 5 + 5).
+
+### Proof-work amplification hardening — 2026-10-19
+
+The resolved Task bridge originally called the bounded `isSharedSafe` walker
+from the canonical `ThreadSafetyTraits` nominal callback using a fresh
+100,000-step budget for every distinct nominal node. A sufficiently wide type
+could therefore multiply the intended compiler-work bound even though each
+individual traversal was bounded.
+
+`isThreadSend` now allocates one query-local 100,000-step nominal
+shared-safety budget and passes that same budget through every nominal callback.
+`ResolvedTaskSendAuthorityTest` adds a wide nominal-storage adversarial case:
+the direct shared-safety traversal and owned-Send query must both fail closed
+at the same global budget, and a subsequent primitive query must remain healthy.
+
+Current exact blobs:
+- `TypeChecker.java`: `e870b9d27c03e5377116fb2c27cf5f9371e6acee`
+- `ResolvedTaskSendAuthorityTest.java`: `30e0926f957e1e699ca677e2c069997511d22f6d`
+
+Current exact branch head: `3dd8590fdd9537aa6b34fcc8e61390991e115c29`.
+Latest source-org fast-ci #39318279186 / job #118285359818 and
+concurrency-contract #39318279228 / job #118285360290 again completed with
+**zero recorded steps**. They are infrastructure failures, not compiler/test
+results. No Maven/JUnit/GraalVM pass is claimed for this head.
