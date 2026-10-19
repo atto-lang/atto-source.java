@@ -67,6 +67,9 @@ public final class TriLayoutMotionStore implements AutoCloseable {
         if (capacity <= 0 || tile < 2 || tile > 1024 || (tile & (tile - 1)) != 0) {
             throw new IllegalArgumentException("capacity must be positive; tile must be power of two in [2,1024]");
         }
+        if (capacity > MAX_ARRAY_LENGTH) {
+            throw new IllegalArgumentException("region exceeds JVM array length bounds");
+        }
         if (budgetBytes < 0) throw new IllegalArgumentException("negative region memory budget");
         if (layouts == null || layouts.isEmpty() || layouts.stream().anyMatch(Objects::isNull)) {
             throw new IllegalArgumentException("nonempty nonnull layout residency is required");
