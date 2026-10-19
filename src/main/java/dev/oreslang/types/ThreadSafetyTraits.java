@@ -2,6 +2,8 @@ package dev.oreslang.types;
 
 import java.util.Collections;
 import java.util.IdentityHashMap;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -66,19 +68,23 @@ public final class ThreadSafetyTraits {
 
     private static boolean has(
             Type type, Trait trait, NominalProof nominalProof, Set<Type> visiting,
-            IdentityHashMap<Type, Boolean[]> proven, int[] steps, int depth) {
+            IdentityHashMap<Type, Map<Integer, Boolean>> proven, int[] steps, int depth) {
         if (depth > MAX_TYPE_DEPTH || --steps[0] < 0) return false;
         // The active identity set must be checked *before* memoization; it
         // must never turn a cycle into a positive proof.
         if (!visiting.add(type)) return false;
         try {
-            Boolean[] cached = proven.get(type);
-            if (cached != null && cached[trait.ordinal()] != null) {
-                return cached[trait.ordinal()];
+            // A positive proof at shallow depth MUST NOT authorize a deeper
+            // occurrence whose descendants exceed MAX_TYPE_DEPTH. Include
+            // depth in the cache key, not only node identity and trait.
+            int proofKey = depth * 2 + trait.ordinal();
+            Map<Integer, Boolean> cached = proven.get(type);
+            if (cached != null && cached.containsKey(proofKey)) {
+                return cached.get(proofKey);
             }
             boolean result = derive(type, trait, nominalProof, visiting, proven, steps, depth);
-            proven.computeIfAbsent(type, ignored -> new Boolean[Trait.values().length])
-                    [trait.ordinal()] = result;
+            proven.computeIfAbsent(type, ignored -> new HashMap<>())
+                    .put(proofKey, result);
             return result;
         } finally {
             visiting.remove(type);
@@ -87,7 +93,7 @@ public final class ThreadSafetyTraits {
 
     private static boolean derive(
             Type type, Trait trait, NominalProof nominalProof, Set<Type> visiting,
-            IdentityHashMap<Type, Boolean[]> proven, int[] steps, int depth) {
+            IdentityHashMap<Type, Map<Integer, Boolean>> proven, int[] steps, int depth) {
         if (type == Unknown.INSTANCE || type instanceof Generic
                 || type instanceof SelfType || type instanceof ClassNamespace
                 || type instanceof Function || type instanceof Types.Not) return false;
