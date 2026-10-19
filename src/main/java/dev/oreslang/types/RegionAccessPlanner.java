@@ -43,21 +43,46 @@ public final class RegionAccessPlanner {
                 if (previous != null && previous.longValue() != access.generation())
                     throw new IllegalArgumentException("mixed or stale region generation in one system");
             }
+            // Two contradictory effects on an overlapping slice cannot be
+            // interpreted as independent borrows within the same system.
+            for (int i = 0; i < accesses.size(); i++) {
+                for (int j = i + 1; j < accesses.size(); j++) {
+                    if (overlapsMutably(accesses.get(i), accesses.get(j)))
+                        throw new IllegalArgumentException("overlapping write effects in one system");
+                }
+            }
+        }
+    }
+
+    private static boolean overlapsMutably(Access a, Access b) {
+        if (a.regionId() != b.regionId()) return false;
+        if (a.mode() == Mode.STRUCTURAL || b.mode() == Mode.STRUCTURAL)
+            return true;
+        return a.column().equals(b.column())
+                && a.start() < b.end() && b.start() < a.end()
+                && (a.mode() == Mode.WRITE || b.mode() == Mode.WRITE);
+    }
+
+    private static void assertConsistentGenerations(Iterable<SystemAccess> systems) {
+        java.util.Map<Long, Long> generations = new java.util.HashMap<>();
+        for (SystemAccess system : systems) {
+            for (Access access : system.accesses()) {
+                Long known = generations.putIfAbsent(access.regionId(), access.generation());
+                if (known != null && known.longValue() != access.generation())
+                    throw new IllegalArgumentException("stale or mismatched region generation");
+            }
         }
     }
 
     public static boolean conflicts(SystemAccess first, SystemAccess second) {
+        Objects.requireNonNull(first, "first");
+        Objects.requireNonNull(second, "second");
+        // Validate all region generations BEFORE the first conflict can
+        // short-circuit; an earlier overlap must not conceal stale metadata.
+        assertConsistentGenerations(List.of(first, second));
         for (Access a : first.accesses()) {
             for (Access b : second.accesses()) {
-                if (a.regionId() != b.regionId()) continue;
-                if (a.generation() != b.generation())
-                    throw new IllegalArgumentException("stale or mismatched region generation");
-                if (a.mode() == Mode.STRUCTURAL || b.mode() == Mode.STRUCTURAL)
-                    return true;
-                if (!a.column().equals(b.column())) continue;
-                if (a.start() < b.end() && b.start() < a.end()
-                        && (a.mode() == Mode.WRITE || b.mode() == Mode.WRITE))
-                    return true;
+                if (overlapsMutably(a, b)) return true;
             }
         }
         return false;
@@ -70,6 +95,9 @@ public final class RegionAccessPlanner {
      */
     public static List<List<SystemAccess>> plan(List<SystemAccess> ordered) {
         Objects.requireNonNull(ordered, "ordered");
+        // Validate whole-batch incarnations even if a scheduling shortcut
+        // would otherwise avoid comparing two systems directly.
+        assertConsistentGenerations(ordered);
         List<SystemAccess> visited = new ArrayList<>();
         java.util.Set<String> names = new java.util.HashSet<>();
         List<Integer> levels = new ArrayList<>();
