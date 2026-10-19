@@ -98,7 +98,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(writes[3][2]["tree"], E)
         self.assertEqual(
             writes[3][2]["message"],
-            f"ci: exact private Oreslang tree {C} tree {D}")
+            f"ci: exact private Oreslang tree {C} tree {D}\n"
+            f"carrier-base {A} tree {B}")
+        self.assertEqual(writes[3][2]["parents"], [A])
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
 
     def test_exact_source_tree_mismatch_stops_before_carrier_commit_and_ref(self):
