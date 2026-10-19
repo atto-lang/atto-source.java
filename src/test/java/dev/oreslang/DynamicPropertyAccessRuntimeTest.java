@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** Guest runtime coverage for computed fixed-product property/index reads and writes. */
 final class DynamicPropertyAccessRuntimeTest {
@@ -84,4 +85,75 @@ final class DynamicPropertyAccessRuntimeTest {
         String text = output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
         assertEquals("4.0\n5.0\n11.0\n12\n13\n", text);
     }
+
+    @Test
+    void runtimeDerivedKeysCannotReflectMethodsOrCreateUnknownFields() {
+        String methodKey = """
+                define class Point as
+                    pub val float x = 3.0;
+                    pub fnc move(): float { return self.x; }
+                end
+
+                fnc dynamic_key(): string { return "move"; }
+
+                pub fnc main(): void {
+                    const Point point = new Point();
+                    const string key = dynamic_key();
+                    stdio.println(point[key]);
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(methodKey));
+        assertThrows(org.graalvm.polyglot.PolyglotException.class, () -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).build()) {
+                context.eval(Source.newBuilder(
+                        OresLanguage.ID, methodKey, "dynamic-class-method-key.ores").build());
+            }
+        });
+
+        String unknownClassWrite = """
+                define class MutablePoint as
+                    pub let int x = 1;
+                end
+
+                fnc dynamic_key(): string { return "missing"; }
+
+                pub fnc main(): void {
+                    val MutablePoint point = new MutablePoint();
+                    const string key = dynamic_key();
+                    point[key] = 7;
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(unknownClassWrite));
+        assertThrows(org.graalvm.polyglot.PolyglotException.class, () -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).build()) {
+                context.eval(Source.newBuilder(
+                        OresLanguage.ID, unknownClassWrite, "dynamic-class-missing-write.ores").build());
+            }
+        });
+
+        String unknownStructWrite = """
+                fnc dynamic_key(): string { return "missing"; }
+
+                pub fnc main(): void {
+                    const Vec seed = infer<Vec> struct{x: 1.0};
+                    val Vec value = infer struct{x: 2.0};
+                    const string key = dynamic_key();
+                    value[key] = 3.0;
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(unknownStructWrite));
+        assertThrows(org.graalvm.polyglot.PolyglotException.class, () -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).build()) {
+                context.eval(Source.newBuilder(
+                        OresLanguage.ID, unknownStructWrite, "dynamic-struct-missing-write.ores").build());
+            }
+        });
+    }
+
 }
