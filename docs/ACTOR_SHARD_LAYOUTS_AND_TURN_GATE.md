@@ -24,8 +24,12 @@ currently executing actor turn, not the worker thread. This is important
 because a logical actor may resume on another pthread. An actor outside
 its live turn cannot call the region even if the host retained a reference.
 The built-in `integrate(position, velocity, dt)` executes a dense in-actor
-kernel over every row without per-entity message dispatch. A copied
-`snapshotColumn` is the only result-export primitive at this stage.
+kernel over every row without per-entity message dispatch.
+`copyColumnInto(field, destination, offset)` offers a bounded allocation-free
+copy into preallocated trusted-host storage. The legacy `snapshotColumn`
+allocates an unmetered detached array and is deprecated for host compatibility;
+it MUST NOT be exposed through guest lowering before quota-owned snapshot
+handles are implemented (P0 #1531).
 
 Tests: `ActorShardColumnsTest`. Manual microbenchmark:
 `ActorShardLayoutBench`, comparing 1K/10K/100K rows across all layouts.
