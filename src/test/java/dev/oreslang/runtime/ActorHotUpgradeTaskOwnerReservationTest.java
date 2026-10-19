@@ -35,7 +35,9 @@ final class ActorHotUpgradeTaskOwnerReservationTest {
                 IsolatePolicy.developer(), ExecutionProfile.serverJit());
              var scheduler = new OresScheduler(1)) {
             var first = manager.stageActorGeneration("owner-oome-v1.ores", SOURCE);
-            var next = manager.stageActorGeneration("owner-oome-v2.ores", SOURCE);
+            var next = manager.stageActorGeneration("owner-oome-v2.ores",
+                    SOURCE.replace("self.count = self.count + mail.value;",
+                            "self.count = self.count + mail.value + 1;"));
             try (var bridge = LogicalSourceActorProxyBridgeV1.spawnShared(
                     first, "Counter", WAIT, 4, 8, 32)) {
                 var ownerField = LogicalSourceActorProxyBridgeV1.class
