@@ -194,30 +194,23 @@ final class ExperimentalHirV1CheckedArithmeticRuntimeTest {
 
 
     @Test
-    void checkedProfileRejectsNestedUncheckedOperationsEvenOnDeadBranch() throws Exception {
-        String[] unsafe = {
-            HEADER + "pub fnc main(): int { return 43 % 2; }",
-            HEADER + "pub fnc main(): int { return true ? 43 : (9223372036854775807 % 2); }"
-        };
-        for (String source : unsafe) {
-            RuntimeException failure = assertThrows(RuntimeException.class, () -> exit(source));
-            boolean classified = false;
-            for (Throwable cursor = failure; cursor != null; cursor = cursor.getCause()) {
-                classified |= String.valueOf(cursor.getMessage()).contains("checked-i64-v1");
-            }
-            assertTrue(classified, "Unsupported nested numeric operation must fail closed");
-        }
+    void checkedProfileRemainderWorksAcrossNestedBranches() throws Exception {
+        // The profile validator and evaluator MUST accept the same safe
+        // integral remainder surface; this catches previous validator drift.
+        assertEquals(1, exit(HEADER + "pub fnc main(): int { return 43 % 2; }"));
+        assertEquals(43, exit(HEADER + "pub fnc main(): int { return true ? 43 : (9223372036854775807 % 2); }"));
+        assertEquals(43, exit(HEADER + "pub fnc main(): int { return false ? (43 % 0) : 43; }"));
         // Unmarked programs retain their original arithmetic semantics.
         assertEquals(1, exit("pub fnc main(): int { return 43 % 2; }"));
     }
 
     @Test
     void checkedModeRejectsUnverifiedNumericFallbacks() throws Exception {
-        // Only i64 +, -, *, unary minus have checked-i64-v1 semantics.
-        // Legacy modulo remains available when the header is absent.
+        // i64 +, -, *, %, and unary minus are verified. Integer division
+        // remains a separate floating-result operation and is NOT admitted.
         assertEquals(43, exit("pub fnc main(): int { return 86 % 43 + 43; }"));
+        assertEquals(43, exit(HEADER + "pub fnc main(): int { return 86 % 43 + 43; }"));
         String[] unsupported = {
-            HEADER + "pub fnc main(): int { return 86 % 43 + 43; }",
             HEADER + "pub fnc main(): int { return 43 / 1; }",
             HEADER + "pub fnc main(): int { return 40.0 + 3.0; }",
             HEADER + "pub fnc main(): int { return -43.0; }",
