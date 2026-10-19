@@ -774,6 +774,46 @@ public class TaskHandleTest {
         }
     }
 
+    @Test void serializedCheckpointMarkerCannotExportCancellationAuthority()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            java.util.concurrent.atomic.AtomicReference<CancellationException> captured =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            TaskHandle<Integer> owner = scope.startTask(resume -> {
+                assertTrue(scope.cancel("serialize-safe"));
+                try {
+                    OresScheduler.cancellationCheckpoint();
+                } catch (CancellationException checkpoint) {
+                    captured.set(checkpoint);
+                    throw checkpoint;
+                }
+                return OresScheduler.done(1);
+            });
+            assertInstanceOf(TaskHandle.Cancelled.class, done(owner));
+            assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
+            assertTrue(owner.result().isCancelled());
+
+            var serialized = new java.io.ByteArrayOutputStream();
+            try (var output = new java.io.ObjectOutputStream(serialized)) {
+                output.writeObject(captured.get());
+            }
+            CancellationException restored;
+            try (var input = new java.io.ObjectInputStream(
+                    new java.io.ByteArrayInputStream(serialized.toByteArray()))) {
+                restored = assertInstanceOf(CancellationException.class,
+                        input.readObject());
+            }
+
+            TaskHandle<Integer> unrelated = scheduler.startTracked(resume -> {
+                throw restored;
+            });
+            assertInstanceOf(TaskHandle.Failed.class, done(unrelated),
+                    "a deserialized checkpoint marker must not confer authority");
+            assertFalse(unrelated.result().isCancelled());
+        }
+    }
+
     @Test void guestCancellationExceptionWithoutRequestIsFailure() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             TaskHandle<Integer> h = scheduler.startTracked(r -> {
