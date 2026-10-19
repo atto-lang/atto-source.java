@@ -183,4 +183,54 @@ final class TrustedActorLoopbackEgressBridgeRuntimeTest {
         }
     }
 
+    @Test void terminatedActorCannotDispatchQueuedHostRequest() throws Exception {
+        var sent = new CountDownLatch(1);
+        var failure = new AtomicReference<Throwable>();
+        var queued = new AtomicReference<Runnable>();
+        try (var runtime = new ActorRuntime();
+             var server = new ServerSocket(0, 2, InetAddress.getByName("127.0.0.1"))) {
+            var actor = runtime.<String>spawnUntrusted(context -> (message, turn) -> {
+                try {
+                    TrustedActorLoopbackEgressBridge.submitGetFromCurrentActor();
+                } catch (Throwable error) {
+                    failure.set(error);
+                } finally {
+                    sent.countDown();
+                }
+            });
+            var gate = new TrustedHierarchicalNetworkGate();
+            long start = System.nanoTime();
+            java.util.function.LongSupplier clock = () -> System.nanoTime() - start;
+            var policy = new TrustedUntrustedNetworkQuota.Policy(20, 2, 1, 1, 20, 2);
+            var child = gate.createHostScope(policy, clock);
+            var supervisor = gate.createHostScope(policy, clock);
+            var tenant = gate.createHostScope(policy, clock);
+            try {
+                // Do not start a host HTTP request before actor termination.
+                java.util.concurrent.Executor deferredHostDispatch = queued::set;
+                try (var bridge = new TrustedActorLoopbackEgressBridge(
+                        runtime, actor, gate, child, supervisor, tenant,
+                        server.getLocalPort(), deferredHostDispatch)) {
+                    actor.send("submit");
+                    assertTrue(sent.await(3, TimeUnit.SECONDS));
+                    assertEquals(null, failure.get());
+                    assertNotNull(queued.get());
+
+                    actor.stop();
+                    assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+                    assertFalse(TrustedActorLoopbackEgressBridge
+                            .isRegisteredForHost(runtime, actor));
+
+                    // The queued Runnable runs on this trusted host test
+                    // thread. Its previously authorized actor is now dead.
+                    queued.get().run();
+                    server.setSoTimeout(250);
+                    assertThrows(java.net.SocketTimeoutException.class, server::accept);
+                }
+            } finally {
+                child.close(); supervisor.close(); tenant.close();
+            }
+        }
+    }
+
 }
