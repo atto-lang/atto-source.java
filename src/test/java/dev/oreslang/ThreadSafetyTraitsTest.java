@@ -145,4 +145,46 @@ final class ThreadSafetyTraitsTest {
                 end
                 """)));
     }
+
+    @Test
+    void deeplyNestedTypeQueriesAreBoundedAndDoNotPoisonOtherChecks() {
+        Type nested = Types.Primitive.INT;
+        for (int i = 0; i < 300; i++) {
+            nested = new Types.ListType(nested);
+        }
+        assertFalse(has(nested, Trait.SEND), "unbounded type recursion must fail closed");
+        assertFalse(has(nested, Trait.SYNC));
+        assertTrue(has(new Types.ListType(Types.Primitive.INT), Trait.SEND));
+    }
+
+    @Test
+    void deniedBuiltinsCannotBeMadeSafeByNominalProof() {
+        ThreadSafetyTraits.NominalProof permissive = (type, trait) -> true;
+        for (String name : List.of(
+                "ActorRef", "SharedMutex", "MutexGuard", "Future",
+                "ExecutionPermit", "ReadLoan", "WriteLoan", "PartitionLoan")) {
+            Type capability = new Types.Named(name, List.of(Types.Primitive.INT));
+            assertFalse(ThreadSafetyTraits.has(capability, Trait.SEND, permissive), name);
+            assertFalse(ThreadSafetyTraits.has(capability, Trait.SYNC, permissive), name);
+        }
+        assertFalse(ThreadSafetyTraits.has(Types.Unknown.INSTANCE, Trait.SEND, permissive));
+        assertFalse(ThreadSafetyTraits.has(new Types.Generic("T"), Trait.SEND, permissive));
+        assertFalse(ThreadSafetyTraits.has(
+                new Types.Named("Channel", List.of(Types.Unknown.INSTANCE)), Trait.SEND, permissive));
+    }
+
+    @Test
+    void sharedMutexAcceptsSendOwnedDataButRejectsUnprovenPayloads() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc good(): void {
+                  val lock = SharedMutex.new([1, 2, 3]);
+                  return;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(SharedMutex<Mutex<int>> lock): void {
+                  return;
+                }
+                """)));
+    }
 }
