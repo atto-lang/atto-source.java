@@ -91,4 +91,75 @@ final class TaskScopeInvariantTest {
         assertTrue(joined.isCompletedExceptionally());
     }
 
+    @Test
+    void closedScopeRejectsRootAndWrongScopePermits() throws Exception {
+        TaskScope scope = new TaskScope();
+        TaskScope other = new TaskScope();
+        TaskScope.Registration owner = scope.reserve();
+        TaskScope.Registration wrong = other.reserve();
+        OresFuture<Void> joined = scope.close();
+        assertThrows(IllegalStateException.class, scope::reserve);
+        assertThrows(IllegalStateException.class, () -> scope.reserve(wrong));
+        TaskScope.Registration child = scope.reserve(owner);
+        owner.attach(OresFuture.completed(null));
+        owner.quiesced();
+        assertThrows(IllegalStateException.class, () -> scope.reserve(owner));
+        child.attach(OresFuture.completed(null));
+        child.quiesced();
+        assertNull(joined.get(2, TimeUnit.SECONDS));
+        wrong.failedAdmission(new IllegalStateException("cleanup"));
+        assertThrows(IllegalStateException.class, () -> scope.reserve(child));
+    }
+
+    @Test
+    void cancelledParentCannotAdmitDescendantBeforeCarrierQuiescence() throws Exception {
+        TaskScope scope = new TaskScope();
+        TaskScope.Registration parent = scope.reserve();
+        OresFuture<Integer> running = new OresFuture<>();
+        parent.attach(running);
+        OresFuture<Void> joined = scope.close();
+        assertTrue(running.cancel(false));
+        assertFalse(joined.isDone(), "carrier has not retired");
+        assertThrows(IllegalStateException.class, () -> scope.reserve(parent));
+        parent.quiesced();
+        assertTrue(joined.isDone());
+        assertTrue(joined.isCompletedExceptionally());
+    }
+
+    @Test
+    void closingScopeAdmissionRacesLastChildRetirement() throws Exception {
+        for (int i = 0; i < 128; i++) {
+            TaskScope scope = new TaskScope();
+            TaskScope.Registration parent = scope.reserve();
+            parent.attach(OresFuture.completed(null));
+            OresFuture<Void> joined = scope.close();
+            java.util.concurrent.CountDownLatch gate = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<TaskScope.Registration> admitted =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            Thread entrant = Thread.ofVirtual().start(() -> {
+                awaitGate(gate);
+                try {
+                    admitted.set(scope.reserve(parent));
+                } catch (IllegalStateException expected) {
+                    // Parent has already physically retired; no admission.
+                }
+            });
+            Thread retire = Thread.ofVirtual().start(() -> {
+                awaitGate(gate);
+                parent.quiesced();
+            });
+            gate.countDown();
+            entrant.join();
+            retire.join();
+            TaskScope.Registration child = admitted.get();
+            if (child != null) {
+                assertFalse(joined.isDone());
+                child.attach(OresFuture.completed(null));
+                child.quiesced();
+            }
+            assertNull(joined.get(2, TimeUnit.SECONDS));
+            assertThrows(IllegalStateException.class, scope::reserve);
+        }
+    }
+
 }
