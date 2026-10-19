@@ -370,4 +370,139 @@ final class OresTaskScopeFrameTest {
     }
 
 
+
+    @Test
+    void cancelledScopeReleasesRejectedFramePinOutsideScopeMonitor() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(1);
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            java.lang.reflect.Field field = OresTaskScope.class.getDeclaredField("gate");
+            field.setAccessible(true);
+            Object monitor = field.get(scope);
+            AtomicInteger releases = new AtomicInteger();
+            java.util.concurrent.atomic.AtomicBoolean lockHeld =
+                    new java.util.concurrent.atomic.AtomicBoolean(true);
+            assertTrue(scope.cancel());
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> scope.startCompilerFrame(scheduler,
+                            resume -> new OresScheduler.Done<>(42), () -> {
+                                releases.incrementAndGet();
+                                lockHeld.set(Thread.holdsLock(monitor));
+                            }));
+            assertEquals(1, releases.get(), "rejected generation pin must be retired once");
+            assertFalse(lockHeld.get(), "release callback must not execute under TaskScope monitor");
+            assertDoesNotThrow(scope::close);
+            assertEquals(1, releases.get(), "scope close must not release a rejected pin again");
+        }
+    }
+
+    @Test
+    void schedulerRejectionReleasesFramePinOutsideScopeMonitor() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            java.lang.reflect.Field field = OresTaskScope.class.getDeclaredField("gate");
+            field.setAccessible(true);
+            Object monitor = field.get(scope);
+            OresScheduler scheduler = new OresScheduler(1);
+            scheduler.close();
+            AtomicInteger releases = new AtomicInteger();
+            java.util.concurrent.atomic.AtomicBoolean lockHeld =
+                    new java.util.concurrent.atomic.AtomicBoolean(true);
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> scope.startCompilerFrame(scheduler,
+                            resume -> new OresScheduler.Done<>(42), () -> {
+                                releases.incrementAndGet();
+                                lockHeld.set(Thread.holdsLock(monitor));
+                            }));
+            assertEquals(1, releases.get());
+            assertFalse(lockHeld.get(), "scheduler rejection cleanup must not hold scope monitor");
+            assertDoesNotThrow(scope::close);
+            assertEquals(1, releases.get());
+        }
+    }
+
+    @Test
+    void admittedCompilerFrameReleasesPinExactlyOnceAfterPhysicalExit() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(1);
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch exitAllowed = new CountDownLatch(1);
+            CountDownLatch closed = new CountDownLatch(1);
+            AtomicInteger releases = new AtomicInteger();
+            AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+            OresTask<Integer> child = scope.startCompilerFrame(scheduler,
+                    resume -> {
+                        entered.countDown();
+                        assertTrue(exitAllowed.await(3, TimeUnit.SECONDS));
+                        return new OresScheduler.Done<>(81);
+                    }, releases::incrementAndGet);
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            Thread closer = Thread.ofVirtual().start(() -> {
+                try {
+                    scope.close();
+                } catch (Throwable failure) {
+                    closeFailure.set(failure);
+                } finally {
+                    closed.countDown();
+                }
+            });
+            try {
+                assertFalse(closed.await(75, TimeUnit.MILLISECONDS),
+                        "physical Task execution must prevent close completion");
+                assertEquals(0, releases.get(),
+                        "cancellation/result settlement cannot retire executing code");
+            } finally {
+                exitAllowed.countDown();
+            }
+            assertTrue(closed.await(3, TimeUnit.SECONDS));
+            closer.join();
+            assertNull(closeFailure.get());
+            assertEquals(1, releases.get());
+            assertTrue(child.isQuiescent());
+        }
+    }
+
+    @Test
+    void concurrentCompilerFrameAdmissionAndCloseNeverLoseCodePin() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(2)) {
+            for (int trial = 0; trial < 64; trial++) {
+                OresTaskScope scope = new OresTaskScope(runtime);
+                CountDownLatch begin = new CountDownLatch(1);
+                AtomicInteger releases = new AtomicInteger();
+                AtomicReference<Throwable> admissionFailure = new AtomicReference<>();
+                AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+                Thread starter = Thread.ofVirtual().start(() -> {
+                    try {
+                        assertTrue(begin.await(3, TimeUnit.SECONDS));
+                        scope.startCompilerFrame(scheduler,
+                                resume -> new OresScheduler.Done<>(21),
+                                releases::incrementAndGet);
+                    } catch (java.util.concurrent.RejectedExecutionException expected) {
+                        // close won admission; its unconsumed pin was released.
+                    } catch (Throwable unexpected) {
+                        admissionFailure.set(unexpected);
+                    }
+                });
+                Thread closer = Thread.ofVirtual().start(() -> {
+                    try {
+                        assertTrue(begin.await(3, TimeUnit.SECONDS));
+                        scope.close();
+                    } catch (Throwable unexpected) {
+                        closeFailure.set(unexpected);
+                    }
+                });
+                begin.countDown();
+                starter.join(4_000);
+                closer.join(4_000);
+                assertFalse(starter.isAlive(), "admission stuck on trial " + trial);
+                assertFalse(closer.isAlive(), "close stuck on trial " + trial);
+                assertNull(admissionFailure.get(), "admission failed on trial " + trial);
+                assertNull(closeFailure.get(), "close failed on trial " + trial);
+                assertEquals(1, releases.get(),
+                        "exactly one code lease retirement required on trial " + trial);
+            }
+        }
+    }
 }
