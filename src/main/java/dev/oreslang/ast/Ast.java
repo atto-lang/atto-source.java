@@ -537,7 +537,7 @@ public final class Ast {
     /**
      * Binding rebinding and mutable access to the referent are independent capabilities.
      * inferredTypeName is compiler-only metadata for the local type alias introduced
-     * by `const T value = infer<T> struct {...}` or `infer<T> tuple (...)`.
+     * by `const T value = infer<T> struct {...}`, inferred records, or tuples.
      */
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer,
                               boolean mutableReferent, String inferredTypeName) implements Stmt {
@@ -557,9 +557,9 @@ public final class Ast {
                         || !declaredType.arguments().isEmpty() || declaredType.inferArguments()) {
                     throw new IllegalArgumentException("named inferred type must match the declared binding type");
                 }
-                if (!(initializer instanceof ObjectExpr object && object.inferredStruct())
+                if (!(initializer instanceof ObjectExpr object && object.readonlyInferredAggregate())
                         && !(initializer instanceof TupleExpr)) {
-                    throw new IllegalArgumentException("named inferred type requires infer struct or tuple literal");
+                    throw new IllegalArgumentException("named inferred type requires infer struct, record or tuple literal");
                 }
             }
         }
@@ -1107,7 +1107,7 @@ public final class Ast {
         }
     }
 
-    public enum ObjectKind { INFERRED_STRUCT, EXPLICIT_STRUCT }
+    public enum ObjectKind { INFERRED_STRUCT, INFERRED_RECORD, EXPLICIT_STRUCT }
 
     /** A field declaration in the closed shape of an explicit anonymous struct. */
     public record StructFieldSpec(String name, TypeRef type) {
@@ -1122,8 +1122,11 @@ public final class Ast {
     /**
      * Anonymous struct expression.
      *
-     * <p>INFERRED_STRUCT is a closed, permanently readonly shape inferred
-     * entirely from its initializer. EXPLICIT_STRUCT carries a separately
+     * <p>INFERRED_STRUCT and INFERRED_RECORD are both closed, permanently
+     * readonly shapes inferred entirely from their initializer. The distinct
+     * tags preserve syntax fidelity for formatting and future schema/layout
+     * lowering without changing readonly structural semantics.
+     * EXPLICIT_STRUCT carries a separately
      * declared closed shape so declared fields may be initialized after
      * construction under an owned mutable binding. Oreslang has no open-ended
      * dynamic struct/object shape.</p>
@@ -1153,7 +1156,12 @@ public final class Ast {
             }
             return ObjectKind.INFERRED_STRUCT;
         }
-        public boolean inferredStruct() { return kind == ObjectKind.INFERRED_STRUCT; }
+        public boolean readonlyInferredAggregate() {
+            return kind == ObjectKind.INFERRED_STRUCT || kind == ObjectKind.INFERRED_RECORD;
+        }
+        /** Legacy checker/runtime spelling: both kinds use inferred readonly lowering. */
+        public boolean inferredStruct() { return readonlyInferredAggregate(); }
+        public boolean inferredRecord() { return kind == ObjectKind.INFERRED_RECORD; }
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
     }
 
