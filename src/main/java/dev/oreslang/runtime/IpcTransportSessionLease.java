@@ -124,7 +124,12 @@ final class IpcTransportSessionLease {
             // commitment until the writer has acquired the physical pin.
             ++activeWrites;
             try {
-                receipts.commitDispatch(message);
+                if (physicalOwner == null) {
+                    receipts.commitDispatch(message);
+                } else {
+                    receipts.commitDispatch(
+                            physicalOwner, message, generation);
+                }
             } catch (RuntimeException failure) {
                 --activeWrites;
                 throw new PreDispatchRejectedException(
