@@ -321,7 +321,11 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             Route current = active;
             if (expectedRouteEpoch != current.routeEpoch)
                 throw new SecurityException("stale proxy dispatch route epoch");
-            mailbox.requireOutstandingEnvelope(envelope, expectedRouteEpoch);
+            // Physical submission is reserved exactly once under the owning
+            // mailbox's lock BEFORE touching the real actor mailbox. A second
+            // trusted caller cannot deliver the same logical envelope while
+            // its first drain receipt is still pending.
+            mailbox.beginPhysicalSendAttempt(envelope, expectedRouteEpoch);
             current.physical.send(value);
             // The bridge dispatches only ONE outstanding message at a time;
             // its cumulative drain therefore acknowledges this exact prefix.
