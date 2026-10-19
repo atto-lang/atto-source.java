@@ -92,3 +92,42 @@ hot-reload and compiled guest Task execution remain disabled until trusted
 source-owner runner evidence, independent capability review, crash/fault
 injection and native backend parity are available. **No test receipt can be
 constructed from skipped Actions jobs.**
+
+## Single-authority SHARED publication prototype (follow-up)
+
+`ActorRoutePublicationV1` now provides a CONTROL-owned *host integration
+primitive*, not a source-runtime activation. The immutable `Published` tuple
+holds logical identity/incarnation, route epoch, code image, defensive-copy
+checkpoint with SHA-256 content receipt, physical route, the new Task admission
+gate, and the last old-route dispatch watermark. Only this tuple is authoritative.
+
+A staged transaction first acquires `ActorUpgradePreflightV1` (freeze Task
+admission then physical DATA dispatch). Its route commit requires a still-owned
+candidate, zero old physical-work pins, drained old dispatched messages,
+unchanged state schema, exact original mailbox epoch/watermark, and a distinct
+replacement route. It constructs the new tuple *before* publication and swaps
+one `volatile` reference under the coordinator's dispatch lock. Old Task
+admission is retired before reopening queued DATA on the new route. Failed
+pre-publication checks retain rollback; a post-publication cleanup failure
+**quarantines** the authority rather than reverting it or dispatching old DATA.
+
+Critically, `dispatchNext` holds the coordinator lock through trusted physical
+send submission; returning a route + envelope to send later would permit an
+upgrade race. Unknown send outcomes stay outstanding. The transport callback
+must never block or execute guest code; actual acknowledgements must be
+verified by a trusted worker before `complete` is called. The existing raw
+`LogicalActorProxyMailboxV1` helpers remain independent for older tests; a
+production caller MUST NOT bypass the coordinator and use them as a second
+source of routing truth.
+
+The nine `ActorRoutePublicationV1Test` cases cover atomic tuple observation,
+mail+Task drain, rollback/FIFO, schema and physical-route rejection, stale
+stage replay, authority loss, checkpoint immutability, concurrent admission,
+and protected-kind denial. These are **authored tests, not executed JUnit proof**.
+
+**Not yet wired into `LogicalSourceActorRouterV1`**: this requires canonical
+immutable ingress encoding, authenticated delivery/completion provenance,
+checkpoint validation from a real `SourceActorTransfer`, candidate-ready
+attestation, and exact source actor retirement. The current host coordinator
+accepts these as trusted prerequisites and cannot independently verify them.
+PRIVATE/UNTRUSTED remain fail-closed. No production switch is enabled.
