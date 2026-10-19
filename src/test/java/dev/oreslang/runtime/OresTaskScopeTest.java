@@ -6,6 +6,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -134,4 +135,52 @@ final class OresTaskScopeTest {
                     () -> scope.fork(resume -> OresScheduler.done(1)));
         }
     }
+
+    @Test
+    void parentCancellationAutomaticallyCancelsAndDrainsOwnedScopes() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            CountDownLatch childEntered = new CountDownLatch(1);
+            CountDownLatch releaseChild = new CountDownLatch(1);
+            CountDownLatch parentQuiescent = new CountDownLatch(1);
+            OresFuture<Integer> never = new OresFuture<>();
+            AtomicReference<OresFuture<Integer>> childRef = new AtomicReference<>();
+            AtomicInteger parentPc = new AtomicInteger();
+
+            OresFuture<Integer> parent = scheduler.start(resume -> {
+                if (parentPc.getAndIncrement() != 0) {
+                    throw new AssertionError("cancelled parent must never resume");
+                }
+
+                OresTaskScope scope = OresTaskScope.openCurrent();
+                childRef.set(scope.fork(childResume -> {
+                    childEntered.countDown();
+                    assertTrue(releaseChild.await(5, TimeUnit.SECONDS));
+                    return OresScheduler.done(7);
+                }));
+                return OresScheduler.await(never);
+            }, parentQuiescent::countDown);
+
+            assertTrue(childEntered.await(5, TimeUnit.SECONDS));
+            assertTrue(parent.cancel(false));
+            assertTrue(parent.isCancelled());
+
+            OresFuture<Integer> child = childRef.get();
+            assertNotNull(child);
+            assertTrue(child.isCancelled(),
+                    "parent cancellation must propagate into its structured children");
+            assertFalse(parentQuiescent.await(100, TimeUnit.MILLISECONDS),
+                    "parent memory must remain live while a cancelled child carrier is still running");
+
+            releaseChild.countDown();
+            assertTrue(parentQuiescent.await(5, TimeUnit.SECONDS),
+                    "parent may retire only after the structured child is physically quiescent");
+            assertEquals(1, parentPc.get());
+        }
+    }
+
+    @Test
+    void openCurrentScopeRequiresAnExecutingTask() {
+        assertThrows(IllegalStateException.class, OresTaskScope::openCurrent);
+    }
+
 }
