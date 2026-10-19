@@ -21,6 +21,10 @@ public final class TaskScope implements AutoCloseable {
     private final OresFuture<Void> done = new OresFuture<>(() -> false, () -> { });
     private boolean sealed;
     private int active;
+    // First trusted retirement failure poisons this scope. We intentionally
+    // keep the corresponding join slot live because memory authority was not
+    // retired, but we also stop admitting fresh children and revoke siblings.
+    private Throwable retirementFailure;
 
     TaskScope(OresScheduler scheduler) {
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
@@ -85,10 +89,27 @@ public final class TaskScope implements AutoCloseable {
             // TaskHandle.getDone() publishes only after physical scheduler
             // quiescence plus descendant retirement. Do not move this hook to
             // result(), cancel(), or cancellation-token retirement.
-            retireAfterPhysicalQuiescence.run();
+            try {
+                retireAfterPhysicalQuiescence.run();
+            } catch (RuntimeException | Error retirementError) {
+                poisonAfterRetirementFailure(retirementError);
+                return;
+            }
             childDone();
         });
         return child;
+    }
+
+    private void poisonAfterRetirementFailure(Throwable failure) {
+        Objects.requireNonNull(failure, "retirement failure");
+        synchronized (admissionLock) {
+            if (retirementFailure == null) retirementFailure = failure;
+            sealed = true;
+        }
+        // Do not release the failed child's join slot. Revoke any siblings so
+        // they can drain to their own physical quiescence without allowing
+        // more work into an invariant-broken scope.
+        cancellation.cancel("task loan retirement failed");
     }
 
     private void childDone() {
@@ -141,6 +162,13 @@ public final class TaskScope implements AutoCloseable {
     /** Runtime diagnostics: completed child tokens must not be retained. */
     int liveCancellationChildren() {
         return cancellation.ownedChildCount();
+    }
+
+    /** First trusted loan-retirement failure; null while the scope is healthy. */
+    Throwable retirementFailure() {
+        synchronized (admissionLock) {
+            return retirementFailure;
+        }
     }
 
     /**
