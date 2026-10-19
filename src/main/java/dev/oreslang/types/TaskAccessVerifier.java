@@ -20,13 +20,15 @@ import java.util.Objects;
  *
  * <p>Admission is atomic across a Task's claims and ledger operations are
  * synchronized (this is a compiler analysis helper, not runtime host admission).
- * Cancellation does not release loans: the emitted TaskScope quiescence barrier
- * must be proven before
- * calling {@link #quiescent(Ticket)}.
+ * Cancellation does not release loans. Admission returns a one-shot physical
+ * completion capability which trusted lowering binds to Task.getDone() or the
+ * scheduler's onPhysicalExit callback; no raw ticket-release API exists.
  */
 final class TaskAccessVerifier {
     private static final int MAX_LABEL_CHARS = 256;
     private static final int MAX_PROJECTION_DEPTH = 64;
+    private static final java.util.Set<String> TRUST_DOMAINS = java.util.Set.of(
+            "PROCESS", "ACTOR_SHARED", "ACTOR_PRIVATE", "UNTRUSTED");
     public enum Mode { READ, WRITE }
 
     /**
@@ -39,7 +41,8 @@ final class TaskAccessVerifier {
         public Root {
             if (domain == null || domain.isBlank() || ownerId == null || ownerId.isBlank()
                     || domain.length() > MAX_LABEL_CHARS || ownerId.length() > MAX_LABEL_CHARS
-                    || allocationId <= 0 || generation <= 0) {
+                    || allocationId <= 0 || generation <= 0
+                    || !TRUST_DOMAINS.contains(domain)) {
                 throw new IllegalArgumentException("invalid allocation provenance");
             }
             if (!domain.equals("PROCESS") && ownerId.equals(domain)) {
@@ -136,32 +139,135 @@ final class TaskAccessVerifier {
         }
     }
 
-    /** A source-level admission claim with its precisely resolved referent type. */
+    /** A scoped-loan claim with its precisely resolved REFERENT type. */
     public record TypedClaim(Claim claim, Types.Type type) {
         public TypedClaim {
             Objects.requireNonNull(claim, "claim");
             Objects.requireNonNull(type, "type");
+            if (containsBorrowCapability(type)) {
+                throw new IllegalArgumentException(
+                        "nested borrowed referents require an explicit outlives proof");
+            }
+            // Keep erased-interface loans behind a proof separate from auto traits.
+            // Future dyn I + Send/Sync must not silently mint concrete layout,
+            // implementation identity or a scope-bound lifetime.
+            if (Types.containsDynWitness(type)) {
+                throw new IllegalArgumentException(
+                        "scoped dyn referents require concrete implementation and lifetime proof");
+            }
         }
     }
 
-    /**
-     * Validates the Send/Sync proof before reserving any access, using the
-     * existing internal auto-trait checker. READ requires T:Sync; WRITE
-     * requires T:Send. A passing proof still does NOT establish lifetime,
-     * actor-domain authorization, pinned code, or task quiescence.
-     */
-    public synchronized Ticket admitTyped(List<TypedClaim> requested,
-                             ThreadSafetyTraits.NominalProof nominalProof) {
-        Objects.requireNonNull(nominalProof, "nominalProof");
-        List<TypedClaim> typed = List.copyOf(Objects.requireNonNull(requested, "claims"));
-        for (TypedClaim claim : typed) {
-            ThreadSafetyTraits.Trait needed = claim.claim().mode() == Mode.READ
-                    ? ThreadSafetyTraits.Trait.SYNC : ThreadSafetyTraits.Trait.SEND;
-            if (!ThreadSafetyTraits.has(claim.type(), needed, nominalProof)) {
-                throw new IllegalArgumentException("Task access requires proven " + needed);
+    private static boolean containsBorrowCapability(Types.Type root) {
+        record Pending(Types.Type type, int depth) { }
+        java.util.ArrayDeque<Pending> pending = new java.util.ArrayDeque<>();
+        java.util.Set<Types.Type> seen =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        pending.push(new Pending(root, 0));
+        int nodes = 0;
+        while (!pending.isEmpty()) {
+            Pending current = pending.pop();
+            Types.Type type = current.type();
+            if (type == null || current.depth() > 256 || ++nodes > 4096) return true;
+            if (!seen.add(type)) continue;
+            if (type instanceof Types.Borrow) return true;
+            int next = current.depth() + 1;
+            if (type instanceof Types.Named named) {
+                for (Types.Type item : named.arguments()) pending.push(new Pending(item, next));
+            } else if (type instanceof Types.Dyn dyn) {
+                pending.push(new Pending(dyn.interfaceType(), next));
+            } else if (type instanceof Types.ListType list) {
+                pending.push(new Pending(list.element(), next));
+            } else if (type instanceof Types.Tuple tuple) {
+                for (Types.Type item : tuple.elements()) pending.push(new Pending(item, next));
+            } else if (type instanceof Types.Record record) {
+                for (Types.Type item : record.members().values()) pending.push(new Pending(item, next));
+            } else if (type instanceof Types.Union union) {
+                for (Types.Type item : union.options()) pending.push(new Pending(item, next));
+            } else if (type instanceof Types.Function function) {
+                for (Types.Type item : function.parameters()) pending.push(new Pending(item, next));
+                pending.push(new Pending(function.result(), next));
+            } else if (type instanceof Types.SelfType self) {
+                pending.push(new Pending(self.bound(), next));
+            } else if (type instanceof Types.Not not) {
+                pending.push(new Pending(not.excluded(), next));
             }
         }
-        return admit(typed.stream().map(TypedClaim::claim).toList());
+        return false;
+    }
+
+    private static boolean containsReadonlyRecordCapability(Types.Type root) {
+        record Pending(Types.Type type, int depth) { }
+        java.util.ArrayDeque<Pending> pending = new java.util.ArrayDeque<>();
+        java.util.Set<Types.Type> seen =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        pending.push(new Pending(root, 0));
+        int nodes = 0;
+        while (!pending.isEmpty()) {
+            Pending current = pending.pop();
+            Types.Type type = current.type();
+            if (type == null || current.depth() > 256 || ++nodes > 4096) return true;
+            if (!seen.add(type)) continue;
+            if (type instanceof Types.Record record && record.readOnly()) return true;
+            int next = current.depth() + 1;
+            if (type instanceof Types.Named named) {
+                for (Types.Type item : named.arguments()) pending.push(new Pending(item, next));
+            } else if (type instanceof Types.Dyn dyn) {
+                pending.push(new Pending(dyn.interfaceType(), next));
+            } else if (type instanceof Types.ListType list) {
+                pending.push(new Pending(list.element(), next));
+            } else if (type instanceof Types.Tuple tuple) {
+                for (Types.Type item : tuple.elements()) pending.push(new Pending(item, next));
+            } else if (type instanceof Types.Record record) {
+                for (Types.Type item : record.members().values()) pending.push(new Pending(item, next));
+            } else if (type instanceof Types.Union union) {
+                for (Types.Type item : union.options()) pending.push(new Pending(item, next));
+            } else if (type instanceof Types.Function function) {
+                for (Types.Type item : function.parameters()) pending.push(new Pending(item, next));
+                pending.push(new Pending(function.result(), next));
+            } else if (type instanceof Types.SelfType self) {
+                pending.push(new Pending(self.bound(), next));
+            } else if (type instanceof Types.Not not) {
+                pending.push(new Pending(not.excluded(), next));
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Scoped READ requires T:Sync; scoped WRITE requires T:Send. Neither route
+     * calls isOwnedSend because a scoped loan is not a detached move.
+     */
+    public synchronized Admission admitScopedTyped(
+            List<TypedClaim> requested,
+            ThreadSafetyTraits.NominalProof nominalProof) {
+        Objects.requireNonNull(nominalProof, "nominalProof");
+        List<TypedClaim> typed = List.copyOf(Objects.requireNonNull(requested, "claims"));
+        if (typed.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "scoped Task access requires at least one loan claim");
+        }
+        for (TypedClaim claim : typed) {
+            validateScopedResolvedClaim(claim.claim(), claim.type(), nominalProof);
+        }
+        Ticket ticket = admitClaims(typed.stream().map(TypedClaim::claim).toList());
+        return new Admission(ticket, new PhysicalCompletion(this, ticket));
+    }
+
+    private static void validateScopedResolvedClaim(
+            Claim claim,
+            Types.Type type,
+            ThreadSafetyTraits.NominalProof nominalProof) {
+        if (claim.mode() == Mode.WRITE && containsReadonlyRecordCapability(type)) {
+            throw new IllegalArgumentException(
+                    "scoped Task WRITE requires mutable referent authority");
+        }
+        ThreadSafetyTraits.Trait needed = claim.mode() == Mode.READ
+                ? ThreadSafetyTraits.Trait.SYNC : ThreadSafetyTraits.Trait.SEND;
+        if (!ThreadSafetyTraits.has(type, needed, nominalProof)) {
+            throw new IllegalArgumentException(
+                    "scoped Task access requires proven " + needed);
+        }
     }
 
     /**
@@ -186,7 +292,7 @@ final class TaskAccessVerifier {
      * Unsupported nominal/record layouts deny until a trusted resolved
      * identity + field-layout witness exists.
      */
-    public synchronized Ticket admitCoherentTyped(
+    public synchronized Admission admitCoherentTyped(
             List<CoherentTypedClaim> requested, SendSyncTraits sourceProof,
             ThreadSafetyTraits.NominalProof resolvedNominals) {
         Objects.requireNonNull(sourceProof, "sourceProof");
@@ -204,19 +310,30 @@ final class TaskAccessVerifier {
                 throw new IllegalArgumentException(
                         "source and lowered Task types lack a matching trusted layout");
             }
+            if (containsBorrowCapability(entry.resolvedType())) {
+                throw new IllegalArgumentException(
+                        "scoped Task referent contains a nested borrow without outlives proof");
+            }
+            if (Types.containsDynWitness(entry.resolvedType())) {
+                throw new IllegalArgumentException(
+                        "scoped dyn referents require concrete implementation and lifetime proof");
+            }
             boolean send = entry.claim().mode() == Mode.WRITE;
             boolean sourceAllowed = send ? sourceProof.isSend(entry.sourceType())
                     : sourceProof.isSync(entry.sourceType());
             ThreadSafetyTraits.Trait needed = send
                     ? ThreadSafetyTraits.Trait.SEND : ThreadSafetyTraits.Trait.SYNC;
-            if (!sourceAllowed || !ThreadSafetyTraits.has(
-                    entry.resolvedType(), needed, resolvedNominals)) {
+            if (!sourceAllowed) {
                 throw new IllegalArgumentException(
-                        "Task access lacks matching source/resolved " + needed + " proof");
+                        "Task source preflight lacks matching " + needed + " candidate");
             }
+            validateScopedResolvedClaim(
+                    entry.claim(), entry.resolvedType(), resolvedNominals);
         }
         // Reuses the SAME ledger and all-or-nothing alias/generation rules.
-        return admit(typed.stream().map(CoherentTypedClaim::claim).toList());
+        Ticket ticket = admitClaims(
+                typed.stream().map(CoherentTypedClaim::claim).toList());
+        return new Admission(ticket, new PhysicalCompletion(this, ticket));
     }
 
     /** Intentionally small trusted ABI subset; no nominal name guessing. */
@@ -252,6 +369,44 @@ final class TaskAccessVerifier {
         // trusted nominal resolution witness; fail closed until MIR provides
         // that immutable witness rather than accepting name equality.
         return false;
+    }
+
+    /** Opaque compiler admission; only its physical completion can retire the loan. */
+    public static final class Admission {
+        private final Ticket ticket;
+        private final PhysicalCompletion completion;
+
+        private Admission(Ticket ticket, PhysicalCompletion completion) {
+            this.ticket = ticket;
+            this.completion = completion;
+        }
+
+        public Ticket ticket() { return ticket; }
+        public PhysicalCompletion completion() { return completion; }
+    }
+
+    /**
+     * One-shot capability intended to be passed as the trusted runtime's
+     * onPhysicalExit callback. Result settlement/cancellation cannot invoke it.
+     */
+    public static final class PhysicalCompletion {
+        private final TaskAccessVerifier owner;
+        private final Ticket ticket;
+        private boolean released;
+
+        private PhysicalCompletion(TaskAccessVerifier owner, Ticket ticket) {
+            this.owner = owner;
+            this.ticket = ticket;
+        }
+
+        public synchronized void releaseAfterPhysicalQuiescence() {
+            if (released) {
+                throw new IllegalStateException(
+                        "Task physical completion already consumed");
+            }
+            owner.releaseAfterPhysicalQuiescence(ticket);
+            released = true;
+        }
     }
 
     /** Opaque compiler-issued child identity. A cancelled Ticket is still live. */
@@ -341,9 +496,13 @@ final class TaskAccessVerifier {
      * Conservatively reserves all child borrows, or none. The frontend must
      * verify Send/Sync and task scope lifetime *before* invoking this method.
      */
-    public synchronized Ticket admit(List<Claim> requested) {
+    private synchronized Ticket admitClaims(List<Claim> requested) {
         if (sealed) throw new IllegalStateException("TaskScope is sealed");
         List<Claim> claims = List.copyOf(Objects.requireNonNull(requested, "claims"));
+        if (claims.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "scoped Task access requires at least one loan claim");
+        }
         if (live.size() >= MAX_CHILDREN || claims.size() > MAX_CLAIMS_PER_CHILD) {
             throw new IllegalStateException("TaskScope access capacity exceeded");
         }
@@ -429,7 +588,7 @@ final class TaskAccessVerifier {
      * Called only after child execution, defers, FFI pins and cleanup are
      * physically quiescent. The ledger itself cannot prove runtime quiescence.
      */
-    public synchronized void quiescent(Ticket ticket) {
+    private synchronized void releaseAfterPhysicalQuiescence(Ticket ticket) {
         child(ticket); // validates this exact ticket belongs to this scope
         live.remove(ticket);
     }
@@ -465,13 +624,20 @@ final class TaskAccessVerifier {
         knownGenerations.put(key, newGeneration);
     }
 
-    public synchronized void finishScope() {
-        if (!live.isEmpty()) {
-            throw new IllegalStateException("TaskScope cannot finish before child quiescence");
-        }
+    /** Stop new admissions without releasing any live loan. */
+    public synchronized void seal() {
         sealed = true;
-        // No source permission is valid after scope teardown; retire
-        // provenance bookkeeping rather than retaining every old allocation.
+    }
+
+    public synchronized void finishScope() {
+        if (!sealed) {
+            throw new IllegalStateException(
+                    "TaskScope must be sealed before provenance retirement");
+        }
+        if (!live.isEmpty()) {
+            throw new IllegalStateException(
+                    "TaskScope cannot finish before physical child quiescence");
+        }
         knownGenerations.clear();
         scopeDomain = null;
     }
