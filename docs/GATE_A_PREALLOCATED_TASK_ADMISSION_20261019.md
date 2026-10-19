@@ -18,6 +18,9 @@ Status: **draft** · 2026-10-19. This integration starts at guest scalar Task #1
 - Readonly structural record views cannot acquire Sync absent a compiler-proven physically frozen backing value.
 - Keep upstream `OresTaskScopePreAdmissionOwnershipTest`, `OresTaskScopeFailedSlotCleanupTest`, `OresTaskScopeCancellationOrderingTest`, and `OresTaskScopeCoherentQuiescenceTest`.
 - Include 64 host submit-vs-close trials, 64 compiler frame-vs-close trials, fail-injected cancellation detachment and code-pin release, and 10,000 host-only prebound shell cancellation/bind checks.
+- Upstream `OresTask` contained an erased Java overload clash: constructors taking `OresFuture<T>` and `OresFuture<?>` are the same JVM signature. Pre-admission now uses the explicit `OresTask.<T>preAdmitted(exitFence)` factory; ordinary result-only construction retains the other one-argument constructor. The three source call sites and regression fixture have been migrated.
+- `AsyncRuntime.PreparedTask` admission/rejection now uses one atomic CAS claim to prevent concurrent double-scheduling. The JUnit suite adds 128 two-thread start-vs-reject trials.
+- **Independent local Java 21 erasure harness executed:** original generic overloads rejected by `javac`, distinct factory shape compiled with `javac -Xlint:all -Werror`. This test confirms the Java signature issue/fix pattern only; it is NOT a full Oreslang source compile or runtime test.
 
 ## Required source-local exact-head execution
 
