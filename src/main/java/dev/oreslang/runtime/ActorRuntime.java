@@ -1542,6 +1542,17 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
+         * Compiler-private, closed-world proof that the resolved actor's
+         * single receive handler accepts exactly ActorMail<int>. A matching
+         * message ABI digest alone proves version compatibility, NOT that
+         * a host-supplied signed-i64 message matches its declared type.
+         * Default DENY until an actual compiler implements the proof.
+         */
+        default boolean actorReceivesProxyLong(String actorTypeName) {
+            return false;
+        }
+
+        /**
          * Serialize persistent actor-owned state only. No guest callbacks,
          * suspension, I/O, FFI, capabilities or raw runtime handles are
          * permitted while this compiler-private hook executes.
