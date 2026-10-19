@@ -46,8 +46,11 @@ mandatory = (
     "test_source_pr_move_stops_next_private_blob_upload",
     "test_protected_main_revocation_stops_next_blob_upload",
     "test_destination_codeowners_revoked_after_first_blob",
+    "test_github_api_absolute_cli_and_sanitized_environment",
+    "test_github_api_rejects_missing_or_ambiguous_explicit_auth",
+    "test_github_api_supports_single_actions_token_without_config",
 )
-for index in range(104):
+for index in range(106):
     name = mandatory[index] if index < len(mandatory) else f"test_synthetic_{index:03d}"
     setattr(DestinationBoundPublisherTests, name,
             lambda self: self.assertTrue(True))
@@ -194,8 +197,8 @@ from pathlib import Path
 import sys
 file = Path(sys.argv[1])
 content = file.read_text()
-assert "range(104)" in content
-file.write_text(content.replace("range(104)", "range(1)"))
+assert "range(106)" in content
+file.write_text(content.replace("range(106)", "range(1)"))
 PY
 if PRIVATE_CI_TEST_REPEATS=1 bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
 grep -q PRIVATE_CI_TEST_INVENTORY_REJECTED "$root/out"
