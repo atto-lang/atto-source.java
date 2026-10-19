@@ -2,3 +2,10 @@
 # No repositories are approved by default.
 # Changes must be reviewed by maintainers and security owners on a protected branch.
 # Format: one exact owner/repo per uncommented line, no whitespace or wildcards.
+#
+# PROPOSED APPROVAL ONLY: this file is inert until reviewed and merged
+# into the protected default branch by authorized security owners.
+# Before each transfer, reconfirm the exact private GitHub repo ID 1412142815,
+# approved confidential-use purpose, ACLs and hosted workflow isolation.
+# Do not infer approval from this PR branch or a successful Actions run.
+ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra
