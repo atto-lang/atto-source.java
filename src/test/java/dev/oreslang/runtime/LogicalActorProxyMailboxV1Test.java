@@ -14,6 +14,71 @@ import static org.junit.jupiter.api.Assertions.*;
 final class LogicalActorProxyMailboxV1Test {
 
     @Test
+    void physicalAdmissionReservationRejectsReplayAndRequiresProvenUnsentRollback() {
+        try (var mailbox = new LogicalActorProxyMailboxV1(2, 16, 32)) {
+            var envelope = mailbox.admit(bytes("first"));
+            assertEquals(envelope, mailbox.pollDispatch());
+            mailbox.beginPhysicalSendAttempt(envelope, 1L);
+            var charged = mailbox.snapshot();
+            assertThrows(IllegalStateException.class,
+                    () -> mailbox.beginPhysicalSendAttempt(envelope, 1L),
+                    "an unresolved physical send attempt must not be submitted twice");
+            assertEquals(charged, mailbox.snapshot());
+            var freeze = mailbox.freezeDispatchForUpgrade();
+            assertThrows(IllegalStateException.class,
+                    () -> mailbox.beginPhysicalSendAttempt(envelope, 1L),
+                    "frozen dispatch may only settle already attempted sends");
+            freeze.rollback();
+            // This API is intentionally trusted-only. The caller must possess
+            // an independent proof that the transport rejected this send.
+            mailbox.requeueProvenUnsent(envelope.messageSequence());
+            assertEquals(1, mailbox.snapshot().queuedMessages());
+            assertEquals(envelope, mailbox.pollDispatch());
+            mailbox.beginPhysicalSendAttempt(envelope, 1L);
+            mailbox.complete(envelope.messageSequence());
+            assertEquals(0, mailbox.snapshot().retainedMessages());
+            assertThrows(SecurityException.class,
+                    () -> mailbox.beginPhysicalSendAttempt(envelope, 1L));
+        }
+    }
+
+    @Test
+    void concurrentPhysicalSendReservationsAdmitExactlyOneSender()
+            throws Exception {
+        try (var mailbox = new LogicalActorProxyMailboxV1(2, 16, 32)) {
+            var envelope = mailbox.admit(bytes("one"));
+            mailbox.pollDispatch();
+            var start = new CountDownLatch(1);
+            var admitted = new java.util.concurrent.atomic.AtomicInteger();
+            var unexpected = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            Thread[] callers = new Thread[32];
+            for (int i = 0; i < callers.length; i++) {
+                callers[i] = Thread.ofPlatform().start(() -> {
+                    try {
+                        start.await();
+                        mailbox.beginPhysicalSendAttempt(envelope, 1L);
+                        admitted.incrementAndGet();
+                    } catch (IllegalStateException expectedDuplicate) {
+                        // The winning sender owns the single physical attempt.
+                    } catch (Throwable failure) {
+                        unexpected.compareAndSet(null, failure);
+                    }
+                });
+            }
+            start.countDown();
+            for (Thread caller : callers) {
+                caller.join(5000);
+                assertFalse(caller.isAlive());
+            }
+            assertNull(unexpected.get());
+            assertEquals(1, admitted.get());
+            assertEquals(1, mailbox.snapshot().outstandingMessages());
+            mailbox.complete(envelope.messageSequence());
+            assertEquals(0, mailbox.snapshot().retainedMessages());
+        }
+    }
+
+    @Test
     void physicalReceiptRequiresOriginalOutstandingEnvelopeAndEpoch() {
         try (var mailbox = new LogicalActorProxyMailboxV1(2, 16, 32);
              var foreign = new LogicalActorProxyMailboxV1(2, 16, 32)) {
