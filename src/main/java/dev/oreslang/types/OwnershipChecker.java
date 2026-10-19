@@ -1215,7 +1215,7 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.IndexExpr indexed) {
             ValueInfo receiver = checkExpr(indexed.receiver(), scope, false);
             checkExpr(indexed.index(), scope, false);
-            Ast.TypeRef elementType = collectionElementType(receiver.type);
+            Ast.TypeRef elementType = indexedElementType(indexed, receiver.type, scope);
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
             if (consuming && isRootedAtActorSelf(indexed.receiver(), scope) && elementKind != ValueKind.COPY) {
                 throw error("cannot move actor-owned indexed state out of its mailbox turn");
@@ -3495,6 +3495,65 @@ public final class OwnershipChecker {
                             Origin.CAPTURE));
         }
         return continuation;
+    }
+
+    private Ast.TypeRef indexedElementType(
+            Ast.IndexExpr indexed, Ast.TypeRef receiverType, Scope scope) {
+        if (receiverType == null) return Ast.TypeRef.inferred();
+        Ast.TypeRef concrete = receiverType.isBorrow()
+                ? receiverType.borrowedTarget() : receiverType;
+
+        if (concrete.isClosedAggregateType()) {
+            Map<String, Ast.TypeRef> members = concrete.aggregateMembers();
+            if (indexed.index() instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof String key) {
+                return members.getOrDefault(key, Ast.TypeRef.inferred());
+            }
+            if (members.isEmpty()) return Ast.TypeRef.inferred();
+            return Ast.TypeRef.union(new ArrayList<>(members.values()));
+        }
+
+        if (concrete.isTupleType()) {
+            if (indexed.index() instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof Long raw
+                    && raw >= 0 && raw < concrete.arguments().size()) {
+                return concrete.arguments().get(raw.intValue());
+            }
+            if (concrete.arguments().isEmpty()) return Ast.TypeRef.inferred();
+            return Ast.TypeRef.union(concrete.arguments());
+        }
+
+        if ((concrete.name().equals("Array") || concrete.name().equals("List"))
+                && concrete.arguments().size() == 1) {
+            return concrete.arguments().getFirst();
+        }
+
+        Ast.ClassDecl klass = findClass(concrete.name());
+        if (klass != null) {
+            if (indexed.index() instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof String key) {
+                ResolvedField target = findFieldTarget(
+                        klass, concrete, key, new LinkedHashSet<>());
+                if (target == null) return Ast.TypeRef.inferred();
+                return substituteType(
+                        ownershipFieldType(target.field()),
+                        genericBindings(
+                                target.owner().genericParameters(),
+                                target.ownerType().arguments()));
+            }
+            List<Ast.TypeRef> fields = new ArrayList<>();
+            for (ResolvedField field : effectiveFieldTargets(
+                    klass, concrete, new LinkedHashSet<>())) {
+                fields.add(substituteType(
+                        ownershipFieldType(field.field()),
+                        genericBindings(
+                                field.owner().genericParameters(),
+                                field.ownerType().arguments())));
+            }
+            return fields.isEmpty() ? Ast.TypeRef.inferred() : Ast.TypeRef.union(fields);
+        }
+
+        return collectionElementType(concrete);
     }
 
     private Ast.TypeRef collectionElementType(Ast.TypeRef type) {
