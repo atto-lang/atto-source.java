@@ -38,13 +38,33 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         }
     }
 
+    /**
+     * Compiler metadata is prepared once per linked image, before the route
+     * can become authoritative. A publication observer must never execute a
+     * compiler callback while holding the physical route monitor.
+     */
+    private record ImageReceipts(
+            String linkedCodeSha256,
+            String stateSchemaSha256,
+            String messageAbiSha256) {
+        static ImageReceipts from(
+                HotReloadManager.ActorGenerationView view, String actorTypeName) {
+            var compiler = view.executor();
+            return new ImageReceipts(
+                    Objects.requireNonNull(compiler.actorCodeSha256(actorTypeName)),
+                    Objects.requireNonNull(compiler.actorStateSchemaSha256(actorTypeName)),
+                    Objects.requireNonNull(compiler.actorMessageAbiSha256(actorTypeName)));
+        }
+    }
+
     private record Route(
             HotReloadManager.Generation generation,
             HotReloadManager.Generation.ActorRouteLease generationLease,
             HotReloadManager.ActorGenerationView view,
             ActorRuntime.ActorRef<Object> physical,
             long incarnation,
-            long routeEpoch) { }
+            long routeEpoch,
+            ImageReceipts image) { }
 
     public final class LogicalActorRef {
         private LogicalActorRef() { }
@@ -219,6 +239,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
 
         HotReloadManager.ActorGenerationView view =
                 generation.linkActorGeneration(actorTypeName);
+        ImageReceipts firstImage = ImageReceipts.from(view, actorTypeName);
         HotReloadManager.Generation.ActorRouteLease generationLease =
                 generation.pinActorRoute();
         ActorRuntime.ActorRef<Object> physical = null;
@@ -242,7 +263,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                             view,
                             physical,
                             1L,
-                            1L));
+                            1L,
+                            firstImage));
         } finally {
             if (!ready) {
                 if (physical != null) physical.stop();
@@ -347,23 +369,18 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             if (boundProxyMailbox != mailbox)
                 throw new SecurityException("foreign supervisor publication mailbox");
             Route current = active;
-            // These compiler-issued immutable fingerprints are observed
-            // against the SAME authoritative route as its physical actor
-            // and mailbox. A source-generation text SHA alone is not a
-            // checkpoint layout or receive-contract compatibility receipt.
-            var compiler = current.view.executor();
-            String linkedCode = compiler.actorCodeSha256(actorTypeName);
-            String stateSchema = compiler.actorStateSchemaSha256(actorTypeName);
-            String messageAbi = compiler.actorMessageAbiSha256(actorTypeName);
+            // The route owns its compiler receipts as immutable values from
+            // prepublication preparation. No compiler calls or digest hashes
+            // occur while the supervisor observes the live route epoch.
             return new SupervisorPublication(
                     new LogicalAddress(
                             logicalId, current.incarnation, current.routeEpoch, kind),
                     current.physical.address(),
                     current.generation.id(),
                     current.generation.sha256(),
-                    linkedCode,
-                    stateSchema,
-                    messageAbi,
+                    current.image.linkedCodeSha256(),
+                    current.image.stateSchemaSha256(),
+                    current.image.messageAbiSha256(),
                     mailbox.snapshot());
         }
     }
@@ -728,6 +745,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         // message admission on the old route must not wait for compilation.
         HotReloadManager.ActorGenerationView candidate =
                 candidateGeneration.linkActorGeneration(actorTypeName);
+        ImageReceipts candidateImage =
+                ImageReceipts.from(candidate, actorTypeName);
         // A compiler-ABI-bound proxy retains already-admitted immutable
         // messages across hot replacement. Reject a different receive ABI
         // before acquiring a generation lease, freezing physical ingress or
@@ -738,9 +757,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 throw new SecurityException(
                         "upgraded scalar actor lacks compiler ActorMail<int> receive proof");
             }
-            String candidateMessageAbi =
-                    candidate.executor().actorMessageAbiSha256(actorTypeName);
-            if (!scalarWireBinding.messageAbiSha256().equals(candidateMessageAbi)) {
+            if (!scalarWireBinding.messageAbiSha256()
+                    .equals(candidateImage.messageAbiSha256())) {
                 throw new SecurityException(
                         "source actor compiler message ABI changed across logical route upgrade");
             }
@@ -799,7 +817,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                         candidate,
                         replacement,
                         prior.incarnation,
-                        Math.addExact(prior.routeEpoch, 1L));
+                        Math.addExact(prior.routeEpoch, 1L),
+                        candidateImage);
                 if (proxyMailbox != null) {
                     proxyMailbox.requireFreezeTicketForRouteEpoch(
                             proxyTicket, prior.routeEpoch);
@@ -883,7 +902,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                                         candidate,
                                         replacement,
                                         prior == null ? 1L : prior.incarnation,
-                                        prior == null ? 1L : prior.routeEpoch));
+                                        prior == null ? 1L : prior.routeEpoch,
+                                        candidateImage));
                             }
                             // The candidate context must stay pinned until its
                             // unpublished physical actor actually finalizes.
@@ -912,7 +932,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                                         candidate,
                                         quarantinedCandidate,
                                         prior == null ? 1L : prior.incarnation,
-                                        prior == null ? 1L : prior.routeEpoch));
+                                        prior == null ? 1L : prior.routeEpoch,
+                                        candidateImage));
                             }
                         }
                     }
