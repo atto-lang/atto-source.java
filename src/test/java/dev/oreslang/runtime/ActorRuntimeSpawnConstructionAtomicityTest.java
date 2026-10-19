@@ -9,6 +9,7 @@ import java.util.Iterator;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -40,6 +41,9 @@ final class ActorRuntimeSpawnConstructionAtomicityTest {
 
             OutOfMemoryError injected = new OutOfMemoryError(
                     "injected stream-registry failure after insertion");
+            OutOfMemoryError cleanupFault = new OutOfMemoryError(
+                    "injected registry cleanup failure after removal");
+            AtomicBoolean removeFault = new AtomicBoolean();
             Set<ActorRuntime.ActorOutputStream<?>> faulty = new AbstractSet<>() {
                 @Override public int size() { return streams.size(); }
                 @Override public Iterator<ActorRuntime.ActorOutputStream<?>>
@@ -49,7 +53,9 @@ final class ActorRuntimeSpawnConstructionAtomicityTest {
                     throw injected;
                 }
                 @Override public boolean remove(Object value) {
-                    return streams.remove(value);
+                    boolean removed = streams.remove(value);
+                    if (removeFault.get()) throw cleanupFault;
+                    return removed;
                 }
             };
             try {
@@ -63,6 +69,20 @@ final class ActorRuntimeSpawnConstructionAtomicityTest {
                         "a failed ActorCell constructor must release its reserved slot");
                 assertTrue(streams.isEmpty(),
                         "no orphan output stream may survive a failed constructor");
+
+                // Cleanup may also raise a fatal Error after removing the
+                // registration. Keep the original allocator failure as the
+                // primary reported cause; suppress cleanup, refund the slot,
+                // and leave the registry empty for healthy future admissions.
+                removeFault.set(true);
+                OutOfMemoryError again = assertThrows(OutOfMemoryError.class,
+                        () -> runtime.<Integer>spawnShared(
+                                () -> (message, context) -> { }));
+                assertSame(injected, again);
+                assertEquals(1, again.getSuppressed().length);
+                assertSame(cleanupFault, again.getSuppressed()[0]);
+                assertEquals(0, slots.get());
+                assertTrue(streams.isEmpty());
             } finally {
                 streamField.set(runtime, streams);
             }
