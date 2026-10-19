@@ -127,6 +127,57 @@ public final class AsyncRuntime implements AutoCloseable {
         return owner;
     }
 
+    /**
+     * Prepare a host Task's physical owner BEFORE admitting any executable
+     * carrier. The scope must register owner() in its tree under the admission
+     * gate, then invoke start() without holding that or any scope monitor.
+     * This keeps existing failed-allocation/zero-orphan guarantees while
+     * allowing callbacks and executor dispatch outside owner locks.
+     */
+    static final class PreparedTask<T> {
+        private final AsyncRuntime runtime;
+        private final Task<T> work;
+        private final TaskExit exit = new TaskExit();
+        private final OresTask<T> owner = new OresTask<>(exit.quiesced);
+        private boolean started;
+
+        PreparedTask(AsyncRuntime runtime, Task<T> work) {
+            this.runtime = runtime;
+            this.work = work;
+        }
+
+        OresTask<T> owner() {
+            return owner;
+        }
+
+        void start() {
+            if (started) throw new IllegalStateException("Task admitted twice");
+            started = true;
+            try {
+                OresFuture<T> completion = runtime.submitInternal(work, exit);
+                // Allocation-free publication. Physical ownership and cleanup
+                // listeners already exist even if the carrier ran inline.
+                owner.attachCompletion(completion);
+            } catch (RuntimeException | Error rejected) {
+                // submitInternal() throws before a Task can be scheduled,
+                // including early closed-runtime, map and executor rejection.
+                // The preallocated exit fence cannot remain unresolved.
+                exit.markExited();
+                throw rejected;
+            }
+        }
+
+        void rejectUnadmitted() {
+            if (started) throw new IllegalStateException("Task already admitted");
+            started = true;
+            exit.markExited();
+        }
+    }
+
+    <T> PreparedTask<T> prepareTask(Task<T> work) {
+        return new PreparedTask<>(this, Objects.requireNonNull(work, "work"));
+    }
+
     /** Supervised discarded-handle form; failure is never silently ignored. */
     public void submitDetached(
             Task<?> task, java.util.function.Consumer<? super Throwable> onFailure) {
