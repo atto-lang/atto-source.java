@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # Gate private-source transfers using a reviewed, checked-in repository policy.
 set -euo pipefail
+
 fail() {
   printf 'PRIVATE_CI_DESTINATION_REJECTED: %s\n' "$1" >&2
   exit 1
 }
+
 [[ $# -eq 1 ]] || fail 'usage: check-private-ci-destination.sh owner/repo'
 target="$1"
 slug_pattern='^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$'
+entry_pattern='^([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*)@([1-9][0-9]*)$'
 [[ "$target" =~ $slug_pattern ]] || fail 'destination must be an owner/repo slug'
+
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 policy_dir="$script_dir/../.github"
 [[ -d "$policy_dir" && ! -L "$policy_dir" ]] ||
@@ -16,19 +20,39 @@ policy_dir="$script_dir/../.github"
 policy="$policy_dir/private-ci-approved-repositories.txt"
 [[ -f "$policy" && -r "$policy" && ! -L "$policy" ]] ||
   fail 'reviewed policy file is missing, unreadable or symlinked'
-allowed=false
+
+contents="$(cat "$policy")" || fail 'reviewed policy cannot be read'
+[[ "$contents" != *$'\r'* ]] || fail 'repository policy must use LF line endings only'
+
+expected_id=""
+declare -A seen=()
 while IFS= read -r candidate || [[ -n "$candidate" ]]; do
   [[ -z "$candidate" || "$candidate" =~ ^# ]] && continue
-  [[ "$candidate" =~ $slug_pattern ]] || fail 'repository policy contains an invalid entry'
-  if [[ "${candidate,,}" == "${target,,}" ]]; then allowed=true; fi
-done < "$policy"
-[[ "$allowed" == true ]] || fail 'destination is absent from reviewed repository policy'
+  [[ "$candidate" =~ $entry_pattern ]] ||
+    fail 'repository policy contains an invalid entry'
+  repo_name="${BASH_REMATCH[1]}"
+  repo_id="${BASH_REMATCH[2]}"
+  key="${repo_name,,}"
+  [[ ! -v seen["$key"] ]] || fail 'repository policy contains a duplicate destination'
+  seen["$key"]=1
+  if [[ "$key" == "${target,,}" ]]; then
+    expected_id="$repo_id"
+  fi
+done <<< "$contents"
+[[ -n "$expected_id" ]] || fail 'destination is absent from reviewed repository policy'
+
 command -v gh >/dev/null 2>&1 || fail 'GitHub CLI is required'
-metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.full_name, .visibility, (.private|tostring)] | @tsv' 2>/dev/null)" ||
+metadata="$(GH_HOST=github.com gh api "repos/$target" \
+  --jq '[.id, .full_name, .visibility, (.private|tostring)] | @tsv' 2>/dev/null)" ||
   fail 'cannot verify repository identity and visibility from live GitHub API'
 [[ -n "$metadata" && "$metadata" != *$'\n'* ]] ||
   fail 'API returned empty or multiline repository metadata'
-IFS=$'\t' read -r actual_name visibility private_flag <<< "$metadata"
-[[ "${actual_name,,}" == "${target,,}" ]] || fail 'API identity differs from requested destination'
-[[ "$visibility" == private && "$private_flag" == true ]] || fail 'destination is not private'
-printf 'PRIVATE_CI_DESTINATION_APPROVED: %s (private)\n' "$target"
+IFS=$'\t' read -r actual_id actual_name visibility private_flag <<< "$metadata"
+[[ "$actual_id" =~ ^[1-9][0-9]*$ && "$actual_id" == "$expected_id" ]] ||
+  fail 'API repository ID differs from reviewed destination'
+[[ "${actual_name,,}" == "${target,,}" ]] ||
+  fail 'API identity differs from requested destination'
+[[ "$visibility" == private && "$private_flag" == true ]] ||
+  fail 'destination is not private'
+
+printf 'PRIVATE_CI_DESTINATION_APPROVED: %s@%s (private)\n' "$target" "$actual_id"
