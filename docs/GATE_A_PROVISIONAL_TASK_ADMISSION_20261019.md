@@ -4,8 +4,8 @@ Status: **draft** (2026-10-19); stacked on the currently updated Java guest scal
 
 ## Admission linearization
 
-1. Under `OresTaskScope.gate`, validate the Task owner remains open, and reserve a `pendingCompilerFrames` physical-exit Future. The record is retained while the scheduler has no bound Task handle.
-2. Release `gate` before invoking `OresScheduler.start`. A scheduler is permitted to execute work or invoke a Future callback inline.
+1. Under the shared `treeAdmissionGate` and then `OresTaskScope.gate`, validate the Task owner remains open and reserve a `pendingAdmissions` physical-exit Future. This keeps the atomic subtree-cancellation preflight from the updated upstream #1484 branch. The record is retained while the scheduler has no bound Task handle.
+2. Release both admission monitors before invoking `OresScheduler.start`. A scheduler is permitted to execute work or invoke a Future callback inline.
 3. If registration is rejected before any TaskRunner exists, release the already acquired code-generation pin **outside the monitor**, settle the pending physical fence only after cleanup and preserve the rejection plus any suppressed release failure. Never treat a failed release as successful shutdown.
 4. On successful submission, atomically exchange the pending reservation for an `OresTask` in `tasks` under `gate`. Cancellation may already have sealed admission; replay a cancellation request against the bound Task after releasing the monitor.
 5. The scheduler's `onQuiescent` invokes trusted code-image cleanup and settles the independent physical-exit Future. Cancelled result Futures are **not** physical completion evidence.
@@ -29,7 +29,7 @@ mvn -B -Dores.runtime.carriers=java \
   test
 ```
 
-The additions stress 64 compiler-frame admission/close races, 64 host-Task submission/close races, physical code-image pin release, monitor-free rejection callbacks and nested NULL/record proof laundering. Run these against the **exact PR head**, not older green commits.
+The additions stress 64 compiler-frame admission/close races, 64 host-Task submission/close races, physical code-image pin release, rejection callbacks running outside locks, cancelled turn-entry fencing, broken cancellation-detach callbacks, and nested NULL/record proof laundering. Tree-wide cancellation still snapshots and atomically seals all descendant scopes before Task revocation. Task revocation occurs before external subscription detachment, preventing a blocking/throwing host callback from stranding siblings. Run these against the **exact PR head**, not older green commits.
 
 Independent **exact blob** `ThreadSafetyTraits.java` compiled under Java 21 `-Xlint:all -Werror` with `Types.java` and its focused Java host-contract harness, and printed `JAVA_SEND_SYNC_NULL_CONTRACT_PASS`. This **does not** count as Maven/JUnit, guest compiler or full JVM runtime execution.
 
