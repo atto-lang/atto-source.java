@@ -89,11 +89,12 @@ public final class OresTaskScope implements AutoCloseable {
             return work.run();
         });
         OresTask<T> child = prepared.owner();
+        OwnershipSlot slot = null;
         try {
             synchronized (treeAdmissionGate) {
                 synchronized (gate) {
                     ensureAdmitting();
-                    OwnershipSlot slot = new OwnershipSlot();
+                    slot = new OwnershipSlot();
                     slot.task = child;
                     if (!tasks.add(slot))
                         throw new IllegalStateException("duplicate Task ownership slot");
@@ -109,6 +110,14 @@ public final class OresTaskScope implements AutoCloseable {
                 }
             }
         } catch (RuntimeException | Error rejected) {
+            // A failed callback subscription may occur AFTER the owner slot
+            // was inserted. No carrier exists yet: retire it and preserve
+            // any secondary removal fault without losing the first error.
+            if (slot != null) {
+                synchronized (gate) {
+                    discardUnadmittedSlot(slot, rejected);
+                }
+            }
             prepared.rejectUnadmitted();
             throw rejected;
         }
