@@ -1,7 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
-import dev.oreslang.nodes.OresEvalRootNode;
+import dev.oreslang.types.UnloweredDefaultArgValsGuard;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
@@ -39,7 +39,9 @@ final class DefaultArgValsStagingTest {
         assertTrue(error.getMessage().contains("parse-only"));
         // Defense in depth: a direct AST-to-evaluator path must not execute
         // a declaration whose default values have not been materialized.
-        assertThrows(IllegalArgumentException.class, () -> new OresEvalRootNode(null, program));
+        IllegalArgumentException runtimeGate = assertThrows(
+                IllegalArgumentException.class, () -> UnloweredDefaultArgValsGuard.reject(program));
+        assertTrue(runtimeGate.getMessage().contains("@DefaultArgVals"));
     }
 
     @Test
