@@ -35,6 +35,26 @@ final class ActorTransportBoundaryCompatibilityTest {
     }
 
     @Test
+    void sameRuntimeActorRefCanCrossMailboxButNotDataOnlyFreeze() throws Exception {
+        var observed = new java.util.concurrent.atomic.AtomicReference<Object>();
+        var delivered = new java.util.concurrent.CountDownLatch(1);
+        try (dev.oreslang.runtime.ActorRuntime runtime = new dev.oreslang.runtime.ActorRuntime()) {
+            var worker = runtime.<String>spawnShared(() -> (message, context) -> { });
+            var relay = runtime.<Object>spawnShared(() -> (message, context) -> {
+                observed.set(message);
+                delivered.countDown();
+            });
+
+            relay.send(worker);
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    delivered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            org.junit.jupiter.api.Assertions.assertSame(worker, observed.get());
+            assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.runtime.ActorRuntime.freeze(worker));
+        }
+    }
+
+    @Test
     void forgedActorRefsWithNonActorOrMissingTargetsAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 actor fnc bad(ActorRef<int> invalid): void { return; }
