@@ -13,6 +13,7 @@ import dev.oreslang.types.Types.ListType;
 import dev.oreslang.types.Types.Named;
 import dev.oreslang.types.Types.Primitive;
 import dev.oreslang.types.Types.Record;
+import dev.oreslang.types.Types.AggregateKind;
 import dev.oreslang.types.Types.SelfType;
 import dev.oreslang.types.Types.StringLiteral;
 import dev.oreslang.types.Types.Tuple;
@@ -1679,7 +1680,7 @@ public final class TypeChecker {
             Ast.BindingStmt binding, Env env, Set<String> generics) {
         if (binding.inferredTypeName() != null || binding.kind() != Ast.BindingKind.CONST
                 || binding.mutableReferent()
-                || !(binding.initializer() instanceof Ast.ObjectExpr object && object.inferredStruct())) {
+                || !(binding.initializer() instanceof Ast.ObjectExpr object && object.inferredAggregate())) {
             return false;
         }
         Ast.TypeRef ref = binding.declaredType();
@@ -3961,7 +3962,7 @@ public final class TypeChecker {
                                     + "; partial initialization is only allowed as the direct initializer "
                                     + "of a mutable binding");
                 }
-                return new Record(members, false);
+                return Record.struct(members);
             }
 
             Map<String, Type> members = new LinkedHashMap<>();
@@ -3969,14 +3970,16 @@ public final class TypeChecker {
                 Type exactValueType = typeOf(field.value(), env, generics, self);
                 if (members.putIfAbsent(
                         field.name(),
-                        object.inferredStruct()
+                        object.inferredAggregate()
                                 ? widenCollectionElement(exactValueType)
                                 : exactValueType) != null) {
                     throw new IllegalArgumentException(
                             "duplicate struct field '" + field.name() + "'");
                 }
             }
-            return new Record(members, object.inferredStruct());
+            if (object.inferredRecord()) return new Record(members, true, AggregateKind.RECORD);
+            if (object.inferredStruct()) return Record.struct(members);
+            throw new IllegalArgumentException("unknown anonymous aggregate kind " + object.kind());
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
@@ -4369,7 +4372,11 @@ public final class TypeChecker {
                                 ? entry.getValue()
                                 : overlayReadonlyCapabilities(sourceMember, entry.getValue()));
             }
-            return new Record(members, sourceRecord.readOnly() || targetRecord.readOnly());
+            if (sourceRecord.kind() != targetRecord.kind()) return expected;
+            return new Record(
+                    members,
+                    sourceRecord.readOnly() || targetRecord.readOnly(),
+                    targetRecord.kind());
         }
         if (source instanceof ListType sourceList && target instanceof ListType targetList) {
             return new ListType(overlayReadonlyCapabilities(sourceList.element(), targetList.element()));
@@ -4482,7 +4489,7 @@ public final class TypeChecker {
     private void requireReadonlyCapabilityPreserved(Type actual, Type expected, String where) {
         if (readonlyCapabilityErased(actual, expected)) {
             throw new IllegalArgumentException(
-                    where + " would erase infer struct readonly capability; "
+                    where + " would erase readonly record capability; "
                             + "use a generic/capability-preserving type or an explicit mutable struct instead");
         }
     }
@@ -4495,14 +4502,14 @@ public final class TypeChecker {
         Type concrete = deref(type);
         if (concrete instanceof Record record && record.readOnly()) {
             throw new IllegalArgumentException(
-                    where + " cannot request mutable access to a infer struct value; "
-                            + "inferred structs are permanently readonly");
+                    where + " cannot request mutable access to a readonly record value; "
+                            + "records are readonly structural values");
         }
         if (concrete instanceof Union union
                 && union.options().stream().anyMatch(option ->
                         deref(option) instanceof Record record && record.readOnly())) {
             throw new IllegalArgumentException(
-                    where + " cannot request mutable access because the value may be a readonly infer struct record");
+                    where + " cannot request mutable access because the value may be a readonly record");
         }
     }
 
@@ -4637,7 +4644,7 @@ public final class TypeChecker {
                     remainder.put(member.getKey(), member.getValue());
                 }
             }
-            return new Record(remainder, record.readOnly());
+            return new Record(remainder, record.readOnly(), record.kind());
         }
         if (source instanceof Union union) {
             List<Type> alternatives = new ArrayList<>(union.options().size());
@@ -4765,7 +4772,7 @@ public final class TypeChecker {
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             record.members().forEach((name, member) -> members.put(name, bindReceiverSelf(member, receiver)));
-            return new Record(members, record.readOnly());
+            return new Record(members, record.readOnly(), record.kind());
         }
         return type;
     }
@@ -4977,7 +4984,7 @@ public final class TypeChecker {
                 unwrapMutexGuard(deref(rawReceiver)));
         if (writing && receiver instanceof Record record && record.readOnly()) {
             throw new IllegalArgumentException(
-                    "cannot mutate a infer struct value; inferred structs are closed and readonly");
+                    "cannot mutate a readonly record value; inferred structs are closed and readonly");
         }
         if (receiver instanceof Record record) {
             Type result = record.members().get(member.member());
@@ -6047,7 +6054,7 @@ public final class TypeChecker {
             for (Map.Entry<String, Type> entry : record.members().entrySet()) {
                 members.put(entry.getKey(), resolveSharedGeneric(entry.getValue(), bindings));
             }
-            return new Record(members, record.readOnly());
+            return new Record(members, record.readOnly(), record.kind());
         }
         return type;
     }
@@ -7658,7 +7665,7 @@ public final class TypeChecker {
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             record.members().forEach((name, member) -> members.put(name, substituteGenerics(member, bindings)));
-            return new Record(members, record.readOnly());
+            return new Record(members, record.readOnly(), record.kind());
         }
         return type;
     }
@@ -8051,12 +8058,14 @@ public final class TypeChecker {
                     .map(element -> resolve(element, generics, self, allowNullMarker))
                     .toList(), TupleKind.TUPLE);
         }
-        if (ref.isRecordType()) {
+        if (ref.isClosedAggregateType()) {
             Map<String, Type> members = new LinkedHashMap<>();
-            for (Map.Entry<String, Ast.TypeRef> member : ref.recordMembers().entrySet()) {
+            for (Map.Entry<String, Ast.TypeRef> member : ref.aggregateMembers().entrySet()) {
                 members.put(member.getKey(), resolve(member.getValue(), generics, self, allowNullMarker));
             }
-            return new Record(members, ref.isReadonlyRecordType());
+            return ref.isStructType()
+                    ? Record.struct(members)
+                    : new Record(members, ref.isReadonlyRecordType(), AggregateKind.RECORD);
         }
         if (generics.contains(ref.name())) {
             if (!ref.arguments().isEmpty() || ref.inferArguments()) {
@@ -8396,6 +8405,9 @@ public final class TypeChecker {
     }
 
     private boolean structuralRecordAssignable(Record actual, Record expected) {
+        if (actual.kind() != expected.kind()) return false;
+        if (actual.kind() == AggregateKind.STRUCT
+                && actual.members().size() != expected.members().size()) return false;
         for (Map.Entry<String, Type> required : expected.members().entrySet()) {
             Type candidate = actual.members().get(required.getKey());
             if (candidate == null || !assignable(candidate, required.getValue())) return false;
