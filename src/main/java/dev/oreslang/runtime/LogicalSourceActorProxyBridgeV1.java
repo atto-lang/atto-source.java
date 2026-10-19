@@ -27,8 +27,6 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
     private final Object admissionLock = new Object();
     private final LogicalSourceActorRouterV1 router;
     private final LogicalActorProxyMailboxV1 mailbox;
-    private final HotReloadManager ownerManager;
-    private final String actorTypeName;
     private final String messageAbiSha256;
     // Non-null only for the explicit compiler-ABI-bound scalar transport.
     // Legacy SHARED host-scalar behavior remains a separate compatibility path.
@@ -45,14 +43,10 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
     private LogicalSourceActorProxyBridgeV1(
             LogicalSourceActorRouterV1 router,
             LogicalActorProxyMailboxV1 mailbox,
-            HotReloadManager ownerManager,
-            String actorTypeName,
             boolean compilerAbiScalar, boolean typedPrimitive,
             int maxMessageBytes) {
         this.router = Objects.requireNonNull(router);
         this.mailbox = Objects.requireNonNull(mailbox);
-        this.ownerManager = Objects.requireNonNull(ownerManager);
-        this.actorTypeName = Objects.requireNonNull(actorTypeName);
         this.maxMessageBytes = maxMessageBytes;
         this.taskOwner = new ActorHotUpgradeTaskOwnerV1(router);
         router.bindProxyMailboxForSupervisor(mailbox, compilerAbiScalar, typedPrimitive);
@@ -135,8 +129,7 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
                 first, ActorRuntime.ActorKind.SHARED, actorTypeName, readyTimeout);
         try {
             return new LogicalSourceActorProxyBridgeV1(
-                    router, mailbox, first.ownerForActorRouting(),
-                    actorTypeName, compilerAbiScalar, typedPrimitive,
+                    router, mailbox, compilerAbiScalar, typedPrimitive,
                     maxMessageBytes);
         } catch (RuntimeException | Error failure) {
             try {
@@ -418,6 +411,10 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
                     throw new IllegalStateException(
                             "logical proxy and physical route publication epochs disagree");
                 }
+                // Force every committed route, including legacy i64 mode,
+                // through the compiler-ABI publication witness before this
+                // call can report success or later dispatch can resume.
+                publication();
                 return true;
             } catch (InterruptedException | ExecutionException | TimeoutException
                     | RuntimeException | Error uncertain) {
