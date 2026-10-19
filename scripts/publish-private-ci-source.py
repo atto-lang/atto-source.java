@@ -393,7 +393,7 @@ def check_main_file_bytes(root, expected):
             for fd in reversed(opened):
                 os.close(fd)
         calculated = hashlib.sha1(
-            b"blob " + str(len(raw)).encode("ascii") + b"\\0" + raw
+            b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
         ).hexdigest()
         if calculated != committed_blob:
             raise Denied("policy or publisher file differs from reviewed main")
