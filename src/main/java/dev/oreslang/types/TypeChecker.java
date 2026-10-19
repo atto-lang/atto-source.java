@@ -4953,12 +4953,18 @@ public final class TypeChecker {
      * mutable borrow by itself does not establish an outlives guarantee.
      */
     private boolean isThreadSend(Type type) {
+        // One shared budget covers every nominal callback made by this top-level
+        // transfer proof. Otherwise N nominal nodes could each start a fresh
+        // 100k shared-safety walk and multiply attacker-controlled compiler work.
+        int[] nominalSharedSafetyBudget = new int[] {100_000};
         return ThreadSafetyTraits.isOwnedSend(type,
                 new ThreadSafetyTraits.NominalProof() {
                     @Override
                     public boolean has(Named nominal, ThreadSafetyTraits.Trait trait) {
                         return trait == ThreadSafetyTraits.Trait.SEND
-                                && isSharedSafe(nominal, new LinkedHashSet<>(), Map.of());
+                                && isSharedSafe(
+                                        nominal, new LinkedHashSet<>(), Map.of(),
+                                        0, nominalSharedSafetyBudget);
                     }
 
                     @Override
