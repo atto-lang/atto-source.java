@@ -26,8 +26,19 @@ final class GuestScalarTaskAwaitTest {
 
     private static void rejects(String body) {
         String program = "pub fnc main(): void { " + body + " return; }";
+        assertDoesNotThrow(() -> Parser.parse(program),
+                "negative compiler fixture must be syntactically valid");
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(program));
+    }
+
+    private static void rejectsWithDiagnostic(String body, String message) {
+        String program = "pub fnc main(): void { " + body + " return; }";
+        assertDoesNotThrow(() -> Parser.parse(program),
+                "negative compiler fixture must be syntactically valid");
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+        assertTrue(failure.getMessage().contains(message), failure::getMessage);
     }
 
     @Test
@@ -85,6 +96,23 @@ final class GuestScalarTaskAwaitTest {
     }
 
     @Test
+    void awaitedFloatAndLocalStringAreCopiedBeforeScheduling() throws Exception {
+        String output = execute("""
+                pub fnc main(): void {
+                    let float ratio = 2.5;
+                    let string label = "scalar";
+                    let float a = await task { return ratio; };
+                    let string b = await task { return label; };
+                    stdio.stdout.write(a);
+                    stdio.stdout.write(b);
+                    stdio.stdout.write(label);
+                    return;
+                }
+                """);
+        assertTrue(output.contains("2.5scalarscalar"), output);
+    }
+
+    @Test
     void standaloneAndEscapingTaskHandlesStayRejected() {
         rejects("let Task<int> work = task { return 7; };");
         rejects("do task { return; };");
@@ -93,11 +121,14 @@ final class GuestScalarTaskAwaitTest {
 
     @Test
     void nestedTasksGuestCallsAndNonScalarBodiesStayRejected() {
-        rejects("let int n = await task { return task { return 1; }; };");
+        rejectsWithDiagnostic("let int n = await task { return task { return 1; }; };",
+                "one return of a scalar literal or copied local name");
         rejects("let int n = await task { let int value = 1; return value; };");
-        rejects("let int n = await task { return 3 + 4; };");
+        rejectsWithDiagnostic("let int n = await task { return 3 + 4; };",
+                "one return of a scalar literal or copied local name");
         rejects("let int n = await task { return; };");
-        rejects("let data = arr[1, 2]; let int n = await task { return data; };");
+        rejectsWithDiagnostic("let data = arr[1, 2]; let int n = await task { return data; };",
+                "proven copyable");
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 fnc sideEffect(): int { return 5; }
                 pub fnc main(): void {
