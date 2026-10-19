@@ -43,6 +43,9 @@ Java runtime is an internal completion marker, never `undefined`,
   before the exposed Future publishes cancellation.
 - After a select winner has committed, consumer cancellation is rejected
   instead of prematurely reporting cancellation before lexical cleanup.
+  If the owning actor subsequently STOPs, its cancellation rejection is
+  converted to an explicit `incomplete cleanup` failure by the owning
+  runtime. This is **not** proof that guest cleanup executed.
 - The source task Future signals normal completion after the arm's lexical
   defer/finally handling. Producer terminal cancellation can be published
   after source retirement without rerunning pre-commit cancellation admission.
@@ -53,13 +56,16 @@ Java runtime is an internal completion marker, never `undefined`,
 
 ## Hard blockers / evidence required
 
-1. **Actor STOP after winner commit**. Current-main actor termination may
-   prevent an already-enqueued winning arm from running. Its exposed Future
-   must be guaranteed a terminal cancellation/failure or authenticated
-   cleanup completion, never left pending. Current source does not yet prove
-   this path; STOP-versus-commit and forced-revocation regression tests are
-   required. Avoid falsely reporting lexical cleanup as complete when actor
-   STOP suppresses that cleanup.
+1. **Actor STOP after winner commit**. An owner STOP can suppress an
+   already-enqueued winning arm. The staged `OresFuture` commit-gated callback
+   now opts into actor-STOP failover: if consumer cancellation cannot roll
+   back the committed winner, the actor publishes an **explicit exceptional
+   terminal result** saying cleanup was not verified complete. It must never
+   publish successful `void` or leave the result pending indefinitely.
+   Targeted runtime unit regressions are committed, but STOP-versus-commit
+   and force-revocation execution races have NOT been exercised against the
+   exact source head. Authenticated cleanup continuation after STOP remains
+   separate unimplemented work.
 2. **Cancellation of running arms**. The branch currently *rejects* ordinary
    cancellation after a winner commits. Implement scheduler-owned deferred
    cancellation with deterministic cleanup and terminal publication if a
