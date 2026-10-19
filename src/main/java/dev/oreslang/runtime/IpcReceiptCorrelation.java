@@ -117,9 +117,9 @@ public final class IpcReceiptCorrelation {
     public synchronized void acceptVerified(Envelope message, Stage next) {
         Objects.requireNonNull(message, "message");
         Objects.requireNonNull(next, "next");
-        if (next == Stage.OUTCOME_UNKNOWN) {
+        if (next == Stage.OUTCOME_UNKNOWN || next == Stage.REJECTED_BEFORE_REMOTE) {
             throw new IllegalArgumentException(
-                    "OUTCOME_UNKNOWN requires local transport-loss authority");
+                    "local transport decision cannot be asserted by peer receipt");
         }
         Entry entry = pending.get(message.messageSequence());
         if (entry == null || !entry.envelope.equals(message)) {
@@ -131,11 +131,6 @@ public final class IpcReceiptCorrelation {
                 --transportCredits;
                 return;
             }
-            if (next == Stage.REJECTED_BEFORE_REMOTE) {
-                pending.remove(message.messageSequence());
-                --transportCredits;
-                return;
-            }
         } else if (entry.stage == Stage.REMOTE_ACCEPTED) {
             if (next == Stage.HANDLER_COMMITTED || next == Stage.HANDLER_FAILED) {
                 pending.remove(message.messageSequence());
@@ -143,6 +138,24 @@ public final class IpcReceiptCorrelation {
             }
         }
         throw new IllegalArgumentException("illegal/duplicate IPC receipt transition");
+    }
+
+    /**
+     * Trusted LOCAL dispatcher rejects a message before remote publication.
+     * Never invoke this through a peer-derived message or guest actor DATA.
+     * This deliberately does not accept a Stage argument, preventing callers
+     * from relabeling local admission failure as a remote handler result.
+     */
+    public synchronized void rejectBeforeRemote(Envelope message) {
+        Objects.requireNonNull(message, "message");
+        Entry entry = pending.get(message.messageSequence());
+        if (entry == null || !entry.envelope.equals(message)
+                || entry.stage != Stage.LOCAL_ADMITTED) {
+            throw new IllegalArgumentException(
+                    "invalid local pre-remote IPC rejection");
+        }
+        pending.remove(message.messageSequence());
+        --transportCredits;
     }
 
     /**
