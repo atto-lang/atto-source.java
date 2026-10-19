@@ -318,13 +318,20 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         int maxProbes = Math.min(enabled - 1, MAX_STEAL_PROBES);
         int rotation = nextStealVictim.getAndIncrement();
         CarrierTopologyPlan plan = topologyPlan;
+        // One of every 16 idle steal attempts makes a global round-robin
+        // sweep. Without it, a persistent >MAX_STEAL_PROBES set of nearby
+        // aged lanes can indefinitely conceal runnable remote NUMA work.
+        boolean globalSweep = (rotation & 15) == 0;
         int examined = 0;
         int probes = 0;
         // Inspect all potential lanes in locality order. Only nonempty lanes
         // consume the bounded dequeue-probe budget; remote peers remain
         // stealable even with many empty nearer lanes.
         while (examined < maximumPoolSize - 1 && probes < maxProbes) {
-            int victimSlot = plan.victimAt(thiefSlot, examined++, rotation);
+            int rank = examined++;
+            int victimSlot = globalSweep
+                    ? plan.globalVictimAt(thiefSlot, rank, rotation)
+                    : plan.victimAt(thiefSlot, rank, rotation);
             if (victimSlot >= enabled) continue;
             ArrayBlockingQueue<Runnable> victim = affinityQueues.get(victimSlot);
             if (victim.peek() == null) continue;
