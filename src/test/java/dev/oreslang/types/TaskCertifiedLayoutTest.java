@@ -176,6 +176,31 @@ final class TaskCertifiedLayoutTest {
         assertNotNull(issuer.admit(List.of(local.writeField("position"))));
     }
 
+    @Test void parallelProofMintingCannotReuseAllocationIds() throws Exception {
+        var issuer = new TaskCertifiedLayout.Emitter();
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(8);
+        var barrier = new java.util.concurrent.CountDownLatch(1);
+        try {
+            var outcomes = new java.util.ArrayList<java.util.concurrent.Future<
+                    TaskCertifiedLayout.Access>>();
+            for (int i = 0; i < 64; i++) {
+                outcomes.add(pool.submit(() -> {
+                    barrier.await();
+                    return issuer.freshRecord(RECORD).writeField("position");
+                }));
+            }
+            barrier.countDown();
+            for (var outcome : outcomes) {
+                assertNotNull(issuer.admit(List.of(outcome.get())));
+            }
+            assertEquals(64, issuer.active(),
+                    "distinct freshly issued allocations must not collide under concurrency");
+        } finally {
+            barrier.countDown();
+            pool.shutdownNow();
+        }
+    }
+
     @Test void unsupportedLayoutDoesNotAccidentallyIssueAnyProof() {
         var issuer = new TaskCertifiedLayout.Emitter();
         var members = new java.util.HashMap<String, Types.Type>();
