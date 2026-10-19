@@ -71,6 +71,15 @@ public final class V3CallLoweringPreview {
                     && !requiresNominalOptionProof) {
                 throw new IllegalArgumentException("Option materialization needs nominal type proof");
             }
+            if (action == SlotAction.DEFAULT_SCALAR
+                    && (requiresNominalOptionProof
+                        || closedDefault.kind() == DefaultArgumentPolicy.LiteralKind.NONE)) {
+                throw new IllegalArgumentException("scalar default cannot materialize Option/None");
+            }
+            if (action == SlotAction.DEFAULT_SOME
+                    && closedDefault.kind() == DefaultArgumentPolicy.LiteralKind.NONE) {
+                throw new IllegalArgumentException("Some default requires a non-None literal");
+            }
             if (action == SlotAction.DEFAULT_NONE
                     && closedDefault.kind() != DefaultArgumentPolicy.LiteralKind.NONE) {
                 throw new IllegalArgumentException("typed None requires None literal");
@@ -82,6 +91,26 @@ public final class V3CallLoweringPreview {
         public Preview {
             unevaluatedExpressionsInSourceOrder = List.copyOf(unevaluatedExpressionsInSourceOrder);
             formalOrderSlots = List.copyOf(formalOrderSlots);
+            boolean[] used = new boolean[unevaluatedExpressionsInSourceOrder.size()];
+            for (int i = 0; i < formalOrderSlots.size(); i++) {
+                Slot slot = formalOrderSlots.get(i);
+                if (slot.formalIndex() != i) {
+                    throw new IllegalArgumentException("v3 preview slots must remain in formal order");
+                }
+                int source = slot.evaluatedSourceIndex();
+                if (source >= 0) {
+                    if (source >= used.length || used[source]) {
+                        throw new IllegalArgumentException(
+                                "v3 preview has an out-of-range or duplicate guest expression");
+                    }
+                    used[source] = true;
+                }
+            }
+            for (boolean present : used) {
+                if (!present) {
+                    throw new IllegalArgumentException("v3 preview lost a supplied guest expression");
+                }
+            }
         }
     }
 
