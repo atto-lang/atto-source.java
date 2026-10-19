@@ -102,3 +102,41 @@ additional test showing that source classes named `ActorRef`, `Task`,
 `Channel`, or `ThreadBound` cannot manufacture a Send or Sync proof.
 This is code alignment, not proof that the two PRs can yet be merged without
 reviewing their distinct base branches and compiler type representations.
+
+
+## Resolved semantic authority bridge — 2026-10-19
+
+The Task branch now has a real second-stage semantic gate in `TypeChecker`,
+rather than relying only on the AST preflight:
+
+`TaskCaptureAnalysis -> canonical Types.Type -> ThreadSafetyTraits.isOwnedSend -> isSharedSafe`
+
+- `TaskCaptureAnalysis` is shared by `OwnershipChecker` and `TypeChecker`, so
+  the affine move pass and semantic permission pass consume the same free-variable
+  set.
+- Expression-form `match` is now traversed. Previously, a value referenced only
+  from a value-match arm could be omitted from the private ownership capture
+  scanner.
+- Task-block captures, Task/async-lambda captures, declared scheduled parameters,
+  and immediately-invoked scheduled arguments are checked using resolved
+  `Types.Type` before the existing execution-disabled diagnostic.
+- A positive semantic Send result still does not enable Task execution.
+- Recursive nominal storage now fails closed instead of using the old
+  `if (!seen.add(klass)) return true` positive fixed point.
+- Shared-safety traversal is bounded to depth 256 / 100,000 proof steps and
+  rejects readonly record views as shared-safe backing.
+- `OptionUnwrapError` is source-unnameable and remains compiler-internal.
+
+Current exact blobs:
+- `TaskCaptureAnalysis.java`: `88da2bd75bd52decdb5ba9f22e914d0e6cfd75ec`
+- `ThreadSafetyTraits.java`: `c1340d77a38b2a0ad5236e1d1a894ccfe1adaba5`
+- `TypeChecker.java`: `eb0099240519261cae1d083e711b7ccdf8f25a7e`
+- `OwnershipChecker.java`: `dcf3e9c41c3d85886ed957a6035ad713af3a8de3`
+- `TaskSpawnSendAdmissionTest.java`: `c07d7159ff44cac63a2f6223d3395847a885245d`
+- `ResolvedTaskSendAuthorityTest.java`: `08dd36257672de0398a7cbae3b3f84ceb85d7ab9`
+- `TaskCaptureAnalysisTest.java`: `5df21d3a9b12cac6403fc695aa8de3ba5d10a043`
+
+Committed targeted test methods in these three suites: **22** (13 + 4 + 5).
+They have not executed under Maven/JUnit on this exact head. Exact-head
+fast-ci #39315110973 / job #118274421514 and concurrency-contract
+#39315110871 / job #118274422388 again failed with zero recorded steps.
