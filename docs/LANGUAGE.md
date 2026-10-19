@@ -531,29 +531,56 @@ stdio.println(user.name);
 
 Whitespace before the initializer is optional: `infer struct {...}`.
 
-A closed structural record can also be constructed with `infer record{...}`.
-Both inferred spellings currently use the same readonly closed-aggregate backing
-and field-name-based structural type identity; records are not dynamic maps.
-`const T value = infer<T> record{...};` introduces a scoped structural type
-alias without creating nominal identity or a runtime type object. Quoted
-field names, including spaces and punctuation, are statically checked.
+The canonical anonymous record spelling is `record{...}`:
 
-The shorter `const T value = infer record{...}` and
-`const T value = infer struct{...}` are now checked by the Java type checker.
-If `T` already denotes a known type, the declaration keeps its ordinary
-type-checking meaning; it does **not** redefine `T`. Otherwise a new, scoped,
-readonly structural alias is introduced only for uppercase-starting, simple
-(non-generic, unqualified) names. Builtins, generics, imports, explicit forward
-aliases and conflicting definitions fail closed. The optional `<T>` form
-remains the unambiguous way to request a new alias; use it when a declaration
-might otherwise be mistaken for a reference to an existing type.
+```ores
+const position = record{x: 3.0, y: 4.0};
+```
+
+Records are closed, field-name-based **structural** values rather than dynamic
+maps. Their field set is statically known, field order does not define type
+identity, and record assignment may use structural row compatibility under the
+normal readonly-capability rules. `infer record{...}` remains accepted as a
+compatibility spelling; `infer<T> record{...}` may capture a lexical structural
+alias, but it does not create nominal identity or a runtime type object.
+
+An inferred struct is deliberately different. `infer struct{...}` synthesizes a
+**concrete closed struct shape** from the initializer. Struct compatibility is
+exact-shape rather than record row-width compatibility, and a struct is not
+implicitly erased to a record (or vice versa). The generated type can be
+captured explicitly:
+
+```ores
+const Point p = infer<Point> struct{x: 3.0, y: 4.0};
+```
+
+or with the checked short form when `Point` is otherwise unbound:
+
+```ores
+const Point p = infer struct{x: 3.0, y: 4.0};
+```
+
+The alias is lexical and compile-time only. Existing types, imported names,
+builtins, generics, reserved forward declarations and conflicting definitions
+cannot be silently shadowed.
+
+`infer` determines where the struct type comes from; it is **not** a freeze
+operator. Binding/referent mutability remains independent. A `const` binding
+cannot mutate through the value, while a mutable-referent binding of the same
+captured struct type can:
+
+```ores
+fnc update(): float {
+    const Point seed = infer<Point> struct{x: 3.0, y: 4.0};
+    val Point current = infer struct{x: 5.0, y: 6.0};
+    current.x = 9.0;
+    return current.x;
+}
+```
 
 Host-side `SoaSnapshot` provides independently tested scalar row/column
 snapshots, but it is NOT an Oreslang guest `SoA<T>` or zero-copy GPU/native
 representation. AoS/SoA guest lowering and ownership still require verification.
-
-An inferred struct is permanently readonly: its field set and field values
-cannot be mutated through aliases or mutable bindings.
 
 Static struct keys may be identifiers, reserved member keys such as
 `stop`/`do`/`done`, or strings written with either single or double
