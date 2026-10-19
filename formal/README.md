@@ -81,3 +81,17 @@ The next models should cover:
 - Structured actor failure propagation/restart policy beyond the already-modeled cancellation tree.
 
 For unbounded properties we should add a second tier using an external prover/model checker once its toolchain is pinned reproducibly; this bounded executable layer remains useful as the fast CI gate.
+
+## Static-effect model checking (2026-10-19)
+
+`FormalEffectClosureModelCheckTest` independently enumerates all 512 three-function directed call graphs
+and 64 pairs of direct IO/PANIC effect assignments (32,768 configurations).
+A breadth-first reachability oracle checks the fixed-point effect summaries for
+every possible root, including recursive strongly connected components. It also
+checks rejection of over-budget graph input and proves via tests that the
+current trapping abstraction does not discard PANIC or unknown calls.
+
+**Scope boundary:** this is a finite-state proof of the graph summary library,
+not a proof that compiler-produced call edges, exception handlers, imports,
+or FFI effect labels are complete or authenticated. Source AST-to-effect-IR
+refinement remains an independent obligation.
