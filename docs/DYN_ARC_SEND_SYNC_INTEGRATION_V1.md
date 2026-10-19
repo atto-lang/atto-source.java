@@ -13,8 +13,11 @@ the resolution and ownership checker; a separate source-AST proof engine (#1447,
 permission oracle. Avoid accepting guest-asserted `unsafe impl Send`/`Sync`.
 
 For a known, immutable scalar or a fully resolved aggregate, derive traits
-transitively; a writable list/record can be Send but does not become Sync by
-element-wise derivation alone. A shared borrow `&T` is Send iff T is Sync; an
+transitively; a writable list can be Send but does not become Sync by
+element-wise derivation alone. **A readonly record view is NOT frozen storage:**
+other aliases may still write its backing allocation. Record is currently
+Send-only even with a source readonly annotation; allow Sync only after an
+independent compiler-minted frozen/exclusive-backing witness exists. A shared borrow `&T` is Send iff T is Sync; an
 exclusive borrow `&mut T` can be Send iff T is Send. The borrow checker must
 *separately* prove scope/outlives, exclusivity, physical quiescence, and
 no cross-await guard escape. Trait derivation is not an ownership transfer.
