@@ -28,7 +28,26 @@ public final class TaskScope implements AutoCloseable {
 
     /** Atomically reserve a child slot or reject a sealed scope. */
     public <T> TaskHandle<T> startTask(OresScheduler.Task<T> task) {
+        return startTask(task, () -> { });
+    }
+
+    /**
+     * Runtime/compiler-only retirement hook. The callback is invoked from the
+     * child's getDone() completion, never from cancellation request or result
+     * settlement, so it may retire scoped memory loans only after physical
+     * scheduler quiescence and descendant retirement.
+     *
+     * <p>Package-private by design: guest/source code cannot supply a callback
+     * that manufactures release authority. A callback failure leaves the scope
+     * join slot live (fail closed) rather than publishing premature completion.
+     */
+    <T> TaskHandle<T> startTask(
+            OresScheduler.Task<T> task,
+            Runnable retireAfterPhysicalQuiescence) {
         Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(
+                retireAfterPhysicalQuiescence,
+                "physical-quiescence retirement hook");
         synchronized (admissionLock) {
             if (sealed) {
                 throw new RejectedExecutionException("TaskScope is sealed");
@@ -62,7 +81,13 @@ public final class TaskScope implements AutoCloseable {
         // arbitrary scope completion observers while holding admissionLock.
         // Any seal/cancel racing this interval sees active > 0 and waits for
         // childDone() after its actual scheduler quiescence.
-        child.getDone().whenCompleteRuntime((outcome, failure) -> childDone());
+        child.getDone().whenCompleteRuntime((outcome, failure) -> {
+            // TaskHandle.getDone() publishes only after physical scheduler
+            // quiescence plus descendant retirement. Do not move this hook to
+            // result(), cancel(), or cancellation-token retirement.
+            retireAfterPhysicalQuiescence.run();
+            childDone();
+        });
         return child;
     }
 
