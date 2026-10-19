@@ -110,6 +110,34 @@ all GitHub API publication, repository administrators remain part of the
 confidentiality trust boundary: no branch protection setting can prevent an
 organization owner from changing repository visibility later.
 
+## Authorization-ref handoff and readback contract
+
+A source-bearing `ci/oreslang-<source-tree>` push may queue a carrier job before
+the non-triggering `ci/authorized-<payload-commit>` ref exists. The carrier must
+deny checkout until that exact authorization ref is present and points to the
+event's immutable commit.
+
+The dispatcher follows this sequence after constructing and validating the
+payload: (1) refresh live independent approvals, repository identities, source
+commit/tree, snapshots and both incident-resume states; (2) re-read the exact
+payload ref and verify `type=commit` and the approved payload SHA; (3) require
+the authorization ref to be absent; (4) create only that new authorization ref;
+(5) read back the authorization ref independently, requiring its exact name,
+`type=commit` and identical SHA; and (6) re-read the payload ref again, also
+requiring its exact name, commit type and SHA.
+
+If a post-write readback fails, the dispatcher's existing bounded cleanup
+path attempts to remove only the authorization and payload refs still
+pointing at the expected commit. Failed or ambiguous cleanup is itself a
+denial, never positive test evidence. Ref reads and writes are not atomic,
+so the carrier must continue enforcing its independently reviewed exact
+`github.sha` authorization and source subtree checks immediately before
+source checkout; a green job without those gates is non-certifying.
+
+These changes strengthen evidence, but do not authorize a transfer while
+independent reviewer policy remains disabled, either incident remains open,
+or any exact-head approval/ledger is missing.
+
 ## Execution binding
 
 The carrier validation workflow is **push-only** on
