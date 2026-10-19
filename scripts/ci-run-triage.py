@@ -44,7 +44,7 @@ def classify(run, jobs, expected_head_sha):
         return "not_terminal"
     if not jobs:
         return "no_jobs_recorded"
-    if any(not isinstance(j, dict) or not isinstance(j.get("steps", []), list) for j in jobs):
+    if any(not isinstance(j, dict) or not isinstance(j.get("steps"), list) for j in jobs):
         raise TriageError("missing or invalid job metadata")
     steps = [s for job in jobs for s in job.get("steps", [])]
     # A job step can be queued or skipped without ever being started.
