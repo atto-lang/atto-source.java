@@ -102,6 +102,8 @@ public final class TypeChecker {
     private boolean currentMaySuspend;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
+    // Scoped collector, active only while checking an unannotated Task block.
+    private List<Type> inferredTaskReturnTypes;
     private final List<String> warnings = new ArrayList<>();
 
     /** Non-fatal compiler diagnostics, detached from mutable checker state. */
@@ -1806,6 +1808,9 @@ public final class TypeChecker {
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
             requireReadonlyCapabilityPreserved(actual, expectedReturn, "return value");
             requireAssignable(actual, expectedReturn, "return value");
+            if (expectedReturn == Unknown.INSTANCE && inferredTaskReturnTypes != null) {
+                inferredTaskReturnTypes.add(widenCollectionElement(actual));
+            }
             return;
         }
         if (stmt instanceof Ast.YieldStmt yielded) {
@@ -3900,7 +3905,7 @@ public final class TypeChecker {
             return new Record(members, object.inferredStruct());
         }
         if (expr instanceof Ast.TaskExpr task) {
-            return checkTaskBlock(task, Primitive.VOID, env, generics, self);
+            return checkTaskBlock(task, Unknown.INSTANCE, env, generics, self);
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
@@ -3914,6 +3919,8 @@ public final class TypeChecker {
             defineImplicitArguments(lambdaEnv, parameters);
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+            List<Type> previousTaskInference = inferredTaskReturnTypes;
+            inferredTaskReturnTypes = null;
             Map<Env.Binding, Set<String>> outerInitialization = env.initializationSnapshot();
             if (nonLexical) currentClassOwner = null;
             // A lambda checked within a constructor runs on invocation, not
@@ -3935,6 +3942,7 @@ public final class TypeChecker {
                 env.restoreInitialization(outerInitialization);
                 currentClassOwner = previousClassOwner;
                 currentConstructorOwner = previousConstructorOwner;
+                inferredTaskReturnTypes = previousTaskInference;
             }
             return new Function(parameters, result);
         }
@@ -4194,25 +4202,96 @@ public final class TypeChecker {
      * cannot credit Task assignments toward parent definite initialization.
      * Neither can a child inherit constructor-only field write privileges.
      */
-    private Type checkTaskBlock(Ast.TaskExpr task, Type result, Env env,
+    private Type checkTaskBlock(Ast.TaskExpr task, Type expected, Env env,
                                 Set<String> generics, Type self) {
         Env child = new Env(env);
         Map<Env.Binding, Set<String>> initializedBefore = env.initializationSnapshot();
         Ast.ClassDecl previousClass = currentClassOwner;
         Ast.ClassDecl previousConstructor = currentConstructorOwner;
+        List<Type> previousInference = inferredTaskReturnTypes;
+        List<Type> discovered = expected == Unknown.INSTANCE ? new ArrayList<>() : null;
         currentConstructorOwner = null;
+        inferredTaskReturnTypes = discovered;
         try {
-            checkCallableBlock(task.body(), child, generics, result, self);
+            checkCallableBlock(task.body(), child, generics, expected, self);
         } finally {
+            inferredTaskReturnTypes = previousInference;
             env.restoreInitialization(initializedBefore);
             currentClassOwner = previousClass;
             currentConstructorOwner = previousConstructor;
+        }
+        Type result = expected;
+        if (result == Unknown.INSTANCE) {
+            if (discovered.isEmpty()) {
+                result = Primitive.VOID;
+            } else {
+                result = discovered.getFirst();
+                for (int i = 1; i < discovered.size(); i++) {
+                    Type joined = capabilitySafeEquivalentJoin(result, discovered.get(i));
+                    if (joined == null) {
+                        throw new IllegalArgumentException(
+                                "unannotated Task returns incompatible result types: "
+                                        + result + " and " + discovered.get(i)
+                                        + "; declare Task<T> explicitly");
+                    }
+                    result = joined;
+                }
+            }
         }
         if (result != Primitive.VOID && !definitelyReturns(task.body())) {
             throw new IllegalArgumentException(
                     "Task<" + result + "> must return a value on every path");
         }
+        validateAsyncBoundaryType(result, true, "Task result");
+        task.bindResultType(taskOwnershipResultRef(result));
         return new Named("Task", List.of(result));
+    }
+
+    /**
+     * Preserve exact checked result types in the ownership AST. Unresolved,
+     * affine or otherwise unsupported types cannot be inferred implicitly.
+     */
+    private Ast.TypeRef taskOwnershipResultRef(Type result) {
+        if (result instanceof Primitive primitive) {
+            return Ast.TypeRef.simple(primitive.name().toLowerCase(java.util.Locale.ROOT));
+        }
+        if (result instanceof StringLiteral) return Ast.TypeRef.simple("string");
+        if (result instanceof BoolLiteral) return Ast.TypeRef.simple("bool");
+        if (result instanceof Named named) {
+            return new Ast.TypeRef(named.name(),
+                    named.arguments().stream().map(this::taskOwnershipResultRef).toList(), false);
+        }
+        if (result instanceof ListType list) {
+            return new Ast.TypeRef("List", List.of(taskOwnershipResultRef(list.element())), false);
+        }
+        if (result instanceof Tuple tuple) {
+            List<Ast.TypeRef> elements =
+                    tuple.elements().stream().map(this::taskOwnershipResultRef).toList();
+            return switch (tuple.kind()) {
+                case TUPLE -> Ast.TypeRef.tupleType(elements);
+                case FIXED_ARRAY -> Ast.TypeRef.fixedArrayType(elements);
+                case FIXED_LIST -> Ast.TypeRef.fixedListType(elements);
+            };
+        }
+        if (result instanceof Record record) {
+            Map<String, Ast.TypeRef> fields = new LinkedHashMap<>();
+            resultRecordMembers(record, fields);
+            return record.readOnly()
+                    ? Ast.TypeRef.readonlyRecordType(fields)
+                    : Ast.TypeRef.recordType(fields);
+        }
+        if (result instanceof Union union) {
+            return Ast.TypeRef.union(
+                    union.options().stream().map(this::taskOwnershipResultRef).toList());
+        }
+        throw new IllegalArgumentException(
+                "Task result cannot be represented as an owned concrete type: " + result);
+    }
+
+    private void resultRecordMembers(Record record, Map<String, Ast.TypeRef> destination) {
+        for (Map.Entry<String, Type> entry : record.members().entrySet()) {
+            destination.put(entry.getKey(), taskOwnershipResultRef(entry.getValue()));
+        }
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
