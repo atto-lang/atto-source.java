@@ -107,6 +107,26 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void privateMoveOnlyFieldDoesNotPoisonPublicCopyableIndexView() throws Exception {
+        String source = """
+                define class Candidate as
+                  pub val int id = 42;
+                  private val Array<int> resources = new Array<int>();
+                end
+                fnc read(string key): int {
+                  const value = new Candidate();
+                  return value[key];
+                }
+                pub routine main(): void {
+                  stdio.stdout.write(read("id"));
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals("42", execute(source));
+    }
+
+    @Test
     void dynamicClassIndexRejectsPrivateFieldAndMethod() {
         String typeOnly = """
                 define class Candidate as
