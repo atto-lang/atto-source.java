@@ -7,6 +7,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.function.Function;
 
 /**
@@ -25,6 +26,10 @@ public final class SealedActorState {
     private static final int MAX_OWNED_FIELD_BYTES = 64 * 1024;
     private static final int MAX_TOTAL_OWNED_BYTES = 1024 * 1024;
     private static final int MAX_PENDING_OWNED = 256;
+    private static final int MAX_TENSOR_RANK = 16;
+    private static final int MAX_TENSOR_ELEMENTS = 1_048_576;
+    private static final long MAX_TRACKED_TENSOR_BYTES = 64L * 1024L * 1024L;
+    private static final int MAX_TRACKED_TENSOR_SNAPSHOTS = 256;
 
     private final ActorRuntime.ActorId owner;
     private final LinkedHashMap<String, String> schema;
@@ -43,6 +48,10 @@ public final class SealedActorState {
     private int pendingOwnedBytes;
     private final Set<OwnedBytes> pendingOwned =
             Collections.newSetFromMap(new IdentityHashMap<>());
+    // Weak tracking bounds live immutable snapshot retention without making
+    // the state root itself keep obsolete weight generations alive forever.
+    private final Set<TensorSnapshotF64> tensorSnapshots =
+            Collections.newSetFromMap(new WeakHashMap<>());
     private volatile boolean retired;
 
     public SealedActorState(ActorRuntime.ActorId owner,
@@ -56,7 +65,7 @@ public final class SealedActorState {
         this.values = new LinkedHashMap<>();
         for (var item : this.schema.entrySet()) {
             switch (item.getValue()) {
-                case "int", "bool", "string", "String", "owned:bytes" -> { }
+                case "int", "bool", "string", "String", "owned:bytes", "tensor:f64" -> { }
                 default -> throw new UnsupportedOperationException(
                         "runtime actor state type is not yet lowered: " + item.getValue());
             }
@@ -153,6 +162,196 @@ public final class SealedActorState {
         }
     }
 
+
+    /**
+     * Deeply immutable, actor-incarnation-bound f64 tensor snapshot.
+     *
+     * Shape and data are defensively copied at construction. No API returns
+     * the backing arrays. Reads are authorized against the issuer's current
+     * actor turn, so a Java/guest alias transported to another actor cannot
+     * become a cross-actor memory capability.
+     */
+    public static final class TensorSnapshotF64 {
+        private final SealedActorState issuer;
+        private final long runId;
+        private final long graphId;
+        private final long incarnation;
+        private final long version;
+        private final int[] shape;
+        private final double[] values;
+        private volatile boolean erased;
+
+        private TensorSnapshotF64(SealedActorState issuer,
+                                  long runId, long graphId,
+                                  long incarnation, long version,
+                                  int[] shape, double[] values) {
+            this.issuer = Objects.requireNonNull(issuer, "tensor issuer");
+            if (runId < 0 || graphId < 0 || incarnation < 1 || version < 1)
+                throw new IllegalArgumentException("ML_INVALID_TENSOR_IDENTITY");
+            this.runId = runId;
+            this.graphId = graphId;
+            this.incarnation = incarnation;
+            this.version = version;
+            this.shape = Objects.requireNonNull(shape, "tensor shape").clone();
+            this.values = Objects.requireNonNull(values, "tensor values").clone();
+            validateShapeAndValues(this.shape, this.values);
+        }
+
+        private static void validateShapeAndValues(int[] shape, double[] values) {
+            if (shape.length > MAX_TENSOR_RANK)
+                throw new IllegalArgumentException("ML_TENSOR_RANK_EXCEEDED");
+            if (values.length > MAX_TENSOR_ELEMENTS)
+                throw new IllegalArgumentException("ML_TENSOR_ELEMENT_BUDGET_EXCEEDED");
+            long product = 1;
+            boolean zero = false;
+            for (int dimension : shape) {
+                if (dimension < 0)
+                    throw new IllegalArgumentException("ML_NEGATIVE_TENSOR_DIMENSION");
+                if (dimension == 0) {
+                    zero = true;
+                    product = 0;
+                    continue;
+                }
+                if (!zero) {
+                    if (product > MAX_TENSOR_ELEMENTS / (long) dimension)
+                        throw new IllegalArgumentException("ML_TENSOR_SHAPE_OVERFLOW");
+                    product *= dimension;
+                }
+            }
+            if (product != values.length)
+                throw new IllegalArgumentException("ML_TENSOR_SHAPE_STORAGE_MISMATCH");
+            for (double value : values) {
+                if (!Double.isFinite(value))
+                    throw new IllegalArgumentException("ML_NONFINITE_TENSOR_VALUE");
+            }
+        }
+
+        private void check() {
+            issuer.requireOwner();
+            if (erased)
+                throw new IllegalStateException("ML_TENSOR_SNAPSHOT_REVOKED");
+        }
+
+        private long byteSize() {
+            return ((long) shape.length * Integer.BYTES)
+                    + ((long) values.length * Double.BYTES);
+        }
+
+        private void erase() {
+            Arrays.fill(shape, 0);
+            Arrays.fill(values, 0.0d);
+            erased = true;
+        }
+
+        public long runId() { check(); return runId; }
+        public long graphId() { check(); return graphId; }
+        public long incarnation() { check(); return incarnation; }
+        public long version() { check(); return version; }
+        public int rank() { check(); return shape.length; }
+        public int length() { check(); return values.length; }
+        public int dimension(int axis) {
+            check();
+            return shape[Objects.checkIndex(axis, shape.length)];
+        }
+        public double read(int index) {
+            check();
+            return values[Objects.checkIndex(index, values.length)];
+        }
+        public int[] copyShape() { check(); return shape.clone(); }
+        public double[] copyValues() { check(); return values.clone(); }
+    }
+
+    /**
+     * Prepared immutable tensor publication. Candidate allocation/copy happens
+     * outside the state loan; publication validates the same run/graph/
+     * incarnation/version/revision tuple immediately before one map swap.
+     */
+    public static final class TensorPublication {
+        private final SealedActorState issuer;
+        private final String tensorField;
+        private final String versionField;
+        private final String runField;
+        private final String graphField;
+        private final String incarnationField;
+        private final long expectedVersion;
+        private final long expectedRevision;
+        private final long expectedRun;
+        private final long expectedGraph;
+        private final long expectedIncarnation;
+        private final TensorSnapshotF64 snapshot;
+        private boolean consumed;
+
+        private TensorPublication(SealedActorState issuer,
+                                  String tensorField, String versionField,
+                                  String runField, String graphField,
+                                  String incarnationField,
+                                  long expectedVersion, long expectedRevision,
+                                  long expectedRun, long expectedGraph,
+                                  long expectedIncarnation,
+                                  TensorSnapshotF64 snapshot) {
+            this.issuer = issuer;
+            this.tensorField = tensorField;
+            this.versionField = versionField;
+            this.runField = runField;
+            this.graphField = graphField;
+            this.incarnationField = incarnationField;
+            this.expectedVersion = expectedVersion;
+            this.expectedRevision = expectedRevision;
+            this.expectedRun = expectedRun;
+            this.expectedGraph = expectedGraph;
+            this.expectedIncarnation = expectedIncarnation;
+            this.snapshot = snapshot;
+        }
+    }
+
+    private long trackedTensorBytes() {
+        long total = 0;
+        for (TensorSnapshotF64 snapshot : tensorSnapshots) {
+            long bytes = snapshot.byteSize();
+            if (bytes > MAX_TRACKED_TENSOR_BYTES - total)
+                return MAX_TRACKED_TENSOR_BYTES + 1;
+            total += bytes;
+        }
+        return total;
+    }
+
+    public TensorPublication prepareTensorPublication(
+            String tensorField, String versionField,
+            String runField, String graphField, String incarnationField,
+            long expectedVersion, long expectedRevision,
+            long expectedRun, long expectedGraph, long expectedIncarnation,
+            int[] shape, double[] values) {
+        requireOwner();
+        if (current != null || stateCarrier.get() != null)
+            throw new IllegalStateException("ML_PREPARE_WITH_LIVE_STATE_LOAN");
+        if (!"tensor:f64".equals(schema.get(tensorField))
+                || !"int".equals(schema.get(versionField))
+                || !"int".equals(schema.get(runField))
+                || !"int".equals(schema.get(graphField))
+                || !"int".equals(schema.get(incarnationField)))
+            throw new IllegalArgumentException("ML_INVALID_TENSOR_PUBLICATION_SCHEMA");
+        if (expectedVersion < 0 || expectedVersion == Long.MAX_VALUE
+                || expectedRevision < 0 || expectedRun < 0
+                || expectedGraph < 0 || expectedIncarnation < 1)
+            throw new IllegalArgumentException("ML_INVALID_TENSOR_PUBLICATION_IDENTITY");
+
+        TensorSnapshotF64 snapshot = new TensorSnapshotF64(
+                this, expectedRun, expectedGraph, expectedIncarnation,
+                expectedVersion + 1,
+                Objects.requireNonNull(shape, "tensor shape"),
+                Objects.requireNonNull(values, "tensor values"));
+        long tracked = trackedTensorBytes();
+        long bytes = snapshot.byteSize();
+        if (tensorSnapshots.size() >= MAX_TRACKED_TENSOR_SNAPSHOTS
+                || bytes > MAX_TRACKED_TENSOR_BYTES - tracked)
+            throw new IllegalArgumentException("ML_TENSOR_SNAPSHOT_BUDGET_EXHAUSTED");
+        tensorSnapshots.add(snapshot);
+        return new TensorPublication(this, tensorField, versionField,
+                runField, graphField, incarnationField,
+                expectedVersion, expectedRevision,
+                expectedRun, expectedGraph, expectedIncarnation, snapshot);
+    }
+
     /**
      * Prepare detached scalar values outside any live state loan. Production
      * training must derive them from authenticated gradients; this runtime
@@ -233,6 +432,8 @@ public final class SealedActorState {
                     || value instanceof Integer || value instanceof Long;
             case "bool" -> value instanceof Boolean;
             case "string", "String" -> value instanceof String;
+            case "tensor:f64" -> value instanceof TensorSnapshotF64 snapshot
+                    && snapshot.issuer == this && !snapshot.erased;
             default -> false;
         };
         if (!valid) {
@@ -333,6 +534,8 @@ public final class SealedActorState {
         public void write(String name, Object value) {
             check();
             if (!writable) throw new SecurityException("critical read cannot write actor state");
+            if ("tensor:f64".equals(schema.get(name)))
+                throw new SecurityException("ML_TENSOR_WRITE_REQUIRES_PUBLICATION");
             validateValue(name, value);
             int previousBytes = stringBytes(values.get(name));
             int nextBytes = stringBytes(value);
@@ -387,8 +590,48 @@ public final class SealedActorState {
             values = nextValues;
             retainedStringBytes = nextStringBytes;
             mutationRevision = revision;
+
             publication.consumed = true;
             return true;
+        }
+
+        public TensorSnapshotF64 publishTensorSnapshot(TensorPublication publication) {
+            check();
+            if (!writable)
+                throw new SecurityException("ML_PUBLISH_REQUIRES_CRITICAL_WRITE");
+            if (publication == null || publication.issuer != SealedActorState.this
+                    || publication.consumed)
+                throw new SecurityException("ML_INVALID_TENSOR_PUBLICATION_CAPABILITY");
+            if (mutationRevision != publication.expectedRevision)
+                throw new IllegalStateException("ML_STALE_STATE_REVISION");
+
+            if (readIntegral(publication.versionField) != publication.expectedVersion)
+                throw new IllegalStateException("ML_STALE_WEIGHT_VERSION");
+            if (readIntegral(publication.runField) != publication.expectedRun)
+                throw new IllegalStateException("ML_STALE_RUN");
+            if (readIntegral(publication.graphField) != publication.expectedGraph)
+                throw new IllegalStateException("ML_STALE_GRAPH");
+            if (readIntegral(publication.incarnationField) != publication.expectedIncarnation)
+                throw new IllegalStateException("ML_STALE_ACTOR_INCARNATION");
+
+            long revision = nextMutationRevision();
+            LinkedHashMap<String, Object> nextValues = new LinkedHashMap<>(values);
+            nextValues.put(publication.tensorField, publication.snapshot);
+            nextValues.put(publication.versionField, publication.expectedVersion + 1);
+            // Single reader-visible publication point; all large allocations
+            // and tensor validation happened before the WRITE loan.
+            values = nextValues;
+            mutationRevision = revision;
+            publication.consumed = true;
+            return publication.snapshot;
+        }
+
+        private long readIntegral(String field) {
+            Object value = values.get(field);
+            if (!(value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long))
+                throw new IllegalStateException("ML_INVALID_IDENTITY_FIELD");
+            return ((Number) value).longValue();
         }
     }
 
@@ -444,6 +687,8 @@ public final class SealedActorState {
                 || value instanceof java.math.BigInteger
                 || value instanceof java.math.BigDecimal
                 || value instanceof Boolean || value instanceof Character) return true;
+        if (value instanceof TensorSnapshotF64 snapshot)
+            return snapshot.issuer == this && !snapshot.erased;
         // Avoid arbitrary mutable guest/Java wrappers and every possible
         // deferred object; the source ownership checker must prove complex
         // returned values before this boundary can be broadened.
@@ -468,6 +713,8 @@ public final class SealedActorState {
             capsule.bytes = null;
         }
         pendingOwned.clear();
+        for (TensorSnapshotF64 snapshot : tensorSnapshots) snapshot.erase();
+        tensorSnapshots.clear();
         for (Object value : values.values()) {
             if (value instanceof OwnedRegion region) region.erase();
         }
