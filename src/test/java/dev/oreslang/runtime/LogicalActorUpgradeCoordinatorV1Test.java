@@ -14,6 +14,81 @@ final class LogicalActorUpgradeCoordinatorV1Test {
     }
 
     @Test
+    void cleanCloseRevokesCoordinatorWithoutClosingUnderlyingActorOrMailbox() {
+        try (var gate = new ActorUpgradeEpochGate(35, image('a'));
+             var proxy = new LogicalActorProxyMailboxV1(2, 16, 32)) {
+            var coordinator = new LogicalActorUpgradeCoordinatorV1(gate, proxy);
+            coordinator.close();
+            coordinator.close();
+            assertThrows(IllegalStateException.class,
+                    () -> coordinator.prepare(image('b')),
+                    "a retired coordinator must not regain CONTROL publication authority");
+            assertEquals(1L, gate.epoch());
+            assertFalse(gate.frozen());
+            assertFalse(proxy.snapshot().dispatchFrozen());
+            var accepted = proxy.admit(bytes("still-open"));
+            assertEquals(accepted.messageSequence(),
+                    proxy.pollDispatch().messageSequence());
+            proxy.complete(accepted.messageSequence());
+        }
+    }
+
+    @Test
+    void cleanCloseVersusPrepareIsLinearizedWithoutOrphanedAuthority()
+            throws Exception {
+        for (int attempt = 0; attempt < 32; attempt++) {
+            try (var gate = new ActorUpgradeEpochGate(200 + attempt, image('a'));
+                 var proxy = new LogicalActorProxyMailboxV1(2, 16, 32)) {
+                var coordinator = new LogicalActorUpgradeCoordinatorV1(gate, proxy);
+                var start = new java.util.concurrent.CountDownLatch(1);
+                var tx = new java.util.concurrent.atomic.AtomicReference<
+                        LogicalActorUpgradeCoordinatorV1.Transaction>();
+                var closeWon = new java.util.concurrent.atomic.AtomicBoolean();
+                var unexpected = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+                Thread prep = Thread.ofPlatform().start(() -> {
+                    try {
+                        start.await();
+                        tx.set(coordinator.prepare(image('b')));
+                    } catch (IllegalStateException expectedClosed) {
+                        // Close may linearize before preparation.
+                    } catch (Throwable failure) {
+                        unexpected.compareAndSet(null, failure);
+                    }
+                });
+                Thread closer = Thread.ofPlatform().start(() -> {
+                    try {
+                        start.await();
+                        coordinator.close();
+                        closeWon.set(true);
+                    } catch (IllegalStateException expectedActive) {
+                        // An active transaction must be resolved explicitly.
+                    } catch (Throwable failure) {
+                        unexpected.compareAndSet(null, failure);
+                    }
+                });
+                start.countDown();
+                prep.join(5000);
+                closer.join(5000);
+                assertFalse(prep.isAlive() || closer.isAlive());
+                assertNull(unexpected.get());
+                if (closeWon.get()) {
+                    assertNull(tx.get());
+                    assertThrows(IllegalStateException.class,
+                            () -> coordinator.prepare(image('c')));
+                } else {
+                    assertNotNull(tx.get());
+                    tx.get().rollback();
+                    coordinator.close();
+                    assertThrows(IllegalStateException.class,
+                            () -> coordinator.prepare(image('c')));
+                }
+                assertFalse(proxy.snapshot().dispatchFrozen());
+                assertFalse(gate.frozen());
+            }
+        }
+    }
+
+    @Test
     void freezesNewDispatchUntilOldRouteMessagesAndSuspendedWorkDrain() {
         try (var gate = new ActorUpgradeEpochGate(7,image('a'));
              var proxy = new LogicalActorProxyMailboxV1(8,64,512);
