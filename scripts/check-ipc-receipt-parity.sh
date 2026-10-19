@@ -7,6 +7,7 @@ root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp"' EXIT
 "$JAVAC" -Xlint:all -Werror -d "$tmp" \
+  "$root/src/main/java/dev/oreslang/runtime/RuntimeBlockingGuard.java" \
   "$root/src/main/java/dev/oreslang/runtime/IpcReceiptCorrelation.java" \
   "$root/src/main/java/dev/oreslang/runtime/IpcReceiptCompletionBridge.java" \
   "$root/src/main/java/dev/oreslang/runtime/IpcTransportSessionLease.java" \
