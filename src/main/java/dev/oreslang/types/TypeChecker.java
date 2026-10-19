@@ -5120,7 +5120,10 @@ public final class TypeChecker {
         Ast.ClassDecl klass = findClass(named.name());
         if (klass == null) return false;
         if (klass.actorKind() != Ast.ActorKind.NONE) return false;
-        if (!seen.add(klass)) return true;
+        // A repeated nominal class is not an established Send/Sync proof.
+        // Reject until a separate cycle-aware, instantiated fixed-point
+        // analysis can establish all recursive storage and aliasing edges.
+        if (!seen.add(klass)) return false;
 
         try {
             Map<String, Type> classBindings = new HashMap<>(genericBindings);
