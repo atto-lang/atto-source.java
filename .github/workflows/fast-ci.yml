@@ -28,6 +28,16 @@ jobs:
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
+      # First execute the small real-GraalVM checked-i64 guest suite; a
+      # zero-step workflow cannot be reported as test execution or parity.
+      - name: Checked-i64 targeted linked-guest regressions
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "Executed checkout commit: $(git rev-parse HEAD)"
+          echo "Executed checkout tree: $(git rev-parse 'HEAD^{tree}')"
+          mvn -B -ntp \
+            -Dtest=CheckedI64SourceHeaderTest,ExperimentalHirV1CheckedArithmeticRuntimeTest,ExperimentalHirV1CheckedArithmeticBoundaryTest,ExperimentalHirV1CheckedArithmeticBoundaryMatrixTest,ExperimentalCheckedI64RemainderParityTest,ExperimentalHirV1CheckedEffectIdentityTest,ExperimentalHirV1CheckedEffectOracleTest \
+            -DfailIfNoTests=true test
       - name: Verify compiler/runtime tests
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
       - name: Run examples
