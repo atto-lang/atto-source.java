@@ -16,7 +16,6 @@ import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.Objects;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.atomic.AtomicBoolean;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
@@ -84,6 +83,11 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                 physicalGeneration,
                 maxOutstandingWrites,
                 receipts,
+                (ignoredEnvelope, preparedFrame) -> {
+                    synchronized (writeGate) {
+                        writeWireFrame(output, preparedFrame);
+                    }
+                },
                 () -> {
                     try {
                         socket.close();
@@ -119,32 +123,37 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             throw new IllegalArgumentException("IPC payload digest mismatch");
         }
 
+        // Complete all deterministic in-memory encoding before admission or
+        // dispatch commitment. Encoding failure therefore cannot create an
+        // ambiguous remote-delivery state or consume a correlation slot.
+        final byte[] preparedFrame;
+        try {
+            preparedFrame = encodeDataFrame(
+                    message, body, physicalGeneration, macKey);
+        } catch (IOException impossibleMemoryEncodingFailure) {
+            throw new IllegalStateException(
+                    "in-memory authenticated IPC frame encoding failed",
+                    impossibleMemoryEncodingFailure);
+        }
+
         CompletionStage<IpcReceiptCorrelation.Stage> outcome = receipts.admit(message);
-        AtomicBoolean physicalWriterEntered = new AtomicBoolean();
         Throwable failure = null;
         try {
-            sessionLease.writeFrame(physicalGeneration, message, ignored -> {
-                // writeFrame invokes this callback only AFTER commitDispatch.
-                physicalWriterEntered.set(true);
-                byte[] frame = encodeDataFrame(message, body, physicalGeneration, macKey);
-                synchronized (writeGate) {
-                    writeWireFrame(output, frame);
-                }
-            });
-        } catch (IOException | RuntimeException | Error sendFailure) {
+            sessionLease.writeFrame(
+                    physicalGeneration, message, preparedFrame);
+        } catch (IpcTransportSessionLease.PreDispatchRejectedException sendFailure) {
             failure = sendFailure;
-            if (!physicalWriterEntered.get()) {
-                // The lease rejected admission before dispatch commitment, so
-                // no physical write was possible and never-sent is provable.
-                try {
-                    receipts.rejectBeforeRemote(message);
-                } catch (RuntimeException | Error cleanupFailure) {
-                    sendFailure.addSuppressed(cleanupFailure);
-                }
+            // The lease proves commitDispatch never succeeded, so the bound
+            // physical writer was never invoked and never-sent is authoritative.
+            try {
+                receipts.rejectBeforeRemote(message);
+            } catch (RuntimeException | Error cleanupFailure) {
+                sendFailure.addSuppressed(cleanupFailure);
             }
-            // Once the physical writer callback has been entered, the dispatch
-            // commitment is irreversible. IpcTransportSessionLease requests
-            // close on writer failure and the outcome becomes unknown.
+        } catch (IOException | RuntimeException | Error sendFailure) {
+            // Any failure after dispatch commitment is ambiguous. The lease
+            // requests close on bound-writer failure and never authorizes replay.
+            failure = sendFailure;
         }
         return new SendSubmission(outcome, failure);
     }
