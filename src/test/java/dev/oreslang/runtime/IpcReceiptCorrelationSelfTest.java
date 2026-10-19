@@ -64,6 +64,35 @@ public final class IpcReceiptCorrelationSelfTest {
                 "tenant", "sender", "worker", "session", "A".repeat(64),
                 1, 2, 3, 4, 1, 1));
 
+        // Verify capacity, recovery after a definitive terminal, and
+        // monotonic route/capability generations through a hot-route change.
+        var evolving = new IpcReceiptCorrelation(1);
+        var generationOne = env(1, "sessionA");
+        evolving.admit(generationOne);
+        denies(() -> evolving.admit(env(2, "sessionB")));
+        evolving.acceptVerified(generationOne,
+                IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+        evolving.acceptVerified(generationOne,
+                IpcReceiptCorrelation.Stage.HANDLER_FAILED);
+        var staleRoute = new IpcReceiptCorrelation.Envelope(
+                "tenant", "sender", "worker", "sessionB", "a".repeat(64),
+                1, 2, 2, 4, 2, 2);
+        denies(() -> evolving.admit(staleRoute));
+        var staleGrant = new IpcReceiptCorrelation.Envelope(
+                "tenant", "sender", "worker", "sessionB", "a".repeat(64),
+                1, 2, 4, 3, 2, 2);
+        denies(() -> evolving.admit(staleGrant));
+        var upgraded = new IpcReceiptCorrelation.Envelope(
+                "tenant", "sender", "worker", "sessionB", "a".repeat(64),
+                1, 2, 4, 5, 2, 2);
+        evolving.admit(upgraded);
+        var restartedActor = new IpcReceiptCorrelation.Envelope(
+                "tenant", "sender", "worker", "sessionC", "a".repeat(64),
+                1, 3, 5, 5, 3, 3);
+        denies(() -> evolving.admit(restartedActor));
+        check(evolving.retireTransportLost("sessionB").size() == 1);
+        check(evolving.invariant());
+
         var racing = new IpcReceiptCorrelation(1);
         var raceMessage = env(1, "session");
         racing.admit(raceMessage);
