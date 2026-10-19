@@ -434,6 +434,86 @@ class DispatcherTest(unittest.TestCase):
                 for name,val in saved.items(): setattr(MOD,name,val)
                 for name,val in pub_saved.items(): setattr(MOD.PUB,name,val)
 
+    def test_dispatch_revokes_both_exact_refs_after_authorization_readback_failure(self):
+        """Exercise dispatch through the real cleanup helpers, with mocked API only."""
+        import hashlib
+        from unittest.mock import patch
+
+        r=receipt(); commit="a"*40; root_tree="8"*40
+        payload_branch="ci/oreslang-"+r["source_tree_sha"]
+        auth_branch="ci/authorized-"+commit
+        source_tree=r["source_tree_sha"]
+        provenance=json.dumps(r,sort_keys=True,separators=(",",":"))+"\\n"
+        data=provenance.encode("utf-8")
+        digest=hashlib.sha1(b"blob "+str(len(data)).encode("ascii")+b"\\0"+data).hexdigest()
+        root_entries=[
+            {"path":MOD.PREFIX,"type":"tree","mode":"040000","sha":source_tree},
+            {"path":MOD.PROVENANCE,"type":"blob","mode":"100644","sha":digest},
+        ]
+        refs={}; mutations=[]; auth_reads=[0]
+        def fake_api(route,method="GET",payload=None):
+            if method=="POST":
+                if route.endswith("/git/trees"):
+                    return {"sha":root_tree if "base_tree" in payload else source_tree}
+                if route.endswith("/git/commits"):
+                    return {"sha":commit}
+                if route.endswith("/git/refs"):
+                    name=payload["ref"]
+                    self.assertNotIn(name,refs)
+                    refs[name]=payload["sha"]; mutations.append(("create",name))
+                    return {"ref":name,"object":{"type":"commit","sha":payload["sha"]}}
+                self.fail("unexpected mock GitHub write: "+route)
+            if route.endswith("/git/commits/"+commit):
+                return {"sha":commit,"tree":{"sha":root_tree},
+                        "parents":[{"sha":r["carrier_base_sha"]}]}
+            if route.endswith("/git/trees/"+root_tree):
+                return {"sha":root_tree,"truncated":False,"tree":root_entries}
+            if "/git/ref/heads/" in route:
+                branch=route.split("/git/ref/heads/",1)[1]
+                name="refs/heads/"+branch
+                self.assertIn(name,refs)
+                if name=="refs/heads/"+auth_branch:
+                    auth_reads[0]+=1
+                    if auth_reads[0]==1:
+                        # A POST response is not proof that the subsequent
+                        # authenticated read returns that payload.
+                        return {"ref":name,"object":{"type":"commit","sha":"b"*40}}
+                return {"ref":name,"object":{"type":"commit","sha":refs[name]}}
+            self.fail("unexpected mock GitHub read: "+route)
+        def fake_list(route):
+            prefix=route.split("/git/matching-refs/heads/",1)[1]
+            return [{"ref":name} for name in refs if name.startswith("refs/heads/"+prefix)]
+        def fake_delete(route,method="POST",payload=None):
+            self.assertEqual(method,"DELETE")
+            branch=route.split("/git/refs/heads/",1)[1]
+            name="refs/heads/"+branch
+            self.assertEqual(refs[name],commit)
+            del refs[name]; mutations.append(("delete",name))
+        with tempfile.TemporaryDirectory() as td:
+            receipt_path=Path(td)/"receipt.json"
+            receipt_path.write_text(json.dumps(r),encoding="utf-8")
+            source=Path(td)/"source"; source.mkdir()
+            with patch.object(MOD.PUB,"require_trusted_publisher_checkout",return_value=None), \\
+                 patch.object(MOD,"refresh_authorization",return_value="9"*40), \\
+                 patch.object(MOD,"require_staged_source",return_value=source), \\
+                 patch.object(MOD.PUB,"collect_source",return_value=[("synthetic.ores",b"test","100644")]), \\
+                 patch.object(MOD.PUB,"source_tree_sha",return_value=source_tree), \\
+                 patch.object(MOD.PUB,"prepare_source_tree_batches",
+                              return_value=[[("synthetic.ores",b"test","100644","test")]]), \\
+                 patch.object(MOD.PUB,"require_private_ci_api_budget",return_value=None), \\
+                 patch.object(MOD.PUB,"gh_api",side_effect=fake_api), \\
+                 patch.object(MOD.PUB,"gh_api_no_content",side_effect=fake_delete), \\
+                 patch.object(MOD,"api_list",side_effect=fake_list):
+                with self.assertRaisesRegex(MOD.Denied,"authorization ref readback mismatch"):
+                    MOD.dispatch(str(receipt_path),str(source))
+        self.assertEqual(refs,{})
+        self.assertEqual(mutations,[
+            ("create","refs/heads/"+payload_branch),
+            ("create","refs/heads/"+auth_branch),
+            ("delete","refs/heads/"+auth_branch),
+            ("delete","refs/heads/"+payload_branch),
+        ])
+
     def test_cleanup_exact_payload_ref_removes_only_our_commit(self):
         r=receipt(); branch="ci/oreslang-"+r["source_tree_sha"]
         old_api=MOD.PUB.gh_api; old_no=MOD.PUB.gh_api_no_content; old_list=MOD.api_list
