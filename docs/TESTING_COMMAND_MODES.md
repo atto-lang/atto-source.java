@@ -17,7 +17,13 @@ validated release feature until exact-head Java/Graal tests execute.
 | `oreslang test --replay trace file.ores` | Verify source SHA256 and rerun seed/count of the **bounded CriticalGate-input explorer** | reproduction of arbitrary guest schedule and failure trace (issue #1418) |
 
 Modifiers `--seed=N`, `--runs=N`, and `--trace-out=path` configure the
-bounded runtime explorer; `--replay=path` is also accepted. `--trace-out`
+bounded runtime explorer; `--replay=path` is also accepted. When `--fuzz`
+is requested, the CLI now also validates each guest `fuzz_int_cases`
+report against any explicitly specified seed and run count; a mismatch
+fails closed rather than treating unrelated host stress cases as guest input
+coverage. Native test summaries and fuzz counters have aggregate bounds and
+reject mixed valid/malformed machine-protocol events. The line protocol
+is still guest-authored stdout, not a trusted attestation. `--trace-out`
 will not overwrite an existing file. Source mismatch or malformed trace
 returns nonzero. Record and replay are *not* guest scheduling replay, and the
 report explicitly identifies `scope=critical-gate-inputs`.
