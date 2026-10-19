@@ -1,0 +1,32 @@
+name: checked-i64 standalone JVM oracle
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/checked-i64-standalone.yml'
+      - 'scripts/test-checked-i64-standalone.sh'
+      - 'src/main/java/dev/oreslang/runtime/CheckedI64Arithmetic.java'
+      - 'src/main/java/dev/oreslang/runtime/CheckedI64OverflowException.java'
+      - 'src/main/java/dev/oreslang/runtime/CheckedI64DivisionByZeroException.java'
+      - 'src/test/java/dev/oreslang/CheckedI64StandaloneSmoke.java'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pure-jvm-differential:
+    name: pure-JVM differential (not Graal guest parity)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Run checked signed-64 arithmetic oracle
+        run: |
+          javac -version
+          java -version
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+          bash scripts/test-checked-i64-standalone.sh
