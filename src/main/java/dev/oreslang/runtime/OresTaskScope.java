@@ -89,7 +89,6 @@ public final class OresTaskScope implements AutoCloseable {
         OresTask<T> child = prepared.owner();
         OwnershipSlot slot = new OwnershipSlot();
         slot.task = child;
-        boolean reserved = false;
         try {
             child.quiescenceFence().whenCompleteRuntime((value, failure) -> {
                 if (failure == null) {
@@ -105,13 +104,20 @@ public final class OresTaskScope implements AutoCloseable {
                         throw new IllegalStateException(
                                 "duplicate Task ownership slot");
                     }
-                    reserved = true;
                 }
             }
         } catch (RuntimeException | Error preparationFailure) {
-            if (reserved) {
+            // A fault-injected Set may insert and then throw before reserved is
+            // published. Always attempt removal. Bookkeeping failure is
+            // secondary: it must never suppress retirement of the exact
+            // physical-exit fence prepared above.
+            try {
                 synchronized (gate) {
                     tasks.remove(slot);
+                }
+            } catch (RuntimeException | Error removalFailure) {
+                if (removalFailure != preparationFailure) {
+                    preparationFailure.addSuppressed(removalFailure);
                 }
             }
             try {
