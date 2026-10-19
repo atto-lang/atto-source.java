@@ -477,11 +477,29 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             ActorRuntime.HotUpgradeExternalLease generation =
                     runtime.pinExternalWorkForHotUpgrade(physical);
 
-            // From this point the canonical scope owns release responsibility.
-            // Its pre-admission preparation path invokes this callback on every
-            // rejection/failure before a TaskRunner becomes executable.
-            return scope.startCompilerFrame(
-                    scheduler, frame, generation::close);
+            // Keep a fail-safe router-side lease owner until the canonical
+            // scope has successfully returned its admitted Task. Constructing
+            // generation::close can itself fail (e.g. OOME) before the scope
+            // receives the callback, and pre-admission scope preparation can
+            // also throw. In either case do not orphan an untracked pin.
+            //
+            // OresTaskScope retires the same lease on every verified
+            // pre-admission rejection. ExternalLease.close is idempotent, so
+            // router cleanup cannot double debit a successfully retired pin.
+            // Scheduler.start promises not to throw after registration; a
+            // post-registration failure instead settles via onQuiescent.
+            try {
+                return scope.startCompilerFrame(
+                        scheduler, frame, generation::close);
+            } catch (RuntimeException | Error admissionFailure) {
+                try {
+                    generation.close();
+                } catch (RuntimeException | Error releaseFailure) {
+                    if (releaseFailure != admissionFailure)
+                        admissionFailure.addSuppressed(releaseFailure);
+                }
+                throw admissionFailure;
+            }
         }
     }
 
