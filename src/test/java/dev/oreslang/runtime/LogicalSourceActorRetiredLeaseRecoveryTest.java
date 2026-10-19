@@ -143,6 +143,14 @@ final class LogicalSourceActorRetiredLeaseRecoveryTest {
                             () -> router.ref().send(10L));
                     assertThrows(IllegalStateException.class,
                             () -> router.ref().nextOutput(WAIT));
+                    try (var scheduler = new OresScheduler(1);
+                         var scope = OresTaskScope.compilerOwned()) {
+                        assertThrows(IllegalStateException.class,
+                                () -> router.startCompilerTaskForUpgrade(
+                                        scope, scheduler,
+                                        resume -> OresScheduler.done(1), 1L),
+                                "a quarantined route cannot launch a new code-pinned Task");
+                    }
                     assertThrows(IllegalStateException.class,
                             () -> router.upgradeTo(second, WAIT));
                     assertEquals(1, owners.size(),
