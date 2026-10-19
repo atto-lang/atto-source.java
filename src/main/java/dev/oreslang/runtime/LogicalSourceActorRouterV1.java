@@ -284,6 +284,39 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     }
 
     /**
+     * Immutable supervisor observation of one source-code image, logical and
+     * physical incarnation, and bounded transport epoch. All fields are
+     * sampled under ONE physical route monitor, nested outside the mailbox
+     * ledger monitor. This is an observation witness, NOT yet a global
+     * compiler/checkpoint/scheduler publication authorization.
+     */
+    record SupervisorPublication(
+            LogicalAddress address,
+            ActorRuntime.ActorAddress physicalAddress,
+            long generationId,
+            String codeSha256,
+            LogicalActorProxyMailboxV1.Snapshot mailbox) { }
+
+    SupervisorPublication supervisorPublication(
+            LogicalActorProxyMailboxV1 mailbox) {
+        requireBlockingHostSurface("observe supervisor actor image publication");
+        Objects.requireNonNull(mailbox, "mailbox");
+        synchronized (routeLock) {
+            requireOpenLocked();
+            if (boundProxyMailbox != mailbox)
+                throw new SecurityException("foreign supervisor publication mailbox");
+            Route current = active;
+            return new SupervisorPublication(
+                    new LogicalAddress(
+                            logicalId, current.incarnation, current.routeEpoch, kind),
+                    current.physical.address(),
+                    current.generation.id(),
+                    current.generation.sha256(),
+                    mailbox.snapshot());
+        }
+    }
+
+    /**
      * Opaque, trusted-host physical completion acknowledgment for ONE
      * runtime-admitted message. ActorRuntime mints the physical sequence and
      * the non-cancellable terminal observer before physical admission.
