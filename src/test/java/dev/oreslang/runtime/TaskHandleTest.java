@@ -849,6 +849,86 @@ public class TaskHandleTest {
         }
     }
 
+    @Test void generatedLoopSafepointsStopPromptlyAndRunFinally() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            for (int iteration = 0; iteration < 100; iteration++) {
+                CountDownLatch entered = new CountDownLatch(1);
+                AtomicBoolean cleaned = new AtomicBoolean();
+                AtomicInteger checkpoints = new AtomicInteger();
+                TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                    try {
+                        entered.countDown();
+                        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                        // Model codegen's periodic safe poll. No thread
+                        // interruption or asynchronous exception injection.
+                        while (System.nanoTime() < deadline) {
+                            checkpoints.incrementAndGet();
+                            OresScheduler.cancellationCheckpoint();
+                            Thread.onSpinWait();
+                        }
+                        return OresScheduler.done(123);
+                    } finally {
+                        cleaned.set(true);
+                    }
+                });
+                assertTrue(entered.await(3, TimeUnit.SECONDS));
+                assertTrue(task.cancel("generated-loop checkpoint"));
+                TaskHandle.TaskOutcome<Integer> outcome = done(task);
+                assertInstanceOf(TaskHandle.Cancelled.class, outcome);
+                assertTrue(cleaned.get(), "finally must finish before done");
+                assertTrue(checkpoints.get() >= 1);
+                assertTrue(task.result().isCancelled());
+            }
+        }
+    }
+
+    @Test void awaitProducerCompletionVersusCancellationNeverLeaksRegistration()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            for (int iteration = 0; iteration < 200; iteration++) {
+                OresFuture<Integer> producer = new OresFuture<>();
+                CountDownLatch enteringAwait = new CountDownLatch(1);
+                AtomicInteger turns = new AtomicInteger();
+                TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                    turns.incrementAndGet();
+                    if (resume.initial()) {
+                        enteringAwait.countDown();
+                        return OresScheduler.await(producer);
+                    }
+                    if (resume.failure() != null) {
+                        throw new AssertionError("producer unexpectedly failed",
+                                resume.failure());
+                    }
+                    return OresScheduler.done((Integer) resume.value());
+                });
+                assertTrue(enteringAwait.await(3, TimeUnit.SECONDS));
+                AtomicReference<Throwable> cancellationError = new AtomicReference<>();
+                Thread canceller = new Thread(() -> {
+                    try {
+                        task.cancel("await-or-cancel");
+                    } catch (Throwable unexpected) {
+                        cancellationError.set(unexpected);
+                    }
+                });
+                canceller.start();
+                assertTrue(producer.completeFromRuntime(iteration));
+                canceller.join(3000);
+                assertFalse(canceller.isAlive());
+                assertNull(cancellationError.get());
+                TaskHandle.TaskOutcome<Integer> outcome = done(task);
+                assertTrue(outcome instanceof TaskHandle.Cancelled<?>
+                                || outcome instanceof TaskHandle.Success<?>,
+                        "await/cancel race cannot synthesize a Failed outcome");
+                assertFalse(producer.isCancelled(),
+                        "borrowed producer is never owned by consumer cancellation");
+                assertEquals(0, producer.pendingRuntimeWaiterCount(),
+                        "all await registrations must detach at quiescence");
+                assertTrue(turns.get() >= 1 && turns.get() <= 2,
+                        "a cancelled Task cannot resume more than once");
+            }
+        }
+    }
+
     @Test void raceCancellationVersusCompletionAlwaysYieldsOneOutcome() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(2)) {
             for (int i = 0; i < 100; i++) {
