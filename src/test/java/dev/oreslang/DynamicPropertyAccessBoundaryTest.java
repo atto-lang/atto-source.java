@@ -155,6 +155,20 @@ final class DynamicPropertyAccessBoundaryTest {
     }
 
     @Test
+    void structuralClassComputedAccessExposesDataFieldsNotMethodContracts() {
+        accepted("""
+                define class Product as
+                    pub val float x = 3.0;
+                    pub fnc label(): string { return "product"; }
+                end
+
+                fnc read(structural Product value, string key): float {
+                    return value[key];
+                }
+                """);
+    }
+
+    @Test
     void dynamicClassIndexCannotBypassPrivateOrImmutableFields() {
         rejected("""
                 define class Secret as
