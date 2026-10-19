@@ -139,7 +139,7 @@ public final class AsyncRuntime implements AutoCloseable {
         private final Task<T> work;
         private final TaskExit exit = new TaskExit();
         private final OresTask<T> owner = new OresTask<>(exit.quiesced);
-        private boolean started;
+        private final AtomicBoolean started = new AtomicBoolean();
 
         PreparedTask(AsyncRuntime runtime, Task<T> work) {
             this.runtime = runtime;
@@ -151,8 +151,8 @@ public final class AsyncRuntime implements AutoCloseable {
         }
 
         void start() {
-            if (started) throw new IllegalStateException("Task admitted twice");
-            started = true;
+            if (!started.compareAndSet(false, true))
+                throw new IllegalStateException("Task admitted twice");
             try {
                 OresFuture<T> completion = runtime.submitInternal(work, exit);
                 // Allocation-free publication. Physical ownership and cleanup
@@ -168,8 +168,8 @@ public final class AsyncRuntime implements AutoCloseable {
         }
 
         void rejectUnadmitted() {
-            if (started) throw new IllegalStateException("Task already admitted");
-            started = true;
+            if (!started.compareAndSet(false, true))
+                throw new IllegalStateException("Task already admitted");
             exit.markExited();
         }
     }
