@@ -245,6 +245,57 @@ final class OtpSupervisorCommandDispatchTest {
     }
 
     @Test
+    @Timeout(90)
+    void racingNewCommandAgainstActorStopSettlesExactlyOnce() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var pool = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            for (int i = 0; i < 128; i++) {
+                var actor = runtime.<String>spawnShared(() ->
+                        new ActorRuntime.Behavior<String>() {
+                            @Override public void onMessage(
+                                    String value, ActorRuntime.ActorContext<String> context) { }
+
+                            @Override public void onSupervisorCommand(
+                                    ActorRuntime.SupervisorCommandNotice notice,
+                                    ActorRuntime.ActorContext<String> context) { }
+                        });
+                actor.ready().get(5, TimeUnit.SECONDS);
+                CountDownLatch start = new CountDownLatch(1);
+                java.util.concurrent.atomic.AtomicBoolean admitted =
+                        new java.util.concurrent.atomic.AtomicBoolean();
+                var submitter = pool.submit(() -> {
+                    start.await();
+                    try {
+                        runtime.submitSupervisorCommand(
+                                actor, 1, ActorRuntime.SupervisorOperation.PREPARE_UPGRADE,
+                                DIGEST);
+                        admitted.set(true);
+                    } catch (ActorRuntime.ActorTerminatedException expected) {
+                        // Stop won admission; no command can be published.
+                    }
+                    return null;
+                });
+                var stopper = pool.submit(() -> {
+                    start.await();
+                    actor.stop();
+                    return null;
+                });
+                start.countDown();
+                submitter.get(5, TimeUnit.SECONDS);
+                stopper.get(5, TimeUnit.SECONDS);
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+                var snap = runtime.supervisorCommandStatsFor(actor);
+                assertEquals(0, snap.outstanding());
+                assertEquals(0, snap.queued());
+                assertEquals(0, snap.inFlight());
+                assertEquals(admitted.get() ? 1 : 0,
+                        snap.acknowledged() + snap.quarantined(),
+                        "accepted command must be handled or quarantined exactly once");
+            }
+        }
+    }
+
+    @Test
     void sourceActorAndActorTurnCannotMintSupervisorAuthority() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch completed = new CountDownLatch(1);
