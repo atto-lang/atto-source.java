@@ -819,16 +819,30 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                         prior.incarnation,
                         Math.addExact(prior.routeEpoch, 1L),
                         candidateImage);
-                if (proxyMailbox != null) {
-                    proxyMailbox.requireFreezeTicketForRouteEpoch(
-                            proxyTicket, prior.routeEpoch);
-                    proxyTicket.commit();
+                // Reserve the *old* generation's retirement ownership BEFORE
+                // the irreversible proxy/route publication. List growth can
+                // throw OOME; that must happen while the old route is still
+                // authoritative, not after the point of no return. This entry
+                // remains owned until the exact physical actor is finalized
+                // AND generationLease.close() succeeds.
+                if (retiredRoutes.contains(prior))
+                    throw new IllegalStateException(
+                            "active route already registered for retirement");
+                retiredRoutes.add(prior);
+                try {
+                    if (proxyMailbox != null) {
+                        proxyMailbox.requireFreezeTicketForRouteEpoch(
+                                proxyTicket, prior.routeEpoch);
+                        proxyTicket.commit();
+                    }
+                    // No throwing/allocation-bearing operation between proxy
+                    // commit and the authoritative physical route pointer swap.
+                    active = next;
+                    candidateLeaseTransferred = true;
+                    published = true;
+                } finally {
+                    if (!published) retiredRoutes.remove(prior);
                 }
-                // No throwing/allocation-bearing operation between proxy
-                // commit and the authoritative physical route pointer swap.
-                active = next;
-                candidateLeaseTransferred = true;
-                published = true;
                 // Keep host route admission paused until the old physical
                 // incarnation is terminal and its generation lease is safe to
                 // release. The new route is authoritative but not yet open.
@@ -839,12 +853,9 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             try {
                 transfer.retireSourceAfterPublication(replacement);
             } catch (RuntimeException | Error retirementFailure) {
-                // stop() marks the cell stopped before its bounded host wait can
-                // fail. Keep the old generation pinned until finalization is
-                // later observable rather than losing its code/context lease.
-                synchronized (routeLock) {
-                    if (!retiredRoutes.contains(prior)) retiredRoutes.add(prior);
-                }
+                // A failed post-publication stop/wait cannot roll back the
+                // logical route. The pre-committed retirement record still
+                // owns the old code pin for later physical-finalization retry.
                 throw retirementFailure;
             } finally {
                 transfer = null;
@@ -855,10 +866,22 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             if (prior.physical.awaitTermination(
                     toNanosSaturated(readyTimeout),
                     TimeUnit.NANOSECONDS)) {
-                prior.generationLease.close();
+                synchronized (routeLock) {
+                    // Never forget a retired code-generation owner until its
+                    // physical finalization is verified and the pin debit has
+                    // succeeded. A corrupted generation counter or injected
+                    // retirement error keeps this record available for retry.
+                    if (!prior.view.runtime().physicallyFinalizedForHotUpgrade(
+                            prior.physical)) {
+                        throw new IllegalStateException(
+                                "old source actor terminated without verified "
+                                        + "physical finalization");
+                    }
+                    prior.generationLease.close();
+                    retiredRoutes.remove(prior);
+                }
             } else {
                 synchronized (routeLock) {
-                    retiredRoutes.add(prior);
                     upgrading = false;
                     pauseOwned = false;
                     routeLock.notifyAll();
