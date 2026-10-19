@@ -159,8 +159,8 @@ public final class OresContext implements AutoCloseable {
      * and fuel accounting. Both deliberately fail closed here instead of
      * giving guest code a new unrestricted scheduling domain.
      *
-     * The source compiler currently cannot construct safe Task frames,
-     * so its TaskExpr/TaskLambdaExpr type gate MUST remain in place.
+     * General guest TaskExpr/TaskLambdaExpr remain fail-closed; only the
+     * separate scalar-copy immediate-await lowering is admitted.
      */
     public <T> OresTask<T> startCompilerTaskFrame(OresScheduler.Task<T> frame) {
         java.util.Objects.requireNonNull(frame, "frame");
