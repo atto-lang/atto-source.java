@@ -29,6 +29,8 @@ public final class OptionalCallValueAssembly {
     public interface TrustedOptionFactory {
         Object some(Ast.TypeRef payloadType, Object value);
         Object none(Ast.TypeRef payloadType);
+        /** Verify exact runtime Option identity for the checked payload type. */
+        boolean isNominalOption(Ast.TypeRef payloadType, Object value);
     }
 
     /**
@@ -80,6 +82,12 @@ public final class OptionalCallValueAssembly {
             }
             if (adapted == null) {
                 throw new IllegalArgumentException("trusted Option factory returned null");
+            }
+            if (slot.action() != OptionalCallAbiPreview.Action.PASS_REQUIRED
+                    && !optionFactory.isNominalOption(
+                            slot.calleeType().arguments().getFirst(), adapted)) {
+                throw new IllegalArgumentException(
+                        "an optional ABI slot does not contain a trusted nominal Option");
             }
             result.add(adapted);
         }
