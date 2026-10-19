@@ -584,6 +584,31 @@ final class ThreadSafetyTraitsTest {
 
     @Test
     @org.junit.jupiter.api.Timeout(5)
+    void structuralTypeRelationsMemoizeSharedDagPairs() {
+        Type equalLeft = Types.Primitive.INT;
+        Type equalRight = Types.Primitive.INT;
+        Type different = Types.Primitive.STRING;
+        for (int i = 0; i < 70; i++) {
+            equalLeft = new Types.Tuple(List.of(equalLeft, equalLeft));
+            equalRight = new Types.Tuple(List.of(equalRight, equalRight));
+            different = new Types.Tuple(List.of(different, different));
+        }
+
+        assertTrue(Types.isStructurallyWellFormed(equalLeft));
+        assertTrue(Types.isStructurallyWellFormed(equalRight));
+        assertTrue(Types.isAssignable(equalLeft, equalRight),
+                "equivalent shared DAGs must not expand exponentially");
+        assertFalse(Types.areProvablyDisjoint(equalLeft, equalRight));
+        assertFalse(Types.isAssignable(equalLeft, different),
+                "incompatible shared DAGs must fail in bounded pairwise work");
+
+        // A bounded relation failure must not poison independent later queries.
+        assertTrue(Types.isAssignable(Types.Primitive.INT, Types.Primitive.INT));
+        assertTrue(Types.areProvablyDisjoint(Types.Primitive.STRING, Types.Primitive.BOOL));
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(5)
     void sharedDagTypeGraphDoesNotTriggerExponentialProofWork() {
         // Only 71 physical nodes, but a naive recursive proof would expand
         // 2^70 visits. Identity memoization must keep this bounded.
