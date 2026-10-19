@@ -14,7 +14,7 @@ RUN = {"id": 42, "status": "completed", "conclusion": "failure",
 
 def step(name, conclusion="success", status="completed"):
     return {"name": name, "conclusion": conclusion, "status": status,
-            "started_at": "2026-10-18T12:00:00Z"}
+            "started_at": "2026-10-18T12:00:00Z", "completed_at": "2026-10-18T12:00:03Z"}
 
 
 def job(conclusion="failure", steps=None, **kwargs):
@@ -150,6 +150,48 @@ class ClassifierTests(unittest.TestCase):
         self.assertNotIn("secret", str(report).lower())
         self.assertNotIn("private", str(report).lower())
 
+
+    def test_missing_timestamps_never_prove_executed_failure(self):
+        for missing in ("started_at", "completed_at"):
+            with self.subTest(missing=missing):
+                sample = step("Run tests", "failure")
+                del sample[missing]
+                outcome = m.assess(RUN, [job(steps=[sample])], SHA)
+                self.assertEqual(outcome["category"], "reported_failure_execution_unobserved")
+                self.assertEqual(outcome["jobs"][0]["reported_failures_without_timing"], 1)
+                self.assertEqual(outcome["jobs"][0]["completed_build_test_failures"], 0)
+
+    def test_missing_timestamps_never_prove_executed_success(self):
+        run = dict(RUN, conclusion="success")
+        sample = step("Run tests")
+        del sample["completed_at"]
+        self.assertEqual(m.classify(run, [job("success", steps=[sample])], SHA),
+                         "success_without_substantive_evidence")
+
+    def test_run_attempt_changed_mid_read_rejected(self):
+        calls = []
+        def fetch(path):
+            calls.append(path)
+            if "jobs?" in path:
+                return {"total_count": 1, "jobs": [job(steps=[])]}
+            return dict(RUN, run_attempt=3) if len(calls) == 3 else RUN
+        with self.assertRaisesRegex(m.TriageError, "run changed"):
+            m.inspect("org/repo", 42, SHA, fetch=fetch)
+        self.assertEqual(len(calls), 3)
+
+    def test_first_run_identity_checked_before_jobs(self):
+        calls = []
+        def fetch(path):
+            calls.append(path)
+            return dict(RUN, id=99)
+        with self.assertRaisesRegex(m.TriageError, "identity"):
+            m.inspect("org/repo", 42, SHA, fetch=fetch)
+        self.assertEqual(len(calls), 1)
+
+    def test_invalid_step_status_is_not_silently_ignored(self):
+        with self.assertRaisesRegex(m.TriageError, "step status"):
+            m.classify(RUN, [job(steps=[step("Run tests", "failure", "weird")])], SHA)
+
     def test_read_only_get_requests_only(self):
         seen = []
         def fetch(path):
@@ -158,7 +200,8 @@ class ClassifierTests(unittest.TestCase):
                     if path.endswith("/jobs?per_page=100") else RUN)
         m.inspect("org/repo", 42, SHA, fetch=fetch)
         self.assertEqual(seen, ["repos/org/repo/actions/runs/42",
-                                "repos/org/repo/actions/runs/42/jobs?per_page=100"])
+                                "repos/org/repo/actions/runs/42/jobs?per_page=100",
+                                "repos/org/repo/actions/runs/42"])
 
 
 
@@ -178,7 +221,7 @@ class PaginationHardeningTests(unittest.TestCase):
         report = m.inspect("org/repo", 42, SHA, fetch=fetch)
         self.assertEqual(report["job_count"], 101)
         self.assertEqual(report["category"], "observed_no_step_failure")
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 4)
 
     def test_racing_totals_and_duplicates_fail_closed(self):
         def racing(path):
