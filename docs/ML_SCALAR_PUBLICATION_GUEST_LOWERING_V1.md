@@ -67,9 +67,21 @@ The resulting publication type is also compiler-internal and move-only.
 inside a critical WRITE/EXCLUSIVE callback. Ownership consumes the publication
 at the call site; the runtime additionally rejects replay.
 
-Compiler-issued snapshot/publication capabilities are invariant. They cannot be
-widened into user nominal/structural types. The intrinsic names cannot be
-shadowed by parameters, locals, destructuring bindings, or module functions.
+Compiler-issued snapshot/publication capabilities are invariant and linear.
+They cannot be widened into `Any`/unknown/user nominal/structural types,
+wrapped in `Option`/`Result`, stored in lists/tuples/records/classes or
+Mutex/SharedMutex, sent through channels, returned/yielded from ordinary
+callables, captured by ordinary/deferred/select closures, copied/shared/taken/
+borrowed through generic `rt` ownership operations, passed through ordinary
+call boundaries, compared with generic binary operators, or observed through
+stdio formatting. Snapshots are usable only by the sealed snapshot accessors
+and detached preparation; publications are consumable only by the immediate
+sealed critical-write publication callback. Runtime stdout also rejects the
+opaque Java capability objects defensively if semantic verification is
+bypassed.
+
+The intrinsic names cannot be shadowed by imports, parameters, locals,
+destructuring/loop bindings, state-loan binders, or module functions.
 
 ## Runtime lowering
 
@@ -97,8 +109,12 @@ rejects publication outside the active loan. The normal handle-state mode check
 therefore rejects publication from read callbacks.
 
 The ownership checker independently binds `state_snapshot` and publication to
-the active loan name, rejects publication from a nonmutable/read loan, and
-consumes the publication capability exactly once at the source level.
+the active loan name, preserves the snapshot capability identity across the one
+sealed read-callback escape, rejects publication from a nonmutable/read loan,
+and consumes the publication capability exactly once at the source level.
+The actor-state contract independently permits the raw state-loan parameter to
+cross only the two sealed bridges—`state_snapshot` and
+`publish_scalar_publication`—and forbids either bridge from nested closures.
 
 ## Tests
 
@@ -117,7 +133,26 @@ effect/ownership + Graal guest gate and compiler-negative cases for:
 - blind replacement of an uncaptured field;
 - publication from a read loan;
 - non-publication payload;
-- module/local/parameter intrinsic-name spoofing.
+- module/import/local/parameter/state-loan intrinsic-name spoofing;
+- capability laundering through `Option`/`Result`;
+- generic `rt copy`, stdio observation, and equality/operator use.
+
+## Current verification boundary — 2026-10-19
+
+Exact source head `f95a116777c207cab07cac93c05374011c35e975` is authored but
+**not compiler-verified**. Source-org fast CI run `39329104036`, full CI run
+`39329103990`, and Graal conformance run `39329103945` all terminated before
+recording any job steps (`steps:null`). Those are infrastructure admission
+failures, not passing or failing Java tests.
+
+An independently authored source-free model in
+`ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra#29`
+executed on funded hosted capacity. Run `39329160038` completed successfully
+with **12/12 tests passed**, including 20,000 seeded snapshot/TOCTOU schedules,
+retirement interleavings, lowering admission, namespace reservation, and the
+closed capability-operation model. It contains no Oreslang private source and
+is supporting design evidence only; it does **not** certify this Java tree,
+Graal execution, Native Image, LLVM, or the guest fixture.
 
 Exact-head Maven/JUnit/GraalVM execution remains a release gate. A GitHub job
 that terminates with no recorded steps is infrastructure evidence, not compiler
