@@ -113,6 +113,28 @@ final class StructuredComputeSyntaxTest {
     }
 
     @Test
+    void parsesConstructorLabelsButRetainsOldNoSpreadBoundary() {
+        Ast.Program program = Parser.parse("""
+                pub fnc main(): void {
+                    let candidate = new Candidate(y: 2, x: 1);
+                }
+                """);
+        Ast.FunctionDecl fn = (Ast.FunctionDecl) program.modules().getFirst()
+                .declarations().getFirst();
+        Ast.NewExpr constructed = assertInstanceOf(Ast.NewExpr.class,
+                ((Ast.BindingStmt) fn.body().getFirst()).initializer());
+        assertEquals(List.of("y", "x"), constructed.arguments().stream()
+                .map(arg -> ((Ast.NamedArgumentExpr) arg).label()).toList());
+        checkSyntaxRejected("new Candidate(...items)", "constructor/spawn argument spreads");
+        checkSyntaxRejected("spawn Candidate(...items)", "constructor/spawn argument spreads");
+        assertTypeDenied("""
+                pub fnc main(): void {
+                    let candidate = new Candidate(x: 1);
+                }
+                """, "named value arguments require checked");
+    }
+
+    @Test
     void rejectsUnsupportedGuestLoweringBeforeNativeOrInterpreterCanRun() {
         assertTypeDenied("""
                 pub fnc target(int x): int { return x; }
