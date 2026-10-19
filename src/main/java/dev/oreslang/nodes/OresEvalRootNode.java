@@ -3828,7 +3828,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 Object built = object.structuralRecord()
                         ? new ReadonlyRecordValue(result)
-                        : result;
+                        : new MutableStructValue(result);
                 continuation.accept(task, built, null);
                 return;
             }
@@ -4583,6 +4583,22 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return value;
             }
+            if (receiver instanceof MutableStructValue struct) {
+                if (!(index instanceof String key)) {
+                    throw new IllegalArgumentException(
+                            "struct field index must be a String");
+                }
+                if (!struct.containsKey(key)) {
+                    throw new IllegalArgumentException(
+                            "unknown struct field key " + key);
+                }
+                Object value = struct.get(key);
+                if (value == UNINITIALIZED_FIELD) {
+                    throw new IllegalArgumentException(
+                            "explicit struct field '" + key + "' is read before initialization");
+                }
+                return value;
+            }
             if (receiver instanceof Map<?, ?> map) {
                 if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
                     throw new IllegalArgumentException(
@@ -4647,9 +4663,7 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException(
                             "struct field index must be a String");
                 }
-                @SuppressWarnings("unchecked")
-                LinkedHashMap<String, Object> struct =
-                        (LinkedHashMap<String, Object>) rawStruct;
+                MutableStructValue struct = rawStruct;
                 if (!struct.containsKey(fieldName)) {
                     throw new IllegalArgumentException(
                             "unknown struct field key " + fieldName);
@@ -4708,9 +4722,7 @@ public final class OresEvalRootNode extends RootNode {
                     return value;
                 }
                 if (receiver instanceof LinkedHashMap<?, ?> rawRecord) {
-                    @SuppressWarnings("unchecked")
-                    LinkedHashMap<String, Object> record =
-                            (LinkedHashMap<String, Object>) rawRecord;
+                    MutableStructValue record = rawRecord;
                     if (!record.containsKey(member.member())) {
                         throw new IllegalArgumentException(
                                 "unknown explicit struct field " + member.member());
@@ -4964,6 +4976,13 @@ public final class OresEvalRootNode extends RootNode {
                         fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
                     }
                     return new ReadonlyRecordValue(fields);
+                }
+                if (value instanceof MutableStructValue mutableStruct) {
+                    LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                    for (Map.Entry<String, Object> entry : mutableStruct.entrySet()) {
+                        fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
+                    }
+                    return new MutableStructValue(fields);
                 }
                 if (value instanceof OptionValue option) {
                     return option.present()
@@ -6668,7 +6687,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return object.structuralRecord()
                         ? new ReadonlyRecordValue(result)
-                        : result;
+                        : new MutableStructValue(result);
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
@@ -9408,6 +9427,14 @@ public final class OresEvalRootNode extends RootNode {
      * detachment/copy boundaries. Concrete structs use mutable owned maps; the
      * static binding/borrow checker decides whether a particular reference may write.
      */
+    /** Runtime tag for closed mutable struct values; never conflated with generic maps. */
+    private static final class MutableStructValue
+            extends LinkedHashMap<String, Object> {
+        private MutableStructValue(Map<String, Object> initial) {
+            super(initial);
+        }
+    }
+
     private static final class ReadonlyRecordValue
             extends java.util.AbstractMap<String, Object>
             implements OresMutex.SharedState {
