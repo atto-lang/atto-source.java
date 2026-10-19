@@ -2242,6 +2242,7 @@ public final class TypeChecker {
                 if (call.typeArgumentsPresent()) throw new IllegalArgumentException(factory.name() + ".new does not accept call-site type arguments");
                 if (call.arguments().size() != 1) throw new IllegalArgumentException(factory.name() + ".new expects exactly one value");
                 Type element = typeOf(call.arguments().getFirst(), env, generics, self);
+                rejectMlCapabilityStorage(element, factory.name() + ".new");
                 if (element instanceof Borrow) {
                     throw new IllegalArgumentException(
                             factory.name() + "<T> requires owned data; borrowed values cannot become mutex state");
@@ -2260,7 +2261,9 @@ public final class TypeChecker {
                 if (call.arguments().size() != 1) {
                     throw new IllegalArgumentException(name.name() + " expects exactly one value");
                 }
-                Type value = widenCollectionElement(typeOf(call.arguments().getFirst(), env, generics, self));
+                Type rawValue = typeOf(call.arguments().getFirst(), env, generics, self);
+                rejectMlCapabilityStorage(rawValue, name.name());
+                Type value = widenCollectionElement(rawValue);
                 return switch (name.name()) {
                     case "Some" -> new Named("Option", List.of(value));
                     case "Ok" -> new Named("Result", List.of(value, Unknown.INSTANCE));
@@ -3269,14 +3272,24 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.ListExpr list) {
             if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
-            Type element = widenCollectionElement(typeOf(list.elements().getFirst(), env, generics, self));
+            Type first = typeOf(list.elements().getFirst(), env, generics, self);
+            rejectMlCapabilityStorage(first, "list literal");
+            Type element = widenCollectionElement(first);
             for (int i = 1; i < list.elements().size(); i++) {
-                element = collectionElementJoin(element, widenCollectionElement(typeOf(list.elements().get(i), env, generics, self)));
+                Type item = typeOf(list.elements().get(i), env, generics, self);
+                rejectMlCapabilityStorage(item, "list literal");
+                element = collectionElementJoin(element, widenCollectionElement(item));
             }
             return new ListType(element);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
-            return new Tuple(tuple.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
+            List<Type> elements = new ArrayList<>();
+            for (Ast.Expr item : tuple.elements()) {
+                Type element = typeOf(item, env, generics, self);
+                rejectMlCapabilityStorage(element, "tuple literal");
+                elements.add(element);
+            }
+            return new Tuple(elements);
         }
         if (expr instanceof Ast.ObjectExpr object) {
             if (object.explicitStruct()) {
@@ -3306,6 +3319,9 @@ public final class TypeChecker {
                     }
                     Type actualField =
                             typeOf(field.value(), env, generics, self);
+                    rejectMlCapabilityStorage(
+                            actualField,
+                            "explicit struct field '" + field.name() + "'");
                     requireReadonlyCapabilityPreserved(
                             actualField,
                             expected,
@@ -3330,6 +3346,9 @@ public final class TypeChecker {
             Map<String, Type> members = new LinkedHashMap<>();
             for (Ast.ObjectField field : object.fields()) {
                 Type exactValueType = typeOf(field.value(), env, generics, self);
+                rejectMlCapabilityStorage(
+                        exactValueType,
+                        "record/struct field '" + field.name() + "'");
                 if (members.putIfAbsent(
                         field.name(),
                         object.inferredStruct()
@@ -7527,6 +7546,13 @@ public final class TypeChecker {
     private String qualifiedInterfaceName(Ast.InterfaceDecl iface) {
         String owner = interfaceOwners.get(iface);
         return owner == null || owner.equals("__root__") ? iface.name() : owner + "." + iface.name();
+    }
+
+    private void rejectMlCapabilityStorage(Type type, String where) {
+        if (containsMlScalarCapability(type)) {
+            throw new IllegalArgumentException(
+                    where + " cannot store a compiler-issued actor scalar snapshot/publication capability");
+        }
     }
 
     private boolean containsMlScalarCapability(Type type) {
