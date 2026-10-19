@@ -71,6 +71,28 @@ final class TaskResolvedSendBridgeTest {
     }
 
     @Test
+    void malformedEmbeddingTypesCannotPassResolvedTaskSendAdmission()
+            throws Exception {
+        var ctor = TypeChecker.class.getDeclaredConstructor();
+        ctor.setAccessible(true);
+        var checker = ctor.newInstance();
+        var threadSend = TypeChecker.class.getDeclaredMethod(
+                "isThreadSend", Types.Type.class);
+        threadSend.setAccessible(true);
+
+        for (Types.Type malformed : java.util.List.of(
+                new Types.Named(null, java.util.List.of()),
+                new Types.Named(" ", java.util.List.of()),
+                new Types.StringLiteral(null),
+                new Types.Record(Map.of(" ", Types.Primitive.INT)),
+                new Types.Named("Option", java.util.List.of(
+                        new Types.Record(Map.of(" ", Types.Primitive.INT)))))) {
+            assertEquals(Boolean.FALSE, threadSend.invoke(checker, malformed),
+                    "malformed semantic type must not authorize Task transfer");
+        }
+    }
+
+    @Test
     void scalarTaskCapturePassesSemanticSendAndStopsAtLoweringBarrier() {
         IllegalArgumentException failure = reject("""
             pub fnc main(): void {
