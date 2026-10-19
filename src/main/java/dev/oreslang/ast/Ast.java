@@ -95,10 +95,11 @@ public final class Ast {
             // general nullable type. Enforce its invariants even when another
             // compiler pass constructs a TypeRef directly, bypassing the parser.
             if (name.equals("$v3_option_sugar$")) {
-                if (inferArguments || arguments.size() != 1 || arguments.getFirst().name().equals("void")
-                        || arguments.getFirst().isBorrow()
-                        || arguments.getFirst().isOmittableFormal()) {
-                    throw new IllegalArgumentException("invalid staged v3 Option type sugar");
+                if (inferArguments || arguments.size() != 1
+                        || containsUnsafeV3OptionPayload(arguments.getFirst())) {
+                    throw new IllegalArgumentException(
+                            "staged v3 Option sugar requires a concrete owned payload without "
+                                    + "borrow, inference, void, or nested unlowered optional syntax");
                 }
             } else if (name.equals("$omittable_formal$")) {
                 if (inferArguments || arguments.size() != 1) {
@@ -119,6 +120,25 @@ public final class Ast {
                 }
             }
         }
+        /**
+         * V3 Option sugar has no lifetime/borrow ABI yet. Checking only the
+         * immediate type would let List<borrow T>? (or generic inference)
+         * launder an unverified borrow into a supposedly owned Option value.
+         * Ordinary explicit Option<T> may still be represented as a normal
+         * named type; only a v3 unlowered '?' marker is restricted here.
+         */
+        private static boolean containsUnsafeV3OptionPayload(TypeRef type) {
+            if (type.name().equals("void") || type.name().equals("$infer$")
+                    || type.isBorrow() || type.isOmittableFormal()
+                    || type.isStagedV3Option() || type.inferArguments()) {
+                return true;
+            }
+            for (TypeRef nested : type.arguments()) {
+                if (containsUnsafeV3OptionPayload(nested)) return true;
+            }
+            return false;
+        }
+
         /** No borrow or nested omittable marker may be hidden in a T? value. */
         private static boolean containsUnsafeOptionalValueType(TypeRef type) {
             if (type.name().equals("$omittable_formal$") || type.isBorrow()) return true;
