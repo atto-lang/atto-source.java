@@ -57,6 +57,7 @@ echo "Verified Oreslang source Git commit=$commit_sha tree=$tree_sha mode=$mode"
 # For an approved mirror, the source commit may differ, but the full tree SHA
 # must match the trusted source head. Modes/blobs are covered by Git tree IDs.
 bash scripts/check-record-parser.sh
+bash scripts/check-record-frontend.sh
 bash scripts/check-soa-snapshot.sh
 
 # Contains GraalVM guest execution, not only AST and host-only smoke tests.
