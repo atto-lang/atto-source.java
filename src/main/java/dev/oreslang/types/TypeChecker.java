@@ -166,7 +166,8 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
 
-        TaskSemanticAdmission semantic = new TaskSemanticAdmission();
+        TaskSemanticAdmission semantic =
+                new TaskSemanticAdmission(program);
         provenance.forEachBoundary((boundary, transfers) -> {
             ArrayList<TaskSemanticAdmission.Entry> entries =
                     new ArrayList<>(transfers.size());
