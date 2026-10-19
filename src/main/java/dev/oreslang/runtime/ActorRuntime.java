@@ -858,12 +858,15 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
-            return new MessageEnvelope(
-                    null,
-                    null,
-                    Objects.requireNonNull(continuation, "continuation"),
-                    null,
-                    -1L);
+            Objects.requireNonNull(continuation, "continuation");
+            // A source-scheduler dispatch is already counted in-flight when
+            // admitted to the actor's continuation mailbox. If termination
+            // drains the envelope without executing it, the release hook must
+            // retire that reservation. Normal completion also closes the
+            // envelope, but the dispatch's CAS rejects double retirement.
+            Runnable release = continuation instanceof OresScheduler.AbandonableTurn turn
+                    ? turn::abandoned : null;
+            return new MessageEnvelope(null, release, continuation, null, -1L);
         }
 
         private boolean isContinuation() {
