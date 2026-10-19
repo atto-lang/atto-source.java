@@ -99,12 +99,16 @@ public final class OresTaskScope implements AutoCloseable {
                     if (!tasks.add(slot))
                         throw new IllegalStateException("duplicate Task ownership slot");
                     OwnershipSlot owned = slot;
-                    // A completion callback cannot fire until start() below.
-                    child.quiescenceFence().whenCompleteRuntime((value, failure) -> {
-                        if (failure == null) {
-                            synchronized (gate) {
-                                tasks.remove(owned);
-                            }
+                    // The host's physical-exit callback executes once AFTER
+                    // the carrier exits (or admission is rejected). Remove
+                    // its slot BEFORE publishing the getDone() quiescence
+                    // fence. Generic Future listeners swallow exceptions and
+                    // therefore cannot be authoritative ownership cleanup.
+                    prepared.onPhysicalExit(() -> {
+                        synchronized (gate) {
+                            if (!tasks.remove(owned))
+                                throw new IllegalStateException(
+                                        "host Task owner slot missing at retirement");
                         }
                     });
                 }
