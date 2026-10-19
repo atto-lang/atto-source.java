@@ -387,17 +387,19 @@ public final class NativeHttp implements AutoCloseable {
             // A hostile InputStream.close() can block. Never wait for producer
             // cleanup before closing the network exchange or releasing admission.
             if (responseInput != null) {
-                try {
-                    io.execute(() -> {
-                        try { responseInput.close(); }
-                        catch (IOException ignored) { }
-                    });
-                } catch (RejectedExecutionException ignored) { }
+                HttpResponseCleanupDispatcher.dispatch(io, () -> {
+                    try { responseInput.close(); }
+                    catch (IOException ignored) { }
+                });
             }
-            try { io.execute(() -> { try {
-                if (send) reject(raw, status); else raw.close();
-            } finally { synchronized (this) { transportClosed = true; } release(); } }); }
-            catch (RejectedExecutionException closed) { release(); }
+            HttpResponseCleanupDispatcher.dispatch(io, () -> {
+                try {
+                    if (send) reject(raw, status); else raw.close();
+                } finally {
+                    synchronized (this) { transportClosed = true; }
+                    release();
+                }
+            });
         }
         void finish() throws IOException {
             synchronized (this) {
