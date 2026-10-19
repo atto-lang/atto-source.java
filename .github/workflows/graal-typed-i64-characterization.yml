@@ -84,7 +84,7 @@ jobs:
               str(Path("scripts/ci").resolve()),
               pattern="test_graal_i64_evidence.py")
           case_count = suite.countTestCases()
-          if case_count < 28:
+          if case_count < 33:
               raise SystemExit(f"DENIED: evidence-admission regression inventory shrank: {case_count}")
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           if (not result.wasSuccessful() or result.testsRun != case_count
