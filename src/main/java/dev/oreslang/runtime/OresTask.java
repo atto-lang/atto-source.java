@@ -36,7 +36,15 @@ public final class OresTask<T> implements Awaitable<T> {
      * Pre-admission owner shell. The scope allocates this before scheduler
      * admission so OOME cannot create an executable Task with no owner record.
      */
-    OresTask(OresFuture<?> quiescence) {
+    // A named factory avoids Java's erased-signature collision between
+    // OresFuture<T> (result) and OresFuture<?> (physical exit).
+    static <T> OresTask<T> preAdmitted(OresFuture<?> quiescence) {
+        return new OresTask<>(quiescence, true);
+    }
+
+    private OresTask(OresFuture<?> quiescence, boolean preAdmission) {
+        if (!preAdmission)
+            throw new IllegalArgumentException("expected pre-admission owner");
         this.completion = null;
         this.quiescence = Objects.requireNonNull(quiescence, "quiescence");
     }
