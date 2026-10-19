@@ -72,6 +72,34 @@ final class ConcurrencyTestProbeTest {
     }
 
     @Test
+    void v3WorkspaceBoundTraceRejectsTamperedSourceDigest() throws Exception {
+        Path trace = tmp.resolve("v3.trace");
+        String entry = "a".repeat(64);
+        String workspace = "b".repeat(64);
+        try (var session = ConcurrencyTestProbe.start(21, false, null,
+                entry, "jit-server", workspace)) {
+            ConcurrencyTestProbe.checkpoint("task-turn");
+            session.writeTrace(trace);
+        }
+        var receipt = ConcurrencyTestProbe.readTraceData(trace);
+        assertEquals(21, receipt.seed());
+        assertEquals(entry, receipt.entrySha256());
+        assertEquals(workspace, receipt.workspaceSha256());
+        assertEquals("jit-server", receipt.backend());
+        assertEquals(List.of("task-turn|0"), receipt.events());
+        String original = java.nio.file.Files.readString(trace);
+        java.nio.file.Files.writeString(trace,
+                original.replace("workspace-sha256=" + workspace,
+                        "workspace-sha256=not-a-hash"));
+        assertThrows(IllegalArgumentException.class,
+                () -> ConcurrencyTestProbe.readTraceData(trace));
+        java.nio.file.Files.writeString(trace,
+                original.replace("|probe=3", "|probe=4"));
+        assertThrows(IllegalArgumentException.class,
+                () -> ConcurrencyTestProbe.readTraceData(trace));
+    }
+
+    @Test
     void replayMismatchFailsClosedAndSessionRetires() {
         try (var session = ConcurrencyTestProbe.start(1, true, List.of("future-await|1"))) {
             assertThrows(IllegalStateException.class,
