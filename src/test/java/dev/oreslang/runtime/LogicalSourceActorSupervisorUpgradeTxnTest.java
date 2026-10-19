@@ -138,6 +138,9 @@ final class LogicalSourceActorSupervisorUpgradeTxnTest {
                 Field phase = txn.getClass().getDeclaredField("phase");
                 phase.setAccessible(true);
                 assertEquals("STAGING", phase.get(txn).toString());
+                assertThrows(IllegalStateException.class,
+                        router::reconcileFailedUpgradeRollback,
+                        "a still-active supervisor transaction is not reconciled");
                 assertTrue(mailbox.snapshot().dispatchFrozen(),
                         "transaction must own the authoritative proxy freeze");
                 assertEquals(1L, mailbox.snapshot().routeEpoch());
