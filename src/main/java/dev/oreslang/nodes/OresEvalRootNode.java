@@ -3110,6 +3110,20 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (expr instanceof Ast.AwaitExpr awaited) {
                     if (awaited.expression() instanceof Ast.TaskExpr scalarTask) {
+                        // Defense in depth: the context scheduler alone does NOT
+                        // identify the VM entrypoint. Other root-scheduled
+                        // source functions must not inherit main's privilege.
+                        if (task.function == null
+                                || !"main".equals(task.function.name())
+                                || !Parser.ROOT_MODULE.equals(
+                                        declarationModules.get(task.function))
+                                || !task.function.parameters().isEmpty()
+                                || task.function.async()
+                                || task.function.generator()
+                                || task.function.actorKind() != Ast.ActorKind.NONE) {
+                            throw new SecurityException(
+                                    "guest scalar task must execute in VM root main");
+                        }
                         // Only the frontend-approved immediate scalar await
                         // may enter the guest Task execution path. Never
                         // snapshot the Env or execute guest AST on the child.
