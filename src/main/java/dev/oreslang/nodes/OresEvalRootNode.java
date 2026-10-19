@@ -6117,6 +6117,15 @@ public final class OresEvalRootNode extends RootNode {
          * or any arguments; in particular, a forged named call must not run
          * effectful arguments before reaching a late unsupported-expression error.
          */
+        private static boolean hasNamedArgs(List<Ast.Expr> arguments) {
+            // This gate runs on the hot interpreter path. Do not allocate a
+            // Stream/lambda for ordinary calls that contain no named arguments.
+            for (Ast.Expr argument : arguments) {
+                if (argument instanceof Ast.NamedArgumentExpr) return true;
+            }
+            return false;
+        }
+
         private void rejectUnloweredStructuredExpr(Ast.Expr expr) {
             if (expr instanceof Ast.NamedArgumentExpr) {
                 throw new IllegalArgumentException(
@@ -6131,7 +6140,7 @@ public final class OresEvalRootNode extends RootNode {
                         "compound assignment requires single-evaluation write and borrow lowering");
             }
             if (expr instanceof Ast.CallExpr call) {
-                if (call.arguments().stream().anyMatch(arg -> arg instanceof Ast.NamedArgumentExpr)) {
+                if (hasNamedArgs(call.arguments())) {
                     throw new IllegalArgumentException(
                             "named value arguments require checked declaration-bound invocation lowering");
                 }
@@ -6142,8 +6151,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             if (expr instanceof Ast.NewExpr created
-                    && created.arguments().stream()
-                            .anyMatch(arg -> arg instanceof Ast.NamedArgumentExpr)) {
+                    && hasNamedArgs(created.arguments())) {
                 throw new IllegalArgumentException(
                         "named value arguments require checked declaration-bound invocation lowering");
             }
