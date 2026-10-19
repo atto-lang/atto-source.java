@@ -45,6 +45,8 @@ final class OresTestTrace {
         if (Files.exists(output, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("trace already exists; never overwrite a failure artifact");
         }
+        validateNumbers(runs, modelCheck, report.exploredStates(),
+                report.rejectedCycles(), report.stressCases());
         String encoded = HEADER + "\n"
                 + "source_closure_sha256=" + hash(source) + "\n"
                 + "seed=" + seed + "\n"
@@ -90,15 +92,32 @@ final class OresTestTrace {
                 throw new IOException("invalid model flag");
             }
             int runs = Integer.parseInt(entries.get("runs"));
-            if (runs < 0 || runs > 100_000) throw new IOException("invalid run count");
+            boolean modelCheck = Boolean.parseBoolean(modelFlag);
+            long states = Long.parseLong(entries.get("states"));
+            long rejectedCycles = Long.parseLong(entries.get("rejected_cycles"));
+            long stressCases = Long.parseLong(entries.get("stress_cases"));
+            validateNumbers(runs, modelCheck, states, rejectedCycles, stressCases);
             return new Data(hash, Long.parseLong(entries.get("seed")), runs,
-                    Boolean.parseBoolean(modelFlag),
-                    Long.parseLong(entries.get("states")),
-                    Long.parseLong(entries.get("rejected_cycles")),
-                    Long.parseLong(entries.get("stress_cases")),
+                    modelCheck, states, rejectedCycles, stressCases,
                     Long.parseLong(entries.get("input_fingerprint")));
         } catch (NumberFormatException bad) {
             throw new IOException("invalid numeric trace field", bad);
+        }
+    }
+
+    /**
+     * A trace is a recording of successfully completed, bounded input probes.
+     * Reject contradictory metadata rather than replaying a different mode or
+     * silently truncating what the trace claims to cover.
+     */
+    private static void validateNumbers(int runs, boolean modelCheck,
+                                        long states, long rejectedCycles,
+                                        long stressCases) throws IOException {
+        if (runs < 0 || runs > 100_000 || stressCases != runs
+                || states < 0 || rejectedCycles < 0
+                || (modelCheck && (states == 0 || rejectedCycles == 0))
+                || (!modelCheck && (states != 0 || rejectedCycles != 0))) {
+            throw new IOException("inconsistent critical exploration trace metadata");
         }
     }
 
