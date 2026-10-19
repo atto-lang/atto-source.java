@@ -66,7 +66,9 @@ class OresSymbolTest {
     }
 
     @Test void hashTokenIsNeverCommentOrWhitespaceAlias() {
-        for (String invalid : List.of("#", "# ready", "#123", "#foo".replace("foo", "é"), "#" + "a".repeat(129))) {
+        for (String invalid : List.of("#", "# ready", "#123", "#foo".replace("foo", "é"),
+                "#" + "a".repeat(129), "#\"\\q\"", "#\"unterminated",
+                "#\"\\u202e\"", "#\"\\u0000\"")) {
             assertThrows(IllegalArgumentException.class, () -> new Lexer(invalid).scan(), invalid);
         }
         assertEquals(Token.Type.COLON, new Lexer(":ready").scan().getFirst().type());
