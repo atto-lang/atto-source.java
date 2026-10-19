@@ -4974,12 +4974,45 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * Actor callable completions use ActorRuntime.freeze(), not the separate
+     * capability-aware mailbox transport. In particular, a live ActorRef or
+     * SharedMutex may be deliberately transported by a mailbox, but cannot
+     * masquerade as an ordinary frozen actor-callable result.
+     */
+    private void rejectLiveActorCallableResult(Type type, String where, int depth) {
+        if (depth > 256) {
+            throw new IllegalArgumentException(where + " exceeds actor result type nesting budget");
+        }
+        if (type instanceof Named named) {
+            if (named.name().equals("ActorRef") || named.name().equals("SharedMutex")) {
+                throw new IllegalArgumentException(
+                        where + " cannot return live " + named.name()
+                                + " through data-only actor completion; use explicit mailbox transport");
+            }
+            for (Type argument : named.arguments()) {
+                rejectLiveActorCallableResult(argument, where, depth + 1);
+            }
+        } else if (type instanceof ListType list) {
+            rejectLiveActorCallableResult(list.element(), where, depth + 1);
+        } else if (type instanceof Tuple tuple) {
+            for (Type item : tuple.elements()) rejectLiveActorCallableResult(item, where, depth + 1);
+        } else if (type instanceof Union union) {
+            for (Type item : union.options()) rejectLiveActorCallableResult(item, where, depth + 1);
+        } else if (type instanceof Record record) {
+            for (Type item : record.members().values()) {
+                rejectLiveActorCallableResult(item, where, depth + 1);
+            }
+        }
+    }
+
     private void validateActorCallableBoundaryType(
             Type type,
             Ast.ActorKind actorKind,
             boolean returnPosition,
             String where) {
         if (returnPosition && type == Primitive.VOID) return;
+        if (returnPosition) rejectLiveActorCallableResult(type, where, 0);
         if (type == Primitive.VOID) {
             throw new IllegalArgumentException(where + " cannot be void");
         }
