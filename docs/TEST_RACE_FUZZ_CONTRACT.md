@@ -128,3 +128,38 @@ Interim Java host tests include `CriticalPhysicalRetirementTest`,
 `CriticalCarrierNonparkingTest` and `NativeTestCommandTest`. Their tests
 must execute on the exact PR head. A GitHub Actions failure with zero job
 steps is **no execution evidence**.
+
+
+## October 18 follow-up: critical cancellation publication
+
+A follow-up review of the existing `CriticalGate` found two additional
+admission/publish windows, hardened on the same draft branch:
+
+1. A synchronous call on an actor or ROOT/CONTROL carrier must either claim an
+   idle gate **atomically without queuing** or reject immediately. Previously
+   the call could enqueue then retract; a concurrent owner release could grant
+   it in the gap. The corrected path leaves the FIFO and wait graph untouched
+   on contention.
+2. Cancelling a queued `CriticalGate` admission must remove its FIFO entry
+   and `WAITING_ON` edge **before** the cancelled `OresFuture` becomes
+   observable. The cancellation-admission callback now retracts only a queued
+   ticket. Once physically granted, public cancellation loses and the owning
+   continuation must perform its normal physical-release protocol.
+
+These are focused fixes, **not** a unified graph with `SharedMutex`. Related
+actor lifecycle code still closes source schedulers under `lifecycleLock`
+during finalization, which may synchronously invoke Future callbacks; issue
+#1231 remains a distinct hardening gate. Do not claim full "no callbacks under
+coordinator/lifecycle locks" until all those paths are audited and executed.
+
+The standalone Java 21 reference transition model was run locally with
+100,000 seeded sequential scenarios, 1,000 concurrent cancellation/grant
+races and 1,000 concurrent cancellation/physical-exit races, repeated twice.
+This is **model-only evidence**; it is not executed exact-source Oreslang
+compiler/JUnit/native-image evidence.
+
+Private cross-organization source testing is blocked by the current approved
+destination list at `.github/private-ci-approved-repositories.txt` on
+`main`: it contains no approved repositories. Source mirroring requires a
+reviewed allowlist entry and destination privacy/permission verification;
+availability of GitHub Actions minutes is not authorization to copy source.
