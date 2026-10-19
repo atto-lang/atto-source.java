@@ -158,6 +158,42 @@ public class TaskHandleTest {
         }
     }
 
+    @Test void checkpointNotifiesFutureAfterGuestContextHasUnwound()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            CountDownLatch started = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            CountDownLatch notified = new CountDownLatch(1);
+            AtomicBoolean callbackSawGuestDomain = new AtomicBoolean();
+            AtomicBoolean callbackSawGuestScheduler = new AtomicBoolean();
+            TaskHandle<Integer> h = scheduler.startTracked(resume -> {
+                started.countDown();
+                awaitUninterruptibly(release);
+                OresScheduler.cancellationCheckpoint();
+                return OresScheduler.done(5);
+            });
+            h.result().whenCompleteRuntime((value, failure) -> {
+                callbackSawGuestDomain.set(OresScheduler.currentTaskDomain() != null);
+                callbackSawGuestScheduler.set(OresScheduler.current() != null);
+                notified.countDown();
+            });
+            assertTrue(started.await(3, TimeUnit.SECONDS));
+            try {
+                assertTrue(h.cancel("checkpoint"));
+                assertFalse(h.result().isDone());
+            } finally {
+                release.countDown();
+            }
+            assertTrue(notified.await(3, TimeUnit.SECONDS));
+            assertTrue(h.result().isCancelled());
+            assertInstanceOf(TaskHandle.Cancelled.class, done(h));
+            assertFalse(callbackSawGuestDomain.get(),
+                    "Future callbacks must not run inside the guest task domain");
+            assertFalse(callbackSawGuestScheduler.get(),
+                    "Future callbacks must not run inside bound scheduler turn");
+        }
+    }
+
     @Test void checkpointWithoutRequestDoesNotStopTask() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             TaskHandle<Integer> handle = scheduler.startTracked(resume -> {
@@ -591,6 +627,8 @@ public class TaskHandleTest {
                         "pre-admission cancellation must not be treated as guest failure");
                 assertEquals("parent shutdown",
                         ((TaskHandle.Cancelled<Integer>) outcome).reason());
+                assertTrue(h.result().isCancelled(),
+                        "pre-admission cancellation must settle source Future as cancelled");
                 assertFalse(guestRan.get());
             }
         }
