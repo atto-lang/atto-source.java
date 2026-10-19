@@ -66,7 +66,7 @@ final class InlineSelfReceiverArityTest {
                       pub zero(self): int { return 0; }
                       pub one(self, int x): int { return x; }
                       pub mutable(mut self, int x): int { return x; }
-                      pub typed(self Counter, int x): int { return x; }
+                      pub typed(self Counter)(int x): int { return x; }
                       pub typed_mut(mut self Counter, int x): int { return x; }
                     end
                     """.formatted(kind));
@@ -91,11 +91,30 @@ final class InlineSelfReceiverArityTest {
                       pub zero(self): int { return 0; }
                       pub one(self, int x): int { return x; }
                       pub mutable(mut self, int x): int { return x; }
-                      pub typed(self Counter, int x): int { return x; }
+                      pub typed(self Counter)(int x): int { return x; }
                       pub typed_mut(mut self Counter, int x): int { return x; }
                     end
                     """.formatted(kind))));
         }
+    }
+
+    @Test
+    void selfTypedFirstUserParameterIsNotMisparsedAsReceiver() {
+        Ast.ClassDecl owner = parseOwner("""
+                define class Counter as
+                  pub choose(self other): self { return other; }
+                end
+                """);
+        Ast.MethodDecl choose = owner.methods().getFirst();
+        assertNull(choose.explicitReceiverType());
+        assertEquals(1, choose.arity());
+        assertEquals("other", choose.parameters().getFirst().name());
+        assertEquals("self", choose.parameters().getFirst().type().name());
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Counter as
+                  pub choose(self other): self { return other; }
+                end
+                """)));
     }
 
     @Test
@@ -108,10 +127,10 @@ final class InlineSelfReceiverArityTest {
                     "foo(self): int { return 0; } foo(): int { return 0; }",
                     "foo(int x): int { return x; } foo(mut self, int x): int { return x; }",
                     "foo(self Counter)(int x): int { return x; } foo(self, int x): int { return x; }",
-                    "foo(int x): int { return x; } foo(self Counter, int x): int { return x; }",
+                    "foo(int x): int { return x; } foo(self Counter)(int x): int { return x; }",
                     "foo(int x): int { return x; } foo(mut self Counter, int x): int { return x; }",
-                    "foo(): int { return 0; } foo(self Counter): int { return 0; }",
-                    "foo(self Counter)(int x): int { return x; } foo(self Counter, int x): int { return x; }"
+                    "foo(): int { return 0; } foo(self Counter)(): int { return 0; }",
+                    "foo(mut self Counter, int x): int { return x; } foo(self, int x): int { return x; }"
             }) {
                 String source = "define " + kind + " Counter as " + pair + " end";
                 IllegalArgumentException error = assertThrows(
