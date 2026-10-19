@@ -492,6 +492,32 @@ public final class OptionalCallShapeBinder {
         return List.copyOf(result);
     }
 
+    /**
+     * Stage v2 default-annotation-aware callable shape binding. The compiler
+     * supplies already checked constant defaults and nominal Option identity.
+     * A default on a plain T formal makes that slot omittable without changing
+     * its body-visible T type, whereas an Option<T> formal is omittable in v2
+     * even without a default. Never pass this plan to an executable backend
+     * until the default constant and Option ABI are lowered consistently.
+     */
+    public static List<Parameter> defaultedParameterShapes(
+            List<DefaultArgumentPolicy.Formal> verifiedFormals,
+            OptionFormalPresencePolicy.LanguageMode mode) {
+        Objects.requireNonNull(verifiedFormals, "verified formals");
+        Objects.requireNonNull(mode, "language mode");
+        List<Parameter> result = new ArrayList<>(verifiedFormals.size());
+        for (DefaultArgumentPolicy.Formal formal : verifiedFormals) {
+            Objects.requireNonNull(formal, "verified formal");
+            boolean optional = DefaultArgumentPolicy.omittable(formal, mode);
+            result.add(formal.signature().variadic()
+                    ? Parameter.variadic(formal.signature().name())
+                    : optional ? Parameter.optional(formal.signature().name())
+                               : Parameter.required(formal.signature().name()));
+        }
+        checkedParameters(result);
+        return List.copyOf(result);
+    }
+
     /** Structural binder proof only; executable Option<T> lowering is gated. */
     public static Plan bindParsedFormals(
             List<Ast.Param> formals, List<Ast.CallArgument> callItems) {
