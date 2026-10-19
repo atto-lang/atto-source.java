@@ -35,6 +35,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.main_force_pushes_allowed = False
         self.main_deletions_allowed = False
         self.main_review_bypass = {"users": [], "teams": [], "apps": []}
+        self.source_codeowners = (
+            "".join("/" + path + " @ORESoftware\\n"
+                    for path in pub.SOURCE_SECURITY_PATHS)).encode("utf-8")
+        self.source_codeowners_sha_override = None
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.baseline_source_tree = self.expected_source_tree()
         self.mock_source_tree = self.baseline_source_tree
@@ -96,6 +100,17 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 "enforce_admins": {"enabled": self.main_enforces_admins},
                 "allow_force_pushes": {"enabled": self.main_force_pushes_allowed},
                 "allow_deletions": {"enabled": self.main_deletions_allowed},
+            }
+        if route == (f"repos/{pub.TRUSTED_SOURCE_REPOSITORY}/contents/"
+                     f".github/CODEOWNERS?ref={pub.TRUSTED_SOURCE_REF}"):
+            raw = self.source_codeowners
+            return {
+                "type": "file", "encoding": "base64",
+                "size": len(raw),
+                "content": base64.b64encode(raw).decode("ascii"),
+                "sha": self.source_codeowners_sha_override or hashlib.sha1(
+                    b"blob " + str(len(raw)).encode("ascii") + bytes([0]) + raw
+                ).hexdigest(),
             }
         trusted_policy_route = (
             f"repos/{pub.TRUSTED_SOURCE_REPOSITORY}/contents/"
@@ -784,6 +799,73 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     pub.publish("trusted/ci", self.source, "ci/oreslang-test",
                                 self.root, pinned, 1286, A)
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_missing_source_main_codeowner_denies_before_source_read(self):
+        # GitHub CODEOWNER enforcement alone does not cover an unowned script.
+        self.source_codeowners = self.source_codeowners.replace(
+            b"/scripts/publish-private-ci-source.py @ORESoftware\\n", b"")
+        pinned = self.expected_source_tree()
+        with patch.object(pub, "gh_api", side_effect=self.fake_api):
+            with patch.object(pub, "collect_source",
+                              side_effect=AssertionError("source read")):
+                with self.assertRaisesRegex(pub.Denied, "effective CODEOWNER"):
+                    pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                self.root, pinned, 1286, A)
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_source_main_codeowner_override_denies_before_source_read(self):
+        self.source_codeowners += (
+            b"/.github/private-ci-approved-repositories.txt @attacker\\n")
+        pinned = self.expected_source_tree()
+        with patch.object(pub, "gh_api", side_effect=self.fake_api):
+            with patch.object(pub, "collect_source",
+                              side_effect=AssertionError("source read")):
+                with self.assertRaisesRegex(pub.Denied, "effective CODEOWNER"):
+                    pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                self.root, pinned, 1286, A)
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_source_main_codeowner_blob_tampering_denied(self):
+        self.source_codeowners_sha_override = "0" * 40
+        with patch.object(pub, "gh_api", side_effect=self.fake_api):
+            with self.assertRaisesRegex(pub.Denied, "Git blob differs"):
+                self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_source_main_codeowner_api_unavailable_denied_before_source_read(self):
+        pinned = self.expected_source_tree()
+        def api_unavailable(route, method="GET", payload=None):
+            if route.endswith("/contents/.github/CODEOWNERS?ref=main"):
+                raise pub.Denied("authenticated GitHub API request failed")
+            return self.fake_api(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=api_unavailable):
+            with patch.object(pub, "collect_source",
+                              side_effect=AssertionError("source read")):
+                with self.assertRaisesRegex(pub.Denied, "GitHub API request failed"):
+                    pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                self.root, pinned, 1286, A)
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_source_codeowner_revocation_stops_next_private_blob(self):
+        # Git blobs survive after a failed ref. Recheck CODEOWNER coverage
+        # between blob uploads and stop any additional private writes.
+        (self.source / "additional.ores").write_text("private test bytes")
+        original = self.fake_api
+        def revoke_after_first_blob(route, method="GET", payload=None):
+            response = original(route, method, payload)
+            if method == "POST" and route == "repos/trusted/ci/git/blobs":
+                self.source_codeowners += (
+                    b"/scripts/publish-private-ci-source.py @attacker\\n")
+            return response
+        with patch.object(pub, "gh_api", side_effect=revoke_after_first_blob):
+            with self.assertRaisesRegex(pub.Denied, "effective CODEOWNER"):
+                self.publish()
+        blobs = [route for method, route, _ in self.route_calls
+                 if method == "POST" and route.endswith("/git/blobs")]
+        self.assertEqual(len(blobs), 1)
+        self.assertFalse(any(method == "POST" and route.endswith(
+            ("/git/trees", "/git/commits", "/git/refs"))
+            for method, route, _ in self.route_calls))
 
     def test_unprotected_source_main_cannot_authorize_any_export(self):
         self.main_is_protected = False
