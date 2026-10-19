@@ -2652,13 +2652,10 @@ public final class OwnershipChecker {
 
     private CaptureSet collectCaptures(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
         CaptureSet captures = new CaptureSet();
-        Set<String> locals = new HashSet<>();
-        for (Ast.Param param : lambda.parameters()) locals.add(param.name());
-        locals.add("arguments");
-        if (lambda.expressionBody() != null) {
-            scanExpr(lambda.expressionBody(), locals, outer, recursiveBinding, captures, false);
-        } else {
-            scanStatements(lambda.blockBody(), locals, outer, recursiveBinding, captures);
+        for (TaskCaptureAnalysis.Use use :
+                TaskCaptureAnalysis.lambda(lambda, recursiveBinding)) {
+            VarState source = outer.lookup(use.name());
+            if (source != null) captures.add(use.name(), source, use.write());
         }
         return captures;
     }
