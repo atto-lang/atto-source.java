@@ -185,6 +185,37 @@ public final class OresContext implements AutoCloseable {
         // Future that might settle before the physical Task frame exits.
         return compilerTaskScope.startCompilerFrame(vm.rootScheduler(), frame);
     }
+    /**
+     * Narrow guest lowering target for `await nb { return scalar; }`.
+     *
+     * <p>The frontend admits only this immediately awaited, scalar-copy-only
+     * expression in trusted VM root main. Although that main executes inside
+     * the root scheduler, its child owns no parent pointers, borrows or code
+     * closures: the context's structured Task scope retains its independent
+     * frame through physical completion, including root cancellation.
+     *
+     * <p>This method is not a general nested Task or detached spawn API.
+     */
+    public OresTask<Object> startCompilerScalarAwait(Object value) {
+        if (ActorRuntime.inActorExecution()) {
+            throw new IllegalStateException(
+                    "actor-private scalar Task execution is not enabled");
+        }
+        if (isolatePolicy.adversarial()) {
+            throw new SecurityException(
+                    "untrusted scalar Task execution needs inherited quotas");
+        }
+        if (OresScheduler.current() != vm.rootScheduler()) {
+            throw new IllegalStateException(
+                    "scalar Task immediate await requires the VM root scheduler");
+        }
+        // Validate/copy the value BEFORE enqueuing, never carry a mutable Env
+        // or source AST into another carrier. The host-owned context scope
+        // drains even if the waiting root source Task is cancelled.
+        OresScalarTaskFrame frame = OresScalarTaskFrame.returnConstant(value);
+        return compilerTaskScope.startCompilerFrame(vm.rootScheduler(), frame);
+    }
+
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
     public IsolatePolicy isolatePolicy() { return isolatePolicy; }
