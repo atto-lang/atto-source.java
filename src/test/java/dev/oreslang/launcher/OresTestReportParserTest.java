@@ -46,6 +46,38 @@ final class OresTestReportParserTest {
     }
 
     @Test
+    void rejectsTruncatedAndNearMissProtocolMarkersEvenWhenValidReportsExist() {
+        String summary = "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=0\\n";
+        String fuzz = "ORES_TEST|FUZZ|seed=17|cases=97\\n";
+        for (String malformed : new String[] {
+                "ORES_TEST|SUMMARY",
+                "ORES_TEST|SUMMARY garbage",
+                "ORES_TEST|SUMMARY_BAD|total=1|passed=1|failed=0|skipped=0|filtered=0",
+                "ORES_TEST|SUMMARY\\rjunk"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresTestReportParser.parseSuite(summary + malformed + "\\n"),
+                    malformed);
+        }
+        for (String malformed : new String[] {
+                "ORES_TEST|FUZZ",
+                "ORES_TEST|FUZZ garbage",
+                "ORES_TEST|FUZZ_BAD|seed=17|cases=97",
+                "ORES_TEST|FUZZ\\rjunk"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresTestReportParser.parseFuzz(fuzz + malformed + "\\n", 17L, 97),
+                    malformed);
+        }
+        // Unrelated native events are permitted: only SUMMARY and FUZZ
+        // machine-record categories require these exact schemas.
+        assertEquals(1L, OresTestReportParser.parseSuite(
+                "ORES_TEST|PASS|example\\n" + summary).tested());
+        assertEquals(97L, OresTestReportParser.parseFuzz(
+                "ORES_TEST|PASS|example\\n" + fuzz, 17L, 97).generatedInputs());
+    }
+
+    @Test
     void rejectIncorrectGuestFuzzCountsAndSeeds() {
         String normal = "ORES_TEST|FUZZ|seed=17|cases=97\n";
         assertThrows(IllegalArgumentException.class,
