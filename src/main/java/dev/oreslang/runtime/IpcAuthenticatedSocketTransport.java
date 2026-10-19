@@ -177,6 +177,15 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         }
     }
 
+    /**
+     * Explicit host-supervisor recovery after bounded cleanup scheduling or
+     * physical-close confirmation failure. Never automatic and never guest
+     * callable; a quarantined generation cannot reopen for new writes.
+     */
+    void retryQuarantinedClose() {
+        sessionLease.retryQuarantinedClose();
+    }
+
     IpcTransportSessionLease.Snapshot snapshot() {
         return sessionLease.snapshot();
     }
