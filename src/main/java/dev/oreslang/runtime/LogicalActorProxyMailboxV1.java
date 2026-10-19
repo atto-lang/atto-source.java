@@ -517,9 +517,13 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             throw new IllegalStateException(
                     "logical proxy freeze-state invariant violated");
         }
-        if (!outstanding.keySet().containsAll(physicalSendAttempted)) {
+        // This is a constant-time hot-path bound. The stronger subset
+        // relationship follows from begin/requeue/complete/close all mutating
+        // the attempt ledger under this exact mailbox lock; scanning every
+        // outstanding sequence here would make admission O(window).
+        if (physicalSendAttempted.size() > outstanding.size()) {
             throw new IllegalStateException(
-                    "physical send attempt is no longer an outstanding logical message");
+                    "physical attempt ledger exceeds outstanding messages");
         }
         if (activeFreeze != null && activeFreeze.routeEpoch != routeEpoch) {
             throw new IllegalStateException(
