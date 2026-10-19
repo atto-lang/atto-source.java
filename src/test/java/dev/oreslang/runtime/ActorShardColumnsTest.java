@@ -74,7 +74,7 @@ final class ActorShardColumnsTest {
     @Test
     void privateActorUsesDirectMemoryQuotaAndReleasesOnTermination() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
-            ActorRuntime.ActorRef<Integer> actor = runtime.spawnPrivateTrusted(
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnPrivate(
                     context -> {
                         // Only this owner-checked shard is retained by the
                         // behavior. No mutable host AtomicReference or array
