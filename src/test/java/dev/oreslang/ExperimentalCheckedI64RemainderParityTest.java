@@ -100,4 +100,72 @@ final class ExperimentalCheckedI64RemainderParityTest {
         }
         assertTrue(found, "left-to-right operand overflow must win over later zero divisor");
     }
+
+    @Test
+    void checkedRemainderExactBoundaryMatrixRunsThroughRealGuestEvaluator() throws Exception {
+        // Exit values are not a 64-bit observation format. Compare the
+        // computed guest value inside guest code, then return 43 on success.
+        String[][] cases = {
+            {"(7 % 3)", "1"},
+            {"(-7 % 3)", "-1"},
+            {"(7 % -3)", "1"},
+            {"(-7 % -3)", "-1"},
+            {"(0 % 3)", "0"},
+            {"(0 % -1)", "0"},
+            {"(9223372036854775807 % 3)", "1"},
+            {"((-9223372036854775807 - 1) % -1)", "0"},
+            {"((-9223372036854775807 - 1) % 1)", "0"},
+            {"((-9223372036854775807 - 1) % 3)", "-2"},
+            {"((-9223372036854775807 - 1) % 9223372036854775807)", "-1"},
+            {"(9223372036854775807 % (-9223372036854775807 - 1))", "9223372036854775807"}
+        };
+        for (String[] row : cases) {
+            String condition = "((" + row[0] + ") == (" + row[1] + ")) ? 43 : 1";
+            assertEquals(43, expression(condition), "checked guest arithmetic: " + row[0]);
+        }
+    }
+
+    @Test
+    void zeroDivisorAndOperandOverflowHaveDistinctHostSideDiagnostics() {
+        for (String guest : new String[] {
+            "0 % 0",
+            "43 % 0",
+            "(-9223372036854775807 - 1) % 0"
+        }) {
+            RuntimeException thrown = assertThrows(RuntimeException.class,
+                    () -> expression(guest), guest);
+            requireClassifiedZero(thrown);
+            for (Throwable cursor = thrown; cursor != null; cursor = cursor.getCause()) {
+                assertFalse(cursor instanceof dev.oreslang.runtime.CheckedI64OverflowException,
+                        "remainder-by-zero must not be mislabeled as overflow: " + guest);
+            }
+        }
+        for (String guest : new String[] {
+            "(9223372036854775807 + 1) % 0",
+            "43 % (9223372036854775807 + 1)",
+            "(9223372036854775807 * 2) % -1"
+        }) {
+            RuntimeException thrown = assertThrows(RuntimeException.class,
+                    () -> expression(guest), guest);
+            boolean overflow = false;
+            for (Throwable cursor = thrown; cursor != null; cursor = cursor.getCause()) {
+                overflow |= cursor instanceof dev.oreslang.runtime.CheckedI64OverflowException
+                        || String.valueOf(cursor.getMessage()).contains("ORES_I64_OVERFLOW");
+                assertFalse(cursor instanceof CheckedI64DivisionByZeroException,
+                        "intermediate checked overflow must take precedence: " + guest);
+            }
+            assertTrue(overflow, "checked operand failure must be observable: " + guest);
+        }
+    }
+
+    @Test
+    void checkedRemainderDoesNotAdmitFloatingOrIntegerDivisionFallbacks() {
+        for (String guest : new String[] {
+            "43 % 2.0", "43.0 % 2", "43 / 1",
+            "true ? 43 : (43 % 2.0)"
+        }) {
+            assertThrows(RuntimeException.class, () -> expression(guest),
+                    "unsupported numeric operation must fail before execution: " + guest);
+        }
+    }
 }
