@@ -162,7 +162,7 @@ public final class SealedActorState {
                                                        long expectedVersion,
                                                        Map<String, Object> replacements) {
         requireOwner();
-        if (current != null)
+        if (current != null || stateCarrier.get() != null)
             throw new IllegalStateException("ML_PREPARE_WITH_LIVE_STATE_LOAN");
         if (!"int".equals(schema.get(versionField)) || expectedVersion < 0
                 || expectedVersion == Long.MAX_VALUE)
@@ -196,6 +196,9 @@ public final class SealedActorState {
         if (!owner.equals(ActorRuntime.currentActorId().orElse(null))) {
             throw new SecurityException("actor state requires the owning actor's admitted turn");
         }
+        Thread active = stateCarrier.get();
+        if (active != null && active != Thread.currentThread())
+            throw new SecurityException("ML_STATE_LOAN_FOREIGN_CARRIER");
     }
 
     private void requireOwnedRegionMutationAuthority() {
@@ -399,17 +402,19 @@ public final class SealedActorState {
             if (newlyAdmitted) stateCarrier.compareAndSet(carrier, null);
             throw new SecurityException("cannot upgrade a live critical read loan to write");
         }
-        Access access = new Access(++serial, writable);
-        current = access;
+        Access access = null;
         try {
+            access = new Access(++serial, writable);
+            current = access;
             T result = callback.apply(access);
             if (!safeResult(result, 0)) {
                 throw new IllegalArgumentException("critical state access cannot escape in result");
             }
             return result;
         } finally {
-            access.live = false;
+            if (access != null) access.live = false;
             current = previous;
+            // Also executes when loan allocation/callback construction throws.
             if (newlyAdmitted && !stateCarrier.compareAndSet(carrier, null))
                 throw new IllegalStateException("ML_STATE_LOAN_CARRIER_CORRUPT");
         }
@@ -441,7 +446,7 @@ public final class SealedActorState {
         if (!owner.equals(confirmedOwner)) {
             throw new SecurityException("cannot retire state for a foreign actor");
         }
-        if (current != null) {
+        if (current != null || stateCarrier.get() != null) {
             throw new IllegalStateException("cannot retire actor state with live critical loan");
         }
         retired = true;
