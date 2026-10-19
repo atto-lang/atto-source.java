@@ -964,6 +964,11 @@ public final class TreeShaker {
                         rewriteExpression(operation.channel(), module, locals),
                         rewriteExpression(operation.value(), module, locals));
             }
+            if (expression instanceof Ast.StaticSelectExpr selected) {
+                Ast.SelectStmt lowered = (Ast.SelectStmt) rewriteStatements(
+                        List.of(selected.select()), module, locals).getFirst();
+                return new Ast.StaticSelectExpr(lowered);
+            }
             if (expression instanceof Ast.DynamicSelectExpr selected) {
                 return new Ast.DynamicSelectExpr(
                         selected.mode(),
@@ -1365,6 +1370,8 @@ public final class TreeShaker {
             else if (expression instanceof Ast.ChannelOpExpr operation) {
                 scanExpression(module, operation.channel(), locals);
                 scanExpression(module, operation.value(), locals);
+            } else if (expression instanceof Ast.StaticSelectExpr selected) {
+                scanStatements(module, List.of(selected.select()), locals);
             } else if (expression instanceof Ast.DynamicSelectExpr selected) {
                 scanExpression(module, selected.cases(), locals);
             } else if (expression instanceof Ast.ListExpr list) {
