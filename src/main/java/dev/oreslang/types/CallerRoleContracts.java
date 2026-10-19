@@ -41,7 +41,7 @@ public final class CallerRoleContracts {
             // A linked/rewritten callable whose exact declaration identity
             // was never validated must not be treated as unrestricted, even
             // if its metadata was dropped during an AST transformation.
-            return isCallable(declaration) && !checkedDeclarations.contains(declaration)
+            return (isCallable(declaration) && !checkedDeclarations.contains(declaration))
                     || permitted.containsKey(declaration)
                     || hasPolicyAnnotation(declaration, "CallableBy");
         }
@@ -51,6 +51,11 @@ public final class CallerRoleContracts {
          * A name-only or arbitrary runtime lookup must never be used as proof.
          */
         public void requireDirectCall(Object callee, Object callerDeclaration, String displayName) {
+            if (!isCallable(callee)) {
+                throw new IllegalArgumentException(
+                        "@CallableBy requires a verified function/method declaration target; "
+                                + "raw names or absent callables cannot prove authorization");
+            }
             // Raw strings/sets supplied by clients are never authorization inputs.
             // Only this index may derive the caller roles from its validated,
             // identity-keyed declaration bindings. null denotes a lambda or
@@ -102,6 +107,10 @@ public final class CallerRoleContracts {
 
         /** A guarded callable must not be erased into a function value. */
         public void rejectReification(Object declaration, String displayName) {
+            if (!isCallable(declaration)) {
+                throw new IllegalArgumentException(
+                        "@CallableBy reification requires a verified function/method declaration");
+            }
             if (isRestricted(declaration)) {
                 throw new IllegalArgumentException("@CallableBy function '" + displayName
                         + "' is direct-call-only; indirect calls and method references "
