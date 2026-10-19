@@ -265,6 +265,86 @@ public class TaskCancellationTest {
         }
     }
 
+
+    @Test void retiredTokenClosesLateSubscriptionsAndCannotBeCancelledAgain()
+            throws Exception {
+        for (int i = 0; i < 100; i++) {
+            TaskCancellation parent = new TaskCancellation();
+            TaskCancellation finished = parent.child();
+            finished.retire();
+            finished.retire(); // Idempotent retirement.
+            assertEquals(0, parent.ownedChildCount());
+            AtomicInteger callbacks = new AtomicInteger();
+            TaskCancellation.Subscription observer =
+                    finished.onCancel(callbacks::incrementAndGet);
+            TaskCancellation.Subscription revoker =
+                    finished.onRevoke(callbacks::incrementAndGet);
+            java.lang.reflect.Field active =
+                    observer.getClass().getDeclaredField("active");
+            active.setAccessible(true);
+            assertFalse(((java.util.concurrent.atomic.AtomicBoolean)
+                    active.get(observer)).get(),
+                    "late observer must not pin a completed task");
+            assertFalse(((java.util.concurrent.atomic.AtomicBoolean)
+                    active.get(revoker)).get(),
+                    "late revoker must not pin a completed task");
+            assertFalse(finished.cancel("too late"));
+            assertEquals(0, callbacks.get());
+            observer.close();
+            revoker.close();
+        }
+    }
+
+    @Test void retiredTokensCannotSpawnOrAdoptLiveTasks() {
+        for (int i = 0; i < 100; i++) {
+            TaskCancellation root = new TaskCancellation();
+            TaskCancellation retired = root.child();
+            retired.retire();
+            assertThrows(IllegalStateException.class, retired::child);
+            TaskCancellation destination = new TaskCancellation();
+            TaskCancellation live = destination.child();
+            assertThrows(IllegalStateException.class,
+                    () -> live.adoptInto(retired));
+            assertTrue(live.isOwnedBy(destination));
+            assertThrows(IllegalStateException.class,
+                    () -> retired.adoptInto(destination));
+        }
+    }
+
+    @Test void concurrentRetirementAndLateSubscriptionNeverRetainsCallback()
+            throws Exception {
+        for (int i = 0; i < 200; i++) {
+            TaskCancellation finished = new TaskCancellation();
+            CountDownLatch start = new CountDownLatch(1);
+            AtomicInteger callbacks = new AtomicInteger();
+            java.util.concurrent.atomic.AtomicReference<TaskCancellation.Subscription> sub =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            Thread registrant = new Thread(() -> {
+                await(start);
+                sub.set(finished.onCancel(callbacks::incrementAndGet));
+            });
+            Thread terminator = new Thread(() -> {
+                await(start);
+                finished.retire();
+            });
+            registrant.start();
+            terminator.start();
+            start.countDown();
+            registrant.join(3000);
+            terminator.join(3000);
+            assertFalse(registrant.isAlive());
+            assertFalse(terminator.isAlive());
+            java.lang.reflect.Field active =
+                    sub.get().getClass().getDeclaredField("active");
+            active.setAccessible(true);
+            assertFalse(((java.util.concurrent.atomic.AtomicBoolean)
+                    active.get(sub.get())).get(),
+                    "retirement must detach racing subscription");
+            assertFalse(finished.cancel("post-retirement"));
+            assertEquals(0, callbacks.get());
+        }
+    }
+
     private static void await(CountDownLatch latch) {
         try { if (!latch.await(3, TimeUnit.SECONDS)) throw new AssertionError("timed out"); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
