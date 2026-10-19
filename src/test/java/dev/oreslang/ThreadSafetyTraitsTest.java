@@ -174,6 +174,34 @@ final class ThreadSafetyTraitsTest {
     }
 
     @Test
+    void permissiveNominalProofCannotSkipUnsoundGenericArguments() {
+        ThreadSafetyTraits.NominalProof permissive = (type, trait) -> true;
+        for (Trait trait : Trait.values()) {
+            for (Type unsafe : List.of(
+                    Types.Unknown.INSTANCE,
+                    new Types.Generic("T"),
+                    new Types.Named("ActorRef", List.of(Types.Primitive.INT)),
+                    new Types.Named("MutexGuard", List.of(Types.Primitive.INT)),
+                    new Types.Function(List.of(), Types.Primitive.INT))) {
+                Type wrapped = new Types.Named("UserDefined", List.of(unsafe));
+                assertFalse(ThreadSafetyTraits.has(wrapped, trait, permissive),
+                        "nominal trait callback bypassed unsound generic " + unsafe);
+                Type doublyWrapped = new Types.Named("Outer", List.of(wrapped));
+                assertFalse(ThreadSafetyTraits.has(doublyWrapped, trait, permissive));
+            }
+        }
+
+        Type sendOnly = new Types.Named("SendOnly", List.of());
+        ThreadSafetyTraits.NominalProof sendProof =
+                (type, trait) -> type.name().equals("SendOnly") && trait == Trait.SEND
+                        || type.name().equals("Wrapper");
+        assertTrue(ThreadSafetyTraits.has(
+                new Types.Named("Wrapper", List.of(sendOnly)), Trait.SEND, sendProof));
+        assertFalse(ThreadSafetyTraits.has(
+                new Types.Named("Wrapper", List.of(sendOnly)), Trait.SYNC, sendProof));
+    }
+
+    @Test
     void sharedMutexAcceptsSendOwnedDataButRejectsUnprovenPayloads() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc good(): void {
