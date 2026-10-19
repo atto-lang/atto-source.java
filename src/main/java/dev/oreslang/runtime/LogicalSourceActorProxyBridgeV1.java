@@ -88,19 +88,28 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
      */
     public record Publication(
             LogicalSourceActorRouterV1.LogicalAddress address,
-            LogicalActorProxyMailboxV1.Snapshot mailbox) { }
+            LogicalActorProxyMailboxV1.Snapshot mailbox,
+            long generationId,
+            String codeSha256) { }
 
     public Publication publication() {
         requireHost();
         synchronized (dispatchLock) {
-            var address = router.ref().address();
-            var snapshot = mailbox.snapshot();
-            if (!poisoned && address.routeEpoch() != snapshot.routeEpoch()) {
+            // One physical route monitor witnesses code generation, exact
+            // physical actor and immutable proxy route epoch together.
+            // dispatchLock also excludes proxy dispatch and upgrade while
+            // the committed publication is being observed.
+            var witness = router.supervisorPublication(mailbox);
+            if (!poisoned
+                    && witness.address().routeEpoch()
+                            != witness.mailbox().routeEpoch()) {
                 poisonAndSealAdmission();
                 throw new IllegalStateException(
                         "inconsistent code-image and proxy route publication");
             }
-            return new Publication(address, snapshot);
+            return new Publication(
+                    witness.address(), witness.mailbox(),
+                    witness.generationId(), witness.codeSha256());
         }
     }
 
