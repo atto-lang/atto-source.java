@@ -184,21 +184,70 @@ final class LogicalSourceActorRetiredLeaseRecoveryTest {
                     oldGeneration, ActorRuntime.ActorKind.SHARED,
                     "Counter", WAIT)) {
                 try {
-                    assertThrows(java.util.concurrent.TimeoutException.class,
-                            () -> router.upgradeTo(
+                    var upgradeFailure = new AtomicReference<Throwable>();
+                    Thread upgrader = Thread.ofPlatform().start(() -> {
+                        try {
+                            router.upgradeTo(
                                     candidateGeneration,
-                                    Duration.ofMillis(25)),
-                            "candidate that never reaches ready must not publish");
-                    assertEquals(1L, router.ref().routeEpoch(),
-                            "timed-out candidate must leave old route authoritative");
+                                    Duration.ofMillis(250));
+                            upgradeFailure.set(new AssertionError(
+                                    "candidate that never reaches ready unexpectedly published"));
+                        } catch (Throwable failure) {
+                            upgradeFailure.set(failure);
+                        }
+                    });
+
+                    long admittedBy = System.nanoTime()
+                            + TimeUnit.SECONDS.toNanos(5);
+                    while (captured.get() == null
+                            && System.nanoTime() < admittedBy) {
+                        Thread.sleep(2);
+                    }
                     assertNotNull(captured.get(),
                             "candidate physical spawn must have reached dispatcher admission");
 
                     @SuppressWarnings("unchecked")
                     var owners = (java.util.ArrayList<Object>)
                             retiredCandidates.get(router);
+                    long ownerBy = System.nanoTime()
+                            + TimeUnit.SECONDS.toNanos(5);
+                    while (owners.isEmpty() && System.nanoTime() < ownerBy) {
+                        Thread.sleep(2);
+                    }
                     assertEquals(1, owners.size(),
-                            "unpublished physical candidate must retain pre-reserved owner");
+                            "candidate owner must be reserved before physical readiness");
+
+                    Object owner = owners.getFirst();
+                    Field eligible = owner.getClass()
+                            .getDeclaredField("retirementEligible");
+                    eligible.setAccessible(true);
+                    assertFalse(eligible.getBoolean(owner),
+                            "staging candidate cannot be retirement-eligible");
+
+                    // routeEpoch() opportunistically calls reapRetiredLocked().
+                    // This observation must not consume a candidate whose
+                    // originating upgrade can still publish it.
+                    assertEquals(1L, router.ref().routeEpoch());
+                    assertEquals(1, owners.size(),
+                            "staging observation must not reap candidate owner");
+                    assertEquals(1, pins.getInt(candidateGeneration),
+                            "staging observation must not release candidate pin");
+                    assertEquals(0, router.reapRetired(),
+                            "explicit reaper must skip staging candidate owner");
+
+                    upgrader.join(10_000);
+                    assertFalse(upgrader.isAlive(),
+                            "timed-out candidate upgrade did not return");
+                    assertInstanceOf(
+                            java.util.concurrent.TimeoutException.class,
+                            upgradeFailure.get(),
+                            "candidate readiness timeout must remain the primary failure");
+                    assertEquals(1L, router.ref().routeEpoch(),
+                            "timed-out candidate must leave old route authoritative");
+                    assertEquals(1, owners.size(),
+                            "failed physical candidate must retain pre-reserved owner");
+                    assertTrue(eligible.getBoolean(owner),
+                            "abandoned candidate must become retirement-eligible");
                     assertEquals(1, pins.getInt(candidateGeneration),
                             "unpublished physical candidate must retain generation pin");
 
