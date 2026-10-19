@@ -6329,6 +6329,10 @@ public final class TypeChecker {
             return literal.value();
         }
         if (expr instanceof Ast.NameExpr name) return env.constantIndexKey(name.name());
+        if (expr instanceof Ast.UnaryExpr unary && unary.operator().equals("-")) {
+            Object operand = constantIndexKey(unary.operand(), env);
+            if (operand instanceof Long value && value != Long.MIN_VALUE) return -value;
+        }
         return null;
     }
 
@@ -6340,12 +6344,7 @@ public final class TypeChecker {
     /** Folds proven integer literals and immutable aliases without guest arithmetic. */
     private Long constantTupleIndex(Ast.Expr expression, Env env) {
         Object value = constantIndexKey(expression, env);
-        if (value instanceof Long index) return index;
-        if (expression instanceof Ast.UnaryExpr unary && unary.operator().equals("-")) {
-            Object operand = constantIndexKey(unary.operand(), env);
-            if (operand instanceof Long index && index != Long.MIN_VALUE) return -index;
-        }
-        return null;
+        return value instanceof Long index ? index : null;
     }
 
     private Type widenCollectionElement(Type type) {
