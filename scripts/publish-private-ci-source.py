@@ -163,12 +163,30 @@ def verify_protected_origin(repository, expected_policy_digest):
         f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}/protection")
     reviews = protection.get("required_pull_request_reviews")
     administrators = protection.get("enforce_admins")
+    force_pushes = protection.get("allow_force_pushes")
+    deletions = protection.get("allow_deletions")
     if (not isinstance(reviews, dict)
             or reviews.get("require_code_owner_reviews") is not True
             or reviews.get("dismiss_stale_reviews") is not True
+            or not isinstance(reviews.get("required_approving_review_count"), int)
+            or isinstance(reviews["required_approving_review_count"], bool)
+            or reviews["required_approving_review_count"] < 1
             or not isinstance(administrators, dict)
-            or administrators.get("enabled") is not True):
-        raise Denied("origin main does not enforce fresh CODEOWNER review for administrators")
+            or administrators.get("enabled") is not True
+            or not isinstance(force_pushes, dict)
+            or force_pushes.get("enabled") is not False
+            or not isinstance(deletions, dict)
+            or deletions.get("enabled") is not False):
+        raise Denied(
+            "origin main must enforce CODEOWNER approvals, stale-review dismissal, "
+            "administrator protection and deny forced pushes/deletions")
+    bypasses = reviews.get("bypass_pull_request_allowances")
+    if bypasses is not None:
+        if (not isinstance(bypasses, dict)
+                or any(not isinstance(bypasses.get(category, []), list)
+                       or bypasses.get(category)
+                       for category in ("users", "teams", "apps"))):
+            raise Denied("origin main has PR review bypass allowances")
     commit_sha = valid_sha(branch.get("commit", {}).get("sha"))
     policy = gh_api(f"repos/{SOURCE_REPO}/contents/{POLICY_PATH}?ref={commit_sha}")
     if (policy.get("path") != POLICY_PATH or policy.get("type") != "file"
