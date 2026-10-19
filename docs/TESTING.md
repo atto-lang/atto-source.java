@@ -122,8 +122,12 @@ deterministic guest scheduler:
   fingerprint are an authentication mechanism for concurrently mutable inputs.
 - A bounded host-only `ConcurrencyRaceAnalyzer` already supports vector-clock
   read/write conflict checking and happens-before edges for **owner-validated**
-  lock release/acquire and globally single-use actor-message IDs, with
-  adversarial regression tests. It requires a
+  reentrant lock release/acquire (synchronization published only on outermost
+  release) and globally single-use actor-message IDs. Every participant ID
+  must denote an independently executing logical task/message lifetime,
+  including distinct lanes within a concurrently executing actor; using only
+  the actor reference as an identity would hide races. Labels containing
+  control characters are rejected. It requires a
   **complete trusted stream of memory-access events**; no guest instrumentation
   feeds it yet, so it cannot certify a program as race-free.
 - `--race` and `--model-check` are reserved and intentionally return exit 2
