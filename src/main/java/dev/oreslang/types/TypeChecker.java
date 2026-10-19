@@ -7917,6 +7917,11 @@ public final class TypeChecker {
                 Type type,
                 Ast.BindingKind kind,
                 Set<String> uninitializedFields) {
+            if (ML_SCALAR_INTRINSICS.contains(name)) {
+                throw new IllegalArgumentException(
+                        "binding '" + name
+                                + "' is reserved by the sealed actor scalar publication API");
+            }
             if (bindings.putIfAbsent(name, new Binding(type, kind, uninitializedFields)) != null) {
                 throw new IllegalArgumentException("duplicate binding '" + name + "'");
             }
