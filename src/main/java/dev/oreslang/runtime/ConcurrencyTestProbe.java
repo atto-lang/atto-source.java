@@ -205,6 +205,9 @@ public final class ConcurrencyTestProbe {
 
     public static TraceData readTraceData(Path trace) throws IOException {
         Objects.requireNonNull(trace, "trace");
+        if (Files.isSymbolicLink(trace) || !Files.isRegularFile(trace)) {
+            throw new IllegalArgumentException("replay trace must be a regular non-symlink file");
+        }
         if (Files.size(trace) > 8L * 1024 * 1024) {
             throw new IllegalArgumentException("concurrency replay trace exceeds 8 MiB admission limit");
         }
