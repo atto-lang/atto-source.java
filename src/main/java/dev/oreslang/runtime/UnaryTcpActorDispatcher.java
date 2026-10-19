@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import java.math.BigInteger;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -61,14 +62,24 @@ final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher
             byte[] bytes = new byte[values.size()];
             for (int i = 0; i < values.size(); i++) {
                 Object item = values.get(i);
-                if (!(item instanceof Number number)) {
+                final long octet;
+                if (item instanceof Byte value) {
+                    octet = Byte.toUnsignedInt(value);
+                } else if (item instanceof Short value) {
+                    octet = value.longValue();
+                } else if (item instanceof Integer value) {
+                    octet = value.longValue();
+                } else if (item instanceof Long value) {
+                    octet = value;
+                } else if (item instanceof BigInteger value
+                        && value.signum() >= 0
+                        && value.bitLength() <= 8) {
+                    octet = value.longValue();
+                } else {
                     throw new IllegalArgumentException(
-                            "unary TCP result bytes must be numeric values");
+                            "unary TCP result byte must be an integer in 0..255");
                 }
-                long octet = number.longValue();
-                if (octet < 0 || octet > 255
-                        || (number instanceof Double d && d != Math.rint(d))
-                        || (number instanceof Float f && f != Math.rint(f))) {
+                if (octet < 0 || octet > 255) {
                     throw new IllegalArgumentException(
                             "unary TCP result byte must be an integer in 0..255");
                 }
