@@ -3574,15 +3574,25 @@ public final class TypeChecker {
             Type receiver = receiverDispatchType(deref(receiverType));
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "struct/record key");
-                if (record.members().isEmpty()) {
-                    throw new IllegalArgumentException("cannot index an empty closed record");
+                // Structural method contracts occupy synthetic shape entries
+                // for direct-call checking, not addressable data fields. Do
+                // not promote them into dynamic property lookup capabilities.
+                Map<String, Type> fields = new LinkedHashMap<>();
+                for (Map.Entry<String, Type> entry : record.members().entrySet()) {
+                    String name = entry.getKey();
+                    if (name.startsWith("instance$") && name.contains("$arity")
+                            && name.contains("$generics")) continue;
+                    fields.put(name, entry.getValue());
                 }
-                if (index instanceof StringLiteral key && !record.members().containsKey(key.value())) {
+                if (fields.isEmpty()) {
+                    throw new IllegalArgumentException("record exposes no indexable data fields");
+                }
+                if (index instanceof StringLiteral key && !fields.containsKey(key.value())) {
                     throw new IllegalArgumentException("unknown structural field '" + key.value() + "'");
                 }
-                Ast.CheckedIndexKeys.record(indexed, record.members().keySet());
-                if (index instanceof StringLiteral key) return record.members().get(key.value());
-                return indexedElementUnion(record.members().values());
+                Ast.CheckedIndexKeys.record(indexed, fields.keySet());
+                if (index instanceof StringLiteral key) return fields.get(key.value());
+                return indexedElementUnion(fields.values());
             }
             if (receiver instanceof Named named) {
                 Ast.ClassDecl klass = findClass(named.name());
