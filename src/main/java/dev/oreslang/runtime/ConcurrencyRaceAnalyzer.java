@@ -6,6 +6,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Bounded happens-before race analysis for *instrumented* logical executions.
@@ -35,7 +37,9 @@ public final class ConcurrencyRaceAnalyzer {
     private final Map<String, Map<String, Long>> clocks = new HashMap<>();
     private final Map<String, Location> locations = new HashMap<>();
     private final Map<String, Map<String, Long>> messages = new HashMap<>();
+    private final Set<String> issuedMessageIds = new HashSet<>();
     private final Map<String, Map<String, Long>> locks = new HashMap<>();
+    private final Map<String, String> lockOwners = new HashMap<>();
     private final List<Finding> findings = new ArrayList<>();
     private int events;
     private long conflictCount;
@@ -120,7 +124,9 @@ public final class ConcurrencyRaceAnalyzer {
     public synchronized void send(String participant, String messageId) {
         budget();
         String id = key(messageId);
-        if (messages.containsKey(id)) throw new IllegalStateException("message token already published");
+        if (!issuedMessageIds.add(id)) {
+            throw new IllegalStateException("message token cannot be reused, including after receive");
+        }
         messages.put(id, tick(participant).clock());
     }
 
@@ -133,15 +139,27 @@ public final class ConcurrencyRaceAnalyzer {
     }
 
     public synchronized void release(String participant, String lockId) {
+        String id = key(lockId);
+        String actor = key(participant);
+        if (!actor.equals(lockOwners.get(id))) {
+            throw new IllegalStateException("release requires the current lock owner");
+        }
         budget();
-        locks.put(key(lockId), tick(participant).clock());
+        locks.put(id, tick(actor).clock());
+        lockOwners.remove(id);
     }
 
     public synchronized void acquire(String participant, String lockId) {
+        String id = key(lockId);
+        String actor = key(participant);
+        if (lockOwners.containsKey(id)) {
+            throw new IllegalStateException("lock is already acquired");
+        }
         budget();
-        Map<String, Long> published = locks.get(key(lockId));
-        if (published != null) merge(clock(participant), published);
-        tick(participant);
+        Map<String, Long> published = locks.get(id);
+        if (published != null) merge(clock(actor), published);
+        tick(actor);
+        lockOwners.put(id, actor);
     }
 
     public synchronized List<Finding> findings() {
