@@ -20,8 +20,11 @@ make_fixture() {
 import unittest
 class MergedMainProvenanceTests(unittest.TestCase):
     pass
+mandatory = ("test_independently_reviewed_exact_main_positive",
+             "test_wrong_main_head_denied")
 for index in range(10):
-    setattr(MergedMainProvenanceTests, f"test_synthetic_{index:03d}",
+    name = mandatory[index] if index < len(mandatory) else f"test_synthetic_{index:03d}"
+    setattr(MergedMainProvenanceTests, name,
             lambda self: self.assertTrue(True))
 MERGED
   cat > "$fixture/test-publish-private-ci-source.py" <<'PY'
@@ -34,8 +37,19 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.environ['GH_CONFIG_DIR']))
         self.assertFalse(os.path.exists(os.path.join(os.environ['GH_CONFIG_DIR'], 'hosts.yml')))
         self.assertEqual(os.environ.get('GIT_TERMINAL_PROMPT'), '0')
+mandatory = (
+    "test_stored_root_tree_readback_precedes_commit_publication",
+    "test_stored_root_tree_tampering_denied_before_commit_or_ref",
+    "test_unreadable_base_root_tree_denied_before_private_blob",
+    "test_created_ci_commit_readback_fails_closed_before_ref",
+    "test_created_ci_ref_readback_rejects_changed_or_malformed_ref",
+    "test_source_pr_move_stops_next_private_blob_upload",
+    "test_protected_main_revocation_stops_next_blob_upload",
+    "test_destination_codeowners_revoked_after_first_blob",
+)
 for index in range(104):
-    setattr(DestinationBoundPublisherTests, f"test_synthetic_{index:03d}",
+    name = mandatory[index] if index < len(mandatory) else f"test_synthetic_{index:03d}"
+    setattr(DestinationBoundPublisherTests, name,
             lambda self: self.assertTrue(True))
 def load_tests(loader, suite, pattern):
     spec = importlib.util.spec_from_file_location(
@@ -188,6 +202,20 @@ grep -q PRIVATE_CI_TEST_INVENTORY_REJECTED "$root/out"
 if grep -q PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED "$root/out"; then exit 1; fi
 echo 'PASS: shortened suite with valid load_tests is rejected'
 make_fixture
+python3 - "$fixture/test-publish-private-ci-source.py" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+data = p.read_text()
+required = "test_stored_root_tree_tampering_denied_before_commit_or_ref"
+assert data.count(required) == 1
+p.write_text(data.replace(required, "test_disarmed_root_tree_tampering_denied_before_commit_or_ref"))
+PY
+if PRIVATE_CI_TEST_REPEATS=1 bash "$fixture/run-private-ci-regressions-local.sh" > "$root/out" 2>&1; then exit 1; fi
+grep -q PRIVATE_CI_TEST_REQUIRED_CASES_MISSING "$root/out"
+if grep -q PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED "$root/out"; then exit 1; fi
+echo 'PASS: equal-sized suite missing a mandatory adversarial case is rejected'
+make_fixture
 mkdir -p "$root/poisoned-PATH"
 for executable in python3 dirname; do
   cat > "$root/poisoned-PATH/$executable" <<'FAKE_EXEC'
@@ -205,4 +233,4 @@ fi
 test ! -e "$root/path-injection-marker"
 grep -q '^PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED=1$' "$root/out"
 echo 'PASS: caller PATH cannot replace trusted Python or dirname'
-echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=19'
+echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=20'
