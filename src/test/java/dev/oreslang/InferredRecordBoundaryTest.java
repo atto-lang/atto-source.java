@@ -350,7 +350,8 @@ final class InferredRecordBoundaryTest {
                 .map(Ast.FunctionDecl.class::cast).findFirst().orElseThrow();
         Ast.BindingStmt named = (Ast.BindingStmt) fn.body().getFirst();
         assertEquals("User", named.inferredTypeName());
-        assertTrue(((Ast.ObjectExpr) named.initializer()).inferredStruct());
+        assertFalse(((Ast.ObjectExpr) named.initializer()).inferredStruct(),
+                "record source must not be reclassified as a concrete struct");
         assertTrue(((Ast.ObjectExpr) named.initializer()).inferredRecord(),
                 "record source identity must survive parsing");
         accepted(source);
