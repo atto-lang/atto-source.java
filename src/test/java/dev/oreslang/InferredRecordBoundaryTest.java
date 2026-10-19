@@ -103,6 +103,29 @@ final class InferredRecordBoundaryTest {
     }
 
     @Test
+    void inferredStructAndRecordKeepDifferentAstSourceKinds() {
+        String source = """
+                fnc read(): string {
+                    const RecordValue a = infer record{name: "Ada"};
+                    const StructValue b = infer struct{name: "Grace"};
+                    return a.name;
+                }
+                """;
+        Ast.Program tree = Parser.parse(source);
+        Ast.FunctionDecl function = tree.modules().getFirst().declarations().stream()
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast).findFirst().orElseThrow();
+        Ast.ObjectExpr record = (Ast.ObjectExpr) ((Ast.BindingStmt) function.body().get(0)).initializer();
+        Ast.ObjectExpr struct = (Ast.ObjectExpr) ((Ast.BindingStmt) function.body().get(1)).initializer();
+        assertEquals(Ast.ObjectKind.INFERRED_RECORD, record.kind());
+        assertEquals(Ast.ObjectKind.INFERRED_STRUCT, struct.kind());
+        assertTrue(record.readonlyInferredAggregate());
+        assertTrue(struct.readonlyInferredAggregate());
+        assertFalse(struct.inferredRecord());
+        accepted(source);
+    }
+
+    @Test
     void emptyAndWhitespaceStaticFieldNamesAreLegal() {
         accepted("""
                 fnc get(): string {
@@ -147,6 +170,8 @@ final class InferredRecordBoundaryTest {
         Ast.BindingStmt named = (Ast.BindingStmt) fn.body().getFirst();
         assertEquals("User", named.inferredTypeName());
         assertTrue(((Ast.ObjectExpr) named.initializer()).inferredStruct());
+        assertTrue(((Ast.ObjectExpr) named.initializer()).inferredRecord(),
+                "record source identity must survive parsing");
         accepted(source);
     }
 
