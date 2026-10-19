@@ -95,21 +95,24 @@ wrapper_blob="$(git rev-parse "$main_sha:$WRAPPER_PATH" 2>/dev/null)" \
 publisher_blob="$(git rev-parse "$main_sha:$PUBLISHER_PATH" 2>/dev/null)" \
   || die "cannot resolve main private publisher blob"
 
-verify_running_blob() {
+verify_security_entry() {
   local path="$1"
-  local expected_blob="$2"
-  local actual_blob
-  actual_blob="$(git hash-object "$path" 2>/dev/null)" \
-    || die "cannot hash running security-critical export file: $path"
-  [[ "$actual_blob" == "$expected_blob" ]] \
-    || die "running export file differs from authoritative main: $path"
+  local main_entry source_entry
+  main_entry="$(git ls-tree "$main_sha" -- "$path")" \
+    || die "cannot inspect authoritative main export file: $path"
+  source_entry="$(git ls-tree "$expected_commit" -- "$path")" \
+    || die "cannot inspect source-head export file: $path"
+  [[ -n "$main_entry" && "$source_entry" == "$main_entry" ]] \
+    || die "source-head export file mode/blob differs from authoritative main: $path"
+  [[ -f "$path" && ! -L "$path" ]] \
+    || die "security-critical export path is not a regular non-symlink file: $path"
 }
 
-verify_running_blob "$POLICY_PATH" "$policy_blob"
-verify_running_blob "$PREFLIGHT_PATH" "$preflight_blob"
-verify_running_blob "$DEST_GUARD_PATH" "$guard_blob"
-verify_running_blob "$WRAPPER_PATH" "$wrapper_blob"
-verify_running_blob "$PUBLISHER_PATH" "$publisher_blob"
+verify_security_entry "$POLICY_PATH"
+verify_security_entry "$PREFLIGHT_PATH"
+verify_security_entry "$DEST_GUARD_PATH"
+verify_security_entry "$WRAPPER_PATH"
+verify_security_entry "$PUBLISHER_PATH"
 
 policy="$(git show "$main_sha:$POLICY_PATH")" \
   || die "cannot read authoritative main allowlist"
