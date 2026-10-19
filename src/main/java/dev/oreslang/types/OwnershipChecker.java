@@ -41,6 +41,8 @@ public final class OwnershipChecker {
     private final Set<String> ambiguousClasses = new HashSet<>();
     private int mutexCriticalSectionDepth;
     private int actorStateLoanDepth;
+    private final java.util.ArrayDeque<String> actorStateLoanNames =
+            new java.util.ArrayDeque<>();
     private int loopDepth;
     private boolean currentAsyncGenerator;
 
@@ -1143,13 +1145,85 @@ public final class OwnershipChecker {
                     List.of(scoped), lambda.expressionBody(), lambda.blockBody(),
                     false, lambda.criticalMode());
             actorStateLoanDepth++;
+            actorStateLoanNames.push(loan.name());
             try {
                 checkLambda(checked, scope, null);
             } finally {
+                actorStateLoanNames.pop();
                 actorStateLoanDepth--;
             }
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
+
+        if (call.callee() instanceof Ast.NameExpr intrinsic) {
+            String name = intrinsic.name();
+            if (name.equals("state_snapshot")) {
+                if (actorStateLoanDepth <= 0 || actorStateLoanNames.isEmpty()
+                        || call.arguments().size() < 3
+                        || !(call.arguments().getFirst() instanceof Ast.NameExpr loan)
+                        || !loan.name().equals(actorStateLoanNames.peek())) {
+                    throw error("state_snapshot requires the active lexical actor state loan");
+                }
+                for (Ast.Expr argument : call.arguments()) {
+                    checkExpr(argument, scope, false);
+                }
+                return new ValueInfo(
+                        Ast.TypeRef.simple("$ActorScalarSnapshot"),
+                        ValueKind.MOVE_ONLY,
+                        null);
+            }
+            if (name.equals("snapshot_int")
+                    || name.equals("snapshot_bool")
+                    || name.equals("snapshot_string")
+                    || name.equals("snapshot_version")
+                    || name.equals("snapshot_revision")) {
+                for (Ast.Expr argument : call.arguments()) {
+                    checkExpr(argument, scope, false);
+                }
+                Ast.TypeRef result = switch (name) {
+                    case "snapshot_bool" -> Ast.TypeRef.simple("bool");
+                    case "snapshot_string" -> Ast.TypeRef.simple("String");
+                    default -> Ast.TypeRef.simple("int");
+                };
+                return new ValueInfo(result, ValueKind.COPY, null);
+            }
+            if (name.equals("prepare_scalar_publication")) {
+                if (actorStateLoanDepth > 0) {
+                    throw error("prepare_scalar_publication must run after the actor state loan is released");
+                }
+                if (call.arguments().size() < 3
+                        || (call.arguments().size() - 1) % 2 != 0) {
+                    throw error("prepare_scalar_publication expects snapshot followed by field/value pairs");
+                }
+                checkExpr(call.arguments().getFirst(), scope, false);
+                for (int i = 1; i < call.arguments().size(); i++) {
+                    checkExpr(call.arguments().get(i), scope, false);
+                }
+                return new ValueInfo(
+                        Ast.TypeRef.simple("$ActorScalarPublication"),
+                        ValueKind.MOVE_ONLY,
+                        null);
+            }
+            if (name.equals("publish_scalar_publication")) {
+                if (actorStateLoanDepth <= 0 || actorStateLoanNames.isEmpty()
+                        || call.arguments().size() != 2
+                        || !(call.arguments().getFirst() instanceof Ast.NameExpr loan)
+                        || !loan.name().equals(actorStateLoanNames.peek())) {
+                    throw error("publish_scalar_publication requires the active lexical actor state loan");
+                }
+                VarState stateLoan = scope.lookup(loan.name());
+                if (stateLoan == null || !stateLoan.mutable) {
+                    throw error("publish_scalar_publication requires a critical write state loan");
+                }
+                checkExpr(call.arguments().getFirst(), scope, false);
+                ValueInfo publication = checkExpr(call.arguments().get(1), scope, true);
+                if (!publication.type.name().equals("$ActorScalarPublication")) {
+                    throw error("publish_scalar_publication requires a compiler-issued scalar publication");
+                }
+                return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+            }
+        }
+
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);
