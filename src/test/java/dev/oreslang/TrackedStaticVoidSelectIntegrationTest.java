@@ -126,6 +126,42 @@ final class TrackedStaticVoidSelectIntegrationTest {
     }
 
     @Test
+    void losingFutureObserverIsDetachedButProducerRemainsAvailable() throws Exception {
+        assertEquals("read:5:producer:23", run("""
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    val Channel<int> inbox = Channel.new<int>(1);
+                    val Channel<int> producerInput = Channel.new<int>(1);
+                    const Future<int> producer = nb readch producerInput;
+                    const Future<void> selected = nb select first {
+                      when readch inbox: int message -> {
+                        stdio.stdout.write("read:");
+                        stdio.stdout.write(message);
+                      }
+                      when await producer: int result -> {
+                        stdio.stdout.write("wrong-winner");
+                      }
+                    };
+                    writech inbox, 5;
+                    await selected;
+                    writech producerInput, 23;
+                    const int result = await producer;
+                    stdio.stdout.write(":producer:");
+                    stdio.stdout.write(result);
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val worker = await spawn Worker();
+                  worker.send("go");
+                  await worker.get_done();
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void nonactorAndValueProducingArmsAreRejected() {
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
