@@ -300,6 +300,39 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void immutableSignedAndOutOfRangeTupleAliasesRejectAtTypeCheck() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse("""
+                fnc bad(): int {
+                  const values = (1, 2);
+                  const int index = -1;
+                  return values[index];
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse("""
+                fnc bad(): int {
+                  const values = (1, 2);
+                  const int index = 12;
+                  return values[index];
+                }
+                """)));
+    }
+
+    @Test
+    void privateClassFieldConstantAliasIsRejectedBeforeRuntime() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse("""
+                define class Vault as
+                  pub val int value = 3;
+                  private val int secret = 19;
+                end
+                fnc bad(): int {
+                  const vault = new Vault();
+                  const string key = "secret";
+                  return vault[key];
+                }
+                """)));
+    }
+
+    @Test
     void mutableStringIndexCannotGainConstantKeyPrivileges() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(string runtimeKey): int {
