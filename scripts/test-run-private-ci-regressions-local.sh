@@ -58,6 +58,20 @@ mandatory = (
     "test_github_api_absolute_cli_and_sanitized_environment",
     "test_github_api_rejects_missing_or_ambiguous_explicit_auth",
     "test_github_api_supports_single_actions_token_without_config",
+    "test_noncanonical_policy_line_separators_cannot_grant_approval",
+    "test_source_codeowners_line_separators_are_denied_before_source_read",
+    "test_destination_codeowners_line_separators_are_denied_before_upload",
+    "test_invalid_utf8_and_control_byte_records_fail_closed",
+    "test_source_repository_numeric_identity_cannot_be_replaced",
+    "test_preflight_destination_id_must_be_attested_before_source_read",
+    "test_destination_id_swap_after_real_preflight_denies_before_read",
+    "test_noncanonical_and_out_of_range_repository_ids_fail_closed",
+    "test_duplicate_casefolded_destination_approval_is_denied",
+    "test_real_preflight_denies_numeric_repository_substitution",
+    "test_name_only_approval_is_not_a_numeric_id_authorization",
+    "test_destination_numeric_id_change_stops_next_private_blob",
+    "test_destination_repository_id_must_be_numeric",
+    "test_preflight_rejects_noninteger_or_missing_destination_identity",
 )
 for index in range(116):
     name = mandatory[index] if index < len(mandatory) else f"test_synthetic_{index:03d}"
