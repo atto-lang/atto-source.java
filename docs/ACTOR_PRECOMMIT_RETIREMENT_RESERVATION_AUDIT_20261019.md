@@ -129,3 +129,39 @@ Committed regression source covers:
 
 These JUnit tests are authored source only until an approved exact-tree runner
 executes them.
+
+
+### Staging owners are not retirement-eligible
+
+A follow-up race audit found that pre-reserving the owner alone was not enough.
+Host observations such as `routeEpoch()` and `address()` opportunistically
+call `reapRetiredLocked()`. While an upgrade is staging, a candidate physical
+actor can terminate before the upgrade thread has observed readiness/failure.
+If the generic reaper consumed that owner immediately, the candidate generation
+lease could be closed while the upgrade thread still retained publication
+authority.
+
+`CandidateRetirement` now carries an explicit `retirementEligible` bit.
+It is false from pre-reservation through the entire staging/publication window.
+The reaper skips such entries even if their physical actor is already finalized.
+Only rollback/failed cleanup, after publication is definitively abandoned,
+marks the owner retirement-eligible. Successful publication instead transfers
+the lease to the new active `Route` and removes the staging owner while holding
+the same route monitor.
+
+The black-hole candidate regression now runs upgrade on a separate thread,
+waits until physical admission, proves the owner is still staging, then calls
+both `routeEpoch()` (which opportunistically reaps) and `reapRetired()`.
+Neither may release the candidate pin. After readiness timeout, the same owner
+must become retirement-eligible, survive with exactly one pin, and be reaped
+exactly once after delayed physical finalization.
+
+A public, source-free JDK25 oracle at commit
+`f4f62e5241185ccbfe5098f1eee04a7d87151b9a` executed this ownership state
+machine in draft PR #15 on Temurin 25.0.4+1 with
+`javac --release 25 -Xlint:all -Werror`. It passed 20,000 deterministic
+candidate-owner rounds, 2,000 candidate-owner races, and the explicit
+`candidate_staging_reap_gate=pass` check, alongside the existing route,
+terminal-receipt, runtime-close, exact-envelope and send-vs-requeue models.
+The run printed `private_source_bytes=0`. This is model evidence only, not
+execution of the private production source or JUnit suite.
