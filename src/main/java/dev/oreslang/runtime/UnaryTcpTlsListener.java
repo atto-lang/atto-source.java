@@ -125,7 +125,11 @@ final class UnaryTcpTlsListener implements AutoCloseable {
 
     @Override public void close() {
         if (!closed.compareAndSet(false, true)) return;
-        closeQuietly(listener);
+        try {
+            listener.close();
+        } catch (IOException ignored) {
+            // Closing the bound endpoint is best effort.
+        }
         for (Socket socket : List.copyOf(acceptedSockets)) closeQuietly(socket);
         adapter.close();
         Thread accepting = acceptingThread;
