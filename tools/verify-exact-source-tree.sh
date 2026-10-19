@@ -236,8 +236,25 @@ while IFS= read -r -d '' entry; do
     echo "SOURCE_WORKTREE_DIRTY; multiply-linked source file forbidden" >&2
     exit 67
   fi
-  if [[ "$mode" == 100755 && ! -x "$path" ]] \
-      || [[ "$mode" == 100644 && -x "$path" ]]; then
+  # Bash -x checks effective access, not raw mode bits. For a non-root
+  # owner, a file with mode 0654 (group execute, owner not execute) may test
+  # false under -x and spuriously certify a Git 100644 source when
+  # core.filemode=false. Git's mode is executable when ANY x bit is set.
+  if raw_mode="$(stat -c %a -- "$path" 2>/dev/null)"; then
+    :
+  elif raw_mode="$(stat -f %Lp -- "$path" 2>/dev/null)"; then
+    :
+  else
+    echo "SOURCE_TREE_INDEX_ERROR; cannot inspect tracked file mode" >&2
+    exit 68
+  fi
+  if [[ ! "$raw_mode" =~ ^[0-7]{3,4}$ ]]; then
+    echo "SOURCE_TREE_INDEX_ERROR; unsupported tracked file mode" >&2
+    exit 68
+  fi
+  exec_bits=$(( (8#$raw_mode) & 0111 ))
+  if { [[ "$mode" == 100755 ]] && (( exec_bits == 0 )); } \
+      || { [[ "$mode" == 100644 ]] && (( exec_bits != 0 )); }; then
     echo "SOURCE_WORKTREE_DIRTY; tracked file mode differs from attested tree" >&2
     exit 67
   fi
