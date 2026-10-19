@@ -7,15 +7,17 @@ import java.util.concurrent.TimeoutException;
 
 /**
  * Deliberately serialized, trusted-HOST integration proof joining immutable
- * bounded proxy mail to real source-actor physical send and drain receipts.
+ * bounded proxy mail to real source-actor physical send and exact terminal
+ * receipts.
  *
  * <p>Only signed 64-bit scalar mail is encoded here; arbitrary guest objects
  * and schemas require a compiler-owned typed wire codec. Successful physical
  * enqueue is not logical completion: the proxy refunds credits only after the
- * exact physical actor drain observer succeeds. No parallel guest-visible
- * dispatch, durable exactly-once effects, or isolated/untrusted placement is
- * claimed. A failed/ambiguous send, drain or deadline seals dispatch without
- * retrying possibly accepted work.</p>
+ * runtime-minted terminal witness for that exact accepted physical sequence
+ * succeeds. No parallel guest-visible dispatch, durable exactly-once effects,
+ * or isolated/untrusted placement is claimed. A failed/ambiguous send,
+ * terminal receipt, or deadline seals dispatch without retrying possibly
+ * accepted work.</p>
  */
 public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
     private final Object dispatchLock = new Object();
@@ -191,7 +193,8 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
                 // Only the authoritative physical router may decode and
                 // send these immutable bytes. Its opaque receipt binds the
                 // exact envelope, route epoch and physical actor instance;
-                // only a successful physical drain may refund proxy credits.
+                // only its successful exact-message terminal receipt may
+                // refund proxy credits.
                 long routeEpoch = mailbox.snapshot().routeEpoch();
                 var receipt = router.sendAndDrainForProxy(
                         mailbox, envelope, routeEpoch);
