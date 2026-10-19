@@ -996,10 +996,12 @@ The trusted SHARED source-actor proxy now uses
 
 The normal `send(ref, message)` and the tracked send share ONE physical
 mailbox acceptance implementation. For a tracked send, the runtime allocates
-an opaque `PhysicalMailReceipt`, non-cancellable terminal `OresFuture`,
-and exact-sequence drain waiter **before** physical admission. Under the
-actor's lifecycle monitor it records the waiter, attempts mailbox admission
-and rolls back that registration if the mailbox rejects the message.
+an opaque `PhysicalMailReceipt` and non-cancellable terminal
+`OresFuture` **before** physical admission. Under the actor's lifecycle
+monitor it reserves an entry in a separate bounded
+`pendingPhysicalReceipts` map, attempts mailbox admission, and rolls back
+that entry if the mailbox rejects the message. The exact-message receipt
+ledger is independent of cumulative public `pendingDrains` waiters.
 The accepted sequence is assigned by the runtime at the same linearization
 point, never taken from the logical proxy or guest source. A terminal witness
 settles only once this physical sequence is marked processed, or fails if
@@ -1020,9 +1022,16 @@ UNTRUSTED network/IPC transport must bind worker attestation, incarnation,
 route epoch, message ABI digest, and opaque accepted-message identity in
 independently authenticated receipts.
 
+Receipt-map keys and the completion callback list are allocated before
+physical mailbox admission and before publishing a processed-message
+watermark, respectively. A failed reservation cannot silently turn into an
+acknowledged send. The trusted receipt entry point also rejects scheduler,
+actor and async carrier contexts, including carrier-only callback markers.
+
 Regression sources include real `ActorRuntime` physical receipt tests
 for exact sequential and concurrent admissions, per-actor sequence namespaces,
-non-cancellable completion observers, faulted actor receive, and existing
+non-cancellable completion observers, paused physical execution, faulted actor
+receive, carrier admission rejection, and existing
 source-compiled SHARED proxy upgrade tests. These remain authored test code,
 **not an exact-head JDK25/GraalVM execution pass** while source-owned Actions
 are runner-blocked.
