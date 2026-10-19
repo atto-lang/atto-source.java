@@ -45,3 +45,33 @@ Reference assertions are mathematical/protocol unit checks, **not performance be
 - After correctness: 1F1B pipeline scheduler, checkpoint/recompute, mixed precision, GPU kernels/collectives, placement, fault injection and instrumented multi-device benchmarks.
 
 Non-goals for v0: training real production models, networked RPC, actual Tensor<f32> values, 1F1B concurrency, cross-process zero-copy, GPU dispatch, automatic source annotation support or verified distributed atomic commits.
+
+
+## Audit and hardening (2026-10-18)
+
+The reference implementation now refuses unknown/missing keys, symbol or hidden keys, accessor-bearing input records, sparse arrays and non-finite f64 tensor elements. This is **not** a general-purpose JavaScript Proxy sanitizer or an authenticated wire parser: a trusted actor transport must supply real identity, origin, tenant fencing, deadline and authenticated generation.
+
+Resource constraints are intentionally conservative for this host oracle:
+
+| Budget | Maximum |
+|---|---:|
+| Graph vertices | 128 |
+| Total dense weight/bias scalars | 65,536 |
+| Scalars per one forward tape (including input + target) | 65,536 |
+| Aggregate live tape scalars per step | 262,144 |
+| Outstanding forward microbatches | 4,096 (also limited by the configured admission cap) |
+| Expected microbatches per step | 4,096 |
+| Logical edge trace receipts per step (forward and backward) | 32,768 |
+| Retained committed step identities | 4,096 |
+
+The bounded in-memory replay ledger **never evicts** a committed key and refuses new steps when full. It does not survive process restart and cannot serve as a durable distributed exactly-once guarantee. The active state holds at most one synchronous training step at a time, and only zero-based microbatch IDs within `[0, expectedMicrobatches)` are admissible. Admission rejects invalid inputs before saving forward activations. Failed reverse-mode calculations retain the frame for explicit cancellation/recovery; no partial optimizer update is exposed. Forward and backward receipts carry run ID, step ID, microbatch ID, parameter version, source/target edge and input-slot correlation. Dynamic or repeated invocations will additionally require an authenticated execution/tape invocation token in the real actor runtime.
+
+**Determinism:** Per-microbatch parameter VJP contributions are stored separately and reduced in **ascending microbatch ID order**, independent of the order in which backward calls arrive. This fixes order-dependent f64 rounding in the reference; it does not promise device-independent or GPU bitwise reproducibility. Gradient overflow is rejected before local SGD commit rather than saturating or publishing a partial update.
+
+Run the expanded numerical and adversarial regression suite with:
+
+```sh
+node --test contracts/ml/v1/autodiff-reference.test.mjs
+```
+
+Open admission gates: independently authored TypeSpec / JSON Schema peers and generated witness comparison; real Oreslang parser/typechecker/IR lowering; sealed runtime differentiable envelopes; single actor `state { ... }` critical-loan implementation; CPU/GPU tensor buffer ownership; JIT/AOT/hybrid/LLVM source parity; authenticated remote messaging; progress/fault model checking; durable step commits and recovery. A passing Node reference suite does **not** close any of those gates.
