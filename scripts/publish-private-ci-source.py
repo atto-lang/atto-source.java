@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 # An approved destination must include its stable numeric GitHub repository ID.
@@ -172,8 +173,16 @@ def gh_api(route, method="GET", payload=None):
         argv.extend(["--input", "-"])
     env = verified_child_env()
     try:
-        p = subprocess.run(argv, input=json.dumps(payload) if payload is not None else None,
-                           capture_output=True, text=True, env=env, timeout=45, check=False)
+        # A caller-controlled HOME can select arbitrary ~/.config/gh hosts and
+        # credential settings even after GH_CONFIG_DIR/XDG_CONFIG_HOME are
+        # removed. Use an ephemeral private configuration root for each
+        # authenticated request: only explicit noninteractive credentials from
+        # the trusted runner environment can authenticate gh.
+        with tempfile.TemporaryDirectory(prefix="ores-ci-gh-") as isolated_home:
+            env["HOME"] = isolated_home
+            env["XDG_CONFIG_HOME"] = isolated_home
+            p = subprocess.run(argv, input=json.dumps(payload) if payload is not None else None,
+                               capture_output=True, text=True, env=env, timeout=45, check=False)
     except (OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
         raise Denied("authenticated GitHub API request unavailable") from exc
     if p.returncode != 0:
