@@ -97,6 +97,25 @@ final class ActorUpgradePreflightV1 implements AutoCloseable {
         }
     }
 
+    /** Frozen old-route DATA watermark captured under the mailbox lock. */
+    synchronized long dispatchWatermark() {
+        requireOpen();
+        return mailboxTicket.dispatchWatermark();
+    }
+
+    /**
+     * CONTROL-only post-publication retirement. This is NOT a second route
+     * commit: the owning logical route snapshot was already atomically swapped.
+     * Closing the old Task gate precedes re-enabling the new DATA route.
+     * A failure is irreversible and requires the owner to quarantine DATA.
+     */
+    synchronized void finishPublished() {
+        requireOpen();
+        closed = true; // close() can never roll back a published route
+        generation.close(); // prevents old generation pins, invalidates candidate
+        mailboxTicket.commit(); // unfreeze only after authoritative route swap
+    }
+
     private void requireOpen() {
         if (closed) throw new IllegalStateException("upgrade preflight is closed");
     }
