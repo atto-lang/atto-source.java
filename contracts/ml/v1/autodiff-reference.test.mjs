@@ -164,3 +164,166 @@ test('unused graph stages are refused rather than silently skipping parameter up
     {id:'loss',type:'mse',inputs:['$input']}
   ]),/unused actor/);
 });
+
+
+test('reject unknown, hidden, accessor and spoofed configuration fields',()=>{
+  const props={nodes:linear(),output:'loss',unexpected:'permit'};
+  assert.throws(()=>new ActorAutodiffReference(props),/unknown or missing/);
+  assert.throws(()=>new ActorAutodiffReference({nodes:linear(),output:'loss',maxInFlight:null}),/safe integer/);
+  const access={output:'loss'};
+  Object.defineProperty(access,'nodes',{enumerable:true,get(){throw new Error('EVALUATED_UNTRUSTED_GETTER');}});
+  assert.throws(()=>new ActorAutodiffReference(access),/accessor/);
+  const hidden={nodes:linear(),output:'loss'};
+  Object.defineProperty(hidden,'extra',{enumerable:false,value:1});
+  assert.throws(()=>new ActorAutodiffReference(hidden),/unknown or missing/);
+  const sym=Symbol('extra');
+  assert.throws(()=>new ActorAutodiffReference({nodes:linear(),output:'loss',[sym]:1}),/unknown or missing/);
+});
+
+test('reject unknown node fields and accessor or sparse graph arrays',()=>{
+  const sp=linear();sp[0].unauthorized=true;
+  assert.throws(()=>graph(sp),/unknown or missing/);
+  const notDense=linear();delete notDense[0].inputs[0];
+  assert.throws(()=>graph(notDense),/sparse\/accessor/);
+  const getter=linear();
+  Object.defineProperty(getter[0],'bias',{enumerable:true,get(){throw new Error('UNSAFE_GETTER');}});
+  assert.throws(()=>graph(getter),/accessor/);
+  const matrix=linear();delete matrix[0].weights[1];
+  assert.throws(()=>graph(matrix),/sparse\/accessor/);
+  const extra=linear();extra[1].weights=[[1]];
+  assert.throws(()=>graph(extra),/unexpected parameters/);
+});
+
+test('reject oversized graphs and weights before allocating owned parameter copies',()=>{
+  const graphNodes=[];
+  let previous='$input';
+  for(let i=0;i<128;i++){const id='step'+i;graphNodes.push({id,type:'relu',inputs:[previous]});previous=id;}
+  graphNodes.push({id:'loss',type:'mse',inputs:[previous]});
+  assert.throws(()=>graph(graphNodes),/bounded dense array/);
+  const denseNodes=[];
+  previous='$input';
+  for(let i=0;i<17;i++){
+    const id='layer'+i;
+    denseNodes.push({id,type:'dense',inputs:[previous],weights:[Array(4096).fill(1)],bias:[0]});
+    previous=id;
+  }
+  denseNodes.push({id:'loss',type:'mse',inputs:[previous]});
+  assert.throws(()=>graph(denseNodes),/PARAMETER_BUDGET_EXCEEDED/);
+});
+
+test('strict DATA message validation rejects unknown, getter and hidden values',()=>{
+  const g=graph();
+  const beginMessage={runId:'runA',stepId:3,expectedMicrobatches:1};
+  assert.throws(()=>g.beginStep({...beginMessage,callerRole:'admin'}),/unknown or missing/);
+  begin(g);
+  assert.throws(()=>g.forward({...{runId:'runA',stepId:3,microbatchId:0,input:[1,2],target:[2,3]},actorId:'other'}),/unknown or missing/);
+  const forwardMessage={runId:'runA',stepId:3,microbatchId:0,input:[1,2]};
+  Object.defineProperty(forwardMessage,'target',{get(){throw new Error('GETTER_RUN');},enumerable:true});
+  assert.throws(()=>g.forward(forwardMessage),/accessor/);
+  fwd(g);
+  assert.throws(()=>g.backward({runId:'runA',stepId:3,microbatchId:0,skipGradients:true}),/unknown or missing/);
+  assert.throws(()=>g.commit({runId:'runA',stepId:3,learningRate:0.1,authorize:true}),/unknown or missing/);
+  assert.throws(()=>g.cancel({runId:'runA',stepId:3,recovery:'trusted'}),/unknown or missing/);
+  back(g);
+  assert.equal(commit(g).committedVersion,1);
+});
+
+test('microbatch identifiers are contiguous bounded step-local IDs',()=>{
+  const g=graph();begin(g,2);
+  assert.throws(()=>fwd(g,2),/MICROBATCH_ID_OUT_OF_RANGE/);
+  assert.throws(()=>fwd(g,Number.MAX_SAFE_INTEGER),/MICROBATCH_ID_OUT_OF_RANGE/);
+  assert.throws(()=>back(g,2),/MICROBATCH_ID_OUT_OF_RANGE/);
+  fwd(g,1);back(g,1);
+  assert.throws(()=>commit(g),/INCOMPLETE_STEP/);
+  fwd(g,0);back(g,0);
+  assert.equal(commit(g).completedMicrobatches,2);
+});
+
+test('gradient fan-in with the identical source on two add ports is counted twice',()=>{
+  const g=graph([{id:'twice',type:'add',inputs:['$input','$input']},{id:'loss',type:'mse',inputs:['twice']}]);
+  begin(g);close(fwd(g,0,[3],[0]).loss,18);
+  assert.deepEqual(back(g).inputGradient,[12]);
+  const backEdges=g.trace().filter(x=>x.kind==='backward'&&x.from==='twice');
+  assert.deepEqual(backEdges.map(x=>x.inputSlot),[0,1]);
+  assert.deepEqual(backEdges.map(x=>x.to),['$input','$input']);
+});
+
+test('forward and backward edge receipts include full step and slot correlation',()=>{
+  const g=graph();begin(g);
+  const forward=fwd(g);const backward=back(g);
+  for(const message of [forward,backward]){
+    assert.equal(message.runId,'runA');
+    assert.equal(message.stepId,3);
+    assert.equal(message.microbatchId,0);
+    assert.equal(message.parameterVersion,0);
+  }
+  for(const receipt of g.trace()){
+    assert.equal(receipt.runId,'runA');
+    assert.equal(receipt.stepId,3);
+    assert.equal(receipt.microbatchId,0);
+    assert.equal(receipt.parameterVersion,0);
+    assert.equal(receipt.inputSlot,0);
+  }
+  const trace=g.trace();
+  trace[0].node='forged';
+  assert.notEqual(g.trace()[0].node,'forged');
+});
+
+test('a rejected forward overflow does not consume microbatch credit or mutate tape',()=>{
+  const g=graph([{id:'sum',type:'add',inputs:['$input','$input']},{id:'loss',type:'mse',inputs:['sum']}]);
+  begin(g);
+  assert.throws(()=>fwd(g,0,[Number.MAX_VALUE],[0]),/overflow/);
+  assert.deepEqual(g.trace(),[]);
+  assert.equal(fwd(g,0,[1],[0]).loss,2);
+  assert.deepEqual(back(g).inputGradient,[4]);
+  assert.equal(commit(g).committedVersion,1);
+});
+
+test('backward overflow retains original forward tape until cancel',()=>{
+  const g=graph([
+    {id:'dense',type:'dense',inputs:['$input'],weights:[[Number.MAX_VALUE]],bias:[1]},
+    {id:'loss',type:'mse',inputs:['dense']}
+  ]);
+  begin(g);
+  close(fwd(g,0,[0],[-2]).loss,4.5);
+  assert.throws(()=>back(g),/overflow/);
+  assert.throws(()=>commit(g),/INCOMPLETE_STEP/);
+  assert.equal(g.trace().filter(x=>x.kind==='forward').length,2);
+  g.cancel({runId:'runA',stepId:3});
+  assert.equal(g.version,0);
+  begin(g); // cancelled step may be retried with safe input/target
+  fwd(g,0,[0],[0]);back(g);
+  assert.equal(commit(g).committedVersion,1);
+});
+
+test('a bounded in-memory commit ledger refuses unsafe eviction and replay',()=>{
+  const g=new ActorAutodiffReference({nodes:linear(),output:'loss',maxCommittedSteps:1});
+  begin(g);fwd(g);back(g);commit(g);
+  assert.throws(()=>begin(g),/ALREADY_COMMITTED/);
+  assert.throws(()=>g.beginStep({runId:'different',stepId:4,expectedMicrobatches:1}),/REPLAY_LEDGER_EXHAUSTED/);
+  assert.equal(g.version,1);
+});
+
+test('activation credit budget bounds aggregate outstanding forward tapes',()=>{
+  const stages=[];let prev='$input';
+  for(let i=0;i<60;i++){const id='relu'+i;stages.push({id,type:'relu',inputs:[prev]});prev=id;}
+  stages.push({id:'loss',type:'mse',inputs:[prev]});
+  const g=graph(stages,8);
+  begin(g,8);
+  for(let i=0;i<4;i++) fwd(g,i,Array(1000).fill(0.5),Array(1000).fill(0));
+  // 4 * (1000 input + 1000 target + 60000 ReLU + 1 loss) > 262144? false (248004)
+  assert.throws(()=>fwd(g,4,Array(1000).fill(0.5),Array(1000).fill(0)),/ACTIVATION_CREDIT_EXHAUSTED/);
+  back(g,0);
+  assert.doesNotThrow(()=>fwd(g,4,Array(1000).fill(0.5),Array(1000).fill(0)));
+});
+
+test('forward activations cannot mutate parameter snapshots after owner admission',()=>{
+  const inputs=linear();const g=graph(inputs);
+  const exported=g.parameters();
+  inputs[0].weights[0][0]=-999;
+  exported.dense.weights[0][0]=-999;
+  begin(g);
+  close(fwd(g).loss,28.15625);
+  back(g);
+  assert.equal(g.gradients().dense.weights[0][0],6.5);
+});
