@@ -4,11 +4,9 @@ import dev.oreslang.ast.Ast;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.HashSet;
-import java.util.List;
+ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 
 /**
  * V3 source-level presence/default contract for the staged parser.
@@ -41,6 +39,10 @@ public final class V3DefaultArgValsPolicy {
         Map<String, Ast.Param> byName = new LinkedHashMap<>();
         for (Ast.Param param : parameters) {
             Objects.requireNonNull(param, "formal");
+            if (param.name().equals("self")) {
+                throw new IllegalArgumentException(
+                        "construction-scoped/receiver self is not a caller argument");
+            }
             if (byName.putIfAbsent(param.name(), param) != null) {
                 throw new IllegalArgumentException("duplicate formal parameter '" + param.name() + "'");
             }
