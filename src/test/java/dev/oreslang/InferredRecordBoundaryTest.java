@@ -31,7 +31,7 @@ final class InferredRecordBoundaryTest {
         String source = """
                 fnc read(): string {
                     const Person first = infer record{name: "Ada", age: 37};
-                    const Person second = infer struct{age: 42, name: "Grace"};
+                    const Person second = infer record{age: 42, name: "Grace"};
                     return second.name;
                 }
                 """;
@@ -112,7 +112,7 @@ final class InferredRecordBoundaryTest {
                 }
                 fnc read(): string {
                     const LocalRow first = infer record{name: "Ada"};
-                    const LocalRow second = infer struct{name: "Grace"};
+                    const LocalRow second = infer record{name: "Grace"};
                     return second.name;
                 }
                 """);
@@ -208,18 +208,18 @@ final class InferredRecordBoundaryTest {
         accepted("""
                 fnc read(): string {
                     const Person user = infer record{"first name": "Ada", age: 37};
-                    const Person second = infer struct{age: 42, "first name": "Grace"};
+                    const Person second = infer record{age: 42, "first name": "Grace"};
                     return second["first name"];
                 }
                 """);
     }
 
     @Test
-    void shortNamedStructAlsoIntroducesReadonlyAlias() {
+    void shortNamedStructIntroducesConcreteStructAlias() {
         accepted("""
                 fnc read(): string {
                     const Profile profile = infer struct{name: "Ada", active: true};
-                    const Profile another = infer record{active: false, name: "Grace"};
+                    const Profile another = infer struct{active: false, name: "Grace"};
                     return another.name;
                 }
                 """);
@@ -301,7 +301,7 @@ final class InferredRecordBoundaryTest {
         assertEquals(Ast.ObjectKind.INFERRED_RECORD, record.kind());
         assertEquals(Ast.ObjectKind.INFERRED_STRUCT, struct.kind());
         assertTrue(record.readonlyInferredAggregate());
-        assertTrue(struct.readonlyInferredAggregate());
+        assertFalse(struct.readonlyInferredAggregate());
         assertFalse(struct.inferredRecord());
         accepted(source);
     }
@@ -335,7 +335,7 @@ final class InferredRecordBoundaryTest {
                         "email@work": "ada@example.com",
                         age: 37
                     };
-                    const User another = infer struct{
+                    const User another = infer record{
                         age: 42,
                         "email@work": "grace@example.com",
                         "last-name": "Hopper",
@@ -370,14 +370,14 @@ final class InferredRecordBoundaryTest {
     }
 
     @Test
-    void structAndRecordReadonlyShapesInteroperate() {
-        accepted("""
+    void structAndRecordShapesDoNotSilentlyInteroperate() {
+        rejected("""
                 fnc read(): string {
                     const T first = infer<T> record{label: "first", count: 1};
                     const T second = infer struct{count: 2, label: "second"};
                     return second.label;
                 }
-                """);
+                """, "initializer for");
     }
 
     @Test
