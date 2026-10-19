@@ -223,6 +223,39 @@ final class ThreadSafetyTraitsTest {
     }
 
 
+
+    @Test
+    void deterministicNestedAdversarialTypesNeverGainForgedTraits() {
+        ThreadSafetyTraits.NominalProof permissive = (type, trait) -> true;
+        java.util.Random random = new java.util.Random(20261018L);
+        for (int i = 0; i < 1500; i++) {
+            Type leaf = switch (i % 4) {
+                case 0 -> Types.Unknown.INSTANCE;
+                case 1 -> new Types.Generic("T");
+                case 2 -> new Types.Named("Future", List.of(Types.Primitive.INT));
+                default -> new Types.Named("MutexGuard", List.of(Types.Primitive.INT));
+            };
+            Type nested = leaf;
+            int depth = 1 + random.nextInt(30);
+            for (int j = 0; j < depth; j++) {
+                nested = switch (random.nextInt(7)) {
+                    case 0 -> new Types.ListType(nested);
+                    case 1 -> new Types.Tuple(List.of(nested));
+                    case 2 -> new Types.Record(Map.of("field", nested), true);
+                    case 3 -> new Types.Union(List.of(Types.Primitive.INT, nested));
+                    case 4 -> new Types.Named("Option", List.of(nested));
+                    case 5 -> new Types.Named("Result", List.of(Types.Primitive.INT, nested));
+                    default -> new Types.Named("UserWrapper", List.of(nested));
+                };
+            }
+            for (Trait trait : Trait.values()) {
+                assertFalse(ThreadSafetyTraits.has(nested, trait, permissive),
+                        "unsafe nested type acquired " + trait + " in case " + i);
+            }
+        }
+    }
+
+
     @Test
     void sharedMutexAcceptsSendOwnedDataButRejectsUnprovenPayloads() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
