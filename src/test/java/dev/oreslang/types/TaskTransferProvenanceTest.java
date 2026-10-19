@@ -234,4 +234,60 @@ final class TaskTransferProvenanceTest {
                 failure.getMessage().contains("borrow"),
                 failure::getMessage);
     }
+    @Test
+    void provenanceLedgerCapacityAndLabelsFailClosedAtomically() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new TaskTransferProvenance.Transfer(
+                        "x".repeat(257),
+                        Ast.TypeRef.simple("int"),
+                        TaskTransferProvenance.TransferKind.COPY));
+
+        TaskTransferProvenance boundaryBound =
+                new TaskTransferProvenance();
+        for (int i = 0; i < 4_096; i++) {
+            boundaryBound.record(
+                    new Ast.TaskBlockStmt(List.of()), List.of());
+        }
+        assertEquals(4_096, boundaryBound.boundaryCount());
+        assertThrows(
+                IllegalStateException.class,
+                () -> boundaryBound.record(
+                        new Ast.TaskBlockStmt(List.of()), List.of()));
+        assertEquals(4_096, boundaryBound.boundaryCount());
+        assertEquals(0, boundaryBound.transferCount());
+
+        TaskTransferProvenance.Transfer copy =
+                new TaskTransferProvenance.Transfer(
+                        "copy",
+                        Ast.TypeRef.simple("int"),
+                        TaskTransferProvenance.TransferKind.COPY);
+        TaskTransferProvenance perBoundary =
+                new TaskTransferProvenance();
+        assertThrows(
+                IllegalStateException.class,
+                () -> perBoundary.record(
+                        new Ast.TaskBlockStmt(List.of()),
+                        java.util.Collections.nCopies(4_097, copy)));
+        assertEquals(0, perBoundary.boundaryCount());
+        assertEquals(0, perBoundary.transferCount());
+
+        TaskTransferProvenance totalBound =
+                new TaskTransferProvenance();
+        List<TaskTransferProvenance.Transfer> full =
+                java.util.Collections.nCopies(4_096, copy);
+        for (int i = 0; i < 16; i++) {
+            totalBound.record(
+                    new Ast.TaskBlockStmt(List.of()), full);
+        }
+        assertEquals(65_536, totalBound.transferCount());
+        assertThrows(
+                IllegalStateException.class,
+                () -> totalBound.record(
+                        new Ast.TaskBlockStmt(List.of()),
+                        List.of(copy)));
+        assertEquals(16, totalBound.boundaryCount());
+        assertEquals(65_536, totalBound.transferCount());
+    }
+
 }
