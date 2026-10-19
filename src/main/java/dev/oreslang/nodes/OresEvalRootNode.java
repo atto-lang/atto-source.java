@@ -4520,6 +4520,9 @@ public final class OresEvalRootNode extends RootNode {
                 return member(object, key, env);
             }
             int i = sequenceIndex(index);
+            // A type-checked positional constant is also a runtime contract:
+            // a changed optimizer rewrite must not read another affine slot.
+            Ast.CheckedIndexKeys.requireTupleSlot(site, i);
             if (receiver instanceof List<?> list) return list.get(i);
             if (receiver instanceof Object[] array) return array[i];
             throw new IllegalArgumentException("value is not indexable");
