@@ -133,8 +133,6 @@ public final class ThreadSafetyTraits {
             int next = current.depth() + 1;
             if (type instanceof Named named) {
                 for (Type arg : named.arguments()) pending.push(new Pending(arg, next));
-            } else if (type instanceof Types.Dyn dyn) {
-                pending.push(new Pending(dyn.interfaceType(), next));
             } else if (type instanceof ListType list) {
                 pending.push(new Pending(list.element(), next));
             } else if (type instanceof Tuple tuple) {
