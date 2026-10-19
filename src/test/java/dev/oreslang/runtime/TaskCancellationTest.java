@@ -533,6 +533,105 @@ public class TaskCancellationTest {
         }
     }
 
+
+    @Test void cancellationDetachesRevocationButNotPhysicalLifetime() {
+        for (int i = 0; i < 100; i++) {
+            TaskCancellation parent = new TaskCancellation();
+            TaskCancellation child = parent.child();
+            TaskCancellation grandchild = child.child();
+            assertTrue(parent.cancel("shutdown"));
+            assertEquals(0, parent.ownedChildCount(),
+                    "cancelled revocation graph must be cleared");
+            AtomicInteger ready = new AtomicInteger();
+            assertFalse(parent.sealAndObserveChildQuiescence(ready::incrementAndGet),
+                    "cancelled child is not physically retired");
+            assertThrows(IllegalStateException.class, parent::retire);
+            grandchild.retire();
+            assertEquals(0, ready.get(),
+                    "child itself has not yet physically retired");
+            child.retire();
+            assertEquals(1, ready.get());
+            parent.retire();
+            assertFalse(parent.cancel("again"));
+        }
+    }
+
+    @Test void movingChildTransfersPhysicalJoinResponsibility() {
+        for (int i = 0; i < 100; i++) {
+            TaskCancellation original = new TaskCancellation();
+            TaskCancellation replacement = new TaskCancellation();
+            TaskCancellation child = original.child();
+            AtomicInteger oldDrained = new AtomicInteger();
+            assertFalse(original.sealAndObserveChildQuiescence(
+                    oldDrained::incrementAndGet));
+            child.adoptInto(replacement);
+            assertEquals(1, oldDrained.get(),
+                    "transferring last child releases old join barrier");
+            original.retire();
+            AtomicInteger newDrained = new AtomicInteger();
+            assertFalse(replacement.sealAndObserveChildQuiescence(
+                    newDrained::incrementAndGet));
+            assertThrows(IllegalStateException.class,
+                    () -> child.adoptInto(original),
+                    "sealed/retired owner must reject adoption");
+            child.retire();
+            assertEquals(1, newDrained.get());
+            replacement.retire();
+        }
+    }
+
+    @Test void sealingChildJoinClosesAdmissionWithoutDroppingLiveChildren() {
+        for (int i = 0; i < 100; i++) {
+            TaskCancellation parent = new TaskCancellation();
+            TaskCancellation running = parent.child();
+            AtomicInteger ready = new AtomicInteger();
+            assertFalse(parent.sealAndObserveChildQuiescence(
+                    ready::incrementAndGet));
+            assertThrows(IllegalStateException.class, parent::child);
+            TaskCancellation other = new TaskCancellation();
+            TaskCancellation moving = other.child();
+            assertThrows(IllegalStateException.class,
+                    () -> moving.adoptInto(parent));
+            assertTrue(moving.isOwnedBy(other));
+            running.retire();
+            assertEquals(1, ready.get());
+            parent.retire();
+            moving.retire();
+            other.retire();
+        }
+    }
+
+    @Test void retirementRacingParentJoinRegistrationNotifiesExactlyOnce()
+            throws Exception {
+        for (int i = 0; i < 200; i++) {
+            TaskCancellation parent = new TaskCancellation();
+            TaskCancellation child = parent.child();
+            CountDownLatch go = new CountDownLatch(1);
+            AtomicInteger ready = new AtomicInteger();
+            java.util.concurrent.atomic.AtomicReference<Boolean> immediate =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            Thread sealing = new Thread(() -> {
+                await(go);
+                boolean noChildren = parent.sealAndObserveChildQuiescence(
+                        ready::incrementAndGet);
+                immediate.set(noChildren);
+                if (noChildren) ready.incrementAndGet();
+            });
+            Thread retiring = new Thread(() -> {
+                await(go);
+                child.retire();
+            });
+            sealing.start(); retiring.start(); go.countDown();
+            sealing.join(3000); retiring.join(3000);
+            assertFalse(sealing.isAlive());
+            assertFalse(retiring.isAlive());
+            assertNotNull(immediate.get());
+            assertEquals(1, ready.get(),
+                    "either the caller or retired child must release join once");
+            parent.retire();
+        }
+    }
+
     private static void await(CountDownLatch latch) {
         try { if (!latch.await(3, TimeUnit.SECONDS)) throw new AssertionError("timed out"); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
