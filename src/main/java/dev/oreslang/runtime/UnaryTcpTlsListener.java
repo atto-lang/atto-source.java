@@ -31,7 +31,7 @@ final class UnaryTcpTlsListener implements AutoCloseable {
     private final Semaphore connectionSlots;
     private final ExecutorService connectionWorkers =
             Executors.newVirtualThreadPerTaskExecutor();
-    private final Set<Socket> acceptedSockets =
+    private final Set<AcceptedConnection> acceptedConnections =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final AtomicBoolean serving = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -76,31 +76,26 @@ final class UnaryTcpTlsListener implements AutoCloseable {
                     break;
                 }
 
-                Socket accepted = null;
+                AcceptedConnection credit = null;
                 try {
-                    accepted = listener.accept();
-                    acceptedSockets.add(accepted);
+                    Socket socket = listener.accept();
+                    credit = new AcceptedConnection(socket);
+                    acceptedConnections.add(credit);
                     if (closed.get()) {
-                        acceptedSockets.remove(accepted);
-                        closeQuietly(accepted);
-                        connectionSlots.release();
+                        credit.close();
                         break;
                     }
-                    final Socket socket = accepted;
+                    final AcceptedConnection admitted = credit;
                     connectionWorkers.execute(() -> {
                         try {
                             adapter.serve(socket);
                         } finally {
-                            acceptedSockets.remove(socket);
-                            connectionSlots.release();
+                            admitted.retire();
                         }
                     });
                 } catch (IOException | RejectedExecutionException failure) {
-                    if (accepted != null) {
-                        acceptedSockets.remove(accepted);
-                        closeQuietly(accepted);
-                    }
-                    connectionSlots.release();
+                    if (credit == null) connectionSlots.release();
+                    else credit.close();
                     if (!closed.get()) throw failure;
                     break;
                 }
@@ -114,6 +109,31 @@ final class UnaryTcpTlsListener implements AutoCloseable {
 
     int activeConnections() { return adapter.activeConnections(); }
     int availableConnectionSlots() { return connectionSlots.availablePermits(); }
+
+    /**
+     * A leased accepted socket may be closed before its virtual thread starts.
+     * Retirement is idempotent across worker completion, submission failure
+     * and concurrent listener shutdown; the capacity permit is never doubled.
+     */
+    private final class AcceptedConnection implements AutoCloseable {
+        private final Socket socket;
+        private final AtomicBoolean retired = new AtomicBoolean();
+
+        AcceptedConnection(Socket socket) {
+            this.socket = socket;
+        }
+
+        void retire() {
+            if (!retired.compareAndSet(false, true)) return;
+            acceptedConnections.remove(this);
+            connectionSlots.release();
+        }
+
+        @Override public void close() {
+            closeQuietly(socket);
+            retire();
+        }
+    }
 
     private static void closeQuietly(Socket socket) {
         try {
@@ -130,7 +150,8 @@ final class UnaryTcpTlsListener implements AutoCloseable {
         } catch (IOException ignored) {
             // Closing the bound endpoint is best effort.
         }
-        for (Socket socket : List.copyOf(acceptedSockets)) closeQuietly(socket);
+        for (AcceptedConnection credit : List.copyOf(acceptedConnections))
+            credit.close();
         adapter.close();
         Thread accepting = acceptingThread;
         if (accepting != null && accepting != Thread.currentThread())
