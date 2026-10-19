@@ -928,6 +928,35 @@ with compiler-owned immutable frames, add authenticated per-message
 accept/done proof tied to physical incarnation, preserve independent
 CONTROL flow and introduce a dedicated worker/isolate backend.
 
+### Close/retirement retry audit (2026-10-18)
+
+The V1 router's logical `closed` bit seals further DATA admission, but
+does **not** mean every physical actor/code-generation lease has been
+reaped. The earlier `close()` implementation sealed the router and then
+called `ActorRef.stop()`, which can throw on the bounded host wait:
+subsequent `close()` calls returned early even while the old generation
+remained pinned. Such a timeout cannot license unload or claim a
+successful shutdown.
+
+`LogicalSourceActorRouterV1` now serializes supervisor close attempts
+under a dedicated close monitor; a stop exception records the active
+physical actor in the deferred-retirement ledger before propagating.
+Repeated close calls on an already-sealed router continue physical
+retirement until every lease is finalized. Reaping closes each generation
+lease before removing its owner from the ledger and tracks whether the
+active lease has already been released to prevent duplicate closure.
+The ordinary fast path remains idempotent. Added a real source-actor
+JUnit regression with eight concurrent host closers that asserts a
+fully retired generation is unpinned and further closure is harmless.
+
+These are committed **source-level changes and test cases, not yet
+executed JDK25/GraalVM proof**. A separate independent source-free
+Python model exercised 500,000 deterministic retirement/close transitions
+including 125,153 simulated stop failures, ensuring no early release,
+at-most-once release and eventual retirement following physical
+finalization. The model does not instantiate the Java router or
+substitute for exact-head CI.
+
 ### Remaining production gates
 
 This remains v1 and intentionally excludes:
