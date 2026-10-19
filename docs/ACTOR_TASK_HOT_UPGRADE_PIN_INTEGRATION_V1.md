@@ -69,6 +69,12 @@ regression explicitly rejects both direct children and grandchildren and
 then proves a fresh v2 child executes successfully. This is only a host
 structural safeguard, not compiler-issued task/code identity attestation.
 
+Closing a scope also prunes fully physically joined descendants **bottom-up**
+from their parent's strong ownership set. Unretired/failed children stay
+owned and keep code-image quarantine enforceable. The deep-scope and
+executing-child regressions assert that closed trees retain zero children;
+a long-lived logical root must not accumulate every prior hot-reload scope.
+
 These are JUnit **sources only**, not execution evidence until Maven/JDK25
 tests run on the exact Git head. The Tasks are intentionally host frames and
 do not claim source-compiled `task {}` exists.
