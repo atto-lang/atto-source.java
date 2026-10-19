@@ -139,6 +139,39 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void partiallyInitializedStructAllowsOnlyProvenInitializedLiteralKey() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc safe(): string {
+                  const mut point = struct{foo: string, ready: bool}{foo: "before"};
+                  const string result = point["foo"];
+                  point.ready = true;
+                  return result;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(string key): string {
+                  const mut point = struct{foo: string, ready: bool}{foo: "before"};
+                  const value = point[key];
+                  point.ready = true;
+                  return "unreachable";
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(): bool {
+                  const mut point = struct{foo: string, ready: bool}{foo: "before"};
+                  return point["ready"];
+                }
+                """)));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc safe(string key): string {
+                  const mut point = struct{foo: string, ready: bool}{foo: "before"};
+                  point.ready = true;
+                  return point[key] as string;
+                }
+                """)));
+    }
+
+    @Test
     void tupleIndexedWriteRejectedBeforeExecution() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(): void {
