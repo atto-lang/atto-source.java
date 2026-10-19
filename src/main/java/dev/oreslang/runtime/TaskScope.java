@@ -38,8 +38,9 @@ public final class TaskScope implements AutoCloseable {
     /**
      * Runtime/compiler-only retirement hook. The callback is invoked from the
      * child's getDone() completion, never from cancellation request or result
-     * settlement, so it may retire scoped memory loans only after physical
-     * scheduler quiescence and descendant retirement.
+     * settlement. The sole exception is scheduler admission failure before a
+     * Task exists at all; in that case the reservation is retired on the
+     * never-started path because no guest execution could own it.
      *
      * <p>Package-private by design: guest/source code cannot supply a callback
      * that manufactures release authority. A callback failure leaves the scope
@@ -70,6 +71,20 @@ public final class TaskScope implements AutoCloseable {
         try {
             child = TaskHandle.start(scheduler, task, cancellation);
         } catch (RuntimeException | Error admissionFailure) {
+            // TaskHandle.start only throws before a scheduler Task has been
+            // returned/admitted for execution. If compiler lowering reserved a
+            // loan before this call, there will be no getDone() callback to
+            // retire it. Retire the never-started reservation here.
+            try {
+                retireAfterPhysicalQuiescence.run();
+            } catch (RuntimeException | Error retirementError) {
+                admissionFailure.addSuppressed(retirementError);
+                poisonAfterRetirementFailure(retirementError);
+                // Keep this reserved join slot live: neither execution nor
+                // memory-authority retirement produced a trustworthy witness.
+                throw admissionFailure;
+            }
+
             // The reservation is already visible to concurrent seal/cancel;
             // undo it under the same lock, then publish completion outside.
             final boolean publish;
