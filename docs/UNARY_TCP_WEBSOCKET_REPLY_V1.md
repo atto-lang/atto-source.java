@@ -162,10 +162,21 @@ arbitrary host exception, stack trace or `toString`.
 
 The byte counters are **wire/buffer admission counters**, not a claim that they
 measure every transient JVM object or actor-heap byte. ActorRuntime mailbox/
-heap limits remain an independent layer. The current adapter accepts an
-already-created `Socket`; a production listener must additionally own bind/
-accept permissions, backlog policy, concrete peer authentication and lifecycle
-supervision.
+heap limits remain an independent layer. The host one-shot actor bridge now
+uses a lazy immutable unsigned-byte view over the request's defensive
+`byte[]`, rather than eagerly allocating one boxed `Long` per wire byte before
+actor admission. ActorRuntime can therefore apply its message-graph node bound
+from the list size before a second large collection is materialized.
+
+The current Java one-shot bridge still does **not** promise that every
+wire-valid 1 MiB unary body is actor-executable: ActorRuntime currently caps a
+message graph at 100,000 nodes, so large byte-list payloads fail closed before
+guest execution. A production `Bytes` lowering needs a compact sendable value
+whose accounting is byte-based rather than one graph node per octet.
+
+The current adapter accepts an already-created `Socket`; a production listener
+must additionally own bind/accept permissions, backlog policy, concrete peer
+authentication and lifecycle supervision.
 
 ## Other unary transports — opt-in, not inferred
 
