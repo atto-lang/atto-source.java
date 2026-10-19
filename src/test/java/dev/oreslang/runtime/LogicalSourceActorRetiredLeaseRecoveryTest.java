@@ -5,6 +5,11 @@ import org.junit.jupiter.api.Timeout;
 
 import java.lang.reflect.Field;
 import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.AbstractExecutorService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -113,6 +118,156 @@ final class LogicalSourceActorRetiredLeaseRecoveryTest {
                 assertEquals(0, router.reapRetired());
                 assertTrue(router.upgradeTo(newGeneration, WAIT),
                         "failed precommit retirement record allocation must allow safe retry");
+                assertEquals(2L, router.ref().routeEpoch());
+            }
+        }
+    }
+
+    @Test
+    void unpublishedCandidateOwnsGenerationBeforePhysicalSpawnAndRetainsItAcrossTimeout()
+            throws Exception {
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var oldGeneration = manager.stageActorGeneration(
+                    "candidate-owner-old.ores", SOURCE);
+            var candidateGeneration = manager.stageActorGeneration(
+                    "candidate-owner-new.ores",
+                    SOURCE.replace(
+                            "self.count = self.count + mail.value;",
+                            "self.count = self.count + mail.value + 1;"));
+
+            var candidateView =
+                    candidateGeneration.linkActorGeneration("Counter");
+            ActorRuntime candidateRuntime = candidateView.runtime();
+
+            Field dispatcherField =
+                    ActorRuntime.class.getDeclaredField("sharedDispatcher");
+            dispatcherField.setAccessible(true);
+            ExecutorService originalDispatcher =
+                    (ExecutorService) dispatcherField.get(candidateRuntime);
+            AtomicReference<Runnable> captured = new AtomicReference<>();
+            ExecutorService blackHole = new AbstractExecutorService() {
+                private volatile boolean shutdown;
+
+                @Override public void execute(Runnable command) {
+                    if (shutdown) {
+                        throw new java.util.concurrent.RejectedExecutionException();
+                    }
+                    if (!captured.compareAndSet(null, command)) {
+                        throw new AssertionError(
+                                "candidate unexpectedly submitted multiple initial dispatches");
+                    }
+                }
+
+                @Override public void shutdown() { shutdown = true; }
+                @Override public List<Runnable> shutdownNow() {
+                    shutdown = true;
+                    return List.of();
+                }
+                @Override public boolean isShutdown() { return shutdown; }
+                @Override public boolean isTerminated() { return shutdown; }
+                @Override public boolean awaitTermination(
+                        long timeout, TimeUnit unit) {
+                    return shutdown;
+                }
+            };
+
+            Field pins = HotReloadManager.Generation.class
+                    .getDeclaredField("actorRoutePins");
+            pins.setAccessible(true);
+            Field retiredCandidates = LogicalSourceActorRouterV1.class
+                    .getDeclaredField("retiredCandidates");
+            retiredCandidates.setAccessible(true);
+
+            dispatcherField.set(candidateRuntime, blackHole);
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                    oldGeneration, ActorRuntime.ActorKind.SHARED,
+                    "Counter", WAIT)) {
+                try {
+                    assertThrows(java.util.concurrent.TimeoutException.class,
+                            () -> router.upgradeTo(
+                                    candidateGeneration,
+                                    Duration.ofMillis(25)),
+                            "candidate that never reaches ready must not publish");
+                    assertEquals(1L, router.ref().routeEpoch(),
+                            "timed-out candidate must leave old route authoritative");
+                    assertNotNull(captured.get(),
+                            "candidate physical spawn must have reached dispatcher admission");
+
+                    @SuppressWarnings("unchecked")
+                    var owners = (java.util.ArrayList<Object>)
+                            retiredCandidates.get(router);
+                    assertEquals(1, owners.size(),
+                            "unpublished physical candidate must retain pre-reserved owner");
+                    assertEquals(1, pins.getInt(candidateGeneration),
+                            "unpublished physical candidate must retain generation pin");
+
+                    captured.get().run();
+
+                    long deadline = System.nanoTime()
+                            + TimeUnit.SECONDS.toNanos(5);
+                    int reaped = 0;
+                    while (reaped == 0 && System.nanoTime() < deadline) {
+                        reaped += router.reapRetired();
+                        if (reaped == 0) Thread.sleep(2);
+                    }
+                    assertEquals(1, reaped,
+                            "pre-reserved unpublished candidate owner must be retry-reapable");
+                    assertEquals(0, pins.getInt(candidateGeneration),
+                            "reap must release candidate generation pin exactly once");
+                    assertTrue(owners.isEmpty(),
+                            "successful reap must forget candidate owner");
+                    assertEquals(0, router.reapRetired(),
+                            "candidate retirement cannot replay");
+                } finally {
+                    dispatcherField.set(candidateRuntime, originalDispatcher);
+                    blackHole.shutdownNow();
+                }
+            }
+        }
+    }
+
+    @Test
+    void candidateOwnerReservationOomeOccursBeforePhysicalCandidateAdmission()
+            throws Exception {
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var oldGeneration = manager.stageActorGeneration(
+                    "candidate-owner-oome-old.ores", SOURCE);
+            var candidateGeneration = manager.stageActorGeneration(
+                    "candidate-owner-oome-new.ores",
+                    SOURCE.replace(
+                            "self.count = self.count + mail.value;",
+                            "self.count = self.count + mail.value + 1;"));
+            Field pins = HotReloadManager.Generation.class
+                    .getDeclaredField("actorRoutePins");
+            pins.setAccessible(true);
+
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                    oldGeneration, ActorRuntime.ActorKind.SHARED,
+                    "Counter", WAIT)) {
+                Field candidates = LogicalSourceActorRouterV1.class
+                        .getDeclaredField("retiredCandidates");
+                candidates.setAccessible(true);
+                Object original = candidates.get(router);
+                candidates.set(router, new java.util.ArrayList<Object>() {
+                    @Override public boolean add(Object value) {
+                        throw new OutOfMemoryError(
+                                "injected candidate owner reservation failure");
+                    }
+                });
+                try {
+                    assertThrows(OutOfMemoryError.class,
+                            () -> router.upgradeTo(candidateGeneration, WAIT));
+                    assertEquals(1L, router.ref().routeEpoch(),
+                            "owner reservation failure is pre-publication");
+                    assertEquals(0, pins.getInt(candidateGeneration),
+                            "pre-spawn owner reservation failure must release candidate pin");
+                } finally {
+                    candidates.set(router, original);
+                }
+                assertTrue(router.upgradeTo(candidateGeneration, WAIT),
+                        "failed pre-admission owner reservation must remain safely retryable");
                 assertEquals(2L, router.ref().routeEpoch());
             }
         }
