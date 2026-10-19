@@ -28,6 +28,8 @@ jobs:
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
+      - name: Run source-local checked-i64 pure-JVM smoke before Maven
+        run: bash scripts/test-checked-i64-standalone.sh
       - name: Verify compiler/runtime tests
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
       - name: Run examples
