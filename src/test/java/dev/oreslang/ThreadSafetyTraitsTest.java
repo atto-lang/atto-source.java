@@ -397,6 +397,49 @@ final class ThreadSafetyTraitsTest {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(10)
+    void actorTransportAndFrozenResultWalkersRespectProofWorkBudget() throws Exception {
+        var constructor = TypeChecker.class.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        var checker = constructor.newInstance();
+        var validate = TypeChecker.class.getDeclaredMethod(
+                "validateActorCallableBoundaryType", Types.Type.class,
+                dev.oreslang.ast.Ast.ActorKind.class, boolean.class, String.class);
+        validate.setAccessible(true);
+
+        // Only 36 distinct structural type nodes, but without a work budget
+        // the two child edges would require over 2^35 visits.
+        Type dag = Types.Primitive.INT;
+        for (int i = 0; i < 35; i++) {
+            dag = new Types.Tuple(List.of(dag, dag));
+        }
+        Type sharedDag = dag;
+        for (boolean completion : List.of(false, true)) {
+            var failure = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                    () -> validate.invoke(checker, sharedDag,
+                            dev.oreslang.ast.Ast.ActorKind.SHARED,
+                            completion, "actor type graph"));
+            assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+            assertTrue(failure.getCause().getMessage().contains("nesting budget"),
+                    failure.getCause().getMessage());
+        }
+
+        Type wide = new Types.Tuple(java.util.Collections.nCopies(
+                100_001, Types.Primitive.INT));
+        var failure = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                () -> validate.invoke(checker, wide,
+                        dev.oreslang.ast.Ast.ActorKind.SHARED,
+                        false, "actor flat payload"));
+        assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+        assertTrue(failure.getCause().getMessage().contains("nesting budget"));
+
+        // Exhausted budgets cannot poison a subsequent compiler query.
+        assertDoesNotThrow(() -> validate.invoke(checker,
+                Types.Primitive.INT, dev.oreslang.ast.Ast.ActorKind.SHARED,
+                false, "scalar"));
+    }
+
+    @Test
     void sharedMutexAcceptsSendOwnedDataButRejectsUnprovenPayloads() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc good(): void {
