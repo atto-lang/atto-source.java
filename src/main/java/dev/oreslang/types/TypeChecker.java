@@ -3563,8 +3563,7 @@ public final class TypeChecker {
             // Until that proof exists, keep the more powerful indexed path
             // unavailable inside constructors, even for literal string keys.
             if (currentConstructorOwner != null
-                    && indexed.receiver() instanceof Ast.NameExpr name
-                    && name.name().equals("self")) {
+                    && referencesConstructorSelf(indexed.receiver())) {
                 throw new IllegalArgumentException(
                         "constructor self cannot be indexed before definite "
                                 + "class-field initialization is proven");
@@ -6351,6 +6350,23 @@ public final class TypeChecker {
     private static String constantStringIndexKey(Ast.Expr expr, Env env) {
         Object value = constantIndexKey(expr, env);
         return value instanceof String key ? key : null;
+    }
+
+    private static boolean referencesConstructorSelf(Ast.Expr receiver) {
+        if (receiver instanceof Ast.NameExpr name) return name.name().equals("self");
+        if (receiver instanceof Ast.CastExpr cast) return referencesConstructorSelf(cast.value());
+        if (receiver instanceof Ast.UnaryExpr unary) return referencesConstructorSelf(unary.operand());
+        if (receiver instanceof Ast.MemberExpr member) return referencesConstructorSelf(member.receiver());
+        if (receiver instanceof Ast.IndexExpr nested) return referencesConstructorSelf(nested.receiver());
+        if (receiver instanceof Ast.ConditionalExpr conditional) {
+            return referencesConstructorSelf(conditional.whenTrue())
+                    || referencesConstructorSelf(conditional.whenFalse());
+        }
+        if (receiver instanceof Ast.CallExpr call) {
+            return referencesConstructorSelf(call.callee())
+                    || call.arguments().stream().anyMatch(TypeChecker::referencesConstructorSelf);
+        }
+        return false;
     }
 
     /** Folds proven integer literals and immutable aliases without guest arithmetic. */
