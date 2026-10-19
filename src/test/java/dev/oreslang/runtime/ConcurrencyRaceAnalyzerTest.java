@@ -127,6 +127,14 @@ final class ConcurrencyRaceAnalyzerTest {
     }
 
     @Test
+    void distinctConcurrentExecutionLanesOfSameActorRemainRacy() {
+        var checker = new ConcurrencyRaceAnalyzer();
+        checker.write("actor-one/task-1", "actor-one/state");
+        checker.write("actor-one/task-2", "actor-one/state");
+        assertEquals(1, checker.conflictCount());
+    }
+
+    @Test
     void consumedMessageTokenCannotBeReusedToForgeOrdering() {
         var checker = new ConcurrencyRaceAnalyzer();
         checker.send("a", "message-1");
