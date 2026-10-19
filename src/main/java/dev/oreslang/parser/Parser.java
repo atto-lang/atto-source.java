@@ -1701,8 +1701,9 @@ public final class Parser {
                     + "' requires checked exception and supervision lowering; source effect is not yet enabled");
         }
         // Standalone lightweight tasks are distinct from nonblocking select
-        // and nonblocking channel operations. Only the explicit `do nb`
-        // statement discards its handle; expression `nb {}` returns Task<T>.
+        // and nonblocking channel operations. Canonical `do task {}`
+        // discards the handle; `task {}` returns Task<T>. Legacy `nb {}`
+        // and `do nb {}` parse to the same AST for compatibility.
         if (check(DO) && checkNext(NB)
                 && current + 2 < tokens.size()
                 && tokens.get(current + 2).type() == LBRACE) {
