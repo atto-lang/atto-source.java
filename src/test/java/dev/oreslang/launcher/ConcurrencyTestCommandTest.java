@@ -83,6 +83,7 @@ final class ConcurrencyTestCommandTest {
         }));
         var evidence = dev.oreslang.runtime.ConcurrencyTestProbe.readTraceData(trace);
         assertEquals(64, evidence.entrySha256().length());
+        assertEquals(64, evidence.workspaceSha256().length());
         String original = Files.readString(trace);
         String alteredDigest = evidence.entrySha256().startsWith("0")
                 ? "1" + evidence.entrySha256().substring(1)
@@ -93,6 +94,14 @@ final class ConcurrencyTestCommandTest {
         }));
         Files.writeString(trace, original.replace("|backend=" + evidence.backend(),
                 "|backend=foreign-backend"));
+        assertEquals(2, ConcurrencyTestCommand.run(new String[]{
+                "examples/native-testing.ores", "--replay=" + trace
+        }));
+        String fakeWorkspace = evidence.workspaceSha256().startsWith("0")
+                ? "1" + evidence.workspaceSha256().substring(1)
+                : "0" + evidence.workspaceSha256().substring(1);
+        Files.writeString(trace,
+                original.replace(evidence.workspaceSha256(), fakeWorkspace));
         assertEquals(2, ConcurrencyTestCommand.run(new String[]{
                 "examples/native-testing.ores", "--replay=" + trace
         }));
