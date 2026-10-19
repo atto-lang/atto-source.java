@@ -24,6 +24,53 @@ The receiver (`self`, implicit or explicit) is **not** a value parameter.
 Instance and static slots are separate namespaces. Constructors are not part
 of ordinary method overloading and remain separately validated.
 
+## Leading inline self receiver (Java parser hardening)
+
+An instance method may spell the hidden receiver in the ordinary parameter list,
+**only as its first standalone item**:
+
+```oreslang
+define class Foo as
+    foo(int x): void { return; }          // caller-visible arity 1
+    // foo(self, int x): void { return; } // ERROR: same caller-visible arity 1
+
+    bar(self): void { return; }           // arity 0
+    baz(mut self, int x): int { return x; } // arity 1
+    pair(self, self peer, int x): int { return x; } // arity 2
+end
+```
+
+These are equivalent receiver bindings: `foo(int x)`,
+`foo(self, int x)`, and the existing `foo(self Foo)(int x)` receiver form.
+The compiler creates only one receiver and excludes it from
+`MethodDecl.parameters()`, its `arity()`, dispatch selector, callable-value
+signature, inherited override identity, and optional/default-argument binder.
+
+A standalone `self` expression **at the call site** is always a PROVIDED
+user argument, never a second hidden receiver. Thus `self.foo(self, 5)`
+has caller-visible arity 2, not 1; it fails if only `foo/1` exists. It can
+select `foo/2` if there is a real first user-argument formal that accepts
+`self` as an ordinary value. Do not silently discard, shift or reinterpret
+that expression, even if a default or named argument is present. The receiver
+to the left of the dot is always evaluated/checked independently.
+
+This parser rule also applies to actor *method declarations*. It does **not**
+authorize transporting raw actor-owned `self` as an actor message: mailbox,
+Send/ownership, capability and lexical state-loan rules remain binding.
+Actor constructor declarations remain forbidden.
+
+Static class functions cannot declare an inline `self` receiver; other
+formal parameters named `self` as a **type**, e.g. `self peer`, are
+ordinary caller-supplied values. The separate two-list explicit receiver form
+remains valid and retains its receiver mutability/type contract.
+
+Leading receiver binds BEFORE optional slot/default normalization. Default
+annotations must not target `self`; otherwise inserting receiver in an ABI
+argument slot could bypass overload or constructor authorization. Contradictory
+forms, duplicate receiver binders, non-leading bare `self`, dangling commas,
+and static receivers must fail closed.
+
+
 At a call site, select the slot by receiver and syntactic argument count
 before checking argument/return types. In particular, an incompatible
 argument must produce a type error for the selected arity, not trigger
