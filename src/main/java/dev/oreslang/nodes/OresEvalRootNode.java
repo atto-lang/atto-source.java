@@ -890,6 +890,12 @@ public final class OresEvalRootNode extends RootNode {
             if (expression instanceof Ast.CastExpr cast) {
                 return staticClassView(cast.targetType());
             }
+            if (expression instanceof Ast.AwaitExpr awaited) {
+                // Await unwraps Future<T> without changing T's static class view.
+                // Preserve that checked view for direct computed access such as
+                // (await load())["field"] rather than falling back to runtime type.
+                return staticClassView(awaited.expression(), env);
+            }
             if (expression instanceof Ast.ConditionalExpr conditional) {
                 Ast.ClassDecl left = staticClassView(conditional.whenTrue(), env);
                 Ast.ClassDecl right = staticClassView(conditional.whenFalse(), env);
