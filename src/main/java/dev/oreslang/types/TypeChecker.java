@@ -100,6 +100,10 @@ public final class TypeChecker {
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private boolean currentMaySuspend;
+    // Non-null only while semantically type-checking a scheduled Task body.
+    // The marker env is empty except for compiler-materialized capture aliases;
+    // names resolved above it are detached-task captures and require owned Send.
+    private Env scheduledTaskCaptureBoundary;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -1675,9 +1679,19 @@ public final class TypeChecker {
     }
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
-        if (stmt instanceof Ast.TaskBlockStmt
-                || (stmt instanceof Ast.BindingStmt binding && binding.initializer() instanceof Ast.TaskExpr)) {
-            throw new IllegalArgumentException("nb Task blocks require ownership-safe capture and scheduler lowering; source execution is not enabled");
+        if (stmt instanceof Ast.TaskBlockStmt task) {
+            validateScheduledTaskBodyTypes(
+                    task.body(), env, generics, self, "do nb Task block");
+            throw new IllegalArgumentException(
+                    "nb Task blocks passed resolved owned-Send admission but still require scheduler/quiescence lowering; source execution is not enabled");
+        }
+        if (stmt instanceof Ast.BindingStmt binding
+                && binding.initializer() instanceof Ast.TaskExpr task) {
+            validateScheduledTaskBodyTypes(
+                    task.body(), env, generics, self,
+                    "Task initializer '" + binding.name() + "'");
+            throw new IllegalArgumentException(
+                    "nb Task blocks passed resolved owned-Send admission but still require scheduler/quiescence lowering; source execution is not enabled");
         }
         if (stmt instanceof Ast.BindingStmt binding) {
             boolean namedInference = binding.inferredTypeName() != null;
@@ -2072,14 +2086,45 @@ public final class TypeChecker {
         if (expr instanceof Ast.SuspendsLambdaExpr) {
             throw new IllegalArgumentException("suspends lambda requires suspension-effect callable typing and continuation lowering; this callable does not create a Task or Future");
         }
-        if (expr instanceof Ast.TaskLambdaExpr) {
-            throw new IllegalArgumentException("async task lambda requires Task<T> return inference, owned argument captures, and scheduled continuation lowering; executable source is not enabled");
+        if (expr instanceof Ast.TaskLambdaExpr scheduled) {
+            validateScheduledLambdaTypes(
+                    scheduled.lambda(), env, generics, self, "async task lambda");
+            throw new IllegalArgumentException(
+                    "async task lambda passed resolved owned-Send admission but still requires Task<T> lowering and quiescence tracking");
         }
-        if (expr instanceof Ast.AsyncLambdaExpr) {
-            throw new IllegalArgumentException("async lambda requires Future<T> lowering; returning nb Task<T> would produce Future<Task<T>> without implicit flattening");
+        if (expr instanceof Ast.AsyncLambdaExpr scheduled) {
+            validateScheduledLambdaTypes(
+                    scheduled.lambda(), env, generics, self, "async lambda");
+            throw new IllegalArgumentException(
+                    "async lambda passed resolved owned-Send admission but still requires Future<T> lowering; nested Task results are never implicitly flattened");
         }
-        if (expr instanceof Ast.TaskExpr) {
-            throw new IllegalArgumentException("nb Task blocks require ownership-safe capture and scheduler lowering; source execution is not enabled");
+        if (expr instanceof Ast.TaskExpr task) {
+            validateScheduledTaskBodyTypes(
+                    task.body(), env, generics, self, "nb Task expression");
+            throw new IllegalArgumentException(
+                    "nb Task block passed resolved owned-Send admission but still requires scheduler/quiescence lowering; source execution is not enabled");
+        }
+        if (expr instanceof Ast.CallExpr call
+                && (call.callee() instanceof Ast.TaskLambdaExpr
+                    || call.callee() instanceof Ast.AsyncLambdaExpr)) {
+            Ast.LambdaExpr lambda = call.callee() instanceof Ast.TaskLambdaExpr taskLambda
+                    ? taskLambda.lambda()
+                    : ((Ast.AsyncLambdaExpr) call.callee()).lambda();
+            String kind = call.callee() instanceof Ast.TaskLambdaExpr
+                    ? "async task lambda" : "async lambda";
+            validateScheduledLambdaTypes(lambda, env, generics, self, kind);
+            if (lambda.parameters().size() != call.arguments().size()) {
+                throw new IllegalArgumentException(
+                        kind + " expected " + lambda.parameters().size()
+                                + " arguments but received " + call.arguments().size());
+            }
+            for (int i = 0; i < call.arguments().size(); i++) {
+                Type argument = typeOf(call.arguments().get(i), env, generics, self);
+                validateAsyncBoundaryType(
+                        argument, false, kind + " argument " + i);
+            }
+            throw new IllegalArgumentException(
+                    kind + " call passed resolved owned-Send admission but executable scheduling/lowering is not enabled");
         }
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
@@ -2103,6 +2148,8 @@ public final class TypeChecker {
         if (expr instanceof Ast.NameExpr name) {
             Env.Binding local = env.lookup(name.name());
             if (local != null) {
+                local = materializeScheduledTaskCapture(
+                        name.name(), env, local);
                 if (local.hasUninitializedFields()) {
                     throw new IllegalArgumentException(
                             "explicit struct binding '" + name.name()
@@ -2175,6 +2222,8 @@ public final class TypeChecker {
             if (assignment.target() instanceof Ast.NameExpr name) {
                 Env.Binding binding = env.lookup(name.name());
                 if (binding == null) throw new IllegalArgumentException("cannot assign unknown name '" + name.name() + "'");
+                binding = materializeScheduledTaskCapture(
+                        name.name(), env, binding);
                 if (binding.kind() != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + binding.kind().name().toLowerCase() + " binding '" + name.name() + "'");
                 targetType = binding.type();
                 where = name.name();
