@@ -22,8 +22,9 @@ class S:
     inserted: frozenset[int] = frozenset()
     # (owner, slot, incarnation, expected logical row)
     issued: frozenset[tuple[int, int, int, int]] = frozenset()
-    # (unique loan id, slot, field, read/write mode), bounded at two loans
-    loans: frozenset[tuple[int, int, str, str]] = frozenset()
+    # Canonical multiset of (slot, field, read/write mode); two readers of
+    # the same field remain two independent live loans and release separately.
+    loans: tuple[tuple[int, str, str], ...] = ()
     structural_corrupt: bool = False
     owner: int = 7
 
@@ -44,8 +45,8 @@ def resolves(s, handle, unsafe_owner=False, unsafe_bounds=False):
 
 def conflicts(loans):
     arr = sorted(loans)
-    return any(a[1] == b[1] and a[2] == b[2] and
-               (a[3] == "w" or b[3] == "w")
+    return any(a[0] == b[0] and a[1] == b[1] and
+               (a[2] == "w" or b[2] == "w")
                for i, a in enumerate(arr) for b in arr[i+1:])
 
 def nexts(s, mutant=None):
@@ -81,15 +82,14 @@ def nexts(s, mutant=None):
         for slot in s.dense:
             for field in FIELDS:
                 for mode in ("r", "w"):
-                    for loan_id in (0, 1):
-                        if any(l[0] == loan_id for l in s.loans):
-                            continue
-                        loan = (loan_id, slot, field, mode)
-                        proposed = s.loans | {loan}
-                        if not conflicts(proposed) or mutant == "borrow-alias":
-                            yield f"borrow({loan_id},{slot},{field},{mode})", replace(s, loans=proposed)
-    for loan in s.loans:
-        yield f"release({loan})", replace(s, loans=s.loans-{loan})
+                    loan = (slot, field, mode)
+                    proposed = tuple(sorted(s.loans + (loan,)))
+                    if not conflicts(proposed) or mutant == "borrow-alias":
+                        yield f"borrow({slot},{field},{mode})", replace(s, loans=proposed)
+    for i, loan in enumerate(s.loans):
+        if i > 0 and loan == s.loans[i-1]:
+            continue
+        yield f"release({loan})", replace(s, loans=s.loans[:i] + s.loans[i+1:])
 
 def violation(s, mutant=None):
     if len(s.dense) != len(set(s.dense)) or len(s.dense) > CAP:
@@ -111,7 +111,7 @@ def violation(s, mutant=None):
         return "InvalidHandleSlotRejected"
     if conflicts(s.loans):
         return "FieldBorrowConflict"
-    if s.structural_corrupt or any(s.rows[l[1]] == 0 for l in s.loans):
+    if s.structural_corrupt or any(s.rows[l[0]] == 0 for l in s.loans):
         return "NoStructuralMutationDuringBorrow"
     if any(g <= 0 for g in s.gens):
         return "GenerationType"
@@ -129,9 +129,9 @@ def explore(mutant=None):
         s = q.popleft()
         if len(s.loans) == 2 and not conflicts(s.loans):
             loans = tuple(s.loans)
-            if any(l[3] == "w" for l in loans) and loans[0][2] != loans[1][2]:
+            if any(l[2] == "w" for l in loans) and loans[0][1] != loans[1][1]:
                 witness.add("disjoint-field-loans")
-            if all(l[3] == "r" for l in loans) and loans[0][1:3] == loans[1][1:3]:
+            if all(l[2] == "r" for l in loans) and loans[0][:2] == loans[1][:2]:
                 witness.add("shared-read-loans")
         if any(s.rows[slot] != 0 and s.gens[slot] > 1 for slot in range(CAP)):
             witness.add("slot-reuse")
