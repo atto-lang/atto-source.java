@@ -192,11 +192,18 @@ Carrier CI additionally binds the source-bearing ref to both the exact full
 source commit and the reviewed carrier-main commit. Production Java verification
 is **not** triggered by a workflow definition read from the source-bearing
 branch. Instead, a `workflow_dispatch` definition on trusted carrier `main`
-checks out its own exact `GITHUB_SHA`, checks out the snapshot by exact commit
-SHA, requires the snapshot's sole parent to equal that trusted-main SHA, runs
-the CODEOWNED `scripts/verify-oreslang-private-ci-snapshot.sh`, and confirms
-through the GitHub API that the named immutable ref still resolves to the same
-snapshot commit before any Maven command executes.
+first asks GitHub to prove that its exact `GITHUB_SHA` is still the **current
+protected main tip before the private snapshot checkout occurs**. It then
+checks out the snapshot by exact commit SHA, repeats the live-main/protection
+proof after checkout, requires the snapshot's sole parent to equal that
+trusted-main SHA, runs the CODEOWNED
+`scripts/verify-oreslang-private-ci-snapshot.sh`, and confirms through the
+GitHub API that the named immutable ref still resolves to the same snapshot
+commit before any Maven command executes. This rejects stale
+`workflow_dispatch` reruns whose historical carrier-main authorization has
+since been revoked. Generic carrier CI and secret-bearing live workflows also
+exclude `refs/heads/ci/oreslang-*`; the dedicated gate is the only reviewed
+workflow allowed to execute those source-bearing refs.
 
 Only that trusted verification step receives `github.token`, solely for the
 read-only ref lookup. The Java build/test jobs receive no explicit
@@ -253,12 +260,17 @@ the following:
 
 The publisher then queries GitHub's active-rules endpoint for the **exact**
 percent-encoded `ci/oreslang-<source>-<carrier>` branch name (the branch does
-not need to exist yet). It requires that the reviewed repository ruleset ID
-actually contributes one immutable `update` rule and one `deletion` rule to
-that exact ref. It also rejects **any** effective `creation` rule, including
-one contributed by another active ruleset, because a predictable final ref
-creation failure after blob/tree uploads would leave unreachable private Git
-objects in the carrier.
+not need to exist yet), explicitly requesting 100 entries from page 1. A full
+100-entry page is treated as incomplete evidence and denied rather than
+silently ignoring a later page. It requires that the reviewed repository
+ruleset ID actually contributes one immutable `update` rule and one
+`deletion` rule to that exact ref. Effective rule types are fail-closed:
+only `update`, `deletion`, and `required_linear_history` are currently
+audited/accepted. `creation`, signature requirements, PR/deployment/status
+requirements, metadata/name restrictions, and any future/unknown rule type
+deny publication before source bytes are read. This prevents predictable
+late ref/commit rejection after private blobs or trees have already been
+uploaded.
 
 Before reading source bytes and again before every pre-ref destination write,
 the publisher also queries GitHub's matching-refs endpoint for the exact
