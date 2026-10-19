@@ -10,9 +10,10 @@ final class ConcurrencyRaceAnalyzerTest {
         checker.write("actor-a", "counter");
         checker.write("actor-b", "counter");
         checker.read("actor-c", "counter");
-        assertEquals(2, checker.findings().size());
+        assertEquals(3, checker.findings().size());
         assertEquals("write-write", checker.findings().get(0).conflict());
-        assertEquals("write-read", checker.findings().get(1).conflict());
+        assertTrue(checker.findings().subList(1, 3).stream()
+                .allMatch(f -> f.conflict().equals("write-read")));
     }
 
     @Test
