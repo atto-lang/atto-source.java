@@ -73,6 +73,29 @@ final class TaskAccessVerifierTest {
                 () -> column.range(64, 64, true));
     }
 
+    @Test void byteAndElementRangesDoNotManufactureDisjointness() {
+        var root = TaskAccessVerifier.Place.whole(WORLD).field("position", true);
+        var elementWriter = write(root.range(0, 32, true));
+        var byteWriter = write(root.byteRange(100, 200, true));
+        // The numbers do not overlap, but one is an index and the other is a
+        // byte offset. Only a trusted element-width/layout conversion could
+        // prove physical separation. Different units must alias by default.
+        assertTrue(TaskAccessVerifier.mayAlias(
+                elementWriter.place(), byteWriter.place()));
+        assertTrue(TaskAccessVerifier.conflicts(elementWriter, byteWriter));
+        var ledger = new TaskAccessVerifier();
+        ledger.admit(List.of(elementWriter));
+        assertThrows(IllegalArgumentException.class,
+                () -> ledger.admit(List.of(byteWriter)));
+        assertThrows(NullPointerException.class, () ->
+                new TaskAccessVerifier.Range(0, 10, true, null));
+
+        // Equal-unit nonoverlapping element ranges still parallelize.
+        var other = write(root.range(32, 64, true));
+        assertFalse(TaskAccessVerifier.conflicts(elementWriter, other));
+        assertNotNull(ledger.admit(List.of(other)));
+    }
+
     @Test void parentCannotMoveOrMutateLiveBorrowedStorage() {
         var ledger = new TaskAccessVerifier();
         var root = TaskAccessVerifier.Place.whole(WORLD);
