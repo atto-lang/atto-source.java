@@ -361,7 +361,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 "HOME": str(attacker_home),
                 "GH_TOKEN": "synthetic-ci-token",
                 "HTTPS_PROXY": "http://attacker.invalid:8123",
-                "GH_CONFIG_DIR": str(config)}):
+                "GH_CONFIG_DIR": str(config),
+                "TMPDIR": str(attacker_home)}):
             with patch.object(pub.subprocess, "run", side_effect=fake_run) as runner:
                 self.assertEqual(pub.gh_api("repos/trusted/ci"), {})
                 self.assertEqual(runner.call_count, 1)
