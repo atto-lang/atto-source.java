@@ -116,6 +116,16 @@ final class ConcurrencyRaceAnalyzerTest {
     }
 
     @Test
+    void rejectsControlCharactersInTraceIdentities() {
+        var checker = new ConcurrencyRaceAnalyzer();
+        assertThrows(IllegalArgumentException.class,
+                () -> checker.write("actor-a", "location\\nORES_TEST|SUMMARY|fake"));
+        assertThrows(IllegalArgumentException.class,
+                () -> checker.send("actor\\u0000", "m1"));
+        assertEquals(0, checker.eventCount());
+    }
+
+    @Test
     void consumedMessageTokenCannotBeReusedToForgeOrdering() {
         var checker = new ConcurrencyRaceAnalyzer();
         checker.send("a", "message-1");
