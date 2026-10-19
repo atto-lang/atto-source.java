@@ -131,6 +131,38 @@ public final class ActorShardColumns implements AutoCloseable {
         }
     }
 
+    /**
+     * Quota-charged immutable snapshot handle. Its byte reservation persists
+     * until close(), or the owner's actor is physically finalized. An
+     * outside-actor trusted host may read it; foreign actor turns cannot.
+     */
+    public static final class ColumnSnapshot implements AutoCloseable {
+        private final ActorRuntime.ActorShardSnapshotLease lease;
+
+        private ColumnSnapshot(ActorRuntime.ActorShardSnapshotLease lease) {
+            this.lease = lease;
+        }
+        public int length() { return lease.length(); }
+        public double read(int index) { return lease.read(index); }
+        @Override public void close() { lease.close(); }
+    }
+
+    public ColumnSnapshot snapshotColumnLeased(int field) {
+        requireOwner();
+        if (field < 0 || field >= fields) throw new IndexOutOfBoundsException("field");
+        ActorRuntime runtime = ActorRuntime.currentActorRuntime();
+        ActorRuntime.ActorShardSnapshotLease lease = runtime.reserveActorShardSnapshot(rows);
+        try {
+            for (int i = 0; i < rows; i++) {
+                lease.writeFromOwner(i, get(offset(i, field)));
+            }
+            return new ColumnSnapshot(lease);
+        } catch (RuntimeException | Error failure) {
+            lease.close();
+            throw failure;
+        }
+    }
+
     /** Copy into preallocated host storage with no new allocation. */
     public void copyColumnInto(int field, double[] dest, int offset) {
         requireOwner();
