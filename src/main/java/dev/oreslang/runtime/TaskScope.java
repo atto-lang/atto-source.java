@@ -7,7 +7,7 @@ package dev.oreslang.runtime;
      */
     public final class TaskScope {
         private final OresFuture<Void> drained;
-         private int active;
+        private int active;
         private boolean closing;
         private boolean published;
         private Throwable firstFailure;
@@ -20,18 +20,12 @@ package dev.oreslang.runtime;
         }
 
         public synchronized Registration reserve() {
-            return reserve(null);
-        }
-
-        /**
-         * After close(), only a still-executing child that holds an active
-         * ticket from THIS scope can admit a grandchild. A captured Env or
-         * unrelated root task cannot reopen the scope during shutdown.
-         */
-        public synchronized Registration reserve(Registration parent) {
-            if (closing && (parent == null || !parent.activeIn(this))) {
-                throw new IllegalStateException(
-                        "Task spawned after scope closure without a live parent permit");
+            // Phase 1 allows a nested Task spawned while a previously
+            // admitted child remains active. The compiler has not yet
+            // installed provenance-carrying lifetime permits, so scoped
+            // borrowed captures must stay disabled.
+            if (closing && active == 0) {
+                throw new IllegalStateException("Task spawned after scope quiescence");
             }
             if (active == Integer.MAX_VALUE) {
                 throw new IllegalStateException("Task scope admission exhausted");
@@ -74,23 +68,34 @@ package dev.oreslang.runtime;
             private boolean quiescent;
             private boolean terminal;
             private boolean notified;
+            private boolean attached;
             private Throwable failure;
 
             private Registration(TaskScope scope) { this.scope = scope; }
 
-            private synchronized boolean activeIn(TaskScope expected) {
-                return scope == expected && !notified && !quiescent;
-            }
-
             public void attach(OresFuture<?> future) {
+                java.util.Objects.requireNonNull(future, "child Future");
+                synchronized (this) {
+                    if (attached || notified || terminal) {
+                        throw new IllegalStateException("Task scope ticket already attached or retired");
+                    }
+                    attached = true;
+                }
                 future.whenCompleteRuntime((value, cause) -> settle(cause, false));
             }
 
             public void quiesced() { settle(null, true); }
 
             public void failedAdmission(Throwable cause) {
+                java.util.Objects.requireNonNull(cause, "admission failure");
                 synchronized (this) {
                     if (notified) return;
+                    if (attached) {
+                        // Once admitted, only the real scheduler callbacks
+                        // may establish terminal state and physical quiescence.
+                        throw new IllegalStateException(
+                                "cannot retire an attached child as failed admission", cause);
+                    }
                     failure = cause;
                     terminal = true;
                     quiescent = true;
