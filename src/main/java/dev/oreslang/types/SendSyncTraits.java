@@ -10,10 +10,15 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Conservative compiler-owned Send/Sync auto-trait inference for Oreslang
- * logical Tasks and threads. Actor Sendable and wire Serializable are separate.
- * A Send borrow still needs independently checked lifetime/physical quiescence.
- * No user-asserted unsafe trait implementation is consulted here.
+ * Conservative AST-only Send/Sync shape preflight.
+ *
+ * <p>This walker is deliberately NOT a permission authority. A positive result
+ * only means the unresolved syntax is not rejected before semantic resolution.
+ * Canonical Send/Sync and detached-transfer permission must be decided later
+ * from resolved Types.Type by ThreadSafetyTraits on the convergence branch.
+ *
+ * <p>Actor Sendable and wire Serializable are separate. No user-asserted unsafe
+ * trait implementation is consulted here.
  */
 public final class SendSyncTraits {
     private static final int MAX_TYPE_DERIVATION_DEPTH = 64;
@@ -69,18 +74,18 @@ public final class SendSyncTraits {
             }
         }
     }
-    public Traits derive(Ast.TypeRef type) {
+    public Traits derivePreflight(Ast.TypeRef type) {
         return derive(type, Map.of(), new HashSet<>());
     }
-    public boolean isSend(Ast.TypeRef type) { return derive(type).send(); }
-    public boolean isSync(Ast.TypeRef type) { return derive(type).sync(); }
-    public void requireSend(Ast.TypeRef type) {
-        if (!isSend(type)) throw new IllegalArgumentException(
-                "type is not Send across Task execution contexts: " + type);
+
+    /** Positive means only "not rejected before resolution", never permission. */
+    public boolean mayBeSendAfterResolution(Ast.TypeRef type) {
+        return derivePreflight(type).send();
     }
-    public void requireSync(Ast.TypeRef type) {
-        if (!isSync(type)) throw new IllegalArgumentException(
-                "type is not Sync for shared Task borrows: " + type);
+
+    /** Positive means only "not rejected before resolution", never permission. */
+    public boolean mayBeSyncAfterResolution(Ast.TypeRef type) {
+        return derivePreflight(type).sync();
     }
 
     private Traits derive(Ast.TypeRef type, Map<String, Ast.TypeRef> substitutions, Set<Key> active) {
