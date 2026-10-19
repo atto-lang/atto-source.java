@@ -32,7 +32,7 @@ final class IpcTransportSessionLease {
     record Snapshot(long generation, Phase phase, int activeWrites,
                     boolean physicalCloseConfirmed, boolean receiptsRetired) { }
 
-    private final String session;
+    private final IpcReceiptCorrelation.Envelope trustedEpoch;
     private final long generation;
     private final int limit;
     private final IpcReceiptCompletionBridge receipts;
@@ -44,14 +44,14 @@ final class IpcTransportSessionLease {
     private boolean receiptsRetired;
     private Throwable closeFailure;
 
-    IpcTransportSessionLease(String session, long generation, int limit,
+    IpcTransportSessionLease(IpcReceiptCorrelation.Envelope trustedEpoch,
+                             long generation, int limit,
                              IpcReceiptCompletionBridge receipts,
                              PhysicalCloser closer, CleanupScheduler scheduler) {
-        if (session == null || session.isBlank() || session.length() > 96
-                || generation <= 0 || limit <= 0 || limit > 65536) {
+        if (generation <= 0 || limit <= 0 || limit > 65536) {
             throw new IllegalArgumentException("invalid transport session policy");
         }
-        this.session = session;
+        this.trustedEpoch = Objects.requireNonNull(trustedEpoch, "trustedEpoch");
         this.generation = generation;
         this.limit = limit;
         this.receipts = Objects.requireNonNull(receipts, "receipts");
@@ -60,6 +60,18 @@ final class IpcTransportSessionLease {
     }
 
     long generation() { return generation; }
+
+    /** A stale actor/route/grant cannot send over a reused session name. */
+    private boolean sameTrustedEpoch(IpcReceiptCorrelation.Envelope message) {
+        return trustedEpoch.domain().equals(message.domain())
+                && trustedEpoch.sender().equals(message.sender())
+                && trustedEpoch.destination().equals(message.destination())
+                && trustedEpoch.session().equals(message.session())
+                && trustedEpoch.senderIncarnation() == message.senderIncarnation()
+                && trustedEpoch.destinationIncarnation() == message.destinationIncarnation()
+                && trustedEpoch.routeEpoch() == message.routeEpoch()
+                && trustedEpoch.capabilityGeneration() == message.capabilityGeneration();
+    }
 
     /**
      * Linearize session admission, receipt dispatch commitment, and close
@@ -73,7 +85,7 @@ final class IpcTransportSessionLease {
         Objects.requireNonNull(writer, "writer");
         synchronized (this) {
             if (phase != Phase.OPEN || expectedGeneration != generation
-                    || !session.equals(message.session()) || activeWrites >= limit) {
+                    || !sameTrustedEpoch(message) || activeWrites >= limit) {
                 throw new IllegalStateException("closed/stale/bounded IPC transport");
             }
             // No arbitrary user callbacks or memory allocation after
@@ -166,7 +178,7 @@ final class IpcTransportSessionLease {
         synchronized (this) { physicalCloseConfirmed = true; }
         try {
             // Arbitrary dependent user callbacks can run: no session lock held.
-            receipts.transportLost(session);
+            receipts.transportLost(trustedEpoch);
         } catch (RuntimeException | Error failure) {
             synchronized (this) {
                 closeFailure = failure;
