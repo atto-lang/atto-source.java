@@ -413,10 +413,11 @@ No observer callback runs under `GRAPH_LOCK`.
 - `childRetirementDuringParentCancellationPreservesObserver`: parent
   cancellation already marked the child and its revoker is blocked.
 
-The latest staged JUnit inventory has **65** methods
-(24 `TaskCancellationTest`, 24 `TaskHandleTest`, and
+The latest staged JUnit inventory has **74** methods
+(24 `TaskCancellationTest`, 33 `TaskHandleTest`, and
 17 `TaskScopeTest`) across the stage-2 branch, **not yet executed**
-as production Maven/JUnit.
+as production Maven/JUnit. The TaskHandle count includes later
+concurrently committed regressions on this draft branch.
 
 **Source-free alternate Actions proof:** private
 `opto-sync-test/go-java-validation` commit
