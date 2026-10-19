@@ -41,9 +41,25 @@ public final class TaskHandle<T> {
      * report Cancelled even if a first resume races the binding path.
      */
     private static final class CancelledAtResume extends CancellationException {
-        CancelledAtResume() {
+        private final TaskCancellation authority;
+        private final Object taskDomain;
+
+        CancelledAtResume(TaskCancellation authority, Object taskDomain) {
             super("task cancelled at a cooperative scheduler checkpoint");
+            this.authority = Objects.requireNonNull(authority, "authority");
+            this.taskDomain = Objects.requireNonNull(taskDomain, "taskDomain");
         }
+    }
+
+    /**
+     * Scheduler-private classification. The marker carries the actual owner
+     * and running logical Task domain, so replay on another Task cannot
+     * cancel its result Future. A mere CancellationException is never enough.
+     */
+    static boolean isAuthenticatedCheckpointCancellation(Throwable failure) {
+        return failure instanceof CancelledAtResume marker
+                && marker.authority.isCancelled()
+                && marker.taskDomain == OresScheduler.currentTaskDomain();
     }
 
     // Only the executing host Task turn can install this token. It is restored
@@ -68,7 +84,9 @@ public final class TaskHandle<T> {
 
     /** Compiler/host safepoint only: never call while holding guest locks. */
     static void checkCurrentCancellationCheckpoint() {
-        if (currentCancellationRequested()) throw new CancelledAtResume();
+        if (!currentCancellationRequested()) return;
+        CancellationContext context = CURRENT_CANCELLATION.get();
+        throw new CancelledAtResume(context.token(), context.taskDomain());
     }
 
     private final TaskCancellation cancellation;
@@ -168,7 +186,9 @@ public final class TaskHandle<T> {
             OresScheduler.Resume resume, OresScheduler.Task<T> task)
             throws Exception {
         synchronized (resumeBoundaryLock) {
-            if (cancellation.isCancelled()) throw new CancelledAtResume();
+            if (cancellation.isCancelled()) {
+                throw new CancelledAtResume(cancellation, OresScheduler.currentTaskDomain());
+            }
             inResume = true;
         }
         // An OresScheduler Task can be resumed by an inline executor. Restore
@@ -216,7 +236,8 @@ public final class TaskHandle<T> {
         if (unwrapped == null) {
             outcome = new Success<>(value);
         } else if (source.isCancelled()
-                || (unwrapped instanceof CancelledAtResume
+                || (unwrapped instanceof CancelledAtResume marker
+                        && marker.authority == cancellation
                         && cancellation.isCancelled())) {
             outcome = new Cancelled<>(Objects.requireNonNullElse(
                     cancellation.cancellationReason(), "cancelled"));
