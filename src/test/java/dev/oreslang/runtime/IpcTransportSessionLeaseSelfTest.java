@@ -155,6 +155,7 @@ public final class IpcTransportSessionLeaseSelfTest {
         check(deferredCloses.get() == 0);
         check(!deferredResult.toCompletableFuture().isDone());
         queuedCleanup.get().run(); // explicit stand-in for isolated host worker
+        queuedCleanup.get().run(); // duplicated scheduler callback must be inert
         check(deferredCloses.get() == 1);
         check(deferred.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
         check(deferredResult.toCompletableFuture().join()
@@ -172,6 +173,37 @@ public final class IpcTransportSessionLeaseSelfTest {
         check(!deniedCleanupFuture.toCompletableFuture().isDone());
         check(deniedCleanup.closeFailure() instanceof IllegalStateException);
         check(deniedCleanup.invariant());
+
+        // A scheduler that partially enqueued a task before throwing must
+        // not let that stale callback steal a later explicit recovery attempt.
+        var staleBridge = new IpcReceiptCompletionBridge(1);
+        var staleMessage = message(1, "staleCleanup");
+        var staleOutcome = staleBridge.admit(staleMessage);
+        AtomicInteger cleanupSchedules = new AtomicInteger();
+        AtomicInteger actualCloses = new AtomicInteger();
+        AtomicReference<Runnable> priorTask = new AtomicReference<>();
+        AtomicReference<Runnable> resumedTask = new AtomicReference<>();
+        var staleGate = new IpcTransportSessionLease("staleCleanup", 60, 1,
+                staleBridge, actualCloses::incrementAndGet, cleanup -> {
+                    if (cleanupSchedules.incrementAndGet() == 1) {
+                        priorTask.set(cleanup);
+                        throw new IllegalStateException("schedule admission uncertain");
+                    }
+                    resumedTask.set(cleanup);
+                });
+        staleGate.writeFrame(60, staleMessage, value -> { });
+        staleGate.requestClose();
+        check(staleGate.snapshot().phase() == IpcTransportSessionLease.Phase.QUARANTINED);
+        staleGate.retryQuarantinedClose();
+        priorTask.get().run(); // stale attempt cannot execute physical close
+        check(actualCloses.get() == 0);
+        check(!staleOutcome.toCompletableFuture().isDone());
+        resumedTask.get().run();
+        check(actualCloses.get() == 1);
+        check(staleGate.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
+        check(staleOutcome.toCompletableFuture().join()
+                == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+        check(staleGate.invariant());
 
         // Verify close never recycles a descriptor during a real host write.
         for (int trial = 0; trial < 512; ++trial) {
