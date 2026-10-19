@@ -467,6 +467,25 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
         }
     }
 
+    /**
+     * Supervisor-only publication preflight. The ticket must be the exact
+     * active freeze object owned by THIS mailbox, not an equal-looking
+     * route epoch or another mailbox's freeze. This operation never thaws.
+     */
+    void requireFreezeTicketForRouteEpoch(
+            FreezeTicket ticket, long expectedRouteEpoch) {
+        synchronized (lock) {
+            requireTicketLocked(ticket);
+            checkStructuralInvariantsLocked();
+            if (routeEpoch != expectedRouteEpoch
+                    || ticket.routeEpoch != expectedRouteEpoch
+                    || !drainedThroughLocked(ticket.dispatchWatermark)) {
+                throw new IllegalStateException(
+                        "foreign epoch or undrained proxy publication ticket");
+            }
+        }
+    }
+
     public Snapshot snapshot() {
         synchronized (lock) {
             checkStructuralInvariantsLocked();
