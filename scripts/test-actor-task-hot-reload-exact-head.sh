@@ -48,7 +48,7 @@ reviewed_blobs=(
   'src/main/java/dev/oreslang/runtime/ActorUpgradeEpochGate.java:0c0315f643fc25b3335e77e64375666cbc2e6d05'
   'src/main/java/dev/oreslang/runtime/OresTaskScope.java:6220209e55dc43311e7d2ead98225e916ee9540e'
   'src/main/java/dev/oreslang/runtime/OresContext.java:c0e8d02cacb036c8570cb4bb5a6c3967ab6030b8'
-  'src/main/java/dev/oreslang/runtime/ActorRoutePublicationV1.java:399268990b952ef7399d7787c8738901dbcd73d2'
+  'src/main/java/dev/oreslang/runtime/ActorRoutePublicationV1.java:1c040229d12166887ba4238c4e958f7bd57a551e'
   'src/main/java/dev/oreslang/runtime/ActorUpgradePreflightV1.java:74f8bc8070449f9448997c8d3b714ddfd58e4a00'
 )
 for record in "${reviewed_blobs[@]}"; do
