@@ -140,21 +140,22 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
             return;
         }
         synchronized (this) {
-            if (closed || !actor.isAlive()) {
+            if (closed || !runtime.isAlive(actor)) {
                 slot.set(new Poll(State.CANCELLED, 0));
                 return;
             }
-            try {
-                // Deliberately no guest-supplied address, timestamp or policy.
-                // Host HTTP completion updates only private atomic state.
-                broker.getStatus().whenComplete((status, failure) -> {
-                    slot.set(failure == null
-                            ? new Poll(State.OK, status)
-                            : new Poll(State.FAILED, 0));
-                });
-            } catch (RuntimeException failure) {
-                slot.set(new Poll(State.FAILED, 0));
-            }
+        }
+        // Actual HTTP admission/dispatch occurs OUTSIDE the bridge monitor.
+        // revokeAfterTermination() and close() synchronously fence the broker
+        // under that monitor; getStatus() cannot start after broker fencing.
+        try {
+            broker.getStatus().whenComplete((status, failure) -> {
+                slot.set(failure == null
+                        ? new Poll(State.OK, status)
+                        : new Poll(State.FAILED, 0));
+            });
+        } catch (RuntimeException failure) {
+            slot.set(new Poll(State.FAILED, 0));
         }
     }
 
@@ -165,6 +166,9 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
         // synchronized section has completed.
         synchronized (this) {
             closed = true;
+            // No-I/O synchronous fence closes the check-before-dispatch race.
+            // Never issue network requests or transport cancellation here.
+            broker.fenceNewDispatch();
             HOST_BINDINGS.remove(bindingKey, this);
             tickets.clear();
         }
@@ -200,6 +204,9 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
         requireHost();
         synchronized (this) {
             closed = true;
+            // No-I/O synchronous fence closes the check-before-dispatch race.
+            // Never issue network requests or transport cancellation here.
+            broker.fenceNewDispatch();
             HOST_BINDINGS.remove(bindingKey, this);
             tickets.clear();
         }
