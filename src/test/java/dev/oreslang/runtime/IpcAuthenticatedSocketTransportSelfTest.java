@@ -481,7 +481,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             transport.requestClose();
             check(transport.snapshot().phase()
                     == IpcTransportSessionLease.Phase.QUARANTINED);
-            check(!transport.keyMaterialDestroyed());
+            check(!transport.keyCloneZeroized());
             check(!submission.outcome().toCompletableFuture().isDone());
             check(bridge.invariant());
         }
@@ -698,7 +698,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                     == IpcTransportSessionLease.Phase.RETIRED);
             check(result.get().outcome().toCompletableFuture().join()
                     == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
-            check(transport.keyMaterialDestroyed());
+            check(transport.keyCloneZeroized());
             check(scheduled.get() == 3);
             check(bridge.invariant());
         }
@@ -765,7 +765,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                     == IpcTransportSessionLease.Phase.RETIRED);
             check(result.get().outcome().toCompletableFuture().join()
                     == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
-            check(transport.keyMaterialDestroyed());
+            check(transport.keyCloneZeroized());
             check(scheduled.get() == 2);
             check(bridge.invariant());
         }
