@@ -215,7 +215,7 @@ public final class SealedActorState {
         if (snapshot == null || snapshot.issuer != this)
             throw new SecurityException("ML_INVALID_SNAPSHOT_CAPABILITY");
         if (snapshot.version < 0 || snapshot.version == Long.MAX_VALUE
-                || snapshot.revision < 0)
+                || snapshot.revision < 0 || snapshot.revision == Long.MAX_VALUE)
             throw new IllegalArgumentException("ML_INVALID_VERSION");
         Objects.requireNonNull(replacements, "scalar replacements");
         if (replacements.isEmpty() || replacements.size() > schema.size())
@@ -224,6 +224,12 @@ public final class SealedActorState {
         for (var entry : replacements.entrySet()) {
             String name = Objects.requireNonNull(entry.getKey(), "scalar name");
             validateValue(name, entry.getValue());
+            // A candidate may only replace a scalar whose previous value was
+            // captured in the same authenticated snapshot. The version field
+            // is already captured separately by the snapshot capability.
+            if (!name.equals(snapshot.versionField)
+                    && !snapshot.scalars.containsKey(name))
+                throw new IllegalArgumentException("ML_REPLACEMENT_NOT_SNAPSHOTTED");
             // Owned regions have no general alias-safe scalar publication path.
             staged.put(name, entry.getValue());
         }
