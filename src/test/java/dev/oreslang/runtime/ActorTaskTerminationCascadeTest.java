@@ -139,6 +139,67 @@ final class ActorTaskTerminationCascadeTest {
     }
 
     @Test
+    void successfulAwaitTerminationRequiresPublishedDoneWitness() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(2, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            // Registry removal and finalizer callback publication occur on
+            // separate operations. The successful blocking wait must target
+            // doneFuture, never assume map absence means done was published.
+            for (int iteration = 0; iteration < 100; iteration++) {
+                var ref = runtime.<Integer>spawnShared(
+                        () -> (message, context) -> context.self().stop());
+                ref.send(1);
+                assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS),
+                        "termination timed out at iteration " + iteration);
+                assertTrue(ref.done().isDone(),
+                        "awaitTermination must not return true before getDone settles");
+                assertNull(ref.done().get(3, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    @Test
+    void failingActorAwaitTerminationStillObservesFailedDoneWitness() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                throw new IllegalStateException("expected failure");
+            });
+            ref.send(1);
+            assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(ref.done().isDone());
+            assertTrue(ref.done().isCompletedExceptionally());
+            assertInstanceOf(IllegalStateException.class, ref.failure().orElseThrow());
+        }
+    }
+
+    @Test
+    void zeroDurationAwaitCannotForgeFinalizationWhileExitHookBlocks()
+            throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            CountDownLatch enteredHook = new CountDownLatch(1);
+            CountDownLatch releaseHook = new CountDownLatch(1);
+            runtime.setActorExitHook(ignored -> {
+                enteredHook.countDown();
+                awaitUninterruptibly(releaseHook);
+            });
+            var ref = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> context.self().stop());
+            ref.send(1);
+            try {
+                assertTrue(enteredHook.await(5, TimeUnit.SECONDS));
+                assertFalse(ref.awaitTermination(0, TimeUnit.NANOSECONDS));
+                assertFalse(ref.done().isDone());
+            } finally {
+                releaseHook.countDown();
+            }
+            assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(ref.done().isDone());
+        }
+    }
+
+    @Test
     void actorDoneWaitsForOwnedFutureCancellationCallbacksAfterTaskScopeJoin()
             throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
