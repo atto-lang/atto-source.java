@@ -10,7 +10,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Real parser/ownership-checker path, not a synthetic Send trait fixture.
- * The TypeChecker must continue to reject executing nb Task source.
+ * The TypeChecker must continue to reject unsupported general task {} source.
  */
 final class TaskSpawnSendAdmissionTest {
     private static Ast.Program verify(String body) {
@@ -28,7 +28,7 @@ final class TaskSpawnSendAdmissionTest {
         assertDoesNotThrow(() -> verify("""
             pub fnc main(): void {
                 let int i = 11;
-                do nb { stdio.stdout.log(i); };
+                do task { stdio.stdout.log(i); };
                 let int again = i;
                 return;
             }
@@ -42,14 +42,14 @@ final class TaskSpawnSendAdmissionTest {
         assertDoesNotThrow(() -> verify("""
             pub fnc main(): void {
                 let data = arr[1, 2, 3];
-                do nb { stdio.stdout.log(data); };
+                do task { stdio.stdout.log(data); };
                 return;
             }
             """));
         reject("""
             pub fnc main(): void {
                 let data = arr[1, 2, 3];
-                do nb { stdio.stdout.log(data); };
+                do task { stdio.stdout.log(data); };
                 let again = data;
                 return;
             }
@@ -60,7 +60,7 @@ final class TaskSpawnSendAdmissionTest {
     void builtinOptionAndResultValuesTransferByOwnership() {
         assertDoesNotThrow(() -> verify("""
             pub fnc main(Option<int> optional): void {
-                do nb { stdio.stdout.log(optional); };
+                do task { stdio.stdout.log(optional); };
                 return;
             }
             """));
@@ -76,7 +76,7 @@ final class TaskSpawnSendAdmissionTest {
     void rawPointersAndNativeHandlesCannotBeMovedToTask() {
         for (String type : new String[]{"RawPointer<int>", "NativeHandle<int>", "FfiHandle<int>"}) {
             reject("pub fnc main(" + type + " handle): void {"
-                    + " do nb { stdio.stdout.log(handle); }; return; }",
+                    + " do task { stdio.stdout.log(handle); }; return; }",
                     "requires proven Send");
         }
     }
@@ -137,7 +137,7 @@ final class TaskSpawnSendAdmissionTest {
                 IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                     pub fnc main(): void {
                         let int x = 7;
-                        do nb { stdio.stdout.log(x); };
+                        do task { stdio.stdout.log(x); };
                         return;
                     }
                     """));
