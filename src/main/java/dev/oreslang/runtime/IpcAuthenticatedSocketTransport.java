@@ -75,15 +75,33 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         if (physicalGeneration <= 0) {
             throw new IllegalArgumentException("physical generation must be positive");
         }
+        if (maxOutstandingWrites <= 0 || maxOutstandingWrites > 65536) {
+            throw new IllegalArgumentException("invalid bounded IPC write capacity");
+        }
         if (macKey == null || macKey.length < 32 || macKey.length > 128) {
             throw new IllegalArgumentException("IPC MAC key must be 32..128 bytes");
         }
-        this.macKey = macKey.clone();
-        this.physicalGeneration = physicalGeneration;
-        this.input = socket.getInputStream();
-        this.output = socket.getOutputStream();
         this.cleanupScheduler = Objects.requireNonNull(
                 cleanupScheduler, "cleanupScheduler");
+        byte[] privateMacKey = macKey.clone();
+        final InputStream socketInput;
+        final OutputStream socketOutput;
+        try {
+            socketInput = socket.getInputStream();
+            socketOutput = socket.getOutputStream();
+        } catch (IOException | RuntimeException | Error constructionFailure) {
+            Arrays.fill(privateMacKey, (byte) 0);
+            try {
+                socket.close();
+            } catch (IOException closeFailure) {
+                constructionFailure.addSuppressed(closeFailure);
+            }
+            throw constructionFailure;
+        }
+        this.macKey = privateMacKey;
+        this.physicalGeneration = physicalGeneration;
+        this.input = socketInput;
+        this.output = socketOutput;
         this.sessionLease = new IpcTransportSessionLease(
                 trustedEpoch,
                 physicalGeneration,
