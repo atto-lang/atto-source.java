@@ -66,6 +66,41 @@ final class SourceActorScalarWireV1Test {
     }
 
     @Test
+    void everyHeaderBitFailsClosedAndEveryI64ValueRemainsCanonical() {
+        byte[] canonical = SourceActorScalarWireV1.encodeLong(
+                BINDING, 0x0102030405060708L);
+        // The header is exactly 64 bytes; the final eight are the i64 body.
+        for (int offset = 0; offset < 64; ++offset) {
+            for (int bit = 0; bit < 8; ++bit) {
+                byte[] tampered = canonical.clone();
+                tampered[offset] ^= (byte) (1 << bit);
+                assertThrows(SecurityException.class,
+                        () -> SourceActorScalarWireV1.decodeLong(
+                                BINDING, tampered),
+                        "ABI-bound scalar header bit must fail at byte "
+                                + offset + " bit " + bit);
+            }
+        }
+
+        var random = new java.util.Random(0x4f524d31L);
+        for (int i = 0; i < 25_000; ++i) {
+            long value = random.nextLong();
+            byte[] encoded = SourceActorScalarWireV1.encodeLong(BINDING, value);
+            assertEquals(SourceActorScalarWireV1.BYTE_LENGTH, encoded.length);
+            assertEquals(value, SourceActorScalarWireV1.decodeLong(BINDING, encoded));
+            // Source buffers must never be retained as a mutable borrowed
+            // message payload: producing a new frame leaves earlier immutable
+            // logical mailbox copies independent.
+            if (i == 0) {
+                byte[] independent = encoded.clone();
+                encoded[71] ^= 1;
+                assertEquals(value,
+                        SourceActorScalarWireV1.decodeLong(BINDING, independent));
+            }
+        }
+    }
+
+    @Test
     void compilerAbiBindingRejectsUncanonicalOrAbsentDigests() {
         assertThrows(NullPointerException.class,
                 () -> new SourceActorScalarWireV1.Binding(ACTOR, 7, null));
