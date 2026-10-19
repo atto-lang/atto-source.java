@@ -33,8 +33,8 @@ import dev.oreslang.types.Types.Unknown;
  *
  * <p>No guest declarations or unsafe/user-defined implementations can forge a
  * trait proof. NominalProof is a trusted compiler callback, not a guest hook.
- * This stacked Task branch predates the dyn semantic type; after rebase onto
- * the dyn convergence branch, erased dyn values remain fail-closed there.
+ * An erased dyn interface currently carries no Send/Sync auto-trait bound,
+ * so it is always denied, even for a nominal callback claiming it safe.
  * Arc/Weak likewise remain denied until trusted intrinsic lowering exists.
  */
 public final class ThreadSafetyTraits {
@@ -133,7 +133,9 @@ public final class ThreadSafetyTraits {
             int next = current.depth() + 1;
             if (type instanceof Named named) {
                 for (Type arg : named.arguments()) pending.push(new Pending(arg, next));
-             } else if (type instanceof ListType list) {
+            } else if (type instanceof Types.Dyn dyn) {
+                pending.push(new Pending(dyn.interfaceType(), next));
+            } else if (type instanceof ListType list) {
                 pending.push(new Pending(list.element(), next));
             } else if (type instanceof Tuple tuple) {
                 for (Type element : tuple.elements()) pending.push(new Pending(element, next));
@@ -183,6 +185,7 @@ public final class ThreadSafetyTraits {
             Type type, Trait trait, NominalProof nominalProof, Set<Type> visiting,
             IdentityHashMap<Type, Map<Integer, Boolean>> proven, int[] steps, int depth) {
         if (type == Unknown.INSTANCE || type instanceof Generic
+                || type instanceof Types.Dyn
                 || type instanceof SelfType || type instanceof ClassNamespace
                 || type instanceof Function || type instanceof Types.Not) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
