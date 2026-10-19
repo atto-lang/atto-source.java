@@ -65,6 +65,42 @@ public class TaskHandleTest {
         }
     }
 
+    @Test void inlineUntrackedTaskDoesNotInheritOuterCancelledTaskDomain()
+            throws Exception {
+        // Inlining is used by VM-owned schedulers: a nested Task temporarily
+        // replaces CURRENT_TASK_DOMAIN on the same Java carrier thread.
+        try (OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "checkpoint-isolation", 1, Runnable::run)) {
+            for (int i = 0; i < 100; i++) {
+                TaskScope scope = scheduler.newTaskScope();
+                AtomicInteger nested = new AtomicInteger();
+                TaskHandle<Integer> outer = scope.startTask(resume -> {
+                    assertTrue(scope.cancel("outer is stopping"));
+                    assertTrue(OresScheduler.cancellationRequested());
+
+                    OresFuture<Integer> plain = scheduler.start(inner -> {
+                        assertFalse(OresScheduler.cancellationRequested(),
+                                "untracked nested Task inherited outer cancellation");
+                        OresScheduler.cancellationCheckpoint();
+                        nested.incrementAndGet();
+                        return OresScheduler.done(7);
+                    });
+                    assertEquals(7, plain.get(3, TimeUnit.SECONDS));
+                    assertTrue(OresScheduler.cancellationRequested(),
+                            "returning to outer domain must restore its token");
+                    OresScheduler.cancellationCheckpoint();
+                    return OresScheduler.done(99);
+                });
+
+                TaskHandle.TaskOutcome<Integer> outcome = done(outer);
+                assertInstanceOf(TaskHandle.Cancelled.class, outcome);
+                assertEquals(1, nested.get());
+                assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
+                assertFalse(OresScheduler.cancellationRequested());
+            }
+        }
+    }
+
     @Test void checkpointWithoutRequestDoesNotStopTask() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             TaskHandle<Integer> handle = scheduler.startTracked(resume -> {
