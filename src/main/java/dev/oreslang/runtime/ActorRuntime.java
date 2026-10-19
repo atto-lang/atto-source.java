@@ -6427,6 +6427,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private static long scalarLogicalBytes(Object value) {
+        if (value instanceof OresBytes bytes) return 24L + bytes.size();
         if (value == null) return 8L;
         if (value instanceof Boolean || value instanceof Byte || value instanceof Short
                 || value instanceof Character || value instanceof Integer || value instanceof Float) return 16L;
@@ -6479,6 +6480,7 @@ public final class ActorRuntime implements AutoCloseable {
             IdentityHashMap<Object, Boolean> seen,
             int depth) {
         requireGraphDepth(depth);
+        if (value instanceof OresBytes bytes) return 24L + bytes.size();
         if (value == null) return 8L;
         if (value instanceof Boolean || value instanceof Byte || value instanceof Short
                 || value instanceof Character || value instanceof Integer || value instanceof Float) return 16L;
@@ -6531,7 +6533,8 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private static boolean isScalar(Object value) {
-        return value == null || value instanceof String || value instanceof OresSymbol
+        return value == null || value instanceof OresBytes
+                || value instanceof String || value instanceof OresSymbol
                 || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
