@@ -65,9 +65,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_real_preflight_rejects_missing_exact_source_authorization(self):
         self.preflight.stop()
-        self.addCleanup(self.preflight.start)
-        with self.assertRaisesRegex(pub.Denied, "exact source PR"):
-            pub.require_preflight("trusted/ci", self.root, None, None, None)
+        try:
+            with self.assertRaisesRegex(pub.Denied, "exact source PR"):
+                pub.require_preflight("trusted/ci", self.root, None, None, None)
+        finally:
+            self.preflight.start()
 
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
         sha, count = self.publish()
