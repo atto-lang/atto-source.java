@@ -75,6 +75,10 @@ package dev.oreslang.runtime;
 
             public void attach(OresFuture<?> future) {
                 java.util.Objects.requireNonNull(future, "child Future");
+                if (future == scope.drained) {
+                    throw new IllegalArgumentException(
+                            "Task scope cannot await its own completion barrier");
+                }
                 synchronized (this) {
                     if (attached || notified || terminal) {
                         throw new IllegalStateException("Task scope ticket already attached or retired");
