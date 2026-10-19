@@ -43,14 +43,10 @@ public final class EcsAccessPlanner {
             if (name == null || name.isBlank()) {
                 throw new IllegalArgumentException("ECS system needs a name");
             }
-            Objects.requireNonNull(accesses, "accesses");
-            // Enforce the bound before copying/enumerating the caller's list.
-            // Otherwise an oversized generated footprint can consume memory/time
-            // inside List.copyOf() before the planner budget is consulted.
-            if (accesses.size() > MAX_ACCESSES_PER_SYSTEM) {
-                throw new IllegalArgumentException("ECS system access footprint exceeds the planner budget");
-            }
-            accesses = List.copyOf(accesses);
+            accesses = boundedSnapshot(
+                    Objects.requireNonNull(accesses, "accesses"),
+                    MAX_ACCESSES_PER_SYSTEM,
+                    "ECS system access footprint");
         }
     }
 
@@ -87,15 +83,14 @@ public final class EcsAccessPlanner {
      * <p>No physical execution, threads, memory loans or reordering happen here.
      */
     public static List<List<SystemAccess>> plan(List<SystemAccess> systems) {
-        Objects.requireNonNull(systems, "systems");
-        if (systems.size() > MAX_SYSTEMS) {
-            throw new IllegalArgumentException("ECS planner system count exceeds the budget");
-        }
+        List<SystemAccess> snapshot = boundedSnapshot(
+                Objects.requireNonNull(systems, "systems"),
+                MAX_SYSTEMS,
+                "ECS planner system list");
         List<List<SystemAccess>> batches = new ArrayList<>();
         long remainingComparisons = MAX_COMPARISONS;
         List<SystemAccess> current = new ArrayList<>();
-        for (SystemAccess system : systems) {
-            Objects.requireNonNull(system, "system");
+        for (SystemAccess system : snapshot) {
             boolean conflict = false;
             for (SystemAccess existing : current) {
                 // Conservative upper bound; no speculative scheduling when
@@ -119,5 +114,33 @@ public final class EcsAccessPlanner {
         }
         if (!current.isEmpty()) batches.add(List.copyOf(current));
         return List.copyOf(batches);
+    }
+
+    /**
+     * Snapshot caller-provided planning metadata without trusting a single
+     * size() observation to bound enumeration. Ordinary List implementations
+     * are expected, but compiler plugins/embedding callers can provide custom
+     * Lists whose declared size disagrees with their iterator.
+     */
+    private static <T> List<T> boundedSnapshot(
+            List<T> source, int maximum, String label) {
+        int declared = source.size();
+        if (declared < 0 || declared > maximum) {
+            throw new IllegalArgumentException(label + " exceeds the planner budget");
+        }
+        List<T> snapshot = new ArrayList<>(declared);
+        int observed = 0;
+        for (T item : source) {
+            if (observed >= maximum) {
+                throw new IllegalArgumentException(label + " exceeds the planner budget");
+            }
+            snapshot.add(Objects.requireNonNull(item, label + " contains null entry"));
+            observed++;
+        }
+        int finalDeclared = source.size();
+        if (observed != declared || finalDeclared != declared) {
+            throw new IllegalArgumentException(label + " changed or reported an inconsistent size");
+        }
+        return List.copyOf(snapshot);
     }
 }
