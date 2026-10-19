@@ -298,6 +298,34 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             check(peerFailure.get() == null);
         }
 
+        // Receiver-side DATA verification is safe-by-default: a captured
+        // valid-MAC frame cannot be reused on another physical generation or
+        // a route/grant epoch sharing the same session text.
+        byte[] replayDataPayload = "replayed data".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var replayDataMessage = envelope(1, "dataReplay", 3, 4, replayDataPayload);
+        byte[] capturedData = IpcAuthenticatedSocketTransport.encodeDataFrame(
+                replayDataMessage, replayDataPayload, 82, key);
+        try {
+            IpcAuthenticatedSocketTransport.decodeDataFrame(
+                    capturedData, replayDataMessage, 83, key);
+            throw new AssertionError("old physical generation DATA accepted");
+        } catch (IOException expected) {
+            check(expected.getMessage().contains("transport epoch/generation"));
+        }
+        var changedDataEpoch = envelope(2, "dataReplay", 4, 5, replayDataPayload);
+        try {
+            IpcAuthenticatedSocketTransport.decodeDataFrame(
+                    capturedData, changedDataEpoch, 82, key);
+            throw new AssertionError("old route/grant DATA accepted");
+        } catch (IOException expected) {
+            check(expected.getMessage().contains("transport epoch/generation"));
+        }
+        var verifiedData = IpcAuthenticatedSocketTransport.decodeDataFrame(
+                capturedData, replayDataMessage, 82, key);
+        check(Arrays.equals(verifiedData.payload(), replayDataPayload));
+        check(verifiedData.physicalGeneration() == 82);
+
         // MAC tampering is rejected before receipt state mutation.
         byte[] tamperPayload = "tamper".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         var tamperMessage = envelope(1, "tamper", 3, 4, tamperPayload);
