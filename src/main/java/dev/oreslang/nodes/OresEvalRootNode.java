@@ -6075,6 +6075,21 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.StagedCallExpr named
+                    && OptionalCallShapeBinder.isDirectScalarLiteralNamedCall(named)) {
+                Ast.NameExpr name = (Ast.NameExpr) named.callee();
+                if (env.lookup(name.name()) != Env.MISSING) {
+                    throw new IllegalArgumentException(
+                            "named scalar-literal call has a shadowed runtime target");
+                }
+                Ast.FunctionDecl resolved = findFunction(
+                        name.name(), named.arguments().size());
+                Ast.CallExpr lowered = OptionalCallShapeBinder.lowerDirectScalarLiteralNamedCall(
+                        named, resolved);
+                // This is safe to reorder ONLY because every source item is a
+                // primitive literal; the ordinary runtime performs invocation.
+                return eval(lowered, env);
+            }
             if (expr instanceof Ast.StagedCallExpr || expr instanceof Ast.StagedNewExpr) {
                 throw new IllegalArgumentException(
                         "staged named/optional calls have no runtime lowering");
