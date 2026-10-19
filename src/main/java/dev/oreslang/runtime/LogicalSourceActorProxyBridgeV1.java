@@ -26,6 +26,9 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
     private final Object admissionLock = new Object();
     private final LogicalSourceActorRouterV1 router;
     private final LogicalActorProxyMailboxV1 mailbox;
+    // Non-null only for the explicit compiler-ABI-bound scalar transport.
+    // Legacy SHARED host-scalar behavior remains a separate compatibility path.
+    private final SourceActorScalarWireV1.Binding scalarWireBinding;
     private final ActorHotUpgradeTaskOwnerV1 taskOwner;
     private volatile boolean poisoned;
     private volatile boolean closed;
@@ -35,11 +38,14 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
 
     private LogicalSourceActorProxyBridgeV1(
             LogicalSourceActorRouterV1 router,
-            LogicalActorProxyMailboxV1 mailbox) {
+            LogicalActorProxyMailboxV1 mailbox,
+            boolean compilerAbiScalar) {
         this.router = Objects.requireNonNull(router);
         this.mailbox = Objects.requireNonNull(mailbox);
         this.taskOwner = new ActorHotUpgradeTaskOwnerV1(router);
-        router.bindProxyMailboxForSupervisor(mailbox);
+        router.bindProxyMailboxForSupervisor(mailbox, compilerAbiScalar);
+        this.scalarWireBinding = compilerAbiScalar
+                ? router.scalarWireBindingForProxy(mailbox) : null;
     }
 
     public static LogicalSourceActorProxyBridgeV1 spawnShared(
@@ -50,13 +56,49 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
             int maxMessageBytes,
             long maxRetainedBytes)
             throws InterruptedException, ExecutionException, TimeoutException {
+        return spawnSharedMode(first, actorTypeName, readyTimeout,
+                maxMessages, maxMessageBytes, maxRetainedBytes, false);
+    }
+
+    /**
+     * Transitional compiler-ABI-framed signed-i64 SHARED source actor bridge.
+     * The ABI digest is minted by the linked actor compiler, not provided by
+     * the sender. This does NOT enable arbitrary guest struct/tuple messages
+     * or protected PRIVATE/UNTRUSTED transports.
+     */
+    public static LogicalSourceActorProxyBridgeV1 spawnSharedAbiBoundLong(
+            HotReloadManager.Generation first,
+            String actorTypeName,
+            Duration readyTimeout,
+            int maxMessages,
+            int maxMessageBytes,
+            long maxRetainedBytes)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        return spawnSharedMode(first, actorTypeName, readyTimeout,
+                maxMessages, maxMessageBytes, maxRetainedBytes, true);
+    }
+
+    private static LogicalSourceActorProxyBridgeV1 spawnSharedMode(
+            HotReloadManager.Generation first,
+            String actorTypeName,
+            Duration readyTimeout,
+            int maxMessages,
+            int maxMessageBytes,
+            long maxRetainedBytes,
+            boolean compilerAbiScalar)
+            throws InterruptedException, ExecutionException, TimeoutException {
         // Capacity validation must precede physical actor spawn.
+        if (compilerAbiScalar
+                && maxMessageBytes < SourceActorScalarWireV1.BYTE_LENGTH)
+            throw new IllegalArgumentException(
+                    "compiler-ABI scalar wire exceeds configured message byte budget");
         var mailbox = new LogicalActorProxyMailboxV1(
                 maxMessages, maxMessageBytes, maxRetainedBytes);
         var router = LogicalSourceActorRouterV1.spawn(
                 first, ActorRuntime.ActorKind.SHARED, actorTypeName, readyTimeout);
         try {
-            return new LogicalSourceActorProxyBridgeV1(router, mailbox);
+            return new LogicalSourceActorProxyBridgeV1(
+                    router, mailbox, compilerAbiScalar);
         } catch (RuntimeException | Error failure) {
             try {
                 router.close();
@@ -161,8 +203,10 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
 
     /**
      * Admission is bounded and remains available while the upgrade holds
-     * dispatchLock. It stores canonical, endian-stable immutable scalar bytes.
-     * It does not claim physical delivery.
+     * dispatchLock. Legacy mode stores immutable endian-stable i64 bytes;
+     * compiler-ABI scalar mode stores a canonical immutable frame bound to
+     * the linked compiler's message ABI and this logical actor identity.
+     * It does not claim arbitrary source message typing or physical delivery.
      */
     public LogicalActorProxyMailboxV1.Envelope admitLong(long value) {
         requireHost();
@@ -170,10 +214,16 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
             if (closed || poisoned)
                 throw new IllegalStateException(
                         "logical proxy bridge is closed or fail-sealed");
-            byte[] bytes = new byte[Long.BYTES];
-            for (int i = Long.BYTES - 1; i >= 0; --i) {
-                bytes[i] = (byte) value;
-                value >>>= Byte.SIZE;
+            final byte[] bytes;
+            if (scalarWireBinding != null) {
+                bytes = SourceActorScalarWireV1.encodeLong(
+                        scalarWireBinding, value);
+            } else {
+                bytes = new byte[Long.BYTES];
+                for (int i = Long.BYTES - 1; i >= 0; --i) {
+                    bytes[i] = (byte) value;
+                    value >>>= Byte.SIZE;
+                }
             }
             return mailbox.admit(bytes);
         }
