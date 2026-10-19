@@ -7,7 +7,6 @@ set -euo pipefail
 readonly SOURCE_REPO="ores-truffle-oreslang/oreslang-source.java"
 readonly DEST_REPO="ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra"
 readonly DEST_ID="1412142815"
-readonly DEST_DEFAULT_BRANCH="main"
 readonly DEST_BASE_COMMIT="4d1d65445a09eb47f383bd5dc373d36056346056"
 readonly DEST_BASE_TREE="825c75a6b4cf84c62510f717290d6c87f4611b9a"
 readonly SOURCE_ID="1400792274"
@@ -175,9 +174,111 @@ done <<< "$policy"
 # Bind authorization to the exact reviewed carrier content, not merely the
 # destination repository identity. A carrier-main change therefore invalidates
 # authorization before private source bytes can be read or uploaded.
-IFS=$'\t' read -r actual_id actual_name actual_private actual_push actual_default < <(
+IFS=
+auth_mode=""
+if [[ "$main_protected" == "true" ]]; then
+  # "protected=true" alone is not enough. Require concrete anti-bypass review
+  # properties for the security-owned files on authoritative main.
+  protection="$(gh_api "repos/$SOURCE_REPO/branches/main/protection" --jq \
+    '[
+      (.required_pull_request_reviews.require_code_owner_reviews // false),
+      (.required_pull_request_reviews.required_approving_review_count // 0),
+      (.required_pull_request_reviews.dismiss_stale_reviews // false),
+      (.required_pull_request_reviews.require_last_push_approval // false),
+      (.enforce_admins.enabled // false),
+      (.allow_force_pushes.enabled // false),
+      (.allow_deletions.enabled // false),
+      ((.required_pull_request_reviews.bypass_pull_request_allowances.users // []) | length),
+      ((.required_pull_request_reviews.bypass_pull_request_allowances.teams // []) | length),
+      ((.required_pull_request_reviews.bypass_pull_request_allowances.apps // []) | length)
+    ] | @tsv')" \
+    || die "cannot verify effective protected-main review controls"
+  [[ -n "$protection" && "$protection" != *$'\n'* ]] \
+    || die "invalid protected-main review control response"
+  IFS=$'\t' read -r require_codeowners approval_count dismiss_stale last_push \
+    enforce_admins allow_force allow_delete bypass_users bypass_teams bypass_apps <<< "$protection"
+  [[ "$require_codeowners" == "true" ]] \
+    || die "protected main does not require code-owner review"
+  [[ "$approval_count" =~ ^[1-9][0-9]*$ ]] \
+    || die "protected main does not require an approving review"
+  [[ "$dismiss_stale" == "true" && "$last_push" == "true" ]] \
+    || die "protected main does not invalidate stale/pre-last-push approvals"
+  [[ "$enforce_admins" == "true" ]] \
+    || die "protected main does not enforce protections for administrators"
+  [[ "$allow_force" == "false" && "$allow_delete" == "false" ]] \
+    || die "protected main permits force-push or deletion"
+  [[ "$bypass_users" == "0" && "$bypass_teams" == "0" && "$bypass_apps" == "0" ]] \
+    || die "protected main has pull-request review bypass actors"
+  auth_mode="protected-main"
+elif [[ "$main_protected" == "false" ]]; then
+  # Fallback is intentionally per-export and independently attested. It remains
+  # inert unless this fallback implementation itself has first been reviewed and
+  # merged to authoritative main. An unprotected branch by itself is NOT enough:
+  # prove that both classic protection and repository rulesets are unavailable
+  # specifically because of the current private-repository plan.
+  require_plan_feature_unavailable \
+    "repos/$SOURCE_REPO/branches/main/protection" "classic branch protection"
+  require_plan_feature_unavailable \
+    "repos/$SOURCE_REPO/rulesets" "repository rulesets"
+  [[ "$#" -eq 6 ]] \
+    || die "unprotected main requires review-attested-v1 comment IDs"
+  maintainer_comment_id="$5"
+  security_comment_id="$6"
+  [[ "$maintainer_comment_id" =~ ^[1-9][0-9]*$ \
+      && "$security_comment_id" =~ ^[1-9][0-9]*$ ]] \
+    || die "invalid review-attested approval comment ID"
+  [[ "$maintainer_comment_id" != "$security_comment_id" ]] \
+    || die "maintainer and security approvals must be distinct comments"
+
+  approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=$SOURCE_REPO source_repo_id=$SOURCE_ID source_pr=$source_pr source_commit=$expected_commit source_tree=$expected_tree destination_repo=$DEST_REPO destination_repo_id=$DEST_ID destination_branch=$destination_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
+
+  verify_attestation_comment() {
+    local comment_id="$1"
+    local expected_login="$2"
+    local expected_user_id="$3"
+    local -a fields=()
+    mapfile -t fields < <(
+      gh_api "repos/$SOURCE_REPO/issues/comments/$comment_id" \
+        --jq '.user.login, (.user.id|tostring), .author_association, .created_at, .updated_at, .issue_url, .body'
+    ) || die "cannot read review-attested approval comment"
+    [[ "${#fields[@]}" -eq 7 ]] \
+      || die "approval comment must contain one canonical payload line"
+    [[ "${fields[0]}" == "$expected_login" && "${fields[1]}" == "$expected_user_id" ]] \
+      || die "approval comment author identity mismatch for $expected_login"
+    case "${fields[2]}" in
+      OWNER|MEMBER|COLLABORATOR) ;;
+      *) die "approval author is not associated with the source repository" ;;
+    esac
+    [[ "${fields[3]}" == "${fields[4]}" ]] \
+      || die "approval comment was edited after creation"
+    [[ "${fields[5]}" == "https://api.github.com/repos/$SOURCE_REPO/issues/$APPROVAL_ISSUE" ]] \
+      || die "approval comment is not on the designated security issue"
+    [[ "${fields[6]}" == "$approval_payload" ]] \
+      || die "approval comment does not exactly bind this export"
+  }
+
+  verify_attestation_comment "$maintainer_comment_id" \
+    "$MAINTAINER_APPROVER" "$MAINTAINER_APPROVER_ID"
+  verify_attestation_comment "$security_comment_id" \
+    "$SECURITY_APPROVER" "$SECURITY_APPROVER_ID"
+  auth_mode="review-attested-v1"
+else
+  die "unexpected source branch protection state"
+fi
+
+# Revalidate destination identity and the exact carrier base after authorization.
+IFS=
+printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_pr=%s source_commit=%s source_tree=%s destination_branch=%s destination_base_commit=%s destination_base_tree=%s main_sha=%s policy_blob=%s preflight_blob=%s guard_blob=%s wrapper_blob=%s publisher_blob=%s dest_repo_id=%s\n' \
+  "$auth_mode" "$source_pr" "$actual_commit" "$actual_tree" "$destination_branch" \
+  "$dest_base_commit" "$dest_base_tree" "$main_sha" \
+  "$policy_blob" "$preflight_blob" "$guard_blob" "$wrapper_blob" "$publisher_blob" "$actual_id"
+
+# No transfer or workflow dispatch occurs. Human security-owner approval,
+# workflow isolation, exact source-subtree verification, retention and actual
+# executed CI tests remain independent mandatory gates.
+\t' read -r actual_id actual_name actual_private actual_push < <(
   gh_api "repos/$DEST_REPO" \
-    --jq '[.id, .full_name, .private, (.permissions.push // false), .default_branch] | @tsv'
+    --jq '[.id, .full_name, .private, (.permissions.push // false)] | @tsv'
 ) || die "cannot read authenticated destination repository"
 [[ "$actual_id" == "$DEST_ID" ]] \
   || die "destination GitHub repository ID mismatch"
@@ -187,17 +288,678 @@ IFS=$'\t' read -r actual_id actual_name actual_private actual_push actual_defaul
   || die "destination must remain private"
 [[ "$actual_push" == "true" ]] \
   || die "insufficient destination permissions"
-[[ "$actual_default" == "$DEST_DEFAULT_BRANCH" ]] \
-  || die "destination default branch changed"
 
-dest_base_commit="$(gh_api "repos/$DEST_REPO/git/ref/heads/$DEST_DEFAULT_BRANCH" --jq '.object.sha')" \
-  || die "cannot resolve destination carrier base commit"
-[[ "$dest_base_commit" =~ ^[0-9a-f]{40}$ && "$dest_base_commit" == "$DEST_BASE_COMMIT" ]] \
-  || die "destination carrier base commit is not the reviewed commit"
-dest_base_tree="$(gh_api "repos/$DEST_REPO/git/commits/$dest_base_commit" --jq '.tree.sha')" \
-  || die "cannot resolve destination carrier base tree"
-[[ "$dest_base_tree" =~ ^[0-9a-f]{40}$ && "$dest_base_tree" == "$DEST_BASE_TREE" ]] \
-  || die "destination carrier base tree is not the reviewed tree"
+# The carrier is an immutable reviewed Git object, not "whatever main points at".
+# Ordinary destination-main movement must neither grant nor revoke authorization.
+IFS=
+auth_mode=""
+if [[ "$main_protected" == "true" ]]; then
+  # "protected=true" alone is not enough. Require concrete anti-bypass review
+  # properties for the security-owned files on authoritative main.
+  protection="$(gh_api "repos/$SOURCE_REPO/branches/main/protection" --jq \
+    '[
+      (.required_pull_request_reviews.require_code_owner_reviews // false),
+      (.required_pull_request_reviews.required_approving_review_count // 0),
+      (.required_pull_request_reviews.dismiss_stale_reviews // false),
+      (.required_pull_request_reviews.require_last_push_approval // false),
+      (.enforce_admins.enabled // false),
+      (.allow_force_pushes.enabled // false),
+      (.allow_deletions.enabled // false),
+      ((.required_pull_request_reviews.bypass_pull_request_allowances.users // []) | length),
+      ((.required_pull_request_reviews.bypass_pull_request_allowances.teams // []) | length),
+      ((.required_pull_request_reviews.bypass_pull_request_allowances.apps // []) | length)
+    ] | @tsv')" \
+    || die "cannot verify effective protected-main review controls"
+  [[ -n "$protection" && "$protection" != *$'\n'* ]] \
+    || die "invalid protected-main review control response"
+  IFS=$'\t' read -r require_codeowners approval_count dismiss_stale last_push \
+    enforce_admins allow_force allow_delete bypass_users bypass_teams bypass_apps <<< "$protection"
+  [[ "$require_codeowners" == "true" ]] \
+    || die "protected main does not require code-owner review"
+  [[ "$approval_count" =~ ^[1-9][0-9]*$ ]] \
+    || die "protected main does not require an approving review"
+  [[ "$dismiss_stale" == "true" && "$last_push" == "true" ]] \
+    || die "protected main does not invalidate stale/pre-last-push approvals"
+  [[ "$enforce_admins" == "true" ]] \
+    || die "protected main does not enforce protections for administrators"
+  [[ "$allow_force" == "false" && "$allow_delete" == "false" ]] \
+    || die "protected main permits force-push or deletion"
+  [[ "$bypass_users" == "0" && "$bypass_teams" == "0" && "$bypass_apps" == "0" ]] \
+    || die "protected main has pull-request review bypass actors"
+  auth_mode="protected-main"
+elif [[ "$main_protected" == "false" ]]; then
+  # Fallback is intentionally per-export and independently attested. It remains
+  # inert unless this fallback implementation itself has first been reviewed and
+  # merged to authoritative main. An unprotected branch by itself is NOT enough:
+  # prove that both classic protection and repository rulesets are unavailable
+  # specifically because of the current private-repository plan.
+  require_plan_feature_unavailable \
+    "repos/$SOURCE_REPO/branches/main/protection" "classic branch protection"
+  require_plan_feature_unavailable \
+    "repos/$SOURCE_REPO/rulesets" "repository rulesets"
+  [[ "$#" -eq 6 ]] \
+    || die "unprotected main requires review-attested-v1 comment IDs"
+  maintainer_comment_id="$5"
+  security_comment_id="$6"
+  [[ "$maintainer_comment_id" =~ ^[1-9][0-9]*$ \
+      && "$security_comment_id" =~ ^[1-9][0-9]*$ ]] \
+    || die "invalid review-attested approval comment ID"
+  [[ "$maintainer_comment_id" != "$security_comment_id" ]] \
+    || die "maintainer and security approvals must be distinct comments"
+
+  approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=$SOURCE_REPO source_repo_id=$SOURCE_ID source_pr=$source_pr source_commit=$expected_commit source_tree=$expected_tree destination_repo=$DEST_REPO destination_repo_id=$DEST_ID destination_branch=$destination_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
+
+  verify_attestation_comment() {
+    local comment_id="$1"
+    local expected_login="$2"
+    local expected_user_id="$3"
+    local -a fields=()
+    mapfile -t fields < <(
+      gh_api "repos/$SOURCE_REPO/issues/comments/$comment_id" \
+        --jq '.user.login, (.user.id|tostring), .author_association, .created_at, .updated_at, .issue_url, .body'
+    ) || die "cannot read review-attested approval comment"
+    [[ "${#fields[@]}" -eq 7 ]] \
+      || die "approval comment must contain one canonical payload line"
+    [[ "${fields[0]}" == "$expected_login" && "${fields[1]}" == "$expected_user_id" ]] \
+      || die "approval comment author identity mismatch for $expected_login"
+    case "${fields[2]}" in
+      OWNER|MEMBER|COLLABORATOR) ;;
+      *) die "approval author is not associated with the source repository" ;;
+    esac
+    [[ "${fields[3]}" == "${fields[4]}" ]] \
+      || die "approval comment was edited after creation"
+    [[ "${fields[5]}" == "https://api.github.com/repos/$SOURCE_REPO/issues/$APPROVAL_ISSUE" ]] \
+      || die "approval comment is not on the designated security issue"
+    [[ "${fields[6]}" == "$approval_payload" ]] \
+      || die "approval comment does not exactly bind this export"
+  }
+
+  verify_attestation_comment "$maintainer_comment_id" \
+    "$MAINTAINER_APPROVER" "$MAINTAINER_APPROVER_ID"
+  verify_attestation_comment "$security_comment_id" \
+    "$SECURITY_APPROVER" "$SECURITY_APPROVER_ID"
+  auth_mode="review-attested-v1"
+else
+  die "unexpected source branch protection state"
+fi
+
+# Revalidate destination identity and the exact carrier base after authorization.
+IFS=$'\t' read -r final_id final_name final_private final_push final_default < <(
+  gh_api "repos/$DEST_REPO" \
+    --jq '[.id, .full_name, .private, (.permissions.push // false), .default_branch] | @tsv'
+) || die "cannot re-read authenticated destination repository"
+[[ "$final_id" == "$actual_id" && "$final_id" == "$DEST_ID" \
+    && "$final_name" == "$DEST_REPO" && "$final_private" == "true" \
+    && "$final_push" == "true" && "$final_default" == "$DEST_DEFAULT_BRANCH" ]] \
+  || die "destination identity, privacy, permissions or default branch changed during authorization"
+final_base_commit="$(gh_api "repos/$DEST_REPO/git/ref/heads/$DEST_DEFAULT_BRANCH" --jq '.object.sha')" \
+  || die "cannot re-resolve destination carrier base commit"
+final_base_tree="$(gh_api "repos/$DEST_REPO/git/commits/$final_base_commit" --jq '.tree.sha')" \
+  || die "cannot re-resolve destination carrier base tree"
+[[ "$final_base_commit" == "$dest_base_commit" && "$final_base_commit" == "$DEST_BASE_COMMIT" \
+    && "$final_base_tree" == "$dest_base_tree" && "$final_base_tree" == "$DEST_BASE_TREE" ]] \
+  || die "destination carrier changed during authorization"
+
+printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_pr=%s source_commit=%s source_tree=%s destination_branch=%s destination_base_commit=%s destination_base_tree=%s main_sha=%s policy_blob=%s preflight_blob=%s guard_blob=%s wrapper_blob=%s publisher_blob=%s dest_repo_id=%s\n' \
+  "$auth_mode" "$source_pr" "$actual_commit" "$actual_tree" "$destination_branch" \
+  "$dest_base_commit" "$dest_base_tree" "$main_sha" \
+  "$policy_blob" "$preflight_blob" "$guard_blob" "$wrapper_blob" "$publisher_blob" "$actual_id"
+
+# No transfer or workflow dispatch occurs. Human security-owner approval,
+# workflow isolation, exact source-subtree verification, retention and actual
+# executed CI tests remain independent mandatory gates.
+\t' read -r dest_base_commit dest_base_tree < <(
+  gh_api "repos/$DEST_REPO/git/commits/$DEST_BASE_COMMIT" \
+    --jq '[.sha, .tree.sha] | @tsv'
+) || die "cannot resolve reviewed destination carrier commit"
+[[ "$dest_base_commit" == "$DEST_BASE_COMMIT" \
+    && "$dest_base_tree" == "$DEST_BASE_TREE" ]] \
+  || die "destination reviewed carrier commit/tree mismatch"
+
+auth_mode=""
+if [[ "$main_protected" == "true" ]]; then
+  # "protected=true" alone is not enough. Require concrete anti-bypass review
+  # properties for the security-owned files on authoritative main.
+  protection="$(gh_api "repos/$SOURCE_REPO/branches/main/protection" --jq \
+    '[
+      (.required_pull_request_reviews.require_code_owner_reviews // false),
+      (.required_pull_request_reviews.required_approving_review_count // 0),
+      (.required_pull_request_reviews.dismiss_stale_reviews // false),
+      (.required_pull_request_reviews.require_last_push_approval // false),
+      (.enforce_admins.enabled // false),
+      (.allow_force_pushes.enabled // false),
+      (.allow_deletions.enabled // false),
+      ((.required_pull_request_reviews.bypass_pull_request_allowances.users // []) | length),
+      ((.required_pull_request_reviews.bypass_pull_request_allowances.teams // []) | length),
+      ((.required_pull_request_reviews.bypass_pull_request_allowances.apps // []) | length)
+    ] | @tsv')" \
+    || die "cannot verify effective protected-main review controls"
+  [[ -n "$protection" && "$protection" != *$'\n'* ]] \
+    || die "invalid protected-main review control response"
+  IFS=$'\t' read -r require_codeowners approval_count dismiss_stale last_push \
+    enforce_admins allow_force allow_delete bypass_users bypass_teams bypass_apps <<< "$protection"
+  [[ "$require_codeowners" == "true" ]] \
+    || die "protected main does not require code-owner review"
+  [[ "$approval_count" =~ ^[1-9][0-9]*$ ]] \
+    || die "protected main does not require an approving review"
+  [[ "$dismiss_stale" == "true" && "$last_push" == "true" ]] \
+    || die "protected main does not invalidate stale/pre-last-push approvals"
+  [[ "$enforce_admins" == "true" ]] \
+    || die "protected main does not enforce protections for administrators"
+  [[ "$allow_force" == "false" && "$allow_delete" == "false" ]] \
+    || die "protected main permits force-push or deletion"
+  [[ "$bypass_users" == "0" && "$bypass_teams" == "0" && "$bypass_apps" == "0" ]] \
+    || die "protected main has pull-request review bypass actors"
+  auth_mode="protected-main"
+elif [[ "$main_protected" == "false" ]]; then
+  # Fallback is intentionally per-export and independently attested. It remains
+  # inert unless this fallback implementation itself has first been reviewed and
+  # merged to authoritative main. An unprotected branch by itself is NOT enough:
+  # prove that both classic protection and repository rulesets are unavailable
+  # specifically because of the current private-repository plan.
+  require_plan_feature_unavailable \
+    "repos/$SOURCE_REPO/branches/main/protection" "classic branch protection"
+  require_plan_feature_unavailable \
+    "repos/$SOURCE_REPO/rulesets" "repository rulesets"
+  [[ "$#" -eq 6 ]] \
+    || die "unprotected main requires review-attested-v1 comment IDs"
+  maintainer_comment_id="$5"
+  security_comment_id="$6"
+  [[ "$maintainer_comment_id" =~ ^[1-9][0-9]*$ \
+      && "$security_comment_id" =~ ^[1-9][0-9]*$ ]] \
+    || die "invalid review-attested approval comment ID"
+  [[ "$maintainer_comment_id" != "$security_comment_id" ]] \
+    || die "maintainer and security approvals must be distinct comments"
+
+  approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=$SOURCE_REPO source_repo_id=$SOURCE_ID source_pr=$source_pr source_commit=$expected_commit source_tree=$expected_tree destination_repo=$DEST_REPO destination_repo_id=$DEST_ID destination_branch=$destination_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
+
+  verify_attestation_comment() {
+    local comment_id="$1"
+    local expected_login="$2"
+    local expected_user_id="$3"
+    local -a fields=()
+    mapfile -t fields < <(
+      gh_api "repos/$SOURCE_REPO/issues/comments/$comment_id" \
+        --jq '.user.login, (.user.id|tostring), .author_association, .created_at, .updated_at, .issue_url, .body'
+    ) || die "cannot read review-attested approval comment"
+    [[ "${#fields[@]}" -eq 7 ]] \
+      || die "approval comment must contain one canonical payload line"
+    [[ "${fields[0]}" == "$expected_login" && "${fields[1]}" == "$expected_user_id" ]] \
+      || die "approval comment author identity mismatch for $expected_login"
+    case "${fields[2]}" in
+      OWNER|MEMBER|COLLABORATOR) ;;
+      *) die "approval author is not associated with the source repository" ;;
+    esac
+    [[ "${fields[3]}" == "${fields[4]}" ]] \
+      || die "approval comment was edited after creation"
+    [[ "${fields[5]}" == "https://api.github.com/repos/$SOURCE_REPO/issues/$APPROVAL_ISSUE" ]] \
+      || die "approval comment is not on the designated security issue"
+    [[ "${fields[6]}" == "$approval_payload" ]] \
+      || die "approval comment does not exactly bind this export"
+  }
+
+  verify_attestation_comment "$maintainer_comment_id" \
+    "$MAINTAINER_APPROVER" "$MAINTAINER_APPROVER_ID"
+  verify_attestation_comment "$security_comment_id" \
+    "$SECURITY_APPROVER" "$SECURITY_APPROVER_ID"
+  auth_mode="review-attested-v1"
+else
+  die "unexpected source branch protection state"
+fi
+
+# Revalidate destination identity and the exact carrier base after authorization.
+IFS=$'\t' read -r final_id final_name final_private final_push final_default < <(
+  gh_api "repos/$DEST_REPO" \
+    --jq '[.id, .full_name, .private, (.permissions.push // false), .default_branch] | @tsv'
+) || die "cannot re-read authenticated destination repository"
+[[ "$final_id" == "$actual_id" && "$final_id" == "$DEST_ID" \
+    && "$final_name" == "$DEST_REPO" && "$final_private" == "true" \
+    && "$final_push" == "true" && "$final_default" == "$DEST_DEFAULT_BRANCH" ]] \
+  || die "destination identity, privacy, permissions or default branch changed during authorization"
+final_base_commit="$(gh_api "repos/$DEST_REPO/git/ref/heads/$DEST_DEFAULT_BRANCH" --jq '.object.sha')" \
+  || die "cannot re-resolve destination carrier base commit"
+final_base_tree="$(gh_api "repos/$DEST_REPO/git/commits/$final_base_commit" --jq '.tree.sha')" \
+  || die "cannot re-resolve destination carrier base tree"
+[[ "$final_base_commit" == "$dest_base_commit" && "$final_base_commit" == "$DEST_BASE_COMMIT" \
+    && "$final_base_tree" == "$dest_base_tree" && "$final_base_tree" == "$DEST_BASE_TREE" ]] \
+  || die "destination carrier changed during authorization"
+
+printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_pr=%s source_commit=%s source_tree=%s destination_branch=%s destination_base_commit=%s destination_base_tree=%s main_sha=%s policy_blob=%s preflight_blob=%s guard_blob=%s wrapper_blob=%s publisher_blob=%s dest_repo_id=%s\n' \
+  "$auth_mode" "$source_pr" "$actual_commit" "$actual_tree" "$destination_branch" \
+  "$dest_base_commit" "$dest_base_tree" "$main_sha" \
+  "$policy_blob" "$preflight_blob" "$guard_blob" "$wrapper_blob" "$publisher_blob" "$actual_id"
+
+# No transfer or workflow dispatch occurs. Human security-owner approval,
+# workflow isolation, exact source-subtree verification, retention and actual
+# executed CI tests remain independent mandatory gates.
+\t' read -r final_id final_name final_private final_push < <(
+  gh_api "repos/$DEST_REPO" \
+    --jq '[.id, .full_name, .private, (.permissions.push // false)] | @tsv'
+) || die "cannot re-read authenticated destination repository"
+[[ "$final_id" == "$actual_id" && "$final_id" == "$DEST_ID" \
+    && "$final_name" == "$DEST_REPO" && "$final_private" == "true" \
+    && "$final_push" == "true" ]] \
+  || die "destination identity, privacy or permissions changed during authorization"
+IFS=
+printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_pr=%s source_commit=%s source_tree=%s destination_branch=%s destination_base_commit=%s destination_base_tree=%s main_sha=%s policy_blob=%s preflight_blob=%s guard_blob=%s wrapper_blob=%s publisher_blob=%s dest_repo_id=%s\n' \
+  "$auth_mode" "$source_pr" "$actual_commit" "$actual_tree" "$destination_branch" \
+  "$dest_base_commit" "$dest_base_tree" "$main_sha" \
+  "$policy_blob" "$preflight_blob" "$guard_blob" "$wrapper_blob" "$publisher_blob" "$actual_id"
+
+# No transfer or workflow dispatch occurs. Human security-owner approval,
+# workflow isolation, exact source-subtree verification, retention and actual
+# executed CI tests remain independent mandatory gates.
+\t' read -r actual_id actual_name actual_private actual_push < <(
+  gh_api "repos/$DEST_REPO" \
+    --jq '[.id, .full_name, .private, (.permissions.push // false)] | @tsv'
+) || die "cannot read authenticated destination repository"
+[[ "$actual_id" == "$DEST_ID" ]] \
+  || die "destination GitHub repository ID mismatch"
+[[ "$actual_name" == "$DEST_REPO" ]] \
+  || die "destination full name mismatch"
+[[ "$actual_private" == "true" ]] \
+  || die "destination must remain private"
+[[ "$actual_push" == "true" ]] \
+  || die "insufficient destination permissions"
+
+# The carrier is an immutable reviewed Git object, not "whatever main points at".
+# Ordinary destination-main movement must neither grant nor revoke authorization.
+IFS=
+auth_mode=""
+if [[ "$main_protected" == "true" ]]; then
+  # "protected=true" alone is not enough. Require concrete anti-bypass review
+  # properties for the security-owned files on authoritative main.
+  protection="$(gh_api "repos/$SOURCE_REPO/branches/main/protection" --jq \
+    '[
+      (.required_pull_request_reviews.require_code_owner_reviews // false),
+      (.required_pull_request_reviews.required_approving_review_count // 0),
+      (.required_pull_request_reviews.dismiss_stale_reviews // false),
+      (.required_pull_request_reviews.require_last_push_approval // false),
+      (.enforce_admins.enabled // false),
+      (.allow_force_pushes.enabled // false),
+      (.allow_deletions.enabled // false),
+      ((.required_pull_request_reviews.bypass_pull_request_allowances.users // []) | length),
+      ((.required_pull_request_reviews.bypass_pull_request_allowances.teams // []) | length),
+      ((.required_pull_request_reviews.bypass_pull_request_allowances.apps // []) | length)
+    ] | @tsv')" \
+    || die "cannot verify effective protected-main review controls"
+  [[ -n "$protection" && "$protection" != *$'\n'* ]] \
+    || die "invalid protected-main review control response"
+  IFS=$'\t' read -r require_codeowners approval_count dismiss_stale last_push \
+    enforce_admins allow_force allow_delete bypass_users bypass_teams bypass_apps <<< "$protection"
+  [[ "$require_codeowners" == "true" ]] \
+    || die "protected main does not require code-owner review"
+  [[ "$approval_count" =~ ^[1-9][0-9]*$ ]] \
+    || die "protected main does not require an approving review"
+  [[ "$dismiss_stale" == "true" && "$last_push" == "true" ]] \
+    || die "protected main does not invalidate stale/pre-last-push approvals"
+  [[ "$enforce_admins" == "true" ]] \
+    || die "protected main does not enforce protections for administrators"
+  [[ "$allow_force" == "false" && "$allow_delete" == "false" ]] \
+    || die "protected main permits force-push or deletion"
+  [[ "$bypass_users" == "0" && "$bypass_teams" == "0" && "$bypass_apps" == "0" ]] \
+    || die "protected main has pull-request review bypass actors"
+  auth_mode="protected-main"
+elif [[ "$main_protected" == "false" ]]; then
+  # Fallback is intentionally per-export and independently attested. It remains
+  # inert unless this fallback implementation itself has first been reviewed and
+  # merged to authoritative main. An unprotected branch by itself is NOT enough:
+  # prove that both classic protection and repository rulesets are unavailable
+  # specifically because of the current private-repository plan.
+  require_plan_feature_unavailable \
+    "repos/$SOURCE_REPO/branches/main/protection" "classic branch protection"
+  require_plan_feature_unavailable \
+    "repos/$SOURCE_REPO/rulesets" "repository rulesets"
+  [[ "$#" -eq 6 ]] \
+    || die "unprotected main requires review-attested-v1 comment IDs"
+  maintainer_comment_id="$5"
+  security_comment_id="$6"
+  [[ "$maintainer_comment_id" =~ ^[1-9][0-9]*$ \
+      && "$security_comment_id" =~ ^[1-9][0-9]*$ ]] \
+    || die "invalid review-attested approval comment ID"
+  [[ "$maintainer_comment_id" != "$security_comment_id" ]] \
+    || die "maintainer and security approvals must be distinct comments"
+
+  approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=$SOURCE_REPO source_repo_id=$SOURCE_ID source_pr=$source_pr source_commit=$expected_commit source_tree=$expected_tree destination_repo=$DEST_REPO destination_repo_id=$DEST_ID destination_branch=$destination_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
+
+  verify_attestation_comment() {
+    local comment_id="$1"
+    local expected_login="$2"
+    local expected_user_id="$3"
+    local -a fields=()
+    mapfile -t fields < <(
+      gh_api "repos/$SOURCE_REPO/issues/comments/$comment_id" \
+        --jq '.user.login, (.user.id|tostring), .author_association, .created_at, .updated_at, .issue_url, .body'
+    ) || die "cannot read review-attested approval comment"
+    [[ "${#fields[@]}" -eq 7 ]] \
+      || die "approval comment must contain one canonical payload line"
+    [[ "${fields[0]}" == "$expected_login" && "${fields[1]}" == "$expected_user_id" ]] \
+      || die "approval comment author identity mismatch for $expected_login"
+    case "${fields[2]}" in
+      OWNER|MEMBER|COLLABORATOR) ;;
+      *) die "approval author is not associated with the source repository" ;;
+    esac
+    [[ "${fields[3]}" == "${fields[4]}" ]] \
+      || die "approval comment was edited after creation"
+    [[ "${fields[5]}" == "https://api.github.com/repos/$SOURCE_REPO/issues/$APPROVAL_ISSUE" ]] \
+      || die "approval comment is not on the designated security issue"
+    [[ "${fields[6]}" == "$approval_payload" ]] \
+      || die "approval comment does not exactly bind this export"
+  }
+
+  verify_attestation_comment "$maintainer_comment_id" \
+    "$MAINTAINER_APPROVER" "$MAINTAINER_APPROVER_ID"
+  verify_attestation_comment "$security_comment_id" \
+    "$SECURITY_APPROVER" "$SECURITY_APPROVER_ID"
+  auth_mode="review-attested-v1"
+else
+  die "unexpected source branch protection state"
+fi
+
+# Revalidate destination identity and the exact carrier base after authorization.
+IFS=$'\t' read -r final_id final_name final_private final_push final_default < <(
+  gh_api "repos/$DEST_REPO" \
+    --jq '[.id, .full_name, .private, (.permissions.push // false), .default_branch] | @tsv'
+) || die "cannot re-read authenticated destination repository"
+[[ "$final_id" == "$actual_id" && "$final_id" == "$DEST_ID" \
+    && "$final_name" == "$DEST_REPO" && "$final_private" == "true" \
+    && "$final_push" == "true" && "$final_default" == "$DEST_DEFAULT_BRANCH" ]] \
+  || die "destination identity, privacy, permissions or default branch changed during authorization"
+final_base_commit="$(gh_api "repos/$DEST_REPO/git/ref/heads/$DEST_DEFAULT_BRANCH" --jq '.object.sha')" \
+  || die "cannot re-resolve destination carrier base commit"
+final_base_tree="$(gh_api "repos/$DEST_REPO/git/commits/$final_base_commit" --jq '.tree.sha')" \
+  || die "cannot re-resolve destination carrier base tree"
+[[ "$final_base_commit" == "$dest_base_commit" && "$final_base_commit" == "$DEST_BASE_COMMIT" \
+    && "$final_base_tree" == "$dest_base_tree" && "$final_base_tree" == "$DEST_BASE_TREE" ]] \
+  || die "destination carrier changed during authorization"
+
+printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_pr=%s source_commit=%s source_tree=%s destination_branch=%s destination_base_commit=%s destination_base_tree=%s main_sha=%s policy_blob=%s preflight_blob=%s guard_blob=%s wrapper_blob=%s publisher_blob=%s dest_repo_id=%s\n' \
+  "$auth_mode" "$source_pr" "$actual_commit" "$actual_tree" "$destination_branch" \
+  "$dest_base_commit" "$dest_base_tree" "$main_sha" \
+  "$policy_blob" "$preflight_blob" "$guard_blob" "$wrapper_blob" "$publisher_blob" "$actual_id"
+
+# No transfer or workflow dispatch occurs. Human security-owner approval,
+# workflow isolation, exact source-subtree verification, retention and actual
+# executed CI tests remain independent mandatory gates.
+\t' read -r dest_base_commit dest_base_tree < <(
+  gh_api "repos/$DEST_REPO/git/commits/$DEST_BASE_COMMIT" \
+    --jq '[.sha, .tree.sha] | @tsv'
+) || die "cannot resolve reviewed destination carrier commit"
+[[ "$dest_base_commit" == "$DEST_BASE_COMMIT" \
+    && "$dest_base_tree" == "$DEST_BASE_TREE" ]] \
+  || die "destination reviewed carrier commit/tree mismatch"
+
+auth_mode=""
+if [[ "$main_protected" == "true" ]]; then
+  # "protected=true" alone is not enough. Require concrete anti-bypass review
+  # properties for the security-owned files on authoritative main.
+  protection="$(gh_api "repos/$SOURCE_REPO/branches/main/protection" --jq \
+    '[
+      (.required_pull_request_reviews.require_code_owner_reviews // false),
+      (.required_pull_request_reviews.required_approving_review_count // 0),
+      (.required_pull_request_reviews.dismiss_stale_reviews // false),
+      (.required_pull_request_reviews.require_last_push_approval // false),
+      (.enforce_admins.enabled // false),
+      (.allow_force_pushes.enabled // false),
+      (.allow_deletions.enabled // false),
+      ((.required_pull_request_reviews.bypass_pull_request_allowances.users // []) | length),
+      ((.required_pull_request_reviews.bypass_pull_request_allowances.teams // []) | length),
+      ((.required_pull_request_reviews.bypass_pull_request_allowances.apps // []) | length)
+    ] | @tsv')" \
+    || die "cannot verify effective protected-main review controls"
+  [[ -n "$protection" && "$protection" != *$'\n'* ]] \
+    || die "invalid protected-main review control response"
+  IFS=$'\t' read -r require_codeowners approval_count dismiss_stale last_push \
+    enforce_admins allow_force allow_delete bypass_users bypass_teams bypass_apps <<< "$protection"
+  [[ "$require_codeowners" == "true" ]] \
+    || die "protected main does not require code-owner review"
+  [[ "$approval_count" =~ ^[1-9][0-9]*$ ]] \
+    || die "protected main does not require an approving review"
+  [[ "$dismiss_stale" == "true" && "$last_push" == "true" ]] \
+    || die "protected main does not invalidate stale/pre-last-push approvals"
+  [[ "$enforce_admins" == "true" ]] \
+    || die "protected main does not enforce protections for administrators"
+  [[ "$allow_force" == "false" && "$allow_delete" == "false" ]] \
+    || die "protected main permits force-push or deletion"
+  [[ "$bypass_users" == "0" && "$bypass_teams" == "0" && "$bypass_apps" == "0" ]] \
+    || die "protected main has pull-request review bypass actors"
+  auth_mode="protected-main"
+elif [[ "$main_protected" == "false" ]]; then
+  # Fallback is intentionally per-export and independently attested. It remains
+  # inert unless this fallback implementation itself has first been reviewed and
+  # merged to authoritative main. An unprotected branch by itself is NOT enough:
+  # prove that both classic protection and repository rulesets are unavailable
+  # specifically because of the current private-repository plan.
+  require_plan_feature_unavailable \
+    "repos/$SOURCE_REPO/branches/main/protection" "classic branch protection"
+  require_plan_feature_unavailable \
+    "repos/$SOURCE_REPO/rulesets" "repository rulesets"
+  [[ "$#" -eq 6 ]] \
+    || die "unprotected main requires review-attested-v1 comment IDs"
+  maintainer_comment_id="$5"
+  security_comment_id="$6"
+  [[ "$maintainer_comment_id" =~ ^[1-9][0-9]*$ \
+      && "$security_comment_id" =~ ^[1-9][0-9]*$ ]] \
+    || die "invalid review-attested approval comment ID"
+  [[ "$maintainer_comment_id" != "$security_comment_id" ]] \
+    || die "maintainer and security approvals must be distinct comments"
+
+  approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=$SOURCE_REPO source_repo_id=$SOURCE_ID source_pr=$source_pr source_commit=$expected_commit source_tree=$expected_tree destination_repo=$DEST_REPO destination_repo_id=$DEST_ID destination_branch=$destination_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
+
+  verify_attestation_comment() {
+    local comment_id="$1"
+    local expected_login="$2"
+    local expected_user_id="$3"
+    local -a fields=()
+    mapfile -t fields < <(
+      gh_api "repos/$SOURCE_REPO/issues/comments/$comment_id" \
+        --jq '.user.login, (.user.id|tostring), .author_association, .created_at, .updated_at, .issue_url, .body'
+    ) || die "cannot read review-attested approval comment"
+    [[ "${#fields[@]}" -eq 7 ]] \
+      || die "approval comment must contain one canonical payload line"
+    [[ "${fields[0]}" == "$expected_login" && "${fields[1]}" == "$expected_user_id" ]] \
+      || die "approval comment author identity mismatch for $expected_login"
+    case "${fields[2]}" in
+      OWNER|MEMBER|COLLABORATOR) ;;
+      *) die "approval author is not associated with the source repository" ;;
+    esac
+    [[ "${fields[3]}" == "${fields[4]}" ]] \
+      || die "approval comment was edited after creation"
+    [[ "${fields[5]}" == "https://api.github.com/repos/$SOURCE_REPO/issues/$APPROVAL_ISSUE" ]] \
+      || die "approval comment is not on the designated security issue"
+    [[ "${fields[6]}" == "$approval_payload" ]] \
+      || die "approval comment does not exactly bind this export"
+  }
+
+  verify_attestation_comment "$maintainer_comment_id" \
+    "$MAINTAINER_APPROVER" "$MAINTAINER_APPROVER_ID"
+  verify_attestation_comment "$security_comment_id" \
+    "$SECURITY_APPROVER" "$SECURITY_APPROVER_ID"
+  auth_mode="review-attested-v1"
+else
+  die "unexpected source branch protection state"
+fi
+
+# Revalidate destination identity and the exact carrier base after authorization.
+IFS=$'\t' read -r final_id final_name final_private final_push final_default < <(
+  gh_api "repos/$DEST_REPO" \
+    --jq '[.id, .full_name, .private, (.permissions.push // false), .default_branch] | @tsv'
+) || die "cannot re-read authenticated destination repository"
+[[ "$final_id" == "$actual_id" && "$final_id" == "$DEST_ID" \
+    && "$final_name" == "$DEST_REPO" && "$final_private" == "true" \
+    && "$final_push" == "true" && "$final_default" == "$DEST_DEFAULT_BRANCH" ]] \
+  || die "destination identity, privacy, permissions or default branch changed during authorization"
+final_base_commit="$(gh_api "repos/$DEST_REPO/git/ref/heads/$DEST_DEFAULT_BRANCH" --jq '.object.sha')" \
+  || die "cannot re-resolve destination carrier base commit"
+final_base_tree="$(gh_api "repos/$DEST_REPO/git/commits/$final_base_commit" --jq '.tree.sha')" \
+  || die "cannot re-resolve destination carrier base tree"
+[[ "$final_base_commit" == "$dest_base_commit" && "$final_base_commit" == "$DEST_BASE_COMMIT" \
+    && "$final_base_tree" == "$dest_base_tree" && "$final_base_tree" == "$DEST_BASE_TREE" ]] \
+  || die "destination carrier changed during authorization"
+
+printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_pr=%s source_commit=%s source_tree=%s destination_branch=%s destination_base_commit=%s destination_base_tree=%s main_sha=%s policy_blob=%s preflight_blob=%s guard_blob=%s wrapper_blob=%s publisher_blob=%s dest_repo_id=%s\n' \
+  "$auth_mode" "$source_pr" "$actual_commit" "$actual_tree" "$destination_branch" \
+  "$dest_base_commit" "$dest_base_tree" "$main_sha" \
+  "$policy_blob" "$preflight_blob" "$guard_blob" "$wrapper_blob" "$publisher_blob" "$actual_id"
+
+# No transfer or workflow dispatch occurs. Human security-owner approval,
+# workflow isolation, exact source-subtree verification, retention and actual
+# executed CI tests remain independent mandatory gates.
+\t' read -r final_base_commit final_base_tree < <(
+  gh_api "repos/$DEST_REPO/git/commits/$DEST_BASE_COMMIT" \
+    --jq '[.sha, .tree.sha] | @tsv'
+) || die "cannot re-resolve reviewed destination carrier commit"
+[[ "$final_base_commit" == "$dest_base_commit" && "$final_base_commit" == "$DEST_BASE_COMMIT" \
+    && "$final_base_tree" == "$dest_base_tree" && "$final_base_tree" == "$DEST_BASE_TREE" ]] \
+  || die "reviewed destination carrier commit/tree is unavailable or changed"
+
+printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_pr=%s source_commit=%s source_tree=%s destination_branch=%s destination_base_commit=%s destination_base_tree=%s main_sha=%s policy_blob=%s preflight_blob=%s guard_blob=%s wrapper_blob=%s publisher_blob=%s dest_repo_id=%s\n' \
+  "$auth_mode" "$source_pr" "$actual_commit" "$actual_tree" "$destination_branch" \
+  "$dest_base_commit" "$dest_base_tree" "$main_sha" \
+  "$policy_blob" "$preflight_blob" "$guard_blob" "$wrapper_blob" "$publisher_blob" "$actual_id"
+
+# No transfer or workflow dispatch occurs. Human security-owner approval,
+# workflow isolation, exact source-subtree verification, retention and actual
+# executed CI tests remain independent mandatory gates.
+\t' read -r actual_id actual_name actual_private actual_push < <(
+  gh_api "repos/$DEST_REPO" \
+    --jq '[.id, .full_name, .private, (.permissions.push // false)] | @tsv'
+) || die "cannot read authenticated destination repository"
+[[ "$actual_id" == "$DEST_ID" ]] \
+  || die "destination GitHub repository ID mismatch"
+[[ "$actual_name" == "$DEST_REPO" ]] \
+  || die "destination full name mismatch"
+[[ "$actual_private" == "true" ]] \
+  || die "destination must remain private"
+[[ "$actual_push" == "true" ]] \
+  || die "insufficient destination permissions"
+
+# The carrier is an immutable reviewed Git object, not "whatever main points at".
+# Ordinary destination-main movement must neither grant nor revoke authorization.
+IFS=
+auth_mode=""
+if [[ "$main_protected" == "true" ]]; then
+  # "protected=true" alone is not enough. Require concrete anti-bypass review
+  # properties for the security-owned files on authoritative main.
+  protection="$(gh_api "repos/$SOURCE_REPO/branches/main/protection" --jq \
+    '[
+      (.required_pull_request_reviews.require_code_owner_reviews // false),
+      (.required_pull_request_reviews.required_approving_review_count // 0),
+      (.required_pull_request_reviews.dismiss_stale_reviews // false),
+      (.required_pull_request_reviews.require_last_push_approval // false),
+      (.enforce_admins.enabled // false),
+      (.allow_force_pushes.enabled // false),
+      (.allow_deletions.enabled // false),
+      ((.required_pull_request_reviews.bypass_pull_request_allowances.users // []) | length),
+      ((.required_pull_request_reviews.bypass_pull_request_allowances.teams // []) | length),
+      ((.required_pull_request_reviews.bypass_pull_request_allowances.apps // []) | length)
+    ] | @tsv')" \
+    || die "cannot verify effective protected-main review controls"
+  [[ -n "$protection" && "$protection" != *$'\n'* ]] \
+    || die "invalid protected-main review control response"
+  IFS=$'\t' read -r require_codeowners approval_count dismiss_stale last_push \
+    enforce_admins allow_force allow_delete bypass_users bypass_teams bypass_apps <<< "$protection"
+  [[ "$require_codeowners" == "true" ]] \
+    || die "protected main does not require code-owner review"
+  [[ "$approval_count" =~ ^[1-9][0-9]*$ ]] \
+    || die "protected main does not require an approving review"
+  [[ "$dismiss_stale" == "true" && "$last_push" == "true" ]] \
+    || die "protected main does not invalidate stale/pre-last-push approvals"
+  [[ "$enforce_admins" == "true" ]] \
+    || die "protected main does not enforce protections for administrators"
+  [[ "$allow_force" == "false" && "$allow_delete" == "false" ]] \
+    || die "protected main permits force-push or deletion"
+  [[ "$bypass_users" == "0" && "$bypass_teams" == "0" && "$bypass_apps" == "0" ]] \
+    || die "protected main has pull-request review bypass actors"
+  auth_mode="protected-main"
+elif [[ "$main_protected" == "false" ]]; then
+  # Fallback is intentionally per-export and independently attested. It remains
+  # inert unless this fallback implementation itself has first been reviewed and
+  # merged to authoritative main. An unprotected branch by itself is NOT enough:
+  # prove that both classic protection and repository rulesets are unavailable
+  # specifically because of the current private-repository plan.
+  require_plan_feature_unavailable \
+    "repos/$SOURCE_REPO/branches/main/protection" "classic branch protection"
+  require_plan_feature_unavailable \
+    "repos/$SOURCE_REPO/rulesets" "repository rulesets"
+  [[ "$#" -eq 6 ]] \
+    || die "unprotected main requires review-attested-v1 comment IDs"
+  maintainer_comment_id="$5"
+  security_comment_id="$6"
+  [[ "$maintainer_comment_id" =~ ^[1-9][0-9]*$ \
+      && "$security_comment_id" =~ ^[1-9][0-9]*$ ]] \
+    || die "invalid review-attested approval comment ID"
+  [[ "$maintainer_comment_id" != "$security_comment_id" ]] \
+    || die "maintainer and security approvals must be distinct comments"
+
+  approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=$SOURCE_REPO source_repo_id=$SOURCE_ID source_pr=$source_pr source_commit=$expected_commit source_tree=$expected_tree destination_repo=$DEST_REPO destination_repo_id=$DEST_ID destination_branch=$destination_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
+
+  verify_attestation_comment() {
+    local comment_id="$1"
+    local expected_login="$2"
+    local expected_user_id="$3"
+    local -a fields=()
+    mapfile -t fields < <(
+      gh_api "repos/$SOURCE_REPO/issues/comments/$comment_id" \
+        --jq '.user.login, (.user.id|tostring), .author_association, .created_at, .updated_at, .issue_url, .body'
+    ) || die "cannot read review-attested approval comment"
+    [[ "${#fields[@]}" -eq 7 ]] \
+      || die "approval comment must contain one canonical payload line"
+    [[ "${fields[0]}" == "$expected_login" && "${fields[1]}" == "$expected_user_id" ]] \
+      || die "approval comment author identity mismatch for $expected_login"
+    case "${fields[2]}" in
+      OWNER|MEMBER|COLLABORATOR) ;;
+      *) die "approval author is not associated with the source repository" ;;
+    esac
+    [[ "${fields[3]}" == "${fields[4]}" ]] \
+      || die "approval comment was edited after creation"
+    [[ "${fields[5]}" == "https://api.github.com/repos/$SOURCE_REPO/issues/$APPROVAL_ISSUE" ]] \
+      || die "approval comment is not on the designated security issue"
+    [[ "${fields[6]}" == "$approval_payload" ]] \
+      || die "approval comment does not exactly bind this export"
+  }
+
+  verify_attestation_comment "$maintainer_comment_id" \
+    "$MAINTAINER_APPROVER" "$MAINTAINER_APPROVER_ID"
+  verify_attestation_comment "$security_comment_id" \
+    "$SECURITY_APPROVER" "$SECURITY_APPROVER_ID"
+  auth_mode="review-attested-v1"
+else
+  die "unexpected source branch protection state"
+fi
+
+# Revalidate destination identity and the exact carrier base after authorization.
+IFS=$'\t' read -r final_id final_name final_private final_push final_default < <(
+  gh_api "repos/$DEST_REPO" \
+    --jq '[.id, .full_name, .private, (.permissions.push // false), .default_branch] | @tsv'
+) || die "cannot re-read authenticated destination repository"
+[[ "$final_id" == "$actual_id" && "$final_id" == "$DEST_ID" \
+    && "$final_name" == "$DEST_REPO" && "$final_private" == "true" \
+    && "$final_push" == "true" && "$final_default" == "$DEST_DEFAULT_BRANCH" ]] \
+  || die "destination identity, privacy, permissions or default branch changed during authorization"
+final_base_commit="$(gh_api "repos/$DEST_REPO/git/ref/heads/$DEST_DEFAULT_BRANCH" --jq '.object.sha')" \
+  || die "cannot re-resolve destination carrier base commit"
+final_base_tree="$(gh_api "repos/$DEST_REPO/git/commits/$final_base_commit" --jq '.tree.sha')" \
+  || die "cannot re-resolve destination carrier base tree"
+[[ "$final_base_commit" == "$dest_base_commit" && "$final_base_commit" == "$DEST_BASE_COMMIT" \
+    && "$final_base_tree" == "$dest_base_tree" && "$final_base_tree" == "$DEST_BASE_TREE" ]] \
+  || die "destination carrier changed during authorization"
+
+printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_pr=%s source_commit=%s source_tree=%s destination_branch=%s destination_base_commit=%s destination_base_tree=%s main_sha=%s policy_blob=%s preflight_blob=%s guard_blob=%s wrapper_blob=%s publisher_blob=%s dest_repo_id=%s\n' \
+  "$auth_mode" "$source_pr" "$actual_commit" "$actual_tree" "$destination_branch" \
+  "$dest_base_commit" "$dest_base_tree" "$main_sha" \
+  "$policy_blob" "$preflight_blob" "$guard_blob" "$wrapper_blob" "$publisher_blob" "$actual_id"
+
+# No transfer or workflow dispatch occurs. Human security-owner approval,
+# workflow isolation, exact source-subtree verification, retention and actual
+# executed CI tests remain independent mandatory gates.
+\t' read -r dest_base_commit dest_base_tree < <(
+  gh_api "repos/$DEST_REPO/git/commits/$DEST_BASE_COMMIT" \
+    --jq '[.sha, .tree.sha] | @tsv'
+) || die "cannot resolve reviewed destination carrier commit"
+[[ "$dest_base_commit" == "$DEST_BASE_COMMIT" \
+    && "$dest_base_tree" == "$DEST_BASE_TREE" ]] \
+  || die "destination reviewed carrier commit/tree mismatch"
 
 auth_mode=""
 if [[ "$main_protected" == "true" ]]; then
