@@ -134,6 +134,10 @@ final class SealedActorTensorSnapshotTest {
 
                         // Raw transaction tuples are no longer caller-supplied.
                         // Every identity value comes from one issuer-bound snapshot.
+                        var afterFirstAuthority = state.critical(false,
+                                read -> read.snapshotScalars(
+                                        "version", "run_id", "graph_id", "incarnation"));
+
                         var incompleteAuthority = state.critical(false,
                                 read -> read.snapshotScalars(
                                         "version", "run_id", "graph_id"));
@@ -147,6 +151,28 @@ final class SealedActorTensorSnapshotTest {
                         assertEquals("ML_TENSOR_IDENTITY_NOT_CAPTURED",
                                 incomplete.getMessage());
 
+                        IllegalArgumentException missingSource = assertThrows(
+                                IllegalArgumentException.class,
+                                () -> state.prepareTensorPublication(
+                                        afterFirstAuthority, null, "weights",
+                                        "run_id", "graph_id", "incarnation",
+                                        new int[] {2, 2},
+                                        new double[] {5, 6, 7, 8}));
+                        assertEquals("ML_SOURCE_TENSOR_REQUIRED",
+                                missingSource.getMessage());
+
+                        assertThrows(IllegalStateException.class,
+                                () -> state.critical(false, read -> {
+                                    state.prepareTensorPublication(
+                                            afterFirstAuthority, snapshot, "weights",
+                                            "run_id", "graph_id", "incarnation",
+                                            new int[] {2, 2},
+                                            new double[] {5, 6, 7, 8});
+                                    return null;
+                                }));
+
+                        // A source tensor is issuer-bound independently from
+                        // the scalar authority capability.
                         var other = new SealedActorState(
                                 context.self().id(),
                                 Map.of("weights", "tensor:f64",
@@ -154,10 +180,20 @@ final class SealedActorTensorSnapshotTest {
                                        "run_id", "int",
                                        "graph_id", "int",
                                        "incarnation", "int"),
-                                Map.of("version", 1L,
+                                Map.of("version", 0L,
                                        "run_id", 7L,
                                        "graph_id", 9L,
                                        "incarnation", 1L));
+                        var otherBootstrap = other.critical(false,
+                                read -> read.snapshotScalars(
+                                        "version", "run_id", "graph_id", "incarnation"));
+                        var otherPrepared = other.prepareTensorPublication(
+                                otherBootstrap, null, "weights",
+                                "run_id", "graph_id", "incarnation",
+                                new int[] {1},
+                                new double[] {99});
+                        var foreignSnapshot = other.critical(true,
+                                write -> write.publishTensorSnapshot(otherPrepared));
                         var foreignAuthority = other.critical(false,
                                 read -> read.snapshotScalars(
                                         "version", "run_id", "graph_id", "incarnation"));
@@ -167,46 +203,63 @@ final class SealedActorTensorSnapshotTest {
                                         "run_id", "graph_id", "incarnation",
                                         new int[] {2, 2},
                                         new double[] {5, 6, 7, 8}));
-                        other.retireFromRuntime(context.self().id());
-
-                        assertThrows(IllegalStateException.class,
-                                () -> state.critical(false, read -> {
-                                    state.prepareTensorPublication(
-                                            authority, snapshot, "weights",
-                                            "run_id", "graph_id", "incarnation",
-                                            new int[] {2, 2},
-                                            new double[] {5, 6, 7, 8});
-                                    return null;
-                                }));
-
-                        // Candidate staged from a real snapshot becomes stale if
-                        // any actor state mutation occurs before publication.
-                        var afterFirstAuthority = state.critical(false,
-                                read -> read.snapshotScalars(
-                                        "version", "run_id", "graph_id", "incarnation"));
-                        assertThrows(IllegalArgumentException.class,
+                        SecurityException foreignSource = assertThrows(
+                                SecurityException.class,
                                 () -> state.prepareTensorPublication(
-                                        afterFirstAuthority, null, "weights",
+                                        afterFirstAuthority, foreignSnapshot, "weights",
                                         "run_id", "graph_id", "incarnation",
                                         new int[] {2, 2},
-                                        new double[] {5, 6, 7, 8}),
-                                "non-bootstrap update must name its source generation");
+                                        new double[] {5, 6, 7, 8}));
+                        assertEquals("ML_INVALID_SOURCE_TENSOR_CAPABILITY",
+                                foreignSource.getMessage());
+                        other.retireFromRuntime(context.self().id());
 
-                        var staleRevision = state.prepareTensorPublication(
+                        // Publish a legitimate second generation, then prove
+                        // the old generation cannot be relabelled as current.
+                        var secondPrepared = state.prepareTensorPublication(
                                 afterFirstAuthority, snapshot, "weights",
                                 "run_id", "graph_id", "incarnation",
                                 new int[] {2, 2},
                                 new double[] {5, 6, 7, 8});
+                        var secondSnapshot = state.critical(true,
+                                write -> write.publishTensorSnapshot(secondPrepared));
+                        snapshotRef.set(secondSnapshot);
+                        assertEquals(2L, secondSnapshot.version());
+                        assertEquals(2L, state.critical(false,
+                                read -> ((Number) read.read("version")).longValue()));
+
+                        var afterSecondAuthority = state.critical(false,
+                                read -> read.snapshotScalars(
+                                        "version", "run_id", "graph_id", "incarnation"));
+                        IllegalArgumentException oldGeneration = assertThrows(
+                                IllegalArgumentException.class,
+                                () -> state.prepareTensorPublication(
+                                        afterSecondAuthority, snapshot, "weights",
+                                        "run_id", "graph_id", "incarnation",
+                                        new int[] {2, 2},
+                                        new double[] {9, 10, 11, 12}));
+                        assertEquals("ML_SOURCE_TENSOR_IDENTITY_MISMATCH",
+                                oldGeneration.getMessage());
+
+                        // Candidate staged from the current generation becomes
+                        // stale if any actor state mutation occurs before publication.
+                        var staleRevision = state.prepareTensorPublication(
+                                afterSecondAuthority, secondSnapshot, "weights",
+                                "run_id", "graph_id", "incarnation",
+                                new int[] {2, 2},
+                                new double[] {9, 10, 11, 12});
                         state.critical(true, write -> {
                             write.write("graph_id", 10L);
                             return null;
                         });
-                        assertThrows(IllegalStateException.class,
+                        IllegalStateException stale = assertThrows(
+                                IllegalStateException.class,
                                 () -> state.critical(true,
                                         write -> write.publishTensorSnapshot(staleRevision)));
-                        assertSame(snapshot, state.critical(false,
+                        assertEquals("ML_STALE_STATE_REVISION", stale.getMessage());
+                        assertSame(secondSnapshot, state.critical(false,
                                 read -> read.read("weights")));
-                        assertEquals(1L, state.critical(false,
+                        assertEquals(2L, state.critical(false,
                                 read -> ((Number) read.read("version")).longValue()));
 
                         produced.countDown();
