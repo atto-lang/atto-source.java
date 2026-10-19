@@ -102,16 +102,20 @@ deterministic guest scheduler:
   candidates. See `examples/native-fuzz-testing.ores`. The guest property must
   be deterministic/pure for replay and shrinking to be meaningful.
 - `--replay` verifies the recorded checkpoint kinds and choices, and
-  refuses a mismatched seed, test-entry SHA-256, backend mode/platform or probe
-  version. An omitted `--seed` inherits the recorded seed. This is **not**
-  deterministic physical thread scheduling or a full build/import-closure
-  provenance proof; compiler revision and transitive imported modules must
-  also be pinned by CI exact-tree evidence.
-- `--trace-output=path` writes `ORES_CONCURRENCY_TRACE_V2` for CLI runs
-  (seed, entry-file SHA-256, backend identity, probe version), bounded to
-  100,000 events. Failures save a trace under `.oreslang/failures` by default.
-  Older `V1` traces can be inspected by the standalone probe API, but the CLI
-  rejects them for replay because they lack source/backend provenance.
+  refuses mismatched seed, test-entry SHA-256, workspace source fingerprint,
+  backend mode/platform or probe version. An omitted `--seed` inherits the
+  recorded seed. It is **not** deterministic physical thread scheduling.
+- `--trace-output=path` writes `ORES_CONCURRENCY_TRACE_V3` for CLI runs
+  (seed, entry-file SHA-256, bounded workspace source digest, backend identity,
+  probe version), with at most 100,000 checkpoint events. The fingerprint
+  conservatively includes `.ores`, compiler-language sources and schema manifests
+  under the current workspace and excludes generated output. This is **not**
+  a compiler-resolved transitive import closure or a trusted runtime binary
+  digest; imports outside the workspace and actual compiler builds must be
+  pinned through separate exact-tree CI evidence. Older V1/V2 traces may be
+  examined diagnostically but are rejected for CLI replay.
+- `--trace-output` is single-iteration only; the CLI rejects traced symlinks
+  and source/replay aliases. Failures save traces under `.oreslang/failures`.
 - A bounded host-only `ConcurrencyRaceAnalyzer` already supports vector-clock
   read/write conflict checking and happens-before edges for **owner-validated**
   lock release/acquire and globally single-use actor-message IDs, with
@@ -144,3 +148,17 @@ dependencies are available:
 
 Those additions should preserve the existing `TestCase` / `RunSummary`
 semantics and machine event contract.
+
+### Exact-tree concurrency P0 gate
+
+On an authorized private runner, check out the exact PR tree (never a partial
+cherry-pick) and set `EXPECTED_SOURCE_TREE_SHA` to its verified Git tree SHA:
+
+```sh
+EXPECTED_SOURCE_TREE_SHA=<40-character-tree-sha> bash scripts/ci-verify-concurrency-p0.sh
+```
+
+The gate must execute the tests and print `ORES_CONCURRENCY_CI|...|result=PASS`
+only after success. Matching Git tree SHA and executable CI logs are required;
+failed pre-step GitHub Actions jobs do not count as test evidence. This
+script does not grant access to private source across organizations.
