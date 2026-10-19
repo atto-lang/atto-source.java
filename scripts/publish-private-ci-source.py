@@ -439,6 +439,8 @@ def checked_trusted_main_checkout(trusted_root):
             or source.get("default_branch") != "main"):
         raise Denied("trusted source repository identity changed")
     trusted_main = gh_api("repos/" + SOURCE_ORIGIN + "/branches/main")
+    if trusted_main.get("protected") is not True:
+        raise Denied("source main branch must be protected before private transfers")
     if (not isinstance(trusted_main.get("commit"), dict)
             or trusted_main["commit"].get("sha") != result.stdout.strip()):
         raise Denied("publisher policy must run from reviewed main HEAD")
@@ -499,7 +501,8 @@ def publish(repository, source, branch, trusted_root, source_commit=None):
         if trust is not None:
             approved_main_sha, approved_files = trust
             observed_main = gh_api("repos/" + SOURCE_ORIGIN + "/branches/main")
-            if (not isinstance(observed_main.get("commit"), dict)
+            if (observed_main.get("protected") is not True
+                    or not isinstance(observed_main.get("commit"), dict)
                     or observed_main["commit"].get("sha") != approved_main_sha):
                 raise Denied("reviewed protected-main source policy changed")
             check_main_file_bytes(trusted_root, approved_files)
