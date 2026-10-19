@@ -658,6 +658,24 @@ public final class OptionalCallShapeBinder {
                 }
                 previousRestSource = restSource;
             }
+            if (!variadicSourceIndices.isEmpty()) {
+                // Positional rest elements can only appear after every fixed
+                // argument item. Any omitted fixed slot must have an explicit
+                // source-level '_' / 'omit' item before the first rest element.
+                for (int i = 0; i < variadicParameterIndex; i++) {
+                    if (sourceIndexByParameter.get(i) == -1 && !claimedOmission[i]) {
+                        throw new IllegalArgumentException(
+                                "rest elements cannot follow an implicitly omitted fixed parameter");
+                    }
+                }
+                int firstRestSource = variadicSourceIndices.getFirst();
+                int firstRestCallItem = callItemIndexByEvaluatedSource.get(firstRestSource);
+                if (firstRestCallItem - firstRestSource
+                        != explicitlyOmittedParameterIndices.size()) {
+                    throw new IllegalArgumentException(
+                            "explicit omission call items must precede the rest tail");
+                }
+            }
             boolean[] seen = new boolean[supplied];
             for (int i = 0; i < sourceIndexByParameter.size(); i++) {
                 int source = sourceIndexByParameter.get(i);
