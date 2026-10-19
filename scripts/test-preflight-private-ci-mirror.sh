@@ -112,13 +112,12 @@ case "$endpoint" in
       "${SYNTH_SECURITY_BODY:-$SYNTH_APPROVAL_PAYLOAD}"
     ;;
   "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra")
-    printf '1412142815\tores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra\ttrue\ttrue\tmain\n'
-    ;;
-  "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/git/ref/heads/main")
-    printf '%s\n' "${SYNTH_DEST_BASE_COMMIT:-4d1d65445a09eb47f383bd5dc373d36056346056}"
+    printf '1412142815\tores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra\ttrue\ttrue\n'
     ;;
   "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/git/commits/4d1d65445a09eb47f383bd5dc373d36056346056")
-    printf '%s\n' "${SYNTH_DEST_BASE_TREE:-825c75a6b4cf84c62510f717290d6c87f4611b9a}"
+    printf '%s\t%s\n' \
+      "${SYNTH_DEST_BASE_COMMIT:-4d1d65445a09eb47f383bd5dc373d36056346056}" \
+      "${SYNTH_DEST_BASE_TREE:-825c75a6b4cf84c62510f717290d6c87f4611b9a}"
     ;;
   *)
     printf 'unexpected synthetic gh endpoint: %s\n' "$endpoint" >&2
