@@ -228,7 +228,16 @@ final class TaskAccessVerifierTest {
         assertThrows(IllegalArgumentException.class,
                 () -> ledger.admitTyped(List.of(syncRead), (name, trait) -> false));
         assertEquals(0, ledger.activeChildren());
-        var sendWrite = new TaskAccessVerifier.TypedClaim(write(unique), channel);
+        // Channel<T> is an unverified runtime authority, not an owned
+        // Send capability. Payload Send alone cannot prove safe transfer.
+        var channelWrite = new TaskAccessVerifier.TypedClaim(write(unique), channel);
+        assertThrows(IllegalArgumentException.class,
+                () -> ledger.admitTyped(List.of(channelWrite), (name, trait) -> true));
+        assertEquals(0, ledger.activeChildren());
+        // Ordinary owned primitive values still transfer, preserving the
+        // positive Send path independently of an unlowered Channel handle.
+        var sendWrite = new TaskAccessVerifier.TypedClaim(
+                write(unique), Types.Primitive.INT);
         var ticket = ledger.admitTyped(List.of(sendWrite), (name, trait) -> false);
         assertEquals(1, ledger.activeChildren());
         ledger.quiescent(ticket);
