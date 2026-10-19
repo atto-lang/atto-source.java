@@ -20,7 +20,8 @@ public final class ActorShardColumns implements AutoCloseable {
     private final int rows;
     private final int fields;
     private final int lanes;
-    private final double[] storage;
+    // Detached on explicit close; runtime-owned lease revokes physical access.
+    private double[] storage;
     private final ActorRuntime.ActorShardLease reservation;
 
     /**
@@ -89,7 +90,15 @@ public final class ActorShardColumns implements AutoCloseable {
     }
 
     @Override public void close() {
-        reservation.close(); // owner-checked and idempotent; reads remain revoked
+        // Explicit close is owner-only. Zero and detach shared backing before
+        // the lease returns its byte reservation. Repeated owner close remains
+        // safe; post-close data access is rejected by the lease.
+        if (storage != null) {
+            reservation.requireOwner();
+            java.util.Arrays.fill(storage, 0.0);
+            storage = null;
+        }
+        reservation.close();
     }
 
     private int offset(int row, int field) {
