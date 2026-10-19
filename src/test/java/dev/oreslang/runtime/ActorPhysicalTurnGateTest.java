@@ -93,6 +93,40 @@ final class ActorPhysicalTurnGateTest {
     }
 
     @Test
+    void throwingErrorObserverDoesNotStrandAdmission() throws Exception {
+        ActorPhysicalTurnGate gate = new ActorPhysicalTurnGate(1, 1);
+        gate.dispatch(() -> { },
+                ignored -> { throw new RejectedExecutionException("underlying pool closed"); },
+                failure -> { throw new AssertionError("observer failed too"); });
+        assertEquals(0, gate.queued());
+        try (var workers = Executors.newSingleThreadExecutor()) {
+            CountDownLatch finished = new CountDownLatch(1);
+            gate.dispatch(finished::countDown, workers::execute,
+                    failure -> fail("a released permit must remain usable"));
+            assertTrue(finished.await(5, TimeUnit.SECONDS));
+        }
+        gate.close();
+    }
+
+    @Test
+    void inlineCallbackFailureMustNotDoubleReleaseThePermit() throws Exception {
+        ActorPhysicalTurnGate gate = new ActorPhysicalTurnGate(1, 1);
+        AtomicInteger rejected = new AtomicInteger();
+        assertThrows(IllegalArgumentException.class,
+                () -> gate.dispatch(
+                        () -> { throw new IllegalArgumentException("guest turn threw"); },
+                        Runnable::run, error -> rejected.incrementAndGet()));
+        assertEquals(0, rejected.get(), "inline guest failure was not admission failure");
+        try (var workers = Executors.newSingleThreadExecutor()) {
+            CountDownLatch finished = new CountDownLatch(1);
+            gate.dispatch(finished::countDown, workers::execute,
+                    error -> fail(error));
+            assertTrue(finished.await(5, TimeUnit.SECONDS));
+        }
+        gate.close();
+    }
+
+    @Test
     void actorRuntimeGateSerializesDifferentSchedulerDomains() throws Exception {
         String key = "ores.runtime.actor.max-active-turns";
         String prior = System.getProperty(key);
