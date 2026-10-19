@@ -90,7 +90,9 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 message, physicalGeneration,
                 IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED, key);
         int bodyLength = frame.length - 32;
-        // Receipt stage is deliberately the final authenticated body byte.
+        // Receipt code is deliberately the final authenticated body byte.
+        // Local enum ordinals have no valid v2 wire meaning; re-MAC the frame
+        // to prove authentication alone cannot authorize a host-local verdict.
         frame[bodyLength - 1] = (byte) localStage.ordinal();
         Mac mac = Mac.getInstance("HmacSHA256");
         mac.init(new SecretKeySpec(key, "HmacSHA256"));
@@ -256,7 +258,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                     transport.readVerifiedReceipt();
                     throw new AssertionError("authenticated peer forged local verdict");
                 } catch (IOException expected) {
-                    check(expected.getMessage().contains("local-only"));
+                    check(expected.getMessage().contains("invalid IPC receipt code"));
                 }
                 awaitPhase(transport, IpcTransportSessionLease.Phase.RETIRED);
                 check(submission.outcome().toCompletableFuture().join()
