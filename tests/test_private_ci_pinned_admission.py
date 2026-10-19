@@ -134,7 +134,7 @@ class SnapshotTests(unittest.TestCase):
         if argv[-2:]==['--','src']:
             return type('Proc',(),{'returncode':0,'stdout':self.listing})()
         if argv[-3:]==['rev-parse','--verify',SRC+':src']:
-            return type('Proc',(),{'returncode':0,'stdout':('d'*40+'\\n').encode()})()
+            return type('Proc',(),{'returncode':0,'stdout':('d'*40).encode()})()
         self.fail('unexpected Git command')
 
 
