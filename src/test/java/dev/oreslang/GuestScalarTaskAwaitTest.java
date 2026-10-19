@@ -106,6 +106,47 @@ final class GuestScalarTaskAwaitTest {
     }
 
     @Test
+    void lexicalRootScalarCaptureAcceptsBlocksButRejectsGlobalSymbols() {
+        // A runtime facade or imported binding cannot be treated as an
+        // independently copied scalar merely because its name resolves.
+        rejects("let int answer = await task { return stdio; };");
+        rejects("let int answer = await task { return print; };");
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                    pub fnc main(): void {
+                        let int answer = await task { return missingLocal; };
+                        return;
+                    }
+                    """));
+    }
+
+    @Test
+    void nestedPlainLambdaMustNotInheritRootTaskAdmission() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                    pub fnc main(): void {
+                        let int x = 4;
+                        let lambda = || -> {
+                            let int result = await task { return x; };
+                            return result;
+                        };
+                        return;
+                    }
+                    """));
+    }
+
+    @Test
+    void asyncEntrypointCannotMintRootScopedScalarTask() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                    pub async fnc main(): void {
+                        let int value = await task { return 7; };
+                        return;
+                    }
+                    """));
+    }
+
+    @Test
     void borrowedValuesAndHostCapabilitiesAreNotScalarCaptures() {
         rejects("let data = arr[1, 2]; let borrowed = rt borrow data; let int n = await task { return borrowed; };");
         rejects("let data = arr[1, 2]; let result = await task { return data; };");
