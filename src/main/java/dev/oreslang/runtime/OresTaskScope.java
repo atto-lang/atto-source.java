@@ -183,7 +183,7 @@ public final class OresTaskScope implements AutoCloseable {
                     // before admitting executable work to the scheduler.
                     slot = new OwnershipSlot();
                     exited = new OresFuture<>();
-                    child = new OresTask<>(exited);
+                    child = OresTask.<T>preAdmitted(exited);
                     slot.task = child;
                     if (!tasks.add(slot))
                         throw new IllegalStateException("duplicate Task ownership slot");
