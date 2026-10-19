@@ -165,15 +165,15 @@ final class DynamicPropertyAccessBoundaryTest {
 
                 fnc record_alias(): int {
                     const row = record{x: 7, box: new Box()};
-                    const first = "x";
-                    const second = first;
+                    const string first = "x";
+                    const string second = first;
                     return row[second];
                 }
 
                 fnc tuple_alias(): int {
                     const pair = tuple(7, new Box());
-                    const first = 0;
-                    const second = first;
+                    const int first = 0;
+                    const int second = first;
                     return pair[second];
                 }
                 """);
