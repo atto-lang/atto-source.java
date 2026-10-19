@@ -9,3 +9,8 @@
 /docs/security/CI_PRIVATE_SOURCE_MIRRORING.md @ORESoftware
 /scripts/publish-private-ci-source.py @ORESoftware
 /scripts/test-publish-private-ci-source.py @ORESoftware
+
+# Numeric identity and exact-source attestation gates
+/.github/private-ci-approved-destinations.json @ORESoftware
+/scripts/private_ci_pinned_admission.py @ORESoftware
+/tests/test_private_ci_pinned_admission.py @ORESoftware
