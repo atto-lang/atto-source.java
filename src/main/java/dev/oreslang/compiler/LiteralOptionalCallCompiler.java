@@ -51,7 +51,128 @@ public final class LiteralOptionalCallCompiler {
         Objects.requireNonNull(source);
         Objects.requireNonNull(moduleName);
         Objects.requireNonNull(callerName);
-        Ast.Program original = Parser.parse(source);
+        return lowerAndAnalyzeParsed(Parser.parse(source), moduleName, callerName);
+    }
+
+    /**
+     * Opt-in bridge for an original zero-argument positional call whose
+     * uniquely selected same-module function has ONLY T? formal parameters.
+     * This does not rewrite ordinary calls in the default compiler, nor does
+     * it infer omissions for required arguments, overloads or imports.
+     *
+     * The source origin is verified from a freshly parsed CallExpr. A single
+     * synthetic StagedCallExpr is then introduced into a private intermediate
+     * program, where the existing lexical/ABI and full checker gates apply.
+     */
+    public static Result lowerImplicitAndAnalyze(
+            String source, String moduleName, String callerName) {
+        Objects.requireNonNull(source);
+        Objects.requireNonNull(moduleName);
+        Objects.requireNonNull(callerName);
+        Ast.Program parsed = Parser.parse(source);
+        return lowerAndAnalyzeParsed(
+                stageImplicitEmptyCall(parsed, moduleName, callerName),
+                moduleName, callerName);
+    }
+
+    private static Ast.Program stageImplicitEmptyCall(
+            Ast.Program parsed, String moduleName, String callerName) {
+        if (!parsed.imports().isEmpty() || parsed.modules().size() != 1) {
+            throw new IllegalArgumentException("implicit omission requires one unimported module");
+        }
+        Ast.ModuleDecl module = parsed.modules().getFirst();
+        if (!module.name().equals(moduleName)
+                || !module.annotations().isEmpty() || !module.contracts().isEmpty()) {
+            throw new IllegalArgumentException("implicit omission module is not uniquely resolved");
+        }
+        Ast.FunctionDecl caller = null;
+        for (Ast.Decl declaration : module.declarations()) {
+            if (declaration instanceof Ast.FunctionDecl fn
+                    && fn.name().equals(callerName)) {
+                if (caller != null) throw new IllegalArgumentException("ambiguous caller");
+                caller = fn;
+            }
+        }
+        if (caller == null || !plain(caller)) {
+            throw new IllegalArgumentException("implicit omission needs an ordinary caller");
+        }
+        Ast.CallExpr originalCall = null;
+        for (Ast.Stmt statement : caller.body()) {
+            Ast.Expr expression = immediateExpression(statement);
+            if (expression instanceof Ast.CallExpr call) {
+                if (originalCall != null) {
+                    throw new IllegalArgumentException("ambiguous ordinary call site");
+                }
+                originalCall = call;
+            } else if (expression instanceof Ast.StagedCallExpr) {
+                throw new IllegalArgumentException("mixed staged and implicit call sites");
+            }
+        }
+        if (originalCall == null
+                || !(originalCall.callee() instanceof Ast.NameExpr name)
+                || originalCall.typeArgumentsPresent()
+                || !originalCall.typeArguments().isEmpty()
+                || !originalCall.arguments().isEmpty()
+                || name.name().equals(callerName)) {
+            throw new IllegalArgumentException("only direct non-generic empty calls qualify");
+        }
+        Ast.FunctionDecl target = null;
+        for (Ast.Decl declaration : module.declarations()) {
+            if (declaration instanceof Ast.FunctionDecl fn
+                    && fn.name().equals(name.name())) {
+                if (target != null) {
+                    throw new IllegalArgumentException("overloaded target needs true resolution");
+                }
+                target = fn;
+            }
+        }
+        if (target == null || !plain(target) || target.parameters().isEmpty()
+                || target.parameters().stream().anyMatch(p -> !p.optional()
+                        || !exactScalar(p.valueType()))) {
+            throw new IllegalArgumentException(
+                    "implicit omission requires a nonempty all-optional scalar signature");
+        }
+        // Reconstruct only the one immediate, original source occurrence.
+        // The lexical binder and full type/ownership checks independently
+        // validate its same-module destination and complete transformed body.
+        Ast.StagedCallExpr staged = new Ast.StagedCallExpr(
+                originalCall.callee(), List.of(), false, List.of());
+        List<Ast.Stmt> body = new ArrayList<>(caller.body().size());
+        int replaced = 0;
+        for (Ast.Stmt statement : caller.body()) {
+            if (immediateExpression(statement) == originalCall) {
+                replaced++;
+                if (statement instanceof Ast.ReturnStmt) {
+                    body.add(new Ast.ReturnStmt(staged));
+                } else if (statement instanceof Ast.ExprStmt) {
+                    body.add(new Ast.ExprStmt(staged));
+                } else if (statement instanceof Ast.BindingStmt binding) {
+                    body.add(new Ast.BindingStmt(
+                            binding.kind(), binding.declaredType(),
+                            binding.name(), staged,
+                            binding.mutableReferent(), binding.inferredTypeName()));
+                } else {
+                    throw new IllegalArgumentException("unsupported call site");
+                }
+            } else {
+                body.add(statement);
+            }
+        }
+        if (replaced != 1) {
+            throw new IllegalArgumentException("original call site not unique");
+        }
+        Ast.FunctionDecl stagedCaller = copyFunction(caller, caller.parameters(), body);
+        List<Ast.Decl> declarations = new ArrayList<>(module.declarations().size());
+        for (Ast.Decl declaration : module.declarations()) {
+            declarations.add(declaration == caller ? stagedCaller : declaration);
+        }
+        return new Ast.Program(parsed.namespace(), parsed.imports(),
+                List.of(new Ast.ModuleDecl(
+                        module.name(), module.annotations(), module.contracts(), declarations)));
+    }
+
+    private static Result lowerAndAnalyzeParsed(
+            Ast.Program original, String moduleName, String callerName) {
         if (!original.imports().isEmpty() || original.modules().size() != 1) {
             throw new IllegalArgumentException(
                     "experimental optional call needs a single unimported module");
