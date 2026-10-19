@@ -50,11 +50,16 @@ mandatory = (
     "test_unavailable_source_branch_protection_api_blocks_before_source_read",
     "test_unavailable_destination_branch_protection_api_blocks_first_blob",
     "test_destination_branch_protection_api_revoked_mid_upload",
+    "test_missing_source_main_codeowner_denies_before_source_read",
+    "test_source_main_codeowner_override_denies_before_source_read",
+    "test_source_main_codeowner_blob_tampering_denied",
+    "test_source_main_codeowner_api_unavailable_denied_before_source_read",
+    "test_source_codeowner_revocation_stops_next_private_blob",
     "test_github_api_absolute_cli_and_sanitized_environment",
     "test_github_api_rejects_missing_or_ambiguous_explicit_auth",
     "test_github_api_supports_single_actions_token_without_config",
 )
-for index in range(111):
+for index in range(116):
     name = mandatory[index] if index < len(mandatory) else f"test_synthetic_{index:03d}"
     setattr(DestinationBoundPublisherTests, name,
             lambda self: self.assertTrue(True))
