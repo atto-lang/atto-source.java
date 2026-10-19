@@ -38,3 +38,28 @@ and remaining physical-isolation work are tracked in
 [Actor physical boundaries](docs/runtime/actor-physical-boundaries.md).
 
 Async filesystem, TCP and HTTP client APIs: [usage and execution guarantees](docs/ASYNC_IO.md).
+
+## Testing CLI (integration draft)
+
+The Java launcher provides the Oreslang-native `oreslang test <file.ores>`
+entrypoint. Draft [test-mode PR #1427](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1427)
+adds deliberately scoped commands:
+
+```sh
+oreslang test examples/native-testing.ores
+oreslang test --fuzz --seed=17 examples/native-fuzz-testing.ores
+oreslang test --deadlock --model-check examples/native-testing.ores
+oreslang test --schedule-fuzz --seed=42 --runs=1000 examples/native-testing.ores
+oreslang test --schedule-fuzz --trace-out=case.orestrace examples/native-testing.ores
+oreslang test --replay case.orestrace examples/native-testing.ores
+```
+
+**Coverage boundary:** `--fuzz` currently runs real seeded *integer*
+property inputs through `stdlib/testing.ores`; runtime schedule stress
+and the 21-state model checker cover `CriticalGate` only. Replay covers
+critical-gate generated input decisions, not general actor/Task interleavings.
+`--race` and all combinations containing it fail closed with exit status 2
+until actual guest shadow-memory instrumentation exists. See
+[testing modes](docs/TESTING_COMMAND_MODES.md) and
+[the race/fuzz design contract](docs/TEST_RACE_FUZZ_CONTRACT.md).
+
