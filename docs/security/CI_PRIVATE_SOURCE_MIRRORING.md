@@ -99,8 +99,9 @@ issues #904 and #962 have been independently verified.
 The protected-main **destination** policy must explicitly approve the exact
 private repository name and numeric ID. Separately,
 `.github/private-ci-approved-source-snapshots.txt` on protected source
-`main` must include a security-reviewed `commitSHA treeSHA destinationNumericID`
-tuple for this one transfer. Approving a destination alone does **not**
+`main` must include a security-reviewed `commitSHA treeSHA destinationNumericID carrierMainCommit carrierRootTree`
+tuple for this one transfer. The carrier commit/tree pin is part of the source-side
+authorization, not merely runtime metadata. Approving a destination alone does **not**
 authorize arbitrary private actor branches or source snapshots. The publisher
 checks this tuple before reading any source, validates its Git blob against
 the served bytes, and rechecks the approved tuple and unchanged policy SHA
@@ -109,10 +110,12 @@ publication; authorization cannot come from the working PR branch.
 
 The source-snapshot ledger starts **empty**. To grant one approved run,
 maintainers must separately review and merge one exact
-`<commitSHA> <rootTreeSHA> <numericDestinationID>` entry on protected source
-main. This applies even after the destination allowlist has been approved.
-Keep the exact source PR head immutable through verification; any new commit
-requires a new reviewed ledger entry and a new destination tree gate.
+`<commitSHA> <rootTreeSHA> <numericDestinationID> <carrierMainCommit> <carrierRootTree>`
+entry on protected source main. This applies even after the destination allowlist has been approved.
+Keep the exact source PR head immutable through verification; any new source
+commit requires a new reviewed ledger entry. Likewise, any change to the
+protected carrier main commit/root tree—including CI workflow changes—requires
+fresh source-side approval before another source byte can be read or uploaded.
 
 The publisher checks the live GitHub identity and `visibility=private` /
 `private=true` before sending any private bytes and rechecks visibility
@@ -132,8 +135,10 @@ Before reading any source bytes, the publisher also requires the private
 carrier's default branch to be `main` and verifies its exact commit
 ref. A simple `main.protected=true` flag is insufficient: destination main
 must also enforce administrator restrictions, strict nonempty CI status
-checks, resolved review conversations, at least one approving reviewer,
-code-owner review, stale-review dismissal, and no reviewer bypass allowances.
+checks whose contexts are bound to explicit GitHub App IDs, resolved review
+conversations, at least one approving reviewer, code-owner review,
+stale-review dismissal, no reviewer bypass allowances, and explicit denial of
+force pushes and branch deletion.
 Missing/denied GitHub protection responses fail closed **before reading source**.
 The carrier must also have a valid protected-main `.github/CODEOWNERS` whose
 last two non-comment rules are exactly `/.github/CODEOWNERS @ORESoftware`
