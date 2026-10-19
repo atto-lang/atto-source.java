@@ -94,8 +94,9 @@ final class LogicalSourceActorProxyBridgeV1Test {
                 assertEquals(0, proxy.snapshot().retainedMessages());
                 var output = router.ref().nextOutput(WAIT);
                 assertFalse(output.done());
-                assertEquals(42L, assertInstanceOf(
-                        Long.class, output.value().value()));
+                long observed = assertInstanceOf(
+                        Long.class, output.value().value());
+                assertEquals(42L, observed);
             }
         }
     }
