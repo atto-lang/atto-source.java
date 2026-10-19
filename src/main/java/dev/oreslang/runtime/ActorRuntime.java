@@ -6325,17 +6325,22 @@ public final class ActorRuntime implements AutoCloseable {
 
                 int processed = 0;
                 while (processed < dispatcherConfig.throughput() && !stopped.get()) {
-                    MessageEnvelope envelope;
+                    // Select the eligible lane under lifecycleLock, but
+                    // perform Channel.tryRead OUTSIDE that monitor. Select
+                    // arbitration can publish a producer Future and invoke
+                    // runtime waiters synchronously. A concurrent stop may
+                    // close/drain either channel after our snapshot; the
+                    // second admission check below then discards the envelope
+                    // without running a new guest turn.
+                    boolean allowUserMail;
                     synchronized (lifecycleLock) {
-                        // Stop closes the user mailbox under this same lock.
                         if (stopped.get() || finalized) break;
-
-                        // Continuations always outrank user mail. While a
-                        // source receive is suspended, user mail is not runnable.
-                        envelope = continuationMailbox.tryRead().orElse(null);
-                        if (envelope == null && !sourceReceiveSuspended) {
-                            envelope = mailbox.tryRead().orElse(null);
-                        }
+                        allowUserMail = !sourceReceiveSuspended;
+                    }
+                    MessageEnvelope envelope =
+                            continuationMailbox.tryRead().orElse(null);
+                    if (envelope == null && allowUserMail) {
+                        envelope = mailbox.tryRead().orElse(null);
                     }
                     if (envelope == null) break;
                     releaseMailboxSlot(envelope.isContinuation());
