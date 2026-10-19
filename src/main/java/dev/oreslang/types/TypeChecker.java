@@ -2273,6 +2273,9 @@ public final class TypeChecker {
                 } else if (receiver instanceof Named named && findClass(named.name()) != null) {
                     requireAssignable(index, Primitive.STRING, "class field key");
                     Ast.ClassDecl klass = findClass(named.name());
+                    if (klass.actorKind() != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException("computed indexing is not supported for this receiver kind");
+                    }
                     if (index instanceof StringLiteral key) {
                         ResolvedField field = findFieldTarget(
                                 klass, named, key.value(), new LinkedHashSet<>());
