@@ -10,9 +10,14 @@ guest program parity.
 A scheduled actor may construct a fixed-size homogeneous double region with
 layout `AOS`, `SOA` or `AOSOA`. Only one layout has storage at any instant.
 With AoSoA, a power-of-two tile width up to 1024 is chosen at construction.
-The underlying region uses a fixed 16 MiB per-instance admission ceiling,
-checked before allocation. This is NOT yet an actor-arena or process-wide
-reservation, and must not be enabled for untrusted guest allocation.
+The underlying region uses a 16 MiB per-instance limit and now reserves its
+full physical byte count against both the per-actor heap ceiling and the
+aggregate ActorRuntime heap ceiling before allocation. PRIVATE shards use
+the existing actor-owned direct PrivateMemoryBlock (with zeroing on close /
+actor termination); SHARED shards use a charged JVM array. Every reservation
+is tracked by its actor cell and revoked at physical actor finalization.
+UNTRUSTED allocation is rejected by this host-only API. These charges do
+not yet replace general actor-arena/guest compiler allocation accounting.
 
 Every read/write/integrate/snapshot checks the *logical actor ID* from the
 currently executing actor turn, not the worker thread. This is important
@@ -47,8 +52,8 @@ remain orthogonal. Testing: `ActorPhysicalTurnGateTest`.
 
 ## Hardening still needed
 
-- Actor arena/process memory reservation for shard storage and retained
-  snapshots; field-sensitive region permits before Task access.
+- Source-compiler actor-arena allocation reconciliation, field-sensitive
+  region permits and process accounting for detached/retained snapshots.
 - Cooperative nonparking scoped `nb` Task admission through the same
   scheduler-domain budget, and exact physical-completion proofs.
 - LLC/NUMA discovery, hierarchical work stealing, cache migration metrics,
