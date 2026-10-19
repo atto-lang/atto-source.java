@@ -305,4 +305,39 @@ final class V3DefaultArgValsAdmissionTest {
                 }
                 """));
     }
+
+    @Test
+    void v3DefaultedOverloadsCannotOccupyOverlappingArityIntervals() {
+        var one = function("""
+                pub fnc choose(int x): void { return; }
+                """);
+        var two = function("""
+                @DefaultArgVals(extra: 5)
+                pub fnc choose(int x, int extra?): void { return; }
+                """);
+        var signatures = List.of(
+                new OptionalCallShapeBinder.StagedV3Signature(
+                        one.parameters(), one.annotations()),
+                new OptionalCallShapeBinder.StagedV3Signature(
+                        two.parameters(), two.annotations()));
+        assertThrows(IllegalArgumentException.class, () ->
+                OptionalCallShapeBinder.selectStagedV3(signatures, List.of(
+                        Ast.CallArgument.value(new Ast.LiteralExpr(1L)))));
+    }
+
+    @Test
+    void legacyBinderCannotTreatV3NameSuffixAsOrdinaryRequiredFormal() {
+        var f = function("""
+                @DefaultArgVals(x: 5)
+                pub fnc choose(int x?): void { return; }
+                """);
+        assertThrows(IllegalArgumentException.class, () ->
+                OptionalCallShapeBinder.formalParameterShapes(f.parameters()));
+        assertThrows(IllegalArgumentException.class, () ->
+                OptionalCallShapeBinder.declaredParameterShapes(f.parameters()));
+        assertEquals(List.of(true),
+                OptionalCallShapeBinder.stagedV3ParameterShapes(
+                        f.parameters(), f.annotations()).stream()
+                        .map(OptionalCallShapeBinder.Parameter::optional).toList());
+    }
 }
