@@ -6242,6 +6242,10 @@ public final class ActorRuntime implements AutoCloseable {
                                 "actor mailbox sequence exhausted for " + ref.id(),
                                 exhausted);
                     }
+                    // Box before mailbox acceptance; both successful
+                    // registration and rollback reuse this exact key without
+                    // any post-mutation allocation.
+                    Long receiptKey = tracked ? Long.valueOf(sequence) : null;
                     envelope = MessageEnvelope.message(
                             prepared, release, sender, sequence);
                     OresFuture<Void> trackedTerminal = null;
@@ -6258,12 +6262,12 @@ public final class ActorRuntime implements AutoCloseable {
                                 new OresFuture<>(() -> false, () -> { });
                         receipt = new PhysicalMailReceipt(
                                 ref, sequence, trackedTerminal);
-                        if (cell.pendingPhysicalReceipts.put(
-                                sequence, trackedTerminal) != null) {
+                        if (cell.pendingPhysicalReceipts.containsKey(receiptKey)) {
                             throw new IllegalStateException(
                                     "duplicate physical mail receipt sequence for "
                                             + ref.id());
                         }
+                        cell.pendingPhysicalReceipts.put(receiptKey, trackedTerminal);
                     }
                     boolean wrote = false;
                     try {
@@ -6274,7 +6278,7 @@ public final class ActorRuntime implements AutoCloseable {
                     } finally {
                         if (!wrote && trackedTerminal != null) {
                             cell.pendingPhysicalReceipts.remove(
-                                    sequence, trackedTerminal);
+                                    receiptKey, trackedTerminal);
                         }
                     }
                     cell.nextUserMessageSequence = nextSequence;
