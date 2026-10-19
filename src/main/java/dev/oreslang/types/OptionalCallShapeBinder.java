@@ -258,6 +258,10 @@ public final class OptionalCallShapeBinder {
 
     private static void requireNoOmittableAnnotations(List<Ast.Annotation> annotations, String where) {
         for (Ast.Annotation annotation : annotations) {
+            if (annotation.name().equals("DefaultArgVals") || !annotation.namedDefaults().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "@DefaultArgVals in " + where + " requires v3 checked presence/Option/ABI lowering");
+            }
             for (Ast.TypeRef type : annotation.arguments()) {
                 requireNoOmittableTypeOutsideFormal(type, where);
             }
@@ -458,6 +462,11 @@ public final class OptionalCallShapeBinder {
         Objects.requireNonNull(parameters, "parameters");
         for (Ast.Param formal : parameters) {
             Objects.requireNonNull(formal, "formal");
+            if (formal.argumentOmittable()) {
+                throw new IllegalArgumentException(
+                        "v3 parameter-name '?' for '" + formal.name()
+                        + "' requires checked default/presence/ABI lowering (not enabled)");
+            }
             if (formal.hasDefault()) {
                 throw new IllegalArgumentException(
                         "@Default annotation on formal '" + formal.name()
@@ -469,6 +478,23 @@ public final class OptionalCallShapeBinder {
                         + "' requires checked Option<T> ABI and ownership lowering (not yet enabled)");
             }
         }
+    }
+
+    /**
+     * V3 compile-time preview only. Do not reuse the legacy optional(T?) binder
+     * classification: type optionality and argument omission are distinct.
+     */
+    public static List<Parameter> stagedV3ParameterShapes(
+            List<Ast.Param> formals, List<Ast.Annotation> annotations) {
+        List<V3DefaultArgValsPolicy.FormalPreview> verified =
+                V3DefaultArgValsPolicy.validateDeclaration(formals, annotations);
+        List<Parameter> shapes = new ArrayList<>(verified.size());
+        for (V3DefaultArgValsPolicy.FormalPreview formal : verified) {
+            shapes.add(formal.omittable() ? Parameter.optional(formal.name())
+                                        : Parameter.required(formal.name()));
+        }
+        checkedParameters(shapes);
+        return List.copyOf(shapes);
     }
 
     /** The reference shape is an omittable source T, never a required Option<T>. */
