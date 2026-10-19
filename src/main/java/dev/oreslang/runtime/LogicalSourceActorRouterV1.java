@@ -99,6 +99,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 if (boundProxyMailbox != null)
                     throw new SecurityException(
                             "raw logical ActorRef.send bypasses bound proxy admission");
+                rawAdmissionAttempted = true;
                 active.physical.send(message);
             }
         }
@@ -159,6 +160,10 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     // Bound once by a trusted supervisor. Once bound, the host raw send()
     // path must not bypass the proxy's immutable bounded admission ledger.
     private LogicalActorProxyMailboxV1 boundProxyMailbox;
+    // Remains set even if physical admission throws: its outcome may be
+    // ambiguous. A subsequently bound proxy could otherwise refund a raw
+    // delivery with a cumulative physical drain.
+    private boolean rawAdmissionAttempted;
     private boolean upgrading;
     private boolean closed;
     // Under routeLock. A close timeout may retain the active physical actor
@@ -253,6 +258,9 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             requireOpenLocked();
             if (boundProxyMailbox != null)
                 throw new IllegalStateException("logical route proxy already bound");
+            if (upgrading || rawAdmissionAttempted)
+                throw new IllegalStateException(
+                        "proxy may not bind during upgrade or after raw actor send");
             var snapshot = mailbox.snapshot();
             if (snapshot.closed() || snapshot.dispatchFrozen()
                     || snapshot.retainedMessages() != 0
