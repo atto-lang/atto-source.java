@@ -6,6 +6,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Consumer;
 
 /**
  * Trusted runtime primitive for lexical structured Task lifetimes.
@@ -37,6 +38,7 @@ public final class OresTaskScope {
     }
 
     private final OresScheduler scheduler;
+    private final Consumer<OresTaskScope> onClosed;
     private final Object lock = new Object();
     private final Set<Child> children =
             Collections.newSetFromMap(new IdentityHashMap<>());
@@ -47,7 +49,24 @@ public final class OresTaskScope {
     private State state = State.OPEN;
 
     public OresTaskScope(OresScheduler scheduler) {
+        this(scheduler, ignored -> { }, ignored -> { });
+    }
+
+    OresTaskScope(
+            OresScheduler scheduler,
+            Consumer<OresTaskScope> registrar,
+            Consumer<OresTaskScope> onClosed) {
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
+        this.onClosed = Objects.requireNonNull(onClosed, "onClosed");
+        Objects.requireNonNull(registrar, "registrar").accept(this);
+    }
+
+    /**
+     * Open a lexical structured scope owned by the currently executing Task.
+     * This is the entry point intended for future guest lowering.
+     */
+    public static OresTaskScope openCurrent() {
+        return OresScheduler.openCurrentTaskScope();
     }
 
     /**
@@ -99,7 +118,7 @@ public final class OresTaskScope {
                 complete = true;
             }
         }
-        if (complete) drained.completeFromRuntime(null);
+        if (complete) completeDrain();
         return drained;
     }
 
@@ -140,7 +159,7 @@ public final class OresTaskScope {
         for (OresFuture<?> child : cancel) {
             child.cancel(false);
         }
-        if (complete) drained.completeFromRuntime(null);
+        if (complete) completeDrain();
         return drained;
     }
 
@@ -162,7 +181,7 @@ public final class OresTaskScope {
             child.quiescent = true;
             complete = retireChildIfReadyLocked(child);
         }
-        if (complete) drained.completeFromRuntime(null);
+        if (complete) completeDrain();
     }
 
     private void childTerminal(Child child) {
@@ -171,7 +190,7 @@ public final class OresTaskScope {
             child.terminal = true;
             complete = retireChildIfReadyLocked(child);
         }
-        if (complete) drained.completeFromRuntime(null);
+        if (complete) completeDrain();
     }
 
     /**
@@ -187,5 +206,13 @@ public final class OresTaskScope {
             return true;
         }
         return false;
+    }
+
+    private void completeDrain() {
+        try {
+            onClosed.accept(this);
+        } finally {
+            drained.completeFromRuntime(null);
+        }
     }
 }
