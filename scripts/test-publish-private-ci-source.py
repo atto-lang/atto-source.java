@@ -348,6 +348,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             env = kwargs["env"]
             captured["home"] = env["HOME"]
             self.assertNotEqual(env["HOME"], str(attacker_home))
+            self.assertEqual(Path(env["HOME"]).parent, Path("/tmp"))
             self.assertEqual(env["XDG_CONFIG_HOME"], env["HOME"])
             self.assertTrue(Path(env["HOME"]).is_dir())
             self.assertFalse((Path(env["HOME"]) / ".config" / "gh" / "hosts.yml").exists())
