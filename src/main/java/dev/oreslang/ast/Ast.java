@@ -1093,7 +1093,14 @@ public final class Ast {
     public record IndexExpr(Expr receiver, Expr index) implements Expr { }
 
     public record NewExpr(TypeRef type, List<Expr> arguments) implements Expr {
-        public NewExpr { arguments = List.copyOf(arguments); }
+        public NewExpr {
+            java.util.Objects.requireNonNull(type, "constructed nominal type");
+            arguments = List.copyOf(arguments);
+            validateCallArguments(arguments);
+            if (arguments.stream().anyMatch(arg -> arg instanceof SpreadExpr)) {
+                throw new IllegalArgumentException("constructor/spawn arguments cannot spread");
+            }
+        }
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
