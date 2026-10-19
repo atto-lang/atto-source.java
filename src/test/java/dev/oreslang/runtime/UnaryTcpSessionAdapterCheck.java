@@ -264,6 +264,11 @@ public final class UnaryTcpSessionAdapterCheck {
             UnaryTcpSessionAdapter.Reply.success(tooLarge);
             throw new AssertionError("reply accepted a payload above the unary protocol limit");
         } catch (IllegalArgumentException expected) { }
+        try {
+            new UnaryTcpSessionAdapter.Reply(
+                    UnaryTransportFrame.Kind.ERROR, new byte[] {1});
+            throw new AssertionError("ERROR accepted an unversioned body");
+        } catch (IllegalArgumentException expected) { }
     }
 
     private static void echoAndReplayFence() throws Exception {
