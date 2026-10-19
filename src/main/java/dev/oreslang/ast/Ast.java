@@ -619,8 +619,15 @@ public final class Ast {
     public record ExprStmt(Expr expression) implements Stmt { }
     public record DeferStmt(Expr expression) implements Stmt { }
 
-    public record BlockStmt(List<Stmt> body) implements Stmt {
+    /**
+     * A lexical block, optionally a structured Task scope. Scoped children
+     * must be physically quiescent before execution leaves the block. The
+     * ownership pass still rejects borrowed Task captures until region loans
+     * and lifetime proofs are implemented.
+     */
+    public record BlockStmt(List<Stmt> body, boolean taskScope) implements Stmt {
         public BlockStmt { body = List.copyOf(body); }
+        public BlockStmt(List<Stmt> body) { this(body, false); }
     }
     public record BreakStmt() implements Stmt { }
     public record ContinueStmt() implements Stmt { }
