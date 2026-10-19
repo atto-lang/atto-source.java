@@ -57,10 +57,20 @@ public final class AsyncRuntime implements AutoCloseable {
         private volatile Thread thread;
         private volatile OresFuture<?> completion;
         private final OresFuture<Void> quiesced = new OresFuture<>();
+        // Set by a structured owner BEFORE submitting its carrier.
+        private Runnable retirement = () -> { };
 
         private void markExited() {
-            exited.countDown();
-            quiesced.completeFromRuntime(null);
+            try {
+                // Physical retirement is part of the completion contract:
+                // failure here must never be masked by Future waiter isolation.
+                retirement.run();
+                quiesced.completeFromRuntime(null);
+            } catch (RuntimeException | Error retirementFailure) {
+                quiesced.failFromRuntime(retirementFailure);
+            } finally {
+                exited.countDown();
+            }
         }
     }
 
@@ -135,6 +145,13 @@ public final class AsyncRuntime implements AutoCloseable {
         final OresTask<T> owner = OresTask.provisional(exit.quiesced);
         private final java.util.concurrent.atomic.AtomicBoolean started =
                 new java.util.concurrent.atomic.AtomicBoolean();
+
+        void installRetirement(Runnable hook) {
+            Objects.requireNonNull(hook, "hook");
+            if (started.get())
+                throw new IllegalStateException("Task retirement must precede dispatch");
+            exit.retirement = hook;
+        }
     }
 
     <T> TaskAdmission<T> prepareTaskAdmission() {
