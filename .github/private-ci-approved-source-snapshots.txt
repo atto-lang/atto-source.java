@@ -1,7 +1,6 @@
 # Immutable private source snapshots authorized for external private-only CI.
-# Empty by default: no source revision is approved for transfer.
+# Empty by default on main: this draft proposes exactly one review-only tuple.
 # Each approved entry must be security-reviewed on protected source main.
-# Format: <40-hex source commit> <40-hex source root tree> <numeric destination repo ID>
-# Approving a destination alone never approves an arbitrary PR/source revision.
-
-097c0fe37aa04c5870ee1d5193012511a1ee5733 56785bd4920c7e23e7974f73a8dee0113ad5fcac 1323679401
+# Format: <source commit> <source root tree> <destination repo ID> <carrier main commit> <carrier root tree>
+# Carrier pins force fresh source-side approval whenever carrier code/workflows change.
+097c0fe37aa04c5870ee1d5193012511a1ee5733 56785bd4920c7e23e7974f73a8dee0113ad5fcac 1323679401 7c62699ad271ee501caf294c8814971ebc4bb2fd a8019c6162d742ed526aaebb7e365511644ed9fc
