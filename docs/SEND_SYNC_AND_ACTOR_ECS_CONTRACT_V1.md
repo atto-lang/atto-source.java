@@ -96,6 +96,28 @@ are bitwise deterministic.
   Keep both PRs as drafts until exact-head Java JUnit and native LLVM CTest,
   plus cross-backend source conformance, execute on authenticated source.
 
+## Audit hardening (2026-10-18)
+
+* An unresolved nominal type is **not** an actor-mailbox transport witness.
+  The Java compiler accepts only explicit compiler-recognized scalar actor
+  metadata (`ActorId` and `ActorKind`) in that final fallback; generic
+  wrappers and unknown host/capability names are rejected. This tightens the
+  previous runtime-only rejection path without granting `Send` or `Sync`.
+* The pure Java ECS planner now enforces deterministic compile-time admission
+  budgets: at most 4096 systems, 4096 declared spans per system, and 16 million
+  access-pair checks per planning operation (including conservative zero-span
+  barriers). Exhausting proof budget is a **compilation error**, never
+  authorization to run conflicting systems concurrently. These limits do not
+  constrain the number of world entities, allocations, or ECS chunks a running
+  system may process; larger proof graphs require coalesced verified spans.
+* Standalone Java 21 host smoke tests, using the exact checked Git blob for
+  `EcsAccessPlanner`, ran 245,344 assertions over deterministic randomized
+  conflict/ordering graphs, large bounds, and provenance identity. An existing
+  exact-blob standalone `ThreadSafetyTraits` harness ran 66 directed and
+  12,020 seeded fuzz/depth checks. These tests **do not** execute the Oreslang
+  parser, complete type checker, JUnit, actor runtime, GraalVM Native Image or
+  the LLVM backend. CI admission is a separate merge gate.
+
 ## Planned actor/ECS design
 
 Actor isolation should remain the outer fault and networking boundary.
