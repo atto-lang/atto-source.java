@@ -22,8 +22,11 @@ source AST evaluator before merging.
   cancellation and suspension restrictions remain active.
 - `Array<T>` / `List<T>` are explicitly treated as **owned moves only**
   when T is recursively Send. Neither receives Sync, actor transport or
-  shared-domain authority. Future runtime ABI changes must re-audit this
-  compiler-specific trusted-intrinsic decision before source execution.
+  shared-domain authority. Built-in `Option<T>` / `Result<T,E>` are permitted
+  only when every payload type is recursively Send. User-shadowed types with
+  those names cannot impersonate the compiler intrinsic.
+  Future runtime ABI changes must re-audit these compiler-specific
+  trusted-intrinsic decisions before source execution.
 - No automatic admission for `Arc`, `Shared`, `Mutex`, `RwLock`,
   `InvertedArray`, `Future`, `Task`, `Channel`, `ActorRef`,
   `ExecutionPermit`, `ThreadBound`, native pointers or unknown nominal
@@ -42,6 +45,7 @@ real Parser + OwnershipChecker regression cases for:
 - use-after-move denial for an owned captured array;
 - raw pointers, native/FFI handles, ActorRef and transitive Option/Array
   capability rejection;
+- owned `Option<int>`/`Result<int,string>` positive captures;
 - immediate async/task lambda parameter/capture safety;
 - preservation of the `OresCompiler.parseAndTypeCheck` failure for unlowered
   `nb` Task execution.
@@ -75,3 +79,13 @@ Cross references:
 - Java #1447 https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1447
 - Java #1448 https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1448
 - LLVM #661 https://github.com/ores-truffle-oreslang/oreslang-source.llvm/pull/661
+
+## Cross-branch exact implementation checkpoint
+
+The hardened `SendSyncTraits.java` file was updated on both #1447 and this
+Task-compiler integration branch with **byte-identical source blob**
+`a4a34c620f437bc917ee1c2c317966ea915cb4bb`. #1447 now includes an
+additional test showing that source classes named `ActorRef`, `Task`,
+`Channel`, or `ThreadBound` cannot manufacture a Send or Sync proof.
+This is code alignment, not proof that the two PRs can yet be merged without
+reviewing their distinct base branches and compiler type representations.
