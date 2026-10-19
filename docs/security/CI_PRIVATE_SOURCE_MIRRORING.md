@@ -84,8 +84,8 @@ carrier.
 ## Reviewed destination execution containment
 
 The reviewed carrier is immutable Git commit
-`ec6a5ddc39dd5524285fcc18902d777c4827c666`, tree
-`c7eba95c9abfc008e395194360327026cf33bd9c`. Authorization binds those Git
+`fc49aa44726eac47301ae2d676c4b38954d3cc46`, tree
+`1e9dec690e45df80758547e991d37f6b18872e33`. Authorization binds those Git
 objects directly; movement of destination `main` is not an authorization
 input.
 
@@ -112,10 +112,13 @@ canary bound to both a fixed fake source commit and the fixed synthetic canary
 tree; that fixture also asserts that GitHub/ACTIONS credential variables are
 absent, runner-private paths are hidden, and outbound TCP is unavailable.
 
-Source-free run `39325168201` validates the pinned carrier: exact-tree and
-concurrency, JDK 25/GraalVM verification, and Native Image AOT/hybrid jobs all
-completed successfully. This proves the carrier and containment harness only;
-it is not evidence that private Oreslang source passed any compiler test.
+Source-free run `39327902459` validates the pinned carrier: exact-tree and
+concurrency, JDK 25/GraalVM verification, Native Image AOT/hybrid, and the
+approval-bound branch-cleanup job all completed successfully. The cleanup log
+confirms deletion of exactly the tested branch SHA, and the branch was
+independently verified absent afterward. This proves the carrier and containment
+harness only; it is not evidence that private Oreslang source passed any
+compiler test.
 
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
 per file, requires the source directory to remain **inside the trusted
@@ -131,11 +134,15 @@ Git blob SHA-1 against the source bytes. It checks that the reviewed destination
 repository ID have not changed before every API write, in addition to
 rechecking the destination's live private visibility. It does not print source contents in API failures.
 API failure before ref creation can leave unreferenced Git objects in
-the private destination. Reachable `ci/oreslang-*` refs are deleted by the
-trusted default-branch `workflow_run` cleanup after the exact-tree workflow
-completes, guarded by the tested head SHA. Unreferenced Git object retention
-remains subject to GitHub server-side garbage collection and is not immediate
-cryptographic erasure.
+the private destination. Reachable `ci/oreslang-*` refs are deleted by a
+separate `contents: write` cleanup job inside the same immutable, reviewed
+exact-tree workflow after all three source-executing jobs finish. The
+source-executing jobs retain `contents: read`; the cleanup job does not check
+out or execute source and deletes only when the live ref still equals the exact
+tested `GITHUB_SHA`. There is no mutable default-branch `workflow_run`
+cleanup control plane. Unreferenced Git object retention remains subject to
+GitHub server-side garbage collection and is not immediate cryptographic
+erasure.
 
 It does **not** intercept arbitrary connector/API tool writes, cannot
 completely prevent visibility changes between API checks, and cannot
