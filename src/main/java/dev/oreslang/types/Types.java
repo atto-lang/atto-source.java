@@ -125,9 +125,7 @@ public final class Types {
     public static boolean areProvablyDisjoint(Type first, Type second) {
         Objects.requireNonNull(first);
         Objects.requireNonNull(second);
-        int[] validationBudget = new int[] {100_000};
-        if (containsMalformedNominalName(first, 0, validationBudget)
-                || containsMalformedNominalName(second, 0, validationBudget)) {
+        if (!isStructurallyWellFormed(first) || !isStructurallyWellFormed(second)) {
             return false;
         }
         return areProvablyDisjointChecked(first, second);
@@ -202,9 +200,7 @@ public final class Types {
         // Unknown/generic/equality/negative-type shortcut can authorize it.
         // The shared budget also turns pathologically deep or wide malformed
         // compiler API input into a controlled fail-closed result.
-        int[] validationBudget = new int[] {100_000};
-        if (containsMalformedNominalName(from, 0, validationBudget)
-                || containsMalformedNominalName(to, 0, validationBudget)) {
+        if (!isStructurallyWellFormed(from) || !isStructurallyWellFormed(to)) {
             return false;
         }
         return isAssignableChecked(from, to);
@@ -291,47 +287,61 @@ public final class Types {
         return numericWidening(from, to);
     }
 
-    private static boolean hasMalformedNominalName(Type type) {
-        return type instanceof Named named
-                && (named.name() == null || named.name().isBlank());
+    /**
+     * Validate direct compiler/embedding Type objects before they participate
+     * in compatibility, negative-type, Send/Sync, or actor-boundary proofs.
+     *
+     * <p>Parser-produced types already obey these invariants, but compiler
+     * transformations and embedding callers can instantiate the public record
+     * classes directly. This check is intentionally bounded and fail-closed.
+     */
+    public static boolean isStructurallyWellFormed(Type type) {
+        return !failsStructuralTypeValidation(type, 0, new int[] {100_000});
     }
 
-    private static boolean containsMalformedNominalName(
+    private static boolean failsStructuralTypeValidation(
             Type type, int depth, int[] budget) {
-        // This guards the equality fast path. Without it, two identical outer
-        // aggregates could compare equal before assignability ever visits a
-        // malformed nominal nested inside them. Exhaustion denies the shortcut.
-        if (depth > 256 || --budget[0] < 0) return true;
-        if (hasMalformedNominalName(type)) return true;
+        if (type == null || depth > 256 || --budget[0] < 0) return true;
         if (type instanceof Named named) {
+            if (named.name() == null || named.name().isBlank()) return true;
             for (Type argument : named.arguments()) {
-                if (containsMalformedNominalName(argument, depth + 1, budget)) return true;
+                if (failsStructuralTypeValidation(argument, depth + 1, budget)) return true;
             }
         } else if (type instanceof SelfType self) {
-            return containsMalformedNominalName(self.bound(), depth + 1, budget);
+            return failsStructuralTypeValidation(self.bound(), depth + 1, budget);
         } else if (type instanceof Borrow borrow) {
-            return containsMalformedNominalName(borrow.target(), depth + 1, budget);
+            return failsStructuralTypeValidation(borrow.target(), depth + 1, budget);
+        } else if (type instanceof ClassNamespace namespace) {
+            return namespace.className() == null || namespace.className().isBlank();
         } else if (type instanceof Record record) {
-            for (Type member : record.members().values()) {
-                if (containsMalformedNominalName(member, depth + 1, budget)) return true;
+            for (Map.Entry<String, Type> member : record.members().entrySet()) {
+                if (member.getKey() == null || member.getKey().isBlank()
+                        || failsStructuralTypeValidation(
+                                member.getValue(), depth + 1, budget)) {
+                    return true;
+                }
             }
         } else if (type instanceof Function function) {
             for (Type parameter : function.parameters()) {
-                if (containsMalformedNominalName(parameter, depth + 1, budget)) return true;
+                if (failsStructuralTypeValidation(parameter, depth + 1, budget)) return true;
             }
-            return containsMalformedNominalName(function.result(), depth + 1, budget);
+            return failsStructuralTypeValidation(function.result(), depth + 1, budget);
         } else if (type instanceof ListType list) {
-            return containsMalformedNominalName(list.element(), depth + 1, budget);
+            return failsStructuralTypeValidation(list.element(), depth + 1, budget);
         } else if (type instanceof Tuple tuple) {
             for (Type element : tuple.elements()) {
-                if (containsMalformedNominalName(element, depth + 1, budget)) return true;
+                if (failsStructuralTypeValidation(element, depth + 1, budget)) return true;
             }
         } else if (type instanceof Union union) {
             for (Type option : union.options()) {
-                if (containsMalformedNominalName(option, depth + 1, budget)) return true;
+                if (failsStructuralTypeValidation(option, depth + 1, budget)) return true;
             }
+        } else if (type instanceof Generic generic) {
+            return generic.name() == null || generic.name().isBlank();
+        } else if (type instanceof StringLiteral literal) {
+            return literal.value() == null;
         } else if (type instanceof Not not) {
-            return containsMalformedNominalName(not.excluded(), depth + 1, budget);
+            return failsStructuralTypeValidation(not.excluded(), depth + 1, budget);
         }
         return false;
     }
