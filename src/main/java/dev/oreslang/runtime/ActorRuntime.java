@@ -2625,9 +2625,15 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     ref.send(command);
                 }
-            } catch (RuntimeException | Error dispatchFailure) {
+            } catch (RuntimeException dispatchFailure) {
+                // Recipients accepted before this failure may still run. Give
+                // the caller the failed Future rather than losing its only
+                // observable result handle after partial fanout.
                 if (epoch.abort()) epoch.fail(dispatchFailure);
-                throw dispatchFailure;
+                return epoch;
+            } catch (Error fatal) {
+                if (epoch.abort()) epoch.fail(fatal);
+                throw fatal;
             }
             return epoch;
         }
