@@ -13,10 +13,12 @@ trap 'rm -rf -- "$tmp"' EXIT
   "$root/src/main/java/dev/oreslang/runtime/IpcAuthenticatedSocketTransport.java" \
   "$root/src/test/java/dev/oreslang/runtime/IpcReceiptCorrelationSelfTest.java" \
   "$root/src/test/java/dev/oreslang/runtime/IpcReceiptCompletionBridgeSelfTest.java" \
+  "$root/src/test/java/dev/oreslang/runtime/IpcReceiptPhysicalBindingSelfTest.java" \
   "$root/src/test/java/dev/oreslang/runtime/IpcTransportSessionLeaseSelfTest.java" \
   "$root/src/test/java/dev/oreslang/runtime/IpcAuthenticatedSocketTransportSelfTest.java"
 "$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcReceiptCorrelationSelfTest
 "$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcReceiptCompletionBridgeSelfTest
+"$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcReceiptPhysicalBindingSelfTest
 "$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcTransportSessionLeaseSelfTest
 "$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcAuthenticatedSocketTransportSelfTest
 printf 'JAVA_RECEIPTS_HOST_ONLY_PASS (not remote IPC or guest compilation)\n'
