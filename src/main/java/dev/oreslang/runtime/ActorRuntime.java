@@ -25,6 +25,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -2197,6 +2198,10 @@ public final class ActorRuntime implements AutoCloseable {
          * absent ActorCell for completed finalization.
          */
         private final AtomicBoolean physicallyFinalized = new AtomicBoolean();
+        // Remains reachable through ActorRef after the ActorCell is removed.
+        // Unlike lifecycleLock waiting, this does not depend on registry
+        // membership and releases only after the final teardown witness.
+        private final CountDownLatch physicalFinalizationLatch = new CountDownLatch(1);
         // A runtime-owned synchronous terminal subscriber may run on the
         // finalizer itself. It must not wait for its own pending completion.
         private volatile Thread physicalFinalizationOwnerThread;
@@ -2288,10 +2293,13 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException(
                         "actor terminal callback cannot join its own physical finalization");
             }
-            ActorCell<?> cell = actors.get(id);
-            if (cell == null) return physicallyFinalized.get();
-            cell.awaitFinalized(unit.toNanos(timeout));
-            return physicallyFinalized.get();
+            // Registry removal intentionally precedes terminal callbacks.
+            // An ActorCell lookup cannot implement this wait: after removal
+            // the callback may still be running and a timeout must not turn
+            // into an immediate false (or a forged true).
+            if (physicallyFinalized.get()) return true;
+            return physicalFinalizationLatch.await(timeout, unit)
+                    && physicallyFinalized.get();
         }
 
         public void send(M message) {
@@ -8473,6 +8481,7 @@ public final class ActorRuntime implements AutoCloseable {
             // work is complete. If cleanup throws, fail closed and pin code
             // instead of certifying retirement from an absent registry entry.
             ref.physicallyFinalized.set(true);
+            ref.physicalFinalizationLatch.countDown();
             ref.physicalFinalizationOwnerThread = null;
             lifecycleLock.notifyAll();
         }
