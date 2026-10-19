@@ -36,13 +36,14 @@ import javax.crypto.spec.SecretKeySpec;
  */
 final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     private static final int MAGIC = 0x4f524553; // ORES
-    private static final int VERSION = 2;
+    private static final int VERSION = 3;
     private static final int TYPE_DATA = 1;
     private static final int TYPE_RECEIPT = 2;
     private static final int RECEIPT_REMOTE_ACCEPTED = 1;
     private static final int RECEIPT_HANDLER_COMMITTED = 2;
     private static final int RECEIPT_HANDLER_FAILED = 3;
     private static final int MAC_BYTES = 32;
+    private static final int CONNECTION_BINDING_BYTES = 16;
     private static final int MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
     private static final int MAX_TOKEN_BYTES = 96;
     // Pre-authentication allocation caps. DATA needs payload headroom; a
@@ -57,6 +58,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     private final IpcReceiptCorrelation.Envelope trustedEpoch;
     private final long physicalGeneration;
     private final byte[] macKey;
+    private final byte[] connectionBinding;
     private final InputStream input;
     private final OutputStream output;
     private final IpcTransportSessionLease.CleanupScheduler cleanupScheduler;
@@ -75,6 +77,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             long physicalGeneration,
             int maxOutstandingWrites,
             byte[] macKey,
+            byte[] connectionBinding,
             IpcTransportSessionLease.CleanupScheduler cleanupScheduler) throws IOException {
         this.socket = Objects.requireNonNull(socket, "socket");
         this.receipts = Objects.requireNonNull(receipts, "receipts");
@@ -90,9 +93,21 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         if (macKey == null || macKey.length < 32 || macKey.length > 128) {
             throw new IllegalArgumentException("IPC MAC key must be 32..128 bytes");
         }
+        if (connectionBinding == null
+                || connectionBinding.length != CONNECTION_BINDING_BYTES) {
+            throw new IllegalArgumentException(
+                    "IPC connection binding must be exactly 16 bytes");
+        }
+        boolean nonzeroBinding = false;
+        for (byte value : connectionBinding) nonzeroBinding |= value != 0;
+        if (!nonzeroBinding) {
+            throw new IllegalArgumentException(
+                    "IPC connection binding must not be all zero");
+        }
         this.cleanupScheduler = Objects.requireNonNull(
                 cleanupScheduler, "cleanupScheduler");
         byte[] privateMacKey = macKey.clone();
+        byte[] privateConnectionBinding = connectionBinding.clone();
         final InputStream socketInput;
         final OutputStream socketOutput;
         try {
@@ -120,6 +135,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             throw bindingFailure;
         }
         this.macKey = privateMacKey;
+        this.connectionBinding = privateConnectionBinding;
         this.physicalGeneration = physicalGeneration;
         this.input = socketInput;
         this.output = socketOutput;
@@ -176,7 +192,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         final byte[] preparedFrame;
         try {
             preparedFrame = encodeDataFrame(
-                    message, body, physicalGeneration, macKey);
+                    message, body, physicalGeneration, connectionBinding, macKey);
         } catch (IOException impossibleMemoryEncodingFailure) {
             throw new IllegalStateException(
                     "in-memory authenticated IPC frame encoding failed",
@@ -209,7 +225,8 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             synchronized (readGate) {
                 frame = readReceiptWireFrame(input);
             }
-            DecodedReceipt receipt = decodeReceiptFrame(frame, macKey);
+            DecodedReceipt receipt = decodeReceiptFrame(
+                    frame, connectionBinding, macKey);
             if (receipt.physicalGeneration() != physicalGeneration) {
                 throw new IOException("stale IPC physical transport generation");
             }
@@ -395,6 +412,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             IpcReceiptCorrelation.Envelope envelope,
             byte[] payload,
             long physicalGeneration,
+            byte[] connectionBinding,
             byte[] key) throws IOException {
         Objects.requireNonNull(envelope, "envelope");
         Objects.requireNonNull(payload, "payload");
@@ -406,7 +424,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         }
         ByteArrayOutputStream raw = new ByteArrayOutputStream();
         try (DataOutputStream out = new DataOutputStream(raw)) {
-            writeHeader(out, TYPE_DATA, physicalGeneration);
+            writeHeader(out, TYPE_DATA, physicalGeneration, connectionBinding);
             writeEnvelope(out, envelope);
             out.writeInt(payload.length);
             out.write(payload);
@@ -418,6 +436,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             byte[] frame,
             IpcReceiptCorrelation.Envelope expectedEpoch,
             long expectedPhysicalGeneration,
+            byte[] expectedConnectionBinding,
             InboundReplayGate replayGate,
             byte[] key) throws IOException {
         Objects.requireNonNull(expectedEpoch, "expectedEpoch");
@@ -427,7 +446,8 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         }
         byte[] authenticated = verifyAndStripMac(frame, key);
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(authenticated))) {
-            long physicalGeneration = requireHeader(in, TYPE_DATA);
+            long physicalGeneration = requireHeader(
+                    in, TYPE_DATA, expectedConnectionBinding);
             IpcReceiptCorrelation.Envelope envelope = readEnvelope(in);
             int length = in.readInt();
             if (length < 0 || length > MAX_PAYLOAD_BYTES || length > in.available()) {
@@ -457,22 +477,25 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             IpcReceiptCorrelation.Envelope envelope,
             long physicalGeneration,
             IpcReceiptCorrelation.Stage stage,
+            byte[] connectionBinding,
             byte[] key) throws IOException {
         Objects.requireNonNull(envelope, "envelope");
         requireRemoteReceiptStage(stage);
         ByteArrayOutputStream raw = new ByteArrayOutputStream();
         try (DataOutputStream out = new DataOutputStream(raw)) {
-            writeHeader(out, TYPE_RECEIPT, physicalGeneration);
+            writeHeader(out, TYPE_RECEIPT, physicalGeneration, connectionBinding);
             writeEnvelope(out, envelope);
             out.writeByte(remoteReceiptWireCode(stage));
         }
         return appendMac(raw.toByteArray(), key);
     }
 
-    private static DecodedReceipt decodeReceiptFrame(byte[] frame, byte[] key) throws IOException {
+    private static DecodedReceipt decodeReceiptFrame(
+            byte[] frame, byte[] expectedConnectionBinding, byte[] key) throws IOException {
         byte[] authenticated = verifyAndStripMac(frame, key);
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(authenticated))) {
-            long physicalGeneration = requireHeader(in, TYPE_RECEIPT);
+            long physicalGeneration = requireHeader(
+                    in, TYPE_RECEIPT, expectedConnectionBinding);
             IpcReceiptCorrelation.Envelope envelope = readEnvelope(in);
             int wireCode = in.readUnsignedByte();
             if (in.available() != 0) {
@@ -533,17 +556,22 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     }
 
     private static void writeHeader(
-            DataOutputStream out, int type, long physicalGeneration) throws IOException {
+            DataOutputStream out, int type, long physicalGeneration,
+            byte[] connectionBinding) throws IOException {
         if (physicalGeneration <= 0) {
             throw new IllegalArgumentException("physical generation must be positive");
         }
+        requireConnectionBinding(connectionBinding);
         out.writeInt(MAGIC);
         out.writeByte(VERSION);
         out.writeByte(type);
         out.writeLong(physicalGeneration);
+        out.write(connectionBinding);
     }
 
-    private static long requireHeader(DataInputStream in, int type) throws IOException {
+    private static long requireHeader(
+            DataInputStream in, int type, byte[] expectedConnectionBinding)
+            throws IOException {
         if (in.readInt() != MAGIC || in.readUnsignedByte() != VERSION
                 || in.readUnsignedByte() != type) {
             throw new IOException("invalid IPC frame header");
@@ -552,7 +580,27 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         if (physicalGeneration <= 0) {
             throw new IOException("invalid IPC physical transport generation");
         }
+        requireConnectionBinding(expectedConnectionBinding);
+        byte[] actualBinding = in.readNBytes(CONNECTION_BINDING_BYTES);
+        if (actualBinding.length != CONNECTION_BINDING_BYTES
+                || !MessageDigest.isEqual(
+                        expectedConnectionBinding, actualBinding)) {
+            throw new IOException("stale IPC connection binding");
+        }
         return physicalGeneration;
+    }
+
+    private static void requireConnectionBinding(byte[] binding) {
+        if (binding == null || binding.length != CONNECTION_BINDING_BYTES) {
+            throw new IllegalArgumentException(
+                    "IPC connection binding must be exactly 16 bytes");
+        }
+        boolean nonzero = false;
+        for (byte value : binding) nonzero |= value != 0;
+        if (!nonzero) {
+            throw new IllegalArgumentException(
+                    "IPC connection binding must not be all zero");
+        }
     }
 
     private static void writeEnvelope(
