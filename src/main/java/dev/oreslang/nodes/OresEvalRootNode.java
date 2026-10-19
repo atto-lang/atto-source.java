@@ -1264,6 +1264,17 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private OresFuture<Object> startSourceBlockTask(
+                Ast.TaskExpr task,
+                Env caller) {
+            // Every capture must have been proven at the compiler ownership
+            // boundary. Project just those names into fresh independent slots:
+            // normal lambda Env.snapshot() intentionally shares its Slot
+            // instances and MUST NOT be used directly for cross-Task moves.
+            Env captured = caller.taskProjection(task.captures());
+            return startSourceBlockTask(task.body(), captured);
+        }
+
+        private OresFuture<Object> startSourceBlockTask(
                 List<Ast.Stmt> body,
                 Env env) {
             SourceTask task = new SourceTask(body);
@@ -6114,7 +6125,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object eval(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.TaskExpr task) {
-                return startSourceBlockTask(task.body(), env);
+                return startSourceBlockTask(task, env);
             }
             if (expr instanceof Ast.MatchExpr valueMatch) {
                 Object subject = eval(valueMatch.subject(), env);
@@ -9098,6 +9109,31 @@ public final class OresEvalRootNode extends RootNode {
             if (parent != null) { parent.assign(name, value); return; }
             throw new IllegalArgumentException("unknown binding " + name);
         }
+        /**
+         * Cross-Task lexical projection. Unlike ordinary closure snapshot(),
+         * this intentionally creates new Slot objects and no parent Env.
+         * Copy-safe scalars are isolated by slot; owned heap references are
+         * transferred only after the compiler has consumed their owners.
+         */
+        private Env taskProjection(List<String> captureNames) {
+            Env cp = new Env(null, descendantsNonLexical, accessClass,
+                    null, lexicalModule, lexicalContainerClass);
+            for (String name : captureNames) {
+                Slot slot = findTaskCapture(name);
+                if (slot == null || slot.value == MISSING) {
+                    throw new IllegalStateException(
+                            "Task capture '" + name + "' missing at spawn");
+                }
+                cp.slots.put(name, new Slot(slot.value, slot.kind));
+            }
+            return cp;
+        }
+
+        private Slot findTaskCapture(String name) {
+            Slot local = slots.get(name);
+            return local != null ? local : parent == null ? null : parent.findTaskCapture(name);
+        }
+
         private Env snapshot() {
             Env cp = new Env(
                     parent == null ? null : parent.snapshot(),
