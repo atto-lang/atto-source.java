@@ -65,6 +65,29 @@ public final class OptionalCallValueAssembly {
             }
         }
 
+        // Validate ALL supplied nominal Option values BEFORE creating any
+        // synthetic Some/None. A required Option<T> is not omittable, but
+        // passing a forged plain T to that slot is just as unsafe as forging
+        // PASS_OPTION for an optional T? formal. Do not infer nominal identity
+        // from a caller's type metadata alone.
+        for (OptionalCallAbiPreview.Slot slot : checkedPreview.abiSlots()) {
+            boolean requiredOption = slot.action() == OptionalCallAbiPreview.Action.PASS_REQUIRED
+                    && slot.calleeType().name().equals("Option")
+                    && slot.calleeType().arguments().size() == 1
+                    && !slot.calleeType().inferArguments();
+            if (slot.action() == OptionalCallAbiPreview.Action.PASS_OPTION || requiredOption) {
+                int source = slot.evaluatedSourceIndex();
+                if (source < 0 || source >= evaluatedSourceValues.size()) {
+                    throw new IllegalArgumentException("missing supplied nominal Option");
+                }
+                Ast.TypeRef payload = slot.calleeType().arguments().getFirst();
+                if (!optionFactory.isNominalOption(payload, evaluatedSourceValues.get(source))) {
+                    throw new IllegalArgumentException(
+                            "supplied Option value fails nominal identity validation");
+                }
+            }
+        }
+
         List<Object> result = new ArrayList<>(checkedPreview.abiSlots().size());
         for (OptionalCallAbiPreview.Slot slot : checkedPreview.abiSlots()) {
             Object adapted;
