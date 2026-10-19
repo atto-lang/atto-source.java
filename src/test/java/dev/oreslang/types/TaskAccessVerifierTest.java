@@ -644,6 +644,50 @@ final class TaskAccessVerifierTest {
         ledger.finishScope();
     }
 
+    @Test void unprovenAllocationCannotSplitFieldsIntoDisjointWriters() {
+        var root = new TaskAccessVerifier.Root("PROCESS", 901, 1, false);
+        var columns = TaskAccessVerifier.Place.whole(root);
+        var left = columns.field("position", true);
+        var right = columns.field("velocity", true);
+        assertTrue(TaskAccessVerifier.mayAlias(left, right),
+                "layout flags cannot establish disjointness for an unproven allocation");
+        var ledger = new TaskAccessVerifier();
+        var first = admit(ledger, List.of(write(left)));
+        assertThrows(IllegalArgumentException.class, () ->
+                admit(ledger, List.of(write(right))));
+        assertEquals(1, ledger.activeChildren());
+        ledger.quiescent(first);
+    }
+
+    @Test void unprovenAllocationCannotSplitRangesIntoDisjointWriters() {
+        var root = new TaskAccessVerifier.Root("PROCESS", 902, 1, false);
+        var column = TaskAccessVerifier.Place.whole(root);
+        var firstHalf = column.range(0, 64, true);
+        var nextHalf = column.range(64, 128, true);
+        assertTrue(TaskAccessVerifier.mayAlias(firstHalf, nextHalf));
+        var ledger = new TaskAccessVerifier();
+        var first = admit(ledger, List.of(write(firstHalf)));
+        assertThrows(IllegalArgumentException.class, () ->
+                admit(ledger, List.of(write(nextHalf))));
+        ledger.quiescent(first);
+    }
+
+    @Test void provenAllocationStillAllowsIndependentFieldAndRangeWriters() {
+        var root = new TaskAccessVerifier.Root("PROCESS", 903, 1, true);
+        var whole = TaskAccessVerifier.Place.whole(root);
+        var ledger = new TaskAccessVerifier();
+        var first = admit(ledger, List.of(write(whole.field("position", true))));
+        var second = admit(ledger, List.of(write(whole.field("velocity", true))));
+        var x = admit(ledger, List.of(write(whole.field("segments", true).range(0, 64, true))));
+        var y = admit(ledger, List.of(write(whole.field("segments", true).range(64, 128, true))));
+        assertEquals(4, ledger.activeChildren());
+        ledger.quiescent(first);
+        ledger.quiescent(second);
+        ledger.quiescent(x);
+        ledger.quiescent(y);
+        ledger.finishScope();
+    }
+
     @Test void racingWritersNeverAcquireTwoLiveLoans() throws Exception {
         var verifier = new TaskAccessVerifier();
         var place = TaskAccessVerifier.Place.whole(WORLD);
