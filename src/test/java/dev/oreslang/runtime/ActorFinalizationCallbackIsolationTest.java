@@ -32,6 +32,35 @@ final class ActorFinalizationCallbackIsolationTest {
     }
 
     @Test
+    void initializationReadyCallbackCannotOwnLifecycleMonitor() throws Exception {
+        CountDownLatch factoryEntered = new CountDownLatch(1);
+        CountDownLatch releaseFactory = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> {
+                factoryEntered.countDown();
+                if (!releaseFactory.await(3, TimeUnit.SECONDS)) {
+                    throw new AssertionError("initialization test deadline");
+                }
+                return (message, context) -> { };
+            });
+            try {
+                assertTrue(factoryEntered.await(2, TimeUnit.SECONDS));
+                Object monitor = lifecycleLock(runtime, actor);
+                AtomicBoolean observedUnderMonitor = new AtomicBoolean(true);
+                actor.ready().whenCompleteRuntime((value, failure) ->
+                        observedUnderMonitor.set(Thread.holdsLock(monitor)));
+                releaseFactory.countDown();
+                actor.ready().get(3, TimeUnit.SECONDS);
+                assertFalse(observedUnderMonitor.get(),
+                        "actor ready callback must execute without lifecycleLock");
+            } finally {
+                releaseFactory.countDown();
+                actor.stop();
+            }
+        }
+    }
+
+    @Test
     void externalStopPublishesFutureAndExitHookWithoutLifecycleMonitor()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
