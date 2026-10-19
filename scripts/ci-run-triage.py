@@ -120,23 +120,23 @@ def _classify_job(job, run, run_id=None):
     for step in steps:
         if not isinstance(step, dict):
             raise TriageError("invalid step metadata")
-        status, conclusion = step.get("status"), step.get("conclusion")
-        if status is not None and status not in ("completed", "queued", "in_progress", "pending", "waiting", "requested"):
+        step_status, step_conclusion = step.get("status"), step.get("conclusion")
+        if step_status is not None and step_status not in ("completed", "queued", "in_progress", "pending", "waiting", "requested"):
             raise TriageError("invalid step status")
-        if conclusion is not None and not isinstance(conclusion, str):
+        if step_conclusion is not None and not isinstance(step_conclusion, str):
             raise TriageError("invalid step conclusion")
         # Completed step status and conclusion alone do not prove execution;
         # require an observable start and completion timestamp as well.
-        timed_execution = (status == "completed" and
+        timed_execution = (step_status == "completed" and
                            isinstance(step.get("started_at"), str) and bool(step["started_at"].strip()) and
                            isinstance(step.get("completed_at"), str) and bool(step["completed_at"].strip()))
         purpose = _purpose(step.get("name"))
-        if status == "completed" and conclusion in ("failure", "timed_out"):
+        if step_status == "completed" and step_conclusion in ("failure", "timed_out"):
             if timed_execution:
                 failed.append(purpose)
             else:
                 uncertain_failed_steps += 1
-        if timed_execution and conclusion == "success" and purpose != "housekeeping":
+        if timed_execution and step_conclusion == "success" and purpose != "housekeeping":
             substantive_success = True
     result["completed_failing_steps"] = len(failed)
     result["completed_build_test_failures"] = failed.count("build_test")
