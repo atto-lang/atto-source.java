@@ -451,4 +451,86 @@ final class OresTaskScopeTest {
             }
         }
     }
+
+    @Test
+    void registrationDetachFailureCannotStrandDescendantCancellation() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresTaskScope root = new OresTaskScope(runtime)) {
+            OresTaskScope child = root.childScope();
+            OresTaskScope grandchild = child.childScope();
+            CountDownLatch started = new CountDownLatch(1);
+            OresTask<Integer> live = grandchild.submit(() -> {
+                started.countDown();
+                Thread.sleep(30_000);
+                return 3;
+            });
+            assertTrue(started.await(2, TimeUnit.SECONDS));
+            java.lang.reflect.Field field =
+                    OresTaskScope.class.getDeclaredField("externalCancellation");
+            field.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            java.util.List<OresCancellationToken.Registration> registrations =
+                    (java.util.List<OresCancellationToken.Registration>) field.get(root);
+            java.util.concurrent.atomic.AtomicInteger detached =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            registrations.add(() -> {
+                detached.incrementAndGet();
+                throw new IllegalStateException("injected detach failure");
+            });
+
+            IllegalStateException failure =
+                    assertThrows(IllegalStateException.class, root::cancel);
+            assertTrue(failure.getMessage().contains("injected detach failure"));
+            assertEquals(1, detached.get());
+            assertTrue(child.isCancelRequested());
+            assertTrue(grandchild.isCancelRequested());
+            assertTrue(live.isCancelled(),
+                    "all Task producers must be revoked even if detach fails");
+            assertDoesNotThrow(root::close);
+            assertTrue(live.isQuiescent());
+            assertEquals(1, detached.get(), "failed detach must not be retried twice");
+        }
+    }
+
+    @Test
+    void cancelledScopeDoesNotEnterPendingHostTaskTurn() throws Exception {
+        CountDownLatch turnScheduled = new CountDownLatch(1);
+        CountDownLatch allowTurn = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger entered =
+                new java.util.concurrent.atomic.AtomicInteger();
+        try (AsyncRuntime runtime = new AsyncRuntime(turn -> {
+                 turnScheduled.countDown();
+                 boolean interrupted = false;
+                 try {
+                     for (;;) {
+                         try {
+                             allowTurn.await();
+                             break;
+                         } catch (InterruptedException ignored) {
+                             interrupted = true;
+                         }
+                     }
+                     turn.run();
+                 } finally {
+                     if (interrupted) Thread.currentThread().interrupt();
+                 }
+             });
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            OresTask<Integer> child = scope.submit(() -> {
+                entered.incrementAndGet();
+                return 17;
+            });
+            assertTrue(turnScheduled.await(2, TimeUnit.SECONDS));
+            try {
+                assertTrue(scope.cancel());
+            } finally {
+                allowTurn.countDown();
+            }
+            assertNull(AsyncRuntime.await(child.getDone()));
+            assertEquals(0, entered.get(),
+                    "worker must not enter cancelled scope after admission");
+        } finally {
+            allowTurn.countDown();
+        }
+    }
 }
