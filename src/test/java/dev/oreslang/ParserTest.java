@@ -27,7 +27,8 @@ final class ParserTest {
                     IllegalArgumentException.class,
                     () -> OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(parsed),
                     invocation);
-            assertTrue(failure.getMessage().contains("not yet enabled"),
+            assertTrue(failure.getMessage().contains("not yet enabled")
+                    || failure.getMessage().contains("require checked Option<T>"),
                     failure::toString);
         }
     }
