@@ -186,6 +186,7 @@ public final class TreeShaker {
                     || !(function.body().getFirst() instanceof Ast.ReturnStmt returned)
                     || returned.value() == null
                     || containsLambda(returned.value())
+                    || containsStagedCall(returned.value())
                     || functionsBeingInlined.contains(target.id())) {
                 return false;
             }
@@ -215,6 +216,13 @@ public final class TreeShaker {
             if (expression instanceof Ast.RuntimeCallExpr runtime) {
                 return runtime.arguments().stream().anyMatch(this::containsLambda);
             }
+            if (expression instanceof Ast.StagedCallExpr call) {
+                if (containsLambda(call.callee())) return true;
+                for (Ast.CallArgument argument : call.arguments()) {
+                    if (argument.value() != null && containsLambda(argument.value())) return true;
+                }
+                return false;
+            }
             if (expression instanceof Ast.CallExpr call) {
                 if (containsLambda(call.callee())) return true;
                 return call.arguments().stream().anyMatch(this::containsLambda);
@@ -236,6 +244,65 @@ public final class TreeShaker {
             if (expression instanceof Ast.ObjectExpr object) {
                 for (Ast.ObjectField field : object.fields()) {
                     if (containsLambda(field.value())) return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean containsStagedCall(Ast.Expr expression) {
+            if (expression == null) return false;
+            if (expression instanceof Ast.StagedCallExpr) return true;
+            if (expression instanceof Ast.TypeTestExpr test) return containsStagedCall(test.value());
+            if (expression instanceof Ast.PatternTestExpr test) return containsStagedCall(test.value());
+            if (expression instanceof Ast.CastExpr cast) return containsStagedCall(cast.value());
+            if (expression instanceof Ast.SpreadExpr spread) return containsStagedCall(spread.expression());
+            if (expression instanceof Ast.BinaryExpr binary) {
+                return containsStagedCall(binary.left()) || containsStagedCall(binary.right());
+            }
+            if (expression instanceof Ast.TrapExpr trapped) return containsStagedCall(trapped.expression());
+            if (expression instanceof Ast.UnaryExpr unary) return containsStagedCall(unary.operand());
+            if (expression instanceof Ast.AssignExpr assignment) {
+                return containsStagedCall(assignment.target()) || containsStagedCall(assignment.value());
+            }
+            if (expression instanceof Ast.ConditionalExpr conditional) {
+                return containsStagedCall(conditional.condition())
+                        || containsStagedCall(conditional.whenTrue())
+                        || containsStagedCall(conditional.whenFalse());
+            }
+            if (expression instanceof Ast.RuntimeCallExpr runtime) {
+                return runtime.arguments().stream().anyMatch(this::containsStagedCall);
+            }
+            if (expression instanceof Ast.CallExpr call) {
+                if (containsStagedCall(call.callee())) return true;
+                return call.arguments().stream().anyMatch(this::containsStagedCall);
+            }
+            if (expression instanceof Ast.MemberExpr member) return containsStagedCall(member.receiver());
+            if (expression instanceof Ast.IndexExpr indexed) {
+                return containsStagedCall(indexed.receiver()) || containsStagedCall(indexed.index());
+            }
+            if (expression instanceof Ast.NewExpr created) {
+                return created.arguments().stream().anyMatch(this::containsStagedCall);
+            }
+            if (expression instanceof Ast.AwaitExpr awaited) return containsStagedCall(awaited.expression());
+            if (expression instanceof Ast.ListExpr list) {
+                return list.elements().stream().anyMatch(this::containsStagedCall);
+            }
+            if (expression instanceof Ast.TupleExpr tuple) {
+                return tuple.elements().stream().anyMatch(this::containsStagedCall);
+            }
+            if (expression instanceof Ast.ObjectExpr object) {
+                for (Ast.ObjectField field : object.fields()) {
+                    if (containsStagedCall(field.value())) return true;
+                }
+            }
+            if (expression instanceof Ast.LambdaExpr lambda) {
+                if (containsStagedCall(lambda.expressionBody())) return true;
+                if (lambda.blockBody() != null) {
+                    // Constant-call inlining only accepts a one-expression
+                    // return body, so nested block scanning is deliberately
+                    // conservative here: any block lambda already trips
+                    // containsLambda before this helper is consulted.
+                    return false;
                 }
             }
             return false;
@@ -335,6 +402,10 @@ public final class TreeShaker {
                     arguments.add(substitute(argument, substitutions, shadowed));
                 }
                 return new Ast.RuntimeCallExpr(runtime.operation(), arguments);
+            }
+            if (expression instanceof Ast.StagedCallExpr) {
+                throw new IllegalStateException(
+                        "checked staged calls are not eligible for constant-call specialization");
             }
             if (expression instanceof Ast.CallExpr call) {
                 List<Ast.Expr> arguments = new ArrayList<>();
@@ -919,6 +990,14 @@ public final class TreeShaker {
                 }
                 return new Ast.RuntimeCallExpr(runtime.operation(), arguments);
             }
+            if (expression instanceof Ast.StagedCallExpr call) {
+                // The semantic proof is identity-bound to this exact AST node.
+                // Preserve it verbatim through build optimization rather than
+                // manufacturing an unverified replacement or reordering its
+                // source items. Reachability scanning still traverses children.
+                Ast.CheckedNamedCallPlan.require(call);
+                return call;
+            }
             if (expression instanceof Ast.CallExpr call) {
                 Ast.Expr callee = rewriteExpression(call.callee(), module, locals);
                 List<Ast.Expr> arguments = new ArrayList<>();
@@ -1349,6 +1428,15 @@ public final class TreeShaker {
                 scanExpression(module, conditional.whenFalse(), locals);
             } else if (expression instanceof Ast.RuntimeCallExpr runtime) {
                 for (Ast.Expr argument : runtime.arguments()) scanExpression(module, argument, locals);
+            } else if (expression instanceof Ast.StagedCallExpr call) {
+                Ast.CheckedNamedCallPlan.require(call);
+                scanExpression(module, call.callee(), locals);
+                for (Ast.TypeRef type : call.typeArguments()) scanType(type);
+                for (Ast.CallArgument argument : call.arguments()) {
+                    if (argument.value() != null) {
+                        scanExpression(module, argument.value(), locals);
+                    }
+                }
             } else if (expression instanceof Ast.CallExpr call) {
                 scanExpression(module, call.callee(), locals);
                 for (Ast.TypeRef type : call.typeArguments()) scanType(type);
