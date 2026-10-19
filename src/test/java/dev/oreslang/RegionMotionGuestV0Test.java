@@ -54,6 +54,23 @@ final class RegionMotionGuestV0Test {
         }
     }
 
+    @Test void explicitRegionAndOpaqueRowHandleTypeAnnotationsWork() throws Exception {
+        String guest = """
+                pub fnc main(): void {
+                    let Region<Motion> region = Region.new<Motion>(3, 2, 7);
+                    let RegionHandle row = region.insert(4.0, 8.0, 1.0, 2.0);
+                    region.set_layout(2);
+                    stdio.stdout.write(region.get_x(row));
+                    region.set_layout(0);
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(region.get_y(row));
+                    region.close();
+                    return;
+                }
+                """;
+        assertEquals("4.0|8.0", execute(guest));
+    }
+
     @Test void invalidRegionConstructionAndUnknownMethodsFailStaticAdmission() {
         for (String body : new String[] {
                 "let region = Region.new<Other>(2, 2, 1);",
