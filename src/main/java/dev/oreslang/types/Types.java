@@ -177,7 +177,7 @@ public final class Types {
         return false; // Not knowing if types overlap is NOT proof of exclusion.
     }
 
-    private static boolean containsUncertainType(Type type) {
+    public static boolean containsUncertainType(Type type) {
         if (type == Unknown.INSTANCE || type instanceof Generic) return true;
         if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Not not) return containsUncertainType(not.excluded());
