@@ -1831,6 +1831,10 @@ public final class TypeChecker {
                 if (constantInteger != null) {
                     env.defineConstantInteger(binding.name(), constantInteger);
                 }
+                if (binding.initializer() instanceof Ast.LiteralExpr literal
+                        && literal.value() instanceof String constantString) {
+                    env.defineConstantString(binding.name(), constantString);
+                }
             }
             return;
         }
@@ -2244,6 +2248,7 @@ public final class TypeChecker {
                 }
                 Type receiver = receiverDispatchType(deref(typeOf(indexed.receiver(), env, generics, self)));
                 Type index = typeOf(indexed.index(), env, generics, self);
+                String constantKey = constantStringKey(indexed.index(), env);
                 if (receiver instanceof Record record) {
                     requireAssignable(index, Primitive.STRING, "record/struct field key");
                     Map<String, Type> indexableMembers = indexableRecordMembers(record);
@@ -2255,12 +2260,12 @@ public final class TypeChecker {
                         throw new IllegalArgumentException(
                                 "cannot mutate a readonly structural record through indexed access");
                     }
-                    if (index instanceof StringLiteral key) {
-                        initializedIndexedField = key.value();
-                        targetType = indexableMembers.get(key.value());
+                    if (constantKey != null) {
+                        initializedIndexedField = constantKey;
+                        targetType = indexableMembers.get(constantKey);
                         if (targetType == null) {
                             throw new IllegalArgumentException(
-                                    "unknown record/struct field key '" + key.value() + "'");
+                                    "unknown record/struct field key '" + constantKey + "'");
                         }
                     } else {
                         if (indexableMembers.isEmpty()) {
@@ -2276,12 +2281,12 @@ public final class TypeChecker {
                     if (klass.actorKind() != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException("computed indexing is not supported for this receiver kind");
                     }
-                    if (index instanceof StringLiteral key) {
+                    if (constantKey != null) {
                         ResolvedField field = findFieldTarget(
-                                klass, named, key.value(), new LinkedHashSet<>());
+                                klass, named, constantKey, new LinkedHashSet<>());
                         if (field == null) {
                             throw new IllegalArgumentException(
-                                    "unknown class field key '" + key.value() + "' on " + named.name());
+                                    "unknown class field key '" + constantKey + "' on " + named.name());
                         }
                         requireClassMemberVisible(
                                 field.field().visibility(), field.owner(), "field", field.field().name());
@@ -3753,16 +3758,17 @@ public final class TypeChecker {
             }
             Type receiver = receiverDispatchType(deref(typeOf(indexed.receiver(), env, generics, self)));
             Type index = typeOf(indexed.index(), env, generics, self);
+            String constantKey = constantStringKey(indexed.index(), env);
             Env.Binding indexedOwner = indexed.receiver() instanceof Ast.NameExpr ownerName
                     ? env.lookup(ownerName.name()) : null;
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "record/struct field key");
                 Map<String, Type> indexableMembers = indexableRecordMembers(record);
                 if (indexedOwner != null && indexedOwner.hasUninitializedFields()) {
-                    if (index instanceof StringLiteral key) {
-                        if (indexedOwner.isUninitialized(key.value())) {
+                    if (constantKey != null) {
+                        if (indexedOwner.isUninitialized(constantKey)) {
                             throw new IllegalArgumentException(
-                                    "explicit struct field '" + key.value()
+                                    "explicit struct field '" + constantKey
                                             + "' is read before initialization on '"
                                             + ((Ast.NameExpr) indexed.receiver()).name() + "'");
                         }
@@ -3773,11 +3779,11 @@ public final class TypeChecker {
                                         + "'; initialize every field or use an exact initialized key");
                     }
                 }
-                if (index instanceof StringLiteral key) {
-                    Type member = indexableMembers.get(key.value());
+                if (constantKey != null) {
+                    Type member = indexableMembers.get(constantKey);
                     if (member == null) {
                         throw new IllegalArgumentException(
-                                "unknown record/struct field key '" + key.value() + "'");
+                                "unknown record/struct field key '" + constantKey + "'");
                     }
                     return member;
                 }
@@ -3795,12 +3801,12 @@ public final class TypeChecker {
                         throw new IllegalArgumentException(
                                 "computed indexing requires an ordinary class instance");
                     }
-                    if (index instanceof StringLiteral key) {
+                    if (constantKey != null) {
                         ResolvedField field = findFieldTarget(
-                                klass, named, key.value(), new LinkedHashSet<>());
+                                klass, named, constantKey, new LinkedHashSet<>());
                         if (field == null) {
                             throw new IllegalArgumentException(
-                                    "unknown class field key '" + key.value() + "' on " + named.name());
+                                    "unknown class field key '" + constantKey + "' on " + named.name());
                         }
                         requireClassMemberVisible(
                                 field.field().visibility(), field.owner(), "field", field.field().name());
@@ -6554,6 +6560,17 @@ public final class TypeChecker {
         return null;
     }
 
+    private String constantStringKey(Ast.Expr expression, Env env) {
+        if (expression instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof String key) {
+            return key;
+        }
+        if (expression instanceof Ast.NameExpr name) {
+            return env.lookupConstantString(name.name());
+        }
+        return null;
+    }
+
     private Type widenCollectionElement(Type type) {
         return type instanceof StringLiteral ? Primitive.STRING : type;
     }
@@ -8867,6 +8884,8 @@ public final class TypeChecker {
         private final Map<String, Binding> bindings = new HashMap<>();
         /** Literal integer constants used only for exact fixed-product index selection. */
         private final Map<String, Long> constantIntegers = new HashMap<>();
+        /** Literal string constants used only for exact fixed-product field selection. */
+        private final Map<String, String> constantStrings = new HashMap<>();
         private final Map<String, Type> inferredTypes = new HashMap<>();
         private final Set<String> reservedInferredNames = new HashSet<>();
         private void reserveInferredType(String name) {
@@ -8933,6 +8952,17 @@ public final class TypeChecker {
             if (bindings.containsKey(name)) return constantIntegers.get(name);
             return parent == null ? null : parent.lookupConstantInteger(name);
         }
+        private void defineConstantString(String name, String value) {
+            if (!bindings.containsKey(name)) {
+                throw new IllegalStateException(
+                        "constant string metadata requires an existing binding '" + name + "'");
+            }
+            constantStrings.put(name, value);
+        }
+        private String lookupConstantString(String name) {
+            if (bindings.containsKey(name)) return constantStrings.get(name);
+            return parent == null ? null : parent.lookupConstantString(name);
+        }
         private Binding lookup(String name) {
             Binding binding = bindings.get(name);
             if (binding != null) return binding;
@@ -8951,6 +8981,7 @@ public final class TypeChecker {
             if (!bindings.containsKey(name)) throw new IllegalArgumentException("unknown binding '" + name + "'");
             bindings.put(name, new Binding(type, kind, Set.of()));
             constantIntegers.remove(name);
+            constantStrings.remove(name);
         }
         private void markInitialized(String name, String field) {
             Binding binding = lookup(name);
