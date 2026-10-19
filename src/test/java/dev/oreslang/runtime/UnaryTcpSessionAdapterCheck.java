@@ -1,0 +1,538 @@
+package dev.oreslang.runtime;
+
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
+import java.util.Arrays;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
+import java.util.function.BiConsumer;
+
+/** Real-loopback proof for authenticated bounded unary TCP session admission. */
+public final class UnaryTcpSessionAdapterCheck {
+    private static void check(boolean ok, String message) {
+        if (!ok) throw new AssertionError(message);
+    }
+
+    private record Binding(long sessionId, long generation) { }
+
+    private static final class BindingAuthenticator
+            implements UnaryTcpSessionAdapter.Authenticator {
+        final AtomicInteger calls = new AtomicInteger();
+        final boolean fail;
+
+        BindingAuthenticator() { this(false); }
+        BindingAuthenticator(boolean fail) { this.fail = fail; }
+
+        @Override
+        public UnaryTcpSessionAdapter.PeerIdentity authenticateAndBind(
+                Socket socket, long sessionId, long generation) throws Exception {
+            calls.incrementAndGet();
+            if (fail) throw new SecurityException("test authentication failure");
+            DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+            out.writeLong(sessionId);
+            out.writeLong(generation);
+            out.flush();
+            return new UnaryTcpSessionAdapter.PeerIdentity("loopback:test");
+        }
+    }
+
+    private static final class TestHandle implements UnaryTcpSessionAdapter.DispatchHandle {
+        final CompletableFuture<UnaryTcpSessionAdapter.Reply> future = new CompletableFuture<>();
+        final AtomicBoolean cancelled = new AtomicBoolean();
+
+        @Override
+        public void whenComplete(
+                BiConsumer<? super UnaryTcpSessionAdapter.Reply, ? super Throwable> completion) {
+            future.whenComplete(completion);
+        }
+
+        @Override
+        public boolean cancel() {
+            cancelled.set(true);
+            return future.completeExceptionally(new java.util.concurrent.CancellationException());
+        }
+
+        void reply(byte... payload) {
+            future.complete(UnaryTcpSessionAdapter.Reply.success(payload));
+        }
+    }
+
+    private static final class ManualDispatcher implements UnaryTcpSessionAdapter.Dispatcher {
+        final Map<String, TestHandle> handles = new ConcurrentHashMap<>();
+        final AtomicInteger dispatches = new AtomicInteger();
+
+        @Override
+        public UnaryTcpSessionAdapter.DispatchHandle dispatch(
+                UnaryTcpSessionAdapter.Request request) {
+            dispatches.incrementAndGet();
+            TestHandle handle = new TestHandle();
+            String key = key(request.sessionId(), request.correlationId());
+            if (handles.putIfAbsent(key, handle) != null)
+                throw new AssertionError("duplicate test dispatch key " + key);
+            return handle;
+        }
+
+        TestHandle await(long sessionId, long correlationId) throws Exception {
+            String key = key(sessionId, correlationId);
+            awaitTrue(() -> handles.containsKey(key), 2000, "dispatch " + key);
+            return handles.get(key);
+        }
+    }
+
+    private static UnaryTcpSessionAdapter.Limits limits(
+            int perConnectionRequests,
+            long perConnectionBytes,
+            int globalWork,
+            long globalBytes,
+            int requestDeadlineMillis) {
+        return new UnaryTcpSessionAdapter.Limits(
+                8,
+                perConnectionRequests,
+                perConnectionBytes,
+                globalWork,
+                globalBytes,
+                1024,
+                2000,
+                requestDeadlineMillis);
+    }
+
+    private static Binding binding(Socket socket) throws IOException {
+        DataInputStream input = new DataInputStream(socket.getInputStream());
+        return new Binding(input.readLong(), input.readLong());
+    }
+
+    private static void send(Socket socket, UnaryTransportFrame.Envelope envelope)
+            throws IOException {
+        UnaryTransportFrame.writeTcp(socket.getOutputStream(), envelope);
+        socket.getOutputStream().flush();
+    }
+
+    private static UnaryTransportFrame.Envelope request(
+            Binding binding, long correlationId, byte[] payload) {
+        return new UnaryTransportFrame.Envelope(
+                UnaryTransportFrame.Kind.REQUEST,
+                binding.sessionId(), binding.generation(), correlationId, payload);
+    }
+
+    private static UnaryTransportFrame.Envelope cancel(
+            Binding binding, long correlationId) {
+        return new UnaryTransportFrame.Envelope(
+                UnaryTransportFrame.Kind.CANCEL,
+                binding.sessionId(), binding.generation(), correlationId, new byte[0]);
+    }
+
+    private static UnaryTransportFrame.Envelope read(Socket socket) throws IOException {
+        return UnaryTransportFrame.readTcp(socket.getInputStream(), 1024);
+    }
+
+    private static void awaitTrue(
+            BooleanSupplier condition, long timeoutMillis, String what) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+        while (!condition.getAsBoolean()) {
+            if (System.nanoTime() >= deadline)
+                throw new AssertionError("timed out waiting for " + what);
+            Thread.sleep(2);
+        }
+    }
+
+    private static void echoAndReplayFence() throws Exception {
+        BindingAuthenticator auth = new BindingAuthenticator();
+        AtomicInteger dispatches = new AtomicInteger();
+        UnaryTcpSessionAdapter.Dispatcher echo = request -> {
+            dispatches.incrementAndGet();
+            TestHandle handle = new TestHandle();
+            handle.reply(request.payload());
+            return handle;
+        };
+
+        try (var adapter = new UnaryTcpSessionAdapter(
+                        limits(4, 4096, 8, 8192, 1000), auth, echo);
+             var server = new ServerSocket(0, 8, InetAddress.getLoopbackAddress());
+             var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> served = pool.submit(() -> {
+                try { adapter.serve(server.accept()); }
+                catch (IOException failure) { throw new AssertionError(failure); }
+            });
+
+            try (Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                client.setSoTimeout(1500);
+                Binding b = binding(client);
+                send(client, request(b, 1, new byte[] {1, 2, 3}));
+                var reply = read(client);
+                check(reply.kind() == UnaryTransportFrame.Kind.REPLY
+                                && reply.correlationId() == 1
+                                && Arrays.equals(reply.payload(), new byte[] {1, 2, 3}),
+                        "authenticated request must roundtrip through dispatcher");
+
+                send(client, request(b, 1, new byte[] {9}));
+                try {
+                    read(client);
+                    throw new AssertionError("duplicate request correlation did not close session");
+                } catch (IOException expected) { }
+            }
+            served.get(3, TimeUnit.SECONDS);
+            check(dispatches.get() == 1, "replay must not redispatch");
+            check(auth.calls.get() == 1, "session authenticates once");
+            check(adapter.activeConnections() == 0
+                            && adapter.activeGlobalWorkItems() == 0
+                            && adapter.activeGlobalPayloadBytes() == 0,
+                    "echo/replay session must reclaim every global credit");
+        }
+    }
+
+    private static void wrongBindingRejectedBeforePayloadRead() throws Exception {
+        BindingAuthenticator auth = new BindingAuthenticator();
+        AtomicInteger dispatches = new AtomicInteger();
+        UnaryTcpSessionAdapter.Dispatcher dispatcher = request -> {
+            dispatches.incrementAndGet();
+            return new TestHandle();
+        };
+
+        try (var adapter = new UnaryTcpSessionAdapter(
+                        limits(2, 2048, 4, 4096, 1000), auth, dispatcher);
+             var server = new ServerSocket(0, 8, InetAddress.getLoopbackAddress());
+             var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> served = pool.submit(() -> {
+                try { adapter.serve(server.accept()); }
+                catch (IOException failure) { throw new AssertionError(failure); }
+            });
+
+            try (Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                client.setSoTimeout(750);
+                Binding b = binding(client);
+                var forged = new UnaryTransportFrame.Envelope(
+                        UnaryTransportFrame.Kind.REQUEST,
+                        b.sessionId() + 1,
+                        b.generation(),
+                        1,
+                        new byte[] {1, 2, 3, 4, 5});
+                byte[] wire = UnaryTransportFrame.encodeTcp(forged);
+                client.getOutputStream().write(wire, 0, 4 + UnaryTransportFrame.ENVELOPE_BYTES);
+                client.getOutputStream().flush();
+
+                int terminal = client.getInputStream().read();
+                check(terminal == -1,
+                        "wrong session header must close before waiting for its omitted payload");
+            }
+            served.get(2, TimeUnit.SECONDS);
+            check(dispatches.get() == 0, "foreign session must never dispatch");
+            check(adapter.activeConnections() == 0 && adapter.activeGlobalWorkItems() == 0,
+                    "foreign session rejection must not leak credits");
+        }
+    }
+
+    private static void overloadCancelAndRecovery() throws Exception {
+        BindingAuthenticator auth = new BindingAuthenticator();
+        ManualDispatcher dispatcher = new ManualDispatcher();
+
+        try (var adapter = new UnaryTcpSessionAdapter(
+                        limits(1, 4, 2, 8, 1000), auth, dispatcher);
+             var server = new ServerSocket(0, 8, InetAddress.getLoopbackAddress());
+             var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> served = pool.submit(() -> {
+                try { adapter.serve(server.accept()); }
+                catch (IOException failure) { throw new AssertionError(failure); }
+            });
+
+            try (Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                client.setSoTimeout(1500);
+                Binding b = binding(client);
+
+                send(client, request(b, 1, new byte[] {1, 2, 3, 4}));
+                TestHandle first = dispatcher.await(b.sessionId(), 1);
+                check(adapter.activeGlobalWorkItems() == 1
+                                && adapter.activeGlobalPayloadBytes() == 4,
+                        "first pending request holds global payload credit");
+
+                send(client, request(b, 2, new byte[] {5}));
+                var overloaded = read(client);
+                check(overloaded.kind() == UnaryTransportFrame.Kind.ERROR
+                                && overloaded.correlationId() == 2
+                                && overloaded.payload().length == 0,
+                        "per-session saturation returns bounded empty ERROR");
+                check(dispatcher.dispatches.get() == 1,
+                        "overloaded request must be discarded without dispatch");
+
+                send(client, cancel(b, 1));
+                awaitTrue(first.cancelled::get, 1000, "request cancellation propagation");
+                awaitTrue(() -> adapter.activeGlobalWorkItems() == 0, 1000, "cancel credit release");
+
+                send(client, request(b, 3, new byte[] {9}));
+                TestHandle third = dispatcher.await(b.sessionId(), 3);
+                third.reply((byte) 42);
+                var recovered = read(client);
+                check(recovered.kind() == UnaryTransportFrame.Kind.REPLY
+                                && recovered.correlationId() == 3
+                                && Arrays.equals(recovered.payload(), new byte[] {42}),
+                        "credit release must allow later requests without ID reuse");
+            }
+
+            served.get(3, TimeUnit.SECONDS);
+            awaitTrue(() -> adapter.activeGlobalWorkItems() == 0
+                            && adapter.activeGlobalPayloadBytes() == 0,
+                    1000, "post-recovery credit release");
+        }
+    }
+
+    private static void deadlineCancelsDispatch() throws Exception {
+        BindingAuthenticator auth = new BindingAuthenticator();
+        ManualDispatcher dispatcher = new ManualDispatcher();
+
+        try (var adapter = new UnaryTcpSessionAdapter(
+                        limits(1, 8, 2, 16, 60), auth, dispatcher);
+             var server = new ServerSocket(0, 8, InetAddress.getLoopbackAddress());
+             var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> served = pool.submit(() -> {
+                try { adapter.serve(server.accept()); }
+                catch (IOException failure) { throw new AssertionError(failure); }
+            });
+
+            try (Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                client.setSoTimeout(1500);
+                Binding b = binding(client);
+                send(client, request(b, 1, new byte[0]));
+                TestHandle handle = dispatcher.await(b.sessionId(), 1);
+                var timeout = read(client);
+                check(timeout.kind() == UnaryTransportFrame.Kind.ERROR
+                                && timeout.correlationId() == 1
+                                && timeout.payload().length == 0,
+                        "deadline publishes one opaque ERROR");
+                awaitTrue(handle.cancelled::get, 1000, "deadline dispatch cancellation");
+                awaitTrue(() -> adapter.activeGlobalWorkItems() == 0, 1000, "deadline write credit release");
+            }
+            served.get(3, TimeUnit.SECONDS);
+        }
+    }
+
+    private static void globalBudgetAcrossConnections() throws Exception {
+        BindingAuthenticator auth = new BindingAuthenticator();
+        ManualDispatcher dispatcher = new ManualDispatcher();
+
+        try (var adapter = new UnaryTcpSessionAdapter(
+                        limits(2, 8, 1, 4, 1000), auth, dispatcher);
+             var server = new ServerSocket(0, 8, InetAddress.getLoopbackAddress());
+             var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+
+            Future<?> firstServer = pool.submit(() -> {
+                try { adapter.serve(server.accept()); }
+                catch (IOException failure) { throw new AssertionError(failure); }
+            });
+            Socket first = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort());
+            first.setSoTimeout(1500);
+            Binding one = binding(first);
+            send(first, request(one, 1, new byte[] {1, 2, 3, 4}));
+            TestHandle oneHandle = dispatcher.await(one.sessionId(), 1);
+
+            Future<?> secondServer = pool.submit(() -> {
+                try { adapter.serve(server.accept()); }
+                catch (IOException failure) { throw new AssertionError(failure); }
+            });
+            try (Socket second = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                second.setSoTimeout(1500);
+                Binding two = binding(second);
+                send(second, request(two, 1, new byte[] {8}));
+                var rejected = read(second);
+                check(rejected.kind() == UnaryTransportFrame.Kind.ERROR
+                                && rejected.correlationId() == 1,
+                        "global work saturation must reject second connection request");
+                check(dispatcher.dispatches.get() == 1,
+                        "global rejection must not reach dispatcher");
+
+                send(first, cancel(one, 1));
+                awaitTrue(oneHandle.cancelled::get, 1000, "first global request cancellation");
+                awaitTrue(() -> adapter.activeGlobalWorkItems() == 0, 1000, "global credit release");
+
+                send(second, request(two, 2, new byte[] {9}));
+                TestHandle twoHandle = dispatcher.await(two.sessionId(), 2);
+                twoHandle.reply((byte) 7);
+                var reply = read(second);
+                check(reply.kind() == UnaryTransportFrame.Kind.REPLY
+                                && reply.correlationId() == 2,
+                        "released global credit must admit another connection");
+            }
+
+            first.close();
+            firstServer.get(3, TimeUnit.SECONDS);
+            secondServer.get(3, TimeUnit.SECONDS);
+            awaitTrue(() -> adapter.activeConnections() == 0
+                            && adapter.activeGlobalWorkItems() == 0
+                            && adapter.activeGlobalPayloadBytes() == 0,
+                    1000, "cross-connection budget reclamation");
+        }
+    }
+
+    private static void authenticationFailureAndConnectionCapacity() throws Exception {
+        BindingAuthenticator failing = new BindingAuthenticator(true);
+        AtomicInteger dispatches = new AtomicInteger();
+        UnaryTcpSessionAdapter.Dispatcher dispatcher = request -> {
+            dispatches.incrementAndGet();
+            return new TestHandle();
+        };
+
+        try (var adapter = new UnaryTcpSessionAdapter(
+                        limits(1, 8, 2, 16, 1000), failing, dispatcher);
+             var server = new ServerSocket(0, 8, InetAddress.getLoopbackAddress());
+             var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> served = pool.submit(() -> {
+                try { adapter.serve(server.accept()); }
+                catch (IOException failure) { throw new AssertionError(failure); }
+            });
+            try (Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                client.setSoTimeout(1000);
+                check(client.getInputStream().read() == -1,
+                        "authentication failure must close before unary framing");
+            }
+            served.get(2, TimeUnit.SECONDS);
+            check(failing.calls.get() == 1 && dispatches.get() == 0,
+                    "failed authentication must never dispatch");
+            check(adapter.activeConnections() == 0, "failed authentication releases connection credit");
+        }
+
+        BindingAuthenticator blockingAuth = new BindingAuthenticator();
+        ManualDispatcher manual = new ManualDispatcher();
+        UnaryTcpSessionAdapter.Limits oneConnection = new UnaryTcpSessionAdapter.Limits(
+                1, 1, 8, 2, 16, 1024, 2000, 1000);
+        try (var adapter = new UnaryTcpSessionAdapter(oneConnection, blockingAuth, manual);
+             var server = new ServerSocket(0, 8, InetAddress.getLoopbackAddress());
+             var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> firstServer = pool.submit(() -> {
+                try { adapter.serve(server.accept()); }
+                catch (IOException failure) { throw new AssertionError(failure); }
+            });
+            Socket first = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort());
+            first.setSoTimeout(1000);
+            binding(first);
+            awaitTrue(() -> adapter.activeConnections() == 1, 1000, "first connection credit");
+
+            Future<?> secondServer = pool.submit(() -> {
+                try { adapter.serve(server.accept()); }
+                catch (IOException failure) { throw new AssertionError(failure); }
+            });
+            try (Socket second = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                second.setSoTimeout(1000);
+                check(second.getInputStream().read() == -1,
+                        "connection-capacity rejection must close before authentication");
+            }
+            secondServer.get(2, TimeUnit.SECONDS);
+            check(blockingAuth.calls.get() == 1,
+                    "capacity-rejected connection must not consume authentication work");
+
+            first.close();
+            firstServer.get(3, TimeUnit.SECONDS);
+            check(adapter.activeConnections() == 0, "connection capacity fully reclaimed");
+        }
+    }
+
+    private static void completionCancelRaces() throws Exception {
+        BindingAuthenticator auth = new BindingAuthenticator();
+        ManualDispatcher dispatcher = new ManualDispatcher();
+
+        try (var adapter = new UnaryTcpSessionAdapter(
+                        limits(1, 8, 2, 16, 1000), auth, dispatcher);
+             var server = new ServerSocket(0, 8, InetAddress.getLoopbackAddress());
+             var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> served = pool.submit(() -> {
+                try { adapter.serve(server.accept()); }
+                catch (IOException failure) { throw new AssertionError(failure); }
+            });
+
+            try (Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                client.setSoTimeout(25);
+                Binding b = binding(client);
+                for (long id = 1; id <= 250; id++) {
+                    send(client, request(b, id, new byte[] {1}));
+                    TestHandle handle = dispatcher.await(b.sessionId(), id);
+                    CountDownLatch go = new CountDownLatch(1);
+                    Future<?> complete = pool.submit(() -> {
+                        try { go.await(); }
+                        catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(e);
+                        }
+                        handle.reply((byte) 3);
+                    });
+                    long racedId = id;
+                    Future<?> cancel = pool.submit(() -> {
+                        try { go.await(); }
+                        catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(e);
+                        }
+                        try { send(client, UnaryTcpSessionAdapterCheck.cancel(b, racedId)); }
+                        catch (IOException e) { throw new AssertionError(e); }
+                    });
+                    go.countDown();
+                    complete.get(1, TimeUnit.SECONDS);
+                    cancel.get(1, TimeUnit.SECONDS);
+                    awaitTrue(() -> adapter.activeGlobalWorkItems() == 0,
+                            1000, "race terminal credit " + id);
+
+                    try {
+                        var terminal = read(client);
+                        check(terminal.kind() == UnaryTransportFrame.Kind.REPLY
+                                        && terminal.correlationId() == id,
+                                "race may publish only its matching successful reply");
+                    } catch (SocketTimeoutException cancelledWon) {
+                        check(handle.cancelled.get(),
+                                "absence of reply requires cancellation to have won");
+                    }
+                }
+            }
+
+            served.get(3, TimeUnit.SECONDS);
+            check(adapter.activeGlobalWorkItems() == 0
+                            && adapter.activeGlobalPayloadBytes() == 0,
+                    "250 terminal races must leave no global work");
+        }
+    }
+
+    private static void sessionCloseCancelsPending() throws Exception {
+        BindingAuthenticator auth = new BindingAuthenticator();
+        ManualDispatcher dispatcher = new ManualDispatcher();
+        try (var adapter = new UnaryTcpSessionAdapter(
+                        limits(2, 8, 4, 32, 1000), auth, dispatcher);
+             var server = new ServerSocket(0, 8, InetAddress.getLoopbackAddress());
+             var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> served = pool.submit(() -> {
+                try { adapter.serve(server.accept()); }
+                catch (IOException failure) { throw new AssertionError(failure); }
+            });
+            Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort());
+            Binding b = binding(client);
+            send(client, request(b, 1, new byte[] {1, 2}));
+            TestHandle handle = dispatcher.await(b.sessionId(), 1);
+            client.close();
+            served.get(3, TimeUnit.SECONDS);
+            awaitTrue(handle.cancelled::get, 1000, "session-close dispatch cancellation");
+            check(adapter.activeConnections() == 0
+                            && adapter.activeGlobalWorkItems() == 0
+                            && adapter.activeGlobalPayloadBytes() == 0,
+                    "session close reclaims request and connection credits");
+        }
+    }
+
+    public static void main(String[] unused) throws Exception {
+        echoAndReplayFence();
+        wrongBindingRejectedBeforePayloadRead();
+        overloadCancelAndRecovery();
+        deadlineCancelsDispatch();
+        globalBudgetAcrossConnections();
+        authenticationFailureAndConnectionCapacity();
+        completionCancelRaces();
+        sessionCloseCancelsPending();
+        System.out.println("PASS: authenticated unary TCP sessions, budgets, deadlines and 250 completion/cancel races");
+    }
+}
