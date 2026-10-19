@@ -260,29 +260,53 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
      */
     public static int reapFailedInitialSpawns() {
         requireBlockingHostSurface("reap failed initial source actor spawns");
+
+        // Cancellation may notify arbitrary host subscribers synchronously.
+        // Never invoke it under the process-wide quarantine monitor: an
+        // uncooperative callback could otherwise block ALL failed-spawn
+        // registrations and retirement attempts. The immutable snapshot
+        // allocates before any mutation to the ledger.
+        final java.util.List<FailedInitialSpawn> candidates;
         synchronized (failedSpawnLock) {
-            int retired = 0;
-            for (int i = failedInitialSpawns.size() - 1; i >= 0; --i) {
-                FailedInitialSpawn pending = failedInitialSpawns.get(i);
+            candidates = java.util.List.copyOf(failedInitialSpawns);
+        }
+
+        Throwable cancellationFailure = null;
+        for (FailedInitialSpawn pending : candidates) {
+            try {
                 if (pending.physical != null
                         && !pending.view.runtime().physicallyFinalizedForHotUpgrade(
                                 pending.physical)) {
-                    // Stop might originally have thrown before completing
-                    // its lifecycle transition. Retry a NONBLOCKING trusted
-                    // cancellation request here; never release the pin just
-                    // because cancellation was requested.
+                    // Retry revocation after a previously failed stop; a
+                    // cancellation request is never a retirement receipt.
                     pending.physical.cancel();
                 }
+            } catch (RuntimeException | Error failure) {
+                // One failing actor must not starve independent quarantines.
+                if (cancellationFailure == null) cancellationFailure = failure;
+                else if (failure != cancellationFailure)
+                    cancellationFailure.addSuppressed(failure);
+            }
+        }
+
+        int retired = 0;
+        synchronized (failedSpawnLock) {
+            for (int i = failedInitialSpawns.size() - 1; i >= 0; --i) {
+                FailedInitialSpawn pending = failedInitialSpawns.get(i);
                 if (pending.physical == null
                         || pending.view.runtime().physicallyFinalizedForHotUpgrade(
                                 pending.physical)) {
+                    // A failed generation pin debit leaves this exact record
+                    // in place for retry rather than certifying false unload.
                     pending.lease.close();
                     failedInitialSpawns.remove(i);
                     retired++;
                 }
             }
-            return retired;
         }
+        if (cancellationFailure instanceof RuntimeException failure) throw failure;
+        if (cancellationFailure instanceof Error failure) throw failure;
+        return retired;
     }
 
     private final Object routeLock = new Object();
