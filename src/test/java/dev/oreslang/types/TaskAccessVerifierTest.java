@@ -12,6 +12,39 @@ final class TaskAccessVerifierTest {
     private static final TaskAccessVerifier.Root UNKNOWN =
             new TaskAccessVerifier.Root("PROCESS", 32, 1, false);
 
+    private static final ThreadSafetyTraits.NominalProof CORE =
+            new ThreadSafetyTraits.NominalProof() {
+                @Override
+                public boolean has(
+                        Types.Named type,
+                        ThreadSafetyTraits.Trait trait) {
+                    return false;
+                }
+
+                @Override
+                public boolean trustedIntrinsic(Types.Named type) {
+                    return java.util.Set.of(
+                            "Option", "Result", "Channel",
+                            "IteratorResult", "OptionUnwrapError")
+                            .contains(type.name());
+                }
+            };
+
+    private static TaskAccessVerifier.Admission admit(
+            TaskAccessVerifier verifier,
+            List<TaskAccessVerifier.Claim> claims) {
+        return verifier.admitScopedTyped(
+                claims.stream()
+                        .map(claim -> new TaskAccessVerifier.TypedClaim(
+                                claim, Types.Primitive.INT))
+                        .toList(),
+                CORE);
+    }
+
+    private static void release(TaskAccessVerifier.Admission admission) {
+        admission.completion().releaseAfterPhysicalQuiescence();
+    }
+
     private static TaskAccessVerifier.Claim read(TaskAccessVerifier.Place place) {
         return new TaskAccessVerifier.Claim(place, TaskAccessVerifier.Mode.READ);
     }
@@ -22,51 +55,53 @@ final class TaskAccessVerifierTest {
     @Test void coexistingReadersAndExclusiveWriters() {
         var ledger = new TaskAccessVerifier();
         var place = TaskAccessVerifier.Place.whole(WORLD);
-        var a = ledger.admit(List.of(read(place)));
-        var b = ledger.admit(List.of(read(place)));
+        var a = admit(ledger, List.of(read(place)));
+        var b = admit(ledger, List.of(read(place)));
         assertEquals(2, ledger.activeChildren());
         assertFalse(ledger.parentMayAccess(write(place)));
         assertTrue(ledger.parentMayAccess(read(place)));
-        assertThrows(IllegalArgumentException.class, () -> ledger.admit(List.of(write(place))));
-        ledger.quiescent(a);
-        ledger.quiescent(b);
-        var writer = ledger.admit(List.of(write(place)));
+        assertThrows(IllegalArgumentException.class, () -> admit(ledger, List.of(write(place))));
+        release(a);
+        release(b);
+        var writer = admit(ledger, List.of(write(place)));
         assertFalse(ledger.parentMayAccess(read(place)));
-        ledger.quiescent(writer);
+        release(writer);
+        ledger.seal();
         ledger.finishScope();
     }
 
     @Test void verifiedSoaColumnsCanBeWrittenInParallel() {
         var ledger = new TaskAccessVerifier();
         var world = TaskAccessVerifier.Place.whole(WORLD);
-        var x = ledger.admit(List.of(write(world.field("positions", true))));
-        var y = ledger.admit(List.of(write(world.field("velocities", true))));
+        var x = admit(ledger, List.of(write(world.field("positions", true))));
+        var y = admit(ledger, List.of(write(world.field("velocities", true))));
         assertThrows(IllegalArgumentException.class,
-                () -> ledger.admit(List.of(write(world))));
+                () -> admit(ledger, List.of(write(world))));
         assertThrows(IllegalArgumentException.class,
-                () -> ledger.admit(List.of(read(world.field("positions", true)))));
-        ledger.quiescent(x);
-        ledger.quiescent(y);
+                () -> admit(ledger, List.of(read(world.field("positions", true)))));
+        release(x);
+        release(y);
+        ledger.seal();
         ledger.finishScope();
     }
 
     @Test void unknownFieldLayoutDoesNotClaimDisjointness() {
         var ledger = new TaskAccessVerifier();
         var world = TaskAccessVerifier.Place.whole(WORLD);
-        ledger.admit(List.of(write(world.field("positions", false))));
+        admit(ledger, List.of(write(world.field("positions", false))));
         assertThrows(IllegalArgumentException.class,
-                () -> ledger.admit(List.of(write(world.field("velocities", true)))));
+                () -> admit(ledger, List.of(write(world.field("velocities", true)))));
     }
 
     @Test void verifiedRangesAreHalfOpenAndChecked() {
         var ledger = new TaskAccessVerifier();
         var column = TaskAccessVerifier.Place.whole(WORLD).field("positions", true);
-        ledger.admit(List.of(write(column.range(0, 64, true))));
-        ledger.admit(List.of(write(column.range(64, 128, true))));
+        admit(ledger, List.of(write(column.range(0, 64, true))));
+        admit(ledger, List.of(write(column.range(64, 128, true))));
         assertThrows(IllegalArgumentException.class,
-                () -> ledger.admit(List.of(write(column.range(63, 65, true)))));
+                () -> admit(ledger, List.of(write(column.range(63, 65, true)))));
         assertThrows(IllegalArgumentException.class,
-                () -> ledger.admit(List.of(write(column.range(128, 130, false)))));
+                () -> admit(ledger, List.of(write(column.range(128, 130, false)))));
         assertThrows(IllegalArgumentException.class,
                 () -> column.range(-1, 50, true));
         assertThrows(IllegalArgumentException.class,
@@ -84,44 +119,45 @@ final class TaskAccessVerifierTest {
                 elementWriter.place(), byteWriter.place()));
         assertTrue(TaskAccessVerifier.conflicts(elementWriter, byteWriter));
         var ledger = new TaskAccessVerifier();
-        ledger.admit(List.of(elementWriter));
+        admit(ledger, List.of(elementWriter));
         assertThrows(IllegalArgumentException.class,
-                () -> ledger.admit(List.of(byteWriter)));
+                () -> admit(ledger, List.of(byteWriter)));
         assertThrows(NullPointerException.class, () ->
                 new TaskAccessVerifier.Range(0, 10, true, null));
 
         // Equal-unit nonoverlapping element ranges still parallelize.
         var other = write(root.range(32, 64, true));
         assertFalse(TaskAccessVerifier.conflicts(elementWriter, other));
-        assertNotNull(ledger.admit(List.of(other)));
+        assertNotNull(admit(ledger, List.of(other)));
     }
 
     @Test void parentCannotMoveOrMutateLiveBorrowedStorage() {
         var ledger = new TaskAccessVerifier();
         var root = TaskAccessVerifier.Place.whole(WORLD);
-        var ticket = ledger.admit(List.of(read(root)));
+        var ticket = admit(ledger, List.of(read(root)));
         assertFalse(ledger.parentMayAccess(write(root)));
         assertTrue(ledger.parentMayAccess(read(root)));
         assertThrows(IllegalStateException.class, ledger::finishScope);
-        ledger.requestCancel(ticket);
-        assertTrue(ledger.cancellationRequested(ticket));
+        ledger.requestCancel(ticket.ticket());
+        assertTrue(ledger.cancellationRequested(ticket.ticket()));
         assertFalse(ledger.parentMayAccess(write(root)), "cancel is not physical quiescence");
         assertThrows(IllegalStateException.class, ledger::finishScope);
-        ledger.quiescent(ticket);
+        release(ticket);
         assertTrue(ledger.parentMayAccess(write(root)));
+        ledger.seal();
         ledger.finishScope();
-        assertThrows(IllegalStateException.class, () -> ledger.admit(List.of()));
+        assertThrows(IllegalStateException.class, () -> admit(ledger, List.of()));
     }
 
     @Test void admissionFailureDoesNotReservePartialClaims() {
         var ledger = new TaskAccessVerifier();
         var root = TaskAccessVerifier.Place.whole(WORLD);
-        ledger.admit(List.of(write(root.field("positions", true))));
-        assertThrows(IllegalArgumentException.class, () -> ledger.admit(List.of(
+        admit(ledger, List.of(write(root.field("positions", true))));
+        assertThrows(IllegalArgumentException.class, () -> admit(ledger, List.of(
                 write(root.field("velocities", true)),
                 read(root.field("positions", true)))));
         assertEquals(1, ledger.activeChildren());
-        var second = ledger.admit(List.of(write(root.field("velocities", true))));
+        var second = admit(ledger, List.of(write(root.field("velocities", true))));
         assertNotNull(second);
         assertEquals(2, ledger.activeChildren());
     }
@@ -129,10 +165,10 @@ final class TaskAccessVerifierTest {
     @Test void siblingClaimsInsideSameTaskAlsoChecked() {
         var ledger = new TaskAccessVerifier();
         var root = TaskAccessVerifier.Place.whole(WORLD);
-        assertThrows(IllegalArgumentException.class, () -> ledger.admit(List.of(
+        assertThrows(IllegalArgumentException.class, () -> admit(ledger, List.of(
                 read(root), write(root.field("positions", true)))));
         assertEquals(0, ledger.activeChildren());
-        assertNotNull(ledger.admit(List.of(
+        assertNotNull(admit(ledger, List.of(
                 read(root.field("positions", true)), read(root.field("positions", true)))));
     }
 
@@ -140,56 +176,59 @@ final class TaskAccessVerifierTest {
         var ledger = new TaskAccessVerifier();
         var uncertain = TaskAccessVerifier.Place.whole(UNKNOWN);
         var known = TaskAccessVerifier.Place.whole(WORLD);
-        ledger.admit(List.of(write(uncertain)));
-        assertThrows(IllegalArgumentException.class, () -> ledger.admit(List.of(write(known))));
+        admit(ledger, List.of(write(uncertain)));
+        assertThrows(IllegalArgumentException.class, () -> admit(ledger, List.of(write(known))));
     }
 
     @Test void twoUniquelyOwnedAllocationsDoNotAlias() {
         var ledger = new TaskAccessVerifier();
-        ledger.admit(List.of(write(TaskAccessVerifier.Place.whole(WORLD))));
+        admit(ledger, List.of(write(TaskAccessVerifier.Place.whole(WORLD))));
         var distinct = TaskAccessVerifier.Place.whole(
                 new TaskAccessVerifier.Root("PROCESS", 33, 1, true));
-        assertNotNull(ledger.admit(List.of(write(distinct))));
+        assertNotNull(admit(ledger, List.of(write(distinct))));
     }
 
     @Test void crossDomainClaimsCannotSilentlyBecomeShared() {
         var ledger = new TaskAccessVerifier();
-        ledger.admit(List.of(write(TaskAccessVerifier.Place.whole(WORLD))));
+        admit(ledger, List.of(write(TaskAccessVerifier.Place.whole(WORLD))));
         var otherDomain = TaskAccessVerifier.Place.whole(
                 new TaskAccessVerifier.Root("ACTOR_PRIVATE", "actor-33:epoch-1", 33, 1, true));
         assertThrows(IllegalArgumentException.class,
-                () -> ledger.admit(List.of(write(otherDomain))));
+                () -> admit(ledger, List.of(write(otherDomain))));
     }
 
     @Test void staleGenerationAndBarrierCannotRerouteLiveLoans() {
         var ledger = new TaskAccessVerifier();
         var original = TaskAccessVerifier.Place.whole(WORLD);
-        var ticket = ledger.admit(List.of(read(original)));
+        var ticket = admit(ledger, List.of(read(original)));
         assertThrows(IllegalStateException.class,
                 () -> ledger.structuralBarrier(WORLD, 2));
-        assertThrows(IllegalStateException.class, () -> ledger.admit(List.of(
+        assertThrows(IllegalStateException.class, () -> admit(ledger, List.of(
                 read(original), read(TaskAccessVerifier.Place.whole(
                         new TaskAccessVerifier.Root("PROCESS", 31, 2, true))))));
         assertEquals(1, ledger.activeChildren());
-        ledger.quiescent(ticket);
+        release(ticket);
         ledger.structuralBarrier(WORLD, 2);
         assertThrows(IllegalStateException.class,
-                () -> ledger.admit(List.of(read(original))));
-        assertNotNull(ledger.admit(List.of(read(TaskAccessVerifier.Place.whole(
+                () -> admit(ledger, List.of(read(original))));
+        assertNotNull(admit(ledger, List.of(read(TaskAccessVerifier.Place.whole(
                 new TaskAccessVerifier.Root("PROCESS", 31, 2, true))))));
     }
 
-    @Test void staleAndForeignTicketsCannotReleaseLoans() {
+    @Test void physicalCompletionIsOneShotAndForeignCancellationCannotReleaseLoans() {
         var one = new TaskAccessVerifier();
         var two = new TaskAccessVerifier();
         var place = TaskAccessVerifier.Place.whole(WORLD);
-        var ticket = one.admit(List.of(write(place)));
-        assertThrows(IllegalArgumentException.class, () -> two.quiescent(ticket));
-        assertThrows(IllegalArgumentException.class, () -> two.requestCancel(ticket));
+        var admission = admit(one, List.of(write(place)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> two.requestCancel(admission.ticket()));
         assertFalse(one.parentMayAccess(read(place)));
-        one.quiescent(ticket);
-        assertThrows(IllegalArgumentException.class, () -> one.quiescent(ticket));
-        assertThrows(IllegalArgumentException.class, () -> one.requestCancel(ticket));
+
+        release(admission);
+        assertThrows(IllegalStateException.class, () -> release(admission));
+        assertThrows(IllegalArgumentException.class,
+                () -> one.requestCancel(admission.ticket()));
     }
 
     @Test void projectionPrefixIsNeverDisjoint() {
@@ -207,9 +246,9 @@ final class TaskAccessVerifierTest {
         var right = uncertainParent.field("y", true);
         assertTrue(TaskAccessVerifier.mayAlias(left, right));
         var ledger = new TaskAccessVerifier();
-        ledger.admit(List.of(write(left)));
+        admit(ledger, List.of(write(left)));
         assertThrows(IllegalArgumentException.class,
-                () -> ledger.admit(List.of(write(right))));
+                () -> admit(ledger, List.of(write(right))));
     }
 
     @Test void unprovenIntermediateRangeCannotCreateDisjointNestedLoans() {
@@ -226,15 +265,15 @@ final class TaskAccessVerifierTest {
         var channel = new Types.Named("Channel", List.of(Types.Primitive.INT));
         var syncRead = new TaskAccessVerifier.TypedClaim(read(unique), channel);
         assertThrows(IllegalArgumentException.class,
-                () -> ledger.admitTyped(List.of(syncRead), (name, trait) -> false));
+                () -> ledger.admitScopedTyped(List.of(syncRead), CORE));
         assertEquals(0, ledger.activeChildren());
         var sendWrite = new TaskAccessVerifier.TypedClaim(write(unique), channel);
-        var ticket = ledger.admitTyped(List.of(sendWrite), (name, trait) -> false);
+        var ticket = ledger.admitScopedTyped(List.of(sendWrite), CORE);
         assertEquals(1, ledger.activeChildren());
-        ledger.quiescent(ticket);
+        release(ticket);
         assertThrows(IllegalArgumentException.class,
-                () -> ledger.admitTyped(List.of(new TaskAccessVerifier.TypedClaim(
-                        read(unique), new Types.Generic("T"))), (name, trait) -> true));
+                () -> ledger.admitScopedTyped(List.of(new TaskAccessVerifier.TypedClaim(
+                        read(unique), new Types.Generic("T"))), CORE);
         assertEquals(0, ledger.activeChildren());
     }
 
@@ -242,7 +281,7 @@ final class TaskAccessVerifierTest {
         var ledger = new TaskAccessVerifier();
         var pos = TaskAccessVerifier.Place.whole(WORLD).field("position", true);
         var vel = TaskAccessVerifier.Place.whole(WORLD).field("velocity", true);
-        assertThrows(IllegalArgumentException.class, () -> ledger.admitTyped(List.of(
+        assertThrows(IllegalArgumentException.class, () -> ledger.admitScopedTyped(List.of(
                 new TaskAccessVerifier.TypedClaim(write(pos), Types.Primitive.INT),
                 new TaskAccessVerifier.TypedClaim(read(vel),
                         new Types.Named("OpaqueHostHandle", List.of()))),
@@ -255,12 +294,12 @@ final class TaskAccessVerifierTest {
         var process = TaskAccessVerifier.Place.whole(WORLD);
         var actor = TaskAccessVerifier.Place.whole(
                 new TaskAccessVerifier.Root("ACTOR_PRIVATE", "actor-50:epoch-1", 50, 1, true));
-        var first = verifier.admit(List.of(read(process)));
+        var first = admit(verifier, List.of(read(process)));
         assertThrows(IllegalArgumentException.class,
-                () -> verifier.admit(List.of(read(actor))));
-        verifier.quiescent(first);
+                () -> admit(verifier, List.of(read(actor))));
+        release(first);
         assertThrows(IllegalArgumentException.class,
-                () -> verifier.admit(List.of(read(actor))));
+                () -> admit(verifier, List.of(read(actor))));
         assertFalse(verifier.parentMayAccess(read(actor)));
         assertEquals(0, verifier.activeChildren());
     }
@@ -280,10 +319,10 @@ final class TaskAccessVerifierTest {
         var actor = TaskAccessVerifier.Place.whole(
                 new TaskAccessVerifier.Root("ACTOR_PRIVATE", "actor-50:epoch-1", 50, 1, true));
         assertThrows(IllegalArgumentException.class,
-                () -> verifier.admit(List.of(read(process), read(actor))));
+                () -> admit(verifier, List.of(read(process), read(actor))));
         assertEquals(0, verifier.activeChildren());
         // Failed admission must not bind a partially selected domain.
-        assertNotNull(verifier.admit(List.of(read(actor))));
+        assertNotNull(admit(verifier, List.of(read(actor))));
         assertFalse(verifier.parentMayAccess(read(process)));
     }
 
@@ -293,16 +332,16 @@ final class TaskAccessVerifierTest {
         var actorB = TaskAccessVerifier.Place.whole(
                 new TaskAccessVerifier.Root("ACTOR_PRIVATE", "actor-B:epoch-1", 2, 1, true));
         var ledger = new TaskAccessVerifier();
-        var first = ledger.admit(List.of(read(actorA)));
+        var first = admit(ledger, List.of(read(actorA)));
         assertTrue(TaskAccessVerifier.mayAlias(actorA, actorB));
         assertTrue(TaskAccessVerifier.conflicts(read(actorA), read(actorB)),
                 "READ/READ does not authorize crossing actor heaps");
         assertThrows(IllegalArgumentException.class,
-                () -> ledger.admit(List.of(read(actorB))));
+                () -> admit(ledger, List.of(read(actorB))));
         assertFalse(ledger.parentMayAccess(read(actorB)));
-        ledger.quiescent(first);
+        release(first);
         assertThrows(IllegalArgumentException.class,
-                () -> ledger.admit(List.of(read(actorB))));
+                () -> admit(ledger, List.of(read(actorB))));
     }
 
     @Test void privateActorIdentityIncludesEpochAndCannotBeReused() {
@@ -311,10 +350,10 @@ final class TaskAccessVerifierTest {
         var actorANew = TaskAccessVerifier.Place.whole(
                 new TaskAccessVerifier.Root("ACTOR_PRIVATE", "actor-A:epoch-2", 1, 1, true));
         var ledger = new TaskAccessVerifier();
-        var ticket = ledger.admit(List.of(read(actorAOld)));
-        ledger.quiescent(ticket);
+        var ticket = admit(ledger, List.of(read(actorAOld)));
+        release(ticket);
         assertThrows(IllegalArgumentException.class,
-                () -> ledger.admit(List.of(read(actorANew))));
+                () -> admit(ledger, List.of(read(actorANew))));
         assertThrows(IllegalArgumentException.class,
                 () -> ledger.structuralBarrier(actorANew.root(), 2));
     }
@@ -325,8 +364,8 @@ final class TaskAccessVerifierTest {
         var b = TaskAccessVerifier.Place.whole(
                 new TaskAccessVerifier.Root("ACTOR_PRIVATE", "actor-A:epoch-1", 2, 1, true));
         var ledger = new TaskAccessVerifier();
-        assertNotNull(ledger.admit(List.of(read(a))));
-        assertNotNull(ledger.admit(List.of(read(b))));
+        assertNotNull(admit(ledger, List.of(read(a))));
+        assertNotNull(admit(ledger, List.of(read(b))));
         assertEquals(2, ledger.activeChildren());
     }
 
@@ -345,8 +384,8 @@ final class TaskAccessVerifierTest {
         var verifier = new TaskAccessVerifier();
         var before = TaskAccessVerifier.Place.whole(WORLD);
         assertFalse(verifier.parentMayAccess(read(before)), "unbound scope is not a permit");
-        var ticket = verifier.admit(List.of(read(before)));
-        verifier.quiescent(ticket);
+        var ticket = admit(verifier, List.of(read(before)));
+        release(ticket);
         verifier.structuralBarrier(WORLD, 2);
         assertFalse(verifier.parentMayAccess(read(before)));
         var after = TaskAccessVerifier.Place.whole(
@@ -359,15 +398,15 @@ final class TaskAccessVerifierTest {
     @Test void structuralBarrierRejectsAllPotentiallyAliasingRoots() {
         var verifier = new TaskAccessVerifier();
         var owner = TaskAccessVerifier.Place.whole(WORLD);
-        var ticket = verifier.admit(List.of(read(owner)));
-        verifier.quiescent(ticket);
+        var ticket = admit(verifier, List.of(read(owner)));
+        release(ticket);
         // A different numeric ID does not establish nonaliasing without
         // independently verified unique-allocation provenance.
         var uncertain = TaskAccessVerifier.Place.whole(UNKNOWN);
-        var unknownTicket = verifier.admit(List.of(read(uncertain)));
+        var unknownTicket = admit(verifier, List.of(read(uncertain)));
         assertThrows(IllegalStateException.class,
                 () -> verifier.structuralBarrier(WORLD, 2));
-        verifier.quiescent(unknownTicket);
+        release(unknownTicket);
         verifier.structuralBarrier(WORLD, 2);
         assertFalse(verifier.parentMayAccess(read(owner)));
     }
@@ -375,15 +414,16 @@ final class TaskAccessVerifierTest {
     @Test void closingScopeRevokesAllParentAuthorityAndRetiresProvenance() {
         var verifier = new TaskAccessVerifier();
         var place = TaskAccessVerifier.Place.whole(WORLD);
-        var ticket = verifier.admit(List.of(read(place)));
-        verifier.quiescent(ticket);
+        var ticket = admit(verifier, List.of(read(place)));
+        release(ticket);
         assertTrue(verifier.parentMayAccess(write(place)));
+        verifier.seal();
         verifier.finishScope();
         assertFalse(verifier.parentMayAccess(read(place)));
         assertFalse(verifier.parentMayAccess(write(place)));
         assertEquals(0, verifier.activeChildren());
         assertThrows(IllegalStateException.class,
-                () -> verifier.admit(List.of(read(place))));
+                () -> admit(verifier, List.of(read(place))));
         assertThrows(IllegalStateException.class,
                 () -> verifier.structuralBarrier(WORLD, 2));
     }
@@ -394,9 +434,9 @@ final class TaskAccessVerifierTest {
                 1025, read(TaskAccessVerifier.Place.whole(WORLD)));
         assertThrows(IllegalStateException.class, () -> verifier.admit(requested));
         assertEquals(0, verifier.activeChildren());
-        var a = verifier.admit(List.of(read(TaskAccessVerifier.Place.whole(WORLD))));
+        var a = admit(verifier, List.of(read(TaskAccessVerifier.Place.whole(WORLD))));
         assertNotNull(a);
-        verifier.quiescent(a);
+        release(a);
     }
 
     @Test void racingWritersNeverAcquireTwoLiveLoans() throws Exception {
@@ -420,7 +460,7 @@ final class TaskAccessVerifierTest {
                         }
                         TaskAccessVerifier.Ticket ticket;
                         try {
-                            ticket = verifier.admit(List.of(write(place)));
+                            ticket = admit(verifier, List.of(write(place)));
                             winners.incrementAndGet();
                         } catch (IllegalArgumentException rejected) {
                             losers.incrementAndGet();
@@ -431,7 +471,7 @@ final class TaskAccessVerifierTest {
                         if (!release.await(10, java.util.concurrent.TimeUnit.SECONDS)) {
                             throw new AssertionError("release gate timed out");
                         }
-                        verifier.quiescent(ticket);
+                        release(ticket);
                     } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
                         throw new AssertionError(interrupted);
@@ -512,12 +552,21 @@ final class TaskAccessVerifierTest {
         assertTrue(TaskAccessVerifier.mayAlias(actor, untrusted));
         assertTrue(TaskAccessVerifier.conflicts(read(actor), read(untrusted)));
         var ledger = new TaskAccessVerifier();
-        var a = ledger.admit(List.of(read(actor)));
+        var a = admit(ledger, List.of(read(actor)));
         assertThrows(IllegalArgumentException.class, () ->
-                ledger.admit(List.of(read(untrusted))));
-        ledger.quiescent(a);
+                admit(ledger, List.of(read(untrusted))));
+        release(a);
         assertThrows(IllegalArgumentException.class, () ->
-                ledger.admit(List.of(read(process))));
+                admit(ledger, List.of(read(process))));
+    }
+
+    @Test void arbitraryTrustDomainAndUnsealedFinishFailClosed() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new TaskAccessVerifier.Root("GUEST", "tenant", 1, 1, true));
+        var verifier = new TaskAccessVerifier();
+        assertThrows(IllegalStateException.class, verifier::finishScope);
+        verifier.seal();
+        verifier.finishScope();
     }
 
     @Test void illegalInputsFailClosed() {
@@ -530,7 +579,7 @@ final class TaskAccessVerifierTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new TaskAccessVerifier.Field("", true));
         assertThrows(NullPointerException.class, () ->
-                new TaskAccessVerifier().admit(java.util.Arrays.asList(
+                admit(new TaskAccessVerifier(), java.util.Arrays.asList(
                         (TaskAccessVerifier.Claim) null)));
     }
 }
