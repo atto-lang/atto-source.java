@@ -6439,14 +6439,19 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void drainMailboxReservations() {
-            synchronized (lifecycleLock) {
-                while (continuationMailbox.drainOne(continuation -> {
-                    releaseMailboxSlot(true);
-                    continuation.close();
-                })) {
-                    // Reclaim admitted control mail even after termination closes the channel.
-                }
-                sourceHandoffRequested = false;
+            // Draining a Channel may settle runtime Futures, run release hooks
+            // and notify producer callbacks. None of those operations may run
+            // under lifecycleLock: a callback can re-enter termination or ask
+            // another carrier to acquire the actor's lifecycle monitor.
+            if (Thread.holdsLock(lifecycleLock)) {
+                throw new IllegalStateException(
+                        "actor mailbox drain must not hold lifecycleLock");
+            }
+            while (continuationMailbox.drainOne(continuation -> {
+                releaseMailboxSlot(true);
+                continuation.close();
+            })) {
+                // Reclaim admitted control mail even after termination closes the channel.
             }
 
             while (mailbox.drainOne(envelope -> {
@@ -6455,8 +6460,11 @@ public final class ActorRuntime implements AutoCloseable {
             })) {
                 // Drain all committed user-message envelopes, including after close.
             }
-            sourceReceiveSuspended = false;
-            activeMail = null;
+            synchronized (lifecycleLock) {
+                sourceHandoffRequested = false;
+                sourceReceiveSuspended = false;
+                activeMail = null;
+            }
         }
 
         private void fail(Throwable failure) {
