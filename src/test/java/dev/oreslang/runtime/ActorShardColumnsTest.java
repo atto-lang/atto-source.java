@@ -135,6 +135,9 @@ final class ActorShardColumnsTest {
                             double[] copy = shard.snapshotColumn(1);
                             copy[2] = 1000;
                             assertEquals(7, shard.read(2, 1));
+                            shard.close();
+                            shard.close(); // no duplicate memory-budget release
+                            assertThrows(IllegalStateException.class, () -> shard.read(2, 1));
                         } catch (Throwable problem) {
                             error.set(problem);
                         } finally {
