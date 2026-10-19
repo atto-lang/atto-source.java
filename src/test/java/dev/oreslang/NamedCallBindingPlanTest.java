@@ -122,6 +122,48 @@ final class NamedCallBindingPlanTest {
     }
 
     @Test
+    void checkedProofPermutesOnlyAlreadyEvaluatedValues() {
+        Ast.NamedCallProof proof = new Ast.NamedCallProof(
+                List.of(1, 0),
+                List.of(1, 0),
+                List.of("first", "second"),
+                -1,
+                "function",
+                "join");
+
+        assertEquals(
+                List.of("source-for-first", "source-for-second"),
+                proof.valuesInFormalOrder(
+                        List.of("source-for-second", "source-for-first")));
+        assertDoesNotThrow(() -> proof.requireFormalNames(
+                List.of(p("first", INT), p("second", INT)),
+                "join"));
+
+        assertThrows(IllegalStateException.class, () -> proof.requireFormalNames(
+                List.of(p("renamed", INT), p("second", INT)),
+                "join"));
+    }
+
+    @Test
+    void checkedProofRejectsForgedOrNonInverseMappings() {
+        assertThrows(IllegalArgumentException.class, () -> new Ast.NamedCallProof(
+                List.of(0, 0),
+                List.of(0, 1),
+                List.of("first", "second"),
+                -1,
+                "function",
+                "join"));
+
+        assertThrows(IllegalArgumentException.class, () -> new Ast.NamedCallProof(
+                List.of(1, 0),
+                List.of(0, 1),
+                List.of("first", "second"),
+                -1,
+                "function",
+                "join"));
+    }
+
+    @Test
     void planVerificationRejectsForgedPermutation() {
         List<Ast.Param> formals = List.of(p("first", INT), p("second", INT));
         List<Ast.CallArgument> items = List.of(
