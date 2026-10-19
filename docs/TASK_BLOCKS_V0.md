@@ -1,6 +1,6 @@
 # Oreslang lightweight Tasks: v0 draft frontend contract
 
-**Status (2026-10-19):** Parser/AST shape added in this branch. **Runtime execution is deliberately disabled** until capture ownership, task scopes, cancellation, cleanup and scheduling are implemented. These samples specify desired semantics, not verified executable behavior.
+**Status (2026-10-19):** Canonical `task {}` syntax is parsed. Draft PR #1484 adds only the immediate `await task { return <scalar>; }` path in a trusted public root `main`; the full-source Maven/JUnit/GraalVM execution gates have **not** been verified. All general, detached, nested and actor Tasks remain rejected. Most examples below specify intended future semantics, not executable behavior.
 
 `task { ... }` is canonical. Legacy `nb { ... }` is parsed to the identical `TaskExpr`; nonblocking `nb readch` / `nb select` retain their separate meaning. Only the restricted immediate-await scalar form in trusted root `main` has an implementation draft; the general forms below remain unexecuted until their gates pass.
 
