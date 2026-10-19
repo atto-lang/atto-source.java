@@ -64,6 +64,8 @@ final class ActorUpgradePreflightV1 implements AutoCloseable {
      */
     synchronized boolean quiescentSnapshot() {
         requireOpen();
+        if (!generation.ownsPrepared(staged))
+            throw new IllegalStateException("actor generation preflight authority lost");
         return generation.livePins() == 0 && mailboxTicket.drained();
     }
 
