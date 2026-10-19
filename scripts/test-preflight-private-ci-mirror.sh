@@ -67,7 +67,26 @@ case "$endpoint" in
     esac
     ;;
   "repos/ores-truffle-oreslang/oreslang-source.java/branches/main/protection")
-    printf 'true\t1\ttrue\ttrue\ttrue\tfalse\tfalse\t0\t0\t0\n'
+    jq=""
+    while [[ "$#" -gt 0 ]]; do
+      if [[ "$1" == "--jq" ]]; then jq="$2"; shift 2; else shift; fi
+    done
+    if [[ -n "$jq" ]]; then
+      printf 'true\t1\ttrue\ttrue\ttrue\tfalse\tfalse\t0\t0\t0\n'
+    elif [[ "${SYNTH_BRANCH_PROTECTION_AVAILABLE:-false}" == "true" ]]; then
+      printf '{}\n'
+    else
+      printf '%s\n' "${SYNTH_BRANCH_PROTECTION_ERROR:-HTTP 403: Upgrade to GitHub Pro or make this repository public to enable this feature}" >&2
+      exit 1
+    fi
+    ;;
+  "repos/ores-truffle-oreslang/oreslang-source.java/rulesets")
+    if [[ "${SYNTH_RULESETS_AVAILABLE:-false}" == "true" ]]; then
+      printf '[]\n'
+    else
+      printf '%s\n' "${SYNTH_RULESETS_ERROR:-HTTP 403: Upgrade to GitHub Pro or make this repository public to enable this feature}" >&2
+      exit 1
+    fi
     ;;
   "repos/ores-truffle-oreslang/oreslang-source.java/issues/comments/101")
     printf '%s\n' \
@@ -134,8 +153,24 @@ assert_exit 0 run_preflight SYNTH_PROTECTED=true \
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree"
 
-# Correct, distinct, unedited attestations pass.
+# Correct, distinct, unedited attestations pass only when GitHub explicitly
+# reports both protection mechanisms as unavailable on the current plan.
 assert_exit 0 run_preflight SYNTH_PROTECTED=false \
+  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" 101 102
+
+# Merely leaving protection disabled must never activate the fallback when
+# either classic protection or rulesets is actually available.
+assert_exit 1 run_preflight SYNTH_PROTECTED=false SYNTH_BRANCH_PROTECTION_AVAILABLE=true \
+  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" 101 102
+assert_exit 1 run_preflight SYNTH_PROTECTED=false SYNTH_RULESETS_AVAILABLE=true \
+  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" 101 102
+
+# Opaque permission/integration failures are not proof of plan unavailability.
+assert_exit 1 run_preflight SYNTH_PROTECTED=false \
+  SYNTH_BRANCH_PROTECTION_ERROR="HTTP 403: Resource not accessible by integration" \
+  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" 101 102
+assert_exit 1 run_preflight SYNTH_PROTECTED=false \
+  SYNTH_RULESETS_ERROR="HTTP 403: Resource not accessible by integration" \
   bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" 101 102
 
 # Reusing one comment cannot satisfy two independent approvals.
