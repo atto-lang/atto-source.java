@@ -46,6 +46,7 @@ public final class IpcReceiptCorrelationSelfTest {
         // A peer-authenticated receipt cannot assert uncertainty. That is
         // exclusively a trusted local transport-liveness determination.
         denies(() -> book.acceptVerified(first, IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
+        denies(() -> book.acceptVerified(first, IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE));
         check(book.counters().equals(new IpcReceiptCorrelation.Counters(1, 1)));
         book.acceptVerified(first, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
         denies(() -> book.acceptVerified(first, IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
@@ -123,6 +124,23 @@ public final class IpcReceiptCorrelationSelfTest {
         check(racing.retireTransportLost("session").size() == 1);
         check(racing.invariant());
 
+        // A trusted local dispatch failure cannot become a peer-authenticated
+        // rejection and is terminal only before REMOTE_ACCEPTED.
+        var local = new IpcReceiptCorrelation(1);
+        var localMessage = env(1, "session");
+        local.admit(localMessage);
+        denies(() -> local.acceptVerified(localMessage,
+                IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE));
+        check(local.counters().equals(new IpcReceiptCorrelation.Counters(1, 1)));
+        local.rejectBeforeRemote(localMessage);
+        check(local.counters().equals(new IpcReceiptCorrelation.Counters(0, 0)));
+        denies(() -> local.rejectBeforeRemote(localMessage));
+        var postAck = new IpcReceiptCorrelation(1);
+        postAck.admit(localMessage);
+        postAck.acceptVerified(localMessage, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+        denies(() -> postAck.rejectBeforeRemote(localMessage));
+        check(postAck.counters().equals(new IpcReceiptCorrelation.Counters(1, 0)));
+
         Random rng = new Random(20261018);
         for (int trial = 0; trial < 2048; trial++) {
             var ledger = new IpcReceiptCorrelation(3);
@@ -132,7 +150,9 @@ public final class IpcReceiptCorrelationSelfTest {
                     ledger.admit(msg);
                     int choice = rng.nextInt(4);
                     if (choice == 0) {
-                        ledger.acceptVerified(msg, IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
+                        denies(() -> ledger.acceptVerified(
+                                msg, IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE));
+                        ledger.rejectBeforeRemote(msg);
                     } else if (choice == 1) {
                         // Trust-domain distinction: only a *local*
                         // disconnected transport can report uncertainty.
