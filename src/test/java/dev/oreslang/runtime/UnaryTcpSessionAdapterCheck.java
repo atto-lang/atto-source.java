@@ -92,6 +92,10 @@ public final class UnaryTcpSessionAdapterCheck {
         }
     }
 
+    private static String key(long sessionId, long correlationId) {
+        return sessionId + ":" + correlationId;
+    }
+
     private static UnaryTcpSessionAdapter.Limits limits(
             int perConnectionRequests,
             long perConnectionBytes,
