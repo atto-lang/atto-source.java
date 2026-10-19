@@ -14,6 +14,44 @@ import static org.junit.jupiter.api.Assertions.*;
 final class LogicalActorProxyMailboxV1Test {
 
     @Test
+    void physicalReceiptRequiresOriginalOutstandingEnvelopeAndEpoch() {
+        try (var mailbox = new LogicalActorProxyMailboxV1(2, 16, 32);
+             var foreign = new LogicalActorProxyMailboxV1(2, 16, 32)) {
+            var admitted = mailbox.admit(bytes("one"));
+            var foreignEnvelope = foreign.admit(bytes("one"));
+            var before = mailbox.snapshot();
+            assertThrows(SecurityException.class,
+                    () -> mailbox.requireOutstandingEnvelope(admitted, 1L),
+                    "queued but not physically dispatched is not a completion receipt");
+            assertEquals(before, mailbox.snapshot());
+
+            var dispatched = mailbox.pollDispatch();
+            assertSame(admitted, dispatched);
+            mailbox.requireOutstandingEnvelope(dispatched, 1L);
+            var copied = new LogicalActorProxyMailboxV1.Envelope(
+                    dispatched.messageSequence(), dispatched.payload());
+            assertThrows(SecurityException.class,
+                    () -> mailbox.requireOutstandingEnvelope(copied, 1L));
+            assertThrows(SecurityException.class,
+                    () -> mailbox.requireOutstandingEnvelope(foreignEnvelope, 1L));
+            assertThrows(SecurityException.class,
+                    () -> mailbox.requireOutstandingEnvelope(dispatched, 2L));
+
+            // A legitimate drain may settle old mail during dispatch freeze.
+            var ticket = mailbox.freezeDispatchForUpgrade();
+            mailbox.requireOutstandingEnvelope(dispatched, 1L);
+            mailbox.complete(dispatched.messageSequence());
+            assertThrows(SecurityException.class,
+                    () -> mailbox.requireOutstandingEnvelope(dispatched, 1L));
+            assertTrue(ticket.drained());
+            ticket.commit();
+            assertThrows(SecurityException.class,
+                    () -> mailbox.requireOutstandingEnvelope(dispatched, 2L));
+            assertEquals(0, mailbox.snapshot().retainedMessages());
+        }
+    }
+
+    @Test
     void freezeStopsDispatchButKeepsBoundedAdmissionOpenUntilCommit() {
         try (var mailbox = new LogicalActorProxyMailboxV1(
                 8, 1024, 4096)) {
