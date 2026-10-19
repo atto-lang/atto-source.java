@@ -40,6 +40,9 @@ public final class ThreadSafetyTraits {
 
     // Bound recursive compiler queries on attacker-controlled nested type input.
     private static final int MAX_TYPE_DEPTH = 256;
+    // Depth limits Java stack usage; this separate budget caps very wide types
+    // and repeated DAG traversals. Restored from the canonical #1439 proof engine.
+    private static final int MAX_PROOF_STEPS = 100_000;
     private static final Set<String> UNPROVEN_CAPABILITIES = Set.of(
             "Mutex", "MutexGuard", "SharedMutex", "Future",
             "ActorRef", "ActorMail", "ActorOutput", "ActorOutputStream",
@@ -80,7 +83,9 @@ public final class ThreadSafetyTraits {
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(trait, "trait");
         Objects.requireNonNull(nominalProof, "nominalProof");
-        return has(type, trait, nominalProof, Collections.newSetFromMap(new IdentityHashMap<>()), 0);
+        return has(type, trait, nominalProof,
+                Collections.newSetFromMap(new IdentityHashMap<>()),
+                new IdentityHashMap<>(), new int[] {MAX_PROOF_STEPS}, 0);
     }
 
     /**
@@ -91,15 +96,18 @@ public final class ThreadSafetyTraits {
     public static boolean isOwnedSend(Type type, NominalProof nominalProof) {
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(nominalProof, "nominalProof");
-        return !hasEmbeddedBorrow(type) && has(type, Trait.SEND, nominalProof);
+        return !hasDetachedOwnershipHazard(type) && has(type, Trait.SEND, nominalProof);
     }
 
     /**
      * Iterative preflight avoids Java-stack overflow on adversarial nested types,
-     * and bounds the number of visited nodes. All unrecognized/cyclic type
-     * shapes still fail the normal Send proof.
+     * and bounds the number of visited nodes. Detached Tasks require more than
+     * a structural Send trait: borrows and readonly record capabilities can both
+     * denote aliases whose backing storage remains live in another execution
+     * context. Until the ownership checker carries a compiler-minted frozen/
+     * exclusive-backing witness, both forms fail closed here.
      */
-    private static boolean hasEmbeddedBorrow(Type root) {
+    private static boolean hasDetachedOwnershipHazard(Type root) {
         record Pending(Type type, int depth) { }
         java.util.ArrayDeque<Pending> pending = new java.util.ArrayDeque<>();
         Set<Type> visited = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -112,6 +120,11 @@ public final class ThreadSafetyTraits {
                     || ++nodes > 4096) return true;
             if (!visited.add(type)) continue;
             if (type instanceof Borrow) return true;
+            // TypeChecker.overlayReadonlyCapabilities can turn writable storage
+            // into a readonly view without proving the backing allocation frozen
+            // or uniquely owned. Moving that view to a detached Task could race
+            // an alias left behind, so provenance must be proved separately.
+            if (type instanceof Record record && record.readOnly()) return true;
             int next = current.depth() + 1;
             if (type instanceof Named named) {
                 for (Type arg : named.arguments()) pending.push(new Pending(arg, next));
@@ -137,104 +150,108 @@ public final class ThreadSafetyTraits {
         return false;
     }
 
-    private static boolean has(Type type, Trait trait, NominalProof nominalProof, Set<Type> visiting, int depth) {
-        if (depth > MAX_TYPE_DEPTH) return false;
-        // Never infer thread safety from cycles, unresolved types or missing
-        // generic bounds. Genuine recursive nominal definitions need a separate
-        // fixed-point proof over their field graph.
+    private static boolean has(
+            Type type, Trait trait, NominalProof nominalProof, Set<Type> visiting,
+            IdentityHashMap<Type, Boolean[]> proven, int[] steps, int depth) {
+        if (type == null || depth > MAX_TYPE_DEPTH || --steps[0] < 0) return false;
+        // Active-cycle detection must precede memoization; a cached proof may
+        // never turn a recursive cycle into a positive result.
         if (!visiting.add(type)) return false;
         try {
-            if (type == Unknown.INSTANCE || type instanceof Generic
-                    || type instanceof Types.Dyn
-                    || type instanceof SelfType || type instanceof ClassNamespace
-                    || type instanceof Function || type instanceof Types.Not) return false;
-            if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
-            if (type instanceof StringLiteral || type instanceof BoolLiteral) return true;
-
-            if (type instanceof Borrow borrow) {
-                // &T: Send iff T: Sync; &mut T: Send iff T: Send.
-                // Both forms: Sync iff T: Sync (shared access does not grant
-                // mutable access through a borrowed mutable reference).
-                Trait required = trait == Trait.SYNC || !borrow.mutable()
-                        ? Trait.SYNC : Trait.SEND;
-                return has(borrow.target(), required, nominalProof, visiting, depth + 1);
+            Boolean[] cached = proven.get(type);
+            if (cached != null && cached[trait.ordinal()] != null) {
+                return cached[trait.ordinal()];
             }
-            if (type instanceof ListType list) {
-                // Array/List/Vector/Slice expose mutable storage. Moving the
-                // owning container is Send when its elements are Send, but
-                // sharing &List<T> does not provide a Sync proof merely because
-                // T is Sync. A future immutable buffer gets its own type.
-                return trait == Trait.SEND
-                        && has(list.element(), Trait.SEND, nominalProof, visiting, depth + 1);
-            }
-            if (type instanceof Tuple tuple) {
-                // FixedArray/FixedList are mutable aggregate storage. The
-                // ordinary Tuple is immutable under shared access.
-                if (trait == Trait.SYNC && tuple.kind() != Types.TupleKind.TUPLE) return false;
-                for (Type member : tuple.elements()) {
-                    if (!has(member, trait, nominalProof, visiting, depth + 1)) return false;
-                }
-                return true;
-            }
-            if (type instanceof Record record) {
-                // Record.readOnly is a *view capability*, not frozen storage.
-                // Other aliases can still write the same allocation. Until
-                // the compiler proves exclusive freeze/published immutability,
-                // a readonly record is Send but never automatically Sync.
-                if (trait == Trait.SYNC) return false;
-                for (Type member : record.members().values()) {
-                    if (!has(member, trait, nominalProof, visiting, depth + 1)) return false;
-                }
-                return true;
-            }
-            if (type instanceof Union union) {
-                for (Type member : union.options()) {
-                    if (!has(member, trait, nominalProof, visiting, depth + 1)) return false;
-                }
-                return true;
-            }
-            if (!(type instanceof Named named)) return false;
-            String name = named.name();
-            if (name.equals("OptionUnwrapError")) {
-                return nominalProof.trustedIntrinsic(named) && named.arguments().isEmpty();
-            }
-            if (name.equals("Option") || name.equals("IteratorResult")) {
-                return nominalProof.trustedIntrinsic(named) && named.arguments().size() == 1
-                        && has(named.arguments().getFirst(), trait, nominalProof, visiting, depth + 1);
-            }
-            if (name.equals("Result")) {
-                return nominalProof.trustedIntrinsic(named) && named.arguments().size() == 2
-                        && has(named.arguments().get(0), trait, nominalProof, visiting, depth + 1)
-                        && has(named.arguments().get(1), trait, nominalProof, visiting, depth + 1);
-            }
-            // Oreslang's Channel is an owned synchronized transport. The
-            // payload must be Send to cross its worker boundary. Do NOT claim
-            // Sync for the handle until the underlying runtime sharing proof
-            // and immutable-reference API have been audited separately.
-            if (name.equals("Channel")) {
-                return trait == Trait.SEND && nominalProof.trustedIntrinsic(named)
-                        && named.arguments().size() == 1
-                        && has(named.arguments().getFirst(), Trait.SEND, nominalProof, visiting, depth + 1);
-            }
-            if (UNPROVEN_CAPABILITIES.contains(name)) {
-                return false;
-            }
-            // The nominal callback must never turn an unresolved or
-            // capability-bearing generic argument into a valid auto-trait.
-            // This is intentionally stricter than Rust's PhantomData-style
-            // exceptions: a future trusted variance/phantom proof is needed
-            // before any argument may be ignored.
-            for (Type argument : named.arguments()) {
-                if (!has(argument, trait, nominalProof, visiting, depth + 1)) {
-                    return false;
-                }
-            }
-            // Unknown nominal types are *not* automatically Send or Sync.
-            // The callback is compiler-trusted, but its result is still
-            // conditional on all nested type arguments passing the same trait.
-            return nominalProof.has(named, trait);
+            boolean result = derive(
+                    type, trait, nominalProof, visiting, proven, steps, depth);
+            proven.computeIfAbsent(type,
+                    ignored -> new Boolean[Trait.values().length])[trait.ordinal()] = result;
+            return result;
         } finally {
             visiting.remove(type);
         }
     }
+
+    private static boolean derive(
+            Type type, Trait trait, NominalProof nominalProof, Set<Type> visiting,
+            IdentityHashMap<Type, Boolean[]> proven, int[] steps, int depth) {
+        if (type == Unknown.INSTANCE || type instanceof Generic
+                || type instanceof Types.Dyn
+                || type instanceof SelfType || type instanceof ClassNamespace
+                || type instanceof Function || type instanceof Types.Not) return false;
+        if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
+        if (type instanceof StringLiteral || type instanceof BoolLiteral) return true;
+
+        if (type instanceof Borrow borrow) {
+            // &T: Send iff T: Sync; &mut T: Send iff T: Send.
+            // Both forms: Sync iff T: Sync.
+            Trait required = trait == Trait.SYNC || !borrow.mutable()
+                    ? Trait.SYNC : Trait.SEND;
+            return has(borrow.target(), required, nominalProof,
+                    visiting, proven, steps, depth + 1);
+        }
+        if (type instanceof ListType list) {
+            // Mutable storage may move when its elements are Send, but shared
+            // access does not gain Sync merely from element traits.
+            return trait == Trait.SEND
+                    && has(list.element(), Trait.SEND, nominalProof,
+                            visiting, proven, steps, depth + 1);
+        }
+        if (type instanceof Tuple tuple) {
+            if (trait == Trait.SYNC && tuple.kind() != Types.TupleKind.TUPLE) return false;
+            for (Type member : tuple.elements()) {
+                if (!has(member, trait, nominalProof,
+                        visiting, proven, steps, depth + 1)) return false;
+            }
+            return true;
+        }
+        if (type instanceof Record record) {
+            // readOnly is a capability/view, not a frozen-backing witness.
+            if (trait == Trait.SYNC) return false;
+            for (Type member : record.members().values()) {
+                if (!has(member, trait, nominalProof,
+                        visiting, proven, steps, depth + 1)) return false;
+            }
+            return true;
+        }
+        if (type instanceof Union union) {
+            for (Type member : union.options()) {
+                if (!has(member, trait, nominalProof,
+                        visiting, proven, steps, depth + 1)) return false;
+            }
+            return true;
+        }
+        if (!(type instanceof Named named)) return false;
+        String name = named.name();
+        if (name.equals("OptionUnwrapError")) {
+            return nominalProof.trustedIntrinsic(named) && named.arguments().isEmpty();
+        }
+        if (name.equals("Option") || name.equals("IteratorResult")) {
+            return nominalProof.trustedIntrinsic(named) && named.arguments().size() == 1
+                    && has(named.arguments().getFirst(), trait, nominalProof,
+                            visiting, proven, steps, depth + 1);
+        }
+        if (name.equals("Result")) {
+            return nominalProof.trustedIntrinsic(named) && named.arguments().size() == 2
+                    && has(named.arguments().get(0), trait, nominalProof,
+                            visiting, proven, steps, depth + 1)
+                    && has(named.arguments().get(1), trait, nominalProof,
+                            visiting, proven, steps, depth + 1);
+        }
+        if (name.equals("Channel")) {
+            return trait == Trait.SEND && nominalProof.trustedIntrinsic(named)
+                    && named.arguments().size() == 1
+                    && has(named.arguments().getFirst(), Trait.SEND, nominalProof,
+                            visiting, proven, steps, depth + 1);
+        }
+        if (UNPROVEN_CAPABILITIES.contains(name)) return false;
+
+        // A nominal proof never excuses unsafe or unresolved generic arguments.
+        for (Type argument : named.arguments()) {
+            if (!has(argument, trait, nominalProof,
+                    visiting, proven, steps, depth + 1)) return false;
+        }
+        return nominalProof.has(named, trait);
+    }
+
 }
