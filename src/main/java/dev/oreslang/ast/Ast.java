@@ -1052,6 +1052,69 @@ public final class Ast {
         }
     }
 
+    /**
+     * Compiler-verified static ordinary-class domain for a computed-index
+     * receiver. The key is the exact receiver AST node admitted by the type
+     * checker, so runtime never has to rediscover a class view from syntax or
+     * from the more-derived runtime object.
+     *
+     * Weak identity keys avoid retaining abandoned compilation units. A
+     * structurally equal expression from another parse is intentionally not a
+     * match.
+     */
+    public static final class CheckedClassView {
+        private CheckedClassView() { }
+
+        private static final java.lang.ref.ReferenceQueue<Expr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, String> VIEWS =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey extends java.lang.ref.WeakReference<Expr> {
+            private final int hash;
+            private IdentityKey(
+                    Expr expression, java.lang.ref.ReferenceQueue<Expr> queue) {
+                super(expression, queue);
+                hash = System.identityHashCode(expression);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                Expr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends Expr> collected;
+            while ((collected = CLEARED.poll()) != null) {
+                VIEWS.remove(collected);
+            }
+        }
+
+        public static synchronized void record(Expr receiver, String className) {
+            java.util.Objects.requireNonNull(receiver, "computed-index receiver");
+            java.util.Objects.requireNonNull(className, "checked class name");
+            if (className.isBlank()) {
+                throw new IllegalArgumentException("checked class name cannot be blank");
+            }
+            expunge();
+            IdentityKey key = new IdentityKey(receiver, CLEARED);
+            String old = VIEWS.putIfAbsent(key, className);
+            if (old != null && !old.equals(className)) {
+                throw new IllegalStateException(
+                        "same computed-index receiver received inconsistent static class views");
+            }
+        }
+
+        public static synchronized String lookup(Expr receiver) {
+            java.util.Objects.requireNonNull(receiver, "computed-index receiver");
+            expunge();
+            return VIEWS.get(new IdentityKey(receiver, null));
+        }
+    }
+
     public record MemberExpr(Expr receiver, String member) implements Expr { }
     public record IndexExpr(Expr receiver, Expr index) implements Expr { }
 
