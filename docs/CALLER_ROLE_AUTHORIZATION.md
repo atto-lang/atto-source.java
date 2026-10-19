@@ -98,6 +98,13 @@ the standalone static index; the executable enum frontend remains gated.
   Unrelated private classes and enums remain outside that dependency set. These fingerprints enable
   cache invalidation; they are **not** authenticated call-site metadata.
 - `ImportGraph.validateLinkedImports` currently **rejects** cross-source
+  import of any public callable carrying `@CallerRole` **or** `@CallableBy`,
+  as well as public class/actor static methods bearing either annotation.
+  A role grant is security-relevant provenance, not merely metadata:
+  importing an annotated grant through an erased signature is unsafe
+  even when the callable itself has no `@CallableBy` restriction.
+  This includes role-bearing inherited public methods selected through
+  class imports and module/wildcard selectors. It also rejects
   import of a protected public function or class static method, and module or
   wildcard imports that expose one, including protected public static
   class methods reachable through whole-module imports and imported
