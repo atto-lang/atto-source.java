@@ -180,6 +180,22 @@ final class DynamicPropertyAccessBoundaryTest {
     }
 
     @Test
+    void mutableSelectorBindingsRemainDynamic() {
+        rejected("""
+                define class Box as
+                    pub val int payload = 1;
+                end
+
+                fnc reject_mutable_selector(): int {
+                    const row = record{x: 7, box: new Box()};
+                    let string field = "x";
+                    field = "box";
+                    return row[field];
+                }
+                """);
+    }
+
+    @Test
     void capturedNamedConstSelectorKeepsOwnershipPrecision() {
         accepted("""
                 define class Box as
