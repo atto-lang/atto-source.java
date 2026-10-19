@@ -174,8 +174,26 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     public static <T> OresFuture<T> fromCallback(
             Consumer<? super Callback<T>> registrar) {
+        return fromCallback(registrar, () -> true, () -> { });
+    }
+
+    /**
+     * A callback adapter with an owning operation's atomic cancellation
+     * admission. The admission predicate must revoke the underlying
+     * operation before allowing this Future to become cancelled.
+     *
+     * A committed select winner refuses consumer cancellation while its
+     * lexical guest cleanup is outstanding. Once its source task finishes,
+     * the producer callback can publish a cancelled terminal outcome.
+     */
+    public static <T> OresFuture<T> fromCallback(
+            Consumer<? super Callback<T>> registrar,
+            BooleanSupplier cancelAdmission,
+            Runnable cancelHook) {
         Objects.requireNonNull(registrar, "registrar");
-        OresFuture<T> future = new OresFuture<>();
+        OresFuture<T> future = new OresFuture<>(
+                Objects.requireNonNull(cancelAdmission, "cancelAdmission"),
+                Objects.requireNonNull(cancelHook, "cancelHook"));
         AtomicBoolean callbackClaimed = new AtomicBoolean();
 
         Callback<T> completion = new Callback<>() {
@@ -215,7 +233,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             @Override
             public void cancel() {
                 if (!claim("cancel")) return;
-                if (!future.cancel(false) && !future.isCancelled()) {
+                // A producer reports cancellation only after its own
+                // cleanup/retirement barrier. Unlike a consumer cancellation
+                // request, this terminal publication must not re-run the
+                // admission predicate (which rejects already-won selection).
+                if (!future.cancelFromRuntime() && !future.isCancelled()) {
                     throw new AlreadySettledException(
                             "callback Future was already settled before cancel");
                 }
@@ -468,6 +490,13 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         // successful state CAS; guest/producer authority must then be removed
         // before ordinary host completion callbacks are entered.
         return settle(new Cancelled(cancelled), this::invokeCancelHook);
+    }
+
+    /** Producer-owned cancellation publication after source cleanup. */
+    private boolean cancelFromRuntime() {
+        return settle(
+                new Cancelled(new CancellationException("OresFuture producer cancelled")),
+                this::invokeCancelHook);
     }
 
     @Override
