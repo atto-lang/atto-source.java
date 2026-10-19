@@ -1,8 +1,12 @@
 package dev.oreslang.types;
 
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 public final class Types {
     private Types() { }
@@ -296,54 +300,106 @@ public final class Types {
      * classes directly. This check is intentionally bounded and fail-closed.
      */
     public static boolean isStructurallyWellFormed(Type type) {
-        return !failsStructuralTypeValidation(type, 0, new int[] {100_000});
+        return !failsStructuralTypeValidation(
+                type, 0, new int[] {100_000},
+                Collections.newSetFromMap(new IdentityHashMap<>()),
+                new IdentityHashMap<>());
     }
 
     private static boolean failsStructuralTypeValidation(
-            Type type, int depth, int[] budget) {
+            Type type, int depth, int[] budget, Set<Type> visiting,
+            IdentityHashMap<Type, Map<Integer, Boolean>> memoizedFailures) {
         if (type == null || depth > 256 || --budget[0] < 0) return true;
-        if (type instanceof Named named) {
-            if (named.name() == null || named.name().isBlank()) return true;
-            for (Type argument : named.arguments()) {
-                if (failsStructuralTypeValidation(argument, depth + 1, budget)) return true;
+        // Direct compiler/embedding objects are expected to be immutable, but
+        // fail closed if a malformed cyclic graph is supplied reflectively.
+        if (!visiting.add(type)) return true;
+        try {
+            // A node that is valid at a shallow depth is not automatically
+            // valid when reused deeper in the graph; include depth in the
+            // identity cache so MAX_TYPE_DEPTH cannot be bypassed.
+            Map<Integer, Boolean> byDepth = memoizedFailures.get(type);
+            if (byDepth != null && byDepth.containsKey(depth)) {
+                return byDepth.get(depth);
             }
-        } else if (type instanceof SelfType self) {
-            return failsStructuralTypeValidation(self.bound(), depth + 1, budget);
-        } else if (type instanceof Borrow borrow) {
-            return failsStructuralTypeValidation(borrow.target(), depth + 1, budget);
-        } else if (type instanceof ClassNamespace namespace) {
-            return namespace.className() == null || namespace.className().isBlank();
-        } else if (type instanceof Record record) {
-            for (Map.Entry<String, Type> member : record.members().entrySet()) {
-                if (member.getKey() == null || member.getKey().isBlank()
-                        || failsStructuralTypeValidation(
-                                member.getValue(), depth + 1, budget)) {
-                    return true;
+
+            boolean failed = false;
+            if (type instanceof Named named) {
+                if (named.name() == null || named.name().isBlank()) {
+                    failed = true;
+                } else {
+                    for (Type argument : named.arguments()) {
+                        if (failsStructuralTypeValidation(
+                                argument, depth + 1, budget, visiting, memoizedFailures)) {
+                            failed = true;
+                            break;
+                        }
+                    }
                 }
+            } else if (type instanceof SelfType self) {
+                failed = failsStructuralTypeValidation(
+                        self.bound(), depth + 1, budget, visiting, memoizedFailures);
+            } else if (type instanceof Borrow borrow) {
+                failed = failsStructuralTypeValidation(
+                        borrow.target(), depth + 1, budget, visiting, memoizedFailures);
+            } else if (type instanceof ClassNamespace namespace) {
+                failed = namespace.className() == null || namespace.className().isBlank();
+            } else if (type instanceof Record record) {
+                for (Map.Entry<String, Type> member : record.members().entrySet()) {
+                    if (member.getKey() == null || member.getKey().isBlank()
+                            || failsStructuralTypeValidation(
+                                    member.getValue(), depth + 1, budget,
+                                    visiting, memoizedFailures)) {
+                        failed = true;
+                        break;
+                    }
+                }
+            } else if (type instanceof Function function) {
+                for (Type parameter : function.parameters()) {
+                    if (failsStructuralTypeValidation(
+                            parameter, depth + 1, budget, visiting, memoizedFailures)) {
+                        failed = true;
+                        break;
+                    }
+                }
+                if (!failed) {
+                    failed = failsStructuralTypeValidation(
+                            function.result(), depth + 1, budget,
+                            visiting, memoizedFailures);
+                }
+            } else if (type instanceof ListType list) {
+                failed = failsStructuralTypeValidation(
+                        list.element(), depth + 1, budget, visiting, memoizedFailures);
+            } else if (type instanceof Tuple tuple) {
+                for (Type element : tuple.elements()) {
+                    if (failsStructuralTypeValidation(
+                            element, depth + 1, budget, visiting, memoizedFailures)) {
+                        failed = true;
+                        break;
+                    }
+                }
+            } else if (type instanceof Union union) {
+                for (Type option : union.options()) {
+                    if (failsStructuralTypeValidation(
+                            option, depth + 1, budget, visiting, memoizedFailures)) {
+                        failed = true;
+                        break;
+                    }
+                }
+            } else if (type instanceof Generic generic) {
+                failed = generic.name() == null || generic.name().isBlank();
+            } else if (type instanceof StringLiteral literal) {
+                failed = literal.value() == null;
+            } else if (type instanceof Not not) {
+                failed = failsStructuralTypeValidation(
+                        not.excluded(), depth + 1, budget, visiting, memoizedFailures);
             }
-        } else if (type instanceof Function function) {
-            for (Type parameter : function.parameters()) {
-                if (failsStructuralTypeValidation(parameter, depth + 1, budget)) return true;
-            }
-            return failsStructuralTypeValidation(function.result(), depth + 1, budget);
-        } else if (type instanceof ListType list) {
-            return failsStructuralTypeValidation(list.element(), depth + 1, budget);
-        } else if (type instanceof Tuple tuple) {
-            for (Type element : tuple.elements()) {
-                if (failsStructuralTypeValidation(element, depth + 1, budget)) return true;
-            }
-        } else if (type instanceof Union union) {
-            for (Type option : union.options()) {
-                if (failsStructuralTypeValidation(option, depth + 1, budget)) return true;
-            }
-        } else if (type instanceof Generic generic) {
-            return generic.name() == null || generic.name().isBlank();
-        } else if (type instanceof StringLiteral literal) {
-            return literal.value() == null;
-        } else if (type instanceof Not not) {
-            return failsStructuralTypeValidation(not.excluded(), depth + 1, budget);
+
+            memoizedFailures.computeIfAbsent(type, ignored -> new HashMap<>())
+                    .put(depth, failed);
+            return failed;
+        } finally {
+            visiting.remove(type);
         }
-        return false;
     }
 
     private static boolean numericWidening(Type from, Type to) {
