@@ -6933,8 +6933,15 @@ public final class OresEvalRootNode extends RootNode {
                     for (var l : TriLayoutMotionStore.Layout.values()) {
                         if ((mask & (1L << l.ordinal())) != 0) resident.add(l);
                     }
-                    return new RegionMotionValue(new TriLayoutMotionStore(
-                            capacity, tile, resident, resident.iterator().next(), 1048576L));
+                    TriLayoutMotionStore store = new TriLayoutMotionStore(
+                            capacity, tile, resident, resident.iterator().next(), 1048576L);
+                    try {
+                        context.registerGuestRegion(store);
+                        return new RegionMotionValue(store, context);
+                    } catch (RuntimeException failure) {
+                        store.close();
+                        throw failure;
+                    }
                 };
             }
             if (receiver instanceof RegionMotionValue region) {
@@ -6987,7 +6994,11 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     case "close" -> (Invokable) args -> {
                         requireZero(args, "Region.close");
-                        region.store.close();
+                        try {
+                            region.store.close();
+                        } finally {
+                            region.context.unregisterGuestRegion(region.store);
+                        }
                         return null;
                     };
                     default -> throw new IllegalArgumentException("unknown Region<Motion> member " + name);
@@ -9524,9 +9535,11 @@ public final class OresEvalRootNode extends RootNode {
     private enum RegionMotionFactory { INSTANCE }
     private static final class RegionMotionValue {
         private final TriLayoutMotionStore store;
+        private final OresContext context;
         private volatile TriLayoutMotionStore.Layout selected;
-        private RegionMotionValue(TriLayoutMotionStore store) {
+        private RegionMotionValue(TriLayoutMotionStore store, OresContext context) {
             this.store = store;
+            this.context = context;
             this.selected = store.authoritativeLayout();
         }
     }
