@@ -2,7 +2,7 @@ name: task-access-verifier-kernel
 
 on:
   push:
-    branches: ["feat/task-provenance-quiescence-gate-*"]
+    branches: ["feat/task-provenance-quiescence-gate-*", "feat/task-scoped-loans-canonical-*"]
   pull_request:
     paths:
       - "src/main/java/dev/oreslang/types/Types.java"
