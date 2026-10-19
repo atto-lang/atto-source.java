@@ -103,13 +103,21 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
     }
 
     boolean physicallyQuiescent() {
-        synchronized (gate) {
-            if (!active.isEmpty()) return false;
-            for (ActorHotUpgradeTaskOwnerV1 child : children) {
-                if (!child.physicallyQuiescent()) return false;
+        // Child-scope nesting has no compiler-enforced depth bound yet.
+        // Traverse iteratively: recursive monitoring could overflow the host
+        // stack even though close() correctly walks the same tree iteratively.
+        // This is a host observation, not an atomic upgrade commit receipt;
+        // ActorRuntime's lifecycle fence remains the admission authority.
+        ArrayDeque<ActorHotUpgradeTaskOwnerV1> pending = new ArrayDeque<>();
+        pending.add(this);
+        while (!pending.isEmpty()) {
+            ActorHotUpgradeTaskOwnerV1 scope = pending.removeLast();
+            synchronized (scope.gate) {
+                if (!scope.active.isEmpty()) return false;
+                pending.addAll(scope.children);
             }
-            return true;
         }
+        return true;
     }
 
     private void ensureOpen() {
@@ -221,7 +229,10 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
         // bookkeeping barrier. Failed retirement records remain owned.
         for (ActorHotUpgradeTaskOwnerV1 scope : visited) {
             synchronized (scope.gate) {
-                scope.active.removeIf(slot -> slot.task != null && exited.contains(slot.task));
+                // active contains OwnershipSlot, not PinnedTask: compare
+                // slot.task against the physical-exit witness identities.
+                scope.active.removeIf(slot ->
+                        slot.task != null && exited.contains(slot.task));
             }
         }
         if (interrupted) Thread.currentThread().interrupt();
