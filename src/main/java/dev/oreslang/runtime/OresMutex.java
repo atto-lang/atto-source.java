@@ -527,18 +527,26 @@ public final class OresMutex {
         }
 
         private void markOwner(Object domain) {
-            if (!currentOwnerDomain.compareAndSet(null, domain)) {
-                throw new IllegalStateException("SharedMutex permit acquired while another owner is recorded");
+            // Owner transitions and waiter graph publication share one
+            // linearization point; otherwise concurrent cycle checks can read
+            // a half-published ownership path.
+            synchronized (WAIT_GRAPH_MONITOR) {
+                if (!currentOwnerDomain.compareAndSet(null, domain)) {
+                    throw new IllegalStateException(
+                            "SharedMutex permit acquired while another owner is recorded");
+                }
             }
         }
 
         private void clearOwner(Object domain) {
             if (domain == null) return;
-            if (!currentOwnerDomain.compareAndSet(domain, null)) {
-                Object recorded = currentOwnerDomain.get();
-                if (recorded != null) {
-                    throw new IllegalStateException(
-                            "SharedMutex owner-domain accounting mismatch");
+            synchronized (WAIT_GRAPH_MONITOR) {
+                if (!currentOwnerDomain.compareAndSet(domain, null)) {
+                    Object recorded = currentOwnerDomain.get();
+                    if (recorded != null) {
+                        throw new IllegalStateException(
+                                "SharedMutex owner-domain accounting mismatch");
+                    }
                 }
             }
         }
