@@ -332,9 +332,20 @@ public final class RuntimePermissions {
 
         return switch (permission) {
             case READ, WRITE, FFI, IMPORT -> normalizePath(trimmed);
-            case NET -> trimmed.toLowerCase(Locale.ROOT);
+            case NET -> normalizeNetworkScope(trimmed);
             case ENV, RUN, SYS -> trimmed;
         };
+    }
+
+    private static String normalizeNetworkScope(String value) {
+        NetworkScope scope = parseNetworkScope(value);
+        if (scope == null)
+            throw new IllegalArgumentException("invalid network permission scope '" + value + "'");
+        String host = scope.host();
+        if (scope.port() == null) return host;
+        return host.indexOf(':') >= 0
+                ? "[" + host + "]:" + scope.port()
+                : host + ":" + scope.port();
     }
 
     private static String normalizePath(String value) {
