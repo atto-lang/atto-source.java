@@ -28,14 +28,40 @@ public final class SendSyncTraits {
             "complex", "string", "String");
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Set<String> ambiguous = new HashSet<>();
+    private final Set<String> shadowedTypeNames = new HashSet<>();
+    private final Set<String> trustedIntrinsicNames;
 
+    /**
+     * Default guest-facing mode: unlowered synchronization and region constructors
+     * are NOT admitted merely because their source spelling resembles Rust.
+     */
     public SendSyncTraits(Ast.Program program) {
+        this(program, Set.of());
+    }
+
+    /**
+     * Trusted compiler entry point only. Callers must independently prove each
+     * enabled constructor resolves to an implemented, safe runtime intrinsic.
+     * Never populate this set from source annotations or type spelling alone.
+     */
+    public SendSyncTraits(Ast.Program program, Set<String> trustedIntrinsicNames) {
+        this.trustedIntrinsicNames = Set.copyOf(
+                Objects.requireNonNull(trustedIntrinsicNames, "trustedIntrinsicNames"));
+        if (!Set.of("Arc", "Weak", "Shared", "Mutex", "RwLock",
+                    "Array", "List", "InvertedArray").containsAll(this.trustedIntrinsicNames)) {
+            throw new IllegalArgumentException("unrecognized trusted intrinsic");
+        }
         Objects.requireNonNull(program, "program");
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.ClassDecl klass
-                        && classes.putIfAbsent(klass.name(), klass) != null) {
-                    ambiguous.add(klass.name());
+                if (decl instanceof Ast.ClassDecl klass) {
+                    shadowedTypeNames.add(klass.name());
+                    if (classes.putIfAbsent(klass.name(), klass) != null)
+                        ambiguous.add(klass.name());
+                } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    shadowedTypeNames.add(alias.name());
+                } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    shadowedTypeNames.add(iface.name());
                 }
             }
         }
@@ -73,35 +99,44 @@ public final class SendSyncTraits {
             if (type.isUnion() || type.isTupleType()) {
                 return all(type.arguments(), substitutions, active);
             }
-            if (type.isStringLiteral() || type.isIntLiteral() || type.isBoolLiteral()
-                    || SCALARS.contains(type.name()) && type.arguments().isEmpty()) {
+            if (type.arguments().isEmpty()
+                    && (type.isStringLiteral() || type.isIntLiteral() || type.isBoolLiteral()
+                        || (SCALARS.contains(type.name())
+                            && !shadowedTypeNames.contains(type.name())))) {
                 return Traits.BOTH;
             }
 
             List<Ast.TypeRef> args = type.arguments();
+            // Source-declared classes, aliases, and interfaces cannot impersonate
+            // trusted compiler-intrinsic constructors.
+            boolean trusted = trustedIntrinsicNames.contains(type.name())
+                    && !shadowedTypeNames.contains(type.name());
             switch (type.name()) {
                 case "Option", "Array", "List", "InvertedArray" -> {
-                    if (args.size() != 1) return Traits.NONE;
+                    if (args.size() != 1 || shadowedTypeNames.contains(type.name()))
+                        return Traits.NONE;
                     Traits element = derive(args.getFirst(), substitutions, active);
-                    // Collection shared aliases remain !Sync until checked borrows/regions.
-                    return type.name().equals("Option") ? element
-                            : new Traits(element.send(), false);
+                    if (type.name().equals("Option")) return element;
+                    // Arrays, Lists and inverted storage can cross a Task boundary
+                    // only after their own runtime ownership/move contract is proven.
+                    return trusted ? new Traits(element.send(), false) : Traits.NONE;
                 }
                 case "Result" -> {
-                    return args.size() == 2 ? all(args, substitutions, active) : Traits.NONE;
+                    return args.size() == 2 && !shadowedTypeNames.contains("Result")
+                            ? all(args, substitutions, active) : Traits.NONE;
                 }
                 case "Arc", "Weak", "Shared" -> {
-                    if (args.size() != 1) return Traits.NONE;
+                    if (!trusted || args.size() != 1) return Traits.NONE;
                     Traits inner = derive(args.getFirst(), substitutions, active);
                     return inner.send() && inner.sync() ? Traits.BOTH : Traits.NONE;
                 }
                 case "Mutex" -> {
-                    if (args.size() != 1) return Traits.NONE;
+                    if (!trusted || args.size() != 1) return Traits.NONE;
                     return derive(args.getFirst(), substitutions, active).send()
                             ? Traits.BOTH : Traits.NONE;
                 }
                 case "RwLock" -> {
-                    if (args.size() != 1) return Traits.NONE;
+                    if (!trusted || args.size() != 1) return Traits.NONE;
                     Traits inner = derive(args.getFirst(), substitutions, active);
                     return inner.send() && inner.sync() ? Traits.BOTH : Traits.NONE;
                 }
@@ -110,8 +145,8 @@ public final class SendSyncTraits {
                     return Traits.NONE;
                 }
                 case "Cell", "RefCell" -> {
-                    if (args.size() != 1) return Traits.NONE;
-                    return new Traits(derive(args.getFirst(), substitutions, active).send(), false);
+                    // No verified source-level move/alias contract yet.
+                    return Traits.NONE;
                 }
                 default -> { }
             }
