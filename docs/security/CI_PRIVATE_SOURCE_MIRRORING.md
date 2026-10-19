@@ -63,7 +63,11 @@ The temporary root is cleaned up even on request failure. On supported
 Linux runners the parent is pinned to a system-owned or runner-owned sticky
 `/tmp` directory, rather than caller-controlled `TMPDIR`/`TMP`/`TEMP`.
 Missing, non-directory, non-sticky, or unexpectedly owned `/tmp` must deny
-GitHub API access before spawning a subprocess. GitHub CLI must
+GitHub API access before spawning a subprocess. In addition, the verified
+child environment discards unreviewed `TMPDIR`, `TMP`, and `TEMP`; after
+checking the parent, authenticated GitHub CLI requests receive
+`TMPDIR=/tmp`. This keeps their ordinary scratch files out of
+caller-chosen paths, not only the private credential HOME. GitHub CLI must
 authenticate through noninteractive runner-supplied credentials; an interactive
 or HOME-backed CLI login is no longer sufficient.
 The publisher resolves child executables from system directories. These checks
