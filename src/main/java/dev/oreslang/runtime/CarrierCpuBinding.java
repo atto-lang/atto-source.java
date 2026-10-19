@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.function.IntConsumer;
+import java.util.function.IntSupplier;
 import java.util.function.LongSupplier;
 
 /**
@@ -22,19 +23,29 @@ final class CarrierCpuBinding {
 
     private CarrierCpuBinding() { }
 
-    static void ensureBound(int cpu, IntConsumer nativeBind, LongSupplier clock) {
+    static void ensureBound(int cpu, IntConsumer nativeBind,
+                            IntSupplier observedCpu, LongSupplier clock) {
         if (cpu < 0) throw new IllegalArgumentException("CPU must be nonnegative");
         Objects.requireNonNull(nativeBind, "nativeBind");
+        Objects.requireNonNull(observedCpu, "observedCpu");
         Objects.requireNonNull(clock, "clock");
         long now = clock.getAsLong();
         Binding previous = CURRENT.get();
         if (previous != null && previous.cpu() == cpu) {
             long age = now - previous.checkedAtNanos();
-            if (age >= 0 && age < REBIND_INTERVAL_NANOS) return;
+            if (age >= 0 && age < REBIND_INTERVAL_NANOS
+                    && observedCpu.getAsInt() == cpu) return;
         }
         // An OS failure must never mark a CPU as successfully pinned.
-        nativeBind.accept(cpu);
-        CURRENT.set(new Binding(cpu, now));
+        CURRENT.remove();
+        try {
+            nativeBind.accept(cpu);
+            if (observedCpu.getAsInt() != cpu) throw new IllegalStateException("CPU affinity observation mismatch");
+            CURRENT.set(new Binding(cpu, now));
+        } catch (RuntimeException | Error failure) {
+            CURRENT.remove();
+            throw failure;
+        }
     }
 
     static void clearCurrentCarrier() {
