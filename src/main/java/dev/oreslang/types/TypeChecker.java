@@ -2308,6 +2308,7 @@ public final class TypeChecker {
                 } else if (receiver instanceof Named named && findClass(named.name()) != null) {
                     requireAssignable(index, Primitive.STRING, "class field key");
                     Ast.ClassDecl klass = findClass(named.name());
+                    Ast.CheckedClassView.record(indexed.receiver(), klass.name());
                     if (klass.actorKind() != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException("computed indexing is not supported for this receiver kind");
                     }
@@ -3821,6 +3822,7 @@ public final class TypeChecker {
                 Ast.ClassDecl klass = findClass(named.name());
                 if (klass != null) {
                     requireAssignable(index, Primitive.STRING, "class field key");
+                    Ast.CheckedClassView.record(indexed.receiver(), klass.name());
                     if (!klass.actorKind().equals(Ast.ActorKind.NONE)) {
                         throw new IllegalArgumentException(
                                 "computed indexing requires an ordinary class instance");
