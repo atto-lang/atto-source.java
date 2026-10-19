@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.OwnershipChecker;
 import org.junit.jupiter.api.Test;
@@ -113,5 +114,17 @@ final class TaskSpawnSendAdmissionTest {
                 return;
             }
             """, "requires proven Send");
+    }
+    @Test
+    void fullSourceCompilerStillRefusesToExecuteUnloweredTasks() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                    pub fnc main(): void {
+                        let int x = 7;
+                        do nb { stdio.stdout.log(x); };
+                        return;
+                    }
+                    """));
+        assertTrue(failure.getMessage().contains("nb Task blocks"), failure::getMessage);
     }
 }
