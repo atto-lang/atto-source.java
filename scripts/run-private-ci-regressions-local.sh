@@ -115,6 +115,28 @@ if (len(ids) < 115 or publisher < 105 or merged < 10
     raise SystemExit(
         "PRIVATE_CI_TEST_INVENTORY_REJECTED: "
         f"publisher={publisher} merged={merged} total={len(ids)}")
+# Counts alone can be satisfied by padding the suite with inert test methods.
+# Pin the security-critical case identities as well as the discovery floor.
+required_publisher = {
+    "test_stored_root_tree_readback_precedes_commit_publication",
+    "test_stored_root_tree_tampering_denied_before_commit_or_ref",
+    "test_unreadable_base_root_tree_denied_before_private_blob",
+    "test_created_ci_commit_readback_fails_closed_before_ref",
+    "test_created_ci_ref_readback_rejects_changed_or_malformed_ref",
+    "test_source_pr_move_stops_next_private_blob_upload",
+    "test_protected_main_revocation_stops_next_blob_upload",
+    "test_destination_codeowners_revoked_after_first_blob",
+}
+required_merged = {
+    "test_independently_reviewed_exact_main_positive",
+    "test_wrong_main_head_denied",
+}
+discovered_publisher = {s.rsplit(".", 1)[-1] for s in ids
+                        if ".DestinationBoundPublisherTests." in s}
+discovered_merged = {s.rsplit(".", 1)[-1] for s in ids
+                     if ".MergedMainProvenanceTests." in s}
+if not required_publisher <= discovered_publisher or not required_merged <= discovered_merged:
+    raise SystemExit("PRIVATE_CI_TEST_REQUIRED_CASES_MISSING")
 print(f"PRIVATE_CI_TEST_INVENTORY_OK publisher={publisher} "
       f"merged={merged} total={len(ids)}", flush=True)
 result = unittest.TextTestRunner(verbosity=2).run(suite)
