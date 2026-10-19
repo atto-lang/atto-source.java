@@ -19,8 +19,8 @@ import java.util.Objects;
  * <p>Admission is atomic across a Task's claims and ledger operations are
  * synchronized (this is a compiler analysis helper, not runtime host admission).
  * Cancellation does not release loans: the emitted TaskScope quiescence barrier
- * must be proven before
- * calling {@link #quiescent(Ticket)}.
+ * must be proven before calling
+ * {@link #retireAfterPhysicalQuiescence(Ticket)}.
  */
 final class TaskAccessVerifier {
     private static final int MAX_LABEL_CHARS = 256;
@@ -315,7 +315,7 @@ final class TaskAccessVerifier {
      * Called only after child execution, defers, FFI pins and cleanup are
      * physically quiescent. The ledger itself cannot prove runtime quiescence.
      */
-    public synchronized void quiescent(Ticket ticket) {
+    synchronized void retireAfterPhysicalQuiescence(Ticket ticket) {
         child(ticket); // validates this exact ticket belongs to this scope
         live.remove(ticket);
     }
