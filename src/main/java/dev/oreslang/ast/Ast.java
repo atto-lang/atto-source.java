@@ -202,7 +202,29 @@ public final class Ast {
         }
     }
 
-    public record Param(TypeRef type, String name, boolean structural, boolean mutable) {
+    /**
+     * Parameter-presence v3 staging: type optionality and call-site omission
+     * are independent flags. The receiver is NEVER represented as a Param.
+     * None of these flags authorizes execution until the verified invocation
+     * plan and ABI lowering are integrated.
+     */
+    public record Param(TypeRef type, String name, boolean structural, boolean mutable,
+                        boolean omittable, boolean optionTypeSugar) {
+        public Param {
+            java.util.Objects.requireNonNull(type, "parameter type");
+            if (name == null || name.isBlank() || name.equals("self")) {
+                throw new IllegalArgumentException("ordinary parameter name must not be self or blank");
+            }
+            if (omittable && (structural || mutable)) {
+                throw new IllegalArgumentException("omittable structural/mutable parameters require separate borrow lowering");
+            }
+            if (optionTypeSugar && !(type.name().equals("Option") && type.arguments().size() == 1)) {
+                throw new IllegalArgumentException("type-level ? must normalize to Option<T>");
+            }
+        }
+        public Param(TypeRef type, String name, boolean structural, boolean mutable) {
+            this(type, name, structural, mutable, false, false);
+        }
         public Param(TypeRef type, String name) { this(type, name, false, false); }
         public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, false); }
     }
