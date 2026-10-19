@@ -271,3 +271,46 @@ remain open. Do NOT transfer actual source into any alternate repo
 without independent, numeric-ID-checked approval and exact-tree
 verification. Stage-1/2 remain stacked and draft; actual Graal/JUnit
 results are unknown.
+
+
+## Verified parent-stack reconciliation — 2026-10-18
+
+The child draft #1407 had diverged from its stage-1 parent #1402 after
+three independent parent hardening commits. At reconciliation:
+
+- Parent #1402 exact commit: `d04f877788b1964d3c7038baa153c24f19ebb170`.
+- Child #1407 previous head: `97413c2a1f8258d1f512d78aa28e3644b99cb552`.
+- The child already carried the parent fatal-revoker code and test semantics,
+  plus the four newer retirement-guard regressions.
+- Resolution: build Git tree `657ee28b66f3e045e4ae9f9ea57544811d6ffbf6`
+  from the complete previous child tree, updating the stage-1 audit document
+  to the parent-approved blob `e55bc40c1034a90c1a48294154515d07d9352a6b`.
+- Two-parent merge commit `01b9d9c68d53710526e01f72d5aac8f7266f2e9e`,
+  parents (child previous head, parent latest head). The branch ref was
+  advanced by guarded **non-force** update; no commit history was rewritten.
+- GitHub verification: `compare #1402...#1407` reports **ahead 51,
+  behind 0**, and PR #1407 reports **mergeable=true**. No parent audit changes
+  or stage-2 code/test changes were discarded. Source `main` is unchanged.
+- Independent check of committed stage-2 source: exactly **61** `@Test`
+  annotations (21 TaskCancellation, 24 TaskHandle, 16 TaskScope).
+
+Local verification after this merge, using available host-side fixtures and
+JDK 21: 2,400 cancellation invariants, 2,000 retirement/race invariants,
+and 3,500 TaskScope invariants all passed. `TaskScope.java` is the exact
+production Git blob `211b5812183e9e35f7a9d7358b1a6f2ccebd024b`,
+but TaskScope dependencies are test doubles. The cancellation fixture is
+derived from the current primitive, not a byte-exact source comparison.
+These are **not** Maven, original JUnit or GraalVM CI results.
+
+Latest source Actions checks on reconciliation commit remain blocked:
+[ci #39182640735](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39182640735)
+(four sampled jobs), [fast-ci #39182640704](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39182640704)
+and [manifest #39182640749](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39182640749)
+all failed with **zero recorded steps**. Do not infer a compiler failure or a
+successful test execution from these runs.
+
+The private-carrier allowlist on source `main` still contains no approved
+repository and enforced main branch protection is still absent. Do not
+mirror the private Java Git tree across organizations until independent
+approval and exact numeric-ID/tree provenance gates pass. The prior
+source-free funded carrier canary does not authorize source export.
