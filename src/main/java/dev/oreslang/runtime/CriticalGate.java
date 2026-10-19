@@ -117,6 +117,8 @@ public final class CriticalGate {
         /** Synchronous callers cannot suspend; never park an actor or ROOT carrier. */
         public void enterSync() {
             if (ActorRuntime.inActorExecution()
+                    || ActorRuntime.isActorCarrierThread()
+                    || ActorRuntime.inActorGroupMailmanExecution()
                     || OresScheduler.current() != null
                     || OresScheduler.isSchedulerCarrierThread()) {
                 // A carrier must NEVER register a waiter and then attempt to
