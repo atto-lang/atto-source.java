@@ -84,11 +84,17 @@ public final class SendSyncTraits {
         String name = named.name();
         var args = named.arguments();
         switch (name) {
-            case "Rc", "RcWeak", "Cell", "RefCell", "MutexGuard", "ReadGuard",
+            case "Rc", "RcWeak", "MutexGuard", "ReadGuard",
                     "WriteGuard", "RawPointer", "NativePointer", "ThreadLocal",
                     "TcpConnection", "HttpExchange", "HttpServer", "HttpHandler",
                     "Future", "Iterator", "AsyncIterator", "ActorRef" -> {
                 return false; // No guest proof for these capabilities.
+            }
+            case "Cell", "RefCell" -> {
+                // Rust-style interior mutability: movable if T is Send,
+                // but not Sync without a synchronizing wrapper.
+                return trait == Trait.SEND && args.size() == 1
+                        && derive(args.getFirst(), Trait.SEND, nominal, next);
             }
             case "Arc", "Weak", "RwLock" -> {
                 // Shared RwLock and Arc require T to be both Send AND Sync.
