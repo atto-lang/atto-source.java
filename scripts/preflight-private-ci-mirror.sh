@@ -120,14 +120,15 @@ policy="$(git show "$main_sha:$POLICY_PATH")" \
 declare -A seen_destinations=()
 while IFS= read -r entry || [[ -n "$entry" ]]; do
   [[ -z "$entry" || "$entry" == \#* ]] && continue
-  [[ "$entry" =~ ^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([1-9][0-9]*)$ ]] \
+  [[ "$entry" =~ ^([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*)@([1-9][0-9]*)$ ]] \
     || die "malformed private mirror allowlist line (expected owner/repo@numeric-id)"
   entry_repo="${BASH_REMATCH[1]}"
   entry_id="${BASH_REMATCH[2]}"
-  [[ ! -v seen_destinations["$entry_repo"] ]] \
+  entry_key="${entry_repo,,}"
+  [[ ! -v seen_destinations["$entry_key"] ]] \
     || die "duplicate private mirror allowlist repository"
-  seen_destinations["$entry_repo"]=1
-  if [[ "$entry_repo" == "$DEST_REPO" ]]; then
+  seen_destinations["$entry_key"]=1
+  if [[ "$entry_key" == "${DEST_REPO,,}" ]]; then
     [[ "$entry_id" == "$DEST_ID" ]] \
       || die "allowlisted destination repository ID mismatch"
     found=$((found + 1))
