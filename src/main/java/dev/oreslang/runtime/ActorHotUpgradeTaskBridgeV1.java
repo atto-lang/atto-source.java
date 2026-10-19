@@ -55,22 +55,6 @@ final class ActorHotUpgradeTaskBridgeV1 {
             ActorRuntime.ActorRef<?> actor,
             OresScheduler scheduler,
             OresScheduler.Task<T> frame) {
-        // Allocate any owner witness before the actor can admit old code.
-        return startPinnedTracked(
-                runtime, actor, scheduler, frame, new PinnedTask<>());
-    }
-
-    /**
-     * The structured owner pre-reserves this witness in its own tracking set
-     * BEFORE calling here. A post-admission HashSet allocation must never
-     * orphan a runnable Task or lose its executable generation pin.
-     */
-    static <T> PinnedTask<T> startPinnedTracked(
-            ActorRuntime runtime,
-            ActorRuntime.ActorRef<?> actor,
-            OresScheduler scheduler,
-            OresScheduler.Task<T> frame,
-            PinnedTask<T> reserved) {
         // This temporary bridge has no compiler-issued actor/task affinity
         // receipt. Do not let executing guest turns launch an unscoped sibling
         // or acquire a new old-generation pin through this host seam.
@@ -85,16 +69,10 @@ final class ActorHotUpgradeTaskBridgeV1 {
         Objects.requireNonNull(actor, "actor");
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(frame, "frame");
-        Objects.requireNonNull(reserved, "reserved");
-        if (reserved.result() != null
-                || reserved.physicallyExited().isDone()) {
-            throw new IllegalStateException(
-                    "actor Task reservation has already been consumed");
-        }
 
         // Same lifecycle lock as freezeUserIngressForHotUpgrade(): a freeze
         // either rejects this new child or observes its pin until physical exit.
-        PinnedTask<T> tracked = reserved;
+        PinnedTask<T> tracked = new PinnedTask<>();
         ActorRuntime.HotUpgradeExternalLease generation =
                 runtime.pinExternalWorkForHotUpgrade(actor);
         try {
