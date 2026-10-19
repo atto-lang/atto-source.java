@@ -256,12 +256,17 @@ def require_destination_workflow_owners(repository, expected_head):
                  if line.strip() and not line.lstrip().startswith("#")]
     except UnicodeDecodeError as exc:
         raise Denied("destination workflow CODEOWNERS is not UTF-8") from exc
+    # Matching the last two rules is insufficient: earlier rules can
+    # override the global owner for security-sensitive scripts and policy.
+    # Require the exact reviewed three-rule trust root.  This is the
+    # compatible policy proposed by the destination CODEOWNERS PR.
     expected = [
+        f"* @{TRUSTED_SOURCE_REVIEWER}",
         f"/.github/ @{TRUSTED_SOURCE_REVIEWER}",
         f"/.github/CODEOWNERS @{TRUSTED_SOURCE_REVIEWER}",
     ]
-    if rules[-2:] != expected:
-        raise Denied("destination workflow CODEOWNERS rules missing or overridden")
+    if rules != expected:
+        raise Denied("destination CODEOWNERS trust root has missing or override rules")
 
 
 def require_destination_branch_controls(repository, default, expected_head):
