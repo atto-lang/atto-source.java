@@ -147,6 +147,46 @@ final class IpcTransportSessionLease {
         if (finalize) scheduleFinalization();
     }
 
+    /**
+     * Host-supervisor bounded wait. This never changes receipt semantics:
+     * RETIRED means confirmed close + receipt retirement, QUARANTINED is a
+     * fail-closed terminal-for-now state, and timeout never implies success.
+     */
+    synchronized boolean awaitTerminal(long timeoutMillis)
+            throws InterruptedException {
+        if (timeoutMillis < 0 || timeoutMillis > 300_000) {
+            throw new IllegalArgumentException("invalid IPC close wait");
+        }
+        long remainingNanos = timeoutMillis * 1_000_000L;
+        long deadline = System.nanoTime() + remainingNanos;
+        while (phase != Phase.RETIRED && phase != Phase.QUARANTINED) {
+            if (remainingNanos <= 0) return false;
+            long millis = remainingNanos / 1_000_000L;
+            int nanos = (int) (remainingNanos % 1_000_000L);
+            wait(millis, nanos);
+            remainingNanos = deadline - System.nanoTime();
+        }
+        return phase == Phase.RETIRED;
+    }
+
+    /**
+     * Fail closed when a trusted abort task cannot be admitted or when the
+     * write pins do not drain by a supervisor deadline. Never marks an
+     * executing physical close as retired or interrupts its cleanup worker.
+     */
+    synchronized boolean quarantineIfUnsettled(Throwable failure) {
+        Objects.requireNonNull(failure, "failure");
+        if (phase == Phase.RETIRED || phase == Phase.QUARANTINED) return false;
+        if (phase == Phase.FINALIZING && cleanupExecuting) {
+            if (closeFailure == null) closeFailure = failure;
+            return false;
+        }
+        closeFailure = failure;
+        phase = Phase.QUARANTINED;
+        notifyAll();
+        return true;
+    }
+
     /** An explicit supervisor retry never reopens a quarantined session. */
     void retryQuarantinedClose() {
         synchronized (this) {
@@ -184,6 +224,7 @@ final class IpcTransportSessionLease {
             if (cleanupAttempt == Long.MAX_VALUE) {
                 closeFailure = new IllegalStateException("cleanup attempt overflow");
                 phase = Phase.QUARANTINED;
+                notifyAll();
                 return;
             }
             attempt = ++cleanupAttempt;
@@ -201,6 +242,7 @@ final class IpcTransportSessionLease {
                         && !cleanupExecuting) {
                     closeFailure = failure;
                     phase = Phase.QUARANTINED;
+                    notifyAll();
                 }
             }
         } finally {
@@ -221,6 +263,7 @@ final class IpcTransportSessionLease {
                         "cleanup scheduler executed inline on requesting carrier");
                 enqueueCaller = null;
                 phase = Phase.QUARANTINED;
+                notifyAll();
                 return;
             }
             cleanupExecuting = true;
@@ -232,6 +275,7 @@ final class IpcTransportSessionLease {
                 closeFailure = failure;
                 cleanupExecuting = false;
                 phase = Phase.QUARANTINED;
+                notifyAll();
             }
             return; // Never declare the descriptor reusable.
         }
@@ -244,6 +288,7 @@ final class IpcTransportSessionLease {
                 closeFailure = failure;
                 cleanupExecuting = false;
                 phase = Phase.QUARANTINED;
+                notifyAll();
             }
             return;
         }
@@ -252,6 +297,7 @@ final class IpcTransportSessionLease {
             closeFailure = null;
             cleanupExecuting = false;
             phase = Phase.RETIRED;
+            notifyAll();
         }
     }
 
