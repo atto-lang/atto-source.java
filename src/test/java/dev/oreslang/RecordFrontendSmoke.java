@@ -231,6 +231,21 @@ public final class RecordFrontendSmoke {
                 }
                 """)), "empty closed record must not return unknown type");
 
+        denied(() -> TypeChecker.check(Parser.parse("""
+                fnc bad(): void {
+                    val pair = tuple(3, 4);
+                    pair[0] = 8;
+                    return;
+                }
+                """)), "ordinary tuple literal slots are immutable");
+        denied(() -> TypeChecker.check(Parser.parse("""
+                fnc bad(int index): void {
+                    val pair = tuple(3, 4);
+                    pair[index] = 8;
+                    return;
+                }
+                """)), "ordinary tuple dynamic slots are immutable");
+
         System.out.println("RECORD_FRONTEND_SMOKE_PASS");
     }
 
