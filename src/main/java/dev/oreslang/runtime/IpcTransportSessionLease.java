@@ -101,6 +101,17 @@ final class IpcTransportSessionLease {
         if (finalize) finalizePhysicalClose();
     }
 
+    /** An explicit supervisor retry never reopens a quarantined session. */
+    void retryQuarantinedClose() {
+        synchronized (this) {
+            if (phase != Phase.QUARANTINED || activeWrites != 0) {
+                throw new IllegalStateException("transport not quarantined");
+            }
+            phase = Phase.FINALIZING;
+        }
+        finalizePhysicalClose();
+    }
+
     private void releaseWrite() {
         boolean finalize;
         synchronized (this) {
@@ -122,7 +133,7 @@ final class IpcTransportSessionLease {
 
     private void finalizePhysicalClose() {
         try {
-            closer.closeAndConfirm();
+            if (!physicalCloseConfirmed) closer.closeAndConfirm();
         } catch (Exception | Error failure) {
             synchronized (this) {
                 closeFailure = failure;
