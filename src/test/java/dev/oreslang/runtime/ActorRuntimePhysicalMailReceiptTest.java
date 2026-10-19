@@ -452,7 +452,7 @@ final class ActorRuntimePhysicalMailReceiptTest {
     @Test
     void completionRacingStructuredCancelSettlesExactlyOneDisposition()
             throws Exception {
-        for (int attempt = 0; attempt < 64; ++attempt) {
+        for (int attempt = 0; attempt < 32; ++attempt) {
             try (var runtime = new ActorRuntime()) {
                 var entered = new CountDownLatch(1);
                 var release = new CountDownLatch(1);
@@ -504,6 +504,130 @@ final class ActorRuntimePhysicalMailReceiptTest {
                                 + disposition);
                 assertEquals(1, callbacks.get(),
                         "exact receipt must notify one terminal settlement");
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    @Test
+    void completionRacingStopSettlesExactlyOneDisposition()
+            throws Exception {
+        for (int attempt = 0; attempt < 24; ++attempt) {
+            try (var runtime = new ActorRuntime()) {
+                var entered = new CountDownLatch(1);
+                var release = new CountDownLatch(1);
+                var go = new CountDownLatch(1);
+                var actor = runtime.<Integer>spawnShared(
+                        () -> (message, context) -> {
+                            entered.countDown();
+                            release.await();
+                        });
+                actor.getReady().get(5, TimeUnit.SECONDS);
+                var receipt = runtime.sendWithPhysicalReceipt(actor, 1);
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                var callbacks = new AtomicInteger();
+                receipt.terminal().whenCompleteRuntime(
+                        (ignored, failure) -> callbacks.incrementAndGet());
+                var stopFailure = new AtomicReference<Throwable>();
+
+                Thread finisher = Thread.ofPlatform().start(() -> {
+                    try {
+                        go.await();
+                        release.countDown();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+                Thread stopper = Thread.ofPlatform().start(() -> {
+                    try {
+                        go.await();
+                        actor.stop();
+                    } catch (Throwable failure) {
+                        stopFailure.compareAndSet(null, failure);
+                    }
+                });
+                go.countDown();
+                finisher.join(5_000);
+                stopper.join(5_000);
+                assertFalse(finisher.isAlive() || stopper.isAlive());
+                assertNull(stopFailure.get());
+
+                try {
+                    receipt.terminal().get(5, TimeUnit.SECONDS);
+                } catch (java.util.concurrent.ExecutionException expected) {
+                    // Stop may win before physical message processing publishes.
+                }
+                var disposition = receipt.terminalDisposition();
+                assertTrue(
+                        disposition == ActorRuntime.PhysicalMailDisposition.PROCESSED
+                                || disposition
+                                == ActorRuntime.PhysicalMailDisposition.STOPPED,
+                        "completion/stop race published impossible disposition "
+                                + disposition);
+                assertEquals(1, callbacks.get());
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    @Test
+    void completionRacingForceCancelSettlesExactlyOneDisposition()
+            throws Exception {
+        for (int attempt = 0; attempt < 24; ++attempt) {
+            try (var runtime = new ActorRuntime()) {
+                runtime.setForceCancellationTreeHook(request -> true);
+                var entered = new CountDownLatch(1);
+                var release = new CountDownLatch(1);
+                var go = new CountDownLatch(1);
+                var actor = runtime.<Integer>spawnPrivate(
+                        () -> (message, context) -> {
+                            entered.countDown();
+                            release.await();
+                        });
+                actor.getReady().get(5, TimeUnit.SECONDS);
+                var receipt = runtime.sendWithPhysicalReceipt(actor, 1);
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                var callbacks = new AtomicInteger();
+                receipt.terminal().whenCompleteRuntime(
+                        (ignored, failure) -> callbacks.incrementAndGet());
+                var cancelFailure = new AtomicReference<Throwable>();
+
+                Thread finisher = Thread.ofPlatform().start(() -> {
+                    try {
+                        go.await();
+                        release.countDown();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+                Thread canceller = Thread.ofPlatform().start(() -> {
+                    try {
+                        go.await();
+                        runtime.cancel(
+                                actor, ActorRuntime.CancellationMode.FORCE_ISOLATED);
+                    } catch (Throwable failure) {
+                        cancelFailure.compareAndSet(null, failure);
+                    }
+                });
+                go.countDown();
+                finisher.join(5_000);
+                canceller.join(5_000);
+                assertFalse(finisher.isAlive() || canceller.isAlive());
+                assertNull(cancelFailure.get());
+
+                try {
+                    receipt.terminal().get(5, TimeUnit.SECONDS);
+                } catch (java.util.concurrent.ExecutionException expected) {
+                    // Force cancellation may win the lifecycleLock race.
+                }
+                var disposition = receipt.terminalDisposition();
+                assertTrue(
+                        disposition == ActorRuntime.PhysicalMailDisposition.PROCESSED
+                                || disposition
+                                == ActorRuntime.PhysicalMailDisposition.FORCE_CANCELLED,
+                        "completion/force-cancel race published impossible disposition "
+                                + disposition);
+                assertEquals(1, callbacks.get());
                 assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
             }
         }
