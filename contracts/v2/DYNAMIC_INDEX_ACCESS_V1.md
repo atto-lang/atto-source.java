@@ -6,6 +6,7 @@ Status: draft implementation on Java/Graal only. The compiler and runtime have *
 
 - A statically resolved closed structural record or struct accepts a string key. Literal keys select one exact declared field type. Runtime-selected string keys produce the union of all fields visible through the receiver's **static** type.
 - A nominal non-actor class accepts a string key for visible data fields. Public fields are available outside the class, private fields only within their declaration owner. Inherited generic field types are substituted before union formation. Methods, actor state and reflective metadata are not indexable.
+- Structural method contract keys (internal `instance$…$arity…$generics…` entries) are excluded from indexed data fields. Neither static nor computed keys may turn such contracts into first-class method values.
 - A tuple or fixed positional product accepts an integer index. Literal indexes must be within arity; dynamic keys return a union of element types and require runtime bounds checks.
 - Arrays and lists retain their existing integer indexing semantics. No implicit conversion of strings to indexes, or indexes to strings, occurs.
 - The runtime evaluates the receiver and key once in left-to-right order, then dispatches. Missing, inaccessible and uninitialized fields fail explicitly.
@@ -18,6 +19,13 @@ A closed record's static type is a **view**, not a promise that the physical bac
 Every closed-record/class IndexExpr is checked by the frontend and receives a weak AST-identity-bound immutable set of permitted field names. The evaluator requires that proof *before* performing Map/OresObject access. Same-text AST nodes never share authority; compiler rewrites explicitly propagate only existing checked key sets, never mint new authority. Class runtime access independently repeats nominal field visibility and uninitialized-field checks. No host/Java interop is permitted through this path.
 
 **Backend obligation:** Any compiler pass cloning IndexExpr must either propagate the checked access proof or re-run full static checking on the rewritten AST. Failure to propagate must fail closed, not turn into unchecked access. For native lowering, a proof becomes a layout-specific fixed key table/bounds check, not a free reflective map lookup.
+
+## Ownership and projection integrity
+
+- After type checking, the ownership checker uses the **same checked AST-identity key set** for record/class read projections. A private field or hidden structural member must not influence the selectable type union for an outside caller.
+- Indexed field reads for classes, structs, records, and immutable tuple products currently require every statically selectable field to be `Copy`-compatible. A literal index needs only its resolved field to be `Copy`-compatible. This prevents repeatable move-only extraction until place-sensitive indexed moves and exclusive projected borrows have been proven.
+- A computed index must never read an affine field through a narrowed record, an inherited class shape, a protected mutex view, or an actor capability.
+- Plain mutable Array/List indexed operations continue to follow the pre-existing collection rules. Affine element moves from mutable collections require a separate audit and are not claimed safe or implemented by this patch.
 
 ## Writes
 
