@@ -94,10 +94,10 @@ final class ExperimentalCheckedI64SharedVectorTest {
     @Test
     void manifestIsCompleteAndPhasesAreExplicit() {
         assertEquals(38, CASES.size(), "only mapped Oreslang source vectors");
-        assertEquals(26, CASES.stream().filter(c -> c.kind().equals("value")).count());
-        assertEquals(12, CASES.stream().filter(c -> c.kind().equals("error")).count());
+        assertEquals(23, CASES.stream().filter(c -> c.kind().equals("value")).count());
+        assertEquals(15, CASES.stream().filter(c -> c.kind().equals("error")).count());
         assertEquals(2, CASES.stream().filter(c -> c.phase().equals("compile")).count());
-        assertEquals(10, CASES.stream().filter(c -> c.phase().equals("runtime")).count());
+        assertEquals(13, CASES.stream().filter(c -> c.phase().equals("runtime")).count());
         assertEquals(38, CASES.stream().map(Vector::id).distinct().count());
     }
 
