@@ -153,6 +153,39 @@ final class MlScalarPublicationGuestLoweringTest {
             """);
     }
 
+    @Test void scalarCapabilitiesCannotBeLaunderedThroughOwnedSumValues() {
+        assertRejected("""
+            define actor Bad as
+                state { version: int = 1; weight: int = 5; }
+                private bad(): int with state.read, alloc {
+                    val snapshot = self.handle_state(critical read |s| -> {
+                        return state_snapshot(s, "version", "weight");
+                    });
+                    val wrapped = Some(snapshot);
+                    return 1;
+                }
+            end
+            """);
+
+        assertRejected("""
+            define actor Bad as
+                state { version: int = 1; weight: int = 5; }
+                private bad(): int with state.read, alloc {
+                    val snapshot = self.handle_state(critical read |s| -> {
+                        return state_snapshot(s, "version", "weight");
+                    });
+                    val publication = prepare_scalar_publication(
+                        snapshot,
+                        "version", 2,
+                        "weight", 4
+                    );
+                    val wrapped = Ok(publication);
+                    return 1;
+                }
+            end
+            """);
+    }
+
     @Test void sealedIntrinsicNamesCannotBeReplacedByModuleValues() {
         assertRejected("""
             pub fnc state_snapshot(int x): int {
