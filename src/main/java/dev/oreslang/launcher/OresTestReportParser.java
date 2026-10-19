@@ -24,6 +24,7 @@ final class OresTestReportParser {
     private OresTestReportParser() { }
 
     static Suite parseSuite(String output) {
+        rejectMalformedLines(output, "ORES_TEST|SUMMARY|", SUMMARY);
         Matcher matches = SUMMARY.matcher(output);
         long tested = 0;
         long failures = 0;
@@ -52,6 +53,7 @@ final class OresTestReportParser {
     }
 
     static FuzzCoverage parseFuzz(String output, Long requestedSeed, Integer requestedRuns) {
+        rejectMalformedLines(output, "ORES_TEST|FUZZ|", FUZZ);
         Matcher matches = FUZZ.matcher(output);
         long inputs = 0;
         int generators = 0;
@@ -73,6 +75,16 @@ final class OresTestReportParser {
                     "native suite did not execute a fuzz_int_cases property generator");
         }
         return new FuzzCoverage(inputs, generators);
+    }
+
+    private static void rejectMalformedLines(String output, String prefix, Pattern expected) {
+        // A valid report mixed with a malformed second event must never
+        // bypass validation merely because Matcher.find() skips bad lines.
+        for (String line : output.split("\\n", -1)) {
+            if (line.startsWith(prefix) && !expected.matcher(line).matches()) {
+                throw new IllegalArgumentException("malformed native test protocol line");
+            }
+        }
     }
 
     private static long positiveNumber(String value, String field) {
