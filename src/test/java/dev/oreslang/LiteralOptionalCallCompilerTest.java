@@ -188,4 +188,83 @@ final class LiteralOptionalCallCompilerTest {
         assertEquals("Alice|anonymous", output.toString(StandardCharsets.UTF_8));
     }
 
+
+    @Test
+    void optInImplicitEmptyCallUsesTheSameFullCheckedNoneAbi() {
+        var checked = LiteralOptionalCallCompiler.lowerImplicitAndAnalyze(
+                source("greet()"), "app", "caller");
+        assertEquals(1, checked.loweredCall().arguments().size());
+        Ast.NameExpr none = assertInstanceOf(
+                Ast.NameExpr.class, checked.loweredCall().arguments().getFirst());
+        assertEquals("None", none.name());
+        assertEquals("Option", checked.checkedTarget().parameters().getFirst().type().name());
+        assertSame(checked.loweredCall(),
+                ((Ast.ReturnStmt) checked.checkedCaller().body().getFirst()).value());
+        // Existing default experimental entry deliberately remains staged-only.
+        assertThrows(IllegalArgumentException.class,
+                () -> LiteralOptionalCallCompiler.lowerAndAnalyze(
+                        source("greet()"), "app", "caller"));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.analyze(Parser.parse(source("greet()"))));
+    }
+
+    @Test
+    void implicitEmptyCallFillsAllOptionalSlotsInDeclarationOrder() {
+        String source = """
+                define module app as
+                    pub fnc combine(int? x, string? y, bool? flag): string {
+                        return "ready";
+                    }
+                    pub fnc caller(): string { return combine(); }
+                end
+                """;
+        var checked = LiteralOptionalCallCompiler.lowerImplicitAndAnalyze(
+                source, "app", "caller");
+        assertEquals(3, checked.loweredCall().arguments().size());
+        assertTrue(checked.loweredCall().arguments().stream().allMatch(
+                value -> value instanceof Ast.NameExpr name && name.name().equals("None")));
+        assertEquals(List.of("int", "string", "bool"),
+                checked.checkedTarget().parameters().stream()
+                        .map(p -> p.type().arguments().getFirst().name()).toList());
+    }
+
+    @Test
+    void implicitEmptyCallNeverInventsARequiredValueOrSelectsAnOverload() {
+        for (String source : List.of(
+                """
+                define module app as
+                    pub fnc f(int value, string? label): int { return value; }
+                    pub fnc caller(): int { return f(); }
+                end
+                """,
+                """
+                define module app as
+                    pub fnc f(): int { return 1; }
+                    pub fnc caller(): int { return f(); }
+                end
+                """,
+                """
+                define module app as
+                    pub fnc f(string? name): int { return 1; }
+                    pub fnc f(int? value): int { return 2; }
+                    pub fnc caller(): int { return f(); }
+                end
+                """)) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> LiteralOptionalCallCompiler.lowerImplicitAndAnalyze(
+                            source, "app", "caller"));
+        }
+    }
+
+    @Test
+    void implicitEmptyCallRejectsGenericExplicitAndNonEmptyCalls() {
+        for (String call : List.of(
+                "greet(name: _)", "greet(name: \"Alice\")", "greet(\"Alice\")",
+                "greet<string>()")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> LiteralOptionalCallCompiler.lowerImplicitAndAnalyze(
+                            source(call), "app", "caller"), call);
+        }
+    }
+
 }
