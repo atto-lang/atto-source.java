@@ -24,6 +24,8 @@ import java.util.Set;
  */
 public final class SendSyncTraits {
     private static final int MAX_TYPE_DERIVATION_DEPTH = 64;
+    private static final int MAX_TYPE_NODES = 4096;
+    private record PendingType(Ast.TypeRef type, int depth) { }
     public record Traits(boolean send, boolean sync) {
         public static final Traits NONE = new Traits(false, false);
         public static final Traits BOTH = new Traits(true, true);
@@ -95,6 +97,7 @@ public final class SendSyncTraits {
 
     private Traits derive(Ast.TypeRef type, Map<String, Ast.TypeRef> substitutions, Set<Key> active) {
         if (type == null || active.size() >= MAX_TYPE_DERIVATION_DEPTH
+                || !boundedTypeShape(type)
                 || type.inferArguments() || type.isComplement()
                 || type.name().equals("$infer$")) return Traits.NONE;
         Ast.TypeRef replacement = substitutions.get(type.name());
@@ -202,6 +205,26 @@ public final class SendSyncTraits {
         } finally {
             active.remove(key);
         }
+    }
+
+    /**
+     * Bound hostile unresolved type graphs before recursive record hashing or
+     * substitution. This is a syntax-preflight resource limit, not a Send proof.
+     */
+    private static boolean boundedTypeShape(Ast.TypeRef root) {
+        java.util.ArrayDeque<PendingType> stack = new java.util.ArrayDeque<>();
+        stack.push(new PendingType(root, 0));
+        int visited = 0;
+        while (!stack.isEmpty()) {
+            PendingType item = stack.pop();
+            if (item.type() == null || item.depth() >= MAX_TYPE_DERIVATION_DEPTH
+                    || ++visited > MAX_TYPE_NODES) return false;
+            for (Ast.TypeRef child : item.type().arguments()) {
+                if (child == null) return false;
+                stack.push(new PendingType(child, item.depth() + 1));
+            }
+        }
+        return true;
     }
 
     private static Ast.TypeRef substitute(Ast.TypeRef type,
