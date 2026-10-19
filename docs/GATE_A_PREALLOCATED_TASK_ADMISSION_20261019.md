@@ -28,7 +28,7 @@ Status: **draft** · 2026-10-19. This integration starts at guest scalar Task #1
 mvn -B -Dores.runtime.carriers=java -DskipTests test-compile
 mvn -B -Dores.runtime.carriers=java \
   -Dsurefire.failIfNoSpecifiedTests=true \
-  -Dtest=OresTaskScopeTest,OresTaskScopeFrameTest,OresTaskScopePreparedOwnerTest,OresTaskScopePreAdmissionOwnershipTest,OresTaskScopeFailedSlotCleanupTest,OresTaskScopeCancellationOrderingTest,OresTaskScopeCoherentQuiescenceTest,TaskTraitAdmissionHardeningTest,GuestScalarTaskAwaitTest,TaskAccessVerifierTest,ScopedTaskTypeBridgeTest \
+  -Dtest=OresTaskScopeTest,OresTaskScopeFrameTest,OresTaskScopePreparedOwnerTest,OresTaskScopePreAdmissionOwnershipTest,OresTaskScopeFailedSlotCleanupTest,OresTaskScopeRetirementBookkeepingTest,OresTaskScopeCancellationOrderingTest,OresTaskScopeCoherentQuiescenceTest,TaskTraitAdmissionHardeningTest,GuestScalarTaskAwaitTest,TaskAccessVerifierTest,ScopedTaskTypeBridgeTest \
   test
 ```
 
