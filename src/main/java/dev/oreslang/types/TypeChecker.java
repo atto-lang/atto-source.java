@@ -229,6 +229,17 @@ public final class TypeChecker {
         for (Ast.ModuleDecl module : program.modules()) {
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
+                String declaredName = null;
+                if (decl instanceof Ast.FunctionDecl fn) declaredName = fn.name();
+                else if (decl instanceof Ast.ClassDecl klass) declaredName = klass.name();
+                else if (decl instanceof Ast.InterfaceDecl iface) declaredName = iface.name();
+                else if (decl instanceof Ast.TypeAliasDecl alias) declaredName = alias.name();
+                if ("Region".equals(declaredName) || "RegionHandle".equals(declaredName)
+                        || "Motion".equals(declaredName)) {
+                    throw new IllegalArgumentException(
+                            "Region<Motion> V0 reserves compiler-owned type/factory name '"
+                                    + declaredName + "'");
+                }
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
