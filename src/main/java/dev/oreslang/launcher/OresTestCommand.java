@@ -151,9 +151,24 @@ final class OresTestCommand {
         // Native TestSuite orchestration always runs guest Oreslang.
         ByteArrayOutputStream out = new BoundedCapture();
         ByteArrayOutputStream err = new BoundedCapture();
-        var result = LinkedProgramRunner.runWithExitStatus(
-                file, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
-                out, err);
+        // Verified tests must compile the exact source-unit snapshots whose
+        // closure digest matched the preflight trace. A source rewrite after
+        // the preflight check is rejected before guest compilation/execution.
+        LinkedProgramRunner.RunResult result;
+        if (sourceHashBefore != null) {
+            try {
+                result = LinkedProgramRunner.runWithExitStatusVerified(
+                        file, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                        sourceHashBefore, out, err);
+            } catch (java.io.IOException changedClosure) {
+                return usage("cannot execute verified source closure: "
+                        + changedClosure.getMessage());
+            }
+        } else {
+            result = LinkedProgramRunner.runWithExitStatus(
+                    file, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                    out, err);
+        }
         System.out.write(out.toByteArray());
         System.err.write(err.toByteArray());
         if (result.exitStatus() != 0) return result.exitStatus();
