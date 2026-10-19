@@ -2304,10 +2304,7 @@ public final class TypeChecker {
                                     "field '" + field.owner().name() + "." + field.field().name()
                                             + "' is immutable/final; indexed assignment cannot initialize fixed class fields");
                         }
-                        Type pattern = resolve(
-                                field.field().type(),
-                                Set.copyOf(field.owner().genericParameters()),
-                                field.ownerType());
+                        Type pattern = classFieldType(field.owner(), field.field());
                         targetType = substituteGenerics(
                                 pattern, classGenericBindings(field.owner(), field.ownerType()));
                     } else {
@@ -2322,10 +2319,7 @@ public final class TypeChecker {
                                                 + field.owner().name() + "." + field.field().name()
                                                 + "' is immutable/final");
                             }
-                            Type pattern = resolve(
-                                    field.field().type(),
-                                    Set.copyOf(field.owner().genericParameters()),
-                                    field.ownerType());
+                            Type pattern = classFieldType(field.owner(), field.field());
                             writableFields.add(substituteGenerics(
                                     pattern, classGenericBindings(field.owner(), field.ownerType())));
                         }
@@ -5215,7 +5209,7 @@ public final class TypeChecker {
                                             + "' is immutable/final; constructor must initialize it at most once");
                         }
                     }
-                    Type pattern = resolve(field.field().type(), Set.copyOf(field.owner().genericParameters()), field.ownerType());
+                    Type pattern = classFieldType(field.owner(), field.field());
                     return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                 }
             }
