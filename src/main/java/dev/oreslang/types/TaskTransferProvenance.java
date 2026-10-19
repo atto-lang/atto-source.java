@@ -21,6 +21,11 @@ import java.util.Objects;
  * lifetime/quiescence admission.</p>
  */
 public final class TaskTransferProvenance {
+    private static final int MAX_BOUNDARIES = 4_096;
+    private static final int MAX_TRANSFERS_PER_BOUNDARY = 4_096;
+    private static final int MAX_TOTAL_TRANSFERS = 65_536;
+    private static final int MAX_NAME_CHARS = 256;
+
     public enum TransferKind {
         /** Copy value; the original binding remains usable. */
         COPY,
@@ -37,6 +42,10 @@ public final class TaskTransferProvenance {
 
         Transfer(String name, Ast.TypeRef type, TransferKind kind) {
             this.name = Objects.requireNonNull(name, "name");
+            if (name.isBlank() || name.length() > MAX_NAME_CHARS) {
+                throw new IllegalArgumentException(
+                        "invalid Task transfer provenance name");
+            }
             this.type = Objects.requireNonNull(type, "type");
             this.kind = Objects.requireNonNull(kind, "kind");
         }
@@ -48,6 +57,7 @@ public final class TaskTransferProvenance {
 
     private final IdentityHashMap<Object, List<Transfer>> byBoundary =
             new IdentityHashMap<>();
+    private int totalTransfers;
     private boolean sealed;
 
     TaskTransferProvenance() { }
@@ -58,11 +68,21 @@ public final class TaskTransferProvenance {
                     "Task transfer provenance is already sealed");
         }
         Objects.requireNonNull(boundary, "boundary");
-        List<Transfer> copy = List.copyOf(transfers);
-        if (byBoundary.putIfAbsent(boundary, copy) != null) {
+        List<Transfer> copy =
+                List.copyOf(Objects.requireNonNull(transfers, "transfers"));
+        if (copy.size() > MAX_TRANSFERS_PER_BOUNDARY
+                || byBoundary.size() >= MAX_BOUNDARIES
+                || copy.size() > MAX_TOTAL_TRANSFERS - totalTransfers) {
+            throw new IllegalStateException(
+                    "Task transfer provenance capacity exceeded");
+        }
+        if (byBoundary.containsKey(boundary)) {
             throw new IllegalStateException(
                     "duplicate Task transfer provenance for one AST boundary");
         }
+        // Commit only after every bound/duplicate check so rejection is atomic.
+        byBoundary.put(boundary, copy);
+        totalTransfers += copy.size();
     }
 
     TaskTransferProvenance seal() {
@@ -88,11 +108,7 @@ public final class TaskTransferProvenance {
     }
 
     public int transferCount() {
-        int count = 0;
-        for (Map.Entry<Object, List<Transfer>> entry : byBoundary.entrySet()) {
-            count += entry.getValue().size();
-        }
-        return count;
+        return totalTransfers;
     }
 
     public boolean sealed() {
