@@ -1,0 +1,96 @@
+package dev.oreslang.runtime;
+
+import java.util.Objects;
+
+/**
+ * Trusted CONTROL-side preflight coupling for the actor code-generation gate
+ * and the bounded, route-stable logical mailbox.
+ *
+ * <p>Freezes new generation work AND physical DATA dispatch. Bytes may still
+ * be admitted to the bounded logical mailbox. Once previously dispatched
+ * messages and external/suspended-task leases drain, this preflight reports
+ * readiness for a later **atomic actor-route transaction**.</p>
+ *
+ * <p>This intentionally has NO publish() method. Independently committing
+ * ActorUpgradeEpochGate and FreezeTicket is NOT an atomic route/image/state
+ * cutover and risks split-brain state if the second commit fails. The future
+ * router must own one linearizable generation+state+route publication step.
+ * Until then this is only a reversible, fail-closed host admission barrier.</p>
+ */
+final class ActorUpgradePreflightV1 implements AutoCloseable {
+    private final ActorUpgradeEpochGate generation;
+    private final ActorUpgradeEpochGate.Candidate staged;
+    private final LogicalActorProxyMailboxV1.FreezeTicket mailboxTicket;
+    private boolean closed;
+
+    private ActorUpgradePreflightV1(
+            ActorUpgradeEpochGate generation,
+            ActorUpgradeEpochGate.Candidate staged,
+            LogicalActorProxyMailboxV1.FreezeTicket ticket) {
+        this.generation = generation;
+        this.staged = staged;
+        this.mailboxTicket = ticket;
+    }
+
+    static ActorUpgradePreflightV1 prepare(
+            ActorUpgradeEpochGate generation,
+            LogicalActorProxyMailboxV1 mailbox,
+            ActorUpgradeEpochGate.Image image) {
+        Objects.requireNonNull(generation, "generation");
+        Objects.requireNonNull(mailbox, "mailbox");
+        Objects.requireNonNull(image, "code image");
+
+        // Freeze new Task/code pin admission FIRST. If mailbox freeze fails,
+        // the candidate must be aborted to restore old-route availability.
+        ActorUpgradeEpochGate.Candidate staged = generation.prepare(image);
+        try {
+            return new ActorUpgradePreflightV1(
+                    generation, staged, mailbox.freezeDispatchForUpgrade());
+        } catch (RuntimeException | Error failure) {
+            try {
+                generation.abort(staged);
+            } catch (RuntimeException | Error rollback) {
+                if (failure != rollback) failure.addSuppressed(rollback);
+            }
+            throw failure;
+        }
+    }
+
+    /**
+     * Stable pre-commit drain observation under existing admission freezes.
+     * Not authorization to publish: state migration, actor turn/FFI provenance,
+     * logical ActorRef CAS, protection-domain checks and physical worker
+     * proof are still required.
+     */
+    synchronized boolean quiescentSnapshot() {
+        requireOpen();
+        return generation.livePins() == 0 && mailboxTicket.drained();
+    }
+
+    private void requireOpen() {
+        if (closed) throw new IllegalStateException("upgrade preflight is closed");
+    }
+
+    /** Abort both freezes; never expose partial publication as success. */
+    @Override
+    public synchronized void close() {
+        if (closed) return;
+        // If one rollback fails, still attempt the other. A failed barrier
+        // remains a supervisor-visible failure, not a successful upgrade.
+        Throwable failure = null;
+        try {
+            mailboxTicket.rollback();
+        } catch (RuntimeException | Error error) {
+            failure = error;
+        }
+        try {
+            generation.abort(staged);
+        } catch (RuntimeException | Error error) {
+            if (failure == null) failure = error;
+            else if (failure != error) failure.addSuppressed(error);
+        }
+        closed = true;
+        if (failure instanceof Error error) throw error;
+        if (failure instanceof RuntimeException error) throw error;
+    }
+}
