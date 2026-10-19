@@ -175,3 +175,43 @@ not durable deduplication, a cryptographically authenticated
 transport ambiguity still requires supervisory quarantine/reconciliation.
 The coordinator is not yet the physical ActorRef publication authority.
 PRIVATE and UNTRUSTED remain disabled for this same-process bridge.
+
+## SHARED proxy route publication linearization — October 19, 2026
+
+`LogicalSourceActorProxyBridgeV1` now binds its mailbox **once** to its
+`LogicalSourceActorRouterV1` physical authority. Bound routers reject the
+legacy raw `LogicalActorRef.send(Object)` and direct unproxied `upgradeTo`
+paths. All proxy physical sends require that exact bound mailbox and the
+exact outstanding copied envelope; a foreign mailbox or forged receipt cannot
+consume its credits.
+
+The bridge's `upgradeTo` passes its active `FreezeTicket` to
+`upgradeToForProxy`. Under **one physical route monitor**, the router first
+preallocates its new immutable `Route`, verifies that the ticket belongs to
+the bound mailbox and its old route epoch and has drained, commits the mailbox
+epoch, then publishes the physical route pointer without allocating or
+performing user callbacks in between. The bridge's dispatch monitor prevents
+proxy dequeue while this transaction runs; the router's route monitor prevents
+any physical route lookup/send from observing an intermediate publication.
+Bounded admission remains available throughout the freeze.
+
+A post-publication retirement error may still quarantine the bridge and
+retain the retired actor's code-generation lease; it must **never** replay
+the old route or refund speculative credits. This is a SHARED-only, trusted
+host scalar upgrade proof, **not** a distributed transaction, durable
+exactly-once delivery, remote authenticated mail.done receipt, or general
+compiler-generated typed message transport.
+
+Regressions authored: raw bound-ActorRef bypass refusal, one-time ownership
+binding, foreign freeze rejection, unproxied upgrade refusal, and a concurrent
+coherent physical/mailbox epoch observer during a real source-compiled SHARED
+actor upgrade with queued mail and preserved state. Pending exact-head Maven
+and JDK25/Graal execution; Github Actions failing with `steps: null` or
+missing logs supplies no passing/failed Java test evidence.
+
+**Remaining production authority gap:** integrate compiler-owned immutable
+ABI-tagged messages, true per-message authenticated delivery/terminal receipts,
+and the compiler/scheduler's Task/continuation/FFI code-generation pins into
+one CONTROL-owned publication boundary. The earlier
+`LogicalActorUpgradeCoordinatorV1` remains a host-only staged seam; it is
+not yet the same physical actor-route authority.
