@@ -157,6 +157,14 @@ public final class TypeChecker {
     public static Ast.Program checkTypesWithImportedClasses(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases) {
+        return checkTypesWithImportedClassesWithDiagnostics(
+                program, linkedClasses, linkedAliases).program();
+    }
+
+    /** Proof metadata must cross both type and ownership passes in linked builds. */
+    public static TypeCheckResult checkTypesWithImportedClassesWithDiagnostics(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases) {
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
@@ -195,7 +203,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
-        return program;
+        return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
     private void validateImports(Ast.Program program) {
