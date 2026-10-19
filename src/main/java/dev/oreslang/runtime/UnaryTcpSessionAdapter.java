@@ -257,6 +257,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
         this.limits = Objects.requireNonNull(limits, "limits");
         this.authenticator = Objects.requireNonNull(authenticator, "authenticator");
         this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher");
+        this.global = new GlobalBudget(limits);
         timers.setRemoveOnCancelPolicy(true);
         timers.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
     }
@@ -290,7 +291,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             session = new Session(socket, connection, peer, identity[0], identity[1]);
             sessions.add(session);
             session.run();
-        } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+        } catch (Error fatal) {
             throw fatal;
         } catch (Throwable ignored) {
             // Authentication, protocol and transport failures are session-local.
@@ -416,7 +417,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
                 handle = Objects.requireNonNull(
                         dispatcher.dispatch(request),
                         "unary TCP dispatcher returned null handle");
-            } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+            } catch (Error fatal) {
                 finish(admitted, Reply.error(), false);
                 throw fatal;
             } catch (Throwable failure) {
@@ -437,14 +438,14 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
                         } else {
                             finish(admitted, reply, false);
                         }
-                    } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                    } catch (Error fatal) {
                         close();
                         throw fatal;
                     } catch (Throwable ignored) {
                         finish(admitted, Reply.error(), false);
                     }
                 });
-            } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+            } catch (Error fatal) {
                 finish(admitted, Reply.error(), true);
                 throw fatal;
             } catch (Throwable failure) {
