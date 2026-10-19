@@ -110,7 +110,8 @@ public final class UnaryTcpSessionAdapterCheck {
                 globalBytes,
                 1024,
                 2000,
-                requestDeadlineMillis);
+                requestDeadlineMillis,
+                1000);
     }
 
     private static Binding binding(Socket socket) throws IOException {
@@ -408,7 +409,7 @@ public final class UnaryTcpSessionAdapterCheck {
         BindingAuthenticator blockingAuth = new BindingAuthenticator();
         ManualDispatcher manual = new ManualDispatcher();
         UnaryTcpSessionAdapter.Limits oneConnection = new UnaryTcpSessionAdapter.Limits(
-                1, 1, 8, 2, 16, 1024, 2000, 1000);
+                1, 1, 8, 2, 16, 1024, 2000, 1000, 1000);
         try (var adapter = new UnaryTcpSessionAdapter(oneConnection, blockingAuth, manual);
              var server = new ServerSocket(0, 8, InetAddress.getLoopbackAddress());
              var pool = Executors.newVirtualThreadPerTaskExecutor()) {
