@@ -51,12 +51,13 @@ final class V3DefaultArgValsAdmissionTest {
         Ast.Param formal = function("""
                 pub fnc f(int? a): void { return; }
                 """).parameters().getFirst();
-        assertEquals("Option", formal.type().name());
+        assertTrue(formal.type().isStagedV3Option());
+        assertEquals("$v3_option_sugar$", formal.type().name());
         assertEquals("int", formal.type().arguments().getFirst().name());
         assertFalse(formal.optional());
         assertFalse(formal.argumentOmittable());
         assertEquals("Option", formal.calleeType().name());
-        assertEquals("Option", formal.valueType().name());
+        assertTrue(formal.valueType().isStagedV3Option());
         assertFalse(OptionalCallShapeBinder.stagedV3ParameterShapes(
                 List.of(formal), List.of()).getFirst().optional());
     }
@@ -115,7 +116,7 @@ final class V3DefaultArgValsAdmissionTest {
                 pub fnc f(int? a?, string b): void { return; }
                 """);
         var first = f.parameters().getFirst();
-        assertEquals("Option", first.type().name());
+        assertTrue(first.type().isStagedV3Option());
         assertTrue(first.argumentOmittable());
         assertFalse(first.optional());
         assertEquals(List.of(true, false), OptionalCallShapeBinder
@@ -350,4 +351,50 @@ final class V3DefaultArgValsAdmissionTest {
                 V3DefaultArgValsPolicy.validateDeclaration(
                         List.of(formal), List.of(annotation)));
     }
+    @Test
+    void requiredV3OptionTypeCannotBypassCompilerAdmission() {
+        Ast.Program program = Parser.parseStagedV3("""
+                pub fnc f(int? value): void { return; }
+                """);
+        Ast.Param param = ((Ast.FunctionDecl) program.modules().getFirst()
+                .declarations().getFirst()).parameters().getFirst();
+        assertTrue(param.type().containsStagedV3Option());
+        assertFalse(param.argumentOmittable());
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(program));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(program));
+        assertThrows(IllegalArgumentException.class, () -> OwnershipChecker.check(program));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.formalParameterShapes(List.of(param)));
+    }
+
+    @Test
+    void returnTypeAndNestedLocalV3TypeSugarMustAlsoFailClosed() {
+        Ast.Program withReturn = Parser.parseStagedV3("""
+                pub fnc f(): int? { return None; }
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(withReturn));
+        Ast.Program withLocal = Parser.parseStagedV3("""
+                pub fnc f(): void {
+                    val Box<string?> result = None;
+                    return;
+                }
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(withLocal));
+    }
+
+    @Test
+    void forgedStagedTypeMarkersCannotUseLegacyAbiPreview() {
+        Ast.TypeRef staged = Ast.TypeRef.stagedV3Option(Ast.TypeRef.simple("int"));
+        Ast.Param p = new Ast.Param(staged, "value");
+        assertTrue(p.type().containsStagedV3Option());
+        assertEquals("Option", p.calleeType().name()); // Preview only
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(List.of(p)));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.formalParameterShapes(List.of(p)));
+    }
+
 }
