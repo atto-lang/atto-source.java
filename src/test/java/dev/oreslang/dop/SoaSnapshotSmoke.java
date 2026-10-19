@@ -76,6 +76,25 @@ public final class SoaSnapshotSmoke {
         expect(SoaSnapshot.fromRows(Map.of("", String.class),
                 List.of(Map.of("", "value"))).column("").equals(List.of("value")),
                 "empty quoted key");
+        Map<String, Class<?>> reversed = new LinkedHashMap<>();
+        reversed.put("active?", Boolean.class);
+        reversed.put("age", Integer.class);
+        reversed.put("first name", String.class);
+        expect(SoaSnapshot.fromRows(reversed, snapshot.toRows()).columns().keySet()
+                        .equals(snapshot.columns().keySet()),
+                "host canonical column order ignores input map iteration order");
+        expect(new ArrayList<>(snapshot.columns().keySet()).equals(
+                        List.of("active?", "age", "first name")),
+                "canonical UTF-16 key order");
+        denied(() -> SoaSnapshot.fromRows(Map.of("bad" + (char) 0xD800, String.class), List.of()),
+                "unpaired high surrogate forbidden");
+        denied(() -> SoaSnapshot.fromRows(Map.of("bad" + (char) 0xDC00, String.class), List.of()),
+                "unpaired low surrogate forbidden");
+        denied(() -> SoaSnapshot.fromRows(Map.of("x".repeat(SoaSnapshot.MAX_FIELD_NAME_UNITS + 1),
+                String.class), List.of()), "oversized key forbidden");
+        expect(SoaSnapshot.fromRows(Map.of("🚀", String.class),
+                List.of(Map.of("🚀", "ready"))).column("🚀").equals(List.of("ready")),
+                "paired Unicode surrogate allowed");
         randomizedRoundTrips();
     }
 
