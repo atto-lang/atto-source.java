@@ -149,6 +149,44 @@ workflows that execute with the carrier's own token. Even verified branch
 protection metadata is not proof of a safe workflow: independent reviewers
 must still audit the carrier's effective rulesets and executable workflow
 definitions for exfiltration and unsafe privilege escalation.
+
+### Pending carrier execution-isolation review (2026-10-19)
+
+Main-branch CODEOWNERS approval alone does **not** protect a newly created
+`ci/oreslang-*` branch from later pushes, force updates, unsafe dispatches, or
+privileged workflow execution on that branch. The publisher authenticates
+`main` and verifies the newly created source subtree, but **does not yet prove**
+that CI branch refs are immutable or that a workflow execution uses only the
+verified new commit. No successful source-free tree check cures this gap.
+Before authorizing any private source transfer, the security owner must:
+
+1. Prove effective private carrier branch/ruleset protection for the CI ref
+   namespace or use an independently reviewed execution design that prevents
+   arbitrary actors from modifying approved source refs. The workflow must
+   checkout a fixed carrier commit SHA, never a movable branch alone, and
+   revalidate the nested source Git-tree SHA before compiling or loading code.
+2. Audit **every** carrier Actions workflow and trigger, including
+   `workflow_dispatch`, scheduled jobs, PR triggers, artifact upload and
+   inherited organization/repository secrets. A branch-local manual dispatch
+   or build step can execute different code from the reviewed `main` workflow.
+   Avoid transferring source into a carrier exposing unreviewed privileged
+   credentials or workflows to the source-bearing branch.
+3. Prove the actual source-testing workflow is read-only, minimally permissioned,
+   immutable-SHA-bound, and incapable of running attacker-modified code with
+   private secrets. Verify source-tree equality as the very first source-touching
+   step and prove cache/artifact/log retention and cleanup policy.
+4. Verify the carrier's **merged** `.github/CODEOWNERS` exists on protected
+   `main`. A proposed CODEOWNERS PR without an enforced merge gate is not enough.
+
+Live 2026-10-19 inspection of candidate
+`fiducia-cloud-test/java-client-consumer` found no `.github/CODEOWNERS` on
+`main` (404), no protected `main`, and an existing `live.yml` containing
+`workflow_dispatch`, a conditional GitHub App token step, and a reference to
+`secrets.CROSS_ORG_APP_PRIVATE_KEY`. This does **not** establish that the secret
+is populated or leaked; it is a mandatory execution/credential-isolation review
+item. Carrier [CODEOWNERS PR #12](https://github.com/fiducia-cloud-test/java-client-consumer/pull/12)
+remains a draft proposal. **Do not publish source** until this separate gate
+is verified and independently approved.
 Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
 branches, including `main`, are never updated. Before declaring success,
 it verifies that the ref-creation response, fresh ref readback (including
