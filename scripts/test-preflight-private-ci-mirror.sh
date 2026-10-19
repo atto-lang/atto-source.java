@@ -31,8 +31,8 @@ git -C "$repo" -c user.name=CI-Feature -c user.email=ci-feature@example.invalid 
 head="$(git -C "$repo" rev-parse HEAD)"
 tree="$(git -C "$repo" rev-parse HEAD^{tree})"
 dest_branch="ci/oreslang-test"
-dest_base_commit="1012deffdaa3d0aec03a98073dc1f48ec1565c08"
-dest_base_tree="de8053d4005b326929e8734a5be741e82b40e9e7"
+dest_base_commit="ec6a5ddc39dd5524285fcc18902d777c4827c666"
+dest_base_tree="c7eba95c9abfc008e395194360327026cf33bd9c"
 
 cat > "$tmp/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -122,10 +122,10 @@ case "$endpoint" in
       exit 1
     fi
     ;;
-  "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/git/commits/1012deffdaa3d0aec03a98073dc1f48ec1565c08")
+  "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/git/commits/ec6a5ddc39dd5524285fcc18902d777c4827c666")
     printf '%s\t%s\n' \
-      "${SYNTH_DEST_BASE_COMMIT:-1012deffdaa3d0aec03a98073dc1f48ec1565c08}" \
-      "${SYNTH_DEST_BASE_TREE:-de8053d4005b326929e8734a5be741e82b40e9e7}"
+      "${SYNTH_DEST_BASE_COMMIT:-ec6a5ddc39dd5524285fcc18902d777c4827c666}" \
+      "${SYNTH_DEST_BASE_TREE:-c7eba95c9abfc008e395194360327026cf33bd9c}"
     ;;
   *)
     printf 'unexpected synthetic gh endpoint: %s\n' "$endpoint" >&2

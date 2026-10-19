@@ -84,8 +84,8 @@ carrier.
 ## Reviewed destination execution containment
 
 The reviewed carrier is immutable Git commit
-`1012deffdaa3d0aec03a98073dc1f48ec1565c08`, tree
-`de8053d4005b326929e8734a5be741e82b40e9e7`. Authorization binds those Git
+`ec6a5ddc39dd5524285fcc18902d777c4827c666`, tree
+`c7eba95c9abfc008e395194360327026cf33bd9c`. Authorization binds those Git
 objects directly; movement of destination `main` is not an authorization
 input.
 
@@ -131,7 +131,11 @@ Git blob SHA-1 against the source bytes. It checks that the reviewed destination
 repository ID have not changed before every API write, in addition to
 rechecking the destination's live private visibility. It does not print source contents in API failures.
 API failure before ref creation can leave unreferenced Git objects in
-the private destination; a follow-up retention policy is still needed.
+the private destination. Reachable `ci/oreslang-*` refs are deleted by the
+trusted default-branch `workflow_run` cleanup after the exact-tree workflow
+completes, guarded by the tested head SHA. Unreferenced Git object retention
+remains subject to GitHub server-side garbage collection and is not immediate
+cryptographic erasure.
 
 It does **not** intercept arbitrary connector/API tool writes, cannot
 completely prevent visibility changes between API checks, and cannot
