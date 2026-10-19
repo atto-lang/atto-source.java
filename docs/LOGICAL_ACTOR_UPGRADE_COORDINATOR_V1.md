@@ -552,3 +552,55 @@ still has zero approved private destinations and security #962 remains open.
 No private Git tree was mirrored to another organization. Neither a
 well-formed code digest nor a host publication snapshot constitutes
 a production cryptographic artifact signature or code-retirement proof.
+
+## ORM2 publication freeze and exact production UTF-8 codec audit — October 19, 2026
+
+The SHARED bridge previously returned a coherent `Publication` whose
+`authoritativeForDispatch()` accepted any non-closed, non-poisoned
+mailbox with equal code/route epochs, without checking an explicitly
+frozen proxy dispatch epoch. A code/image observation during a legitimate
+upgrade freeze must NOT confer live physical dispatch authority. It now
+requires `!mailbox.dispatchFrozen()` as well. The typed ORM2 bridge
+publication also checks the original immutable compiler-bound message ABI
+against its authoritative source image, mirroring the previously added ORM1
+scalar drift guard, and fail-seals on inconsistency.
+
+New real-source `LogicalSourceActorFrozenPublicationTest` exercises an
+`ActorMail<string>` SHARED source actor: under a real mailbox freeze, the
+snapshot remains diagnostic but cannot authorize dispatch; bounded
+admission can queue a string; physical dispatch remains frozen; explicit
+rollback restores dispatch and delivers the original immutable queued
+string exactly once. An old frozen snapshot remains non-authoritative
+after rollback. These committed JUnit cases have not executed under
+JDK25/Graal source CI.
+
+**Actual local production codec defect detected and fixed concurrently:**
+the original `SourceActorTypedWireV2.java` exact Git blob
+`48c6c12d8a4e19944147d9ad6ec53b3036e54891` called
+`CoderResult.throwException()` unconditionally after UTF-8
+`encode()` and `flush()`. A successful Java charset-encoder
+`UNDERFLOW` result caused `BufferUnderflowException` even for valid
+strings, so the source's existing ORM2 JUnit tests would have failed.
+During the audit another concurrent branch edit landed the correct
+`if (result.isError()) result.throwException()` guard, yielding exact
+Git blob `c302cdf467e4802033f09586aeab3c301a841a88`.
+The audit confirmed byte-for-byte exact blob identity using
+`git hash-object`. The *real* production ORM2 codec was compiled with
+OpenJDK 21 using `javac --release 21 -Xlint:all -Werror` against minimal
+stubs for the two runtime-dependent binding types, then exercised by an
+independent Java executable probe: **201,003 passing checks** across
+signed-int, boolean, strings (including empty, ASCII, Unicode and
+supplementary code points), header mutation, invalid booleans, wrong
+binding/incarnation, truncated/overlong UTF-8 and capacity refusals.
+The prior exact production codec blob failed with
+`java.nio.BufferUnderflowException`, so this was an observed source defect,
+not a speculative redesign.
+
+**Scope limit:** the above executed the real codec in isolation with
+stub dependencies. It is not Maven/JUnit/Graal/Native Image execution
+of the complete private Oreslang compiler or live actor bridge.
+At most recently inspected head, source-owned `ci` and `fast-ci` still
+reported failures with `steps:null`. Private cross-org transfer remains
+unauthorized while source `main`'s approved destination list is empty,
+security #962 is open and required branch protection #904 lacks verification.
+Keep PR DRAFT and production hot reload disabled.
