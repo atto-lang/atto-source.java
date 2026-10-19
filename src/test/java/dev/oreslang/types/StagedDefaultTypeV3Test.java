@@ -64,6 +64,15 @@ final class StagedDefaultTypeV3Test {
                         Ast.TypeRef.boolLiteral(false)).kind());
     }
 
+    @Test void nestedOptionScalarDefaultDoesNotSilentlyLoseSomeLayer() {
+        Ast.TypeRef nested = new Ast.TypeRef("Option",
+                java.util.List.of(option("int")), false);
+        assertThrows(IllegalArgumentException.class,
+                () -> StagedDefaultTypeV3.verifyKnownBuiltin(nested, number("5")));
+        assertEquals(DefaultCallShapeV3.ConstantKind.NONE,
+                StagedDefaultTypeV3.verifyKnownBuiltin(nested, type("None")).kind());
+    }
+
     @Test void unresolvedAliasesCannotMintTrustedBuiltins() {
         assertNull(StagedDefaultTypeV3.verifyKnownBuiltin(type("MyInt"), number("4")));
         assertNull(StagedDefaultTypeV3.verifyKnownBuiltin(type("OptionAlias"), type("None")));
