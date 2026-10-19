@@ -34,6 +34,38 @@ final class OresTaskScopeCancellationOrderingTest {
     }
 
     @Test
+    void deferredFutureCancellationRevokesBeforeDeliveringOldAndLateWaiters() {
+        var revoked = new java.util.concurrent.atomic.AtomicInteger();
+        var delivered = new java.util.concurrent.atomic.AtomicInteger();
+        var future = new OresFuture<Integer>(revoked::incrementAndGet);
+
+        future.whenCompleteRuntime((ignored, failure) -> {
+            assertInstanceOf(java.util.concurrent.CancellationException.class, failure);
+            assertEquals(1, revoked.get(), "producer must be revoked first");
+            delivered.incrementAndGet();
+        });
+
+        Runnable notify = future.cancelDeferredNotification();
+        assertNotNull(notify);
+        assertTrue(future.isCancelled());
+        assertEquals(1, revoked.get());
+        assertEquals(0, delivered.get(), "early subscriber must be deferred");
+        future.whenCompleteRuntime((ignored, failure) -> {
+            assertInstanceOf(java.util.concurrent.CancellationException.class, failure);
+            assertEquals(1, revoked.get());
+            delivered.incrementAndGet();
+        });
+        assertEquals(0, delivered.get(), "late subscriber must also be deferred");
+
+        notify.run();
+        assertEquals(2, delivered.get());
+        notify.run();
+        assertEquals(2, delivered.get(), "delivery must be single-shot");
+        assertNull(future.cancelDeferredNotification(),
+                "terminal cancellation cannot mint another notification");
+    }
+
+    @Test
     void parentCancellationHookCannotCreateTaskInGrandchild() throws Exception {
         try (var runtime = new AsyncRuntime();
              var root = new OresTaskScope(runtime)) {
