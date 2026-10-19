@@ -216,6 +216,23 @@ final class InvertedArrayTest {
     }
 
     @Test
+    void cannotSilentlyDropDeclaredMethodsThroughSchemaOnlyConstructor() {
+        var withMethod = declaration("""
+                define inverted class Counter as
+                    value: f64;
+                    inc(f64 d): void { self.value = self.value + d; }
+                end
+                """);
+        var schema = InvertedArray.Schema.fromClass(withMethod);
+        assertThrows(IllegalArgumentException.class, () -> new InvertedArray(schema, 1));
+        try (var array = InvertedArray.fromClass(withMethod, 1)) {
+            var row = array.pushValues(1.0);
+            array.invoke(row, "inc", 2.0);
+            assertEquals(3.0, array.read(row, "value"));
+        }
+    }
+
+    @Test
     void rejectsUnsupportedAndEffectfulMethodBodiesBeforeAllocatingOwner() {
         String[] methods = {
                 "sleep(f64 x): void { await x; }",
