@@ -348,7 +348,10 @@ static_struct_key
                 = member_name | STRING_LITERAL ;
 
 literal         = INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL | STRING_LITERAL
-                | "true" | "false" ;
+                | SYMBOL_LITERAL | "true" | "false" ;
+(* SYMBOL_LITERAL is lexed from #identifier or a quoted #\"...\"/#'...' name,
+   with source validation in Lexer and OresSymbol. Policy validation is
+   independent of lexical recognition. *)
 
 type_ref        = type_atom { "|" type_atom } ;
 
