@@ -23,6 +23,15 @@ final class NativeTestingFrameworkTest {
     }
 
     @Test
+    void nativeSeededFuzzerActuallyExecutesGeneratedGuestInputs() throws Exception {
+        String output = run(Path.of("examples/native-fuzz-testing.ores"));
+        assertTrue(output.contains("ORES_TEST|FUZZ|seed=17|cases=97"), output);
+        assertTrue(output.contains(
+                "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=0"),
+                output);
+    }
+
+    @Test
     void nativeFrameworkEnforcesFilteringAndFailFast() throws Exception {
         String output = run(Path.of("examples/native-testing-semantics.ores"));
         assertTrue(output.contains(
