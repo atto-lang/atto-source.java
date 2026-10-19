@@ -143,6 +143,25 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        // Cache immutable proofs by AST *identity* within this evaluator.
+        // Concurrent actor carriers share an evaluator; never use record
+        // structural equality for a permission lookup, and never cache a
+        // failed/missing proof. All proof creation remains compiler-only.
+        private final Map<Ast.IndexExpr, Set<String>> indexedFieldPlanCache =
+                java.util.Collections.synchronizedMap(new IdentityHashMap<>());
+
+        private void requireCheckedIndexedField(Ast.IndexExpr site, String key) {
+            Set<String> visible;
+            synchronized (indexedFieldPlanCache) {
+                visible = indexedFieldPlanCache.computeIfAbsent(
+                        site, Ast.CheckedIndexKeys::requirePlan);
+            }
+            if (!visible.contains(key)) {
+                throw new IllegalArgumentException(
+                        "unknown or inaccessible field '" + key + "' in indexed view");
+            }
+        }
+
         /** Exact immutable image published by link(); shared by all source actors. */
         private volatile SharedCodeImageStore.CodeImage linkedCodeImage;
         private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
@@ -4496,7 +4515,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 // A record may be a narrowed structural view of a wider backing
                 // map. Check *the compiled view*, not the physical key set.
-                Ast.CheckedIndexKeys.require(site, key);
+                requireCheckedIndexedField(site, key);
                 if (!map.containsKey(key)) {
                     throw new IllegalArgumentException("unknown struct/record key " + key);
                 }
@@ -4511,7 +4530,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (!(index instanceof String key)) {
                     throw new IllegalArgumentException("class field index must be a string");
                 }
-                Ast.CheckedIndexKeys.require(site, key);
+                requireCheckedIndexedField(site, key);
                 if (!object.fields.containsKey(key)) {
                     throw new IllegalArgumentException("unknown class field '" + key + "'");
                 }
