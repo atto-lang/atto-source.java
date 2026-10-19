@@ -5653,6 +5653,11 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "structural pattern target must be a structural record, interface, or trait; concrete struct shapes require exact type matching");
             }
+            // 'structural { ... }' is a contract view. Converting only the
+            // pattern target keeps ordinary RECORD and STRUCT values distinct.
+            if (record.kind() == AggregateKind.RECORD) {
+                return new Record(record.members(), true, AggregateKind.CONTRACT);
+            }
             return record;
         }
         if (!(resolvedTarget instanceof Named named)) {
@@ -6055,7 +6060,7 @@ public final class TypeChecker {
     private boolean runtimeRecordShapeCovered(Record source, Record target, int depth) {
         if (depth >= 32) return false;
         if (!aggregateKindsCompatible(source.kind(), target.kind())) return false;
-        if (source.kind() == AggregateKind.STRUCT
+        if (target.kind() == AggregateKind.STRUCT
                 && source.members().size() != target.members().size()) return false;
         for (Map.Entry<String, Type> required : target.members().entrySet()) {
             Type actual = source.members().get(required.getKey());
@@ -8643,9 +8648,12 @@ public final class TypeChecker {
 
     private static boolean aggregateKindsCompatible(
             AggregateKind left, AggregateKind right) {
-        return left == AggregateKind.STRUCT || right == AggregateKind.STRUCT
-                ? left == right
-                : true;
+        if (left == right) return true;
+        // CONTRACT is an explicit structural view, not a stored data kind.
+        // Concrete structs may satisfy that view without becoming RECORD data.
+        if (left == AggregateKind.STRUCT && right == AggregateKind.CONTRACT) return true;
+        if (left == AggregateKind.STRUCT || right == AggregateKind.STRUCT) return false;
+        return true;
     }
 
     private static boolean methodContractMember(String key) {
@@ -8668,7 +8676,7 @@ public final class TypeChecker {
 
     private boolean structuralRecordAssignable(Record actual, Record expected) {
         if (!aggregateKindsCompatible(actual.kind(), expected.kind())) return false;
-        if (actual.kind() == AggregateKind.STRUCT
+        if (expected.kind() == AggregateKind.STRUCT
                 && actual.members().size() != expected.members().size()) return false;
         for (Map.Entry<String, Type> required : expected.members().entrySet()) {
             Type candidate = actual.members().get(required.getKey());
