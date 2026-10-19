@@ -30,6 +30,9 @@ public final class OresTaskScope implements AutoCloseable {
     private final AsyncRuntime runtime;
     private final OresTaskScope parent;
     private final Object gate = new Object();
+    // All members of one owned tree share a strict admission/plan monitor.
+    // Lock order: treeAdmissionGate -> individual scope.gate.
+    private final Object treeAdmissionGate;
 
     /**
      * Reserve ownership before executable admission. The slot itself is
@@ -68,11 +71,14 @@ public final class OresTaskScope implements AutoCloseable {
     private OresTaskScope(AsyncRuntime runtime, OresTaskScope parent) {
         this.runtime = runtime;
         this.parent = parent;
+        this.treeAdmissionGate = parent == null
+                ? new Object() : parent.treeAdmissionGate;
     }
 
     public <T> OresTask<T> submit(AsyncRuntime.Task<T> work) {
         Objects.requireNonNull(work, "work");
-        synchronized (gate) {
+        synchronized (treeAdmissionGate) {
+            synchronized (gate) {
             ensureAdmitting();
             if (runtime == null)
                 throw new RejectedExecutionException(
@@ -117,6 +123,7 @@ public final class OresTaskScope implements AutoCloseable {
             }
             return child;
         }
+        }
     }
 
     /**
@@ -151,7 +158,8 @@ public final class OresTaskScope implements AutoCloseable {
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(frame, "frame");
         Objects.requireNonNull(onPhysicalExit, "onPhysicalExit");
-        synchronized (gate) {
+        synchronized (treeAdmissionGate) {
+            synchronized (gate) {
             try {
                 ensureAdmitting();
             } catch (RuntimeException | Error rejectedByScope) {
@@ -228,6 +236,7 @@ public final class OresTaskScope implements AutoCloseable {
             ownedChild.attachCompletion(completion);
             return ownedChild;
         }
+        }
     }
 
     /** A discarded-handle Task is still owned and always reports failures. */
@@ -242,11 +251,13 @@ public final class OresTaskScope implements AutoCloseable {
     }
 
     public OresTaskScope childScope() {
-        synchronized (gate) {
+        synchronized (treeAdmissionGate) {
+            synchronized (gate) {
             ensureAdmitting();
             OresTaskScope child = new OresTaskScope(runtime, this);
             childScopes.add(child);
             return child;
+        }
         }
     }
 
@@ -269,9 +280,11 @@ public final class OresTaskScope implements AutoCloseable {
         }
         OresCancellationToken.Registration registration =
                 token.onCancellationRequested(this::cancel);
-        synchronized (gate) {
-            if (cancelled) registration.close();
-            else externalCancellation.add(registration);
+        synchronized (treeAdmissionGate) {
+            synchronized (gate) {
+                if (cancelled) registration.close();
+                else externalCancellation.add(registration);
+            }
         }
     }
 
@@ -347,33 +360,49 @@ public final class OresTaskScope implements AutoCloseable {
     }
 
     private boolean cancelTreeIterative(List<Runnable> notifications) {
-        ArrayDeque<OresTaskScope> pending = new ArrayDeque<>();
-        List<OresTask<?>> ownedToCancel = new ArrayList<>();
-        List<OresCancellationToken.Registration> inboundToClose =
+        // A failed traversal, iterator, set growth or snapshot allocation
+        // MUST NOT leave a partially cancelled tree. First build a complete
+        // plan while holding the tree's shared admission gate; only after
+        // every allocation succeeds may cancellation become observable.
+        // The same gate serializes descendant childScope(), submit() and
+        // startCompilerFrame(), so no executable Task can escape the plan.
+        final ArrayDeque<OresTaskScope> pending = new ArrayDeque<>();
+        final List<OresTaskScope> allScopes = new ArrayList<>();
+        final List<OresTask<?>> allTasks = new ArrayList<>();
+        final List<OresCancellationToken.Registration> allLinks =
                 new ArrayList<>();
-        pending.add(this);
-        boolean wonRoot = false;
-        // PHASE 1: close every descendant admission gate, and snapshot its
-        // Tasks, BEFORE invoking a single revocation hook. All child creation
-        // and Task starts take the corresponding gate, so new descendants
-        // cannot escape this sweep after their parent has been visited.
-        while (!pending.isEmpty()) {
-            OresTaskScope scope = pending.removeLast();
-            synchronized (scope.gate) {
-                boolean firstClaim = !scope.cancelled;
-                scope.cancelled = true;
-                if (scope == this && firstClaim) wonRoot = true;
-                pending.addAll(scope.childScopes);
-                ownedToCancel.addAll(scope.snapshotTasksLocked());
-                inboundToClose.addAll(scope.externalCancellation);
-                scope.externalCancellation.clear();
+        final boolean wonRoot;
+        synchronized (treeAdmissionGate) {
+            pending.add(this);
+            while (!pending.isEmpty()) {
+                OresTaskScope scope = pending.removeLast();
+                synchronized (scope.gate) {
+                    // All operations below can allocate/throw; the entire
+                    // cancellation tree is still unchanged at this point.
+                    allScopes.add(scope);
+                    pending.addAll(scope.childScopes);
+                    allTasks.addAll(scope.snapshotTasksLocked());
+                    allLinks.addAll(scope.externalCancellation);
+                }
+            }
+
+            // Commit phase is allocation-free and cannot invoke user code.
+            // All admissions and descendant creations remain blocked until
+            // EVERY scope in the plan has been sealed.
+            synchronized (gate) {
+                wonRoot = !cancelled;
+            }
+            for (OresTaskScope scope : allScopes) {
+                synchronized (scope.gate) {
+                    scope.cancelled = true;
+                    scope.externalCancellation.clear();
+                }
             }
         }
 
+        // No arbitrary callbacks execute under the admission gate.
         Throwable firstFailure = null;
-        // PHASE 2: sever upstream cancellation links, then revoke all Task
-        // producers. A misbehaving link/cancel hook must not stop the sweep.
-        for (OresCancellationToken.Registration link : inboundToClose) {
+        for (OresCancellationToken.Registration link : allLinks) {
             try {
                 link.close();
             } catch (RuntimeException | Error failure) {
@@ -381,7 +410,7 @@ public final class OresTaskScope implements AutoCloseable {
                 else if (firstFailure != failure) firstFailure.addSuppressed(failure);
             }
         }
-        for (OresTask<?> task : ownedToCancel) {
+        for (OresTask<?> task : allTasks) {
             try {
                 Runnable notification = task.cancelDeferredNotification();
                 if (notification != null) notifications.add(notification);
@@ -419,9 +448,12 @@ public final class OresTaskScope implements AutoCloseable {
     private CloseFrame beginClose() {
         synchronized (gate) {
             if (joining) return null;
-            joining = true;
-            return new CloseFrame(this,
+            // Do not commit joining before allocations: an injected OOME in
+            // either snapshot must not strand later close() on fullyJoined.
+            CloseFrame prepared = new CloseFrame(this,
                     new ArrayList<>(childScopes), snapshotTasksLocked());
+            joining = true;
+            return prepared;
         }
     }
 
