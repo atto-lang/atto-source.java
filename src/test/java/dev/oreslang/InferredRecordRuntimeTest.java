@@ -21,7 +21,7 @@ final class InferredRecordRuntimeTest {
                 pub fnc main(): void {
                     const Person first = infer record{name: "Ada", age: 37};
                     stdio.println(first.name);
-                    const Person second = infer struct{age: 42, name: "Grace"};
+                    const Person second = infer record{age: 42, name: "Grace"};
                     stdio.println(second.name);
                     const Contact contact = infer<Contact> record{
                         "first name": "Linus",
