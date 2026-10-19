@@ -259,6 +259,31 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             long physicalGeneration,
             IpcReceiptCorrelation.Stage stage) { }
 
+    /**
+     * Constant-memory inbound DATA replay gate. One instance belongs to one
+     * authenticated physical connection direction. TCP preserves byte order;
+     * a repeated or decreasing authenticated sequence therefore represents
+     * replay/stale state rather than benign network reordering.
+     */
+    static final class InboundReplayGate {
+        private long lastMessageSequence;
+        private long lastFrameSequence;
+
+        synchronized void accept(IpcReceiptCorrelation.Envelope envelope) {
+            Objects.requireNonNull(envelope, "envelope");
+            if (envelope.messageSequence() <= lastMessageSequence
+                    || envelope.frameSequence() <= lastFrameSequence) {
+                throw new IllegalArgumentException(
+                        "duplicate/reordered authenticated IPC DATA sequence");
+            }
+            lastMessageSequence = envelope.messageSequence();
+            lastFrameSequence = envelope.frameSequence();
+        }
+
+        synchronized long lastMessageSequence() { return lastMessageSequence; }
+        synchronized long lastFrameSequence() { return lastFrameSequence; }
+    }
+
     static byte[] encodeDataFrame(
             IpcReceiptCorrelation.Envelope envelope,
             byte[] payload,
@@ -286,8 +311,10 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             byte[] frame,
             IpcReceiptCorrelation.Envelope expectedEpoch,
             long expectedPhysicalGeneration,
+            InboundReplayGate replayGate,
             byte[] key) throws IOException {
         Objects.requireNonNull(expectedEpoch, "expectedEpoch");
+        Objects.requireNonNull(replayGate, "replayGate");
         if (expectedPhysicalGeneration <= 0) {
             throw new IllegalArgumentException("physical generation must be positive");
         }
@@ -309,6 +336,11 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             if (physicalGeneration != expectedPhysicalGeneration
                     || !sameEpoch(expectedEpoch, envelope)) {
                 throw new IOException("stale IPC DATA transport epoch/generation");
+            }
+            try {
+                replayGate.accept(envelope);
+            } catch (IllegalArgumentException replay) {
+                throw new IOException("replayed/reordered authenticated IPC DATA", replay);
             }
             return new DecodedData(envelope, physicalGeneration, payload);
         }
