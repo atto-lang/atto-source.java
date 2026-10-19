@@ -5938,10 +5938,16 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override public void close() {
             synchronized (cell.lifecycleLock) {
-                if (!released.compareAndSet(false, true)) return;
+                if (released.get()) return;
+                // Validate before revoking this lease. A corrupted counter
+                // must leave the lease live and retryable after repair; otherwise
+                // scheduler quiescence could falsely retire executable code.
                 if (cell.hotUpgradeExternalPins <= 0)
                     throw new IllegalStateException("actor external upgrade pin underflow");
                 cell.hotUpgradeExternalPins--;
+                // lifecycleLock serializes all release/permit/freeze observations;
+                // publish released only after successful accounting.
+                released.set(true);
                 cell.lifecycleLock.notifyAll();
             }
         }
