@@ -9,19 +9,21 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 final class InferredStructReadonlyBoundaryTest {
-    @Test void mutableDestructureAliasIsRejectedAtBinding() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(): void {
+    @Test void mutableDestructureCanOwnConcreteStructElement() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok(): string {
                   val [item] = [infer struct{foo: "a"}];
-                  return;
+                  item.foo = "b";
+                  return item.foo;
                 }
                 """)));
     }
 
-    @Test void mutableForOfAliasIsRejectedAtBinding() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(): void {
+    @Test void mutableForOfAliasCanUseConcreteStructElement() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok(): void {
                   for val item of arr[infer struct{foo: "a"}] do
+                    item.foo = "b";
                     stdio.println(item.foo);
                   done
                   return;
@@ -51,31 +53,32 @@ final class InferredStructReadonlyBoundaryTest {
                 """)));
     }
 
-    @Test void returnCannotEraseReadonlyCapability() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc leak(): {foo: string} {
-                  return infer struct{foo: "a"};
+    @Test void recordReturnPreservesReadonlyCapability() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc keep(): {foo: string} {
+                  return record{foo: "a"};
                 }
                 """)));
     }
 
-    @Test void fixedStructuralParameterCannotRoundTripReadonlyAsMutableShape() {
+    @Test void recordRoundTripCannotGainMutableBinding() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc identity({foo: string} value): {foo: string} {
                   return value;
                 }
                 fnc bad(): void {
-                  const result = identity(infer struct{foo: "a"});
+                  val result = identity(record{foo: "a"});
+                  result.foo = "b";
                   return;
                 }
                 """)));
     }
 
-    @Test void collectionInsertionCannotEraseNestedReadonlyCapability() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(): void {
+    @Test void collectionInsertionAcceptsOwnedConcreteStructOfSameShape() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok(): void {
                   val items = arr[struct{foo: string}{foo: "mutable"}];
-                  items.add(infer struct{foo: "readonly"});
+                  items.add(infer struct{foo: "owned"});
                   return;
                 }
                 """)));
@@ -94,7 +97,7 @@ final class InferredStructReadonlyBoundaryTest {
                 """)));
     }
 
-    @Test void structuralBorrowViewMayReadReadonlyInferredRecord() {
+    @Test void structuralBorrowViewMayReadConcreteStruct() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc read(structural {foo: string} value): string {
                   return value.foo;
