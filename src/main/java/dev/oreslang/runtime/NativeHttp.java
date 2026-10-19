@@ -335,9 +335,10 @@ public final class NativeHttp implements AutoCloseable {
         long generation;
         long spawnNanos, readyNanos, movedNanos, claimedNanos;
         Object owner;
-        // committed reserves response ownership; wireStarted reserves one
-        // physical header attempt; headersSent confirms transport acceptance.
-        boolean busy, committed, wireStarted, headersSent, bodyRead, streamingBody, suppressBody;
+        // Response ownership and terminal cancellation share the State lock
+        // with the first, irreversible HTTP header attempt.
+        final HttpResponseWirePhase wirePhase = new HttpResponseWirePhase();
+        boolean busy, committed, bodyRead, streamingBody, suppressBody;
         int bodyBytes;
         volatile boolean terminal;
         volatile InputStream activeResponseInput;
@@ -360,16 +361,11 @@ public final class NativeHttp implements AutoCloseable {
         // hold this monitor while performing blocking socket I/O.
         boolean beginHeaders() {
             synchronized (this) {
-                if (terminal || !committed || wireStarted) return false;
-                wireStarted = true;
-                return true;
+                return wirePhase.begin(committed, terminal);
             }
         }
         void noteHeadersSent() {
-            synchronized (this) {
-                if (!wireStarted) throw new IllegalStateException("HTTP headers sent without reservation");
-                headersSent = true;
-            }
+            synchronized (this) { wirePhase.markSent(); }
         }
         void abort(int status) { abort(status, true); }
         void abort(int status, boolean cancelOwner) {
@@ -379,7 +375,7 @@ public final class NativeHttp implements AutoCloseable {
                 // A reserved response that never reached the wire may still
                 // fail precommit. Once an emission attempt starts, never
                 // synthesize a second HTTP status.
-                send = !terminal && !wireStarted && !busy;
+                send = wirePhase.maySendError(terminal, busy);
                 if (!terminal) responseStatus = send ? status : 0;
                 terminal = true;
             }
@@ -408,8 +404,7 @@ public final class NativeHttp implements AutoCloseable {
                 // An abort/deadline may win after the wire writer finishes.
                 // Do not resolve the actor's respond()/finish() Future as
                 // successful when the request has already been terminated.
-                if (terminal)
-                    throw new IOException("HTTP request was aborted before response completion");
+                HttpResponseWirePhase.requireLiveFinish(terminal);
                 terminal = true;
             }
             try { raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); }
