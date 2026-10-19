@@ -9,7 +9,7 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 
 from verify_graal_i64_evidence import (
     check_junit, check_report, no_duplicate_json_pairs, read_bounded,
-    reject_json_constant,
+    reject_json_constant, JUNIT_CLASS, REQUIRED_JUNIT_NAMES,
 )
 
 SHA = "a" * 40
@@ -37,10 +37,13 @@ def fixture():
 
 
 def xml(tests=17, *, skips=0):
-    suite = Element("testsuite", tests=str(tests), skipped=str(skips),
+    suite = Element("testsuite", name=JUNIT_CLASS, tests=str(tests), skipped=str(skips),
                     errors="0", failures="0")
+    names = sorted(REQUIRED_JUNIT_NAMES)
     for n in range(tests):
-        SubElement(suite, "testcase", name=str(n))
+        SubElement(suite, "testcase",
+                   name=names[n] if n < len(names) else "unexpected-" + str(n),
+                   classname=JUNIT_CLASS)
     return tostring(suite)
 
 
@@ -134,7 +137,7 @@ class EvidenceAdmissionTest(unittest.TestCase):
         self.assertEqual(check_junit(xml()), 17)
 
     def test_junit_incomplete(self):
-        with self.assertRaisesRegex(ValueError, "fewer"):
+        with self.assertRaisesRegex(ValueError, "missing, substituted or duplicate"):
             check_junit(xml(16))
 
     def test_junit_skip(self):
@@ -147,15 +150,50 @@ class EvidenceAdmissionTest(unittest.TestCase):
             check_junit(bad)
 
     def test_junit_per_test_output_is_not_a_failure(self):
-        good = xml(17).replace(b'<testcase name="0" />',
-                               b'<testcase name="0"><system-out>diagnostic metadata</system-out></testcase>')
-        self.assertEqual(check_junit(good), 17)
+        from xml.etree.ElementTree import fromstring
+        doc = fromstring(xml(17))
+        SubElement(doc.find("testcase"), "system-out").text = "diagnostic metadata"
+        self.assertEqual(check_junit(tostring(doc)), 17)
 
     def test_junit_hidden_failure_node(self):
-        bad = xml(17).replace(b'<testcase name="0" />',
-                              b'<testcase name="0"><failure /></testcase>')
+        from xml.etree.ElementTree import fromstring
+        doc = fromstring(xml(17))
+        SubElement(doc.find("testcase"), "failure")
         with self.assertRaisesRegex(ValueError, "contains failure"):
-            check_junit(bad)
+            check_junit(tostring(doc))
+
+    def test_junit_unrelated_suite_identity_denied(self):
+        from xml.etree.ElementTree import fromstring
+        doc = fromstring(xml(17))
+        doc.set("name", "dev.oreslang.UnrelatedSuite")
+        with self.assertRaisesRegex(ValueError, "wrong JUnit suite"):
+            check_junit(tostring(doc))
+
+    def test_junit_unrelated_testcase_class_denied(self):
+        from xml.etree.ElementTree import fromstring
+        doc = fromstring(xml(17))
+        doc.find("testcase").set("classname", "dev.oreslang.UnrelatedSuite")
+        with self.assertRaisesRegex(ValueError, "unrelated class"):
+            check_junit(tostring(doc))
+
+    def test_junit_duplicate_name_denied(self):
+        from xml.etree.ElementTree import fromstring
+        doc = fromstring(xml(17))
+        cases = doc.findall("testcase")
+        cases[1].set("name", cases[0].get("name"))
+        with self.assertRaisesRegex(ValueError, "duplicate named"):
+            check_junit(tostring(doc))
+
+    def test_junit_substituted_name_denied(self):
+        from xml.etree.ElementTree import fromstring
+        doc = fromstring(xml(17))
+        doc.find("testcase").set("name", "arbitrary-success")
+        with self.assertRaisesRegex(ValueError, "substituted"):
+            check_junit(tostring(doc))
+
+    def test_junit_unrelated_extra_pass_denied(self):
+        with self.assertRaisesRegex(ValueError, "missing, substituted or duplicate"):
+            check_junit(xml(18))
 
     def test_reject_duplicate_json_key(self):
         with self.assertRaisesRegex(ValueError, "duplicate JSON"):
