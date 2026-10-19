@@ -7,6 +7,9 @@ on:
       - 'scripts/run-in-private-ci-destination.sh'
       - 'scripts/publish-private-ci-source.py'
       - 'scripts/test-publish-private-ci-source.py'
+      - 'scripts/private_ci_pinned_admission.py'
+      - 'tests/test_private_ci_pinned_admission.py'
+      - '.github/private-ci-approved-destinations.json'
       - '.github/private-ci-approved-repositories.txt'
       - '.github/CODEOWNERS'
       - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
@@ -19,6 +22,9 @@ on:
       - 'scripts/run-in-private-ci-destination.sh'
       - 'scripts/publish-private-ci-source.py'
       - 'scripts/test-publish-private-ci-source.py'
+      - 'scripts/private_ci_pinned_admission.py'
+      - 'tests/test_private_ci_pinned_admission.py'
+      - '.github/private-ci-approved-destinations.json'
       - '.github/private-ci-approved-repositories.txt'
       - '.github/CODEOWNERS'
       - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
@@ -36,7 +42,8 @@ jobs:
         run: |
           set -euo pipefail
           bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
-          python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py
+          python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py scripts/private_ci_pinned_admission.py
+          python3 -m unittest discover -s tests -p 'test_private_ci_pinned_admission.py' -v
           bash scripts/test-private-ci-destination.sh
           bash -n tools/verify-exact-source-tree.sh tools/test-verify-exact-source-tree.sh
           bash tools/test-verify-exact-source-tree.sh
