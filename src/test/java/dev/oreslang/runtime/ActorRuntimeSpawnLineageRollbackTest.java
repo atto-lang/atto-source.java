@@ -103,4 +103,48 @@ final class ActorRuntimeSpawnLineageRollbackTest {
             assertTrue(parent.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
+
+    @Test
+    void failedRootRegistryInsertionAfterMutationDoesNotStrandActorSlot()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            Field registryField = access(ActorRuntime.class, "actors");
+            @SuppressWarnings("unchecked")
+            Map<Object, Object> original =
+                    (Map<Object, Object>) registryField.get(runtime);
+            assertTrue(original.isEmpty());
+            var injected = new AtomicBoolean(true);
+            var registry = new ConcurrentHashMap<Object, Object>() {
+                @Override public Object put(Object key, Object value) {
+                    Object previous = super.put(key, value);
+                    if (injected.getAndSet(false)) {
+                        throw new OutOfMemoryError(
+                                "injected registry failure after publication");
+                    }
+                    return previous;
+                }
+            };
+            registryField.set(runtime, registry);
+            try {
+                assertThrows(OutOfMemoryError.class,
+                        () -> runtime.<Integer>spawnShared(
+                                () -> (message, actor) -> { }));
+                assertEquals(0, registry.size(),
+                        "failed spawn cannot strand a registered physical actor");
+                AtomicInteger count = (AtomicInteger) access(
+                        ActorRuntime.class, "actorCount").get(runtime);
+                assertEquals(0, count.get(),
+                        "failure after registry publication must refund actor count");
+            } finally {
+                registryField.set(runtime, original);
+            }
+
+            // A subsequent legitimate root actor must be fully schedulable.
+            var recovery = runtime.<Integer>spawnShared(
+                    () -> (message, actor) -> { });
+            recovery.getReady().get(5, TimeUnit.SECONDS);
+            recovery.stop();
+            assertTrue(recovery.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
 }
