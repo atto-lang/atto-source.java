@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
+    public sealed interface Type permits Primitive, Named, Dyn, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -26,6 +26,14 @@ public final class Types {
      * actual receiver may be a more-derived subtype. Values already proven to
      * have the receiver-polymorphic self type may flow through aliases/parameters.
      */
+    /**
+     * Statically validated nominal interface view, retained throughout checking.
+     * This is not a runtime fat pointer and does not grant actor transport.
+     */
+    public record Dyn(Named interfaceType) implements Type {
+        public Dyn { Objects.requireNonNull(interfaceType, "dyn interface"); }
+    }
+
     public record SelfType(Type bound) implements Type {
         public SelfType { Objects.requireNonNull(bound, "self bound"); }
     }
@@ -173,6 +181,7 @@ public final class Types {
         if (type == Unknown.INSTANCE || type instanceof Generic) return true;
         if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Not not) return containsUncertainType(not.excluded());
+        if (type instanceof Dyn dyn) return containsUncertainType(dyn.interfaceType());
         if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Record record) return record.members().values().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof ListType list) return containsUncertainType(list.element());
@@ -195,9 +204,11 @@ public final class Types {
         }
         if (from instanceof Not) return to == Unknown.INSTANCE;
         if (from instanceof BoolLiteral && to == Primitive.BOOL) return true;
+        if (from.equals(to)) return true;
+        // A new dyn witness cannot arise from dynamic compatibility or an unbound generic.
+        if (from instanceof Dyn || to instanceof Dyn) return false;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
-        if (from.equals(to)) return true;
         if (from instanceof SelfType source) {
             if (to instanceof SelfType target) {
                 return isAssignable(source.bound(), target.bound())
