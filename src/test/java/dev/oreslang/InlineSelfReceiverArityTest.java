@@ -20,6 +20,45 @@ import static org.junit.jupiter.api.Assertions.*;
 final class InlineSelfReceiverArityTest {
 
     @Test
+    void methodAstRejectsReceiverLeakageIntoCallerVisibleParameters() {
+        IllegalArgumentException leaked = assertThrows(
+                IllegalArgumentException.class,
+                () -> new Ast.MethodDecl(
+                        "bad",
+                        Ast.Visibility.PRIVATE,
+                        false,
+                        false,
+                        false,
+                        false,
+                        false,
+                        null,
+                        java.util.List.of(),
+                        java.util.List.of(new Ast.Param(Ast.TypeRef.simple("int"), "self")),
+                        Ast.TypeRef.simple("void"),
+                        java.util.List.of(),
+                        java.util.List.of()));
+        assertTrue(leaked.getMessage().contains("normalized out"), leaked::getMessage);
+
+        IllegalArgumentException staticReceiver = assertThrows(
+                IllegalArgumentException.class,
+                () -> new Ast.MethodDecl(
+                        "badStatic",
+                        Ast.Visibility.PRIVATE,
+                        true,
+                        false,
+                        false,
+                        false,
+                        false,
+                        Ast.TypeRef.simple("self"),
+                        java.util.List.of(),
+                        java.util.List.of(),
+                        Ast.TypeRef.simple("void"),
+                        java.util.List.of(),
+                        java.util.List.of()));
+        assertTrue(staticReceiver.getMessage().contains("static methods"), staticReceiver::getMessage);
+    }
+
+    @Test
     void inlineReceiverIsNotInUserParameterListForClassesAndActors() {
         for (String kind : new String[] {"class", "actor"}) {
             Ast.ClassDecl owner = parseOwner("""
