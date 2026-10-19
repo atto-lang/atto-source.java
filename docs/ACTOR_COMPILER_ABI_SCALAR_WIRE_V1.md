@@ -104,6 +104,22 @@ exactly-once external side-effects are claimed.
   optimized blob** was recompiled and the same 400,000 checks rerun.
   This is the real standalone codec class, not a full Oreslang runtime,
   compiler, JUnit or GraalVM run.
+- **2026-10-19 compiler receive-type hardening:** The source compiler now
+  implements `actorReceivesProxyLong()` using the linked actor's resolved
+  `receive(ActorMail<int>)` AST declaration, while other code executors
+  default-deny. The router checks the compiler proof before binding any
+  ABI-bound scalar mailbox and before any candidate physical handoff.
+  New product JUnit fixtures explicitly deny `ActorMail<string>` on
+  initial proxy creation and on V1-to-V2 migration, and retain a positive
+  `ActorMail<int>` case. They are committed but **not executed** on
+  the full Graal/Maven actor runtime.
+- A separate, source-free **Java 21** type-proof oracle compiled with
+  `javac --release 21 -Xlint:all -Werror` and executed
+  **200,024/200,024** deterministic and seeded randomized checks.
+  These exercise exact allowed `ActorMail<int>` and deny inferred,
+  nested, aliased, wrong-arity, and foreign message type spellings.
+  This is an independent structural model, not compilation of the
+  actual `OresEvalRootNode` code or a product JUnit pass.
 - **Release gate:** execute the new JUnit tests and the full actor/runtime
   suite on exact-head JDK25/GraalVM, Native Image, and validated Linux
   runtimes. Source-owned GitHub Actions still fail without executed job steps,
