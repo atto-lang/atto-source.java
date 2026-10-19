@@ -74,6 +74,9 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private final AtomicInteger queuedTaskCount = new AtomicInteger();
     private final AtomicInteger nextWakeSlot = new AtomicInteger();
     private final AtomicInteger nextStealVictim = new AtomicInteger();
+    /** Independent cursor: a global sweep every 16 polls must not always
+     * begin at the same rank when peer count is a multiple of 16. */
+    private final AtomicInteger nextGlobalStealVictim = new AtomicInteger();
     private final AtomicLong completedTaskCount = new AtomicLong();
     private final AtomicLong affinityPreferredHits = new AtomicLong();
     private final AtomicLong affinitySteals = new AtomicLong();
@@ -322,6 +325,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         // sweep. Without it, a persistent >MAX_STEAL_PROBES set of nearby
         // aged lanes can indefinitely conceal runnable remote NUMA work.
         boolean globalSweep = (rotation & 15) == 0;
+        int globalRotation = globalSweep ? nextGlobalStealVictim.getAndIncrement() : 0;
         int examined = 0;
         int probes = 0;
         // Inspect all potential lanes in locality order. Only nonempty lanes
@@ -330,7 +334,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         while (examined < maximumPoolSize - 1 && probes < maxProbes) {
             int rank = examined++;
             int victimSlot = globalSweep
-                    ? plan.globalVictimAt(thiefSlot, rank, rotation)
+                    ? plan.globalVictimAt(thiefSlot, rank, globalRotation)
                     : plan.victimAt(thiefSlot, rank, rotation);
             if (victimSlot >= enabled) continue;
             ArrayBlockingQueue<Runnable> victim = affinityQueues.get(victimSlot);
