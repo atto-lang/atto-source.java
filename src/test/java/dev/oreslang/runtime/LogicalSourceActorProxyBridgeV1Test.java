@@ -664,4 +664,27 @@ final class LogicalSourceActorProxyBridgeV1Test {
         }
     }
 
+    @Test
+    void lateProxyBindingCannotInheritPriorRawDeliveries() throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("late-bind-v1.ores", V1);
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                         first, ActorRuntime.ActorKind.SHARED, "Counter", WAIT);
+                 var proxy = new LogicalActorProxyMailboxV1(2, 8, 16)) {
+                // Prior raw admission would poison a later cumulative
+                // physical drain proof, even if the raw send had thrown.
+                router.ref().send(41L);
+                assertThrows(IllegalStateException.class,
+                        () -> router.bindProxyMailboxForSupervisor(proxy));
+                assertEquals(1L, router.ref().routeEpoch());
+                assertEquals(1L, proxy.snapshot().routeEpoch());
+                assertEquals(0, proxy.snapshot().retainedMessages());
+                var output = router.ref().nextOutput(WAIT);
+                assertFalse(output.done());
+                assertEquals(42L, assertInstanceOf(Long.class, output.value().value()));
+            }
+        }
+    }
+
 }
