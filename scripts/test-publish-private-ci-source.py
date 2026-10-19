@@ -2446,7 +2446,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     "trusted/ci", TEST_BRANCH, 777), 777)
             api.assert_called_once_with(
                 "repos/trusted/ci/rules/branches/"
-                + TEST_BRANCH.replace("/", "%2F"), root_type=list)
+                + TEST_BRANCH.replace("/", "%2F"))
 
         failures = []
         failures.append(valid[:1])
@@ -2476,7 +2476,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "repos/trusted/ci/rules/branches/"
             + TEST_BRANCH.replace("/", "%2F"))
 
-        def revoke_effective_rule(route, method="GET", payload=None, root_type=dict):
+        def revoke_effective_rule(route, method="GET", payload=None):
             if route == effective_route:
                 calls["effective"] += 1
                 if calls["effective"] >= 2:
