@@ -48,13 +48,14 @@ final class ScopedTaskTypeBridgeTest {
                 ledger.admitCoherentTyped(List.of(claim(
                         TaskAccessVerifier.Mode.WRITE, 4095, 4097, array, resolved)),
                         SOURCE, NO_GUEST_UNSAFE));
-        ledger.requestCancel(left);
+        ledger.requestCancel(left.ticket());
         assertFalse(ledger.parentMayAccess(new TaskAccessVerifier.Claim(
                 POSITIONS.range(0, 4096, true), TaskAccessVerifier.Mode.READ)));
         assertThrows(IllegalStateException.class, ledger::finishScope);
         // Runtime must call quiescent only AFTER actual physical Task exit.
-        ledger.quiescent(left);
-        ledger.quiescent(right);
+        left.completion().releaseAfterPhysicalQuiescence();
+        right.completion().releaseAfterPhysicalQuiescence();
+        ledger.seal();
         ledger.finishScope();
     }
 
@@ -127,6 +128,31 @@ final class ScopedTaskTypeBridgeTest {
                             TaskAccessVerifier.Mode.WRITE, 0, 16, source, resolved)),
                             SOURCE, NO_GUEST_UNSAFE));
         }
+        assertEquals(0, ledger.activeChildren());
+    }
+
+    @Test
+    void semanticDynCannotEnterCoherentScopedLoanEvenWithPermissiveNominalProof() {
+        var ledger = new TaskAccessVerifier();
+        Types.Type dyn = new Types.Dyn(
+                new Types.Named("Worker", List.of()));
+        // No source dyn syntax exists on this stack. A forged surface type and
+        // permissive nominal callback must not bypass the independent dyn gate.
+        assertThrows(IllegalArgumentException.class, () ->
+                ledger.admitCoherentTyped(List.of(claim(
+                        TaskAccessVerifier.Mode.WRITE, 0, 16,
+                        src("Worker"), dyn)),
+                        SOURCE, new ThreadSafetyTraits.NominalProof() {
+                            @Override public boolean has(
+                                    Types.Named type,
+                                    ThreadSafetyTraits.Trait trait) {
+                                return true;
+                            }
+                            @Override public boolean trustedIntrinsic(
+                                    Types.Named type) {
+                                return true;
+                            }
+                        }));
         assertEquals(0, ledger.activeChildren());
     }
 
