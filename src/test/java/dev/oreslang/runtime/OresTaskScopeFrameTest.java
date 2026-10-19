@@ -370,4 +370,54 @@ final class OresTaskScopeFrameTest {
     }
 
 
+
+    @Test
+    void cancelledScopeReleasesRejectedFramePinOutsideScopeMonitor() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(1);
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            java.lang.reflect.Field field = OresTaskScope.class.getDeclaredField("gate");
+            field.setAccessible(true);
+            Object monitor = field.get(scope);
+            AtomicInteger releases = new AtomicInteger();
+            java.util.concurrent.atomic.AtomicBoolean lockHeld =
+                    new java.util.concurrent.atomic.AtomicBoolean(true);
+            assertTrue(scope.cancel());
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> scope.startCompilerFrame(scheduler,
+                            resume -> new OresScheduler.Done<>(42), () -> {
+                                releases.incrementAndGet();
+                                lockHeld.set(Thread.holdsLock(monitor));
+                            }));
+            assertEquals(1, releases.get(), "rejected generation pin must be retired once");
+            assertFalse(lockHeld.get(), "release callback must not execute under TaskScope monitor");
+            assertDoesNotThrow(scope::close);
+            assertEquals(1, releases.get(), "scope close must not release a rejected pin again");
+        }
+    }
+
+    @Test
+    void schedulerRejectionReleasesFramePinOutsideScopeMonitor() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            java.lang.reflect.Field field = OresTaskScope.class.getDeclaredField("gate");
+            field.setAccessible(true);
+            Object monitor = field.get(scope);
+            OresScheduler scheduler = new OresScheduler(1);
+            scheduler.close();
+            AtomicInteger releases = new AtomicInteger();
+            java.util.concurrent.atomic.AtomicBoolean lockHeld =
+                    new java.util.concurrent.atomic.AtomicBoolean(true);
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> scope.startCompilerFrame(scheduler,
+                            resume -> new OresScheduler.Done<>(42), () -> {
+                                releases.incrementAndGet();
+                                lockHeld.set(Thread.holdsLock(monitor));
+                            }));
+            assertEquals(1, releases.get());
+            assertFalse(lockHeld.get(), "scheduler rejection cleanup must not hold scope monitor");
+            assertDoesNotThrow(scope::close);
+            assertEquals(1, releases.get());
+        }
+    }
 }
