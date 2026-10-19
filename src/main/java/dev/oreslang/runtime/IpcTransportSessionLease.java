@@ -121,6 +121,7 @@ final class IpcTransportSessionLease {
             long expectedGeneration,
             IpcReceiptCorrelation.Envelope message,
             byte[] preparedFrame) throws IOException {
+        RuntimeBlockingGuard.requireBlockingHostThread("IPC transport send");
         Objects.requireNonNull(message, "message");
         Objects.requireNonNull(preparedFrame, "preparedFrame");
         final CompletionStage<IpcReceiptCorrelation.Stage> outcome;
@@ -163,6 +164,7 @@ final class IpcTransportSessionLease {
     void writeFrame(long expectedGeneration,
                     IpcReceiptCorrelation.Envelope message,
                     byte[] preparedFrame) throws IOException {
+        RuntimeBlockingGuard.requireBlockingHostThread("IPC transport write");
         Objects.requireNonNull(message, "message");
         Objects.requireNonNull(preparedFrame, "preparedFrame");
         synchronized (this) {
@@ -221,21 +223,26 @@ final class IpcTransportSessionLease {
      * RETIRED means confirmed close + receipt retirement, QUARANTINED is a
      * fail-closed terminal-for-now state, and timeout never implies success.
      */
-    synchronized boolean awaitTerminal(long timeoutMillis)
+    boolean awaitTerminal(long timeoutMillis)
             throws InterruptedException {
         if (timeoutMillis < 0 || timeoutMillis > 300_000) {
             throw new IllegalArgumentException("invalid IPC close wait");
         }
-        long remainingNanos = timeoutMillis * 1_000_000L;
-        long deadline = System.nanoTime() + remainingNanos;
-        while (phase != Phase.RETIRED && phase != Phase.QUARANTINED) {
-            if (remainingNanos <= 0) return false;
-            long millis = remainingNanos / 1_000_000L;
-            int nanos = (int) (remainingNanos % 1_000_000L);
-            wait(millis, nanos);
-            remainingNanos = deadline - System.nanoTime();
+        // Check before acquiring the session monitor: an actor carrier must
+        // never park merely trying to enter this blocking wait.
+        RuntimeBlockingGuard.requireBlockingHostThread("IPC transport terminal wait");
+        synchronized (this) {
+            long remainingNanos = timeoutMillis * 1_000_000L;
+            long deadline = System.nanoTime() + remainingNanos;
+            while (phase != Phase.RETIRED && phase != Phase.QUARANTINED) {
+                if (remainingNanos <= 0) return false;
+                long millis = remainingNanos / 1_000_000L;
+                int nanos = (int) (remainingNanos % 1_000_000L);
+                wait(millis, nanos);
+                remainingNanos = deadline - System.nanoTime();
+            }
+            return phase == Phase.RETIRED;
         }
-        return phase == Phase.RETIRED;
     }
 
     /**
