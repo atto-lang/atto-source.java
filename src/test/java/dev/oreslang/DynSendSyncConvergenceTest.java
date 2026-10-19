@@ -298,6 +298,149 @@ final class DynSendSyncConvergenceTest {
     }
 
     @Test
+    void actorTransportRejectsUnknownNominalsAndGuestShadowedBuiltins() throws Exception {
+        var ctor = TypeChecker.class.getDeclaredConstructor();
+        ctor.setAccessible(true);
+        var checker = ctor.newInstance();
+        var validate = TypeChecker.class.getDeclaredMethod(
+                "validateActorCallableBoundaryType",
+                Types.Type.class,
+                dev.oreslang.ast.Ast.ActorKind.class,
+                boolean.class,
+                String.class);
+        validate.setAccessible(true);
+
+        for (String unknown : List.of(
+                "UnknownOpaque", "NativeHandle", "ExecutionPermit", "TcpListener")) {
+            var failure = assertThrows(
+                    java.lang.reflect.InvocationTargetException.class,
+                    () -> validate.invoke(
+                            checker,
+                            new Types.Named(unknown, List.of()),
+                            dev.oreslang.ast.Ast.ActorKind.SHARED,
+                            false,
+                            "mailbox"));
+            assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+        }
+        assertDoesNotThrow(() -> validate.invoke(
+                checker,
+                new Types.Named("ActorId", List.of()),
+                dev.oreslang.ast.Ast.ActorKind.SHARED,
+                false,
+                "mailbox"));
+        assertThrows(java.lang.reflect.InvocationTargetException.class, () ->
+                validate.invoke(
+                        checker,
+                        new Types.Named("ActorId", List.of(Types.Primitive.INT)),
+                        dev.oreslang.ast.Ast.ActorKind.SHARED,
+                        false,
+                        "mailbox"));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                    define class Option<T> as end
+                    define actor Receiver as
+                        receive(ActorMail<Option<int>> mail): void {
+                            return;
+                        }
+                    end
+                    """)),
+                "guest class named Option must not acquire builtin actor transport");
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(10)
+    void actorTransportWalkersBoundSharedDagAndFlatPayloadWork() throws Exception {
+        var ctor = TypeChecker.class.getDeclaredConstructor();
+        ctor.setAccessible(true);
+        var checker = ctor.newInstance();
+        var validate = TypeChecker.class.getDeclaredMethod(
+                "validateActorCallableBoundaryType",
+                Types.Type.class,
+                dev.oreslang.ast.Ast.ActorKind.class,
+                boolean.class,
+                String.class);
+        validate.setAccessible(true);
+
+        Types.Type dag = Types.Primitive.INT;
+        for (int i = 0; i < 35; i++) {
+            dag = new Types.Tuple(List.of(dag, dag));
+        }
+        Types.Type sharedDag = dag;
+        for (boolean completion : List.of(false, true)) {
+            var failure = assertThrows(
+                    java.lang.reflect.InvocationTargetException.class,
+                    () -> validate.invoke(
+                            checker,
+                            sharedDag,
+                            dev.oreslang.ast.Ast.ActorKind.SHARED,
+                            completion,
+                            "actor type graph"));
+            assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+            assertTrue(failure.getCause().getMessage().contains("nesting budget"),
+                    failure.getCause()::getMessage);
+        }
+
+        Types.Type wide = new Types.Tuple(
+                java.util.Collections.nCopies(100_001, Types.Primitive.INT));
+        var wideFailure = assertThrows(
+                java.lang.reflect.InvocationTargetException.class,
+                () -> validate.invoke(
+                        checker,
+                        wide,
+                        dev.oreslang.ast.Ast.ActorKind.SHARED,
+                        false,
+                        "actor flat payload"));
+        assertInstanceOf(IllegalArgumentException.class, wideFailure.getCause());
+        assertTrue(wideFailure.getCause().getMessage().contains("nesting budget"));
+
+        assertDoesNotThrow(() -> validate.invoke(
+                checker,
+                Types.Primitive.INT,
+                dev.oreslang.ast.Ast.ActorKind.SHARED,
+                false,
+                "scalar"));
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(10)
+    void sharedSafetyWalkerHasGlobalProofWorkBudget() throws Exception {
+        var ctor = TypeChecker.class.getDeclaredConstructor();
+        ctor.setAccessible(true);
+        var checker = ctor.newInstance();
+        var sharedSafe = TypeChecker.class.getDeclaredMethod(
+                "isSharedSafe",
+                Types.Type.class,
+                java.util.Set.class,
+                java.util.Map.class);
+        sharedSafe.setAccessible(true);
+
+        Types.Type dag = Types.Primitive.INT;
+        for (int i = 0; i < 35; i++) {
+            dag = new Types.Tuple(List.of(dag, dag));
+        }
+        assertEquals(Boolean.FALSE, sharedSafe.invoke(
+                checker,
+                dag,
+                new java.util.LinkedHashSet<>(),
+                Map.of()));
+
+        Types.Type wide = new Types.Tuple(
+                java.util.Collections.nCopies(100_001, Types.Primitive.INT));
+        assertEquals(Boolean.FALSE, sharedSafe.invoke(
+                checker,
+                wide,
+                new java.util.LinkedHashSet<>(),
+                Map.of()));
+
+        assertEquals(Boolean.TRUE, sharedSafe.invoke(
+                checker,
+                Types.Primitive.INT,
+                new java.util.LinkedHashSet<>(),
+                Map.of()));
+    }
+
+    @Test
     void unresolvedAndDeepTypesNeverGainSendOrSync() {
         Type nested = new Types.Dyn(new Types.Named("Worker", List.of()));
         for (int i = 0; i < 400; i++) nested = new Types.ListType(nested);
