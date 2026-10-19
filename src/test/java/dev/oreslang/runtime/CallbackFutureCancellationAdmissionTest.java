@@ -46,6 +46,37 @@ final class CallbackFutureCancellationAdmissionTest {
     }
 
     @Test
+    void ownerStopCompletesCommittedFutureWithExplicitIncompleteCleanupFailure() {
+        AtomicReference<OresFuture.Callback<Void>> callback = new AtomicReference<>();
+        OresFuture<Void> pending = OresFuture.fromCallback(
+                callback::set, () -> false, () -> { });
+        assertFalse(pending.cancel(false));
+        assertTrue(pending.failOnOwnerStopIfPending(
+                new IllegalStateException("actor stopping")));
+        assertTrue(pending.isDone());
+        assertFalse(pending.isCancelled());
+        java.util.concurrent.CompletionException failure = assertThrows(
+                java.util.concurrent.CompletionException.class, pending::join);
+        assertTrue(failure.getCause().getMessage().contains(
+                "source cleanup was not verified complete"));
+        assertFalse(pending.failOnOwnerStopIfPending(
+                new IllegalStateException("duplicate stop")));
+        // A queued source producer is no longer permitted to revive a
+        // forcibly stopped owner or overwrite its explicit terminal failure.
+        callback.get().resolve(null);
+        assertFalse(pending.isCancelled());
+    }
+
+    @Test
+    void ordinaryCallbackFutureDoesNotGainForcedOwnerStopPolicy() {
+        OresFuture<String> regular = OresFuture.fromCallback(callback -> { });
+        assertFalse(regular.failOnOwnerStopIfPending(
+                new IllegalStateException("not an actor-bound callback")));
+        assertFalse(regular.isDone());
+        assertTrue(regular.cancel(false));
+    }
+
+    @Test
     void producerCanPublishCancellationAfterRetirementDespiteAdmissionDenial() {
         AtomicBoolean committed = new AtomicBoolean(true);
         AtomicInteger hooks = new AtomicInteger();
