@@ -144,6 +144,7 @@ final class ActorUpgradeEpochGate implements AutoCloseable {
         return pinsByKind[Objects.requireNonNull(kind, "lease kind").ordinal()];
     }
     synchronized boolean frozen() { return candidate != null; }
+    synchronized boolean isClosed() { return closed; }
     /** A still-owned, unretired preflight token is required at route CAS. */
     synchronized boolean ownsPrepared(Candidate staged) {
         return !closed && staged != null && staged.owner == this
