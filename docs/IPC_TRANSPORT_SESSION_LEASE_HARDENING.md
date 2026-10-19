@@ -181,3 +181,40 @@ The socket adapter now:
 The current source self-test includes real localhost kernel I/O, pressured 8 MiB blocked writers, off-carrier abort, cleanup queue rejection, explicit active-abort recovery, deliberately withheld abort/deadline quarantine, caller-runs denial, prior-version valid-MAC rejection, and pre-auth receipt allocation limits.
 
 **Current-head execution remains unverified in source CI** until a source-org runner actually records steps. Static/source inspection is not a substitute for `javac`, Maven, GraalVM or LLVM execution.
+
+
+## Physical receipt-bridge ownership and close/admission linearization
+
+The receipt bridge is now a **one-shot physical-connection capability**. A concrete
+socket adapter must claim an empty `IpcReceiptCompletionBridge` with an opaque
+host object identity, the authenticated logical epoch, and the physical
+connection generation. The claim is irreversible: closing/retiring the
+connection never clears it, and reconnect must allocate a fresh bridge.
+
+Once bound, legacy generic bridge mutation entry points fail closed. Admission,
+dispatch commitment, verified receipts, local pre-dispatch rejection, and
+transport-loss retirement all require the exact opaque owner + logical epoch +
+physical generation. This prevents a delayed generation-N close from retiring
+generation-N+1 correlations even when session/route strings and keys are reused.
+
+A second race was also closed: adapter `send()` no longer inserts a correlation
+before the session lease decides whether the connection is still OPEN.
+`IpcTransportSessionLease.admitAndCommitFrame` performs OPEN/generation/epoch
+validation and owner-bound correlation admit + `DISPATCH_COMMITTED` under the
+same session monitor. Therefore:
+
+- close wins first → no correlation is published; host returns
+  `REJECTED_BEFORE_REMOTE`;
+- admission wins first → the message is already dispatch-committed and physically
+  pinned; later close can only produce verified remote terminal state or
+  `OUTCOME_UNKNOWN`, never a false never-sent verdict.
+
+`IpcSessionAdmissionCloseRaceSelfTest` exercises 512 simultaneous close/admit
+races plus deterministic close-first and admit-first orderings. The strict host
+script and Maven parity wrapper include this proof.
+
+Independent source-free funded-host evidence on run #39325148864 executes the
+same safety properties without copying Oreslang private source: 17 Python
+protocol tests, a 22-check socket/HMAC Java canary, and a 2,060-check
+physical-owner/admission Java canary under JDK 17, 21 and 25. This is runner/JDK
+and model evidence only, not exact-source Java certification.
