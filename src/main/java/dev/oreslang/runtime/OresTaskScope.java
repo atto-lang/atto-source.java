@@ -51,7 +51,7 @@ public final class OresTaskScope implements AutoCloseable {
     private final List<OresCancellationToken.Registration> externalCancellation =
             new ArrayList<>();
     private final CountDownLatch fullyJoined = new CountDownLatch(1);
-    private boolean cancelled;
+    private volatile boolean cancelled;
     private boolean joining;
     private volatile Throwable closeFailure;
 
@@ -77,53 +77,57 @@ public final class OresTaskScope implements AutoCloseable {
 
     public <T> OresTask<T> submit(AsyncRuntime.Task<T> work) {
         Objects.requireNonNull(work, "work");
-        synchronized (treeAdmissionGate) {
-            synchronized (gate) {
-            ensureAdmitting();
-            if (runtime == null)
-                throw new RejectedExecutionException(
-                        "compiler-owned TaskScope has no ordinary AsyncRuntime admission");
-
-            OwnershipSlot slot = new OwnershipSlot();
-            // Any allocation/growth failure occurs before runtime submission.
-            if (!tasks.add(slot))
-                throw new IllegalStateException("duplicate Task ownership slot");
-
-            final OresTask<T> child;
-            try {
-                child = runtime.submitTask(work);
-                slot.task = child; // allocation-free publication into owner
-            } catch (RuntimeException | Error admissionFailure) {
-                discardUnadmittedSlot(slot, admissionFailure);
-                throw admissionFailure;
-            }
-
-            try {
-                OwnershipSlot owned = slot;
-                child.quiescenceFence().whenCompleteRuntime((value, failure) -> {
-                    if (failure == null) {
-                        synchronized (gate) {
-                            tasks.remove(owned);
+        if (runtime == null) {
+            throw new RejectedExecutionException(
+                    "compiler-owned TaskScope has no ordinary AsyncRuntime admission");
+        }
+        // Allocate the actual physical-exit witness and Task shell before
+        // entering the tree's admission lock. No executor runs at this point.
+        AsyncRuntime.PreparedTask<T> prepared = runtime.prepareTask(() -> {
+            if (cancelled) throw new java.util.concurrent.CancellationException(
+                    "Task scope cancelled before host Task entry");
+            return work.run();
+        });
+        OresTask<T> child = prepared.owner();
+        try {
+            synchronized (treeAdmissionGate) {
+                synchronized (gate) {
+                    ensureAdmitting();
+                    OwnershipSlot slot = new OwnershipSlot();
+                    slot.task = child;
+                    if (!tasks.add(slot))
+                        throw new IllegalStateException("duplicate Task ownership slot");
+                    OwnershipSlot owned = slot;
+                    // A completion callback cannot fire until start() below.
+                    child.quiescenceFence().whenCompleteRuntime((value, failure) -> {
+                        if (failure == null) {
+                            synchronized (gate) {
+                                tasks.remove(owned);
+                            }
                         }
-                    }
-                });
-            } catch (RuntimeException | Error observerFailure) {
-                // The Task is already admitted and remains in its pre-reserved
-                // slot. Seal this scope and request cancellation; close() can
-                // still join the physical fence even without the optimization
-                // callback that normally prunes the slot.
-                cancelled = true;
-                try {
-                    child.cancel();
-                } catch (RuntimeException | Error cancelFailure) {
-                    if (cancelFailure != observerFailure)
-                        observerFailure.addSuppressed(cancelFailure);
+                    });
                 }
-                throw observerFailure;
             }
-            return child;
+        } catch (RuntimeException | Error rejected) {
+            prepared.rejectUnadmitted();
+            throw rejected;
         }
+
+        try {
+            // Executor entry (including inline turns) must not hold the
+            // individual scope or tree-wide admission monitor.
+            prepared.start();
+        } catch (RuntimeException | Error rejected) {
+            // The PreparedTask has already fenced pre-execution rejection.
+            // Physical completion callback removes the owned slot.
+            throw rejected;
         }
+
+        if (cancelled) {
+            Runnable notification = child.cancelDeferredNotification();
+            if (notification != null) notification.run();
+        }
+        return child;
     }
 
     /**
@@ -158,84 +162,104 @@ public final class OresTaskScope implements AutoCloseable {
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(frame, "frame");
         Objects.requireNonNull(onPhysicalExit, "onPhysicalExit");
-        synchronized (treeAdmissionGate) {
-            synchronized (gate) {
-            try {
-                ensureAdmitting();
-            } catch (RuntimeException | Error rejectedByScope) {
-                try {
-                    onPhysicalExit.run();
-                } catch (RuntimeException | Error releaseFailure) {
-                    if (releaseFailure != rejectedByScope)
-                        rejectedByScope.addSuppressed(releaseFailure);
-                }
-                throw rejectedByScope;
-            }
 
-            OwnershipSlot slot = null;
-            OresFuture<Void> exited = null;
-            OresTask<T> child = null;
-            try {
-                // Every ownership object and callback registration is created
-                // before scheduler admission. In particular HashSet growth
-                // cannot strand an admitted actor/code-generation pin.
-                slot = new OwnershipSlot();
-                exited = new OresFuture<>();
-                child = new OresTask<>(exited);
-                slot.task = child;
-                if (!tasks.add(slot))
-                    throw new IllegalStateException("duplicate Task ownership slot");
-                OwnershipSlot owned = slot;
-                exited.whenCompleteRuntime((ignored, failure) -> {
-                    // A failed external generation/resource retirement must
-                    // remain owned so close() reports it instead of pruning it.
-                    if (failure == null) {
-                        synchronized (gate) {
-                            tasks.remove(owned);
-                        }
-                    }
-                });
-            } catch (RuntimeException | Error preparationFailure) {
-                discardUnadmittedSlot(slot, preparationFailure);
-                try {
-                    onPhysicalExit.run();
-                } catch (RuntimeException | Error releaseFailure) {
-                    if (releaseFailure != preparationFailure)
-                        preparationFailure.addSuppressed(releaseFailure);
+        OwnershipSlot slot = null;
+        OresFuture<Void> exited = null;
+        OresTask<T> child = null;
+        try {
+            synchronized (treeAdmissionGate) {
+                synchronized (gate) {
+                    ensureAdmitting();
+                    // All potentially allocating Task ownership work occurs
+                    // before admitting executable work to the scheduler.
+                    slot = new OwnershipSlot();
+                    exited = new OresFuture<>();
+                    child = new OresTask<>(exited);
+                    slot.task = child;
+                    if (!tasks.add(slot))
+                        throw new IllegalStateException("duplicate Task ownership slot");
                 }
-                throw preparationFailure;
             }
-
-            final OwnershipSlot admittedSlot = slot;
-            final OresFuture<Void> exitFence = exited;
-            final OresTask<T> ownedChild = child;
-            final OresFuture<T> completion;
-            try {
-                completion = scheduler.start(frame, () -> {
-                    // The scheduler invokes this only after the final guest
-                    // carrier turn has physically unwound.
-                    try {
-                        onPhysicalExit.run();
-                        exitFence.completeFromRuntime(null);
-                    } catch (RuntimeException | Error failure) {
-                        exitFence.failFromRuntime(failure);
-                    }
-                });
-            } catch (RuntimeException | Error rejectedBeforeAdmission) {
-                discardUnadmittedSlot(admittedSlot, rejectedBeforeAdmission);
-                try {
-                    onPhysicalExit.run();
-                } catch (RuntimeException | Error releaseFailure) {
-                    if (releaseFailure != rejectedBeforeAdmission)
-                        rejectedBeforeAdmission.addSuppressed(releaseFailure);
+        } catch (RuntimeException | Error rejected) {
+            if (slot != null) {
+                synchronized (gate) {
+                    discardUnadmittedSlot(slot, rejected);
                 }
-                throw rejectedBeforeAdmission;
             }
-
-            // Preallocated handle publication is an allocation-free assignment.
-            ownedChild.attachCompletion(completion);
-            return ownedChild;
+            releaseUnadmitted(onPhysicalExit, rejected);
+            throw rejected;
         }
+
+        final OwnershipSlot owned = slot;
+        final OresFuture<Void> exitFence = exited;
+        final OresTask<T> shell = child;
+        final OresFuture<T> completion;
+        try {
+            // Neither admission lock may be held during enqueue, guest turn,
+            // synchronous scheduler callback or external resource release.
+            completion = scheduler.start(resume -> {
+                if (cancelled) throw new java.util.concurrent.CancellationException(
+                        "Task scope cancelled before guest Task turn");
+                return frame.resume(resume);
+            }, () -> {
+                try {
+                    onPhysicalExit.run();
+                    exitFence.completeFromRuntime(null);
+                } catch (RuntimeException | Error releaseFailure) {
+                    exitFence.failFromRuntime(releaseFailure);
+                }
+            });
+        } catch (RuntimeException | Error rejected) {
+            // The scheduler throws only before registering a TaskRunner.
+            // Keep ownership alive until its generation pin is released.
+            Throwable releaseFailure = releaseUnadmitted(onPhysicalExit, rejected);
+            if (releaseFailure == null) exitFence.completeFromRuntime(null);
+            else exitFence.failFromRuntime(releaseFailure);
+            // Preserve injected owner-set removal failures as suppressed
+            // errors; pin retirement always runs before bookkeeping.
+            if (releaseFailure == null) {
+                synchronized (gate) {
+                    discardUnadmittedSlot(owned, rejected);
+                }
+            }
+            throw rejected;
+        }
+
+        // Publication is a reference assignment and cannot allocate.
+        shell.attachCompletion(completion);
+        try {
+            exitFence.whenCompleteRuntime((ignored, failure) -> {
+                if (failure == null) {
+                    synchronized (gate) {
+                        tasks.remove(owned);
+                    }
+                }
+            });
+        } catch (RuntimeException | Error observerFailure) {
+            // Even with a broken observer the pre-reserved slot remains
+            // joinable; seal this scope and revoke the producer.
+            synchronized (gate) {
+                cancelled = true;
+            }
+            shell.cancel();
+            throw observerFailure;
+        }
+        if (cancelled) {
+            Runnable notification = shell.cancelDeferredNotification();
+            if (notification != null) notification.run();
+        }
+        return shell;
+    }
+
+    /** Release one pre-admission image pin without holding a scope monitor. */
+    private static Throwable releaseUnadmitted(
+            Runnable onPhysicalExit, Throwable rejected) {
+        try {
+            onPhysicalExit.run();
+            return null;
+        } catch (RuntimeException | Error failure) {
+            if (failure != rejected) rejected.addSuppressed(failure);
+            return failure;
         }
     }
 
@@ -297,12 +321,14 @@ public final class OresTaskScope implements AutoCloseable {
         }
         OresCancellationToken.Registration registration =
                 token.onCancellationRequested(this::cancel);
+        final boolean detach;
         synchronized (treeAdmissionGate) {
             synchronized (gate) {
-                if (cancelled) registration.close();
-                else externalCancellation.add(registration);
+                detach = cancelled;
+                if (!detach) externalCancellation.add(registration);
             }
         }
+        if (detach) registration.close();
     }
 
 
@@ -424,18 +450,20 @@ public final class OresTaskScope implements AutoCloseable {
 
         // No arbitrary callbacks execute under the admission gate.
         Throwable firstFailure = null;
-        for (OresCancellationToken.Registration link : allLinks) {
+        // An external registration close may block or throw. Revoke the
+        // entire Task tree first, then detach links, then notify listeners.
+        for (OresTask<?> task : allTasks) {
             try {
-                link.close();
+                Runnable notification = task.cancelDeferredNotification();
+                if (notification != null) notifications.add(notification);
             } catch (RuntimeException | Error failure) {
                 if (firstFailure == null) firstFailure = failure;
                 else if (firstFailure != failure) firstFailure.addSuppressed(failure);
             }
         }
-        for (OresTask<?> task : allTasks) {
+        for (OresCancellationToken.Registration link : allLinks) {
             try {
-                Runnable notification = task.cancelDeferredNotification();
-                if (notification != null) notifications.add(notification);
+                link.close();
             } catch (RuntimeException | Error failure) {
                 if (firstFailure == null) firstFailure = failure;
                 else if (firstFailure != failure) firstFailure.addSuppressed(failure);
