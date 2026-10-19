@@ -83,10 +83,25 @@ def main():
         for expr in ("3/2","9223372036854775808"):
             source.write_text("pub fnc main():int{return "+expr+";}\n",encoding="utf-8")
             neg=run([sys.executable,str(probe),str(source)])
-            require(neg.returncode!=0 and not neg.stdout,
-                    "unsupported source erroneously admitted or emitted output: "+expr)
+            diagnostics=neg.stderr.decode("utf-8","replace")
+            require(neg.returncode==1 and not neg.stdout and
+                    re.search(r"\\b(error|invalid|unsupported|overflow|out of range|type mismatch|cannot|failed)\\b",
+                              diagnostics,re.IGNORECASE) is not None and
+                    re.search(r"Traceback|NoClassDefFoundError|ClassNotFoundException|OutOfMemoryError",
+                              diagnostics,re.IGNORECASE) is None,
+                    "source diagnostic missing or infrastructure failure: "+
+                    expr+" "+repr((neg.returncode,diagnostics[:1200])))
+    checkout=run(["git","rev-parse","--verify","HEAD"])
+    require(checkout.returncode==0 and
+            re.fullmatch(rb"[0-9a-f]{40}",checkout.stdout.strip()) is not None,
+            "cannot independently identify Git checkout")
+    clean=run(["git","status","--porcelain=v1","--untracked-files=no"])
+    require(clean.returncode==0 and clean.stdout==b"",
+            "compiler checkout has unexpected tracked source modifications")
     receipt={
         "kind":"graal-java-real-compiler-exit-subset",
+        "actual_checkout_commit":checkout.stdout.decode("ascii").strip(),
+        "source_commit_binary_link_attested":False,
         "fixture_git_blob":BLOB,
         "launcher_class_sha256":hashlib.sha256(launcher.read_bytes()).hexdigest(),
         "executed":len(results),"corpus_total":len(cases),
