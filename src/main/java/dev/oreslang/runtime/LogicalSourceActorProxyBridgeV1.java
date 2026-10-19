@@ -81,6 +81,21 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
         return router.ref().nextOutput(timeout);
     }
 
+    /**
+     * Host-only verification hook: bind one resumable scheduler frame to the
+     * current physical actor before its source generation can be retired.
+     * Unlike public admission, this is deliberately NOT an ActorRef method.
+     * The final compiler-owned TaskScope must replace this test seam.
+     */
+    <T> OresFuture<T> startHostPinnedTaskForUpgrade(
+            OresScheduler scheduler, OresScheduler.Task<T> frame) {
+        requireHost();
+        synchronized (dispatchLock) {
+            requireUsable();
+            return router.startHostPinnedTaskForUpgrade(scheduler, frame);
+        }
+    }
+
     public LogicalActorProxyMailboxV1.Snapshot snapshot() { return mailbox.snapshot(); }
 
     public boolean failSealed() { return poisoned; }
