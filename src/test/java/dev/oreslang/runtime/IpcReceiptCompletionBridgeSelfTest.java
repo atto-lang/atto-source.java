@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 /** Host completion protocol self-test; not Oreslang guest Future lowering. */
@@ -53,13 +54,37 @@ public final class IpcReceiptCompletionBridgeSelfTest {
         var three = env(1, "session");
         var completion = onTerminal.admit(three);
         AtomicInteger observed = new AtomicInteger();
+        AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
         completion.thenAccept(state -> {
-            if (state == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED
-                    && onTerminal.invariant()) observed.incrementAndGet();
+            // If CompletableFuture.complete() runs inside the correlation
+            // monitor, the probe thread cannot re-enter before the callback
+            // returns. Ensure a separate carrier actually observes readiness.
+            CountDownLatch probeDone = new CountDownLatch(1);
+            Thread probe = new Thread(() -> {
+                try {
+                    if (state == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED
+                            && onTerminal.invariant()) observed.incrementAndGet();
+                } catch (Throwable error) {
+                    callbackFailure.compareAndSet(null, error);
+                } finally {
+                    probeDone.countDown();
+                }
+            });
+            probe.start();
+            try {
+                if (!probeDone.await(2, TimeUnit.SECONDS)) {
+                    callbackFailure.compareAndSet(null,
+                            new AssertionError("callback blocked on correlation lock"));
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                callbackFailure.compareAndSet(null, interrupted);
+            }
         });
         onTerminal.acceptVerified(three, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
         onTerminal.acceptVerified(three, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
         check(result(completion) == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+        check(callbackFailure.get() == null);
         check(observed.get() == 1);
         check(onTerminal.invariant());
 
