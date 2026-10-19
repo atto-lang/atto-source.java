@@ -39,6 +39,11 @@ Both syntaxes still need full formatter/AOT and executable conformance.
 only String, Boolean, Integer, Long, Float, and Double. Nulls, opaque host
 Objects, capabilities, nested structures, and Option payloads are excluded.
 Quoted static field names, including empty strings, are treated as data.
+The parser/AST now enforce the same maximum 1,024 UTF-16-unit field-name
+length and reject NUL and malformed surrogates for inferred/explicit struct
+fields and typed structural record fields; unmodified, well-formed Unicode,
+spaces and punctuation remain valid. This bounds compiler schema names as
+well as host-side column keys without creating locale-sensitive normalization.
 
 The implementation validates exact row/column keys and every element type,
 checks equal column lengths, and caps fields at 64 and cells at 1,000,000.
