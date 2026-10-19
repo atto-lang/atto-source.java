@@ -49,6 +49,29 @@ public class TaskScopeTest {
         }
     }
 
+    @Test void guestTurnCanCancelItsOwnScopeAndFinishFinally() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            AtomicBoolean cleanupRan = new AtomicBoolean();
+            AtomicBoolean cancelledInsideTurn = new AtomicBoolean();
+            TaskHandle<Integer> child = scope.startTask(resume -> {
+                try {
+                    cancelledInsideTurn.set(scope.cancel("self-stop"));
+                    // Scope cancellation requests are cooperative: the
+                    // current compiler-generated turn may finish this block.
+                    return OresScheduler.done(9);
+                } finally {
+                    cleanupRan.set(true);
+                }
+            });
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    child.getDone().get(3, TimeUnit.SECONDS));
+            assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
+            assertTrue(cancelledInsideTurn.get());
+            assertTrue(cleanupRan.get());
+        }
+    }
+
     @Test void scopeCancelCannotPretendRunningChildExited() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(2)) {
             TaskScope scope = scheduler.newTaskScope();
