@@ -611,3 +611,24 @@ physical scheduler carrier after the guest turn has unwound. Guaranteed
 bounded host callback latency requires separately scheduled and
 admission-bounded completion notification; unbounded virtual-thread spawning
 is not an acceptable shortcut.
+
+
+## Serializable Throwable authority boundary
+
+The private `CancelledAtResume` marker is a Java
+`CancellationException` and therefore Serializable. Its internal
+TaskCancellation authority and scheduler Task-domain identity must **never**
+cross a serialization boundary. Both are now `transient`, with a stable
+`serialVersionUID`. The scheduler's authentication check also rejects a
+deserialized marker with missing authority or domain. This preserves the
+rule that a copied exception is diagnostic data, not cancellation permission.
+
+A new committed `TaskHandleTest` serializes a genuine cancelled Task's
+checkpoint marker and rethrows the deserialized exception inside an
+unrelated Task. Its outcome must remain Failed and the unrelated source
+Future must not be cancelled. The same suite checks ordinary marker replay
+without serialization.
+
+Current Stage-2 JUnit inventory on this branch: 40 TaskHandleTest +
+17 TaskScopeTest source test methods. All require production JDK/GraalVM
+execution before being treated as passing integration regressions.
