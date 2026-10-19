@@ -1157,10 +1157,13 @@ public final class Ast {
     }
 
     /**
-     * Anonymous struct expression.
+     * Anonymous closed aggregate expression.
      *
-     * <p>INFERRED_RECORD is a closed structural readonly value shape.
-     * INFERRED_STRUCT is a concrete closed struct shape whose field types are
+     * <p>RECORD is the canonical structural record value and carries no
+     * type-capture intent. INFERRED_RECORD is the compatibility infer-record
+     * spelling and may participate in an explicit/short inferred alias.
+     * Both are closed structural readonly value shapes. INFERRED_STRUCT is a
+     * concrete closed struct shape whose field types are
      * inferred from the initializer; mutation authority remains a property of
      * the binding/borrow, not of the {@code infer} keyword. The distinct tags
      * therefore survive semantic lowering instead of collapsing to one record type.
