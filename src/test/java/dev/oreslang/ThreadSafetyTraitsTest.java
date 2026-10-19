@@ -115,6 +115,19 @@ final class ThreadSafetyTraitsTest {
     }
 
     @Test
+    void malformedNominalNamesDenyProofBeforeNominalCallback() {
+        ThreadSafetyTraits.NominalProof permissive = (type, trait) -> true;
+        for (Trait trait : Trait.values()) {
+            assertFalse(ThreadSafetyTraits.has(
+                    new Types.Named("", List.of()), trait, permissive));
+            assertFalse(ThreadSafetyTraits.has(
+                    new Types.Named("   ", List.of()), trait, permissive));
+            assertFalse(ThreadSafetyTraits.has(
+                    new Types.Named(null, List.of()), trait, permissive));
+        }
+    }
+
+    @Test
     void mutableAndImmutableBorrowHaveDistinctSendRequirements() {
         Type sendOnly = new Types.Named("SendOnly", List.of());
         ThreadSafetyTraits.NominalProof proof =
