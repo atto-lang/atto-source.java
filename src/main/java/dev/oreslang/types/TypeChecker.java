@@ -5832,6 +5832,9 @@ public final class TypeChecker {
                 || a instanceof Generic || b instanceof Generic) return true;
         if (a instanceof Union union) return union.options().stream().anyMatch(option -> typesMayOverlap(option, b));
         if (b instanceof Union union) return union.options().stream().anyMatch(option -> typesMayOverlap(a, option));
+        // Overlap is only a conservative possibility, never a conversion proof.
+        if (a instanceof Dyn dyn) return typesMayOverlap(dyn.interfaceType(), b);
+        if (b instanceof Dyn dyn) return typesMayOverlap(a, dyn.interfaceType());
 
         if (a instanceof StringLiteral && (b instanceof StringLiteral || b == Primitive.STRING)) return true;
         if (b instanceof StringLiteral && (a instanceof StringLiteral || a == Primitive.STRING)) return true;
