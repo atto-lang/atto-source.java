@@ -148,11 +148,20 @@ final class TaskAccessVerifier {
         Objects.requireNonNull(nominalProof, "nominalProof");
         Objects.requireNonNull(trustedPlaceTypes, "trustedPlaceTypes");
         List<TypedClaim> typed = List.copyOf(Objects.requireNonNull(requested, "claims"));
+        Map<Place, Types.Type> pendingTypes = new HashMap<>();
         for (TypedClaim claim : typed) {
             Types.Type actual = trustedPlaceTypes.resolvedReferent(claim.claim().place());
             if (actual == null || !actual.equals(claim.type())) {
                 throw new IllegalArgumentException(
                         "Task claim referent type does not match resolved place type");
+            }
+            Place place = claim.claim().place();
+            Types.Type previous = knownPlaceTypes.get(place);
+            Types.Type duplicate = pendingTypes.putIfAbsent(place, actual);
+            if ((previous != null && !previous.equals(actual))
+                    || (duplicate != null && !duplicate.equals(actual))) {
+                throw new IllegalStateException(
+                        "Task place changed type without a generation barrier");
             }
             ThreadSafetyTraits.Trait needed = claim.claim().mode() == Mode.READ
                     ? ThreadSafetyTraits.Trait.SYNC : ThreadSafetyTraits.Trait.SEND;
@@ -160,7 +169,14 @@ final class TaskAccessVerifier {
                 throw new IllegalArgumentException("Task access requires proven " + needed);
             }
         }
-        return reserveVerified(typed.stream().map(TypedClaim::claim).toList());
+        long newPlaces = pendingTypes.keySet().stream()
+                .filter(place -> !knownPlaceTypes.containsKey(place)).count();
+        if (newPlaces > MAX_TRACKED_PLACES - knownPlaceTypes.size()) {
+            throw new IllegalStateException("Task place type tracking capacity exceeded");
+        }
+        Ticket admitted = reserveVerified(typed.stream().map(TypedClaim::claim).toList());
+        knownPlaceTypes.putAll(pendingTypes);
+        return admitted;
     }
 
     /** Opaque compiler-issued child identity. A cancelled Ticket is still live. */
@@ -187,9 +203,12 @@ final class TaskAccessVerifier {
     // more than two million pairwise compatibility decisions.
     private static final long MAX_PAIRWISE_CHECKS_PER_ADMISSION = 2_000_000L;
     private static final int MAX_TRACKED_ALLOCATIONS = 65536;
+    private static final int MAX_TRACKED_PLACES = 65536;
 
     private final Map<Ticket, Child> live = new LinkedHashMap<>();
     private final Map<AllocationKey, Long> knownGenerations = new HashMap<>();
+    /** Same storage/generation cannot silently change referent type between children. */
+    private final Map<Place, Types.Type> knownPlaceTypes = new HashMap<>();
     /** Single trusted allocation/trust domain per scope, including READ-only claims. */
     private ScopeKey scopeDomain;
     private long nextId = 1;
@@ -384,6 +403,12 @@ final class TaskAccessVerifier {
             }
         }
         knownGenerations.put(key, newGeneration);
+        // Old-generation type witnesses cannot be reused after a checked
+        // reallocation/layout transition. New claims must re-resolve types.
+        knownPlaceTypes.keySet().removeIf(place ->
+                place.root().domain().equals(oldRoot.domain())
+                        && place.root().ownerId().equals(oldRoot.ownerId())
+                        && place.root().allocationId() == oldRoot.allocationId());
     }
 
     public synchronized void finishScope() {
@@ -394,6 +419,7 @@ final class TaskAccessVerifier {
         // No source permission is valid after scope teardown; retire
         // provenance bookkeeping rather than retaining every old allocation.
         knownGenerations.clear();
+        knownPlaceTypes.clear();
         scopeDomain = null;
     }
 
