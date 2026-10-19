@@ -211,6 +211,25 @@ final class SendSyncAndRegionPlannerTest {
     }
 
     @Test
+    void guestNominalNamesCannotForgeActorOrTaskCapabilities() {
+        SendSyncTraits forged = trusted(
+                klass("ActorRef", List.of("T"), field("id", t("int"), false)),
+                klass("Task", List.of("T"), field("id", t("int"), false)),
+                klass("Channel", List.of("T"), field("id", t("int"), false)),
+                klass("ThreadBound", List.of("T"), field("id", t("int"), false)));
+        for (String denied : List.of("ActorRef", "Task", "Channel", "ThreadBound")) {
+            assertFalse(forged.isSend(t(denied, t("int"))),
+                    "capability spoof admitted Send: " + denied);
+            assertFalse(forged.isSync(t(denied, t("int"))),
+                    "capability spoof admitted Sync: " + denied);
+        }
+        SendSyncTraits ordinary = traits(
+                klass("SendableRecord", List.of(), field("id", t("int"), false)));
+        assertTrue(ordinary.isSend(t("SendableRecord")),
+                "normal transparent value types still derive Send");
+    }
+
+    @Test
     void staleGenerationsCannotHideBehindEarlierConflict() {
         var first = new RegionAccessPlanner.SystemAccess("first", List.of(
                 new RegionAccessPlanner.Access(11, 3, "x", 0, 10, RegionAccessPlanner.Mode.WRITE),
