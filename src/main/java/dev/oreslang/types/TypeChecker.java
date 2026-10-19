@@ -3900,12 +3900,7 @@ public final class TypeChecker {
             return new Record(members, object.inferredStruct());
         }
         if (expr instanceof Ast.TaskExpr task) {
-            // A child Task executes in its own logical continuation. The
-            // ownership pass enforces captured Send values and move semantics;
-            // the body is type-checked as a separate void-returning callable.
-            Env child = new Env(env);
-            checkCallableBlock(task.body(), child, generics, Primitive.VOID, self);
-            return new Named("Task", List.of(Primitive.VOID));
+            return checkTaskBlock(task, Primitive.VOID, env, generics, self);
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
@@ -4194,7 +4189,39 @@ public final class TypeChecker {
         return Primitive.BOOL;
     }
 
+    /**
+     * A Task runs after the enclosing function continues, so source analysis
+     * cannot credit Task assignments toward parent definite initialization.
+     * Neither can a child inherit constructor-only field write privileges.
+     */
+    private Type checkTaskBlock(Ast.TaskExpr task, Type result, Env env,
+                                Set<String> generics, Type self) {
+        Env child = new Env(env);
+        Map<Env.Binding, Set<String>> initializedBefore = env.initializationSnapshot();
+        Ast.ClassDecl previousClass = currentClassOwner;
+        Ast.ClassDecl previousConstructor = currentConstructorOwner;
+        currentConstructorOwner = null;
+        try {
+            checkCallableBlock(task.body(), child, generics, result, self);
+        } finally {
+            env.restoreInitialization(initializedBefore);
+            currentClassOwner = previousClass;
+            currentConstructorOwner = previousConstructor;
+        }
+        if (result != Primitive.VOID && !definitelyReturns(task.body())) {
+            throw new IllegalArgumentException(
+                    "Task<" + result + "> must return a value on every path");
+        }
+        return new Named("Task", List.of(result));
+    }
+
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.TaskExpr task
+                && expected instanceof Named named
+                && named.name().equals("Task")
+                && named.arguments().size() == 1) {
+            return checkTaskBlock(task, named.arguments().getFirst(), env, generics, self);
+        }
         if (expr instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
             return fn;
