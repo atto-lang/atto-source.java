@@ -1026,6 +1026,11 @@ public final class Ast {
                 new java.lang.ref.ReferenceQueue<>();
         private static final java.util.Map<IdentityKey, java.util.Set<String>> KEYS =
                 new java.util.HashMap<>();
+        // Tuple positional literals and immutable int aliases have an exact
+        // checked slot. Ownership must not unnecessarily widen to unrelated
+        // affine fields in the same tuple.
+        private static final java.util.Map<IdentityKey, Integer> TUPLE_SLOTS =
+                new java.util.HashMap<>();
 
         private static final class IdentityKey extends java.lang.ref.WeakReference<IndexExpr> {
             private final int hash;
@@ -1046,7 +1051,10 @@ public final class Ast {
 
         private static void expunge() {
             java.lang.ref.Reference<? extends IndexExpr> dead;
-            while ((dead = CLEARED.poll()) != null) KEYS.remove(dead);
+            while ((dead = CLEARED.poll()) != null) {
+                KEYS.remove(dead);
+                TUPLE_SLOTS.remove(dead);
+            }
         }
 
         /** Called only after the checker resolves visibility and the field set. */
@@ -1065,6 +1073,29 @@ public final class Ast {
         }
 
         /**
+         * An exact tuple slot proved by the type checker. These slots are not
+         * runtime bounds checks; the evaluator still enforces integer bounds.
+         * Values are recorded only once and only after arity validation.
+         */
+        public static synchronized void recordTupleSlot(IndexExpr site, int slot) {
+            java.util.Objects.requireNonNull(site, "index site");
+            if (slot < 0) throw new IllegalArgumentException("tuple slot must be nonnegative");
+            expunge();
+            Integer previous = TUPLE_SLOTS.putIfAbsent(
+                    new IdentityKey(site, CLEARED), slot);
+            if (previous != null && previous.intValue() != slot) {
+                throw new IllegalStateException("same tuple index site has conflicting slot proofs");
+            }
+        }
+
+        /** Null denotes a genuinely dynamic positional selection. */
+        public static synchronized Integer knownTupleSlot(IndexExpr site) {
+            java.util.Objects.requireNonNull(site, "index site");
+            expunge();
+            return TUPLE_SLOTS.get(new IdentityKey(site, null));
+        }
+
+        /**
          * Semantic-preserving compiler rewrites clone AST nodes. Preserve a
          * checked projection proof by identity for the resulting node; do not
          * broaden keys or mint proofs for unchecked array/tuple accesses.
@@ -1076,6 +1107,8 @@ public final class Ast {
             expunge();
             java.util.Set<String> visible = KEYS.get(new IdentityKey(original, null));
             if (visible != null) record(rewritten, visible);
+            Integer fixed = TUPLE_SLOTS.get(new IdentityKey(original, null));
+            if (fixed != null) recordTupleSlot(rewritten, fixed);
             return rewritten;
         }
 
