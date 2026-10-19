@@ -104,6 +104,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     /** Released at terminal CAS so retained settled Futures cannot pin actor/channel state. */
     private volatile BooleanSupplier cancelAdmission;
+    /** One-shot runtime callback after terminal authority is final, before subscriber drain. */
+    private volatile Runnable onTerminalReady;
     /** One-shot release after terminal subscribers complete; never retain owners afterwards. */
     private volatile Runnable onNotificationDrained;
     private final AtomicReference<Runnable> cancelHook;
@@ -145,10 +147,17 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
             Runnable onNotificationDrained) {
+        this(cancelAdmission, cancelHook, () -> { }, onNotificationDrained);
+    }
+
+    OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
+            Runnable onTerminalReady, Runnable onNotificationDrained) {
         this.cancelAdmission = Objects.requireNonNull(
                 cancelAdmission, "cancelAdmission");
         this.cancelHook = new AtomicReference<>(
                 Objects.requireNonNull(cancelHook, "cancelHook"));
+        this.onTerminalReady = Objects.requireNonNull(
+                onTerminalReady, "onTerminalReady");
         this.onNotificationDrained = Objects.requireNonNull(
                 onNotificationDrained, "onNotificationDrained");
     }
@@ -455,19 +464,29 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     @Override
     public boolean cancel(boolean mayInterruptIfRunning) {
-        if (state.get() != PENDING) return false;
-        // Capture the admission capability locally: a concurrent terminal
-        // transition may clear the field, but settlement CAS remains final.
-        BooleanSupplier admission = cancelAdmission;
-        if (admission == null || !admission.getAsBoolean()) return false;
+        RuntimeCancellation<T> cancellation = claimCancellationFromRuntime();
+        if (cancellation == null) return false;
+        cancellation.revoke();
+        cancellation.publish();
+        return true;
+    }
 
-        CancellationException cancelled =
-                new CancellationException("OresFuture was cancelled");
-        // Revoke the owning operation BEFORE any synchronous subscriber can
-        // block terminal notification. isCancelled() becomes visible at the
-        // successful state CAS; guest/producer authority must then be removed
-        // before ordinary host completion callbacks are entered.
-        return settle(new Cancelled(cancelled), this::invokeCancelHook);
+    /**
+     * Runtime-only split cancellation used by structured scopes and scheduler
+     * shutdown. Claiming makes cancellation authoritative; callers must revoke
+     * every claimed operation before publishing potentially blocking subscribers.
+     */
+    RuntimeCancellation<T> claimCancellationFromRuntime() {
+        if (state.get() != PENDING) return null;
+        BooleanSupplier admission = cancelAdmission;
+        if (admission == null || !admission.getAsBoolean()) return null;
+
+        Cancelled cancelled = new Cancelled(
+                new CancellationException("OresFuture was cancelled"));
+        if (!state.compareAndSet(PENDING, cancelled)) return null;
+
+        cancelAdmission = null;
+        return new RuntimeCancellation<>(this, cancelled);
     }
 
     @Override
@@ -616,6 +635,48 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         }
     }
 
+    private void invokeTerminalReady() {
+        Runnable ready = onTerminalReady;
+        onTerminalReady = null;
+        if (ready == null) return;
+        try {
+            ready.run();
+        } catch (RuntimeException | Error ignored) {
+            // Runtime lifetime/accounting hooks cannot roll back a terminal
+            // Future or prevent ordinary subscribers from being delivered.
+        }
+    }
+
+    static final class RuntimeCancellation<T> {
+        private final OresFuture<T> owner;
+        private final Cancelled terminal;
+        private boolean revoked;
+        private boolean published;
+
+        private RuntimeCancellation(OresFuture<T> owner, Cancelled terminal) {
+            this.owner = owner;
+            this.terminal = terminal;
+        }
+
+        void revoke() {
+            if (revoked) return;
+            owner.invokeCancelHook();
+            owner.cancelRevocationComplete.set(true);
+            owner.invokeTerminalReady();
+            revoked = true;
+        }
+
+        void publish() {
+            if (published) return;
+            if (!revoked) {
+                throw new IllegalStateException(
+                        "runtime cancellation must be revoked before publication");
+            }
+            published = true;
+            owner.drainTerminalNotifications(terminal);
+        }
+    }
+
     private boolean settle(Object terminal) {
         return settle(terminal, () -> { });
     }
@@ -635,32 +696,36 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         // returns. Cancellation itself uses invokeCancelHook() after CAS.
         if (!(terminal instanceof Cancelled)) cancelHook.set(null);
 
-        try {
-            // The winning cancellation claim runs its internal revoker before
-            // notifying potentially blocking synchronous host subscribers.
-            // Publish revocation completion BEFORE draining registrations:
-            // later registrations can then notify directly without waiting.
-            if (terminal instanceof Cancelled) {
-                try {
-                    afterStateClaimed.run();
-                } finally {
-                    cancelRevocationComplete.set(true);
-                }
-            } else {
+        // Completion/failure are already irrevocable. Cancellation normally
+        // uses RuntimeCancellation, but keep this path correct for any future
+        // internal caller that settles a Cancelled state directly.
+        if (terminal instanceof Cancelled) {
+            try {
                 afterStateClaimed.run();
+            } finally {
+                cancelRevocationComplete.set(true);
             }
+        } else {
+            afterStateClaimed.run();
+        }
+        invokeTerminalReady();
+        drainTerminalNotifications(terminal);
+        return true;
+    }
+
+    private void drainTerminalNotifications(Object terminal) {
+        try {
             RuntimeWaiterRegistration<T> waiter;
             while ((waiter = waiters.poll()) != null) {
                 notifyWaiter(waiter, terminal);
             }
-            return true;
         } finally {
             // Terminal state can be visible long before a synchronous waiter
             // returns. A bounded host notification permit cannot be reused
             // just because isDone() became true during a blocked callback.
             Runnable drained = onNotificationDrained;
             onNotificationDrained = null;
-            // There is exactly one winning terminal CAS, hence one release.
+            // There is exactly one winning terminal claim, hence one release.
             // Keep the callback live until every synchronous waiter returns.
             if (drained != null) drained.run();
         }
