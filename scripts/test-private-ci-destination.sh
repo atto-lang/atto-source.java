@@ -36,12 +36,42 @@ expect_fail() {
 }
 expect_wrapper_reject() {
   rm -f "$MOCK_EXEC_LOG"
-  if "$script_dir/run-in-private-ci-destination.sh" "$1" --source-dir "$work/fixture/source" --branch ci/oreslang-test > "$work/out" 2>&1; then
+  if "$script_dir/run-in-private-ci-destination.sh" "$1" --source-dir "$work/fixture/source" --branch ci/oreslang-test --source-commit 0123456789abcdef0123456789abcdef01234567 > "$work/out" 2>&1; then
     echo 'Unsafe destination executed publishing' >&2; exit 1;
   fi
   test ! -e "$MOCK_EXEC_LOG"
   grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
 }
+# The source commit is required and validated by the shell entrypoint
+# *before* any Python child, GitHub API request, or source read can occur.
+cat > "$work/python3" <<'NO_PYTHON_INVOCATION'
+#!/usr/bin/env bash
+printf 'unexpected python child\\n' >> "$MOCK_EXEC_LOG"
+exit 96
+NO_PYTHON_INVOCATION
+chmod +x "$work/python3"
+for source_commit in INVALID 0123456789ABCDEF0123456789ABCDEF01234567 12345; do
+  rm -f "$MOCK_EXEC_LOG"
+  if "$script_dir/run-in-private-ci-destination.sh" trusted/ci \\
+      --source-dir "$work/fixture/source" \\
+      --branch ci/oreslang-test --source-commit "$source_commit" \\
+      > "$work/out" 2>&1; then
+    echo 'Unsafe malformed source commit accepted' >&2
+    exit 1
+  fi
+  grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
+  test ! -e "$MOCK_EXEC_LOG"
+done
+rm -f "$MOCK_EXEC_LOG"
+if "$script_dir/run-in-private-ci-destination.sh" trusted/ci \\
+    --source-dir "$work/fixture/source" --branch ci/oreslang-test \\
+    > "$work/out" 2>&1; then
+  echo 'Unsafe missing source commit accepted' >&2
+  exit 1
+fi
+grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
+test ! -e "$MOCK_EXEC_LOG"
+rm "$work/python3"
 expect_ok trusted/ci
 for visibility in public internal null; do
   export MOCK_VISIBILITY="$visibility"
