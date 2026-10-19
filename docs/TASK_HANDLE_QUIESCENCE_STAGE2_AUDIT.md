@@ -579,3 +579,35 @@ checkpoints and after inline self-cancellation, while the marker replay
 test captures a true checkpoint exception in its original Task and
 rethrows it in a distinct Task. These tests have **not yet executed
 in production Maven/GraalVM CI**. Keep the PR draft.
+
+
+## Post-turn publication of authenticated checkpoint cancellation
+
+A further audit tightened notification timing for an authenticated runtime
+checkpoint. The scheduler now atomically claims the RUNNING -> TERMINAL
+transition and records a pending checkpoint cancellation, but defers
+`completion.cancel(false)` until `afterCarrierTurn`. At that point
+`runBound()` has removed the current Task's scheduler/guest execution
+context, and the runner has retired its physical execution lease. This
+avoids invoking synchronous host Future subscribers inside a still-bound
+guest turn.
+
+A wall-clock deadline or external forced cancellation that already claimed
+the terminal TaskRunner state cannot be overwritten by the checkpoint,
+because only a winning RUNNING -> TERMINAL transition records the pending
+checkpoint. The ordinary physical TaskScope `getDone` witness remains
+separate from early terminal state visibility.
+
+A committed real-runtime JUnit checks that checkpoint-result subscribers
+observe no current scheduler or Task-domain binding on a dedicated carrier.
+Pre-admission cancellation now also explicitly asserts
+`TaskHandle.result().isCancelled()`. Stage 2 has **37 TaskHandleTest and
+17 TaskScopeTest** JUnit methods, not yet run by a source-exact Maven/GraalVM
+workflow. No assumption of full compiler success may be drawn from
+the GitHub Actions zero-step failures.
+
+A remaining limitation is that host subscribers can still block the
+physical scheduler carrier after the guest turn has unwound. Guaranteed
+bounded host callback latency requires separately scheduled and
+admission-bounded completion notification; unbounded virtual-thread spawning
+is not an acceptable shortcut.
