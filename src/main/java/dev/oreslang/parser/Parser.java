@@ -3620,9 +3620,17 @@ public final class Parser {
             return new Ast.ListExpr(items);
         }
         if (match(NLEX)) {
+            if (check(FNC) && checkNext(LPAREN)) {
+                advance(); // anonymous fnc: the same LambdaExpr as pipe lambdas
+                return parseFncLambda(true);
+            }
             if (check(PIPE)) return parsePipeLambda(true);
             if (check(LPAREN) && looksLikeLambda()) return parseLambda(true);
             throw error(previous(), "'nlex' in expression position must prefix a lambda");
+        }
+        if (check(FNC) && checkNext(LPAREN)) {
+            advance();
+            return parseFncLambda(false);
         }
         if (check(PIPE)) return parsePipeLambda(false);
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
@@ -3700,6 +3708,34 @@ public final class Parser {
         consume(RPAREN, "expected ')' after lambda parameters");
         consume(ARROW, "expected '->' after lambda parameters");
         return parseLambdaBody(params, nonLexical);
+    }
+
+    /**
+     * Anonymous `fnc (arg) { ... }` is sugar for `|arg| -> { ... }`.
+     * Keep one LambdaExpr representation so capture, ownership, and callable
+     * checking cannot diverge by source spelling. Block braces are required.
+     */
+    private Ast.LambdaExpr parseFncLambda(boolean nonLexical) {
+        consume(LPAREN, "expected '(' after anonymous fnc");
+        List<Ast.Param> params = new ArrayList<>();
+        if (!check(RPAREN)) {
+            do {
+                if (check(IDENT) && (checkNext(COMMA) || checkNext(RPAREN))) {
+                    String name = advance().lexeme();
+                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
+                } else {
+                    Ast.TypeRef type = parseTypeRef();
+                    boolean mutable = match(MUT);
+                    String name = consume(IDENT, "expected anonymous fnc parameter name").lexeme();
+                    params.add(new Ast.Param(type, name, false, mutable));
+                }
+            } while (match(COMMA));
+        }
+        consume(RPAREN, "expected ')' after anonymous fnc parameters");
+        if (!check(LBRACE)) {
+            throw error(peek(), "anonymous fnc requires a braced block body");
+        }
+        return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
     }
 
     private Ast.LambdaExpr parsePipeLambda(boolean nonLexical) {
