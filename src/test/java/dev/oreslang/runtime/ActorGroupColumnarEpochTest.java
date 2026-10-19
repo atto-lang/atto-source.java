@@ -14,24 +14,23 @@ import org.junit.jupiter.api.Timeout;
 /** Executable host-level group/actor collection tests; guest lowering is separate. */
 @Timeout(20)
 final class ActorGroupColumnarEpochTest {
-    private record Tick(long epoch, int multiplier) { }
 
     @Test
     void bulkRequestCollectsIndexedColumnarResultsAcrossIndependentActors() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
             var join = group.joinCapability();
-            List<ActorRuntime.ActorRef<Tick>> actors = new ArrayList<>();
+            List<ActorRuntime.ActorRef<List<Long>>> actors = new ArrayList<>();
             for (int i = 0; i < 32; i++) {
                 final int index = i;
-                ActorRuntime.ActorRef<Tick> actor = runtime.spawnShared(() -> (tick, context) ->
-                        group.publishDoubleEpoch(tick.epoch(), index * tick.multiplier(), index));
+                ActorRuntime.ActorRef<List<Long>> actor = runtime.spawnShared(() -> (tick, context) ->
+                        group.publishDoubleEpoch(tick.get(0), index * tick.get(1), index));
                 group.join(actor, join);
                 actors.add(actor);
             }
 
             ActorGroupColumnarEpoch epoch = group.requestDoubleEpoch(
-                    actors, id -> new Tick(id, 3), List.of("position", "velocity"));
+                    actors, id -> List.of(id, 3L), List.of("position", "velocity"));
             ActorGroupColumnarEpoch.Snapshot result = epoch.completion().get(10, TimeUnit.SECONDS);
             assertEquals(32, result.rowCount());
             assertEquals(2, result.columnCount());
@@ -48,7 +47,7 @@ final class ActorGroupColumnarEpochTest {
                     "no caller may mutate the completed columnar snapshot");
 
             ActorGroupColumnarEpoch next = group.requestDoubleEpoch(
-                    actors, id -> new Tick(id, 4), List.of("position", "velocity"));
+                    actors, id -> List.of(id, 4L), List.of("position", "velocity"));
             assertTrue(next.epochId() > epoch.epochId());
             ActorGroupColumnarEpoch.Snapshot second = next.completion().get(10, TimeUnit.SECONDS);
             for (int i = 0; i < second.rowCount(); i++) {
@@ -61,11 +60,11 @@ final class ActorGroupColumnarEpochTest {
     void privateActorCanPublishScalarCopyWithoutZeroCopySubscription() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
-            ActorRuntime.ActorRef<Tick> actor = runtime.spawnPrivateTrusted(
-                    context -> (tick, turn) -> group.publishDoubleEpoch(tick.epoch(), 7.5));
+            ActorRuntime.ActorRef<List<Long>> actor = runtime.spawnPrivateTrusted(
+                    context -> (tick, turn) -> group.publishDoubleEpoch(tick.get(0), 7.5));
             group.join(actor, group.joinCapability());
             var epoch = group.requestDoubleEpoch(
-                    List.of(actor), id -> new Tick(id, 1), List.of("load"));
+                    List.of(actor), id -> List.of(id, 1L), List.of("load"));
             assertEquals(7.5, epoch.completion().get(5, TimeUnit.SECONDS).value(0, 0));
         }
     }
@@ -74,11 +73,11 @@ final class ActorGroupColumnarEpochTest {
     void leaveAbortsCollectionAndPreviouslyAdmittedActorCannotPublish() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
-            ActorRuntime.ActorRef<Tick> member = runtime.spawnShared(() -> (tick, context) -> group.leaveCurrent());
+            ActorRuntime.ActorRef<List<Long>> member = runtime.spawnShared(() -> (tick, context) -> group.leaveCurrent());
             group.join(member, group.joinCapability());
 
             var epoch = group.requestDoubleEpoch(
-                    List.of(member), id -> new Tick(id, 1), List.of("value"));
+                    List.of(member), id -> List.of(id, 1L), List.of("value"));
             assertThrows(ExecutionException.class, () -> epoch.completion().get(5, TimeUnit.SECONDS));
             assertEquals(0, group.memberCount());
             assertThrows(SecurityException.class, () -> group.publishDoubleEpoch(epoch.epochId(), 1));
@@ -89,7 +88,7 @@ final class ActorGroupColumnarEpochTest {
     void closeAndActorTerminationAbortPendingCollection() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
-            ActorRuntime.ActorRef<Tick> actor = runtime.spawnShared(() -> (tick, context) -> { });
+            ActorRuntime.ActorRef<List<Long>> actor = runtime.spawnShared(() -> (tick, context) -> { });
             group.join(actor, group.joinCapability());
             var epoch = group.beginDoubleEpoch(List.of("score"));
             assertFalse(epoch.completion().isDone());
@@ -102,7 +101,7 @@ final class ActorGroupColumnarEpochTest {
 
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
-            ActorRuntime.ActorRef<Tick> actor = runtime.spawnShared(() -> (tick, context) -> { });
+            ActorRuntime.ActorRef<List<Long>> actor = runtime.spawnShared(() -> (tick, context) -> { });
             group.join(actor, group.joinCapability());
             var epoch = group.beginDoubleEpoch(List.of("score"));
             actor.stop();
@@ -117,11 +116,11 @@ final class ActorGroupColumnarEpochTest {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
             AtomicReference<Throwable> duplicate = new AtomicReference<>();
             CountDownLatch published = new CountDownLatch(1);
-            ActorRuntime.ActorRef<Tick> actor = runtime.spawnShared(() -> (tick, context) -> {
+            ActorRuntime.ActorRef<List<Long>> actor = runtime.spawnShared(() -> (tick, context) -> {
                 try {
-                    group.publishDoubleEpoch(tick.epoch(), 1);
+                    group.publishDoubleEpoch(tick.get(0), 1);
                     try {
-                        group.publishDoubleEpoch(tick.epoch(), 2);
+                        group.publishDoubleEpoch(tick.get(0), 2);
                     } catch (IllegalStateException expected) {
                         duplicate.set(expected);
                     }
@@ -137,9 +136,9 @@ final class ActorGroupColumnarEpochTest {
                     () -> group.beginDoubleEpoch(List.of()));
             assertThrows(IllegalArgumentException.class,
                     () -> group.requestDoubleEpoch(
-                            List.of(actor, actor), id -> new Tick(id, 1), List.of("value")));
+                            List.of(actor, actor), id -> List.of(id, 1L), List.of("value")));
             var epoch = group.requestDoubleEpoch(
-                    List.of(actor), id -> new Tick(id, 1), List.of("value"));
+                    List.of(actor), id -> List.of(id, 1L), List.of("value"));
             assertEquals(1, epoch.completion().get(5, TimeUnit.SECONDS).value(0, 0));
             assertTrue(published.await(5, TimeUnit.SECONDS));
             assertNotNull(duplicate.get());
@@ -154,7 +153,7 @@ final class ActorGroupColumnarEpochTest {
     void hostCommandFactoryFailureFencesEpochAndDoesNotBlockNextRequest() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
-            ActorRuntime.ActorRef<Tick> actor = runtime.spawnShared(() -> (tick, context) -> { });
+            ActorRuntime.ActorRef<List<Long>> actor = runtime.spawnShared(() -> (tick, context) -> { });
             group.join(actor, group.joinCapability());
             var failed = group.requestDoubleEpoch(
                     List.of(actor), id -> {
