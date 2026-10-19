@@ -185,6 +185,11 @@ def collect_source(root, trusted_root):
         except OSError as exc:
             raise Denied("source directory cannot be listed safely") from exc
         names.sort()
+        # Git does not record empty directories. A copied source snapshot with
+        # extra empty paths must not claim exact-tree equivalence merely
+        # because those paths contribute no entries to the Git tree digest.
+        if depth > 0 and not names:
+            raise Denied("source snapshot contains unattested empty directory")
         for name in names:
             if (name in (".", "..", ".git")
                     or any(ord(ch) < 32 or ord(ch) == 127 for ch in name)
