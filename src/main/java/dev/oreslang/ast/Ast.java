@@ -1180,6 +1180,14 @@ public final class Ast {
     public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) implements Expr {
         public LambdaExpr {
             parameters = List.copyOf(parameters);
+            // AST-construction gate, not just parser rejection: call-site
+            // omission/default lowering of lambda values remains unproved.
+            for (Param parameter : parameters) {
+                if (parameter.omittable() || parameter.optionTypeSugar()) {
+                    throw new IllegalArgumentException(
+                            "optional lambda formal needs checked invocation/Option lowering");
+                }
+            }
             blockBody = blockBody == null ? null : List.copyOf(blockBody);
             if ((expressionBody == null) == (blockBody == null)) {
                 throw new IllegalArgumentException(
