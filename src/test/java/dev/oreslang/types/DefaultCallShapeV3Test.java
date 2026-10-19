@@ -78,6 +78,11 @@ final class DefaultCallShapeV3Test {
         assertThrows(IllegalArgumentException.class, () -> new Bound(0, 0, -1,
                 Origin.PROVIDED, Fill.EXPRESSION, null));
         assertThrows(IllegalArgumentException.class, () -> new Plan(List.of(), List.of(0)));
+        assertThrows(IllegalArgumentException.class, () -> new Bound(0, -1, -1,
+                Origin.UNSUPPLIED, Fill.DEFAULT_NONE, new Constant(ConstantKind.INTEGER, 5L)));
+        assertThrows(IllegalArgumentException.class, () -> new Plan(List.of(
+                new Bound(0, 1, 0, Origin.PROVIDED, Fill.EXPRESSION, null),
+                new Bound(1, 1, 1, Origin.PROVIDED, Fill.EXPRESSION, null)), List.of(1, 1)));
     }
 
     @Test void randomizedAcceptedPlansPreserveEveryRawExpressionExactlyOnce() {
