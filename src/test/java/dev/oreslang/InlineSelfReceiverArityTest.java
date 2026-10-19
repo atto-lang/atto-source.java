@@ -1,0 +1,143 @@
+package dev.oreslang;
+
+import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.CallableSelector;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * Receiver syntax must never change caller-visible overload arity.
+ * A self expression inside a call's argument list is a real argument.
+ */
+final class InlineSelfReceiverArityTest {
+
+    @Test
+    void inlineReceiverIsNotInUserParameterListForClassesAndActors() {
+        for (String kind : new String[] {"class", "actor"}) {
+            Ast.ClassDecl owner = parseOwner("""
+                    define %s Counter as
+                      pub zero(self): int { return 0; }
+                      pub one(self, int x): int { return x; }
+                      pub mutable(mut self, int x): int { return x; }
+                    end
+                    """.formatted(kind));
+            assertEquals(3, owner.methods().size());
+            assertEquals(0, owner.methods().get(0).arity());
+            assertEquals(1, owner.methods().get(1).arity());
+            assertEquals(1, owner.methods().get(2).arity());
+            assertEquals("self", owner.methods().get(0).explicitReceiverType().name());
+            assertEquals("self", owner.methods().get(1).explicitReceiverType().name());
+            assertTrue(owner.methods().get(2).explicitReceiverType().isBorrow());
+            assertEquals(CallableSelector.instance("zero", 0),
+                    CallableSelector.of(owner.methods().get(0)));
+            assertEquals(CallableSelector.instance("one", 1),
+                    CallableSelector.of(owner.methods().get(1)));
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                    define %s Counter as
+                      pub zero(self): int { return 0; }
+                      pub one(self, int x): int { return x; }
+                      pub mutable(mut self, int x): int { return x; }
+                    end
+                    """.formatted(kind))));
+        }
+    }
+
+    @Test
+    void inlineAndImplicitReceiverAreOneOverloadSlot() {
+        for (String kind : new String[] {"class", "actor"}) {
+            for (String pair : new String[] {
+                    "foo(int x): int { return x; } foo(self, int x): int { return x; }",
+                    "foo(self, int x): int { return x; } foo(int x): int { return x; }",
+                    "foo(): int { return 0; } foo(self): int { return 0; }",
+                    "foo(self): int { return 0; } foo(): int { return 0; }",
+                    "foo(int x): int { return x; } foo(mut self, int x): int { return x; }",
+                    "foo(self Counter)(int x): int { return x; } foo(self, int x): int { return x; }"
+            }) {
+                String source = "define " + kind + " Counter as " + pair + " end";
+                IllegalArgumentException error = assertThrows(
+                        IllegalArgumentException.class,
+                        () -> TypeChecker.check(Parser.parse(source)),
+                        source);
+                assertTrue(error.getMessage().contains("already has arity"),
+                        () -> source + ": " + error.getMessage());
+            }
+        }
+    }
+
+    @Test
+    void inlineSelfAllowsIndependentCallerVisibleArities() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Counter as
+                  pub foo(self): int { return 0; }
+                  pub foo(self, int x): int { return x; }
+                  pub foo(self, int x, int y): int { return x + y; }
+                end
+                """)));
+    }
+
+    @Test
+    void selfAtCallSiteIsAnOrdinaryArgumentNotASecondReceiver() {
+        Ast.ClassDecl owner = parseOwner("""
+                define class Counter as
+                  pub foo(Counter other, int x): int { return x; }
+                  pub run(self): int { return self.foo(self, 5); }
+                end
+                """);
+        Ast.MethodDecl method = owner.methods().get(1);
+        Ast.ReturnStmt returned = assertInstanceOf(Ast.ReturnStmt.class, method.body().getFirst());
+        Ast.CallExpr call = assertInstanceOf(Ast.CallExpr.class, returned.value());
+        assertEquals(2, call.arguments().size(), "self inside call parentheses counts toward arity");
+        assertEquals(new Ast.NameExpr("self"), call.arguments().getFirst());
+        Ast.MemberExpr member = assertInstanceOf(Ast.MemberExpr.class, call.callee());
+        assertEquals(new Ast.NameExpr("self"), member.receiver());
+        assertEquals("foo", member.member());
+    }
+
+    @Test
+    void supplyingSelfToOneUserParameterMethodDoesNotDisappear() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Counter as
+                          pub foo(self, int x): int { return x; }
+                          pub run(self): int { return self.foo(self, 5); }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("arity") || error.getMessage().contains("argument"),
+                error::getMessage);
+    }
+
+    @Test
+    void staticAndMalformedInlineReceiversFailClosed() {
+        for (String member : new String[] {
+                "static fnc foo(self, int x): int { return x; }",
+                "static fnc foo(mut self, int x): int { return x; }",
+                "foo(self,): int { return 0; }",
+                "foo(mut self,): int { return 0; }",
+                "foo(int x, self): int { return x; }",
+                "foo(self, self, int x): int { return x; }"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("define class Counter as " + member + " end"),
+                    member);
+        }
+    }
+
+    @Test
+    void splitReceiverSpellingRemainsSupported() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Counter as
+                  pub foo(self Counter)(int x): int { return x; }
+                  pub bar(mut self)(int x): int { return x; }
+                end
+                """)));
+    }
+
+    private static Ast.ClassDecl parseOwner(String source) {
+        Ast.Program program = Parser.parse(source);
+        return assertInstanceOf(Ast.ClassDecl.class,
+                program.modules().getFirst().declarations().getFirst());
+    }
+}
