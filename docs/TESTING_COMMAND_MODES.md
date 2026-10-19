@@ -30,9 +30,14 @@ are intentionally rejected instead of being mistaken for full-source replay.
 The digest is derived from the same import-closure resolver as the guest
 loader and includes all reachable raw .ores/.java unit source text, packaged
 `std/*` sources, resolved importer→target mappings, project-manifest bytes,
-and ordered import search roots. The CLI checks this closure before and after
-guest execution and before trace creation. Changes to imported source now
-invalidate replay. The digest is a snapshot, not a filesystem lock: source
+and ordered import search roots. Project TOML is parsed from a bounded,
+strict-UTF-8 byte snapshot retained in the project configuration; the digest
+uses **those exact manifest bytes**, not a reopened file. For trace/record
+runs, the runner hashes the **same in-memory source units it hands to the
+compiler**, refusing a preflight mismatch **before compiling or executing**
+guest code. The CLI also checks the closure after guest execution and before
+trace creation. Changes to imported source now invalidate replay.
+The digest is a snapshot, not a filesystem lock: source
 modification and reversal between checkpoints remains an inherent TOCTOU
 limit. It also does **not** capture the compiler binary, external FFI/JVM state,
 nondeterministic OS events, or actual guest scheduler choices. Record/replay
