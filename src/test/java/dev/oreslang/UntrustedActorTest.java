@@ -178,6 +178,26 @@ final class UntrustedActorTest {
     }
 
     @Test
+    void sourceUntrustedActorCannotSpawnAnotherActor() {
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.check(Parser.parse("""
+                        define actor Endpoint as
+                          receive(ActorMail<int> mail): void { return; }
+                        end
+
+                        define untrusted actor Worker as
+                          receive(ActorMail<int> mail): void {
+                            val child = spawn Endpoint();
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(denied.getMessage().contains("untrusted actors cannot spawn actors"),
+                denied.getMessage());
+    }
+
+    @Test
     void untrustedActorCannotSpawnAnotherActor() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
             var ref = runtime.<String>spawnUntrusted(context ->
