@@ -119,9 +119,10 @@ final class ConcurrencyRaceAnalyzerTest {
     void rejectsControlCharactersInTraceIdentities() {
         var checker = new ConcurrencyRaceAnalyzer();
         assertThrows(IllegalArgumentException.class,
-                () -> checker.write("actor-a", "location\\nORES_TEST|SUMMARY|fake"));
+                () -> checker.write("actor-a",
+                        "location" + (char) 10 + "ORES_TEST|SUMMARY|fake"));
         assertThrows(IllegalArgumentException.class,
-                () -> checker.send("actor\\u0000", "m1"));
+                () -> checker.send("actor" + (char) 0, "m1"));
         assertEquals(0, checker.eventCount());
     }
 
