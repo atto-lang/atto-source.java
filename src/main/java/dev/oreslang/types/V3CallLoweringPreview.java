@@ -4,6 +4,7 @@ import dev.oreslang.ast.Ast;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -92,10 +93,19 @@ public final class V3CallLoweringPreview {
             unevaluatedExpressionsInSourceOrder = List.copyOf(unevaluatedExpressionsInSourceOrder);
             formalOrderSlots = List.copyOf(formalOrderSlots);
             boolean[] used = new boolean[unevaluatedExpressionsInSourceOrder.size()];
+            int[] originalByDenseSource = new int[used.length];
+            java.util.Set<Integer> usedRawCallItems = new HashSet<>();
             for (int i = 0; i < formalOrderSlots.size(); i++) {
                 Slot slot = formalOrderSlots.get(i);
                 if (slot.formalIndex() != i) {
                     throw new IllegalArgumentException("v3 preview slots must remain in formal order");
+                }
+                // Explicit omission items and supplied expressions are distinct
+                // source occurrences. A forged preview must not reuse either.
+                int raw = slot.originalCallItemIndex();
+                if (raw >= 0 && !usedRawCallItems.add(raw)) {
+                    throw new IllegalArgumentException(
+                            "v3 preview has duplicated original call-item provenance");
                 }
                 int source = slot.evaluatedSourceIndex();
                 if (source >= 0) {
@@ -104,12 +114,20 @@ public final class V3CallLoweringPreview {
                                 "v3 preview has an out-of-range or duplicate guest expression");
                     }
                     used[source] = true;
+                    originalByDenseSource[source] = raw;
                 }
             }
-            for (boolean present : used) {
-                if (!present) {
+            int previousCallItem = -1;
+            for (int source = 0; source < used.length; source++) {
+                if (!used[source]) {
                     throw new IllegalArgumentException("v3 preview lost a supplied guest expression");
                 }
+                int raw = originalByDenseSource[source];
+                if (raw <= previousCallItem) {
+                    throw new IllegalArgumentException(
+                            "v3 preview would evaluate supplied expressions out of lexical order");
+                }
+                previousCallItem = raw;
             }
         }
     }
