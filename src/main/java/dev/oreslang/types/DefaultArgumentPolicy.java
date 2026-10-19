@@ -186,7 +186,17 @@ public final class DefaultArgumentPolicy {
             }
             case UNDERLYING_VALUE, TYPED_OPTION -> {
                 // A supplied expression ALWAYS defeats the default, including
-                // an explicit, correctly typed Option.None.
+                // an explicit, correctly typed Option.None. Even in legacy mode,
+                // an explicitly defaulted Option<T> becomes an optional-call
+                // boundary; permit exactly T -> Some(T) there (not a general
+                // implicit Option conversion). Nested Option stays fail-closed.
+                if (actual == OptionFormalPresencePolicy.ActualKind.UNDERLYING_VALUE
+                        && formal.hasDefault()
+                        && formal.signature().kind()
+                                == OptionFormalPresencePolicy.TypeKind.INTRINSIC_OPTION
+                        && !formal.signature().nestedOption()) {
+                    return new Decision(Lowering.SOME_OF_SUPPLIED_VALUE, null);
+                }
                 var original = OptionFormalPresencePolicy.classify(
                         formal.signature(), mode, actual);
                 Lowering lowering = switch (original) {
