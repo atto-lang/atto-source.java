@@ -4978,6 +4978,9 @@ public final class TypeChecker {
             Type type,
             boolean returnPosition,
             String where) {
+        if (!Types.isStructurallyWellFormed(type)) {
+            throw new IllegalArgumentException(where + " contains malformed type metadata");
+        }
         if (returnPosition && type == Primitive.VOID) return;
         // A typed channel handle is an Ores-owned synchronized transport, not
         // an actor/mailbox capability. Async tasks may receive the handle when
@@ -5038,6 +5041,9 @@ public final class TypeChecker {
             Ast.ActorKind actorKind,
             boolean returnPosition,
             String where) {
+        if (!Types.isStructurallyWellFormed(type)) {
+            throw new IllegalArgumentException(where + " contains malformed type metadata");
+        }
         validateActorCallableBoundaryType(type, actorKind, returnPosition, where, 0, new int[] {100_000});
     }
 
@@ -5196,7 +5202,8 @@ public final class TypeChecker {
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
-        return isSharedSafe(type, seen, genericBindings, 0, new int[] {100_000});
+        return Types.isStructurallyWellFormed(type)
+                && isSharedSafe(type, seen, genericBindings, 0, new int[] {100_000});
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen,
