@@ -4949,9 +4949,11 @@ public final class TypeChecker {
      * Send is necessary for a movable Task payload, but actor Sendable,
      * scoped borrow lifetime, and scheduler/allocator admission are separate.
      * Use the same resolved-type trait proof engine as Send/Sync PR #1439.
+     * Detached async boundaries need an owned Send proof; a Send shared or
+     * mutable borrow by itself does not establish an outlives guarantee.
      */
     private boolean isThreadSend(Type type) {
-        return ThreadSafetyTraits.has(type, ThreadSafetyTraits.Trait.SEND,
+        return ThreadSafetyTraits.isOwnedSend(type,
                 new ThreadSafetyTraits.NominalProof() {
                     @Override
                     public boolean has(Named nominal, ThreadSafetyTraits.Trait trait) {
