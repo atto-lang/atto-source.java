@@ -7,11 +7,13 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 
 /**
@@ -42,6 +44,9 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private final ArrayBlockingQueue<Runnable> queue;
     private final int maximumPoolSize;
     private final long nativeStackBytes;
+    private final int startupCpu;
+    private final CountDownLatch startupReady;
+    private final AtomicReference<Throwable> startupFailure = new AtomicReference<>();
     private final AtomicInteger corePoolSize;
     private final AtomicInteger largestPoolSize;
     private final AtomicInteger activeCount = new AtomicInteger();
@@ -57,18 +62,34 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
             int maximumPoolSize,
             int queueCapacity,
             String threadPrefix) {
+        this(corePoolSize, maximumPoolSize, queueCapacity, threadPrefix, -1);
+    }
+
+    NativeCarrierExecutor(
+            int corePoolSize,
+            int maximumPoolSize,
+            int queueCapacity,
+            String threadPrefix,
+            int startupCpu) {
         if (corePoolSize <= 0) throw new IllegalArgumentException("corePoolSize must be > 0");
         if (maximumPoolSize < corePoolSize) {
             throw new IllegalArgumentException("maximumPoolSize must be >= corePoolSize");
         }
         if (queueCapacity <= 0) throw new IllegalArgumentException("queueCapacity must be > 0");
+        if (startupCpu < -1) throw new IllegalArgumentException("startupCpu must be -1 or nonnegative");
+        if (startupCpu >= 0 && maximumPoolSize != 1) {
+            throw new IllegalArgumentException("startup CPU pinning requires a single-carrier lane");
+        }
         Objects.requireNonNull(threadPrefix, "threadPrefix");
 
         ensureNativeLibraryLoaded();
+        if (startupCpu >= 0) requireAllowedCpu(startupCpu);
 
         this.queue = new ArrayBlockingQueue<>(queueCapacity, true);
         this.maximumPoolSize = maximumPoolSize;
         this.nativeStackBytes = configuredCarrierStackBytes();
+        this.startupCpu = startupCpu;
+        this.startupReady = new CountDownLatch(maximumPoolSize);
         this.carrierThreads = new AtomicReferenceArray<>(maximumPoolSize);
         this.corePoolSize = new AtomicInteger(corePoolSize);
         this.largestPoolSize = new AtomicInteger(corePoolSize);
@@ -81,10 +102,26 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         boolean started = false;
         try {
             nativeStart(handle);
+            awaitCarrierStartup();
             started = true;
         } finally {
             if (!started) nativeShutdown(handle);
         }
+    }
+
+    private void awaitCarrierStartup() {
+        final boolean ready;
+        try {
+            ready = startupReady.await(10L, TimeUnit.SECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted waiting for native carrier startup", interrupted);
+        }
+        if (!ready) throw new IllegalStateException("timed out waiting for native carrier startup");
+        Throwable failure = startupFailure.get();
+        if (failure == null) return;
+        if (failure instanceof Error fatal) throw fatal;
+        throw new IllegalStateException("native carrier startup failed", failure);
     }
 
     static void requireAllowedCpu(int cpu) {
@@ -160,6 +197,15 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         CURRENT_NATIVE_THREAD_ID.set(nativeCurrentThreadId());
         carrierThreads.set(slot, Thread.currentThread());
         try {
+            try {
+                if (startupCpu >= 0) ensureCurrentCarrierCpu(startupCpu);
+            } catch (Throwable failure) {
+                startupFailure.compareAndSet(null, failure);
+                return;
+            } finally {
+                startupReady.countDown();
+            }
+
             while (!shutdown.get()) {
                 nativeAwaitEnabled(nativeHandle, slot);
                 if (shutdown.get()) break;
