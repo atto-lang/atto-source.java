@@ -2477,12 +2477,18 @@ public final class OwnershipChecker {
                 if (!source.mutable && !source.rebindable) throw error("closure cannot write read-only capture '" + capture.name + "'");
                 if (source.immutableBorrows > 0 || source.mutableBorrowed) throw error("closure cannot capture '" + capture.name + "' mutably while borrowed");
                 if (!deferredCleanup) move(source, capture.name);
-                closure.define(capture.name, new VarState(source.type, source.mutable, source.rebindable, source.kind, Origin.CAPTURE));
+                closure.define(
+                        capture.name,
+                        capturedState(source, source.mutable, source.rebindable, source.kind));
             } else if (source.kind == ValueKind.MOVE_ONLY) {
                 if (!deferredCleanup) move(source, capture.name);
-                closure.define(capture.name, new VarState(source.type, false, ValueKind.MOVE_ONLY, Origin.CAPTURE));
+                closure.define(
+                        capture.name,
+                        capturedState(source, false, false, ValueKind.MOVE_ONLY));
             } else {
-                closure.define(capture.name, new VarState(source.type, false, ValueKind.COPY, Origin.CAPTURE));
+                closure.define(
+                        capture.name,
+                        capturedState(source, false, false, ValueKind.COPY));
             }
         }
 
@@ -3493,14 +3499,29 @@ public final class OwnershipChecker {
 
             continuation.define(
                     capture.name,
-                    new VarState(
-                            source.type,
+                    capturedState(
+                            source,
                             capture.write && source.mutable,
                             capture.write && source.rebindable,
-                            source.kind,
-                            Origin.CAPTURE));
+                            source.kind));
         }
         return continuation;
+    }
+
+    /**
+     * Captured const selectors keep the same compile-time proof as their lexical
+     * source. Only CONST bindings ever carry this metadata, so copying it cannot
+     * make a writable/rebindable selector stale.
+     */
+    private VarState capturedState(
+            VarState source,
+            boolean mutable,
+            boolean rebindable,
+            ValueKind kind) {
+        VarState captured = new VarState(
+                source.type, mutable, rebindable, kind, Origin.CAPTURE);
+        captured.computedIndexConstant = source.computedIndexConstant;
+        return captured;
     }
 
     private Ast.TypeRef indexedElementType(
