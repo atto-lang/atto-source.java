@@ -43,17 +43,39 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
      * can become authoritative. A publication observer must never execute a
      * compiler callback while holding the physical route monitor.
      */
-    private record ImageReceipts(
+    record ImageReceipts(
             String linkedCodeSha256,
             String stateSchemaSha256,
             String messageAbiSha256) {
+        ImageReceipts {
+            linkedCodeSha256 = canonicalDigest(linkedCodeSha256, "linked code");
+            stateSchemaSha256 = canonicalDigest(stateSchemaSha256, "persistent state schema");
+            messageAbiSha256 = canonicalDigest(messageAbiSha256, "receive message ABI");
+        }
+
+        // Keep the same lowercase SHA-256 syntax enforced by the physical
+        // checkpoint header. A malformed compiler receipt must be rejected
+        // before a route lease or physical actor can become authoritative.
+        static String canonicalDigest(String digest, String field) {
+            if (digest == null || digest.length() != 64)
+                throw new IllegalArgumentException(
+                        field + " digest must be canonical lowercase SHA-256");
+            for (int i = 0; i < 64; ++i) {
+                char ch = digest.charAt(i);
+                if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')))
+                    throw new IllegalArgumentException(
+                            field + " digest must be canonical lowercase SHA-256");
+            }
+            return digest;
+        }
+
         static ImageReceipts from(
                 HotReloadManager.ActorGenerationView view, String actorTypeName) {
             var compiler = view.executor();
             return new ImageReceipts(
-                    Objects.requireNonNull(compiler.actorCodeSha256(actorTypeName)),
-                    Objects.requireNonNull(compiler.actorStateSchemaSha256(actorTypeName)),
-                    Objects.requireNonNull(compiler.actorMessageAbiSha256(actorTypeName)));
+                    compiler.actorCodeSha256(actorTypeName),
+                    compiler.actorStateSchemaSha256(actorTypeName),
+                    compiler.actorMessageAbiSha256(actorTypeName));
         }
     }
 
