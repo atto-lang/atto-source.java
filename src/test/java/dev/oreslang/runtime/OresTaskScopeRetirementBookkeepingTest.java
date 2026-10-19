@@ -123,4 +123,45 @@ final class OresTaskScopeRetirementBookkeepingTest {
             scope.close();
         }
     }
+
+    @Test
+    void hostCarrierExitReportsOwnerRetirementFailureBeforeGetDone() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime()) {
+            OresTaskScope scope = new OresTaskScope(runtime);
+            Field slots = ownerSlots();
+            Object original = slots.get(scope);
+            AtomicInteger removals = new AtomicInteger();
+            Set<Object> broken = new HashSet<>() {
+                @Override public boolean remove(Object entry) {
+                    removals.incrementAndGet();
+                    throw new IllegalStateException(
+                            "injected host owner-retirement failure");
+                }
+            };
+            slots.set(scope, broken);
+            try {
+                OresTask<Integer> task = scope.submit(() -> 37);
+                assertEquals(37, AsyncRuntime.await(task.getAwaited()));
+                var retirement = assertThrows(IllegalStateException.class,
+                        () -> AsyncRuntime.await(task.getDone()));
+                assertTrue(retirement.toString().contains(
+                        "injected host owner-retirement failure"));
+                assertTrue(task.isQuiescent(),
+                        "the quiescence Future must fail, not remain pending");
+                assertEquals(1, removals.get(),
+                        "host physical exit may retire each owner only once");
+                assertFalse(scope.physicallyQuiescent(),
+                        "failed retirement must retain the unsafe ownership slot");
+                var close = assertThrows(IllegalStateException.class, scope::close);
+                assertTrue(close.getMessage().contains("retirement failed"));
+                assertEquals(1, removals.get(),
+                        "concurrent close must not retry the failed retirement");
+            } finally {
+                slots.set(scope, original);
+                // A previous failed join is sticky even after removing the
+                // deliberately corrupted test collection.
+                try { scope.close(); } catch (IllegalStateException expected) { }
+            }
+        }
+    }
 }
