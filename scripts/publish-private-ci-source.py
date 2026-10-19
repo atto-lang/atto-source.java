@@ -217,7 +217,7 @@ def strict_github_api_json(raw, root_type=dict):
     return data
 
 
-def gh_api(route, method="GET", payload=None, root_type=dict):
+def gh_api(route, method="GET", payload=None):
     argv = ["gh", "api", "--method", method, route,
             "--header", "Accept: application/vnd.github+json"]
     if payload is not None:
@@ -248,7 +248,14 @@ def gh_api(route, method="GET", payload=None, root_type=dict):
     if p.returncode != 0:
         # Never echo stderr: a client can include private file bytes in errors.
         raise Denied("authenticated GitHub API request failed")
-    return strict_github_api_json(p.stdout, root_type=root_type)
+    # GitHub's effective-rules endpoint is the only security API used here
+    # whose documented top-level response is an array. Keep every other route
+    # object-only so unexpected response shapes still fail closed.
+    effective_rules_route = re.fullmatch(
+        r"repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/rules/branches/"
+        r"ci%2Foreslang-[a-f0-9]{40}-[a-f0-9]{40}", route)
+    return strict_github_api_json(
+        p.stdout, root_type=list if effective_rules_route is not None else dict)
 
 
 def checked_repo(repository, expected_id=None):
@@ -542,7 +549,7 @@ def require_effective_carrier_source_rules(repository, branch, ruleset_id):
     # Encode the slash so GitHub interprets the complete ref name as one path parameter.
     encoded_branch = branch.replace("/", "%2F")
     effective = gh_api(
-        f"repos/{repository}/rules/branches/{encoded_branch}", root_type=list)
+        f"repos/{repository}/rules/branches/{encoded_branch}")
     if not effective or not all(isinstance(rule, dict) for rule in effective):
         raise Denied("effective private carrier source-branch rules are unavailable")
     matched = [
