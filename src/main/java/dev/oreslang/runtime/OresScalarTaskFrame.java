@@ -11,7 +11,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * primitive. It does not capture an Env, AST closure, ActorRef, arbitrary
  * object, borrow, runtime handle, or guest callback. Only the compiler may
  * decide whether a guest expression maps to one of these pure operations.
- * Guest Task execution remains gated by TypeChecker.
+ * Only the narrowly validated immediate root scalar await is admitted;
+ * all other guest Task shapes remain gated by TypeChecker.
  *
  * <p>Scalar values are snapshotted before scheduling, so subsequent changes
  * to the parent's variable bindings cannot change the worker's input.
