@@ -160,9 +160,35 @@ public final class OptionalCallShapeBinder {
         for (int formal = 0; formal < resolvedTarget.parameters().size(); formal++) {
             int index = plan.sourceIndex(formal);
             if (index < 0) throw new IllegalArgumentException("missing required named argument");
-            ordered.add(source.get(index));
+            Ast.Param declared = resolvedTarget.parameters().get(formal);
+            Ast.TypeRef type = declared.type();
+            Ast.Expr expression = source.get(index);
+            if (!(expression instanceof Ast.LiteralExpr literal)
+                    || !type.arguments().isEmpty() || type.inferArguments()
+                    || !literalMatchesDirectScalarFormal(literal.value(), type.name())) {
+                throw new IllegalArgumentException(
+                        "named literal requires an exact primitive scalar formal type: "
+                                + declared.name());
+            }
+            ordered.add(expression);
         }
         return new Ast.CallExpr(call.callee(), List.copyOf(ordered));
+    }
+
+    /**
+     * This deliberately small direct-AST/runtime admission must not trust
+     * previous static typechecking. Only these closed scalar types can be
+     * reordered without expression effects or ownership coercions.
+     * User-defined nominal types, aliases and Option<T> are NOT eligible.
+     */
+    private static boolean literalMatchesDirectScalarFormal(Object value, String formalType) {
+        return switch (formalType) {
+            case "int" -> value instanceof Long;
+            case "float" -> value instanceof Double;
+            case "bool" -> value instanceof Boolean;
+            case "string" -> value instanceof String;
+            default -> false;
+        };
     }
 
     /**
