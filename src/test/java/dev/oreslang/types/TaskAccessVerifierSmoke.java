@@ -140,6 +140,40 @@ public final class TaskAccessVerifierSmoke {
                 CORE);
         listWrite.completion().releaseAfterPhysicalQuiescence();
 
+        var permissive = new ThreadSafetyTraits.NominalProof() {
+            @Override
+            public boolean has(
+                    Types.Named type,
+                    ThreadSafetyTraits.Trait trait) {
+                return true;
+            }
+
+            @Override
+            public boolean trustedIntrinsic(Types.Named type) {
+                return true;
+            }
+        };
+        Types.Type dyn = new Types.Dyn(
+                new Types.Named("Worker", List.of()));
+        expectFailure(
+                IllegalArgumentException.class,
+                () -> verifier2.admitScopedTyped(
+                        List.of(claim(
+                                place,
+                                TaskAccessVerifier.Mode.READ,
+                                dyn)),
+                        permissive),
+                "unbounded dyn cannot acquire scoped READ");
+        expectFailure(
+                IllegalArgumentException.class,
+                () -> verifier2.admitScopedTyped(
+                        List.of(claim(
+                                place,
+                                TaskAccessVerifier.Mode.WRITE,
+                                dyn)),
+                        permissive),
+                "unbounded dyn cannot acquire scoped WRITE");
+
         System.out.println(
                 "TaskAccessVerifierSmoke PASS assertions=" + checked);
     }
