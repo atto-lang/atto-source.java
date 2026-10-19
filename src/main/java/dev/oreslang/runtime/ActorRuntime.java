@@ -6105,8 +6105,10 @@ public final class ActorRuntime implements AutoCloseable {
 
     /**
      * Host/compiler-only tracked physical send. The returned terminal Future
-     * settles only after this exact accepted message is processed, or fails
-     * on actor teardown before processing. No guest may mint its sequence.
+     * is backed by a dedicated exact-message ledger, independent of public
+     * cumulative drain observers. It settles only after this exact accepted
+     * message is processed, or fails on actor teardown before processing.
+     * No guest may mint its sequence.
      */
     <M> PhysicalMailReceipt sendWithPhysicalReceipt(
             ActorRef<M> ref, M message) {
@@ -6242,20 +6244,26 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     envelope = MessageEnvelope.message(
                             prepared, release, sender, sequence);
-                    ActorCell.DrainWaiter trackedWaiter = null;
+                    OresFuture<Void> trackedTerminal = null;
                     if (tracked) {
-                        if (cell.pendingDrains.size()
-                                >= ActorCell.MAX_PENDING_DRAIN_WAITERS)
+                        if (cell.pendingPhysicalReceipts.size()
+                                >= ActorCell.MAX_PENDING_PHYSICAL_RECEIPTS)
                             throw new ActorResourceExhaustedException(ref.id());
-                        // Reserve the receipt, Future and waiter before physical
-                        // acceptance. Register under lifecycleLock, remove if
-                        // transport admission rejects. Never allocate a
-                        // completion witness after an accepted send.
-                        OresFuture<Void> terminal =
+                        // Reserve the exact-message receipt metadata BEFORE
+                        // physical acceptance. HashMap growth/allocation
+                        // failure therefore cannot accept work without a
+                        // terminal witness. This quota is deliberately
+                        // independent of public cumulative drain observers.
+                        trackedTerminal =
                                 new OresFuture<>(() -> false, () -> { });
-                        receipt = new PhysicalMailReceipt(ref, sequence, terminal);
-                        trackedWaiter = new ActorCell.DrainWaiter(sequence, terminal);
-                        cell.pendingDrains.add(trackedWaiter);
+                        receipt = new PhysicalMailReceipt(
+                                ref, sequence, trackedTerminal);
+                        if (cell.pendingPhysicalReceipts.put(
+                                sequence, trackedTerminal) != null) {
+                            throw new IllegalStateException(
+                                    "duplicate physical mail receipt sequence for "
+                                            + ref.id());
+                        }
                     }
                     boolean wrote = false;
                     try {
@@ -6264,8 +6272,9 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                         wrote = true;
                     } finally {
-                        if (!wrote && trackedWaiter != null) {
-                            cell.pendingDrains.remove(trackedWaiter);
+                        if (!wrote && trackedTerminal != null) {
+                            cell.pendingPhysicalReceipts.remove(
+                                    sequence, trackedTerminal);
                         }
                     }
                     cell.nextUserMessageSequence = nextSequence;
@@ -7894,7 +7903,17 @@ public final class ActorRuntime implements AutoCloseable {
         private long lastProcessedUserMessageSequence = -1L;
         private record DrainWaiter(long sequence, OresFuture<Void> completion) { }
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
+        private static final int MAX_PENDING_PHYSICAL_RECEIPTS = 1_024;
+        /** Cumulative host drain observers; not physical-message authority. */
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
+        /**
+         * Exact runtime-minted per-message terminal witnesses. Kept separate
+         * from public cumulative drain observers so ActorRef.drain() quota
+         * exhaustion cannot starve supervisor/hot-reload receipt admission.
+         * Guarded by lifecycleLock and bounded independently.
+         */
+        private final HashMap<Long, OresFuture<Void>> pendingPhysicalReceipts =
+                new HashMap<>();
         private ActorInboxMail<M> activeMail;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
@@ -8112,24 +8131,32 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void markMessageProcessed(long sequence) {
-            List<OresFuture<Void>> completed = new ArrayList<>();
+            List<OresFuture<Void>> completedDrains = new ArrayList<>();
+            OresFuture<Void> exactReceipt;
             synchronized (lifecycleLock) {
                 if (sequence != lastProcessedUserMessageSequence + 1L) {
                     throw new IllegalStateException(
                             "nonsequential actor message completion for " + ref.id());
                 }
                 lastProcessedUserMessageSequence = sequence;
+                // Exact-message authority is intentionally independent from
+                // cumulative prefix drains. Today actor user-mail completion
+                // is sequential; keeping these ledgers separate prevents a
+                // future drain implementation change from weakening receipts.
+                exactReceipt = pendingPhysicalReceipts.remove(sequence);
                 for (int i = pendingDrains.size() - 1; i >= 0; --i) {
                     DrainWaiter waiter = pendingDrains.get(i);
                     if (waiter.sequence() <= sequence) {
                         pendingDrains.remove(i);
-                        completed.add(waiter.completion());
+                        completedDrains.add(waiter.completion());
                     }
                 }
             }
             // Complete outside the lifecycle monitor: Future callbacks may
             // synchronously request actor stop or another lifecycle operation.
-            for (OresFuture<Void> waiter : completed) waiter.completeFromRuntime(null);
+            if (exactReceipt != null) exactReceipt.completeFromRuntime(null);
+            for (OresFuture<Void> waiter : completedDrains)
+                waiter.completeFromRuntime(null);
         }
 
         private boolean hasQueuedWork() {
@@ -8841,6 +8868,7 @@ public final class ActorRuntime implements AutoCloseable {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
             List<DrainWaiter> failedDrainWaiters;
+            List<OresFuture<Void>> failedPhysicalReceipts;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -8854,6 +8882,9 @@ public final class ActorRuntime implements AutoCloseable {
                 // one while holding lifecycleLock.
                 failedDrainWaiters = List.copyOf(pendingDrains);
                 pendingDrains.clear();
+                failedPhysicalReceipts =
+                        List.copyOf(pendingPhysicalReceipts.values());
+                pendingPhysicalReceipts.clear();
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
                 continuationMailbox.close(cause);
@@ -8868,6 +8899,9 @@ public final class ActorRuntime implements AutoCloseable {
             // Runtime Future callbacks can take other actor/lifecycle locks.
             // Publish failure only after teardown has released lifecycleLock.
             Throwable drainFailure = cause == null ? terminated(ref) : cause;
+            for (OresFuture<Void> exact : failedPhysicalReceipts) {
+                exact.failFromRuntime(drainFailure);
+            }
             for (DrainWaiter waiter : failedDrainWaiters) {
                 waiter.completion().failFromRuntime(drainFailure);
             }
