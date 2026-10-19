@@ -232,3 +232,27 @@ credit refund. An additional regression source covers 136 serial logical
 sequences, out-of-order sparse convergence and proven-unsent requeue.
 These strengthen exception safety but cannot replace fault-injection
 execution, full runtime JUnit, or exact-head native/Graal testing.
+
+
+## October 19: code-gate retirement serialization
+
+A follow-up audit found a lifecycle race in the host-only coordinator: the
+code gate and proxy mailbox used separate monitors, so an independent
+`ActorUpgradeEpochGate.close()` could retire code between a proxy
+freeze/thaw operation and the matching prepare/publish/abort transition.
+
+The coordinator now uses one explicit nested lock order for every cross-ledger
+transition: **coordinator → code gate → mailbox**. Preparation holds the code
+authority while checking the epoch, freezing dispatch, staging the candidate,
+and performing any proven rollback. Commit holds it from the final drainage
+check through code publication and mailbox epoch publication. Rollback holds
+it from candidate abort through old-route thaw. A code-gate lifecycle refusal
+before candidate staging is treated as quarantine and preserves the mailbox
+freeze instead of reopening an unverified old route.
+
+This closes the coordinator-local partial-publication/partial-rollback race,
+but it does **not** turn this helper into the production source-actor
+publication authority. The live SHARED proxy/router transaction has its own
+route-lock publication path; compiler-owned immutable typed messages,
+authenticated per-message terminal receipts, and PRIVATE/UNTRUSTED protected
+worker migration remain required.
