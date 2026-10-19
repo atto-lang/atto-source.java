@@ -7,17 +7,22 @@ set -euo pipefail
 readonly SOURCE_REPO="ores-truffle-oreslang/oreslang-source.java"
 readonly DEST_REPO="ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra"
 readonly DEST_ID="1412142815"
+readonly SOURCE_ID="1400792274"
 readonly POLICY_PATH=".github/private-ci-approved-repositories.txt"
+readonly PREFLIGHT_PATH="scripts/preflight-private-ci-mirror.sh"
+readonly APPROVAL_ISSUE="1084"
+readonly MAINTAINER_APPROVER="the1mills"
+readonly SECURITY_APPROVER="ORESoftware"
 
 die() {
   printf 'PRIVATE_MIRROR_PREFLIGHT_DENIED: %s\n' "$1" >&2
   exit 1
 }
 usage() {
-  echo "usage: bash preflight-private-ci-mirror.sh <source-pr-number> <source-commit-sha> <source-tree-sha>" >&2
+  echo "usage: bash preflight-private-ci-mirror.sh <source-pr-number> <source-commit-sha> <source-tree-sha> [maintainer-approval-comment-id security-approval-comment-id]" >&2
   exit 2
 }
-[[ "$#" -eq 3 ]] || usage
+[[ "$#" -eq 3 || "$#" -eq 5 ]] || usage
 source_pr="$1"
 expected_commit="$2"
 expected_tree="$3"
@@ -28,6 +33,11 @@ expected_tree="$3"
 for tool in git gh; do
   command -v "$tool" >/dev/null 2>&1 || die "missing $tool"
 done
+
+actual_source_id="$(gh api "repos/$SOURCE_REPO" --jq '.id')" \
+  || die "cannot read authenticated source repository"
+[[ "$actual_source_id" == "$SOURCE_ID" ]] \
+  || die "source GitHub repository ID mismatch"
 actual_root="$(git rev-parse --show-toplevel 2>/dev/null)" \
   || die "not in a Git checkout"
 [[ "$actual_root" == "$PWD" ]] \
@@ -57,14 +67,13 @@ pr_repo="$(gh api "repos/$SOURCE_REPO/pulls/$source_pr" --jq '.head.repo.full_na
     && "$pr_base" == "main" && "$pr_repo" == "$SOURCE_REPO" ]] \
   || die "source checkout is not the live head of an open same-repo PR"
 
-# Consult the *remote protected main policy*, never an arbitrary PR branch.
-# The local origin/main must be fresh and identical to GitHub's verified main.
+# Consult authenticated main for the authoritative policy/preflight blobs.
+# The running script must be byte-identical to the version on main, so an
+# arbitrary feature branch cannot weaken export authorization.
 main_sha="$(gh api "repos/$SOURCE_REPO/branches/main" --jq '.commit.sha')" \
   || die "cannot read authenticated source main"
 main_protected="$(gh api "repos/$SOURCE_REPO/branches/main" --jq '.protected')" \
   || die "cannot read authenticated source branch protection"
-[[ "$main_protected" == "true" ]] \
-  || die "source main is not protected"
 [[ "$main_sha" =~ ^[0-9a-f]{40}$ ]] \
   || die "invalid GitHub source main SHA"
 local_main="$(git rev-parse --verify refs/remotes/origin/main 2>/dev/null)" \
@@ -72,20 +81,25 @@ local_main="$(git rev-parse --verify refs/remotes/origin/main 2>/dev/null)" \
 [[ "$main_sha" == "$local_main" ]] \
   || die "origin/main is stale or does not match GitHub main"
 
-# Only the protected main revision is authoritative for private code export.
+policy_blob="$(git rev-parse "$main_sha:$POLICY_PATH" 2>/dev/null)" \
+  || die "cannot resolve main private mirror policy blob"
+preflight_blob="$(git rev-parse "$main_sha:$PREFLIGHT_PATH" 2>/dev/null)" \
+  || die "cannot resolve main private mirror preflight blob"
+running_preflight_blob="$(git hash-object "$PREFLIGHT_PATH")" \
+  || die "cannot hash running private mirror preflight"
+[[ "$running_preflight_blob" == "$preflight_blob" ]] \
+  || die "running preflight differs from authoritative main"
+
 policy="$(git show "$main_sha:$POLICY_PATH")" \
-  || die "cannot read the protected main allowlist"
+  || die "cannot read authoritative main allowlist"
 found=0
 declare -A seen_destinations=()
 while IFS= read -r entry || [[ -n "$entry" ]]; do
   [[ -z "$entry" || "$entry" == \#* ]] && continue
-  # Canonical rows bind a repository NAME to its immutable numeric GitHub ID.
-  # A name-only approval or mismatched ID must never authorize private export.
   [[ "$entry" =~ ^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([1-9][0-9]*)$ ]] \
     || die "malformed private mirror allowlist line (expected owner/repo@numeric-id)"
   entry_repo="${BASH_REMATCH[1]}"
   entry_id="${BASH_REMATCH[2]}"
-  # Reject ambiguous duplicate repo names, even if they specify different IDs.
   [[ ! -v seen_destinations["$entry_repo"] ]] \
     || die "duplicate private mirror allowlist repository"
   seen_destinations["$entry_repo"]=1
@@ -96,7 +110,54 @@ while IFS= read -r entry || [[ -n "$entry" ]]; do
   fi
 done <<< "$policy"
 [[ "$found" -eq 1 ]] \
-  || die "destination is not uniquely approved on protected main"
+  || die "destination is not uniquely approved on main"
+
+auth_mode=""
+if [[ "$main_protected" == "true" ]]; then
+  auth_mode="protected-main"
+elif [[ "$main_protected" == "false" ]]; then
+  [[ "$#" -eq 5 ]] \
+    || die "unprotected main requires review-attested-v1 comment IDs"
+  maintainer_comment_id="$4"
+  security_comment_id="$5"
+  [[ "$maintainer_comment_id" =~ ^[1-9][0-9]*$ \
+      && "$security_comment_id" =~ ^[1-9][0-9]*$ ]] \
+    || die "invalid review-attested approval comment ID"
+  [[ "$maintainer_comment_id" != "$security_comment_id" ]] \
+    || die "maintainer and security approvals must be distinct comments"
+
+  approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=$SOURCE_REPO source_repo_id=$SOURCE_ID source_pr=$source_pr source_commit=$expected_commit source_tree=$expected_tree destination_repo=$DEST_REPO destination_repo_id=$DEST_ID policy_blob=$policy_blob preflight_blob=$preflight_blob"
+
+  verify_attestation_comment() {
+    local comment_id="$1"
+    local expected_login="$2"
+    local -a fields=()
+    mapfile -t fields < <(
+      gh api "repos/$SOURCE_REPO/issues/comments/$comment_id" \
+        --jq '.user.login, .author_association, .created_at, .updated_at, .issue_url, .body'
+    ) || die "cannot read review-attested approval comment"
+    [[ "${#fields[@]}" -eq 6 ]] \
+      || die "approval comment must contain one canonical payload line"
+    [[ "${fields[0]}" == "$expected_login" ]] \
+      || die "approval comment author mismatch for $expected_login"
+    case "${fields[1]}" in
+      OWNER|MEMBER|COLLABORATOR) ;;
+      *) die "approval author is not associated with the source repository" ;;
+    esac
+    [[ "${fields[2]}" == "${fields[3]}" ]] \
+      || die "approval comment was edited after creation"
+    [[ "${fields[4]}" == "https://api.github.com/repos/$SOURCE_REPO/issues/$APPROVAL_ISSUE" ]] \
+      || die "approval comment is not on the designated security issue"
+    [[ "${fields[5]}" == "$approval_payload" ]] \
+      || die "approval comment does not exactly bind this export"
+  }
+
+  verify_attestation_comment "$maintainer_comment_id" "$MAINTAINER_APPROVER"
+  verify_attestation_comment "$security_comment_id" "$SECURITY_APPROVER"
+  auth_mode="review-attested-v1"
+else
+  die "unexpected source branch protection state"
+fi
 
 # Verify the immutable private destination *at time of transfer*, not merely
 # a reusable name from a previously observed passing workflow.
@@ -113,8 +174,8 @@ IFS=$'\t' read -r actual_id actual_name actual_private actual_push < <(
 [[ "$actual_push" == "true" ]] \
   || die "insufficient destination permissions"
 
-printf 'PRIVATE_MIRROR_PREFLIGHT_PASS source_pr=%s source_commit=%s source_tree=%s main_policy_sha=%s dest_repo_id=%s\n' \
-  "$source_pr" "$actual_commit" "$actual_tree" "$main_sha" "$actual_id"
+printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_pr=%s source_commit=%s source_tree=%s main_sha=%s policy_blob=%s preflight_blob=%s dest_repo_id=%s\n' \
+  "$auth_mode" "$source_pr" "$actual_commit" "$actual_tree" "$main_sha" "$policy_blob" "$preflight_blob" "$actual_id"
 
 # No transfer or workflow dispatch occurs. Human security-owner approval,
 # workflow isolation, exact mirrored-tree verification, retention and actual
