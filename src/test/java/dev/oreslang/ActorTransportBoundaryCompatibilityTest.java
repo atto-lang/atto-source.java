@@ -73,6 +73,41 @@ final class ActorTransportBoundaryCompatibilityTest {
     }
 
     @Test
+    void aPrivateSenderCannotEscalateSharedMutexToSharedDestination() throws Exception {
+        var constructor = TypeChecker.class.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        var checker = constructor.newInstance();
+        var current = TypeChecker.class.getDeclaredField("currentActorKind");
+        current.setAccessible(true);
+        var validate = TypeChecker.class.getDeclaredMethod(
+                "validateActorCallableBoundaryType",
+                dev.oreslang.types.Types.Type.class,
+                dev.oreslang.ast.Ast.ActorKind.class,
+                boolean.class,
+                String.class);
+        validate.setAccessible(true);
+        var payload = new dev.oreslang.types.Types.Named(
+                "SharedMutex", java.util.List.of(dev.oreslang.types.Types.Primitive.INT));
+
+        // Host/shared sender to shared destination is conditionally legal.
+        assertDoesNotThrow(() -> validate.invoke(checker, payload,
+                dev.oreslang.ast.Ast.ActorKind.SHARED, false, "mailbox payload"));
+
+        for (var sender : java.util.List.of(
+                dev.oreslang.ast.Ast.ActorKind.PRIVATE,
+                dev.oreslang.ast.Ast.ActorKind.UNTRUSTED)) {
+            current.set(checker, sender);
+            var rejected = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                    () -> validate.invoke(checker, payload,
+                            dev.oreslang.ast.Ast.ActorKind.SHARED, false, "mailbox payload"));
+            org.junit.jupiter.api.Assertions.assertInstanceOf(
+                    IllegalArgumentException.class, rejected.getCause());
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    rejected.getCause().getMessage().contains("private/untrusted actor"));
+        }
+    }
+
+    @Test
     void nominalValuesWithoutTransportContractsFailClosed() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 actor fnc bad(HostOpaque value): void { return; }
