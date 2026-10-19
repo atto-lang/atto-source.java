@@ -221,7 +221,7 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
         // bookkeeping barrier. Failed retirement records remain owned.
         for (ActorHotUpgradeTaskOwnerV1 scope : visited) {
             synchronized (scope.gate) {
-                scope.active.removeAll(exited);
+                scope.active.removeIf(slot -> slot.task != null && exited.contains(slot.task));
             }
         }
         if (interrupted) Thread.currentThread().interrupt();
