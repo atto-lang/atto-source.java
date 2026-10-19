@@ -64,6 +64,91 @@ public final class AsyncRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Pre-executor Task ownership package. The structured scope can publish
+     * this shell before executor admission, so cancellation/close always has
+     * a physical-exit fence to join even while submission is in flight.
+     */
+    static final class PreparedTask<T> {
+        private final TaskExit exit;
+        private final OresTask<T> owner;
+        private final AtomicBoolean claimed = new AtomicBoolean();
+
+        private PreparedTask(TaskExit exit, OresTask<T> owner) {
+            this.exit = exit;
+            this.owner = owner;
+        }
+
+        OresTask<T> owner() {
+            return owner;
+        }
+    }
+
+    /**
+     * Allocate all Task ownership/quiescence state before executable
+     * admission. Package-private: only trusted runtime/scope code may use it.
+     */
+    <T> PreparedTask<T> prepareTask() {
+        TaskExit exit = new TaskExit();
+        return new PreparedTask<>(exit, OresTask.provisional(exit.quiesced));
+    }
+
+    /**
+     * Retire a preparation that will never be submitted. Idempotent against a
+     * racing submit claim and never retires a Task after executable admission.
+     */
+    void discardPreparedTask(PreparedTask<?> prepared) {
+        Objects.requireNonNull(prepared, "prepared Task");
+        if (prepared.claimed.compareAndSet(false, true)) {
+            retireUnadmitted(prepared.exit);
+        }
+    }
+
+    /**
+     * Submit exactly one previously prepared Task. A failure before executor
+     * admission settles the same physical fence already owned by its scope.
+     * If a post-admission publication failure ever occurs, cancel the admitted
+     * Future but leave physical retirement to the carrier's real exit path.
+     */
+    <T> OresTask<T> submitPreparedTask(Task<T> task, PreparedTask<T> prepared) {
+        Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(prepared, "prepared Task");
+        if (!prepared.claimed.compareAndSet(false, true)) {
+            throw new IllegalStateException("prepared Task was already submitted or discarded");
+        }
+
+        OresFuture<T> completion = null;
+        boolean admitted = false;
+        try {
+            completion = submitInternal(task, prepared.exit);
+            admitted = true;
+            prepared.owner.attachCompletion(completion);
+            return prepared.owner;
+        } catch (RuntimeException | Error failure) {
+            if (!admitted) {
+                retireUnadmitted(prepared.exit);
+            } else if (completion != null) {
+                try {
+                    Runnable notify = completion.cancelDeferredNotification();
+                    if (notify != null) notify.run();
+                } catch (RuntimeException | Error cancelFailure) {
+                    if (cancelFailure != failure) failure.addSuppressed(cancelFailure);
+                }
+            }
+            throw failure;
+        }
+    }
+
+    private void retireUnadmitted(TaskExit exit) {
+        OresFuture<?> completion = exit.completion;
+        if (completion != null) {
+            taskExits.remove(completion, exit);
+        }
+        if (exit.state.compareAndSet(0, 2)) {
+            exit.markExited();
+        }
+    }
+
 
     public AsyncRuntime() {
         this(TurnExecutor.direct());
@@ -119,12 +204,8 @@ public final class AsyncRuntime implements AutoCloseable {
      * cannot orphan executable work outside its Task handle.
      */
     public <T> OresTask<T> submitTask(Task<T> task) {
-        Objects.requireNonNull(task, "task");
-        TaskExit exit = new TaskExit();
-        OresTask<T> owner = new OresTask<>(exit.quiesced);
-        OresFuture<T> completion = submitInternal(task, exit);
-        owner.attachCompletion(completion);
-        return owner;
+        PreparedTask<T> prepared = prepareTask();
+        return submitPreparedTask(task, prepared);
     }
 
     /** Supervised discarded-handle form; failure is never silently ignored. */
