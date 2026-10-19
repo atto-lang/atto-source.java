@@ -2479,7 +2479,23 @@ public final class OwnershipChecker {
         if (mutexCriticalSectionDepth > 0 || outer.hasLiveMutexGuard()) {
             throw error("Task cannot launch while a MutexGuard/critical section is live");
         }
-        checkLambda(new Ast.LambdaExpr(List.of(), null, body), outer, null);
+        Ast.LambdaExpr activation = new Ast.LambdaExpr(List.of(), null, body);
+        // The closure checker moves captured owners, but names are not
+        // allocation identities. Reject two aliases to the same affine or
+        // writable root before the first move mutates parent scope state.
+        // This is analysis-only: source Task execution remains disabled.
+        if (!outer.descendantsNonLexical()) {
+            CaptureSet free = collectCaptures(activation, outer, null);
+            List<TaskCaptureRootAudit.Capture> roots = new ArrayList<>();
+            for (Capture capture : free.values.values()) {
+                VarState owner = ownershipRoot(capture.source());
+                roots.add(new TaskCaptureRootAudit.Capture(
+                        owner, capture.name(),
+                        owner.kind == ValueKind.MOVE_ONLY, capture.write()));
+            }
+            TaskCaptureRootAudit.verify(roots);
+        }
+        checkLambda(activation, outer, null);
         return new ValueInfo(new Ast.TypeRef(
                 "Task", List.of(Ast.TypeRef.inferred()), false), ValueKind.MOVE_ONLY, null);
     }
