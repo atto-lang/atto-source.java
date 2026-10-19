@@ -111,6 +111,10 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                // Contextual layout keyword: preserve 'inverted' as an identifier elsewhere.
+                boolean invertedClass = matchContextualIdentifier("inverted");
+                if (invertedClass && !check(CLASS))
+                    throw error(peek(), "'inverted' must immediately precede 'class'");
                 if (match(ACTOR, ISOACTOR)) {
                     rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations));
                     continue;
@@ -143,7 +147,8 @@ public final class Parser {
                     rootDeclarations.add(parseClass(
                             modifiers.visibility,
                             modifiers.isAbstract,
-                            modifiers.visibility != Ast.Visibility.PUBLIC));
+                            modifiers.visibility != Ast.Visibility.PUBLIC,
+                            invertedClass));
                     continue;
                 }
                 if (match(INTERFACE, TRAIT)) {
@@ -304,6 +309,10 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            // Contextual layout keyword: preserve 'inverted' as an identifier elsewhere.
+            boolean invertedClass = matchContextualIdentifier("inverted");
+            if (invertedClass && !check(CLASS))
+                throw error(peek(), "'inverted' must immediately precede 'class'");
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations);
             }
@@ -323,7 +332,7 @@ public final class Parser {
                 rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
                 validateClassModifiers(modifiers);
                 return parseClass(modifiers.visibility,
-                        modifiers.isAbstract, false);
+                        modifiers.isAbstract, false, invertedClass);
             }
             if (match(INTERFACE, TRAIT)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -501,10 +510,21 @@ public final class Parser {
             Ast.Visibility visibility,
             boolean isAbstract,
             boolean filePrivateScope) {
+        return parseClass(visibility, isAbstract, filePrivateScope, false);
+    }
+
+    private Ast.ClassDecl parseClass(
+            Ast.Visibility visibility,
+            boolean isAbstract,
+            boolean filePrivateScope,
+            boolean inverted) {
         String name = consume(IDENT, "expected class name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+        if (inverted && (isAbstract || !parents.isEmpty() || !interfaces.isEmpty())) {
+            throw error(previous(), "inverted class cannot be abstract, extend classes, or implement interfaces until checked columnar dispatch is supported");
+        }
         consume(AS, "expected 'as' after class header");
         boolean braceStyle = match(LBRACE);
         Token.Type classTerminator = braceStyle ? RBRACE : END;
@@ -596,9 +616,12 @@ public final class Parser {
                 braceStyle
                         ? "expected '}' to close class " + name
                         : "expected 'end' to close class " + name);
+        if (inverted && constructor != null) {
+            throw error(previous(), "inverted class constructors require checked whole-row initialization and are not enabled");
+        }
         return new Ast.ClassDecl(
                 name, visibility, isAbstract, Ast.ActorKind.NONE, generics,
-                parents, interfaces, fields, constructor, methods);
+                parents, interfaces, fields, constructor, methods, inverted);
     }
 
     private Ast.ConstructorDecl parseConstructor(
