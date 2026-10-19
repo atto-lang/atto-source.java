@@ -224,6 +224,89 @@ final class ActorRuntimePhysicalMailReceiptTest {
     }
 
     @Test
+    void runtimeCloseRetryAfterTeardownOomeStillShutsDispatchersAndReceipts()
+            throws Exception {
+        var runtime = new ActorRuntime();
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var actor = runtime.<Integer>spawnShared(
+                () -> (message, context) -> {
+                    entered.countDown();
+                    release.await();
+                });
+        Object original = null;
+        java.lang.reflect.Field drainsField = null;
+        try {
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            var receipt = runtime.sendWithPhysicalReceipt(actor, 1);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            Object cell = actorCellForTest(runtime, actor);
+            drainsField = cell.getClass().getDeclaredField("pendingDrains");
+            drainsField.setAccessible(true);
+            original = drainsField.get(cell);
+
+            var failingSnapshot = new java.util.ArrayList<Object>() {
+                private boolean fail = true;
+
+                private void failOnce() {
+                    if (fail) {
+                        fail = false;
+                        throw new OutOfMemoryError(
+                                "injected first runtime-close teardown failure");
+                    }
+                }
+
+                @Override public Object[] toArray() {
+                    failOnce();
+                    return super.toArray();
+                }
+
+                @Override public <T> T[] toArray(T[] target) {
+                    failOnce();
+                    return super.toArray(target);
+                }
+            };
+            drainsField.set(cell, failingSnapshot);
+
+            assertThrows(OutOfMemoryError.class, runtime::close);
+            assertTrue(actor.isAlive(),
+                    "failed actor teardown preparation cannot publish actor stop");
+            assertFalse(receipt.terminal().isDone());
+            assertNull(receipt.terminalDisposition());
+
+            drainsField.set(cell, original);
+            original = null;
+
+            // The first close already sealed global runtime admission, but it
+            // did not consume dispatcher-shutdown authority. The retry must
+            // stop the actor, settle the exact receipt and terminate carriers.
+            assertDoesNotThrow(runtime::close);
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> receipt.terminal().get(5, TimeUnit.SECONDS));
+            assertEquals(ActorRuntime.PhysicalMailDisposition.RUNTIME_CLOSED,
+                    receipt.terminalDisposition());
+            assertDoesNotThrow(runtime::close,
+                    "completed runtime close remains idempotent after retry");
+        } finally {
+            release.countDown();
+            if (drainsField != null && original != null) {
+                try {
+                    Object cell = actorCellForTest(runtime, actor);
+                    drainsField.set(cell, original);
+                } catch (Throwable ignored) {
+                    // Runtime may already have finalized and removed the cell.
+                }
+            }
+            try {
+                runtime.close();
+            } catch (Throwable ignored) {
+                // Preserve the primary assertion/fault-injection result.
+            }
+        }
+    }
+
+    @Test
     void failedActorReceiveCannotForgeSuccessfulPhysicalCompletion()
             throws Exception {
         try (var runtime = new ActorRuntime()) {
