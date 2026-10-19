@@ -151,6 +151,16 @@ class ClassifierTests(unittest.TestCase):
         self.assertNotIn("private", str(report).lower())
 
 
+    def test_job_conclusion_must_not_be_overwritten_by_last_step(self):
+        failing = job("failure", [step("Run tests", "failure"),
+                                  step("Complete job", "success")])
+        outcome = m.assess(RUN, [failing], SHA)
+        self.assertEqual(outcome["category"], "executed_build_test_failure")
+        self.assertEqual(outcome["jobs"][0]["completed_build_test_failures"], 1)
+        failing = job("failure", [step("Checkout", "failure"),
+                                  step("Complete job", "success")])
+        self.assertEqual(m.classify(RUN, [failing], SHA), "setup_only_failure")
+
     def test_missing_timestamps_never_prove_executed_failure(self):
         for missing in ("started_at", "completed_at"):
             with self.subTest(missing=missing):
