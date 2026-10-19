@@ -55,6 +55,19 @@ final class TaskAccessVerifierQuiescenceTest {
     }
 
     @Test
+    void oversizedClaimSetFailsBeforeAdmission() {
+        var verifier = new TaskAccessVerifier();
+        var item = read(
+                TaskAccessVerifier.Place.whole(ROOT),
+                Types.Primitive.INT);
+        var oversized = java.util.Collections.nCopies(1025, item);
+        assertThrows(
+                IllegalStateException.class,
+                () -> verifier.admitScopedTyped(oversized, CORE));
+        assertEquals(0, verifier.activeChildren());
+    }
+
+    @Test
     void cancellationDoesNotReleaseScopedLoan() {
         var verifier = new TaskAccessVerifier();
         var place = TaskAccessVerifier.Place.whole(ROOT);
