@@ -97,6 +97,9 @@ final class TaskCertifiedLayout {
                 throw new IllegalStateException(
                         "allocation site already certified; reuse original compiler storage identity");
             }
+            if (issuedSites.size() >= 65536) {
+                throw new IllegalStateException("source allocation proof budget exceeded");
+            }
             RecordStorage result = freshRecord(shape);
             issuedSites.put(expression, result);
             return result;
