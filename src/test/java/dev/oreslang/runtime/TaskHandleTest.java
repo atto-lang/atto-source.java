@@ -29,6 +29,73 @@ public class TaskHandleTest {
         if (interrupted) Thread.currentThread().interrupt();
     }
 
+    @Test void explicitCheckpointUnwindsFinallyAfterCancellationRequest()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            CountDownLatch started = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicBoolean cleaned = new AtomicBoolean();
+            AtomicBoolean workAfterCheckpoint = new AtomicBoolean();
+            TaskHandle<Integer> handle = scheduler.startTracked(resume -> {
+                try {
+                    started.countDown();
+                    awaitUninterruptibly(release);
+                    assertTrue(OresScheduler.cancellationRequested());
+                    OresScheduler.cancellationCheckpoint();
+                    workAfterCheckpoint.set(true);
+                    return OresScheduler.done(123);
+                } finally {
+                    cleaned.set(true);
+                }
+            });
+            assertTrue(started.await(3, TimeUnit.SECONDS));
+            try {
+                assertTrue(handle.cancel("graceful checkpoint"));
+                assertFalse(handle.result().isDone(),
+                        "request must not asynchronously interrupt guest execution");
+            } finally {
+                release.countDown();
+            }
+            TaskHandle.TaskOutcome<Integer> outcome = done(handle);
+            assertInstanceOf(TaskHandle.Cancelled.class, outcome);
+            assertEquals("graceful checkpoint",
+                    ((TaskHandle.Cancelled<Integer>) outcome).reason());
+            assertTrue(cleaned.get(), "finally must execute before done");
+            assertFalse(workAfterCheckpoint.get(), "no work after safepoint");
+        }
+    }
+
+    @Test void checkpointWithoutRequestDoesNotStopTask() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> handle = scheduler.startTracked(resume -> {
+                assertFalse(OresScheduler.cancellationRequested());
+                OresScheduler.cancellationCheckpoint();
+                return OresScheduler.done(8);
+            });
+            assertEquals(new TaskHandle.Success<>(8), done(handle));
+            assertFalse(OresScheduler.cancellationRequested(),
+                    "task-local cancellation token must not leak to host");
+        }
+    }
+
+    @Test void checkpointPollOutsideTrackedTaskIsReadOnlyAndNoop() {
+        assertFalse(OresScheduler.cancellationRequested());
+        OresScheduler.cancellationCheckpoint();
+        assertFalse(OresScheduler.cancellationRequested());
+    }
+
+    @Test void checkpointPollReturnsFalseAfterGuestTurnExit() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> handle = scheduler.startTracked(resume -> {
+                assertFalse(OresScheduler.cancellationRequested());
+                return OresScheduler.done(9);
+            });
+            assertEquals(new TaskHandle.Success<>(9), done(handle));
+            assertFalse(OresScheduler.cancellationRequested(),
+                    "threadlocal must be cleared after success");
+        }
+    }
+
     @Test void successHasQuiescentOutcome() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             TaskHandle<Integer> handle = scheduler.startTracked(r -> OresScheduler.done(42));
