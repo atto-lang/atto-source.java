@@ -58,7 +58,8 @@ public final class OwnershipChecker {
     private OwnershipChecker(Ast.Program program) {
         // Array/List have checked unique ownership moves in this pass. This
         // admission does not promise runtime worker-scheduler/actor authority.
-        taskSendSyncTraits = new SendSyncTraits(program, Set.of("Array", "List"));
+        taskSendSyncTraits = new SendSyncTraits(
+                program, Set.of("Array", "List", "Option", "Result"));
         index(program);
     }
 
