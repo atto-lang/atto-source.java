@@ -33,6 +33,10 @@ class TriageTests(unittest.TestCase):
         self.assertEqual(m.classify(RUN, [], SHA), "no_jobs_recorded")
         self.assertEqual(m.classify(dict(RUN, status="queued"), [], SHA), "not_terminal")
 
+    def test_missing_steps_is_not_false_evidence(self):
+        with self.assertRaisesRegex(m.TriageError, "metadata"):
+            m.classify(RUN, [{"conclusion": "failure"}], SHA)
+
     def test_wrong_source_and_incomplete_pagination_fail(self):
         with self.assertRaisesRegex(m.TriageError, "head SHA"):
             m.classify(RUN, [{"steps": []}], "b" * 40)
