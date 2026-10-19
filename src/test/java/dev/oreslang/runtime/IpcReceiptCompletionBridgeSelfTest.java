@@ -148,6 +148,61 @@ public final class IpcReceiptCompletionBridgeSelfTest {
         check(observed.get() == 1);
         check(onTerminal.invariant());
 
+        // A failure after the irreversible dispatch claim has uncertain
+        // remote visibility; it must never complete as "never sent".
+        var afterClaim = new IpcReceiptCompletionBridge(1);
+        var claimedMessage = env(1, "claim");
+        var uncertain = afterClaim.admit(claimedMessage);
+        afterClaim.commitDispatch(claimedMessage);
+        denied(() -> afterClaim.rejectBeforeRemote(claimedMessage));
+        denied(() -> afterClaim.acceptVerified(claimedMessage,
+                IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
+        check(!uncertain.toCompletableFuture().isDone());
+        check(afterClaim.counters().transportCredits() == 1);
+        check(afterClaim.transportLost("claim") == 1);
+        check(result(uncertain) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+        check(afterClaim.counters().pending() == 0);
+        check(afterClaim.counters().transportCredits() == 0);
+
+        // A local session loss must fence a dispatch claim, not merely
+        // remove the future while allowing a late writer to reopen it.
+        for (int trial = 0; trial < 256; ++trial) {
+            var closing = new IpcReceiptCompletionBridge(1);
+            var message = env(1, "closed");
+            var future = closing.admit(message);
+            CountDownLatch fire = new CountDownLatch(1);
+            AtomicInteger commits = new AtomicInteger();
+            AtomicInteger losses = new AtomicInteger();
+            AtomicReference<Throwable> problem = new AtomicReference<>();
+            Thread publisher = new Thread(() -> {
+                try {
+                    fire.await();
+                    closing.commitDispatch(message);
+                    commits.incrementAndGet();
+                } catch (IllegalArgumentException expectedRetired) {
+                    // EOF won the correlation ledger.
+                } catch (Throwable failure) { problem.compareAndSet(null, failure); }
+            });
+            Thread eof = new Thread(() -> {
+                try {
+                    fire.await();
+                    losses.addAndGet(closing.transportLost("closed"));
+                } catch (Throwable failure) { problem.compareAndSet(null, failure); }
+            });
+            publisher.start();
+            eof.start();
+            fire.countDown();
+            publisher.join();
+            eof.join();
+            check(problem.get() == null);
+            check(commits.get() == 0 || commits.get() == 1);
+            check(losses.get() == 1);
+            check(result(future) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(closing.counters().pending() == 0);
+            check(closing.counters().transportCredits() == 0);
+            check(closing.invariant());
+        }
+
         // Physical transmission must begin only after commitDispatch,
         // which races atomically with local never-sent rejection. Regardless
         // of which wins, there is exactly one terminal host completion.
