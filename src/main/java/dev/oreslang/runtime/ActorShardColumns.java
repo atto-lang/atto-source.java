@@ -64,6 +64,13 @@ public final class ActorShardColumns implements AutoCloseable {
         }
         this.reservation = allocated;
         this.storage = heap;
+        try {
+            allocated.attach(this);
+        } catch (RuntimeException | Error failure) {
+            revokeBackingFromLease();
+            allocated.close();
+            throw failure;
+        }
     }
 
     boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor) {
@@ -75,6 +82,19 @@ public final class ActorShardColumns implements AutoCloseable {
     public int rows() { return rows; }
     public int fields() { return fields; }
     public int lanes() { return lanes; }
+
+    /**
+     * Called by the owning lease before returning its allocation budget.
+     * Also runs on actor-stop finalization, without any active actor turn.
+     * Must not publish or retain the old mutable backing reference.
+     */
+    void revokeBackingFromLease() {
+        double[] old = storage;
+        if (old != null) {
+            java.util.Arrays.fill(old, 0.0);
+            storage = null;
+        }
+    }
 
     private void requireOwner() {
         reservation.requireOwner();
