@@ -9,8 +9,11 @@ trap 'rm -rf -- "$tmp"' EXIT
 "$JAVAC" -Xlint:all -Werror -d "$tmp" \
   "$root/src/main/java/dev/oreslang/runtime/IpcReceiptCorrelation.java" \
   "$root/src/main/java/dev/oreslang/runtime/IpcReceiptCompletionBridge.java" \
+  "$root/src/main/java/dev/oreslang/runtime/IpcTransportSessionLease.java" \
   "$root/src/test/java/dev/oreslang/runtime/IpcReceiptCorrelationSelfTest.java" \
-  "$root/src/test/java/dev/oreslang/runtime/IpcReceiptCompletionBridgeSelfTest.java"
+  "$root/src/test/java/dev/oreslang/runtime/IpcReceiptCompletionBridgeSelfTest.java" \
+  "$root/src/test/java/dev/oreslang/runtime/IpcTransportSessionLeaseSelfTest.java"
 "$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcReceiptCorrelationSelfTest
 "$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcReceiptCompletionBridgeSelfTest
+"$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcTransportSessionLeaseSelfTest
 printf 'JAVA_RECEIPTS_HOST_ONLY_PASS (not remote IPC or guest compilation)\n'
