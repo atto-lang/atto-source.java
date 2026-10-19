@@ -1385,6 +1385,31 @@ public final class OwnershipChecker {
             }
             return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
         }
+        if (call.callee() instanceof Ast.MemberExpr regionFactory
+                && regionFactory.receiver() instanceof Ast.NameExpr regionName
+                && regionName.name().equals("Region")
+                && scope.lookup("Region") == null) {
+            for (Ast.Expr arg : call.arguments()) checkExpr(arg, scope, false);
+            return new ValueInfo(new Ast.TypeRef("Region",
+                    List.of(Ast.TypeRef.simple("Motion")), false), ValueKind.MOVE_ONLY, null);
+        }
+        if (call.callee() instanceof Ast.MemberExpr regionMethod
+                && regionMethod.receiver() instanceof Ast.NameExpr regionBinding) {
+            VarState regionState = scope.lookup(regionBinding.name());
+            if (regionState != null && regionState.type.name().equals("Region")
+                    && regionState.type.arguments().size() == 1
+                    && regionState.type.arguments().getFirst().name().equals("Motion")) {
+                requireUsable(regionState, regionBinding.name(), false);
+                for (Ast.Expr arg : call.arguments()) checkExpr(arg, scope, true);
+                Ast.TypeRef result = switch (regionMethod.member()) {
+                    case "insert" -> Ast.TypeRef.simple("RegionHandle");
+                    case "get_x", "get_y" -> Ast.TypeRef.simple("float");
+                    case "size", "epoch" -> Ast.TypeRef.simple("int");
+                    default -> Ast.TypeRef.simple("void");
+                };
+                return new ValueInfo(result, kindOfType(result), null);
+            }
+        }
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
                 && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
@@ -3669,7 +3694,7 @@ public final class OwnershipChecker {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void","SharedMutex",
-                    "Channel","SelectCase","SelectSet","OptionUnwrapError" -> true;
+                    "Channel","RegionHandle","SelectCase","SelectSet","OptionUnwrapError" -> true;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))
