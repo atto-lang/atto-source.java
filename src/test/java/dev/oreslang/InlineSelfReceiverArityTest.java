@@ -185,6 +185,24 @@ final class InlineSelfReceiverArityTest {
     }
 
     @Test
+    void actorLifecycleAndMailboxMethodsCountOnlyUserParameters() {
+        String program = """
+                define actor Worker as
+                  on_start(self): void { return; }
+                  receive(self, ActorMail<int> mail): void { return; }
+                end
+                """;
+        Ast.ClassDecl worker = parseOwner(program);
+        assertEquals(0, worker.methods().get(0).arity());
+        assertEquals(1, worker.methods().get(1).arity());
+        assertEquals(CallableSelector.instance("on_start", 0),
+                CallableSelector.of(worker.methods().get(0)));
+        assertEquals(CallableSelector.instance("receive", 1),
+                CallableSelector.of(worker.methods().get(1)));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+    }
+
+    @Test
     void splitReceiverSpellingRemainsSupported() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Counter as
