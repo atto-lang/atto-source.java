@@ -3515,6 +3515,56 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                if (assignment.target() instanceof Ast.IndexExpr target) {
+                                    // Computed writes must use the same suspension-aware
+                                    // receiver/key lowering as computed reads. Evaluating
+                                    // the target through synchronous eval() here rejects a
+                                    // legal awaited/delayed key after the RHS has completed.
+                                    // Preserve the language's existing RHS-first assignment
+                                    // order while evaluating receiver and key exactly once.
+                                    evalSuspendableExpr(
+                                            t,
+                                            target.receiver(),
+                                            env,
+                                            (t2, receiver, receiverFailure) -> {
+                                                if (receiverFailure != null) {
+                                                    continuation.accept(
+                                                            t2,
+                                                            null,
+                                                            receiverFailure);
+                                                    return;
+                                                }
+                                                evalSuspendableExpr(
+                                                        t2,
+                                                        target.index(),
+                                                        env,
+                                                        (t3, key, keyFailure) -> {
+                                                            if (keyFailure != null) {
+                                                                continuation.accept(
+                                                                        t3,
+                                                                        null,
+                                                                        keyFailure);
+                                                                return;
+                                                            }
+                                                            try {
+                                                                continuation.accept(
+                                                                        t3,
+                                                                        assignIndexValue(
+                                                                                receiver,
+                                                                                key,
+                                                                                value,
+                                                                                env),
+                                                                        null);
+                                                            } catch (RuntimeException | Error failure2) {
+                                                                continuation.accept(
+                                                                        t3,
+                                                                        null,
+                                                                        failure2);
+                                                            }
+                                                        });
+                                            });
+                                    return;
+                                }
                                 try {
                                     continuation.accept(
                                             t,
