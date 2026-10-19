@@ -212,6 +212,7 @@ final class MethodOverloadTest {
                     foo(self): int { return 1; }
                     foo(self, int x): int { return x; }
                     foo(mut self, int x, int y): int { return x + y; }
+                    alt(self)(int x): int { return x; }
                   end
                 end
                 """)));
