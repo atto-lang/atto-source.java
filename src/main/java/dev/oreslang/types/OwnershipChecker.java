@@ -1364,7 +1364,7 @@ public final class OwnershipChecker {
                 if (!object.explicitStruct()) members.put(field.name(), info.type);
             }
             Ast.TypeRef type;
-            if (object.inferredRecord()) type = Ast.TypeRef.readonlyRecordType(members);
+            if (object.structuralRecord()) type = Ast.TypeRef.readonlyRecordType(members);
             else if (object.inferredStruct() || object.explicitStruct()) type = Ast.TypeRef.structType(members);
             else throw error("unknown anonymous aggregate kind " + object.kind());
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
