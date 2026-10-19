@@ -130,18 +130,9 @@ public final class LinkedProgramRunner {
         LinkedHashMap<String, String> sourceText = new LinkedHashMap<>();
         for (var unit : units.values()) sourceText.put(unit.unitId(), unit.rawSource());
         Path manifest = projectConfig.manifestPath().orElse(null);
-        byte[] manifestText = new byte[0];
-        if (manifest != null) {
-            // Checking Files.size followed by readAllBytes has a TOCTOU hole:
-            // a concurrent writer can grow the file after the size check.
-            // Bound the actual allocation while reading the snapshot.
-            try (java.io.InputStream manifestInput = Files.newInputStream(manifest)) {
-                manifestText = manifestInput.readNBytes(1024 * 1024 + 1);
-                if (manifestText.length > 1024 * 1024) {
-                    throw new IOException("project manifest too large for test closure trace");
-                }
-            }
-        }
+        // These are the exact bytes OresProjectConfig parsed. Never reopen
+        // the manifest after resolving imports: it might have changed.
+        byte[] manifestText = projectConfig.manifestSourceBytes();
         return SourceClosureFingerprint.sha256(
                 sourceText, resolutions,
                 manifest == null ? "" : manifest.toString(),
