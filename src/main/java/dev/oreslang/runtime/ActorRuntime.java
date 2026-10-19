@@ -4616,26 +4616,30 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 return ref;
             } catch (RuntimeException | Error failure) {
-                // Roll back every registry when spawn admission fails. In
-                // particular, never strand an inherited group ownership ref.
-                if (cell != null) actors.remove(cell.ref.id(), cell);
-                if (linkedToParent && cell != null) parent.children.remove(cell);
-                if (cell != null) {
-                    ActorGroupId inheritedId = cell.managedByGroup.get();
-                    ActorGroup inherited = inheritedId == null
-                            ? null : actorGroups.get(inheritedId);
-                    if (inherited != null) {
-                        synchronized (inherited.authorityLock) {
-                            inherited.managedWorkers.remove(cell.ref.id(), cell.ref);
+                // A constructor or registry mutation may throw even after
+                // partial admission. Always refund the reserved actor slot.
+                // Keep the original failure authoritative if teardown itself
+                // fails with an Error (including injected OOME).
+                try {
+                    if (cell != null) actors.remove(cell.ref.id(), cell);
+                    if (linkedToParent && cell != null) parent.children.remove(cell);
+                    if (cell != null) {
+                        ActorGroupId inheritedId = cell.managedByGroup.get();
+                        ActorGroup inherited = inheritedId == null
+                                ? null : actorGroups.get(inheritedId);
+                        if (inherited != null) {
+                            synchronized (inherited.authorityLock) {
+                                inherited.managedWorkers.remove(cell.ref.id(), cell.ref);
+                            }
                         }
-                    }
-                    try {
                         cell.abortUnregisteredConstruction();
-                    } catch (RuntimeException cleanupFailure) {
-                        failure.addSuppressed(cleanupFailure);
                     }
+                } catch (RuntimeException | Error cleanupFailure) {
+                    if (cleanupFailure != failure)
+                        failure.addSuppressed(cleanupFailure);
+                } finally {
+                    actorCount.decrementAndGet();
                 }
-                actorCount.decrementAndGet();
                 throw failure;
             }
         }
@@ -8198,11 +8202,35 @@ public final class ActorRuntime implements AutoCloseable {
                     Math.max(1, policy.maxMailboxMessages()));
             this.outputStream = new ActorOutputStream<>(
                     ref.id(), outputChannel);
-            ref.outputStream = outputStream;
-            actorOutputStreams.add(outputStream);
+            // Finish all fallible actor-owned construction BEFORE publishing
+            // this stream in the runtime-wide registry. If a later memory
+            // allocation fails, there is no ActorCell for spawnInternal to
+            // abort; a published stream would otherwise be orphaned.
             this.memorySlice = isPrivateKind(kind)
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
+            ref.outputStream = outputStream;
+            try {
+                // Even an add-then-throw allocator/registry fault must not
+                // leave a reachable orphan output stream.
+                actorOutputStreams.add(outputStream);
+            } catch (RuntimeException | Error admissionFailure) {
+                try {
+                    outputStream.closeAndDrainFromRuntime();
+                } catch (RuntimeException | Error cleanupFailure) {
+                    if (cleanupFailure != admissionFailure)
+                        admissionFailure.addSuppressed(cleanupFailure);
+                }
+                if (memorySlice != null) {
+                    try {
+                        memorySlice.close();
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        if (cleanupFailure != admissionFailure)
+                            admissionFailure.addSuppressed(cleanupFailure);
+                    }
+                }
+                throw admissionFailure;
+            }
         }
 
         /**
