@@ -2736,6 +2736,10 @@ public final class TypeChecker {
                                         + " does not accept call-site type arguments");
                     }
                     if (member.member().equals("send")) {
+                        if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                            throw new IllegalArgumentException(
+                                    "untrusted actors cannot send actor messages, including self.send");
+                        }
                         if (call.arguments().size() != 1) {
                             throw new IllegalArgumentException(
                                     "self.send expects exactly one outbound value");
@@ -2794,6 +2798,10 @@ public final class TypeChecker {
                     }
                     return switch (member.member()) {
                         case "send" -> {
+                            if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                                throw new IllegalArgumentException(
+                                        "untrusted actors cannot send actor messages through ActorRef");
+                            }
                             if (call.arguments().size() != 1) {
                                 throw new IllegalArgumentException(
                                         "ActorRef.send expects exactly one mailbox value");
