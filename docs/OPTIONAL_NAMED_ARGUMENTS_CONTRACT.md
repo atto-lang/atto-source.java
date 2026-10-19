@@ -1,6 +1,11 @@
 # Named and non-trailing optional value arguments: hardened language contract
 
-Status: **design accepted for implementation planning, NOT currently available as source syntax**.
+Status: **staged language design, NOT yet executable guest syntax**. The original
+T?-only contract below is extended by the 2026-10-18 Option-type omission
+amendment. The amendment describes the *next language mode*, not the current
+source compiler. Existing Option<T> parameters retain their legacy required
+behavior until a versioned or capability-gated migration is implemented.
+See [Option-typed formal omission amendment](#option-typed-formal-omission-amendment-2026-10-18).
 Java/GraalVM currently has an arity-based runtime, ordinary expression-list calls,
 and exactly one explicitly declared class constructor. The LLVM native scalar subset
 already parses and lowers named calls at **exact** arity, but cannot omit arguments;
@@ -25,9 +30,11 @@ foo(a: 3, true);      // error: positional argument follows named
 
 The `?` belongs to the **formal argument slot** only, directly after its
 declared type: `T? name`. It does NOT alter a general type reference, make
-`T` nullable, or introduce JavaScript's `undefined`. This is intentionally
-different from `Option<T> name`, a *required* parameter whose caller must
-supply an Option value. In the callee, `T? name` is read as an `Option<T>`;
+`T` nullable, or introduce JavaScript's `undefined`. In **legacy mode** this differs from
+`Option<T> name`, which currently requires an explicit Option value. In the
+proposed **implicit Option omission mode** both forms become omittable and
+have identical body-visible `Option<T>` types. To insist on a supplied
+Option in the new mode, use the proposed `required Option<T> name` formal. In the callee, `T? name` is read as an `Option<T>`;
 a supplied ordinary `T` is wrapped in `Some(T)`, an already-typed `Option<T>` value may be passed as-is, and omission is `None`.
 The omitted/default distinction must remain visible to match, borrowing,
 serialization, reflection, debugging and cross-backend lowering.
@@ -149,6 +156,90 @@ or execute new source forms. Feature admission requires AST/parser changes,
 an actual type/effect/ownership check plan, runtime and lowering integration,
 LLVM parity, formatter and grammar changes, and execution of the same
 negative and positive guest programs on matching exact Git trees.
+
+## Option-typed formal omission amendment (2026-10-18)
+
+**Proposed direction, not executable syntax:** infer argument omittability from
+the **resolved intrinsic Option<T> formal type**. `T? name` is purely an
+abbreviation for `Option<T> name` in the new language mode. A required
+`Option<T>` formal remains expressible using the contextual
+`required Option<T> name` modifier. This is a deliberate API behavior
+change relative to legacy Oreslang, so the change MUST be gated by
+versioned module/signature metadata during rollout. Do not silently
+reinterpret old precompiled APIs or source when importing them.
+
+```oreslang
+pub fnc foo(int a, Option<string> b, bool c): int {
+    // b is Option<string>.
+    return 5;
+}
+foo(3, "", true);             // supplied string -> b = Some("")
+foo(a: 3, c: true);          // omitted -> b = None
+foo(3, _, true);             // explicitly omitted -> b = None
+foo(3, None, true);          // supplied Option.None; b = None
+foo(3, Some("x"), true);     // supplied Option; b = Some("x")
+
+pub fnc audit(required Option<string> token): void {
+    // token may hold None, but the caller must supply an argument.
+}
+audit(None);                 // valid: explicit supplied None
+audit();                     // error: required argument absent
+```
+
+**Presence is not value.** Implicit omission, explicit standalone `_` /
+`omit`, and a caller-supplied `None` can all yield the same callee value
+`None`, but their checked call-plan presence/origin metadata differ.
+Later defaults may react to an omitted argument without rewriting an
+explicit `None`; never re-evaluate or accidentally discard a side-effect
+of a supplied expression. `None` is the existing Oreslang value spelling;
+do not assume `Option.None` is an available expression namespace.
+
+**Static typing and lifting.** Only the nominally resolved intrinsic
+`Option<T>`, including aliases/generic instantiations whose resolved type
+is proven, gains automatic omission. Never use a textual name prefix,
+structural `Some`/`None` members, a user-defined `Option`, dynamic
+dispatch, or runtime argument types to infer omittability. At an omittable
+formal boundary, an exact `T` becomes `Some(T)`; an exact
+`Option<T>` (including explicitly typed `None`) is passed unchanged.
+A `required Option<T>` formal accepts only a properly typed Option
+value, not implicit `T -> Some(T)` lifting. General assignments do not
+gain implicit Option promotion.
+
+**Nested cases.** `Option<Option<T>>` is omittable because its outer
+container is Option, but an unbound slot becomes *outer* `None`.
+Do not automatically lift an `Option<T>` expression to
+`Some<Option<T>>` without an explicit, type-checked outer constructor:
+it can erase the distinction between outer `None` and `Some(None)`.
+The spelling `Option<T>? name` is invalid: it is neither a second
+default nor implicit `Option<Option<T>>`; express nesting explicitly.
+
+**Variadic and ownership limits.** A final `...Option<T> rest` parameter
+is a variadic sequence with zero or more optional-typed *elements*;
+an absent tail is the empty sequence, not an omitted Option slot. An
+omittable mutable/borrowed/structural parameter remains fail-closed
+until the relevant loan/drop proof is implemented. Function, routine,
+method, interface, lambda and explicit class-constructor signatures
+must eventually share the same rule; synthesized field-order
+constructors, actor constructors and message payload schemas are not
+silently rewritten.
+
+**Overload ABI and compatibility.** Required vs omittable is part of a
+versioned callable contract and must be inherited unchanged in overrides.
+Conservative v1 effective-arity interval collision checks apply to
+**all** implicitly omittable Option slots as well as `T?` slots.
+The compiler must select a complete declaration identity and retain
+full ABI parameter arity, without choosing by runtime argument types,
+labels, or declaration order. Keep the legacy required-Option mode
+until all Java/Graal/LLVM frontends and imports can enforce this.
+
+**Implementation checkpoint.** `OptionFormalPresencePolicy` is a
+pure, executable Java classifier distinguishing LEGACY from
+IMPLICIT_OPTION_OMISSION and preserving omitted-vs-supplied outcomes.
+It receives **already verified nominal type classifications** and
+does not itself parse a `required` modifier, decide actual argument
+types, execute effects, or lower Option values. No named/optional
+guest calls may execute until the parser, type/effect/ownership checker,
+constructor semantics, formatters and both backends have parity proofs.
 
 ## Absence, explicit Option values, and variadic tails (2026-10-18 audit)
 
