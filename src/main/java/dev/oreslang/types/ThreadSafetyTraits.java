@@ -98,10 +98,14 @@ public final class ThreadSafetyTraits {
                 return true;
             }
             if (type instanceof Record record) {
-                // Structural records are writable by default. Only the
-                // explicitly readonly record type can establish shared
-                // access, and every nested field must independently be Sync.
-                if (trait == Trait.SYNC && !record.readOnly()) return false;
+                // Record.readOnly is a *view capability*, not a frozen
+                // allocation or a proof that all aliases are immutable.
+                // TypeChecker.overlayReadonlyCapabilities can add readOnly
+                // to a view of writable storage. Claiming Sync here would
+                // let a readonly alias race a remaining writable alias.
+                // Deny even readOnly records until a separate compiler
+                // witness proves a frozen backing allocation/exclusivity.
+                if (trait == Trait.SYNC) return false;
                 for (Type member : record.members().values()) {
                     if (!has(member, trait, nominalProof, visiting, depth + 1)) return false;
                 }
