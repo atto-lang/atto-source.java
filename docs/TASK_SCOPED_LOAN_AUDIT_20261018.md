@@ -226,3 +226,41 @@ exposing private source; another-org mirroring first requires #962's
 protected policy and provenance gates. Source Task borrow execution
 remains disabled pending MIR proof minting and authenticated TaskScope
 physical quiescence.
+
+## October 19 compiler-proof and field-alias hardening follow-up
+
+1. `TaskAccessVerifier.mayAlias` now rejects claimed disjoint
+   fields or ranges within **one allocation without a compiler-verified
+   unique-allocation witness**, even if their layout flags are set.
+   Underlying pointer/column aliasing otherwise cannot be excluded.
+   Verified unique allocations still permit independently proven
+   projections. Three adversarial JUnit methods cover this.
+2. The scalar-only `TaskBorrowCompilerBridge` now requires **two
+   independently supplied compiler lookups**: canonical allocation
+   root (owner, numeric allocation ID, generation and uniqueness) and
+   true referent type. It rejects a forged/stale root *before* invoking
+   the type resolver; all-or-none semantics remain unchanged.
+   Three more JUnit methods cover wrong owner IDs, false uniqueness,
+   stale generations and later failed lookups.
+3. The current proof lookup callback is still an **integration seam**:
+   source Task capture compilation is NOT enabled and the callback
+   supplied by unit tests (which echoes the claim) is NOT an authentic
+   compiler-issued MIR allocation witness. Before any source Task
+   admission, `OwnershipChecker` must provide independent,
+   canonical, checked proof lookup.
+4. Wrote `docs/TASK_CAPTURE_MIR_INTEGRATION_V1.md` with the precise
+   reconciliation, ownership, MIR identity, alias/layout, TaskScope
+   completion and conformance requirements for safely bringing
+   parser PR #1377 into the newer Send/Sync stack.
+5. **Current total: 60 committed JUnit methods** (49 scoped verifier
+   + 11 compiler-bridge). Four changed Java files passed a source
+   delimiter/balance review; all 20 bridge test call sites have four
+   expected arguments. These are STATIC checks, not an executed
+   full Java compiler or JUnit pass.
+6. Exact-head fast-ci and concurrency-contract on the prior revision
+   failed with zero job steps and no runner; see GitHub Actions for
+   the latest revision. The protected private mirror policy remains
+   empty and security issue #962 still blocks cross-organization copies.
+
+**Do not enable the guest Task execution switch or claim safe parallel
+SoA execution based on these intermediate proof interfaces.**
