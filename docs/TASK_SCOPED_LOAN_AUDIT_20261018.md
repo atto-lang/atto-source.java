@@ -199,7 +199,7 @@ budget **before copying input or invoking compiler type/trait callbacks**.
 The private reserve step rechecks quota and conflict conditions.
 
 **Regression coverage.** The branch now contains 54 checked-in JUnit
-methods across the verifier (46) and compiler bridge (8), including six
+methods across the verifier (46) and compiler bridge (8), including nine
 new proof-identity, budget and reentrancy tests. Source-structural review
 found 10/10 inspected conditions and balanced delimiters. **This is not
 a source Java compilation or an executed JUnit pass.** A separate,
