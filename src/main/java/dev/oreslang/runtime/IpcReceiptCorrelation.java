@@ -67,6 +67,7 @@ public final class IpcReceiptCorrelation {
     private final TreeMap<Long, Entry> pending = new TreeMap<>();
     private Stream stream;
     private long lastSequence;
+    private long lastFrameSequence;
     private long lastRouteEpoch;
     private long lastCapabilityGeneration;
     private int transportCredits;
@@ -89,6 +90,9 @@ public final class IpcReceiptCorrelation {
         if (message.messageSequence() <= lastSequence) {
             throw new IllegalArgumentException("duplicate/reordered message sequence");
         }
+        if (message.frameSequence() <= lastFrameSequence) {
+            throw new IllegalArgumentException("duplicate/reordered frame sequence");
+        }
         if (message.routeEpoch() < lastRouteEpoch
                 || message.capabilityGeneration() < lastCapabilityGeneration) {
             throw new IllegalArgumentException("route or capability rollback");
@@ -102,6 +106,7 @@ public final class IpcReceiptCorrelation {
         }
         stream = next;
         lastSequence = message.messageSequence();
+        lastFrameSequence = message.frameSequence();
         lastRouteEpoch = message.routeEpoch();
         lastCapabilityGeneration = message.capabilityGeneration();
         ++transportCredits;
