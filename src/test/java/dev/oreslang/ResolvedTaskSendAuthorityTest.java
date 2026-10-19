@@ -95,6 +95,49 @@ final class ResolvedTaskSendAuthorityTest {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(5)
+    void nominalCallbacksShareOneGlobalSendProofBudget() throws Exception {
+        TypeChecker checker = checker();
+
+        java.util.ArrayList<Ast.FieldDecl> fields = new java.util.ArrayList<>();
+        for (int i = 0; i < 400; i++) {
+            fields.add(new Ast.FieldDecl(
+                    "f" + i,
+                    Ast.Visibility.PUBLIC,
+                    Ast.BindingKind.CONST,
+                    Ast.TypeRef.simple("int"),
+                    List.of(),
+                    null,
+                    false));
+        }
+        Ast.ClassDecl wideNominal = new Ast.ClassDecl(
+                "WideNominal",
+                false,
+                Ast.ActorKind.NONE,
+                List.of(),
+                List.of(),
+                List.of(),
+                fields,
+                List.of());
+        installClass(checker, wideNominal);
+
+        java.util.ArrayList<Types.Type> members = new java.util.ArrayList<>();
+        for (int i = 0; i < 300; i++) {
+            // Distinct type nodes defeat identity memoization, forcing each
+            // nominal callback to consume from the same compiler-work budget.
+            members.add(new Types.Named("WideNominal", List.of()));
+        }
+        Types.Tuple wide = new Types.Tuple(members);
+
+        assertFalse(sharedSafe(checker, wide),
+                "canonical shared-safety traversal must exhaust its global budget");
+        assertFalse(ownedSend(checker, wide),
+                "owned Send must not restart a fresh shared-safety budget per nominal");
+        assertTrue(ownedSend(checker, Types.Primitive.INT),
+                "budget exhaustion must be query-local and not poison later checks");
+    }
+
+    @Test
     void readonlyRecordViewCannotCrossDetachedTaskBoundary() throws Exception {
         TypeChecker checker = checker();
         Types.Record readonly = new Types.Record(
