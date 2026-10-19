@@ -26,7 +26,8 @@ final class TaskRegionHostScopeIntegrationTest {
         return verifier.admitScopedTyped(
                 List.of(new TaskAccessVerifier.TypedClaim(
                         claim, Types.Primitive.INT)),
-                CORE);
+                CORE,
+                place -> Types.Primitive.INT);
     }
 
     @Test void twoHostTasksFinishBeforeReleasingStaticLoans() throws Exception {
