@@ -36,6 +36,8 @@ final class OresTestReportParserTest {
                 "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=1000001\n",
                 "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=0\n"
                     + "ORES_TEST|SUMMARY|total=1000000|passed=1000000|failed=0|skipped=0|filtered=0\n",
+                "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=0\n"
+                    + "ORES_TEST|SUMMARY|total=broken|passed=1|failed=0|skipped=0|filtered=0\n",
                 "not a native test report\n"
         }) {
             assertThrows(IllegalArgumentException.class,
@@ -56,6 +58,8 @@ final class OresTestReportParserTest {
                 "ORES_TEST|FUZZ|seed=17|cases=100001\n",
                 "ORES_TEST|FUZZ|seed=17|cases=999999999999999999999999999999\n",
                 "ORES_TEST|FUZZ|seed=17|cases=100000\n".repeat(11),
+                "ORES_TEST|FUZZ|seed=17|cases=97\n"
+                    + "ORES_TEST|FUZZ|seed=17|cases=nope\n",
                 "ORES_TEST|PASS|fake/fuzz|\n"
         }) {
             assertThrows(IllegalArgumentException.class,
