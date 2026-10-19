@@ -147,7 +147,22 @@ final class TaskAccessVerifier {
                              PlaceTypeProof trustedPlaceTypes) {
         Objects.requireNonNull(nominalProof, "nominalProof");
         Objects.requireNonNull(trustedPlaceTypes, "trustedPlaceTypes");
-        List<TypedClaim> typed = List.copyOf(Objects.requireNonNull(requested, "claims"));
+        Objects.requireNonNull(requested, "claims");
+        // Reject oversized or sealed submissions before evaluating any
+        // compiler-supplied resolver/trait callback or copying large lists.
+        // reserveVerified repeats these checks at the actual commit boundary.
+        if (sealed) throw new IllegalStateException("TaskScope is sealed");
+        int requestedCount = requested.size();
+        if (live.size() >= MAX_CHILDREN || requestedCount > MAX_CLAIMS_PER_CHILD
+                || requestedCount > MAX_LIVE_CLAIMS - liveClaimCount) {
+            throw new IllegalStateException("TaskScope access capacity exceeded");
+        }
+        long potentialChecks = (long) requestedCount * liveClaimCount
+                + (long) requestedCount * (requestedCount - 1) / 2;
+        if (potentialChecks > MAX_PAIRWISE_CHECKS_PER_ADMISSION) {
+            throw new IllegalStateException("TaskScope proof-comparison budget exceeded");
+        }
+        List<TypedClaim> typed = List.copyOf(requested);
         Map<PlaceIdentity, Types.Type> pendingTypes = new HashMap<>();
         for (TypedClaim claim : typed) {
             Types.Type actual = trustedPlaceTypes.resolvedReferent(claim.claim().place());
