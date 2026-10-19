@@ -975,3 +975,26 @@ real compiler and runtime, not these literal-only previews. Finite values,
 including `+0.0` and `-0.0`, remain admitted by the scalar oracle. The
 `CheckedLiteralOptionAbi` and direct literal-call planner JUnit regressions
 are committed but unexecuted pending JDK25 Maven Actions capacity.
+
+
+## Full compiler-issued ordinary-call baseline (2026-10-18)
+
+`VerifiedDirectModuleCall.analyzeAndIssue(source, module, caller)` is a
+deliberately narrow **ordinary positional call** proof boundary. Unlike
+`BoundInvocation` and `CheckedScalarInvocationWitness`, its private
+constructor can only be reached after `OresCompiler.analyze` has run the
+actual TypeChecker and OwnershipChecker against a freshly parsed source
+program. It retains original checked AST identities for the unique same-module
+function, calling function and immediate `Ast.CallExpr`. The issuer denies
+imports, complex calling bodies, effectful or optional signatures, name
+shadowing, ambiguous module/call-target namespaces, unproved recursion and
+staged `StagedCallExpr`/`StagedNewExpr` source syntax.
+
+This narrow identity is a baseline for integrating compiler-derived target
+selection with runtime invocation. **It is not a generic authorization to
+execute `T?` calls**, is not transferable to another program, and does not
+replace trusted checked ownership/effects or the actual runtime Option ABI.
+An ordinary `CallExpr` is already executable via the existing interpreter;
+a new GraalVM regression uses identical source for full admission and
+normal guest runtime execution, expecting output `42`. All seven source JUnit
+methods remain unverified until the exact-head suite runs on a real runner.
