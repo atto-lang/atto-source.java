@@ -289,10 +289,14 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             if (closed.get()) return;
             long[] identity = mintSessionIdentity();
             socket.setSoTimeout(limits.readDeadlineMillis());
-            PeerIdentity peer = Objects.requireNonNull(
-                    authenticator.authenticateAndBind(socket, identity[0], identity[1]),
-                    "authenticator returned null peer identity");
-            if (closed.get()) return;
+            PeerIdentity peer;
+            try (ReadWindow authentication = new ReadWindow(socket)) {
+                peer = Objects.requireNonNull(
+                        authenticator.authenticateAndBind(socket, identity[0], identity[1]),
+                        "authenticator returned null peer identity");
+                if (authentication.expired()) return;
+            }
+            if (closed.get() || socket.isClosed()) return;
             session = new Session(socket, connection, peer, identity[0], identity[1]);
             sessions.add(session);
             session.run();
@@ -324,6 +328,34 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
     int activeGlobalWorkItems() { return global.workItems(); }
     long activeGlobalPayloadBytes() { return global.payloadBytes(); }
 
+    /**
+     * Absolute bound for one authentication handshake or one wire frame.
+     * SO_TIMEOUT alone limits a single socket read and is bypassable by a peer
+     * that sends one byte before each idle timeout. A terminal close aborts
+     * the whole socket rather than leaving an ambiguous partial frame.
+     */
+    private final class ReadWindow implements AutoCloseable {
+        private final AtomicBoolean active = new AtomicBoolean(true);
+        private final ScheduledFuture<?> deadline;
+        private volatile boolean expired;
+
+        ReadWindow(Socket socket) {
+            deadline = timers.schedule(() -> {
+                if (active.compareAndSet(true, false)) {
+                    expired = true;
+                    closeQuietly(socket);
+                }
+            }, limits.readDeadlineMillis(), TimeUnit.MILLISECONDS);
+        }
+
+        boolean expired() { return expired; }
+
+        @Override public void close() {
+            active.set(false);
+            deadline.cancel(false);
+        }
+    }
+
     private final class Session implements AutoCloseable {
         private final Socket socket;
         private final ConnectionCredit connection;
@@ -350,14 +382,19 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
 
         void run() throws IOException {
             while (!ended && !closed.get()) {
-                UnaryTransportFrame.TcpHead head =
-                        UnaryTransportFrame.readTcpHead(socket.getInputStream(), limits.maxPayloadBytes());
-                authenticate(head);
-                switch (head.kind()) {
-                    case REQUEST -> receiveRequest(head);
-                    case CANCEL -> receiveCancel(head.correlationId());
-                    case REPLY, ERROR -> throw new IOException(
-                            "client sent server-terminal unary frame");
+                try (ReadWindow frameRead = new ReadWindow(socket)) {
+                    UnaryTransportFrame.TcpHead head =
+                            UnaryTransportFrame.readTcpHead(socket.getInputStream(), limits.maxPayloadBytes());
+                    authenticate(head);
+                    switch (head.kind()) {
+                        case REQUEST -> receiveRequest(head, frameRead);
+                        case CANCEL -> {
+                            frameRead.close();
+                            receiveCancel(head.correlationId());
+                        }
+                        case REPLY, ERROR -> throw new IOException(
+                                "client sent server-terminal unary frame");
+                    }
                 }
             }
         }
@@ -368,7 +405,8 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             }
         }
 
-        private void receiveRequest(UnaryTransportFrame.TcpHead head) throws IOException {
+        private void receiveRequest(UnaryTransportFrame.TcpHead head,
+                                    ReadWindow frameRead) throws IOException {
             Pending admitted;
             synchronized (lock) {
                 requireOpen();
@@ -395,6 +433,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
 
             if (admitted == null) {
                 UnaryTransportFrame.discardTcpPayload(socket.getInputStream(), head);
+                frameRead.close();
                 writeNow(new UnaryTransportFrame.Envelope(
                         UnaryTransportFrame.Kind.ERROR,
                         sessionId, generation, head.correlationId(), new byte[0]));
@@ -404,6 +443,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             final UnaryTransportFrame.Envelope envelope;
             try {
                 envelope = UnaryTransportFrame.readTcpPayload(socket.getInputStream(), head);
+                frameRead.close();
             } catch (IOException failure) {
                 retireWithoutReply(admitted, true);
                 throw failure;
