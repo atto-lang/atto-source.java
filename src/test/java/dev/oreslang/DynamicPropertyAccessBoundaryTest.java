@@ -364,6 +364,27 @@ final class DynamicPropertyAccessBoundaryTest {
     }
 
     @Test
+    void inferredClassFieldsKeepOwnershipPrecisionAcrossDestructuringAndIndexing() {
+        accepted("""
+                define class Payload as
+                    pub val int value = 1;
+                end
+
+                define class Holder as
+                    pub val id = 7;
+                    pub val Payload payload = new Payload();
+                end
+
+                fnc read(Holder holder): int {
+                    const {id} = holder;
+                    const key = "id";
+                    const int indexed = holder[key];
+                    return id + indexed;
+                }
+                """);
+    }
+
+    @Test
     void genericInheritedFieldsPreserveComputedAccessSubstitution() {
         accepted("""
                 define class Parent<T> as
