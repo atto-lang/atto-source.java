@@ -90,3 +90,41 @@ this repository's explicit review policy; no such export was performed.
    mailbox ownership and dynamic dispatch never reselect at runtime.
 5. Execute the same test matrix under Maven/JDK25, GraalVM Native
    Image and supported LLVM guest method paths with exact-head CI logs.
+
+
+## Security/provenance hardening audit (2026-10-19, follow-up)
+
+A concrete forged-plan gap was discovered: the old `Plan` record
+constructor verified supplied expression-order indices but not a
+**bijection over raw source tokens**. A manually constructed plan could
+omit source-token index 0 and refer only to index 1, or assign the same
+raw item to both an omission and a supplied expression.
+
+The patched record now accounts for `provided expressions +
+explicit omissions`; their raw-source indexes must be an exact
+contiguous 0-based set, with each index present exactly once.
+Unprovided formals have raw index -1; expressions keep strictly
+increasing lexical source indices. The planner continues to be an
+**untrusted model** until a selected-callable ABI/type/effects proof
+attaches it to executable lowering.
+
+New JUnit regression sources exercise missing, duplicate, reused
+omission-token and valid mixed-provenance scenarios, and extend
+randomized checks to cover all raw call items, not merely expressions.
+
+Exact hashed model `40bd1c81b023b29d3b8853440d5c4dcb4a81fd21`
+was locally compiled on JDK21 and passed:
+- 45,000 deterministic baseline cases, 1,553 accepted, 11,710 checks;
+- 100,000 adversarial randomized cases, 2,864 accepted, 8,288 checks;
+- targeted forged-plan rejections and valid mixed omission scenarios.
+
+The separate overlap shim/model `d08e493c2dc9a3c268856799e381cb9a9279fe39`
+passed six isolated checks. These local runs do **not** execute the
+project JUnit suites, the parser/typechecker as a complete binary,
+JDK25/GraalVM Native Image or the LLVM backend.
+
+On this date, no private source transfer to a test org is allowed by
+protected `main`'s empty `.github/private-ci-approved-repositories.txt`
+file. Security draft #1326 is not merged and has no recorded approvals.
+Destination source-free canaries have also recently failed admission.
+No external source mirror and no cross-org exact-tree CI test occurred.
