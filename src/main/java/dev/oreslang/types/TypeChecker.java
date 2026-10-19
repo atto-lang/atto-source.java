@@ -133,6 +133,70 @@ public final class TypeChecker {
     }
 
     /**
+     * Expands compiler annotations and applies structural cleanup checks for
+     * proof-only Task transfer analysis. This does not enable Task lowering
+     * and deliberately does not suppress the ordinary execution gate.
+     */
+    public static Ast.Program prepareTaskAdmissionProgram(Ast.Program program) {
+        program = AnnotationExpander.expand(program);
+        ReturnCleanupChecker.check(program);
+        TypeChecker checker = new TypeChecker();
+        checker.validateImports(program);
+        checker.collect(program);
+        return program;
+    }
+
+    /**
+     * Resolve the exact transfer TypeRefs already minted by OwnershipChecker
+     * and apply the canonical detached Task semantic gate.
+     *
+     * <p>The same exact AST instance must be supplied: both ledgers are
+     * identity-bound. This method does not type-check Task bodies or enable
+     * execution; it is the semantic half of a future lowering admission
+     * bundle.</p>
+     */
+    public static TaskSemanticAdmission checkTaskTransferProvenance(
+            Ast.Program program,
+            TaskTransferProvenance provenance) {
+        if (program == null || provenance == null || !provenance.sealed()) {
+            throw new IllegalArgumentException(
+                    "Task semantic admission requires a program and sealed ownership provenance");
+        }
+        TypeChecker checker = new TypeChecker();
+        checker.validateImports(program);
+        checker.collect(program);
+
+        TaskSemanticAdmission semantic = new TaskSemanticAdmission();
+        provenance.forEachBoundary((boundary, transfers) -> {
+            ArrayList<TaskSemanticAdmission.Entry> entries =
+                    new ArrayList<>(transfers.size());
+            for (TaskTransferProvenance.Transfer transfer : transfers) {
+                Type resolved;
+                try {
+                    // No lexical generic/self context is guessed here. Such
+                    // transfers fail closed until the future full lowering
+                    // bridge supplies exact declaration context.
+                    resolved = checker.resolve(
+                            transfer.type(), Set.of(), null);
+                } catch (IllegalArgumentException failure) {
+                    throw new IllegalArgumentException(
+                            "Task transfer '" + transfer.name()
+                                    + "' cannot be resolved for semantic admission: "
+                                    + failure.getMessage(),
+                            failure);
+                }
+                checker.validateDetachedTaskType(
+                        resolved,
+                        "Task transfer '" + transfer.name() + "'");
+                entries.add(new TaskSemanticAdmission.Entry(
+                        transfer.name(), resolved));
+            }
+            semantic.record(boundary, entries);
+        });
+        return semantic.seal();
+    }
+
+    /**
      * Checked, public, explicitly imported class declarations supply field
      * signatures to this compilation unit without importing foreign bodies.
      * A missing linked signature must remain Unknown (and fail on arithmetic)
