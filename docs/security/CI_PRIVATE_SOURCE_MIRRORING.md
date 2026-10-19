@@ -29,9 +29,9 @@ directory, and a new isolated CI branch:
 ```bash
 scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
   --source-dir ./verified-source-tree \
-  --branch ci/oreslang-verified-20261013 \
+  --branch 'ci/oreslang-<exact 40-hex source commit>' \
   --expected-source-tree '<trusted full 40-hex Git tree SHA>' \
-  --expected-source-commit '<trusted immutable 40-hex source commit SHA>'
+  --expected-source-commit '<the same exact 40-hex source commit SHA>'
 ```
 
 A matching policy Git blob on `main` is not authorization by itself. The
@@ -105,7 +105,10 @@ authorization, not merely runtime metadata. Approving a destination alone does *
 authorize arbitrary private actor branches or source snapshots. The publisher
 checks this tuple before reading any source, validates its Git blob against
 the served bytes, and rechecks the approved tuple and unchanged policy SHA
-before each write. A missing, unmerged, altered, or revoked tuple denies
+before each write. The destination carrier must independently approve the
+same source commit/tree/source-repository-ID tuple in
+`.github/private-oreslang-approved-source-snapshots.txt` on protected carrier
+`main`; that carrier ledger is also revalidated before every Git write. A missing, unmerged, altered, or revoked tuple denies
 publication; authorization cannot come from the working PR branch.
 
 The source-snapshot ledger starts **empty**. To grant one approved run,
@@ -140,6 +143,12 @@ conversations, at least one approving reviewer, code-owner review,
 stale-review dismissal, no reviewer bypass allowances, and explicit denial of
 force pushes and branch deletion.
 Missing/denied GitHub protection responses fail closed **before reading source**.
+The carrier must also have a valid protected-main `.github/CODEOWNERS`.
+Its terminal rules must independently own the carrier source-approval ledger,
+the CODEOWNERS file itself, and all `.github/workflows/` definitions. The
+source-bearing branch name is fixed to `ci/oreslang-<full-source-commit-SHA>`,
+so carrier CI can bind the branch identity to its reviewed source tuple.
+
 The carrier must also have a valid protected-main `.github/CODEOWNERS` whose
 last two non-comment rules are exactly `/.github/CODEOWNERS @ORESoftware`
 and `/.github/workflows/ @ORESoftware`, in that order. The exporter
