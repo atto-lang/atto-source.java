@@ -15,6 +15,7 @@ import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.crypto.Mac;
@@ -182,39 +183,27 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         }
 
         synchronized (sendGate) {
-            // Correlation admission, dispatch commitment and TCP publication
-            // share one stream-order linearization point. Receipt lifetimes
-            // may overlap after send() returns, but accepted frames cannot be
-            // physically reordered by competing host sender threads.
-            CompletionStage<IpcReceiptCorrelation.Stage> outcome =
-                    receipts.admit(physicalOwner, message, physicalGeneration);
+            final IpcTransportSessionLease.AdmittedWrite admitted;
+            try {
+                admitted = sessionLease.admitAndCommitFrame(
+                        physicalGeneration, message);
+            } catch (IpcTransportSessionLease.PreDispatchRejectedException rejected) {
+                CompletionStage<IpcReceiptCorrelation.Stage> outcome =
+                        CompletableFuture.completedFuture(
+                                IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE)
+                                .minimalCompletionStage();
+                return new SendSubmission(outcome, rejected);
+            }
+
             Throwable failure = null;
             try {
-                sessionLease.writeFrame(
-                        physicalGeneration, message, preparedFrame);
-            } catch (IpcTransportSessionLease.PreDispatchRejectedException sendFailure) {
-                failure = sendFailure;
-                // The lease proves commitDispatch never succeeded, so the bound
-                // physical writer was never invoked and never-sent is authoritative.
-                try {
-                    receipts.rejectBeforeRemote(
-                            physicalOwner, message, physicalGeneration);
-                } catch (RuntimeException | Error cleanupFailure) {
-                    sendFailure.addSuppressed(cleanupFailure);
-                }
+                sessionLease.writeAdmittedFrame(admitted, preparedFrame);
             } catch (IOException | RuntimeException sendFailure) {
-                // Any ordinary failure after dispatch commitment is ambiguous.
-                // The lease requests close on bound-writer failure and never
-                // authorizes replay.
                 failure = sendFailure;
             } catch (Error fatalHostFailure) {
-                // Never convert VM/linkage/resource Errors into an ordinary
-                // application-visible send result. IpcTransportSessionLease
-                // has already released its write pin and requested close when
-                // the bound physical writer threw.
                 throw fatalHostFailure;
             }
-            return new SendSubmission(outcome, failure);
+            return new SendSubmission(admitted.outcome(), failure);
         }
     }
 
