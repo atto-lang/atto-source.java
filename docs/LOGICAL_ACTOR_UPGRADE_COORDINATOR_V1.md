@@ -483,3 +483,37 @@ test failure or prove Actions minutes were exhausted. Draft source CI
 publisher PR #954 and private transfer issue #962 remain under independent
 security review. Source `main` has **zero approved destination entries**;
 no cross-organization private source transfer was performed.
+
+## Compiler fingerprint preparation outside live route monitor — October 19, 2026
+
+The initial code/state/message-image publication witness sampled three
+compiler-owned digest accessors every time a supervisor called
+`publication()`, while holding `routeLock`. This made a high-frequency
+observer repeatedly execute compiler code inside the physical admission and
+upgrade publication monitor.
+
+The router now prepares a private immutable `ImageReceipts` triple
+(linked code SHA-256, persistent state-schema SHA-256 and message ABI
+SHA-256) immediately after linking each actor generation, **before**
+acquiring its actor route lease or attempting physical transfer.
+Every authoritative or quarantined `Route` carries that same prevalidated
+image triple. `supervisorPublication()` reads only immutable route metadata,
+not compiler callbacks, and obtains its bounded mailbox snapshot under the
+same ordered `routeLock -> mailbox` acquisition. No code-image receipt
+allocation is required in the narrow window between proxy epoch commit and
+authoritative physical route pointer publication.
+
+Existing real-source JUnit regressions `LogicalSourceActorImagePublicationTest`
+and `LogicalSourceActorProxyBridgeV1Test` now inspect code, state-schema,
+and message-contract digests during concurrent observation and compatible
+V1/V2 migration; the source tests remain unexecuted pending exact-head
+JDK25/Graal CI.
+
+**CI retry:** the existing source-owned `fast-ci` test job in workflow
+39312699087 was retried without exporting any source. GitHub accepted the
+rerun request, but the new test job 118266859038 still ended
+`failure` with `steps: null`. An inspected prior test job returned an
+empty step list, and its log download returned BlobNotFound. These are
+runner-admission failures/unknown reasons, **not** executable Maven/JUnit
+receipts or proof of a precise minutes shortage. Private mirroring remains
+blocked by the empty reviewed destination policy and security issue #962.
