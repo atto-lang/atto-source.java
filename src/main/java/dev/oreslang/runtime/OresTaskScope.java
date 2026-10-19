@@ -318,21 +318,30 @@ public final class OresTaskScope implements AutoCloseable {
         return owned;
     }
 
-    /** Package/runtime observation only; not a code-unload authority. */
+    /**
+     * One coherent, host-only observation of this subtree's physical owner
+     * slots. Each Task start and child-scope creation takes the shared tree
+     * admission gate BEFORE a per-scope gate. Hold that same gate throughout
+     * traversal: otherwise a new Task or descendant could be admitted after
+     * its parent was inspected, and an in-progress observer could incorrectly
+     * return true. This is still NOT code-unload authority: a successful
+     * observation by itself neither seals future admission nor authenticates
+     * the generation's external FFI/shared-memory pins.
+     */
     boolean physicallyQuiescent() {
-        ArrayDeque<OresTaskScope> pending = new ArrayDeque<>();
-        pending.add(this);
-        while (!pending.isEmpty()) {
-            OresTaskScope scope = pending.removeLast();
-            synchronized (scope.gate) {
-                // Successful physical exit prunes the slot. Any retained slot
-                // is either still executing or has a failed trusted retirement
-                // callback, neither of which is safe code-unload evidence.
-                if (!scope.tasks.isEmpty()) return false;
-                pending.addAll(scope.childScopes);
+        synchronized (treeAdmissionGate) {
+            ArrayDeque<OresTaskScope> pending = new ArrayDeque<>();
+            pending.add(this);
+            while (!pending.isEmpty()) {
+                OresTaskScope scope = pending.removeLast();
+                synchronized (scope.gate) {
+                    // Failed trusted physical retirement retains its slot.
+                    if (!scope.tasks.isEmpty()) return false;
+                    pending.addAll(scope.childScopes);
+                }
             }
+            return true;
         }
-        return true;
     }
 
     int retainedChildScopesForTesting() {
