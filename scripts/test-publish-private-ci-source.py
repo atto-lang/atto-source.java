@@ -768,6 +768,23 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                     self.root, self.expected_source_tree(), 1286, A)
                 self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
+    def test_unavailable_source_branch_protection_api_blocks_before_source_read(self):
+        # Default Actions GITHUB_TOKEN usually cannot read /protection.
+        # An API 403 is a denial, never permission to skip branch security.
+        pinned = self.expected_source_tree()
+        def protected_api_unavailable(route, method="GET", payload=None):
+            if route == (f"repos/{pub.TRUSTED_SOURCE_REPOSITORY}"
+                         f"/branches/{pub.TRUSTED_SOURCE_REF}/protection"):
+                raise pub.Denied("authenticated GitHub API request failed")
+            return self.fake_api(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=protected_api_unavailable):
+            with patch.object(pub, "collect_source",
+                              side_effect=AssertionError("source read")):
+                with self.assertRaisesRegex(pub.Denied, "GitHub API request failed"):
+                    pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                self.root, pinned, 1286, A)
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
     def test_unprotected_source_main_cannot_authorize_any_export(self):
         self.main_is_protected = False
         pinned = self.expected_source_tree()
@@ -1093,6 +1110,43 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test",
                             self.root, pinned, 1286, A)
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_unavailable_destination_branch_protection_api_blocks_first_blob(self):
+        # An unreadable destination branch protection policy may not be
+        # interpreted as a reviewed workflow baseline.
+        def protected_api_unavailable(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/branches/main/protection":
+                raise pub.Denied("authenticated GitHub API request failed")
+            return self.fake_api(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=protected_api_unavailable):
+            with self.assertRaisesRegex(pub.Denied, "GitHub API request failed"):
+                self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_destination_branch_protection_api_revoked_mid_upload(self):
+        # Revocation after the first blob must stop the NEXT source write,
+        # not merely deny creation of the final CI branch reference.
+        (self.source / "extra.ores").write_text("additional private test source")
+        original = self.fake_api
+        permission_revoked = False
+        def protected_api_revoked(route, method="GET", payload=None):
+            nonlocal permission_revoked
+            if (permission_revoked and
+                    route == "repos/trusted/ci/branches/main/protection"):
+                raise pub.Denied("authenticated GitHub API request failed")
+            result = original(route, method, payload)
+            if method == "POST" and route == "repos/trusted/ci/git/blobs":
+                permission_revoked = True
+            return result
+        with patch.object(pub, "gh_api", side_effect=protected_api_revoked):
+            with self.assertRaisesRegex(pub.Denied, "GitHub API request failed"):
+                self.publish()
+        blob_posts = [route for method, route, _ in self.route_calls
+                      if method == "POST" and route.endswith("/git/blobs")]
+        self.assertEqual(len(blob_posts), 1)
+        self.assertFalse(any(route.endswith(("/git/trees", "/git/commits", "/git/refs"))
+                             and method == "POST"
+                             for method, route, _ in self.route_calls))
 
     def test_unprotected_destination_rejected_before_private_bytes(self):
         self.dest_protected = False
