@@ -3,4 +3,4 @@
 # Each approved entry must be security-reviewed on protected source main.
 # Format: <source commit> <source root tree> <destination repo ID> <carrier main commit> <carrier root tree>
 # Carrier pins force fresh source-side approval whenever carrier code/workflows change.
-ad431c1d583e7af6f4d7f5bcdc0fdda3bf80ed56 caaf753223df9119d302c1fda752ad83fd9de865 1323679401 7c62699ad271ee501caf294c8814971ebc4bb2fd a8019c6162d742ed526aaebb7e365511644ed9fc
+93af0d505541853b4fac01577bf41fc4d722cc20 ba670027d35024cf829e8d9f30c719f6b4d65efe 1323679401 7c62699ad271ee501caf294c8814971ebc4bb2fd a8019c6162d742ed526aaebb7e365511644ed9fc
