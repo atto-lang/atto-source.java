@@ -2235,6 +2235,9 @@ public final class TypeChecker {
                 requireAssignable(index, Primitive.INT, "array/list index");
                 if (receiver instanceof ListType list) targetType = list.element();
                 else if (receiver instanceof Tuple tuple) {
+                    if (tuple.kind() == Types.TupleKind.TUPLE) {
+                        throw new IllegalArgumentException("tuple indexed assignment requires mutable fixed storage");
+                    }
                     // Constant reads preserve individual slot types, so
                     // writes must retain the same invariant.
                     Long constant = constantTupleIndex(indexed.index());
