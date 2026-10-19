@@ -1,6 +1,7 @@
 package dev.oreslang.types;
 
-import java.util.HashSet;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Objects;
 import java.util.Set;
 
@@ -55,7 +56,7 @@ public final class ThreadSafetyTraits {
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(trait, "trait");
         Objects.requireNonNull(nominalProof, "nominalProof");
-        return has(type, trait, nominalProof, new HashSet<>(), 0);
+        return has(type, trait, nominalProof, Collections.newSetFromMap(new IdentityHashMap<>()), 0);
     }
 
     private static boolean has(Type type, Trait trait, NominalProof nominalProof, Set<Type> visiting, int depth) {
