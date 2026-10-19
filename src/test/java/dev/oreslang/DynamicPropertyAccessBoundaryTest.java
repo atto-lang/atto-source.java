@@ -150,7 +150,7 @@ final class DynamicPropertyAccessBoundaryTest {
 
                 fnc record_copy(): int {
                     const row = record{x: 7, box: new Box()};
-                    const key = "x";
+                    const string key = "x";
                     return row[key];
                 }
                 """);
@@ -227,6 +227,18 @@ final class DynamicPropertyAccessBoundaryTest {
                     return;
                 }
                 """);
+        accepted("""
+                define class Secret as
+                    private val int hidden = 1;
+                    pub val int shown = 2;
+                end
+
+                fnc good(): int {
+                    const Secret secret = new Secret();
+                    const string key = "shown";
+                    return secret[key];
+                }
+                """);
         rejected("""
                 define class Mixed as
                     pub let int mutable = 1;
@@ -258,8 +270,9 @@ final class DynamicPropertyAccessBoundaryTest {
         accepted("""
                 fnc good(): bool {
                     val state = struct{score: int, ready: bool}{score: 1};
-                    state["ready"] = true;
-                    return state["ready"];
+                    const string key = "ready";
+                    state[key] = true;
+                    return state[key];
                 }
                 """);
         rejected("""
