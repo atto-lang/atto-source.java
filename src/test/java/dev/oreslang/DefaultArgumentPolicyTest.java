@@ -196,6 +196,57 @@ final class DefaultArgumentPolicyTest {
     }
 
     @Test
+    void defaultedScalarCanBeOmittedBeforeRequiredNamedArgument() {
+        var shapes = dev.oreslang.types.OptionalCallShapeBinder.defaultedParameterShapes(
+                List.of(
+                        Formal.checked(OptionFormalPresencePolicy.Formal.value("a"),
+                                ScalarType.INT, List.of()),
+                        checked(OptionFormalPresencePolicy.Formal.value("port"),
+                                ScalarType.INT, Literal.integer(5432)),
+                        Formal.checked(OptionFormalPresencePolicy.Formal.value("enabled"),
+                                ScalarType.BOOL, List.of())
+                ), NEXT);
+        var plan = dev.oreslang.types.OptionalCallShapeBinder.bind(
+                shapes, List.of(
+                        dev.oreslang.types.OptionalCallShapeBinder.Argument.named("a"),
+                        dev.oreslang.types.OptionalCallShapeBinder.Argument.named("enabled")));
+        assertEquals(List.of(0, -1, 1), plan.sourceIndexByParameter());
+        assertEquals(3, plan.declaredArity());
+    }
+
+    @Test
+    void defaultedScalarExpandsEffectiveArityCollisionRange() {
+        var shortSig = dev.oreslang.types.OptionalCallShapeBinder.defaultedParameterShapes(
+                List.of(Formal.checked(OptionFormalPresencePolicy.Formal.value("id"),
+                        ScalarType.INT, List.of())), NEXT);
+        var longSig = dev.oreslang.types.OptionalCallShapeBinder.defaultedParameterShapes(
+                List.of(
+                        Formal.checked(OptionFormalPresencePolicy.Formal.value("id"),
+                                ScalarType.INT, List.of()),
+                        checked(OptionFormalPresencePolicy.Formal.value("retry"),
+                                ScalarType.INT, Literal.integer(3))
+                ), NEXT);
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.OptionalCallShapeBinder
+                        .requireNonOverlappingOptionalArityIntervals(
+                                List.of(shortSig, longSig)));
+    }
+
+    @Test
+    void defaultedOptionPreservesAnnotationOnConstructorParameter() {
+        var formals = dev.oreslang.types.OptionalCallShapeBinder.defaultedParameterShapes(
+                List.of(
+                        Formal.checked(OptionFormalPresencePolicy.Formal.value("id"),
+                                ScalarType.INT, List.of()),
+                        checked(OptionFormalPresencePolicy.Formal.option("label"),
+                                ScalarType.STRING, Literal.string("untitled"))
+                ), NEXT);
+        var plan = dev.oreslang.types.OptionalCallShapeBinder.bind(
+                formals, List.of(dev.oreslang.types.OptionalCallShapeBinder.Argument.named("id")));
+        assertEquals(List.of(0, -1), plan.sourceIndexByParameter());
+    }
+
+    @Test
     void defaultWitnessCannotBeForgedAsProvidedValue() {
         assertThrows(IllegalArgumentException.class,
                 () -> new DefaultArgumentPolicy.Decision(Lowering.DEFAULT_SCALAR, null));
