@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.NamedCallBindingPlan;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
@@ -52,6 +53,30 @@ final class NamedCallTrailingClosureSyntaxTest {
         assertNull(callback.label());
         assertTrue(callback.trailingClosure());
         assertInstanceOf(Ast.LambdaExpr.class, callback.value());
+    }
+
+    @Test
+    void parsedComputeShapeBindsOnlyToTheRemainingFinalFncFormal() {
+        Ast.StagedCallExpr call = assertInstanceOf(Ast.StagedCallExpr.class,
+                firstExpression("""
+                        group.compute(
+                            layout: #aosoa,
+                            region: motion,
+                            fnc(chunk) { return; }
+                        )
+                        """));
+        var formals = java.util.List.of(
+                new Ast.Param(Ast.TypeRef.simple("Region"), "region"),
+                new Ast.Param(Ast.TypeRef.simple("Symbol"), "layout"),
+                new Ast.Param(
+                        Ast.TypeRef.functionType(
+                                java.util.List.of(Ast.TypeRef.simple("Chunk")),
+                                Ast.TypeRef.simple("void")),
+                        "body"));
+        NamedCallBindingPlan.Plan plan =
+                NamedCallBindingPlan.bindRequired(formals, call.arguments());
+        assertEquals(java.util.List.of(1, 0, 2), plan.formalIndexBySourceItem());
+        assertEquals(2, plan.trailingClosureFormalIndex());
     }
 
     @Test
