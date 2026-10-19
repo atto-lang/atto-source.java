@@ -156,10 +156,11 @@ final class ActorGroupColumnarEpochTest {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
             ActorRuntime.ActorRef<Tick> actor = runtime.spawnShared(() -> (tick, context) -> { });
             group.join(actor, group.joinCapability());
-            assertThrows(IllegalArgumentException.class, () -> group.requestDoubleEpoch(
+            var failed = group.requestDoubleEpoch(
                     List.of(actor), id -> {
                         throw new IllegalArgumentException("failed to build request");
-                    }, List.of("value")));
+                    }, List.of("value"));
+            assertTrue(failed.completion().isCompletedExceptionally());
             var next = group.beginDoubleEpoch(List.of("value"));
             assertFalse(next.completion().isDone());
             group.close();
