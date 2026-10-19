@@ -5915,6 +5915,12 @@ public final class TypeChecker {
 
     private void requireRuntimeReifiableType(Ast.TypeRef ref, String operator) {
         if (ref == null) throw new IllegalArgumentException(operator + " requires a runtime-reifiable type");
+        // No runtime checked dyn casts or tests until nominal witness tables
+        // and generation-aware identity checks are implemented.
+        if (containsDynTypeRef(ref)) {
+            throw new IllegalArgumentException(operator
+                    + " cannot test or construct a dyn interface view at runtime");
+        }
         if (ref.isComplement()) {
             requireRuntimeReifiableType(ref.complementedType(), operator);
             return;
