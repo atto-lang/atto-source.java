@@ -16,6 +16,8 @@ import subprocess
 import sys
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
+POLICY_ENTRY = re.compile(
+    r"^([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*)@([1-9][0-9]*)$")
 BRANCH = re.compile(r"^ci/oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}$")
 SHA = re.compile(r"^[a-f0-9]{40}$")
 MAX_FILES = 1024
@@ -59,13 +61,19 @@ def gh_api(route, method="GET", payload=None):
     return data
 
 
-def checked_repo(repository):
+def checked_repo(repository, expected_id):
     result = gh_api("repos/" + repository)
-    if (not isinstance(result.get("full_name"), str)
+    actual_id = result.get("id")
+    if isinstance(actual_id, bool) or not isinstance(actual_id, (int, str)):
+        raise Denied("destination repository ID is missing or invalid")
+    actual_id = str(actual_id)
+    if (not actual_id.isdigit() or actual_id == "0"
+            or actual_id != expected_id
+            or not isinstance(result.get("full_name"), str)
             or result["full_name"].casefold() != repository.casefold()
             or result.get("visibility") != "private"
             or result.get("private") is not True):
-        raise Denied("destination identity or private visibility changed")
+        raise Denied("destination identity, immutable ID, or private visibility changed")
     return result
 
 
@@ -80,14 +88,14 @@ def require_preflight(repository, root):
         raise Denied("destination policy check unavailable") from exc
     if p.returncode != 0:
         raise Denied("destination not approved by checked-in private policy")
-    checked_repo(repository)
 
 
 def checked_policy_fingerprint(root, repository):
-    """Read approval only through directory descriptors and O_NOFOLLOW.
+    """Read and bind approval to one immutable GitHub repository ID.
 
-    A pathname symlink check followed by read_bytes() can be raced: the
-    unapproved file can briefly be replaced with an approved symlink.
+    The policy is opened descriptor-relative with O_NOFOLLOW to resist
+    symlink/ancestor swaps. Every active row is owner/repo@numeric-id; duplicate
+    repository names, CRLF, malformed UTF-8, or a changed ID fail closed.
     """
     if (not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW")
             or not hasattr(os, "O_NONBLOCK")):
@@ -109,7 +117,8 @@ def checked_policy_fingerprint(root, repository):
                 with stream:
                     details = os.fstat(stream.fileno())
                     if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
-                        raise Denied("private CI approval policy is not a regular single-link file")
+                        raise Denied(
+                            "private CI approval policy is not a regular single-link file")
                     contents = stream.read(16 * 1024 + 1)
             finally:
                 os.close(policy_dir_fd)
@@ -117,23 +126,35 @@ def checked_policy_fingerprint(root, repository):
             os.close(root_fd)
     except OSError as exc:
         raise Denied("private CI approval policy cannot be opened safely") from exc
+
     if len(contents) > 16 * 1024:
         raise Denied("private CI approval policy exceeds size limit")
+    if b"\r" in contents:
+        raise Denied("private CI approval policy must use LF line endings only")
     try:
-        lines = contents.decode("utf-8").splitlines()
+        text = contents.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise Denied("private CI approval policy cannot be decoded") from exc
-    approved = False
-    for line in lines:
+
+    expected_id = None
+    seen = set()
+    for line in text.splitlines():
         if not line or line.startswith("#"):
             continue
-        if not NAME.fullmatch(line):
+        match = POLICY_ENTRY.fullmatch(line)
+        if match is None:
             raise Denied("private CI approval policy contains an invalid entry")
-        if line.casefold() == repository.casefold():
-            approved = True
-    if not approved:
+        approved_repo, approved_id = match.groups()
+        key = approved_repo.casefold()
+        if key in seen:
+            raise Denied("private CI approval policy contains a duplicate destination")
+        seen.add(key)
+        if key == repository.casefold():
+            expected_id = approved_id
+
+    if expected_id is None:
         raise Denied("destination approval was revoked or absent")
-    return hashlib.sha256(contents).digest()
+    return hashlib.sha256(contents).digest(), expected_id
 
 def collect_source(root, trusted_root):
     """Snapshot regular files using descriptor-relative, no-follow traversal.
@@ -251,7 +272,8 @@ def publish(repository, source, branch, trusted_root):
         raise Denied("invalid destination or isolated CI branch name")
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
-    approved_policy = checked_policy_fingerprint(trusted_root, repository)
+    approved_policy, expected_id = checked_policy_fingerprint(
+        trusted_root, repository)
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
     try:
@@ -259,7 +281,7 @@ def publish(repository, source, branch, trusted_root):
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source, trusted_root)
-    base = checked_repo(repository)
+    base = checked_repo(repository, expected_id)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
         raise Denied("destination default branch is invalid")
@@ -268,9 +290,11 @@ def publish(repository, source, branch, trusted_root):
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
     def authorize_write():
-        if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
+        current_policy, current_id = checked_policy_fingerprint(
+            trusted_root, repository)
+        if current_policy != approved_policy or current_id != expected_id:
             raise Denied("private CI destination approval policy changed during transfer")
-        checked_repo(repository)
+        checked_repo(repository, expected_id)
 
     elements = []
     for rel, data, mode in files:
