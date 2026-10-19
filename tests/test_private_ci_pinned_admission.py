@@ -118,9 +118,6 @@ class Tests(unittest.TestCase):
         self.policy['unexpected']=True
         with self.assertRaisesRegex(g.AdmissionDenied,'schema'):self.verify()
 
-if __name__=='__main__':unittest.main()
-
-
 class SnapshotTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory()
@@ -134,11 +131,23 @@ class SnapshotTests(unittest.TestCase):
         self.listing=(b'100644 blob '+digest.encode()+b'\tsrc/a.ores\0')
 
     def fake_run(self,argv,**kwargs):
-        self.assertEqual(argv[-2:],['--','src'])
-        return type('Proc',(),{'returncode':0,'stdout':self.listing})()
+        if argv[-2:]==['--','src']:
+            return type('Proc',(),{'returncode':0,'stdout':self.listing})()
+        if argv[-3:]==['rev-parse','--verify',SRC+':src']:
+            return type('Proc',(),{'returncode':0,'stdout':('d'*40+'\\n').encode()})()
+        self.fail('unexpected Git command')
+
 
     def test_exact_source_blob_admitted(self):
-        self.assertTrue(g.verify_snapshot(self.root,self.src,[('a.ores',self.data,'100644')],SRC,run=self.fake_run))
+        self.assertEqual(g.verify_snapshot(self.root,self.src,[('a.ores',self.data,'100644')],SRC,run=self.fake_run),'d'*40)
+
+    def test_git_subtree_identity_missing_rejects_after_blob_comparison(self):
+        def cannot_resolve(argv, **kwargs):
+            if argv[-3:] == ['rev-parse','--verify',SRC+':src']:
+                return type('Proc',(),{'returncode':1,'stdout':b''})()
+            return self.fake_run(argv, **kwargs)
+        with self.assertRaisesRegex(g.AdmissionDenied,'subtree identity unavailable'):
+            g.verify_snapshot(self.root,self.src,[('a.ores',self.data,'100644')],SRC,run=cannot_resolve)
 
     def test_mutated_source_bytes_before_write_denied(self):
         with self.assertRaisesRegex(g.AdmissionDenied,'bytes differ'):
@@ -148,3 +157,7 @@ class SnapshotTests(unittest.TestCase):
         for files in ([],[('evil.ores',self.data,'100644')],[('a.ores',self.data,'100755')]):
             with self.subTest(files=files),self.assertRaises(g.AdmissionDenied):
                 g.verify_snapshot(self.root,self.src,files,SRC,run=self.fake_run)
+
+
+if __name__ == '__main__':
+    unittest.main()
