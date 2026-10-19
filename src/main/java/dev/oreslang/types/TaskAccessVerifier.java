@@ -23,6 +23,8 @@ import java.util.Objects;
  * calling {@link #quiescent(Ticket)}.
  */
 final class TaskAccessVerifier {
+    private static final int MAX_LABEL_CHARS = 256;
+    private static final int MAX_PROJECTION_DEPTH = 64;
     public enum Mode { READ, WRITE }
 
     /**
@@ -34,6 +36,7 @@ final class TaskAccessVerifier {
                        boolean uniqueAllocationProven) {
         public Root {
             if (domain == null || domain.isBlank() || ownerId == null || ownerId.isBlank()
+                    || domain.length() > MAX_LABEL_CHARS || ownerId.length() > MAX_LABEL_CHARS
                     || allocationId <= 0 || generation <= 0) {
                 throw new IllegalArgumentException("invalid allocation provenance");
             }
@@ -61,7 +64,9 @@ final class TaskAccessVerifier {
     /** Verified inline field storage, not a pointer/FFI alias to arbitrary memory. */
     public record Field(String name, boolean disjointLayoutProven) implements Projection {
         public Field {
-            if (name == null || name.isBlank()) throw new IllegalArgumentException("empty field");
+            if (name == null || name.isBlank() || name.length() > MAX_LABEL_CHARS) {
+                throw new IllegalArgumentException("invalid field name");
+            }
         }
     }
 
@@ -78,7 +83,11 @@ final class TaskAccessVerifier {
     public record Place(Root root, List<Projection> projections) {
         public Place {
             Objects.requireNonNull(root, "root");
-            projections = List.copyOf(Objects.requireNonNull(projections, "projections"));
+            Objects.requireNonNull(projections, "projections");
+            if (projections.size() > MAX_PROJECTION_DEPTH) {
+                throw new IllegalArgumentException("Task place projection depth exceeded");
+            }
+            projections = List.copyOf(projections);
             if (projections.stream().anyMatch(Objects::isNull)) {
                 throw new IllegalArgumentException("null projection");
             }
