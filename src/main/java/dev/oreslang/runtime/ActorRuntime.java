@@ -6078,8 +6078,49 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    @SuppressWarnings("unchecked")
+    /**
+     * Runtime-minted LOCAL physical-message completion authority. Created
+     * before the physical mailbox accepts the message and linked to the
+     * actual accepted sequence under the same actor lifecycle monitor.
+     * Result cancellation is disabled. This is NOT a remote cryptographic
+     * mail.done signature or a durable exactly-once delivery record.
+     */
+    static final class PhysicalMailReceipt {
+        private final ActorRef<?> physical;
+        private final long acceptedSequence;
+        private final OresFuture<Void> terminal;
+
+        private PhysicalMailReceipt(
+                ActorRef<?> physical, long acceptedSequence,
+                OresFuture<Void> terminal) {
+            this.physical = physical;
+            this.acceptedSequence = acceptedSequence;
+            this.terminal = terminal;
+        }
+
+        ActorRef<?> physical() { return physical; }
+        long acceptedSequence() { return acceptedSequence; }
+        OresFuture<Void> terminal() { return terminal; }
+    }
+
+    /**
+     * Host/compiler-only tracked physical send. The returned terminal Future
+     * settles only after this exact accepted message is processed, or fails
+     * on actor teardown before processing. No guest may mint its sequence.
+     */
+    <M> PhysicalMailReceipt sendWithPhysicalReceipt(
+            ActorRef<M> ref, M message) {
+        requireSupervisorContext("issue physical actor mail receipt");
+        return sendInternal(ref, message, true);
+    }
+
     public <M> void send(ActorRef<M> ref, M message) {
+        sendInternal(ref, message, false);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <M> PhysicalMailReceipt sendInternal(
+            ActorRef<M> ref, M message, boolean tracked) {
         requireCallerRuntimeAffinity("send messages");
         if (currentActorKind() == ActorKind.UNTRUSTED) {
             throw new SecurityException("untrusted actors cannot send actor messages");
@@ -6161,6 +6202,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         ActorId sender = currentActorId().orElse(null);
         MessageEnvelope envelope = null;
+        PhysicalMailReceipt receipt = null;
         List<OresMutex.Shared<?>> sharedMutexReservations = List.of();
         boolean admitted = false;
         try {
@@ -6192,8 +6234,31 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     envelope = MessageEnvelope.message(
                             prepared, release, sender, sequence);
-                    if (!cell.mailbox.tryWrite(envelope)) {
-                        throw new ActorMailboxFullException(ref.id());
+                    ActorCell.DrainWaiter trackedWaiter = null;
+                    if (tracked) {
+                        if (cell.pendingDrains.size()
+                                >= ActorCell.MAX_PENDING_DRAIN_WAITERS)
+                            throw new ActorResourceExhaustedException(ref.id());
+                        // Reserve the receipt, Future and waiter before physical
+                        // acceptance. Register under lifecycleLock, remove if
+                        // transport admission rejects. Never allocate a
+                        // completion witness after an accepted send.
+                        OresFuture<Void> terminal =
+                                new OresFuture<>(() -> false, () -> { });
+                        receipt = new PhysicalMailReceipt(ref, sequence, terminal);
+                        trackedWaiter = new ActorCell.DrainWaiter(sequence, terminal);
+                        cell.pendingDrains.add(trackedWaiter);
+                    }
+                    boolean wrote = false;
+                    try {
+                        if (!cell.mailbox.tryWrite(envelope)) {
+                            throw new ActorMailboxFullException(ref.id());
+                        }
+                        wrote = true;
+                    } finally {
+                        if (!wrote && trackedWaiter != null) {
+                            cell.pendingDrains.remove(trackedWaiter);
+                        }
                     }
                     cell.nextUserMessageSequence = nextSequence;
                     mailboxSlotTransferred = true;
@@ -6212,6 +6277,7 @@ public final class ActorRuntime implements AutoCloseable {
         } finally {
             if (!mailboxSlotTransferred) cell.releaseMailboxSlot(false);
         }
+        return receipt;
     }
 
     /**
