@@ -319,3 +319,46 @@ remains open. The source-owned `ci` / `fast-ci` jobs still fail with no
 recorded execution steps. The authored tests are *not* claimed to have run.
 Do not export private source into another org without protected-source and
 reviewed immutable numeric-destination authorization.
+
+## Exact physical completion authority and credit refund — October 19, 2026
+
+A follow-up audit found the real SHARED proxy receipt checked outstanding
+envelope ownership under the mailbox lock, released that lock, then invoked
+the generic `complete(sequence)` ledger operation. That operation was not
+itself bound to the exact immutable envelope and prior physical send attempt.
+Even though the router also held its physical route monitor, the mailbox's
+credit-refund boundary was less strict than its runtime-issued exact terminal
+receipt.
+
+The router now consumes its runtime-minted exact physical terminal receipt and
+calls `completeAfterPhysicalReceipt(envelope, routeEpoch)`. Under one mailbox
+monitor this operation validates ALL of:
+- the current mailbox route epoch matches the physical accepted route;
+- this **same immutable Envelope object**, not just equal bytes/sequence, is
+  still outstanding in this mailbox;
+- the exact logical sequence has a recorded physical send attempt;
+- the existing bounded completion watermark/accounting checks all succeed.
+
+On refusal it refunds **no** credits and advances **no** watermark. The router
+consumes its one-use receipt before calling this operation; corruption or
+failure requires supervisor quarantine, not a speculative replay. The
+sequence-only `complete(sequence)` remains package-private for standalone
+mailbox unit models; production source actor acknowledgments use the stricter
+physical receipt method.
+
+The new `LogicalPhysicalCompletionAuthorityV1Test` adds three JUnit
+regressions: no-attempt refund refusal; copied/foreign envelope and wrong
+epoch refusal; and prevention of an old physical route's receipt refunding
+queued new-route mail after upgrade.
+
+**Evidence, carefully scoped:** an independent Java 21 oracle reflecting
+the receipt/epoch/credit synchronization contract compiled with
+`javac --release 21 -Xlint:all -Werror` and passed **910,000 isolated
+assertions**, including **5,000 two-thread duplicate-completion races**.
+It is not the production Oreslang class or JDK25/Graal runtime, so the new
+source JUnit tests remain **authored, not executed** pending CI capacity.
+
+No private cross-organization source mirror was made: the protected source
+authorization and immutable numeric-destination approval mandated by
+security issue #962 remain unresolved and the source main destination allowlist
+is empty. Keep the hot-reload PR draft and production support disabled.
