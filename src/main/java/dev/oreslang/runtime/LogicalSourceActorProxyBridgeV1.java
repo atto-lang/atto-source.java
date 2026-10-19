@@ -20,6 +20,9 @@ import java.util.concurrent.TimeoutException;
  */
 public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
     private final Object dispatchLock = new Object();
+    // Separate from dispatchLock: admission remains open while upgrading,
+    // but close must atomically seal admission before physical teardown.
+    private final Object admissionLock = new Object();
     private final LogicalSourceActorRouterV1 router;
     private final LogicalActorProxyMailboxV1 mailbox;
     private volatile boolean poisoned;
@@ -86,14 +89,17 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
      */
     public LogicalActorProxyMailboxV1.Envelope admitLong(long value) {
         requireHost();
-        if (closed || poisoned)
-            throw new IllegalStateException("logical proxy bridge is closed or fail-sealed");
-        byte[] bytes = new byte[Long.BYTES];
-        for (int i = Long.BYTES - 1; i >= 0; --i) {
-            bytes[i] = (byte) value;
-            value >>>= Byte.SIZE;
+        synchronized (admissionLock) {
+            if (closed || poisoned)
+                throw new IllegalStateException(
+                        "logical proxy bridge is closed or fail-sealed");
+            byte[] bytes = new byte[Long.BYTES];
+            for (int i = Long.BYTES - 1; i >= 0; --i) {
+                bytes[i] = (byte) value;
+                value >>>= Byte.SIZE;
+            }
+            return mailbox.admit(bytes);
         }
-        return mailbox.admit(bytes);
     }
 
     /**
@@ -200,15 +206,21 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
     @Override public void close() {
         requireHost();
         synchronized (dispatchLock) {
-            if (closed) return;
-            poisoned = true; // no new admission while physical teardown runs
-            try {
-                router.close();
-            } finally {
-                // The proxy ledger intentionally remains if teardown throws:
-                // an unretired code generation is not evidence of completion.
+            synchronized (admissionLock) {
+                if (closed) return;
+                // Admission succeeded at the proxy, so dropping these bytes
+                // on close would silently break the logical delivery contract.
+                // Require the supervisor to finish/reconcile every envelope.
+                if (mailbox.snapshot().retainedMessages() != 0) {
+                    throw new IllegalStateException(
+                            "cannot close bounded proxy with outstanding or queued mail");
+                }
                 closed = true;
+                poisoned = true;
             }
+            // If physical teardown fails, retain the proxy ledger for
+            // supervisor investigation. Do not assert completed actor cleanup.
+            router.close();
             mailbox.close();
         }
     }
