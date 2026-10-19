@@ -504,6 +504,62 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             check(expected.getMessage().contains("replayed/reordered"));
         }
 
+        // A valid-HMAC receipt from the prior physical connection is
+        // rejected when the replacement transport has a fresh binding, even
+        // if key, logical epoch and physical generation were otherwise reused.
+        byte[] reboundPayload = "rebound receipt".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var reboundMessage = envelope(1, "reboundReceipt", 3, 4, reboundPayload);
+        peerFailure.set(null);
+        try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress())) {
+            Thread peer = new Thread(() -> {
+                try (Socket accepted = server.accept()) {
+                    IpcAuthenticatedSocketTransport.readDataWireFrame(
+                            accepted.getInputStream());
+                    byte[] staleReceipt =
+                            IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                                    reboundMessage, 821,
+                                    IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED,
+                                    connectionBinding, key);
+                    IpcAuthenticatedSocketTransport.writeWireFrame(
+                            accepted.getOutputStream(), staleReceipt);
+                    while (accepted.getInputStream().read() != -1) { }
+                } catch (Throwable failure) {
+                    peerFailure.compareAndSet(null, failure);
+                }
+            }, "ipc-test-peer-rebound-receipt");
+            peer.start();
+
+            ExecutorService cleanup = Executors.newSingleThreadExecutor();
+            try (Socket client = new Socket(
+                    InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                client.setSoTimeout(3000);
+                var bridge = new IpcReceiptCompletionBridge(1);
+                var transport = new IpcAuthenticatedSocketTransport(
+                        client, bridge, reboundMessage, 821, 1, key,
+                        replacementBinding, cleanup::execute);
+                var submission = transport.send(reboundMessage, reboundPayload);
+                check(!submission.writeAttemptFailed());
+                try {
+                    transport.readVerifiedReceipt();
+                    throw new AssertionError(
+                            "prior-connection receipt binding authenticated");
+                } catch (IOException expected) {
+                    check(expected.getMessage().contains("connection binding"));
+                }
+                awaitPhase(transport, IpcTransportSessionLease.Phase.RETIRED);
+                check(submission.outcome().toCompletableFuture().join()
+                        == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+                check(bridge.invariant());
+            } finally {
+                cleanup.shutdownNow();
+                cleanup.awaitTermination(2, TimeUnit.SECONDS);
+            }
+            peer.join(3000);
+            check(!peer.isAlive());
+            check(peerFailure.get() == null);
+        }
+
         // Receipt framing has a small pre-authentication allocation cap.
         // A hostile length prefix must be rejected before attempting to
         // allocate/read the advertised body.
