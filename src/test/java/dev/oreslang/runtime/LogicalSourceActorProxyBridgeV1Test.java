@@ -248,6 +248,52 @@ final class LogicalSourceActorProxyBridgeV1Test {
     }
 
     @Test
+    void staleTaskScopeCannotRebindCapturedFrameToSuccessorActorGeneration()
+            throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit());
+             OresScheduler scheduler = new OresScheduler(1)) {
+            var first = manager.stageActorGeneration("epoch-scope-v1.ores", V1);
+            var candidate = manager.stageActorGeneration("epoch-scope-v2.ores", V2);
+            try (var bridge = LogicalSourceActorProxyBridgeV1.spawnShared(
+                    first, "Counter", WAIT, 2, 8, 16)) {
+                var old = bridge.childHostTaskScopeForUpgrade();
+                var oldGrandchild = old.childScope();
+                assertEquals(1L, bridge.address().routeEpoch());
+                assertTrue(bridge.upgradeTo(candidate, WAIT));
+                assertEquals(2L, bridge.address().routeEpoch());
+
+                var incorrectlyExecuted =
+                        new java.util.concurrent.atomic.AtomicBoolean();
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> old.start(scheduler, resume -> {
+                            incorrectlyExecuted.set(true);
+                            return OresScheduler.done(1);
+                        }));
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> oldGrandchild.start(scheduler, resume -> {
+                            incorrectlyExecuted.set(true);
+                            return OresScheduler.done(2);
+                        }));
+                assertFalse(incorrectlyExecuted.get(),
+                        "old TaskScope must not bind captured code to new actor");
+
+                // The logical supervisor is stable across publication and may
+                // mint a fresh child scope authenticated to the new epoch.
+                var next = bridge.childHostTaskScopeForUpgrade();
+                var result = next.start(scheduler,
+                        resume -> OresScheduler.done(3));
+                assertEquals(3, result.get(
+                        5, java.util.concurrent.TimeUnit.SECONDS));
+                next.close();
+                old.close();
+                assertTrue(old.physicallyQuiescent());
+                assertTrue(next.physicallyQuiescent());
+            }
+        }
+    }
+
+    @Test
     void deeplyNestedIdleTaskScopesDoNotOverflowHostStack() throws Exception {
         try (HotReloadManager manager = new HotReloadManager(
                 IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
