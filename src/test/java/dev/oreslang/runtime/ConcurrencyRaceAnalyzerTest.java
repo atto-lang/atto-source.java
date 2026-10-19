@@ -86,6 +86,36 @@ final class ConcurrencyRaceAnalyzerTest {
     }
 
     @Test
+    void reentrantLogicalOwnershipPublishesOnlyAfterFinalRelease() {
+        var checker = new ConcurrencyRaceAnalyzer();
+        checker.acquire("actor-a", "critical-state");
+        checker.acquire("actor-a", "critical-state"); // same owner is legal
+        checker.write("actor-a", "actor-state");
+        checker.release("actor-a", "critical-state");
+        assertThrows(IllegalStateException.class,
+                () -> checker.acquire("actor-b", "critical-state"));
+        assertThrows(IllegalStateException.class,
+                () -> checker.release("actor-b", "critical-state"));
+        checker.release("actor-a", "critical-state");
+        checker.acquire("actor-b", "critical-state");
+        checker.read("actor-b", "actor-state");
+        checker.release("actor-b", "critical-state");
+        assertEquals(0, checker.conflictCount());
+    }
+
+    @Test
+    void nestedOwnerDoesNotSuppressUnprotectedCompetingAccess() {
+        var checker = new ConcurrencyRaceAnalyzer();
+        checker.acquire("a", "critical-state");
+        checker.acquire("a", "critical-state");
+        checker.write("a", "actor-state");
+        checker.release("a", "critical-state");
+        checker.read("b", "actor-state"); // b never acquired mutex
+        assertEquals(1, checker.conflictCount());
+        checker.release("a", "critical-state");
+    }
+
+    @Test
     void consumedMessageTokenCannotBeReusedToForgeOrdering() {
         var checker = new ConcurrencyRaceAnalyzer();
         checker.send("a", "message-1");
