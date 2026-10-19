@@ -569,6 +569,68 @@ class CommittedSourceTreeTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "collected source"):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
 
+    def test_reviewed_main_file_blob_attestation_rejects_modifications(self):
+        import os
+        main_commit = self.git("rev-parse", "HEAD")
+        expected = pub.committed_main_file_blobs(self.root, main_commit)
+        self.assertEqual(set(expected), set(pub.TRUSTED_MAIN_FILES))
+        for name in pub.TRUSTED_MAIN_FILES:
+            with self.subTest(path=name):
+                item = self.root / name
+                original = item.read_bytes()
+                try:
+                    item.write_bytes(original + b"unreviewed mutation")
+                    with self.assertRaisesRegex(pub.Denied, "differs from reviewed main"):
+                        pub.check_main_file_bytes(self.root, expected)
+                finally:
+                    item.write_bytes(original)
+                pub.check_main_file_bytes(self.root, expected)
+        policy = self.root / ".github/private-ci-approved-repositories.txt"
+        self.git("update-index", "--skip-worktree",
+                 ".github/private-ci-approved-repositories.txt")
+        original = policy.read_bytes()
+        try:
+            policy.write_bytes(original + b"extra/ci\\n")
+            with self.assertRaises(pub.Denied):
+                pub.check_main_file_bytes(self.root, expected)
+        finally:
+            policy.write_bytes(original)
+            self.git("update-index", "--no-skip-worktree",
+                     ".github/private-ci-approved-repositories.txt")
+
+    def test_reviewed_main_file_link_and_git_environment_attacks(self):
+        import os
+        original = (self.root / "scripts/check-private-ci-destination.sh")
+        data = original.read_bytes()
+        expected = pub.committed_main_file_blobs(
+            self.root, self.git("rev-parse", "HEAD"))
+        outside = self.root / "outside-guard-snapshot"
+        outside.write_bytes(data)
+        original.unlink()
+        try:
+            original.symlink_to(outside)
+            with self.assertRaises(pub.Denied):
+                pub.check_main_file_bytes(self.root, expected)
+            original.unlink()
+            os.link(outside, original)
+            with self.assertRaises(pub.Denied):
+                pub.check_main_file_bytes(self.root, expected)
+        finally:
+            if original.exists() or original.is_symlink():
+                original.unlink()
+            original.write_bytes(data)
+            outside.unlink()
+        poison = {
+            "GIT_DIR": str(self.root / "nonexistent-poisoned-repo"),
+            "GIT_WORK_TREE": str(self.root / "untrusted-worktree"),
+            "GIT_INDEX_FILE": str(self.root / "untrusted-index"),
+        }
+        with patch.dict(os.environ, poison):
+            self.assertEqual(
+                pub.committed_main_file_blobs(
+                    self.root, self.git("rev-parse", "HEAD")),
+                expected)
+
     def test_snapshot_commit_binding_rejects_untrusted_main_or_dirty_bytes(self):
         # Source-free fixture: protect the policy from a PR-controlled checkout
         # and bind snapshot bytes to the immutable source commit Git tree.
