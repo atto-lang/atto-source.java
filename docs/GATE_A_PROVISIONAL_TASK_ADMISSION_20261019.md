@@ -11,7 +11,7 @@ Status: **draft** (2026-10-19); stacked on the currently updated Java guest scal
 5. The scheduler's `onQuiescent` invokes trusted code-image cleanup and settles the independent physical-exit Future. Cancelled result Futures are **not** physical completion evidence.
 6. `close()` snapshots both bound Tasks and unbound pending-frame reservations. Cancellation prevents new reservations but does not drop either type of join slot. The close barrier joins both groups and surfaces trusted release errors.
 
-The current host `submit(AsyncRuntime.Task)` is a separate path, still calling `submitTask` under `gate`; it requires equivalent provisional reservation before it can be considered a fully callback-safe API. Guest execution remains limited to immediate awaited scalar Task root entrypoint.
+The host `submit(AsyncRuntime.Task)` path now uses the same pending physical-join slot and dispatches outside `gate`. Its pre-bind reservation is retired only after the host Task's `getDone()` quiescence. `cancelWhen` also detaches discarded registration outside `gate`. Guest execution remains limited to immediate awaited scalar Task root entrypoint.
 
 ## Type proof rebase
 
@@ -25,11 +25,11 @@ The current host `submit(AsyncRuntime.Task)` is a separate path, still calling `
 ```sh
 mvn -B -Dores.runtime.carriers=java \
   -Dsurefire.failIfNoSpecifiedTests=true \
-  -Dtest=OresTaskScopeFrameTest,TaskTraitAdmissionHardeningTest,GuestScalarTaskAwaitTest,ScopedTaskTypeBridgeTest,TaskAccessVerifierTest \
+  -Dtest=OresTaskScopeFrameTest,OresTaskScopeTest,TaskTraitAdmissionHardeningTest,GuestScalarTaskAwaitTest,ScopedTaskTypeBridgeTest,TaskAccessVerifierTest \
   test
 ```
 
-The additions stress concurrent admitted/rejected compiler Task starts racing with scope close, physical code-image pin release, monitor-free rejection callbacks and nested NULL/record proof laundering. Run these against the **exact PR head**, not older green commits.
+The additions stress 64 compiler-frame admission/close races, 64 host-Task submission/close races, physical code-image pin release, monitor-free rejection callbacks and nested NULL/record proof laundering. Run these against the **exact PR head**, not older green commits.
 
 Independent **exact blob** `ThreadSafetyTraits.java` compiled under Java 21 `-Xlint:all -Werror` with `Types.java` and its focused Java host-contract harness, and printed `JAVA_SEND_SYNC_NULL_CONTRACT_PASS`. This **does not** count as Maven/JUnit, guest compiler or full JVM runtime execution.
 
@@ -37,7 +37,7 @@ Independent **exact blob** `ThreadSafetyTraits.java` compiled under Java 21 `-Xl
 
 - No parent-root cancellation-tree authority or guest owned/nontrivial aggregate Task frames yet.
 - No compiler-minted lifetime/borrow/region transfer token or awaited-code-generation lease integration for general Task tasks.
-- `OresTaskScope.submit` and `cancelWhen` retain older host callback boundary risks and require a separate audit.
+- `AsyncRuntime` uses interruptible virtual-thread compatibility carriers; these are not yet a compiler-verified M:N guest-Task cancellation ABI. A pre-bound scheduler submission can only replay cancellation when a handle becomes available. For arbitrary guest code, the safe-point continuation must carry this authority explicitly.
 - LLVM needs equivalent compiler/runtime cancellation + physically completed destructor/FFI/borrow proof, not just host Send/Sync shape-model tests.
 - Source Actions still produce no executed job steps, so exact-head Maven/JUnit execution has **not** been verified.
 - Cross-organization private Git-tree export remains disallowed until protected-source reviews, immutable snapshot and approved numeric destination source-mirror policy have been completed (Java #962, platform-conformance #69). An available private runner does not imply export authority.
