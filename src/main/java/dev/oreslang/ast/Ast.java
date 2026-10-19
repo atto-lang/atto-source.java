@@ -478,6 +478,22 @@ public final class Ast {
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
+
+            // Normalized-AST invariant: the instance receiver is represented
+            // only by explicitReceiverType (or implicitly by instance binding),
+            // never as a caller-visible parameter. Keeping this invariant here
+            // prevents parser/annotation/lowering regressions from silently
+            // changing name+arity overload identity.
+            if (isStatic && explicitReceiverType != null) {
+                throw new IllegalArgumentException(
+                        "static methods cannot carry an instance self receiver");
+            }
+            for (Param parameter : parameters) {
+                if (parameter.name().equals("self")) {
+                    throw new IllegalArgumentException(
+                            "method self receiver must be normalized out of caller-visible parameters");
+                }
+            }
         }
 
         /** Compatibility constructor for methods that do not use declaration-level structural matching. */
