@@ -158,102 +158,94 @@ public final class OresTaskScope implements AutoCloseable {
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(frame, "frame");
         Objects.requireNonNull(onPhysicalExit, "onPhysicalExit");
-        synchronized (treeAdmissionGate) {
-            synchronized (gate) {
-            try {
-                ensureAdmitting();
-            } catch (RuntimeException | Error rejectedByScope) {
-                try {
-                    onPhysicalExit.run();
-                } catch (RuntimeException | Error releaseFailure) {
-                    if (releaseFailure != rejectedByScope)
-                        rejectedByScope.addSuppressed(releaseFailure);
-                }
-                throw rejectedByScope;
-            }
 
-            OwnershipSlot slot = null;
-            OresFuture<Void> exited = null;
-            OresTask<T> child = null;
-            try {
-                // Every ownership object and callback registration is created
-                // before scheduler admission. In particular HashSet growth
-                // cannot strand an admitted actor/code-generation pin.
-                slot = new OwnershipSlot();
-                exited = new OresFuture<>();
-                child = new OresTask<>(exited);
-                slot.task = child;
-                if (!tasks.add(slot))
-                    throw new IllegalStateException("duplicate Task ownership slot");
-                OwnershipSlot owned = slot;
-                exited.whenCompleteRuntime((ignored, failure) -> {
-                    // A failed external generation/resource retirement must
-                    // remain owned so close() reports it instead of pruning it.
-                    if (failure == null) {
-                        synchronized (gate) {
-                            tasks.remove(owned);
-                        }
-                    }
-                });
-            } catch (RuntimeException | Error preparationFailure) {
-                discardUnadmittedSlot(slot, preparationFailure);
-                try {
-                    onPhysicalExit.run();
-                } catch (RuntimeException | Error releaseFailure) {
-                    if (releaseFailure != preparationFailure)
-                        preparationFailure.addSuppressed(releaseFailure);
-                }
-                throw preparationFailure;
-            }
-
-            final OwnershipSlot admittedSlot = slot;
-            final OresFuture<Void> exitFence = exited;
-            final OresTask<T> ownedChild = child;
-            final OresFuture<T> completion;
-            try {
-                completion = scheduler.start(frame, () -> {
-                    // The scheduler invokes this only after the final guest
-                    // carrier turn has physically unwound.
-                    try {
-                        onPhysicalExit.run();
-                        exitFence.completeFromRuntime(null);
-                    } catch (RuntimeException | Error failure) {
-                        exitFence.failFromRuntime(failure);
-                    }
-                });
-            } catch (RuntimeException | Error rejectedBeforeAdmission) {
-                discardUnadmittedSlot(admittedSlot, rejectedBeforeAdmission);
-                try {
-                    onPhysicalExit.run();
-                } catch (RuntimeException | Error releaseFailure) {
-                    if (releaseFailure != rejectedBeforeAdmission)
-                        rejectedBeforeAdmission.addSuppressed(releaseFailure);
-                }
-                throw rejectedBeforeAdmission;
-            }
-
-            // Preallocated handle publication is an allocation-free assignment.
-            ownedChild.attachCompletion(completion);
-            return ownedChild;
-        }
-        }
-    }
-
-    /**
-     * Best-effort cleanup for a Task that was provably never admitted.
-     * A fault-injected or corrupted owner Set may itself throw during remove.
-     * Preserve the original admission error, but never allow that secondary
-     * bookkeeping failure to skip release of a previously acquired image pin.
-     */
-    private void discardUnadmittedSlot(
-            OwnershipSlot slot, Throwable admissionFailure) {
-        if (slot == null) return;
+        // A provisional, fully observable physical lifetime is committed
+        // before executor admission. Never dispatch a Task while holding
+        // treeAdmissionGate or gate: scheduler/inline completion and external
+        // generation release callbacks can acquire unrelated host locks.
+        OresFuture<Void> preparedFence = null;
+        OresTask<T> preparedChild = null;
+        OwnershipSlot preparedSlot = null;
         try {
-            tasks.remove(slot);
-        } catch (RuntimeException | Error cleanupFailure) {
-            if (cleanupFailure != admissionFailure)
-                admissionFailure.addSuppressed(cleanupFailure);
+            final OresFuture<Void> fence = new OresFuture<>();
+            preparedFence = fence;
+            final OresTask<T> child = OresTask.provisional(fence);
+            preparedChild = child;
+            final OwnershipSlot slot = new OwnershipSlot();
+            preparedSlot = slot;
+            slot.task = child;
+            fence.whenCompleteRuntime((ignored, failure) -> {
+                // A failed code-image release cannot be treated as
+                // successful quiescence; retain the slot for close().
+                if (failure == null) {
+                    synchronized (gate) {
+                        tasks.remove(slot);
+                    }
+                }
+            });
+            synchronized (treeAdmissionGate) {
+                synchronized (gate) {
+                    ensureAdmitting();
+                    if (!tasks.add(slot))
+                        throw new IllegalStateException("duplicate Task ownership slot");
+                }
+            }
+        } catch (RuntimeException | Error rejectedBeforeReservation) {
+            // If an adversarial/fault-injection collection inserted and
+            // then threw, remove the provisional slot before publishing
+            // the failed admission fence. No guest work was admitted.
+            if (preparedSlot != null) {
+                synchronized (gate) {
+                    tasks.remove(preparedSlot);
+                }
+            }
+            try {
+                onPhysicalExit.run();
+                if (preparedFence != null)
+                    preparedFence.completeFromRuntime(null);
+            } catch (RuntimeException | Error releaseFailure) {
+                if (preparedFence != null)
+                    preparedFence.failFromRuntime(releaseFailure);
+                if (releaseFailure != rejectedBeforeReservation)
+                    rejectedBeforeReservation.addSuppressed(releaseFailure);
+            }
+            throw rejectedBeforeReservation;
         }
+        final OresFuture<Void> exitFence = preparedFence;
+        final OresTask<T> ownedChild = preparedChild;
+
+        final OresFuture<T> completion;
+        try {
+            completion = scheduler.start(frame, () -> {
+                // Physical exit, not Future cancellation, is the only
+                // authority to retire the child's code/resource lease.
+                try {
+                    onPhysicalExit.run();
+                    exitFence.completeFromRuntime(null);
+                } catch (RuntimeException | Error releaseFailure) {
+                    exitFence.failFromRuntime(releaseFailure);
+                }
+            });
+        } catch (RuntimeException | Error rejectedBeforeDispatch) {
+            // OresScheduler.start throws only before TaskRunner registration.
+            // Cancel/close may already be waiting on our provisional fence,
+            // so publish that no guest turn was ever admitted.
+            try {
+                onPhysicalExit.run();
+                exitFence.completeFromRuntime(null);
+            } catch (RuntimeException | Error releaseFailure) {
+                exitFence.failFromRuntime(releaseFailure);
+                if (releaseFailure != rejectedBeforeDispatch)
+                    rejectedBeforeDispatch.addSuppressed(releaseFailure);
+            }
+            throw rejectedBeforeDispatch;
+        }
+
+        // Cancellation may have sealed this parent while scheduler.start
+        // was pending. OresTask atomically publishes the completion and
+        // replays that cancellation without running observers under a lock.
+        ownedChild.attachCompletion(completion);
+        return ownedChild;
     }
 
     /** A discarded-handle Task is still owned and always reports failures. */
