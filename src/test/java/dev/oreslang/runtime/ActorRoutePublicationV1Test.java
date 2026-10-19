@@ -248,4 +248,38 @@ final class ActorRoutePublicationV1Test {
                     () -> newAuthority(gate, mailbox));
         }
     }
+    @Test
+    void candidateAuthorityLockExcludesConcurrentTeardownAtCommitPoint() throws Exception {
+        try (var gate = new ActorUpgradeEpochGate(48, image('a'));
+             var pool = Executors.newFixedThreadPool(2)) {
+            var candidate = gate.prepare(image('b'));
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var committing = pool.submit(() ->
+                    gate.withPreparedAuthority(candidate, () -> {
+                        entered.countDown();
+                        try {
+                            if (!release.await(5, TimeUnit.SECONDS))
+                                throw new AssertionError("test authority callback stalled");
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(e);
+                        }
+                        assertTrue(gate.ownsPrepared(candidate));
+                        return true;
+                    }));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            var teardown = pool.submit(gate::close);
+            try {
+                assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> teardown.get(50, TimeUnit.MILLISECONDS),
+                        "teardown must not invalidate a publication mid-CAS");
+            } finally {
+                release.countDown();
+            }
+            assertTrue(committing.get(5, TimeUnit.SECONDS));
+            teardown.get(5, TimeUnit.SECONDS);
+            assertTrue(gate.retired());
+        }
+    }
 }
