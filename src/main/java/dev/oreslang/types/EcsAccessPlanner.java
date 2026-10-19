@@ -44,6 +44,10 @@ public final class EcsAccessPlanner {
     public static boolean conflicts(SystemAccess left, SystemAccess right) {
         Objects.requireNonNull(left, "left");
         Objects.requireNonNull(right, "right");
+        // An empty access set is not evidence of purity: unmodeled I/O,
+        // atomics, globals or actor callbacks could still have side effects.
+        // Until an independent effects proof exists, serialize such systems.
+        if (left.accesses().isEmpty() || right.accesses().isEmpty()) return true;
         for (Access a : left.accesses()) {
             for (Access b : right.accesses()) {
                 if (a.mode() == Mode.READ && b.mode() == Mode.READ) continue;
