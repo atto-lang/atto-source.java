@@ -632,3 +632,36 @@ without serialization.
 Current Stage-2 JUnit inventory on this branch: 40 TaskHandleTest +
 17 TaskScopeTest source test methods. All require production JDK/GraalVM
 execution before being treated as passing integration regressions.
+
+
+## Cancellation-checkpoint stress additions
+
+Two source-level JUnit regressions were added to
+`TaskHandleTest` after the Task-domain and authenticated checkpoint audits:
+
+- `generatedLoopSafepointsStopPromptlyAndRunFinally` runs 100 iterations
+  of compiler-style loop polling, confirms `finally` and actor-independent
+  physical Task quiescence complete, and asserts a cancelled result.
+- `awaitProducerCompletionVersusCancellationNeverLeaksRegistration` races
+  Future completion with cooperative cancellation over 200 iterations,
+  checks that the borrowed producer is not cancelled, no attached Future
+  waiters are retained, and only a single resume can follow the initial
+  suspension.
+
+The test source also gained the required `AtomicReference` import.
+These tests are committed but **not yet executed** against full production
+OresScheduler/JDK25/GraalVM; they must run on the exact PR tree once
+CI is admitted to a runner.
+
+As supplemental evidence only, the existing *isolated* Java 21 models
+were rerun locally and passed: 2,800 authenticated-checkpoint model
+cases, 3,600 checkpoint/failure-ordering cases, and 6,000 Task-domain
+isolation cases (**12,400 total**). The model code is not the private
+production Java source, and a passing result does not certify the new
+JUnit tests.
+
+Latest fast-ci is again failing with **zero executed job steps**. Attempts
+to inspect organization Actions billing and runner policy through the
+connected GitHub interface are unsupported; no claim of verified minute
+exhaustion or successful cross-organization private source mirror is made.
+Security authorization issue #962 remains open.
