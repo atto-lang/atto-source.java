@@ -249,7 +249,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 ],
             }
         if route == ("repos/trusted/ci/rules/branches/"
-                     + TEST_BRANCH.replace("/", "%2F")):
+                     + TEST_BRANCH.replace("/", "%2F") + "?per_page=100&page=1"):
             return [
                 {"type": "update", "ruleset_id": 777,
                  "ruleset_source_type": "Repository",
@@ -2449,7 +2449,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     "trusted/ci", TEST_BRANCH, 777), 777)
             api.assert_called_once_with(
                 "repos/trusted/ci/rules/branches/"
-                + TEST_BRANCH.replace("/", "%2F"))
+                + TEST_BRANCH.replace("/", "%2F") + "?per_page=100&page=1")
 
         failures = []
         failures.append(valid[:1])
@@ -2479,12 +2479,62 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         pub.require_effective_carrier_source_rules(
                             "trusted/ci", TEST_BRANCH, 777)
 
+    def test_effective_rules_page_99_passes_and_full_100_denied(self):
+        baseline = [
+            {"type": "update", "ruleset_id": 777,
+             "ruleset_source_type": "Repository",
+             "ruleset_source": "trusted/ci",
+             "parameters": {"update_allows_fetch_and_merge": False}},
+            {"type": "deletion", "ruleset_id": 777,
+             "ruleset_source_type": "Repository",
+             "ruleset_source": "trusted/ci"}]
+        filler = [{"type": "required_linear_history"} for _ in range(97)]
+        with patch.object(pub, "gh_api", return_value=baseline + filler):
+            self.assertEqual(pub.require_effective_carrier_source_rules(
+                "trusted/ci", TEST_BRANCH, 777), 777)
+        with patch.object(pub, "gh_api", return_value=baseline + filler +
+                          [{"type": "required_linear_history"}]):
+            with self.assertRaisesRegex(pub.Denied, "incomplete"):
+                pub.require_effective_carrier_source_rules(
+                    "trusted/ci", TEST_BRANCH, 777)
+
+    def test_effective_rules_30_and_31_entries_are_complete(self):
+        baseline = [
+            {"type": "update", "ruleset_id": 777,
+             "ruleset_source_type": "Repository",
+             "ruleset_source": "trusted/ci",
+             "parameters": {"update_allows_fetch_and_merge": False}},
+            {"type": "deletion", "ruleset_id": 777,
+             "ruleset_source_type": "Repository",
+             "ruleset_source": "trusted/ci"}]
+        for count in (30, 31):
+            rules = baseline + [{"type": "required_linear_history"}] * (count - 2)
+            with self.subTest(count=count):
+                with patch.object(pub, "gh_api", return_value=rules) as api:
+                    self.assertEqual(pub.require_effective_carrier_source_rules(
+                        "trusted/ci", TEST_BRANCH, 777), 777)
+                    api.assert_called_once_with(
+                        "repos/trusted/ci/rules/branches/"
+                        + TEST_BRANCH.replace("/", "%2F") + "?per_page=100&page=1")
+
+    def test_effective_rules_strict_paginated_api_array_route(self):
+        exact = ("repos/trusted/ci/rules/branches/"
+                 + TEST_BRANCH.replace("/", "%2F") + "?per_page=100&page=1")
+        near_miss = ("repos/trusted/ci/rules/branches/"
+                     + TEST_BRANCH.replace("/", "%2F") + "?per_page=30&page=1")
+        def fake_run(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+        with patch.object(pub.subprocess, "run", side_effect=fake_run):
+            self.assertEqual(pub.gh_api(exact), [])
+            with self.assertRaisesRegex(pub.Denied, "unexpected GitHub response shape"):
+                pub.gh_api(near_miss)
+
     def test_effective_carrier_rules_rechecked_before_every_write(self):
         original = self.fake_api
         calls = {"effective": 0}
         effective_route = (
             "repos/trusted/ci/rules/branches/"
-            + TEST_BRANCH.replace("/", "%2F"))
+            + TEST_BRANCH.replace("/", "%2F") + "?per_page=100&page=1")
 
         def revoke_effective_rule(route, method="GET", payload=None):
             if route == effective_route:
@@ -2546,7 +2596,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         original = self.fake_api
         effective_route = (
             "repos/trusted/ci/rules/branches/"
-            + TEST_BRANCH.replace("/", "%2F"))
+            + TEST_BRANCH.replace("/", "%2F") + "?per_page=100&page=1")
 
         def block_creation(route, method="GET", payload=None):
             response = original(route, method, payload)
