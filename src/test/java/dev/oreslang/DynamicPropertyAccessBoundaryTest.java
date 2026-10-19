@@ -288,4 +288,124 @@ final class DynamicPropertyAccessBoundaryTest {
                 }
                 """);
     }
+
+    @Test
+    void namedConstKeysRemainExactAcrossOwnershipWithMoveOnlySiblingFields() {
+        accepted("""
+                define class Payload as
+                    pub val int value = 1;
+                end
+
+                fnc record_read(): int {
+                    const row = record{id: 1, payload: new Payload()};
+                    const key = "id";
+                    const int value = row[key];
+                    return value;
+                }
+
+                fnc tuple_read(): int {
+                    const row = tuple(1, new Payload());
+                    const index = 0;
+                    const int value = row[index];
+                    return value;
+                }
+
+                define class Holder as
+                    pub val int id = 1;
+                    pub val Payload payload = new Payload();
+                end
+
+                fnc class_read(): int {
+                    const Holder holder = new Holder();
+                    const key = "id";
+                    const int value = holder[key];
+                    return value;
+                }
+                """);
+    }
+
+    @Test
+    void computedWritesCannotEscalateReadOnlyBindingAuthority() {
+        rejected("""
+                fnc bad(): void {
+                    const Point point = infer<Point> struct{x: 1, y: 2};
+                    point["x"] = 3;
+                    return;
+                }
+                """);
+        rejected("""
+                define class MutablePoint as
+                    pub let int x = 1;
+                end
+
+                fnc bad(): void {
+                    const MutablePoint point = new MutablePoint();
+                    point["x"] = 3;
+                    return;
+                }
+                """);
+    }
+
+    @Test
+    void exactKeysDoNotInheritDynamicVisibilityOrDomainAmbiguity() {
+        accepted("""
+                define class Secret as
+                    private val int hidden = 1;
+                    pub val int shown = 2;
+                end
+
+                fnc good(): int {
+                    const Secret secret = new Secret();
+                    return secret["shown"];
+                }
+                """);
+        rejected("""
+                define class Secret as
+                    private val int hidden = 1;
+                    pub val int shown = 2;
+                end
+
+                fnc bad(): int {
+                    const Secret secret = new Secret();
+                    return secret["hidden"];
+                }
+                """);
+        rejected("""
+                fnc bad(): void {
+                    const row = record{x: 1};
+                    const value = row[0];
+                    return;
+                }
+                """);
+        rejected("""
+                fnc bad(): void {
+                    const pair = tuple(1, 2);
+                    const value = pair["0"];
+                    return;
+                }
+                """);
+        rejected("""
+                fnc bad(): void {
+                    const row = record{x: 1};
+                    const value = row["missing"];
+                    return;
+                }
+                """);
+        rejected("""
+                fnc bad(): void {
+                    const pair = tuple(1, 2);
+                    const value = pair[-1];
+                    return;
+                }
+                """);
+        rejected("""
+                fnc bad(): void {
+                    const pair = tuple(1, 2);
+                    const index = 2;
+                    const value = pair[index];
+                    return;
+                }
+                """);
+    }
+
 }
