@@ -49,3 +49,36 @@ The existing security policy explicitly states the main allowlist is empty and p
 - Runtime cancellation links do not expose lateral actor cancellation authority.
 - Owner transition and \`get_done()\` timing are proven under real Java and LLVM continuation lowering.
 - Security reviewer verifies provenance/mirror controls before any private cross-org source transfer.
+
+
+## Fatal callback revocation-barrier hardening — October 18
+
+**Reproduced against the original exact Java source:** a trusted
+`onRevoke` callback throwing `LinkageError` interrupted the cancellation
+batch before remaining revokers were delivered and before
+`revocationComplete` was published. Original and late `onCancel`
+observers could then remain pending indefinitely.
+
+**Correction in this branch:** retain and rethrow the first fatal
+`VirtualMachineError`, `ThreadDeath`, or `LinkageError`, but continue
+delivering other admitted revokers/observers and publish the revocation
+barrier first. The iterative thread-local dispatcher also drains
+previously queued nested cancellation batches rather than dropping them
+when a preceding callback reports a fatal Error. Ordinary nonfatal
+callback failures retain the existing best-effort suppression policy.
+Under catastrophic VM exhaustion, successful cleanup cannot be
+guaranteed; this is not a global recovery claim.
+
+Two new committed JUnit regressions cover a fatal revoker and a nested
+fatal observer; **17** stage-1 JUnit methods are now present. A
+source-local Java 21 test harness using the exact original file reproduced
+`revoked=0 observed=0 lateObserved=0`; the patched source reported
+`revoked=1 observed=1 lateObserved=1`. In the same host harness, **2,400**
+normal and nested-cancellation test cases passed. This is direct
+primitive-level validation, not Graal/Maven/JUnit execution against the
+complete OresVM scheduler.
+
+Both the stage-1 and the stacked stage-2 draft branches contain matching
+semantic fixes and regressions; rebase stage 2 onto the reviewed stage-1
+head before merging. Source Actions and private-source export restrictions
+remain unchanged.
