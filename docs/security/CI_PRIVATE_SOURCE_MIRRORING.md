@@ -56,10 +56,15 @@ caller-chosen GitHub CLI configuration roots, inherited HTTP(S)/SOCKS proxy
 variables, and custom TLS trust-bundle variables from child-process
 environments. In particular, an attacker-supplied `HTTPS_PROXY`,
 `GH_CONFIG_DIR`, or `SSL_CERT_FILE` cannot redirect authenticated repository
-metadata checks or private Git blob requests. The publisher resolves child
-executables from system directories. These checks mitigate ambient environment
-injection; the invoking runner/host, system trust store and system executable
-directories must themselves be trusted. Networks requiring an explicit proxy
+metadata checks or private Git blob requests. For each authenticated `gh api` request, it also creates an ephemeral
+private HOME/XDG configuration root, preventing an inherited `HOME` from
+selecting a caller-controlled `~/.config/gh/hosts.yml` credential profile.
+The temporary root is cleaned up even on request failure. GitHub CLI must
+authenticate through noninteractive runner-supplied credentials; an interactive
+or HOME-backed CLI login is no longer sufficient.
+The publisher resolves child executables from system directories. These checks
+mitigate ambient environment injection; the invoking runner/host, system
+trust store and system executable directories must themselves be trusted. Networks requiring an explicit proxy
 must establish a separately reviewed, trusted egress design rather than
 passing unreviewed environment overrides. Do not execute the transfer from
 an untrusted PR-controlled environment.
