@@ -57,6 +57,22 @@ final class TaskSpawnSendAdmissionTest {
     }
 
     @Test
+    void builtinOptionAndResultValuesTransferByOwnership() {
+        assertDoesNotThrow(() -> verify("""
+            pub fnc main(Option<int> optional): void {
+                do nb { stdio.stdout.log(optional); };
+                return;
+            }
+            """));
+        assertDoesNotThrow(() -> verify("""
+            pub fnc main(Result<int, string> result): void {
+                do task { stdio.stdout.log(result); };
+                return;
+            }
+            """));
+    }
+
+    @Test
     void rawPointersAndNativeHandlesCannotBeMovedToTask() {
         for (String type : new String[]{"RawPointer<int>", "NativeHandle<int>", "FfiHandle<int>"}) {
             reject("pub fnc main(" + type + " handle): void {"
