@@ -135,6 +135,37 @@ final class StructuredComputeSyntaxTest {
     }
 
     @Test
+    void rejectsForgedAstNodesThatBypassSourceParserShapeChecks() {
+        Ast.NameExpr fn = new Ast.NameExpr("invoke");
+        Ast.LiteralExpr one = new Ast.LiteralExpr(1L);
+        Ast.NamedArgumentExpr a = new Ast.NamedArgumentExpr("a", one);
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.CallExpr(fn, List.of(a, a)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.CallExpr(fn, List.of(a, one)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.CallExpr(fn, List.of(
+                        new Ast.SpreadExpr(new Ast.NameExpr("items")), a)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.NewExpr(Ast.TypeRef.simple("Box"), List.of(
+                        new Ast.SpreadExpr(new Ast.NameExpr("items")))));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.NewExpr(Ast.TypeRef.simple("Box"), List.of(a, a)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.NamedArgumentExpr("a",
+                        new Ast.SpreadExpr(new Ast.NameExpr("items"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.CompoundAssignExpr(one, "+", one));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.TypeSpecializationExpr(
+                        new Ast.CallExpr(fn, List.of()), List.of(Ast.TypeRef.simple("Motion"))));
+
+        Ast.CallExpr valid = assertDoesNotThrow(() -> new Ast.CallExpr(
+                fn, List.of(one, new Ast.NamedArgumentExpr("b", one))));
+        assertEquals(2, valid.arguments().size());
+    }
+
+    @Test
     void rejectsUnsupportedGuestLoweringBeforeNativeOrInterpreterCanRun() {
         assertTypeDenied("""
                 pub fnc target(int x): int { return x; }
