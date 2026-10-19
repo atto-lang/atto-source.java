@@ -379,6 +379,11 @@ public final class OptionalCallShapeBinder {
         Objects.requireNonNull(parameters, "parameters");
         for (Ast.Param formal : parameters) {
             Objects.requireNonNull(formal, "formal");
+            if (formal.hasDefault()) {
+                throw new IllegalArgumentException(
+                        "@Default annotation on formal '" + formal.name()
+                        + "' requires checked static-constant, presence and ABI lowering (not enabled)");
+            }
             if (formal.optional()) {
                 throw new IllegalArgumentException(
                         "T? optional formal '" + formal.name()
