@@ -83,6 +83,46 @@ final class ActorHotUpgradeHostCarrierIsolationTest {
     }
 
     @Test
+    void taskScopeOwnerCannotJoinChildrenFromActorOrMailmanCarrier()
+            throws Exception {
+        Method taskHost = ActorHotUpgradeTaskOwnerV1.class
+                .getDeclaredMethod("requireHost");
+        taskHost.setAccessible(true);
+        assertDoesNotThrow(() -> taskHost.invoke(null),
+                "ordinary supervisor remains authorized");
+
+        for (var marker : java.util.List.of(
+                marker(ActorRuntime.class, "ACTOR_CARRIER"),
+                marker(OresScheduler.class, "SCHEDULER_CARRIER"),
+                marker(AsyncRuntime.class, "ASYNC_CARRIER"))) {
+            Boolean prior = marker.get();
+            try {
+                marker.set(Boolean.TRUE);
+                var error = assertThrows(InvocationTargetException.class,
+                        () -> taskHost.invoke(null));
+                assertInstanceOf(SecurityException.class, error.getCause());
+            } finally {
+                if (prior == null) marker.remove();
+                else marker.set(prior);
+            }
+        }
+
+        ThreadLocal<Object> mailman = mailmanMarker();
+        Object prior = mailman.get();
+        try {
+            mailman.set(new Object());
+            assertTrue(ActorRuntime.inActorGroupMailmanExecution());
+            assertFalse(ActorRuntime.inActorExecution());
+            var error = assertThrows(InvocationTargetException.class,
+                    () -> taskHost.invoke(null));
+            assertInstanceOf(SecurityException.class, error.getCause());
+        } finally {
+            if (prior == null) mailman.remove();
+            else mailman.set(prior);
+        }
+    }
+
+    @Test
     void actorCarrierCannotReadOrReapLogicalRouteGeneration()
             throws Exception {
         String source = """
