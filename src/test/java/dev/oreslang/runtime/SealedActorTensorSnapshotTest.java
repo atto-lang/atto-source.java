@@ -52,6 +52,16 @@ final class SealedActorTensorSnapshotTest {
                                         0, revision, 7, 9, 1,
                                         new int[] {2, 2},
                                         new double[] {1, 2, 3}));
+                        IllegalArgumentException duplicateField = assertThrows(
+                                IllegalArgumentException.class,
+                                () -> state.prepareTensorPublication(
+                                        "weights", "version",
+                                        "version", "graph_id", "incarnation",
+                                        0, revision, 7, 9, 1,
+                                        new int[] {1},
+                                        new double[] {1}));
+                        assertEquals("ML_DUPLICATE_TENSOR_PUBLICATION_FIELD",
+                                duplicateField.getMessage());
                         assertThrows(IllegalArgumentException.class,
                                 () -> state.prepareTensorPublication(
                                         "weights", "version",
