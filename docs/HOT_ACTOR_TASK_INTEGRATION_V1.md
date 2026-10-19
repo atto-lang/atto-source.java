@@ -39,12 +39,11 @@ runtime without reviewing every concurrent change.
    Task/code/FFI/shared-region pin counters.
 5. `close` ABORTS code staging first and only then reopens the old mailbox.
    A failed code abort must leave DATA frozen and escalate; no false rollback.
-6. **There is deliberately no publish method on the joint preflight.** The
-   underlying generation gate and mailbox currently have separate epochs.
-   Independently committing them is non-atomic. Only a single authoritative
-   logical ActorRef publication transaction should commit image, validated
-   single `state {}`, route epoch, message watermark and active physical
-   actor as one indivisible decision, then retire old resource images.
+6. **The joint preflight exposes no guest/public publish method.** Its
+   package-private CONTROL commit hook now holds both generation and mailbox
+   monitors through a single authoritative route update. Legacy standalone
+   gate/ticket publications remain available to older host tests and MUST NOT
+   be invoked independently by a production router.
 
 ### Why the additional safety gates matter
 
@@ -67,11 +66,11 @@ runtime without reviewing every concurrent change.
    non-skipped counts for epoch, placement, Task bridge, joint preflight
    and bounded logical proxy tests. Infrastructure runs with zero steps are
    NOT passing evidence.
-2. Have **one CONTROL-owned route coordinator** enforce an atomic generation
-   and mailbox route cutover. Introduce a single route CAS or transaction
-   journal and recover safely after a post-CAS worker crash; do not expose
-   independent gate/ticket publication to guest code. Require authenticated
-   `mail.done` receipts and lossless bounded queued-message transfer.
+2. **Converge the two host-only route publication prototypes on one
+   production contract.** Finish a single route CAS plus crash-recovery
+   journal, real actor checkpoint/restore verification, authenticated
+   `mail.done` receipts, and lossless bounded queued-message transfer.
+   Never activate competing authorities together.
 3. Compiler-lower owned `suspends`/Task frames with typed actor state-loan,
    deadline and cancellation/FFI lease instrumentation. Keep ordinary
    `TaskExpr` fail-closed until all ownership and physical-exit tests pass.
@@ -86,11 +85,15 @@ runtime without reviewing every concurrent change.
 
 ### Security and testing
 
-The source remains inside its original PRIVATE GitHub repository. No
-cross-organization mirroring is authorized by this draft. Both production
-hot-reload and compiled guest Task execution remain disabled until trusted
-source-owner runner evidence, independent capability review, crash/fault
-injection and native backend parity are available. **No test receipt can be
+The source remains in its original PRIVATE GitHub repository unless its
+owner explicitly authorizes an access-controlled test-org mirror. Such a
+mirror must reproduce the **exact reviewed Git tree**, independently attest
+the original source head and tree, refuse public exposure or embedded tokens,
+and distinguish a mirror commit SHA from the source commit SHA. Merely copying
+a few test files is NOT whole-tree evidence. Both production hot-reload and
+compiled guest Task execution remain disabled until JUnit/guest execution,
+independent capability review, crash/fault injection and native backend
+parity are available. **No test receipt can be
 constructed from skipped Actions jobs.**
 
 ## Single-authority SHARED publication prototype (follow-up)
@@ -120,7 +123,7 @@ verified by a trusted worker before `complete` is called. The existing raw
 production caller MUST NOT bypass the coordinator and use them as a second
 source of routing truth.
 
-The ten `ActorRoutePublicationV1Test` cases cover atomic tuple observation,
+The nine `ActorRoutePublicationV1Test` cases cover atomic tuple observation,
 mail+Task drain, rollback/FIFO, schema and physical-route rejection, stale
 stage replay, authority loss, checkpoint immutability, concurrent admission,
 and protected-kind denial. These are **authored tests, not executed JUnit proof**.
@@ -131,3 +134,33 @@ checkpoint validation from a real `SourceActorTransfer`, candidate-ready
 attestation, and exact source actor retirement. The current host coordinator
 accepts these as trusted prerequisites and cannot independently verify them.
 PRIVATE/UNTRUSTED remain fail-closed. No production switch is enabled.
+
+
+## Concurrent CONTROL publication prototype reconciliation (2026-10-18)
+
+The integration branch now also carries `ActorUpgradeAtomicPublicationV1`
+and ten additional `ActorUpgradeAtomicPublicationV1Test` host JUnit cases.
+This path holds the generation **and** mailbox locks during its single
+immutable route/state/physical/watermark swap, and requires both subordinate
+epochs to agree with the authoritative record before any DATA dispatch. It
+quarantines independent legacy gate/mailbox epoch changes, clones/bounds
+state bytes (1 MiB), and closes its subordinate gates on terminal shutdown.
+
+**These are two alternative experimental host models, not two production
+routers to be installed together**:
+
+- `ActorRoutePublicationV1` creates a distinct Task admission gate per
+  generation and retires the old one after route publication.
+- `ActorUpgradeAtomicPublicationV1` advances a single generation gate
+  under the combined lock while atomically updating route and mailbox epoch.
+
+The final design must choose one lifetime/retirement model, remove any
+conflicting production entrypoints, and prove reentrant callbacks, scheduler
+physical exits and crash recovery across that exact model. Neither prototype
+currently proves real source actor state reconstruction or authenticated
+physical-route identity. A returned delivery in the second prototype remains
+outstanding through send acceptance; an ambiguous send must never be
+requeued, and an untrusted completion cannot be treated as `mail.done`.
+
+CI requires both host JUnit suites with nonzero, non-skipped XML receipts,
+but the source runner has so far failed before execution. No pass is claimed.
