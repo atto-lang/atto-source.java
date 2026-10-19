@@ -50,6 +50,7 @@ actors publish scalar copies; this API does not expose their heap pointers.
 - Exactly one contribution per selected actor, one aggregate completion future.
 - Empty selected sets return an immediately completed, zero-row snapshot.
 - One active epoch per group; completion or failure permits a later epoch.
+  Aborting an incomplete epoch drops its column buffers promptly.
 - Any selected member leaving, terminating, or group closure aborts the epoch.
 - The collected snapshot has immutable member/field metadata; `column(...)`
   returns a defensive copy. Mutating the returned array cannot change it.
@@ -57,8 +58,9 @@ actors publish scalar copies; this API does not expose their heap pointers.
   not stitch together separately-owned actor-private SoA data by reference.
 - Results are bound to the epoch ID, not the current group member count.
 - Dispatch through `ActorRef.send` is **not atomic fanout**. If one send
-  rejects, the collector fails and previously accepted actor messages are
-  not retracted; actors must make commands idempotent as required.
+  rejects, the returned epoch has a failed Future, and previously accepted
+  actor messages are not retracted; actors must make commands idempotent as
+  required. Fatal JVM Errors may still propagate immediately.
 - Aggregate completion proves each actor called `publishDoubleEpoch`, not
   that all effects were transactionally committed or that a remote message
   was durably delivered.
