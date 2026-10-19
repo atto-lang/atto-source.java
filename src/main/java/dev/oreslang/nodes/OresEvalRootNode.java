@@ -4658,7 +4658,7 @@ public final class OresEvalRootNode extends RootNode {
                 object.fields.put(fieldName, value);
                 return value;
             }
-            if (receiver instanceof LinkedHashMap<?, ?> rawStruct) {
+            if (receiver instanceof MutableStructValue rawStruct) {
                 if (!(key instanceof String fieldName)) {
                     throw new IllegalArgumentException(
                             "struct field index must be a String");
@@ -4721,7 +4721,7 @@ public final class OresEvalRootNode extends RootNode {
                     object.fields.put(member.member(), value);
                     return value;
                 }
-                if (receiver instanceof LinkedHashMap<?, ?> rawRecord) {
+                if (receiver instanceof MutableStructValue rawRecord) {
                     MutableStructValue record = rawRecord;
                     if (!record.containsKey(member.member())) {
                         throw new IllegalArgumentException(
@@ -6417,7 +6417,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     // Concrete inferred/explicit structs use this mutable owned-map path.
                     // Structural records use ReadonlyRecordValue and never reach it.
-                    if (receiver instanceof LinkedHashMap<?, ?> rawRecord) {
+                    if (receiver instanceof MutableStructValue rawRecord) {
                         @SuppressWarnings("unchecked")
                         LinkedHashMap<String, Object> record =
                                 (LinkedHashMap<String, Object>) rawRecord;
