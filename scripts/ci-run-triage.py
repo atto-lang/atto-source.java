@@ -154,6 +154,10 @@ def _classify_job(job, run, run_id=None):
             category = "reported_failure_execution_unobserved"
         else:
             category = "failure_without_completed_failing_step"
+    elif failed:
+        category = "success_with_reported_failing_step"
+    elif uncertain_failed_steps:
+        category = "success_with_unverified_step_failure"
     elif substantive_success:
         category = "executed_success"
     else:
@@ -195,6 +199,10 @@ def assess(run, jobs, expected_head_sha, run_id=None):
         category = "observed_no_step_failure"
     elif "reported_failure_execution_unobserved" in kinds:
         category = "reported_failure_execution_unobserved"
+    elif "success_with_reported_failing_step" in kinds:
+        category = "success_with_reported_failing_step"
+    elif "success_with_unverified_step_failure" in kinds:
+        category = "success_with_unverified_step_failure"
     elif "pending" in kinds:
         category = "pending"
     elif run["conclusion"] == "failure":
