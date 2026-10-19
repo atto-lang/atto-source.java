@@ -117,6 +117,26 @@ final class DynSendSyncConvergenceTest {
     }
 
     @Test
+    void malformedCompilerTypesNeverProduceTraitOrDetachedTaskProofs() {
+        for (Trait trait : Trait.values()) {
+            assertFalse(ThreadSafetyTraits.has(
+                    new Types.Named(null, List.of()), trait, PERMISSIVE_TRUSTED_CORE));
+            assertFalse(ThreadSafetyTraits.has(
+                    new Types.Named(" ", List.of()), trait, PERMISSIVE_TRUSTED_CORE));
+            assertFalse(ThreadSafetyTraits.has(
+                    new Types.StringLiteral(null), trait, PERMISSIVE_TRUSTED_CORE));
+            assertFalse(ThreadSafetyTraits.has(
+                    new Types.Record(Map.of("", Types.Primitive.INT)),
+                    trait, PERMISSIVE_TRUSTED_CORE));
+        }
+        Type malformed = new Types.Record(Map.of(" ", Types.Primitive.INT));
+        assertFalse(ThreadSafetyTraits.isOwnedSend(malformed, PERMISSIVE_TRUSTED_CORE));
+        assertFalse(ThreadSafetyTraits.isOwnedSend(
+                new Types.Named("Option", List.of(malformed)),
+                PERMISSIVE_TRUSTED_CORE));
+    }
+
+    @Test
     void ordinaryImmutableAndMovableValuesKeepTheirProvenTraits() {
         Type immutable = new Types.Record(
                 Map.of("count", Types.Primitive.INT), true);
