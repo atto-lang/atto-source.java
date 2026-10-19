@@ -29,6 +29,8 @@ final class TaskCancellation {
     private final Set<Registration> revokers = new LinkedHashSet<>();
     private final Set<Registration> observers = new LinkedHashSet<>();
     private TaskCancellation owner;
+    // Protected by GRAPH_LOCK: completed tokens must not regain authority.
+    private boolean retired;
     private volatile boolean cancelled;
     private volatile String cancellationReason;
     // Protected by GRAPH_LOCK: observers registered after the cancel decision
@@ -39,6 +41,7 @@ final class TaskCancellation {
 
     TaskCancellation child() {
         synchronized (GRAPH_LOCK) {
+            if (retired) throw new IllegalStateException("cannot spawn from retired authority");
             TaskCancellation child = new TaskCancellation();
             if (cancelled) {
                 child.cancellationReason = cancellationReason;
@@ -69,6 +72,8 @@ final class TaskCancellation {
     void retire() {
         List<Registration> detached = new ArrayList<>();
         synchronized (GRAPH_LOCK) {
+            if (retired) return;
+            retired = true;
             if (owner != null) owner.children.remove(this);
             owner = null;
             detached.addAll(revokers);
@@ -104,6 +109,8 @@ final class TaskCancellation {
     void adoptInto(TaskCancellation newOwner) {
         Objects.requireNonNull(newOwner, "newOwner");
         synchronized (GRAPH_LOCK) {
+            if (retired) throw new IllegalStateException("cannot transfer retired task");
+            if (newOwner.retired) throw new IllegalStateException("cannot adopt into retired owner");
             if (cancelled) throw new IllegalStateException("cannot transfer cancelled task");
             if (newOwner.cancelled) throw new IllegalStateException("cannot adopt into cancelled owner");
             if (owner == null) throw new IllegalStateException("cannot transfer a root authority");
@@ -129,7 +136,7 @@ final class TaskCancellation {
         List<TaskCancellation> marked = new ArrayList<>();
         List<Registration> revoke = new ArrayList<>();
         synchronized (GRAPH_LOCK) {
-            if (cancelled) return false;
+            if (retired || cancelled) return false;
             ArrayDeque<TaskCancellation> queue = new ArrayDeque<>();
             queue.addLast(this);
             while (!queue.isEmpty()) {
@@ -212,13 +219,18 @@ final class TaskCancellation {
         Objects.requireNonNull(hook, "hook");
         Registration registration = new Registration(this, hook, revoke);
         boolean deliver;
+        boolean discard;
         synchronized (GRAPH_LOCK) {
-            // During cancellation, new revokers execute immediately; new
-            // observers wait until the initial revoker batch completes.
-            deliver = cancelled && (revoke || revocationComplete);
-            if (!deliver) (revoke ? revokers : observers).add(registration);
+            // A completed task cannot accept new listeners that keep its
+            // captured actor/guest state alive indefinitely.
+            discard = retired;
+            deliver = !discard && cancelled && (revoke || revocationComplete);
+            if (!discard && !deliver) {
+                (revoke ? revokers : observers).add(registration);
+            }
         }
-        if (deliver) dispatch(registration::deliver);
+        if (discard) registration.close();
+        else if (deliver) dispatch(registration::deliver);
         return registration;
     }
 
