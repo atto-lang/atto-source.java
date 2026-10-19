@@ -151,6 +151,10 @@ public final class TypeChecker {
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
             String name = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
+            // Linked signatures must not bypass local-only default admission.
+            if (declaration != null) {
+                UnloweredDefaultArgValsGuard.rejectClass(declaration);
+            }
             if (name == null || declaration == null || !name.equals(declaration.name())
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("invalid linked public class: " + name);
