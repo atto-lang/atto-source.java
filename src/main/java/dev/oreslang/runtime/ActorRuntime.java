@@ -1828,18 +1828,31 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * A committed select cannot be rolled back by the ordinary cancellation
+     * predicate. When owner STOP prevents the winner's guest continuation,
+     * report an explicit incomplete-cleanup failure instead of leaving its
+     * tracked result pending indefinitely. No guest code executes here.
+     */
+    private void revokeOwnedFutureForStop(
+            ActorCell<?> cell, OresFuture<?> future) {
+        if (!future.cancel(false) && !future.isDone()) {
+            future.failOnOwnerStopIfPending(terminated(cell.ref));
+        }
+    }
+
     private boolean ownFuture(
             ActorCell<?> cell,
             OresFuture<?> future) {
         if (cell.stopped.get() || cell.finalized || closed.get()) {
-            future.cancel(false);
+            revokeOwnedFutureForStop(cell, future);
             return false;
         }
 
         cell.pendingOperations.add(future);
         if (cell.stopped.get() || cell.finalized || closed.get()) {
             cell.pendingOperations.remove(future);
-            future.cancel(false);
+            revokeOwnedFutureForStop(cell, future);
             return false;
         }
 
@@ -7714,7 +7727,9 @@ public final class ActorRuntime implements AutoCloseable {
 
             // Cancellation removes channel/select waiter registrations before
             // any future channel activity can revive work for this dead actor.
-            for (OresFuture<?> future : pending) future.cancel(false);
+            for (OresFuture<?> future : pending) {
+                revokeOwnedFutureForStop(this, future);
+            }
 
             for (ActorCell<?> child : descendants) {
                 child.cancel(new ActorCancelledException(
