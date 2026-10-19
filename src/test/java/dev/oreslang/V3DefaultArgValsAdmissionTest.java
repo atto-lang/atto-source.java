@@ -56,7 +56,8 @@ final class V3DefaultArgValsAdmissionTest {
         assertEquals("int", formal.type().arguments().getFirst().name());
         assertFalse(formal.optional());
         assertFalse(formal.argumentOmittable());
-        assertEquals("Option", formal.calleeType().name());
+        assertTrue(formal.calleeType().isStagedV3Option());
+        assertEquals("Option", formal.calleeType().stagedV3PreviewType().name());
         assertTrue(formal.valueType().isStagedV3Option());
         assertFalse(OptionalCallShapeBinder.stagedV3ParameterShapes(
                 List.of(formal), List.of()).getFirst().optional());
@@ -390,7 +391,8 @@ final class V3DefaultArgValsAdmissionTest {
         Ast.TypeRef staged = Ast.TypeRef.stagedV3Option(Ast.TypeRef.simple("int"));
         Ast.Param p = new Ast.Param(staged, "value");
         assertTrue(p.type().containsStagedV3Option());
-        assertEquals("Option", p.calleeType().name()); // Preview only
+        assertTrue(p.calleeType().isStagedV3Option()); // No ABI normalization
+        assertEquals("Option", p.calleeType().stagedV3PreviewType().name()); // Preview only
         assertThrows(IllegalArgumentException.class,
                 () -> OptionalCallShapeBinder.requireNoUnloweredOptionalFormals(List.of(p)));
         assertThrows(IllegalArgumentException.class,
