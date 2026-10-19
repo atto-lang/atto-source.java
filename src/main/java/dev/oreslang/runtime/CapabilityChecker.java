@@ -359,9 +359,17 @@ public final class CapabilityChecker {
     }
 
     private void checkExpr(Ast.Expr expr, IsolatePolicy policy) {
-        if (expr instanceof Ast.StagedCallExpr || expr instanceof Ast.StagedNewExpr) {
+        if (expr instanceof Ast.StagedCallExpr staged) {
+            Ast.CheckedNamedCallPlan.require(staged);
+            checkExpr(staged.callee(), policy);
+            for (Ast.CallArgument argument : staged.arguments()) {
+                checkExpr(argument.value(), policy);
+            }
+            return;
+        }
+        if (expr instanceof Ast.StagedNewExpr) {
             throw new SecurityException(
-                    "staged named/trailing-closure calls require checked lowering before capability admission");
+                    "named constructor/actor calls require checked lowering before capability admission");
         }
         if (expr instanceof Ast.TypeExpr) {
             throw new SecurityException(
