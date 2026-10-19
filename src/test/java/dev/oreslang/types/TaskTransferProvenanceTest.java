@@ -60,7 +60,7 @@ final class TaskTransferProvenanceTest {
         // Proofs are tied to the exact checked AST node, never merely to an
         // equal-looking boundary manufactured by a later/untrusted phase.
         Ast.TaskBlockStmt lookalike =
-                new Ast.TaskBlockStmt(boundary.body(), boundary.discard());
+                new Ast.TaskBlockStmt(boundary.body());
         assertTrue(provenance.transfersFor(lookalike).isEmpty());
     }
 
