@@ -193,6 +193,41 @@ final class UntrustedActorTest {
     }
 
     @Test
+    void sourceUntrustedActorCannotUseSelfSendAsIpc() {
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.check(Parser.parse("""
+                        define untrusted actor Worker as
+                          receive(ActorMail<int> mail): void {
+                            self.send(1);
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(denied.getMessage().contains("untrusted actors cannot send actor messages"),
+                denied.getMessage());
+    }
+
+    @Test
+    void sourceUntrustedActorCannotInvokeActorRefSendAsIpc() {
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.check(Parser.parse("""
+                        define actor Endpoint as
+                          receive(ActorMail<int> mail): void { return; }
+                        end
+
+                        define untrusted actor Worker as
+                          receive(ActorMail<int> mail): void {
+                            val target = spawn Endpoint();
+                            target.send(1);
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(denied.getMessage().contains("untrusted actors cannot send actor messages"),
+                denied.getMessage());
+    }
+
+    @Test
     void untrustedActorCannotUseActorMessagingAsIpc() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
             var ref = runtime.<String>spawnUntrusted(context ->

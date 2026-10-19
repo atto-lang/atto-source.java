@@ -2736,6 +2736,10 @@ public final class TypeChecker {
                                         + " does not accept call-site type arguments");
                     }
                     if (member.member().equals("send")) {
+                        if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                            throw new IllegalArgumentException(
+                                    "untrusted actors cannot send actor messages, including self.send");
+                        }
                         if (call.arguments().size() != 1) {
                             throw new IllegalArgumentException(
                                     "self.send expects exactly one outbound value");
@@ -2794,6 +2798,10 @@ public final class TypeChecker {
                     }
                     return switch (member.member()) {
                         case "send" -> {
+                            if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                                throw new IllegalArgumentException(
+                                        "untrusted actors cannot send actor messages through ActorRef");
+                            }
                             if (call.arguments().size() != 1) {
                                 throw new IllegalArgumentException(
                                         "ActorRef.send expects exactly one mailbox value");
@@ -5070,6 +5078,13 @@ public final class TypeChecker {
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
         }
         if (named.name().equals("ActorRef")) {
+            // The runtime's rejectUntrustedInboundCapabilities rejects live
+            // ActorRef values before accepting UNTRUSTED mailbox messages.
+            // Enforce the same rule statically, including nested containers.
+            if (actorKind == Ast.ActorKind.UNTRUSTED) {
+                throw new IllegalArgumentException(
+                        where + " cannot transport ActorRef to an untrusted actor; untrusted mailboxes are data-only");
+            }
             // ActorRef is a sealed, generation-bound routing capability, not
             // an ordinary nominal object or an automatically Send/Sync value.
             // Runtime transport enforces actor-runtime ownership and epoch.
