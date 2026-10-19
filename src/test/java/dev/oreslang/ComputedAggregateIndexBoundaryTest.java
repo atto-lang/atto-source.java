@@ -207,4 +207,41 @@ final class ComputedAggregateIndexBoundaryTest {
                 }
                 """);
     }
+
+    @Test
+    void shortTupleAliasesCannotShadowExistingTypesOrDriftTheirShape() {
+        denied("""
+                define class Pair as
+                    pub val int x = 1;
+                end
+                fnc bad(): void {
+                    const Pair p = tuple(1, 2);
+                    return;
+                }
+                """);
+        denied("""
+                fnc bad(): void {
+                    const Pair first = tuple(1, "second");
+                    const Pair second = tuple(1, 2);
+                    return;
+                }
+                """);
+        denied("""
+                fnc bad(): void {
+                    val Pair p = tuple(1, 2);
+                    return;
+                }
+                """);
+        accepted("""
+                fnc first(): string {
+                    const Pair p = tuple(1, "second");
+                    return p[1];
+                }
+                fnc second(): int {
+                    const Pair p = tuple(1, 2);
+                    return p[1];
+                }
+                """);
+    }
+
 }
