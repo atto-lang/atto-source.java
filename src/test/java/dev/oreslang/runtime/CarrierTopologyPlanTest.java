@@ -72,4 +72,39 @@ class CarrierTopologyPlanTest {
             }
         }
     }
+    @Test void wraparoundAndGlobalSweepsNeverLoseOrDuplicateVictims() {
+        for (int workers = 2; workers <= 64; workers++) {
+            CarrierTopologyPlan.Location[] loc = new CarrierTopologyPlan.Location[workers];
+            for (int i = 0; i < workers; i++) {
+                loc[i] = new CarrierTopologyPlan.Location(i, i / 32, i / 4, i / 16);
+            }
+            var plan = new CarrierTopologyPlan(loc);
+            for (int thief = 0; thief < workers; thief++) {
+                for (int rotation : new int[]{
+                        Integer.MIN_VALUE, Integer.MIN_VALUE + 1, -1, 0, 1,
+                        Integer.MAX_VALUE - 1, Integer.MAX_VALUE
+                }) {
+                    boolean[] tierVisited = new boolean[workers];
+                    boolean[] globalVisited = new boolean[workers];
+                    for (int rank = 0; rank < workers - 1; rank++) {
+                        int tierVictim = plan.victimAt(thief, rank, rotation);
+                        int globalVictim = plan.globalVictimAt(thief, rank, rotation);
+                        assertNotEquals(thief, tierVictim);
+                        assertNotEquals(thief, globalVictim);
+                        assertFalse(tierVisited[tierVictim], "overflow repeated a local victim");
+                        assertFalse(globalVisited[globalVictim], "overflow repeated a global victim");
+                        tierVisited[tierVictim] = true;
+                        globalVisited[globalVictim] = true;
+                    }
+                    for (int i = 0; i < workers; i++) {
+                        if (i != thief) {
+                            assertTrue(tierVisited[i], "omitted a cache-tier victim");
+                            assertTrue(globalVisited[i], "omitted a global victim");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
 }
