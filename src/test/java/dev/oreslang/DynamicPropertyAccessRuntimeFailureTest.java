@@ -111,4 +111,49 @@ final class DynamicPropertyAccessRuntimeFailureTest {
                 """, "dynamic-class-write-missing-key.ores");
     }
 
+    @Test
+    void dynamicUnknownStructReadFailsAtRuntime() {
+        runtimeRejected("""
+                fnc selector(): string { return "missing"; }
+
+                pub fnc main(): void {
+                    val Point point = infer struct{x: 1, y: 2};
+                    const string key = selector();
+                    const int value = point[key];
+                    stdio.println(value);
+                    return;
+                }
+                """, "dynamic-struct-read-missing-key.ores");
+    }
+
+    @Test
+    void dynamicNegativeTupleIndexFailsAtRuntime() {
+        runtimeRejected("""
+                fnc selector(): int { return -1; }
+
+                pub fnc main(): void {
+                    const pair = tuple(1, 2);
+                    const int index = selector();
+                    const int value = pair[index];
+                    stdio.println(value);
+                    return;
+                }
+                """, "dynamic-tuple-negative-index.ores");
+    }
+
+    @Test
+    void dynamicTupleIndexOverflowFailsAtRuntime() {
+        runtimeRejected("""
+                fnc selector(): int { return 2147483648; }
+
+                pub fnc main(): void {
+                    const pair = tuple(1, 2);
+                    const int index = selector();
+                    const int value = pair[index];
+                    stdio.println(value);
+                    return;
+                }
+                """, "dynamic-tuple-index-overflow.ores");
+    }
+
 }
