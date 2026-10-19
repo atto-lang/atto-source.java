@@ -1374,6 +1374,10 @@ public final class TreeShaker {
                 else externalBindings.add(name.name());
                 return;
             }
+            if (expression instanceof Ast.TypeExpr typeExpression) {
+                scanType(typeExpression.type());
+                return;
+            }
             if (expression instanceof Ast.MemberExpr member) {
                 if (member.receiver() instanceof Ast.NameExpr namespace
                         && !locals.contains(namespace.name())) {
