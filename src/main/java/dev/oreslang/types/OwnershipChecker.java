@@ -890,6 +890,9 @@ public final class OwnershipChecker {
                 Origin.LOCAL);
         state.borrowSource = value.borrowSource;
         state.borrowLease = value.borrowLease;
+        if (binding.kind() == Ast.BindingKind.CONST) {
+            state.computedIndexConstant = directComputedIndexConstant(binding);
+        }
         scope.define(binding.name(), state);
     }
 
@@ -3506,10 +3509,11 @@ public final class OwnershipChecker {
         Ast.TypeRef concrete = receiverType.isBorrow()
                 ? receiverType.borrowedTarget() : receiverType;
 
+        Object constantIndex = computedIndexConstant(indexed.index(), scope);
+
         if (concrete.isClosedAggregateType()) {
             Map<String, Ast.TypeRef> members = concrete.aggregateMembers();
-            if (indexed.index() instanceof Ast.LiteralExpr literal
-                    && literal.value() instanceof String key) {
+            if (constantIndex instanceof String key) {
                 return members.getOrDefault(key, Ast.TypeRef.inferred());
             }
             if (members.isEmpty()) return Ast.TypeRef.inferred();
@@ -3517,8 +3521,7 @@ public final class OwnershipChecker {
         }
 
         if (concrete.isTupleType()) {
-            if (indexed.index() instanceof Ast.LiteralExpr literal
-                    && literal.value() instanceof Long raw
+            if (constantIndex instanceof Long raw
                     && raw >= 0 && raw < concrete.arguments().size()) {
                 return concrete.arguments().get(raw.intValue());
             }
@@ -3533,8 +3536,7 @@ public final class OwnershipChecker {
 
         Ast.ClassDecl klass = findClass(concrete.name());
         if (klass != null) {
-            if (indexed.index() instanceof Ast.LiteralExpr literal
-                    && literal.value() instanceof String key) {
+            if (constantIndex instanceof String key) {
                 ResolvedField target = findFieldTarget(
                         klass, concrete, key, new LinkedHashSet<>());
                 if (target == null) return Ast.TypeRef.inferred();
@@ -3826,6 +3828,46 @@ public final class OwnershipChecker {
         return Ast.TypeRef.inferred();
     }
 
+    /**
+     * Match TypeChecker's exact computed-index proofs without evaluating guest code.
+     * Integer const bindings retain literal precision even with an explicit type;
+     * string singleton precision is retained only for inferred const bindings.
+     */
+    private Object directComputedIndexConstant(Ast.BindingStmt binding) {
+        Ast.Expr initializer = binding.initializer();
+        if (initializer instanceof Ast.LiteralExpr literal) {
+            if (literal.value() instanceof Long value) return value;
+            if (binding.declaredType() == null && literal.value() instanceof String value) return value;
+        }
+        if (initializer instanceof Ast.UnaryExpr unary
+                && unary.operator().equals("-")
+                && unary.operand() instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long value
+                && value != Long.MIN_VALUE) {
+            return -value;
+        }
+        return null;
+    }
+
+    private Object computedIndexConstant(Ast.Expr expression, Scope scope) {
+        if (expression instanceof Ast.LiteralExpr literal
+                && (literal.value() instanceof String || literal.value() instanceof Long)) {
+            return literal.value();
+        }
+        if (expression instanceof Ast.UnaryExpr unary
+                && unary.operator().equals("-")
+                && unary.operand() instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long value
+                && value != Long.MIN_VALUE) {
+            return -value;
+        }
+        if (expression instanceof Ast.NameExpr name) {
+            VarState state = scope.lookup(name.name());
+            return state == null ? null : state.computedIndexConstant;
+        }
+        return null;
+    }
+
     private IllegalArgumentException error(String message) {
         return new IllegalArgumentException("Oreslang ownership error: " + message);
     }
@@ -3865,6 +3907,8 @@ public final class OwnershipChecker {
         /** Synthetic aggregate aliases, currently used by the implicit arguments tuple. */
         private List<VarState> aggregateSources = List.of();
         private String debugName = "<value>";
+        /** Literal key/index proven constant by the frontend ownership pass. */
+        private Object computedIndexConstant;
 
         private VarState(Ast.TypeRef type, boolean mutable, ValueKind kind, Origin origin) {
             this(type, mutable, mutable, kind, origin);
