@@ -95,7 +95,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                     accepted.setSoTimeout(3000);
                     byte[] wire = IpcAuthenticatedSocketTransport.readWireFrame(
                             accepted.getInputStream());
-                    var decoded = IpcAuthenticatedSocketTransport.decodeDataFrame(wire, key);
+                    var decoded = IpcAuthenticatedSocketTransport.decodeDataFrame(wire, message, 11, key);
                     check(decoded.envelope().equals(message));
                     check(decoded.physicalGeneration() == 11);
                     check(Arrays.equals(decoded.payload(), payload));
@@ -205,7 +205,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                     accepted.setSoTimeout(3000);
                     var data = IpcAuthenticatedSocketTransport.decodeDataFrame(
                             IpcAuthenticatedSocketTransport.readWireFrame(accepted.getInputStream()),
-                            key);
+                            maliciousMessage, 73, key);
                     check(data.envelope().equals(maliciousMessage));
                     byte[] malicious = peerLocalVerdictWithValidMac(
                             maliciousMessage,
@@ -367,7 +367,8 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             var submission = transport.send(quarantineMessage, quarantinePayload);
             check(!submission.writeAttemptFailed());
             var decoded = IpcAuthenticatedSocketTransport.decodeDataFrame(
-                    IpcAuthenticatedSocketTransport.readWireFrame(peer.getInputStream()), key);
+                    IpcAuthenticatedSocketTransport.readWireFrame(peer.getInputStream()),
+                    quarantineMessage, 89, key);
             check(decoded.physicalGeneration() == 89);
             transport.requestClose();
             check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.QUARANTINED);
