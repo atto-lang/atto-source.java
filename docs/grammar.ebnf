@@ -273,7 +273,7 @@ for_of_destructure_item
 for_of_rest_item= [ for_of_binding ] "..." IDENT ;
 loop_body       = block | "do" { statement } "done" ;
 expression      = assignment ;
-assignment      = conditional [ "=" assignment ] ;
+assignment      = conditional [ ( "=" | "+=" ) assignment ] ;
 conditional     = logic_or [ "?" assignment ":" conditional ] ;
 logic_or        = equality { "|" equality } ;
 equality        = comparison { ( "eq" | "neq" | "!eq" | "==" | "!=" | "is" ) comparison } ;
@@ -294,10 +294,16 @@ channel_expr    = [ channel_wait_mode ] "readch" unary
                 | [ channel_wait_mode ] "select" [ select_policy ] "from" unary ;
 channel_wait_mode
                 = "nb" | "try" ;
-postfix         = primary { call_suffix | member_suffix | index_suffix } ;
+postfix         = primary { call_suffix | generic_call_suffix | type_member_specialization | member_suffix | index_suffix } ;
 call_suffix     = "(" [ call_argument_list ] ")" ;
+generic_call_suffix = "<" [ type_ref { "," type_ref } ] ">" "(" [ call_argument_list ] ")" ;
+type_member_specialization = "<" type_ref { "," type_ref } ">" (* followed by "." member_suffix, not by "(" *) ;
 call_argument_list = call_argument { "," call_argument } ;
-call_argument   = [ "..." ] expression ;
+call_argument   = [ "..." ] expression | IDENT ":" expression ;
+(* Named arguments follow positional arguments; after the first label every
+   argument must be named. Mixing ...spread and named arguments is forbidden.
+   Calls with labels have AST identity but cannot execute until the compiler
+   binds formal slots and proves lexical evaluation order. *)
 member_suffix   = "." member_name ;
 member_name     = IDENT | "stop" | "do" | "done"
                 | "match" | "matches" | "eq" | "neq" | "is" | "when"
@@ -666,3 +672,9 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    rebinds before every test, including after continue. If bindings cover
    their predicate and remaining branch chain, but do not escape the if.
    See VALUE_BOUNDARIES.md for aggregate ordering and unsupported surfaces. *)
+
+(* Staged-only expressions (compiler must reject before execution):
+   - Region<Motion>.new(...): specialized nominal receiver, *not* generic new().
+   - foo(kernel: fnc (chunk) { ... }): named value callback.
+   - chunk.x += rhs: compound field update needs single-evaluation lvalue IR.
+   Lexer/parser AST admission is NOT guest runtime support. *)
