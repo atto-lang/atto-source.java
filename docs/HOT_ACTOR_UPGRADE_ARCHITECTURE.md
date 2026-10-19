@@ -1041,3 +1041,33 @@ allocates the lease before charging its counter; `ActorRouteLease.close()`
 checks the counter before consuming its release token. Failed pin accounting
 remains retryable. Dedicated generation race tests cover corrupted accounting,
 16 simultaneous releases, and concurrent code retirement.
+
+### Exact-receipt single-claim timeout hardening — 2026-10-19
+
+A follow-up audit found that `ProxyDrainReceipt.awaitAndComplete` previously
+marked its receipt consumed only **after** awaiting a successful physical
+terminal Future. The host bridge fail-sealed a failed wait, but a caller of
+the lower-level trusted router receipt could time out (or be interrupted)
+and then invoke the same receipt again after late physical completion.
+That crossed the quarantine boundary without a supervisor reconciliation.
+
+The receipt now obtains an exclusive one-shot claim under the physical
+`routeLock`, verifying active route identity, bound proxy mailbox, exact
+outstanding `Envelope`, and route epoch **before waiting**. That claim is
+never reset, including on timeout, interruption, terminal exception,
+route change, or mailbox completion rejection. The terminal wait stays
+outside the route lock; a successful wait revalidates publication and uses
+`completeAfterPhysicalReceipt` to refund credits once. A second caller
+fails immediately without waiting; no timeout/retry loop is permitted.
+
+A real source-compiled SHARED Counter regression was added with deliberate
+test-only replacement of its receipt's terminal observation Future. This
+makes a timeout deterministic without relying on guest scheduler timing
+and verifies: the original physical message was submitted, the timeout
+retains logical credits, reusing the same receipt is rejected even after
+the synthetic terminal settles, and replaying the physical send is rejected.
+The test is committed but **not confirmed executed by an exact-head
+JDK25/GraalVM Maven job**.
+
+This is a local in-process receipt safety property, not a remote
+authenticated `mail.done`, durable deduplication, or exactly-once effects.
