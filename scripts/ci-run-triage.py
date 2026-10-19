@@ -44,11 +44,19 @@ def classify(run, jobs, expected_head_sha):
         return "not_terminal"
     if not jobs:
         return "no_jobs_recorded"
-    if any(not isinstance(j, dict) or not isinstance(j.get("steps"), list) for j in jobs):
-        raise TriageError("missing or invalid job metadata")
-    steps = [s for job in jobs for s in job.get("steps", [])]
+    if any(not isinstance(j, dict) for j in jobs):
+        raise TriageError("invalid job metadata")
+    # GitHub can omit the 'steps' field on jobs that never got a runner.
+    # Missing fields are UNKNOWN, not evidence that zero steps executed.
+    if any("steps" not in j or j["steps"] is None for j in jobs):
+        return "steps_metadata_unavailable"
+    if any(not isinstance(j["steps"], list) for j in jobs):
+        raise TriageError("invalid steps collection")
+    steps = [s for job in jobs for s in job["steps"]]
+    if any(not isinstance(s, dict) for s in steps):
+        raise TriageError("invalid step metadata")
     # A job step can be queued or skipped without ever being started.
-    executed = [s for s in steps if isinstance(s, dict) and s.get("started_at")]
+    executed = [s for s in steps if s.get("started_at")]
     if executed:
         if run.get("conclusion") == "success" and all(j.get("conclusion") == "success" for j in jobs):
             return "executed_success"
@@ -67,14 +75,17 @@ def inspect(repo, run_id, expected_sha, fetch=get_json):
     response = fetch(f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100")
     if not isinstance(response, dict) or not isinstance(response.get("jobs"), list):
         raise TriageError("missing jobs collection")
-    if response.get("total_count", len(response["jobs"])) > len(response["jobs"]):
-        raise TriageError("job pagination incomplete")
+    count = response.get("total_count")
+    if type(count) is not int or count < 0 or count != len(response["jobs"]):
+        raise TriageError("job pagination incomplete or invalid")
     jobs = response["jobs"]
     category = classify(run, jobs, expected_sha)
+    # A null counter is more truthful than zero when GitHub omitted steps.
+    observed = None if category == "steps_metadata_unavailable" else sum(
+        bool(s.get("started_at")) for j in jobs for s in j.get("steps", []))
     return {"repository": repo, "run_id": run_id, "head_sha": expected_sha,
             "conclusion": run.get("conclusion"), "category": category,
-            "job_count": len(jobs),
-            "executed_steps": sum(bool(s.get("started_at")) for j in jobs for s in j.get("steps", []))}
+            "job_count": len(jobs), "executed_steps": observed}
 
 
 def main(argv=None):
