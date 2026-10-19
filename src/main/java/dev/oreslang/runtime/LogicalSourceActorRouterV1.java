@@ -543,6 +543,38 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         return upgradeInternal(candidateGeneration, readyTimeout, mailbox, ticket);
     }
 
+    /**
+     * Nonallocating supervisor preflight under routeLock. In particular, a
+     * caller lacking the exact proxy freeze cannot cause candidate linking
+     * as a side effect. Called both before linking and at route freeze.
+     */
+    private void requireUpgradeAuthorityLocked(
+            HotReloadManager.Generation candidateGeneration,
+            LogicalActorProxyMailboxV1 proxyMailbox,
+            LogicalActorProxyMailboxV1.FreezeTicket proxyTicket) {
+        if (!Thread.holdsLock(routeLock))
+            throw new IllegalStateException("upgrade preflight requires route monitor");
+        requireOpenLocked();
+        if (upgrading)
+            throw new IllegalStateException(
+                    "logical actor upgrade already in progress");
+        if (proxyMailbox == null) {
+            if (boundProxyMailbox != null)
+                throw new SecurityException(
+                        "bound proxy route requires supervisor-owned upgrade");
+        } else {
+            if (boundProxyMailbox != proxyMailbox)
+                throw new SecurityException("foreign proxy upgrade authority");
+            proxyMailbox.requireFreezeTicketForRouteEpoch(
+                    proxyTicket, active.routeEpoch);
+        }
+        if (candidateGeneration == active.generation)
+            throw new IllegalArgumentException(
+                    "candidate generation is already the active logical route");
+        if (active.routeEpoch == Long.MAX_VALUE)
+            throw new IllegalStateException("logical actor route epoch exhausted");
+    }
+
     private boolean upgradeInternal(
             HotReloadManager.Generation candidateGeneration,
             Duration readyTimeout,
@@ -561,8 +593,18 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                             + "from the same HotReloadManager");
         }
 
-        // Link/compile and pin the candidate context before pausing message route
-        // admission. Failure here has zero effect on the active logical route.
+        // Refuse unauthorized, frozen-ticket, stale-route or same-generation
+        // requests BEFORE invoking the candidate loader/compiler. Otherwise
+        // a denied host request could still compile/link/pin arbitrary code.
+        // Revalidate after linking: another supervisor may have closed or
+        // upgraded the logical route while the loader worked.
+        synchronized (routeLock) {
+            requireUpgradeAuthorityLocked(
+                    candidateGeneration, proxyMailbox, proxyTicket);
+        }
+
+        // Authorized candidate linking is deliberately outside routeLock:
+        // message admission on the old route must not wait for compilation.
         HotReloadManager.ActorGenerationView candidate =
                 candidateGeneration.linkActorGeneration(actorTypeName);
         HotReloadManager.Generation.ActorRouteLease candidateLease =
@@ -577,27 +619,11 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         Throwable primaryFailure = null;
         try {
             synchronized (routeLock) {
-                requireOpenLocked();
+                // Repeat authorization with the latest route under the
+                // same publication monitor, after potentially slow linking.
+                requireUpgradeAuthorityLocked(
+                        candidateGeneration, proxyMailbox, proxyTicket);
                 reapRetiredLocked();
-                if (proxyMailbox == null) {
-                    if (boundProxyMailbox != null)
-                        throw new SecurityException(
-                                "bound proxy route requires supervisor-owned upgrade");
-                } else {
-                    if (boundProxyMailbox != proxyMailbox)
-                        throw new SecurityException("foreign proxy upgrade authority");
-                    proxyMailbox.requireFreezeTicketForRouteEpoch(
-                            proxyTicket, active.routeEpoch);
-                }
-                if (upgrading)
-                    throw new IllegalStateException(
-                            "logical actor upgrade already in progress");
-                if (candidateGeneration == active.generation)
-                    throw new IllegalArgumentException(
-                            "candidate generation is already the active logical route");
-                if (active.routeEpoch == Long.MAX_VALUE)
-                    throw new IllegalStateException(
-                            "logical actor route epoch exhausted");
                 upgrading = true;
                 pauseOwned = true;
                 prior = active;
