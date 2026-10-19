@@ -25,6 +25,12 @@ public final class SealedActorState {
     private static final int MAX_OWNED_FIELD_BYTES = 64 * 1024;
     private static final int MAX_TOTAL_OWNED_BYTES = 1024 * 1024;
     private static final int MAX_PENDING_OWNED = 256;
+    // Permanent non-null carrier marker installed before retirement clears any
+    // state. It closes the check-then-retire race with a future multi-carrier
+    // actor: critical() can no longer acquire the state gate once retirement
+    // wins the CAS.
+    private static final Thread RETIRED_STATE_CARRIER =
+            new Thread("ores-retired-state-carrier-sentinel");
 
     private final ActorRuntime.ActorId owner;
     private final LinkedHashMap<String, String> schema;
@@ -130,6 +136,40 @@ public final class SealedActorState {
     private enum Uninitialized { INSTANCE }
 
     /**
+     * Runtime-only immutable scalar snapshot capability. It is issued only by
+     * a live state Access and carries the exact version + mutation revision
+     * observed with copied immutable scalar inputs. Callers cannot fabricate a
+     * revision/version pair after releasing the loan.
+     */
+    public static final class ScalarSnapshot {
+        private final SealedActorState issuer;
+        private final String versionField;
+        private final long version;
+        private final long revision;
+        private final Map<String, Object> scalars;
+
+        private ScalarSnapshot(SealedActorState issuer, String versionField,
+                               long version, long revision,
+                               Map<String, Object> scalars) {
+            this.issuer = issuer;
+            this.versionField = versionField;
+            this.version = version;
+            this.revision = revision;
+            this.scalars = Map.copyOf(scalars);
+        }
+
+        public long version() { return version; }
+        public long revision() { return revision; }
+
+        /** Immutable scalar copied under the originating state loan. */
+        public Object scalar(String name) {
+            if (!scalars.containsKey(name))
+                throw new IllegalArgumentException("scalar was not captured in snapshot: " + name);
+            return scalars.get(name);
+        }
+    }
+
+    /**
      * Runtime-only immutable prepared scalar transaction. Preparing may
      * allocate and validate, but it does not borrow the guest state root.
      * Capabilities are issuer-bound and single-use, not serializable wire IDs.
@@ -154,19 +194,20 @@ public final class SealedActorState {
     }
 
     /**
-     * Prepare detached scalar values outside any live state loan. Production
-     * training must derive them from authenticated gradients; this runtime
-     * method does not attest numerical provenance or actor message senders.
+     * Prepare detached scalar values outside any live state loan. The
+     * version/revision authority comes only from an issuer-bound snapshot that
+     * was created while the model inputs were copied under a state loan.
+     * Production training must still authenticate gradient/edge provenance.
      */
-    public ScalarPublication prepareScalarPublication(String versionField,
-                                                       long expectedVersion,
-                                                       long expectedRevision,
+    public ScalarPublication prepareScalarPublication(ScalarSnapshot snapshot,
                                                        Map<String, Object> replacements) {
         requireOwner();
         if (current != null || stateCarrier.get() != null)
             throw new IllegalStateException("ML_PREPARE_WITH_LIVE_STATE_LOAN");
-        if (!"int".equals(schema.get(versionField)) || expectedVersion < 0
-                || expectedVersion == Long.MAX_VALUE || expectedRevision < 0)
+        if (snapshot == null || snapshot.issuer != this)
+            throw new SecurityException("ML_INVALID_SNAPSHOT_CAPABILITY");
+        if (snapshot.version < 0 || snapshot.version == Long.MAX_VALUE
+                || snapshot.revision < 0)
             throw new IllegalArgumentException("ML_INVALID_VERSION");
         Objects.requireNonNull(replacements, "scalar replacements");
         if (replacements.isEmpty() || replacements.size() > schema.size())
@@ -178,15 +219,12 @@ public final class SealedActorState {
             // Owned regions have no general alias-safe scalar publication path.
             staged.put(name, entry.getValue());
         }
-        Object proposed = staged.get(versionField);
+        Object proposed = staged.get(snapshot.versionField);
         if (!(proposed instanceof Long next)
-                || next.longValue() != expectedVersion + 1)
+                || next.longValue() != snapshot.version + 1)
             throw new IllegalArgumentException("ML_VERSION_ADVANCE_REQUIRED");
-        // Do not stamp this candidate with the *current* revision: another
-        // turn might have written newer state after the caller's read loan.
-        // The caller must carry the revision observed WITH its input snapshot.
-        return new ScalarPublication(this, versionField, expectedVersion,
-                expectedRevision, staged);
+        return new ScalarPublication(this, snapshot.versionField, snapshot.version,
+                snapshot.revision, staged);
     }
 
     private long nextMutationRevision() {
@@ -196,11 +234,12 @@ public final class SealedActorState {
     }
 
     private void requireOwner() {
-        if (retired) throw new IllegalStateException("actor state retired");
+        Thread active = stateCarrier.get();
+        if (retired || active == RETIRED_STATE_CARRIER)
+            throw new IllegalStateException("actor state retired");
         if (!owner.equals(ActorRuntime.currentActorId().orElse(null))) {
             throw new SecurityException("actor state requires the owning actor's admitted turn");
         }
-        Thread active = stateCarrier.get();
         if (active != null && active != Thread.currentThread())
             throw new SecurityException("ML_STATE_LOAN_FOREIGN_CARRIER");
     }
@@ -262,6 +301,38 @@ public final class SealedActorState {
         public long revision() {
             check();
             return mutationRevision;
+        }
+
+        /**
+         * Copy immutable scalar inputs and their version/revision under one
+         * live state loan. Owned/reference-bearing regions are never admitted.
+         */
+        public ScalarSnapshot snapshotScalars(String versionField, String... names) {
+            check();
+            if (!"int".equals(schema.get(versionField)))
+                throw new IllegalArgumentException("ML_INVALID_VERSION_FIELD");
+            Object rawVersion = read(versionField);
+            if (!(rawVersion instanceof Number number))
+                throw new IllegalStateException("ML_INVALID_VERSION_VALUE");
+            long version = number.longValue();
+            if (version < 0)
+                throw new IllegalStateException("ML_INVALID_VERSION_VALUE");
+            Objects.requireNonNull(names, "snapshot scalar names");
+            var copied = new LinkedHashMap<String, Object>();
+            for (String name : names) {
+                Objects.requireNonNull(name, "snapshot scalar name");
+                if (copied.containsKey(name))
+                    throw new IllegalArgumentException("duplicate snapshot scalar: " + name);
+                Object value = read(name);
+                // read() already rejects OwnedRegion. Keep the runtime
+                // capability narrow to immutable scalar types accepted by
+                // safeResult rather than returning mutable host wrappers.
+                if (!safeResult(value, 0))
+                    throw new SecurityException("ML_SNAPSHOT_NONSCALAR_FIELD");
+                copied.put(name, value);
+            }
+            return new ScalarSnapshot(SealedActorState.this, versionField,
+                    version, mutationRevision, copied);
         }
 
         public Object read(String name) {
@@ -402,8 +473,11 @@ public final class SealedActorState {
         requireOwner();
         final Thread carrier = Thread.currentThread();
         final boolean newlyAdmitted = stateCarrier.compareAndSet(null, carrier);
-        if (!newlyAdmitted && stateCarrier.get() != carrier)
+        if (!newlyAdmitted && stateCarrier.get() != carrier) {
+            if (stateCarrier.get() == RETIRED_STATE_CARRIER || retired)
+                throw new IllegalStateException("actor state retired");
             throw new IllegalStateException("ML_STATE_LOAN_CONCURRENT_CARRIER");
+        }
         if (serial == Long.MAX_VALUE) {
             if (newlyAdmitted) stateCarrier.compareAndSet(carrier, null);
             throw new IllegalStateException("actor loan serial exhausted");
@@ -459,10 +533,18 @@ public final class SealedActorState {
         if (!owner.equals(confirmedOwner)) {
             throw new SecurityException("cannot retire state for a foreign actor");
         }
-        if (current != null || stateCarrier.get() != null) {
+        // Atomically close admission BEFORE clearing any state. If a loan won
+        // the race its carrier is non-null and retirement fails without
+        // mutation. If retirement wins, every subsequent critical() CAS fails
+        // against the permanent sentinel.
+        if (!stateCarrier.compareAndSet(null, RETIRED_STATE_CARRIER)) {
+            if (retired || stateCarrier.get() == RETIRED_STATE_CARRIER)
+                throw new IllegalStateException("actor state already retired");
             throw new IllegalStateException("cannot retire actor state with live critical loan");
         }
         retired = true;
+        if (current != null)
+            throw new IllegalStateException("actor state carrier/current invariant corrupted");
         for (OwnedBytes capsule : pendingOwned) {
             if (capsule.bytes != null) Arrays.fill(capsule.bytes, (byte) 0);
             capsule.bytes = null;
