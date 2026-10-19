@@ -26,6 +26,17 @@ confirms: protected `main`, at least one mandatory approving review, required
 CODEOWNER review, and administrator enforcement. Ruleset-only configurations
 cannot silently bypass these checks and need separately reviewed support.
 
+The publisher also authenticates the source `.github/CODEOWNERS` blob on
+canonical `main` and verifies the **effective final owner** of each of the
+15 export-control paths (policy, publisher, offline tests, workflow and
+provenance verification tools). A missing path, later owner override,
+unsupported pattern, malformed metadata or mismatched Git blob fails closed
+**before source collection**. Ownership is checked again before each Git
+write, so an override introduced during an upload stops the next write.
+Source CODEOWNERS coverage on currently unprotected `main` is not yet
+complete for all 15 paths; this independent trust-root gate must remain
+closed until the security PR is independently reviewed and merged.
+
 The trusted-main verification additionally rejects stale code-owner approval
 configurations (approvals must be dismissed after new commits), explicit
 user/team/app exemptions from required pull-request reviews, enabled or
