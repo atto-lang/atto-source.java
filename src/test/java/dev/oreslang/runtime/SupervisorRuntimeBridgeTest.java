@@ -14,7 +14,8 @@ final class SupervisorRuntimeBridgeTest {
     void realFinalizedActorFailureBecomesTrustedControlNotice() throws Exception {
         try (var runtime = new ActorRuntime();
              var inbox = new TrustedSupervisorInbox(4, 8, 4096, 1024);
-             var bridge = new SupervisorRuntimeBridge(inbox, notice -> {
+             var table = new SupervisorDenseTable(SupervisorDenseTable.Layout.AOSOA, 8, 8);
+             var bridge = new SupervisorRuntimeBridge(runtime, inbox, table, notice -> {
                  fail("unexpected parent escalation");
                  return false;
              })) {
@@ -39,7 +40,8 @@ final class SupervisorRuntimeBridgeTest {
     void gracefulFinalizationDoesNotForgeFailureControl() throws Exception {
         try (var runtime = new ActorRuntime();
              var inbox = new TrustedSupervisorInbox(4, 8, 4096, 1024);
-             var bridge = new SupervisorRuntimeBridge(inbox, notice -> true)) {
+             var table = new SupervisorDenseTable(SupervisorDenseTable.Layout.AOSOA, 8, 8);
+             var bridge = new SupervisorRuntimeBridge(runtime, inbox, table, notice -> true)) {
             var child = runtime.<String>spawnShared(() -> (message, context) -> context.self().stop());
             bridge.register(child);
 
@@ -56,7 +58,8 @@ final class SupervisorRuntimeBridgeTest {
         AtomicInteger escalations = new AtomicInteger();
         try (var runtime = new ActorRuntime();
              var inbox = new TrustedSupervisorInbox(1, 8, 4096, 1024);
-             var bridge = new SupervisorRuntimeBridge(inbox, notice -> {
+             var table = new SupervisorDenseTable(SupervisorDenseTable.Layout.AOSOA, 8, 8);
+             var bridge = new SupervisorRuntimeBridge(runtime, inbox, table, notice -> {
                  escalations.incrementAndGet();
                  return true;
              })) {
@@ -136,6 +139,8 @@ final class SupervisorRuntimeBridgeTest {
             // the durable assertion is the bridge's host-visible poison state.
             assertFalse(bridge.healthy());
             assertThrows(IllegalStateException.class, bridge::requireHealthy);
+            assertEquals(1, table.size(),
+                    "failed mandatory escalation retains one FAILED diagnostic row");
 
             var later = runtime.<String>spawnShared(() -> (message, context) -> {});
             assertThrows(IllegalStateException.class, () -> bridge.register(later));
