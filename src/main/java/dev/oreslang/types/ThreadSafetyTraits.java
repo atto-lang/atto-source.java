@@ -34,6 +34,16 @@ import dev.oreslang.types.Types.Unknown;
 public final class ThreadSafetyTraits {
     private ThreadSafetyTraits() { }
 
+    // Bound recursive compiler queries on attacker-controlled nested type input.
+    private static final int MAX_TYPE_DEPTH = 256;
+    private static final Set<String> UNPROVEN_CAPABILITIES = Set.of(
+            "Mutex", "MutexGuard", "SharedMutex", "Future",
+            "ActorRef", "ActorMail", "ActorOutput", "ActorOutputStream",
+            "SelectCase", "SelectSet", "SelectResult",
+            "Iterator", "AsyncIterator", "TcpConnection", "HttpExchange",
+            "HttpServer", "HttpHandler", "ExecutionPermit",
+            "ReadLoan", "WriteLoan", "PartitionLoan");
+
     public enum Trait { SEND, SYNC }
 
     @FunctionalInterface
@@ -45,10 +55,11 @@ public final class ThreadSafetyTraits {
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(trait, "trait");
         Objects.requireNonNull(nominalProof, "nominalProof");
-        return has(type, trait, nominalProof, new HashSet<>());
+        return has(type, trait, nominalProof, new HashSet<>(), 0);
     }
 
-    private static boolean has(Type type, Trait trait, NominalProof nominalProof, Set<Type> visiting) {
+    private static boolean has(Type type, Trait trait, NominalProof nominalProof, Set<Type> visiting, int depth) {
+        if (depth > MAX_TYPE_DEPTH) return false;
         // Never infer thread safety from cycles, unresolved types or missing
         // generic bounds. Genuine recursive nominal definitions need a separate
         // fixed-point proof over their field graph.
@@ -66,7 +77,7 @@ public final class ThreadSafetyTraits {
                 // mutable access through a borrowed mutable reference).
                 Trait required = trait == Trait.SYNC || !borrow.mutable()
                         ? Trait.SYNC : Trait.SEND;
-                return has(borrow.target(), required, nominalProof, visiting);
+                return has(borrow.target(), required, nominalProof, visiting, depth + 1);
             }
             if (type instanceof ListType list) {
                 // Array/List/Vector/Slice expose mutable storage. Moving the
@@ -74,14 +85,14 @@ public final class ThreadSafetyTraits {
                 // sharing &List<T> does not provide a Sync proof merely because
                 // T is Sync. A future immutable buffer gets its own type.
                 return trait == Trait.SEND
-                        && has(list.element(), Trait.SEND, nominalProof, visiting);
+                        && has(list.element(), Trait.SEND, nominalProof, visiting, depth + 1);
             }
             if (type instanceof Tuple tuple) {
                 // FixedArray/FixedList are mutable aggregate storage. The
                 // ordinary Tuple is immutable under shared access.
                 if (trait == Trait.SYNC && tuple.kind() != Types.TupleKind.TUPLE) return false;
                 return tuple.elements().stream().allMatch(
-                        member -> has(member, trait, nominalProof, visiting));
+                        member -> has(member, trait, nominalProof, visiting, depth + 1));
             }
             if (type instanceof Record record) {
                 // Structural records are writable by default. Only the
@@ -89,23 +100,23 @@ public final class ThreadSafetyTraits {
                 // access, and every nested field must independently be Sync.
                 if (trait == Trait.SYNC && !record.readOnly()) return false;
                 return record.members().values().stream().allMatch(
-                        member -> has(member, trait, nominalProof, visiting));
+                        member -> has(member, trait, nominalProof, visiting, depth + 1));
             }
             if (type instanceof Union union) {
                 return union.options().stream().allMatch(
-                        member -> has(member, trait, nominalProof, visiting));
+                        member -> has(member, trait, nominalProof, visiting, depth + 1));
             }
             if (!(type instanceof Named named)) return false;
             String name = named.name();
             if (name.equals("OptionUnwrapError")) return named.arguments().isEmpty();
             if (name.equals("Option") || name.equals("IteratorResult")) {
                 return named.arguments().size() == 1
-                        && has(named.arguments().getFirst(), trait, nominalProof, visiting);
+                        && has(named.arguments().getFirst(), trait, nominalProof, visiting, depth + 1);
             }
             if (name.equals("Result")) {
                 return named.arguments().size() == 2
-                        && has(named.arguments().get(0), trait, nominalProof, visiting)
-                        && has(named.arguments().get(1), trait, nominalProof, visiting);
+                        && has(named.arguments().get(0), trait, nominalProof, visiting, depth + 1)
+                        && has(named.arguments().get(1), trait, nominalProof, visiting, depth + 1);
             }
             // Oreslang's Channel is an owned synchronized transport. The
             // payload must be Send to cross its worker boundary. Do NOT claim
@@ -113,14 +124,9 @@ public final class ThreadSafetyTraits {
             // and immutable-reference API have been audited separately.
             if (name.equals("Channel")) {
                 return trait == Trait.SEND && named.arguments().size() == 1
-                        && has(named.arguments().getFirst(), Trait.SEND, nominalProof, visiting);
+                        && has(named.arguments().getFirst(), Trait.SEND, nominalProof, visiting, depth + 1);
             }
-            if (Set.of("Mutex", "MutexGuard", "SharedMutex", "Future",
-                    "ActorRef", "ActorMail", "ActorOutput", "ActorOutputStream",
-                    "SelectCase", "SelectSet", "SelectResult",
-                    "Iterator", "AsyncIterator", "TcpConnection", "HttpExchange",
-                    "HttpServer", "HttpHandler", "ExecutionPermit",
-                    "ReadLoan", "WriteLoan", "PartitionLoan").contains(name)) {
+            if (UNPROVEN_CAPABILITIES.contains(name)) {
                 return false;
             }
             // Unknown nominal types are *not* automatically Send or Sync.
