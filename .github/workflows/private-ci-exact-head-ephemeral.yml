@@ -85,6 +85,31 @@ jobs:
             tests/test_review_pinned_private_ci.py \
             scripts/dispatch-review-pinned-private-ci.py \
             tests/test_review_pinned_dispatcher.py
+      - name: Execute source-local Git admission tests (including synthetic mode bypasses)
+        run: |
+          set -euo pipefail
+          python3 -I - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import unittest
+
+          path = Path("tests/test_private_ci_exact_head_ephemeral.py")
+          spec = importlib.util.spec_from_file_location("private_source_local_admission_tests", path)
+          if spec is None or spec.loader is None:
+              raise SystemExit("Source-local admission regression module missing")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+          count = suite.countTestCases()
+          if count < 20:
+              raise SystemExit(f"Source-local security suite shrank below 20: {count}")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if (result.testsRun != count or not result.wasSuccessful()
+                  or result.skipped or result.expectedFailures
+                  or result.unexpectedSuccesses):
+              raise SystemExit("Source-local admission tests failed, skipped, or incomplete")
+          print(f"VERIFIED_SOURCE_LOCAL_ADMISSION_TESTS={result.testsRun}")
+          PY
       - name: Execute destination-policy fail-closed Bash suite
         run: |
           set -euo pipefail

@@ -2,6 +2,8 @@
 """Static source-local ephemeral CI admission regression checks."""
 from pathlib import Path
 import unittest
+import subprocess
+import tempfile
 
 REPO=Path(__file__).resolve().parents[1]
 PATH=REPO/".github/workflows/private-ci-exact-head-ephemeral.yml"
@@ -142,6 +144,49 @@ class SourceLocalEphemeralWorkflowTests(unittest.TestCase):
         self.assertIn('APPROVED_REF: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_REF }}', self.job)
         self.assertLess(self.job.index('test "$APPROVED_REF" = "$GITHUB_REF"'),
                         self.job.index("uses: actions/checkout@"))
+
+    def test_synthetic_filemode_false_bypass_is_blocked(self):
+        # Synthetic Git repo: never use or move Oreslang private source.
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            def git(*args, check=True):
+                return subprocess.run(
+                    ["git", *args], cwd=root, capture_output=True, text=True,
+                    check=check)
+            git("init", "-q")
+            git("config", "user.email", "synthetic@example.invalid")
+            git("config", "user.name", "Synthetic Gate")
+            script = root / "synthetic.sh"
+            script.write_text("#!/bin/sh\\nexit 0\\n", encoding="utf-8")
+            script.chmod(0o644)
+            git("add", "synthetic.sh")
+            git("commit", "-qm", "synthetic")
+            git("config", "core.fileMode", "false")
+            script.chmod(0o755)
+            self.assertEqual(git("diff", "--quiet", check=False).returncode, 0)
+            self.assertEqual(
+                git("-c", "core.fileMode=true", "diff", "--no-ext-diff",
+                    "--quiet", "--exit-code", check=False).returncode, 1)
+
+    def test_synthetic_git_hidden_index_flags_are_blocked(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            def git(*args):
+                return subprocess.run(
+                    ["git", *args], cwd=root, capture_output=True, text=True,
+                    check=True).stdout
+            git("init", "-q")
+            git("config", "user.email", "synthetic@example.invalid")
+            git("config", "user.name", "Synthetic Gate")
+            (root / "synthetic.txt").write_text("synthetic\\n", encoding="utf-8")
+            git("add", "synthetic.txt")
+            git("commit", "-qm", "synthetic")
+            self.assertTrue(git("ls-files", "-v").startswith("H "))
+            git("update-index", "--skip-worktree", "synthetic.txt")
+            self.assertFalse(git("ls-files", "-v").startswith("H "))
+            git("update-index", "--no-skip-worktree", "synthetic.txt")
+            git("update-index", "--assume-unchanged", "synthetic.txt")
+            self.assertFalse(git("ls-files", "-v").startswith("H "))
 
     def test_receipt_is_exclusive_nofollow_private(self):
         self.assertIn("os.O_CREAT|os.O_EXCL|os.O_CLOEXEC|os.O_NOFOLLOW,0o600",self.job)
