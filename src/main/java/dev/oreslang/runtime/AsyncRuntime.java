@@ -227,7 +227,8 @@ public final class AsyncRuntime implements AutoCloseable {
         try {
             scheduled = executor.submit(() -> {
                 if (!exit.state.compareAndSet(0, 1)) {
-                    taskExits.remove(completion, exit);
+                    // A cancelling host won pre-entry retirement. It owns
+                    // map removal only AFTER the physical fence settles.
                     return;
                 }
                 exit.thread = Thread.currentThread();
