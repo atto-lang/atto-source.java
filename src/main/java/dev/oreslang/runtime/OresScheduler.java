@@ -392,7 +392,13 @@ public final class OresScheduler implements AutoCloseable {
      * only after task execution is quiescent (or before it ever started).
      * Never use Future settlement alone to reclaim guest-owned resources.
      */
-    <T> OresFuture<T> start(Task<T> task, Runnable onQuiescent) {
+    /**
+     * Start a task with a physical-quiescence notification. Unlike Future
+     * settlement, this callback is invoked only after the executing carrier
+     * has left guest code, including cancellation and scheduler shutdown.
+     * Callbacks must not execute guest code or block the scheduler.
+     */
+    public <T> OresFuture<T> start(Task<T> task, Runnable onQuiescent) {
         return startAdmitted(task, onQuiescent, null, 0L, () -> { });
     }
 
