@@ -106,6 +106,34 @@ final class LogicalActorProxyMailboxV1Test {
     }
 
     @Test
+    void prepopulatedInjectedQueueCannotBypassBoundedAdmission() {
+        var injected = new java.util.ArrayDeque<
+                LogicalActorProxyMailboxV1.Envelope>();
+        injected.add(new LogicalActorProxyMailboxV1.Envelope(
+                1L, bytes("untracked")));
+        assertThrows(IllegalArgumentException.class,
+                () -> new LogicalActorProxyMailboxV1(2, 16, 32, injected),
+                "test-only queue injection must not import unaccounted envelopes");
+        assertThrows(NullPointerException.class,
+                () -> new LogicalActorProxyMailboxV1(2, 16, 32, null));
+    }
+
+    @Test
+    void consumedFreezeTicketCloseCannotThawLaterEpoch() {
+        try (var mailbox = new LogicalActorProxyMailboxV1(4, 8, 32)) {
+            var initial = mailbox.freezeDispatchForUpgrade();
+            initial.commit();
+            var current = mailbox.freezeDispatchForUpgrade();
+            initial.close();
+            assertTrue(mailbox.snapshot().dispatchFrozen());
+            assertNull(mailbox.pollDispatch());
+            assertEquals(2L, current.routeEpoch());
+            current.rollback();
+            assertFalse(mailbox.snapshot().dispatchFrozen());
+        }
+    }
+
+    @Test
     void transportRejectionRequeuesLatestUnsentWithoutRefundingCredits() {
         try (var mailbox = new LogicalActorProxyMailboxV1(2, 16, 32)) {
             var first = mailbox.admit(bytes("first"));
