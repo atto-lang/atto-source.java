@@ -538,11 +538,19 @@ and field-name-based structural type identity; records are not dynamic maps.
 alias without creating nominal identity or a runtime type object. Quoted
 field names, including spaces and punctuation, are statically checked.
 
-The shorter `const T value = infer record{...}` is **not enabled** yet:
-it must be disambiguated from `const ExistingType value = infer record{...}`
-without silently redefining an existing type or weakening forward-reference,
-generic, and lexical-scope checks. AoS/SoA columnar inversion likewise requires
-a distinct verified storage and ownership contract.
+The shorter `const T value = infer record{...}` and
+`const T value = infer struct{...}` are now checked by the Java type checker.
+If `T` already denotes a known type, the declaration keeps its ordinary
+type-checking meaning; it does **not** redefine `T`. Otherwise a new, scoped,
+readonly structural alias is introduced only for uppercase-starting, simple
+(non-generic, unqualified) names. Builtins, generics, imports, explicit forward
+aliases and conflicting definitions fail closed. The optional `<T>` form
+remains the unambiguous way to request a new alias; use it when a declaration
+might otherwise be mistaken for a reference to an existing type.
+
+Host-side `SoaSnapshot` provides independently tested scalar row/column
+snapshots, but it is NOT an Oreslang guest `SoA<T>` or zero-copy GPU/native
+representation. AoS/SoA guest lowering and ownership still require verification.
 
 An inferred struct is permanently readonly: its field set and field values
 cannot be mutated through aliases or mutable bindings.
