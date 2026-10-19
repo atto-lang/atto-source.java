@@ -68,21 +68,32 @@ public final class OptionalCallScalarAbiFrame {
         }
     }
 
-    public record Frame(Ast.FunctionDecl selected, List<Slot> slots) {
-        public Frame {
-            Objects.requireNonNull(selected, "selected callable");
-            slots = List.copyOf(slots);
-            if (slots.size() != selected.parameters().size()) {
+    /**
+     * Factory-only reference frame. Public ABI value/slot records are merely
+     * inert data; only from(CheckedScalarInvocationWitness) may create a frame
+     * carrying a verified original declaration and source-origin mapping.
+     */
+    public static final class Frame {
+        private final Ast.FunctionDecl selected;
+        private final List<Slot> slots;
+
+        private Frame(Ast.FunctionDecl selected, List<Slot> slots) {
+            this.selected = Objects.requireNonNull(selected, "selected callable");
+            this.slots = List.copyOf(slots);
+            if (this.slots.size() != selected.parameters().size()) {
                 throw new IllegalArgumentException("frame must cover selected declaration");
             }
-            for (int i = 0; i < slots.size(); i++) {
-                if (slots.get(i).formalIndex() != i
-                        || !slots.get(i).value().abiType()
+            for (int i = 0; i < this.slots.size(); i++) {
+                if (this.slots.get(i).formalIndex() != i
+                        || !this.slots.get(i).value().abiType()
                                 .equals(selected.parameters().get(i).calleeType())) {
                     throw new IllegalArgumentException("frame ABI differs from selected formal");
                 }
             }
         }
+
+        public Ast.FunctionDecl selected() { return selected; }
+        public List<Slot> slots() { return slots; }
         public BoundInvocation.Readiness readiness() {
             return BoundInvocation.Readiness.SHAPE_ONLY;
         }
