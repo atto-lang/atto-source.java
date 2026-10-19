@@ -34,6 +34,26 @@ scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
   --expected-source-commit '<the same exact 40-hex source commit SHA>'
 ```
 
+**Bootstrap trust is external to the source checkout.** The wrapper and Python
+publisher cannot prove their own integrity before their first instructions
+execute. Therefore the command above is a publisher interface, not a root of
+trust, and it must not be launched directly from a merely caller-supplied
+checkout. The independently reviewed private carrier provides
+`scripts/launch-oreslang-private-ci-publisher.py`, which first authenticates
+the private source repository and exact protected-`main` commit, fetches
+`scripts/publish-private-ci-source.py` from GitHub at that immutable revision,
+requires an independently supplied expected **publisher Git blob SHA**, verifies
+the returned bytes against that SHA, and only then executes those exact bytes
+under isolated Python with `__file__` bound to the source checkout. Local
+publisher bytes are never executed before this attestation.
+
+The expected publisher blob SHA is approval data and must come from an
+independent security review / protected carrier trust boundary, never from the
+source checkout being authenticated. Carrier CODEOWNERS must terminally cover
+the bootstrap launcher, and source-side admission verifies that coverage.
+Until carrier `main` itself is independently protected and reviewed, the
+bootstrap remains test scaffolding and does not authorize publication.
+
 A matching policy Git blob on `main` is not authorization by itself. The
 publisher now requires a live private and active source repository whose
 numeric GitHub ID is `1400792274` and requires the source branch
@@ -77,16 +97,18 @@ must establish a separately reviewed, trusted egress design rather than
 passing unreviewed environment overrides. Do not execute the transfer from
 an untrusted PR-controlled environment.
 
-The publisher itself must run from an **unmodified Git checkout of the same
-protected source-main commit** reported by GitHub. It checks the actual Git
+After the independent bootstrap has fixed the executed publisher bytes, the
+publisher requires its associated local checkout to be an **unmodified Git
+checkout of the same protected source-main commit** reported by GitHub. It checks the actual Git
 repository root and immutable `HEAD`, then performs descriptor-relative,
 no-symlink byte hashing of every trusted script and policy file against
 its exact `HEAD` Git blob and mode, before reading private snapshot files.
 Git `status --porcelain` is insufficient: `skip-worktree` and
 `assume-unchanged` index flags can make altered executable bytes appear
 clean. The verifier bypasses Git replace-object mappings and does not trust
-the index as proof of worktree contents. An untrusted compiler PR checkout cannot run an altered
-publisher or grant itself approval. Prepare the exact compiler PR snapshot as
+the index as proof of worktree contents. Combined with the external bootstrap,
+an untrusted compiler PR checkout cannot cause its local altered publisher
+bytes to execute or grant itself approval. Prepare the exact compiler PR snapshot as
 a separate, bounded directory **inside the trusted main checkout** (for example
 using a reviewed `git archive` of the independently authenticated commit).
 The source files are still hashed and compared to the remote immutable commit
