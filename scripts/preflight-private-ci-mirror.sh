@@ -10,6 +10,9 @@ readonly DEST_ID="1412142815"
 readonly SOURCE_ID="1400792274"
 readonly POLICY_PATH=".github/private-ci-approved-repositories.txt"
 readonly PREFLIGHT_PATH="scripts/preflight-private-ci-mirror.sh"
+readonly DEST_GUARD_PATH="scripts/check-private-ci-destination.sh"
+readonly WRAPPER_PATH="scripts/run-in-private-ci-destination.sh"
+readonly PUBLISHER_PATH="scripts/publish-private-ci-source.py"
 readonly APPROVAL_ISSUE="1084"
 readonly MAINTAINER_APPROVER="the1mills"
 readonly SECURITY_APPROVER="ORESoftware"
@@ -85,10 +88,27 @@ policy_blob="$(git rev-parse "$main_sha:$POLICY_PATH" 2>/dev/null)" \
   || die "cannot resolve main private mirror policy blob"
 preflight_blob="$(git rev-parse "$main_sha:$PREFLIGHT_PATH" 2>/dev/null)" \
   || die "cannot resolve main private mirror preflight blob"
-running_preflight_blob="$(git hash-object "$PREFLIGHT_PATH")" \
-  || die "cannot hash running private mirror preflight"
-[[ "$running_preflight_blob" == "$preflight_blob" ]] \
-  || die "running preflight differs from authoritative main"
+guard_blob="$(git rev-parse "$main_sha:$DEST_GUARD_PATH" 2>/dev/null)" \
+  || die "cannot resolve main destination guard blob"
+wrapper_blob="$(git rev-parse "$main_sha:$WRAPPER_PATH" 2>/dev/null)" \
+  || die "cannot resolve main destination wrapper blob"
+publisher_blob="$(git rev-parse "$main_sha:$PUBLISHER_PATH" 2>/dev/null)" \
+  || die "cannot resolve main private publisher blob"
+
+verify_running_blob() {
+  local path="$1"
+  local expected_blob="$2"
+  local actual_blob
+  actual_blob="$(git hash-object "$path" 2>/dev/null)" \
+    || die "cannot hash running security-critical export file: $path"
+  [[ "$actual_blob" == "$expected_blob" ]] \
+    || die "running export file differs from authoritative main: $path"
+}
+
+verify_running_blob "$PREFLIGHT_PATH" "$preflight_blob"
+verify_running_blob "$DEST_GUARD_PATH" "$guard_blob"
+verify_running_blob "$WRAPPER_PATH" "$wrapper_blob"
+verify_running_blob "$PUBLISHER_PATH" "$publisher_blob"
 
 policy="$(git show "$main_sha:$POLICY_PATH")" \
   || die "cannot read authoritative main allowlist"
@@ -126,7 +146,7 @@ elif [[ "$main_protected" == "false" ]]; then
   [[ "$maintainer_comment_id" != "$security_comment_id" ]] \
     || die "maintainer and security approvals must be distinct comments"
 
-  approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=$SOURCE_REPO source_repo_id=$SOURCE_ID source_pr=$source_pr source_commit=$expected_commit source_tree=$expected_tree destination_repo=$DEST_REPO destination_repo_id=$DEST_ID policy_blob=$policy_blob preflight_blob=$preflight_blob"
+  approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=$SOURCE_REPO source_repo_id=$SOURCE_ID source_pr=$source_pr source_commit=$expected_commit source_tree=$expected_tree destination_repo=$DEST_REPO destination_repo_id=$DEST_ID policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
 
   verify_attestation_comment() {
     local comment_id="$1"
@@ -174,8 +194,8 @@ IFS=$'\t' read -r actual_id actual_name actual_private actual_push < <(
 [[ "$actual_push" == "true" ]] \
   || die "insufficient destination permissions"
 
-printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_pr=%s source_commit=%s source_tree=%s main_sha=%s policy_blob=%s preflight_blob=%s dest_repo_id=%s\n' \
-  "$auth_mode" "$source_pr" "$actual_commit" "$actual_tree" "$main_sha" "$policy_blob" "$preflight_blob" "$actual_id"
+printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_pr=%s source_commit=%s source_tree=%s main_sha=%s policy_blob=%s preflight_blob=%s guard_blob=%s wrapper_blob=%s publisher_blob=%s dest_repo_id=%s\n' \
+  "$auth_mode" "$source_pr" "$actual_commit" "$actual_tree" "$main_sha" "$policy_blob" "$preflight_blob" "$guard_blob" "$wrapper_blob" "$publisher_blob" "$actual_id"
 
 # No transfer or workflow dispatch occurs. Human security-owner approval,
 # workflow isolation, exact mirrored-tree verification, retention and actual
