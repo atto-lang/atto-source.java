@@ -91,6 +91,15 @@ class Tests(unittest.TestCase):
             return original(root,*args)
         with self.assertRaisesRegex(g.AdmissionDenied,'tree mismatch'):
             g.verify(DST,self.root,self.fetch,env=self.env,git=wrong_tree)
+    def test_duplicate_json_keys_cannot_hide_a_shadow_approval(self):
+        forged = b'{"version":1,"version":2,"repositories":[{"name":"trusted/ci","id":779}]}'
+        def fetch(route):
+            if '/contents/' in route:
+                return {'encoding':'base64','content':base64.b64encode(forged).decode()}
+            return self.fetch(route)
+        with self.assertRaisesRegex(g.AdmissionDenied,'policy is invalid'):
+            g.verify(DST,self.root,fetch,env=self.env,git=self.git)
+
     def test_duplicate_names_and_extra_keys_denied(self):
         self.policy['repositories'].append({'name':DST.upper(),'id':ID})
         with self.assertRaisesRegex(g.AdmissionDenied,'duplicate'):self.verify()
