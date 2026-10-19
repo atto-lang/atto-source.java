@@ -443,9 +443,9 @@ class DispatcherTest(unittest.TestCase):
         payload_branch="ci/oreslang-"+r["source_tree_sha"]
         auth_branch="ci/authorized-"+commit
         source_tree=r["source_tree_sha"]
-        provenance=json.dumps(r,sort_keys=True,separators=(",",":"))+"\\n"
+        provenance=json.dumps(r,sort_keys=True,separators=(",",":"))+"\n"
         data=provenance.encode("utf-8")
-        digest=hashlib.sha1(b"blob "+str(len(data)).encode("ascii")+b"\\0"+data).hexdigest()
+        digest=hashlib.sha1(b"blob "+str(len(data)).encode("ascii")+b"\0"+data).hexdigest()
         root_entries=[
             {"path":MOD.PREFIX,"type":"tree","mode":"040000","sha":source_tree},
             {"path":MOD.PROVENANCE,"type":"blob","mode":"100644","sha":digest},
@@ -493,16 +493,16 @@ class DispatcherTest(unittest.TestCase):
             receipt_path=Path(td)/"receipt.json"
             receipt_path.write_text(json.dumps(r),encoding="utf-8")
             source=Path(td)/"source"; source.mkdir()
-            with patch.object(MOD.PUB,"require_trusted_publisher_checkout",return_value=None), \\
-                 patch.object(MOD,"refresh_authorization",return_value="9"*40), \\
-                 patch.object(MOD,"require_staged_source",return_value=source), \\
-                 patch.object(MOD.PUB,"collect_source",return_value=[("synthetic.ores",b"test","100644")]), \\
-                 patch.object(MOD.PUB,"source_tree_sha",return_value=source_tree), \\
+            with patch.object(MOD.PUB,"require_trusted_publisher_checkout",return_value=None), \
+                 patch.object(MOD,"refresh_authorization",return_value="9"*40), \
+                 patch.object(MOD,"require_staged_source",return_value=source), \
+                 patch.object(MOD.PUB,"collect_source",return_value=[("synthetic.ores",b"test","100644")]), \
+                 patch.object(MOD.PUB,"source_tree_sha",return_value=source_tree), \
                  patch.object(MOD.PUB,"prepare_source_tree_batches",
-                              return_value=[[("synthetic.ores",b"test","100644","test")]]), \\
-                 patch.object(MOD.PUB,"require_private_ci_api_budget",return_value=None), \\
-                 patch.object(MOD.PUB,"gh_api",side_effect=fake_api), \\
-                 patch.object(MOD.PUB,"gh_api_no_content",side_effect=fake_delete), \\
+                              return_value=[[("synthetic.ores",b"test","100644","test")]]), \
+                 patch.object(MOD.PUB,"require_private_ci_api_budget",return_value=None), \
+                 patch.object(MOD.PUB,"gh_api",side_effect=fake_api), \
+                 patch.object(MOD.PUB,"gh_api_no_content",side_effect=fake_delete), \
                  patch.object(MOD,"api_list",side_effect=fake_list):
                 with self.assertRaisesRegex(MOD.Denied,"authorization ref readback mismatch"):
                     MOD.dispatch(str(receipt_path),str(source))
