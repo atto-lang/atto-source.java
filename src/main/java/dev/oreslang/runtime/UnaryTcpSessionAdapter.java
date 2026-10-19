@@ -448,6 +448,10 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
                 retireWithoutReply(admitted, true);
                 throw failure;
             }
+            if (frameRead.expired() || socket.isClosed()) {
+                retireWithoutReply(admitted, true);
+                throw new IOException("unary TCP frame expired before dispatch");
+            }
 
             Request request = new Request(
                     peer, sessionId, generation, head.correlationId(), envelope.payload());
