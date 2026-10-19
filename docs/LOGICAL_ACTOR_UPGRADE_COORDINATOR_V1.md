@@ -137,3 +137,41 @@ security-reviewed source+numeric-destination authorization. Consequently,
 to obtain Actions minutes, even using identical Git blobs and no personal
 access token. Once policy permits a carrier, verify exact nested Git-tree
 and immutable commit identity before claiming its JVM/native CI as evidence.
+
+## October 19 — further lifecycle and duplicate-send audit
+
+Additional defects fixed after the route-bound drain receipt change:
+
+1. **Retired coordinator reuse:** a clean call to
+   `LogicalActorUpgradeCoordinatorV1.close()` previously left the object
+   capable of calling `prepare()` again. Close now irrevocably revokes new
+   supervisor transaction admission without implicitly stopping the actor or
+   closing its mailbox. Close-versus-prepare tests verify the shared monitor
+   picks exactly one authoritative outcome.
+2. **Duplicate physical submission:** one logical envelope could previously
+   be passed twice through the trusted `sendAndDrainForProxy` seam before
+   either receipt settled, potentially delivering two effects for one logical
+   message and refunding its credits only once. Each mailbox now tracks a
+   **bounded physical send-attempt reservation ledger**. The first physical
+   submission consumes the reservation before calling ActorRuntime.send;
+   another attempt for the same sequence is rejected under the mailbox lock.
+   The reservation remains held on ambiguous send/drain failures. Only
+   supervisor-proven-unsent requeue or completion clears it. The reservation
+   is rejected once upgrade dispatch has frozen.
+3. **Bounded hot-path overhead:** the ledger's invariant check compares counts
+   in O(1) and uses synchronized transitions to preserve the subset relation;
+   it does not scan every outstanding sequence on each mailbox operation.
+
+Added regression sources for 32 concurrent duplicate physical attempts,
+reservation retention across upgrade freeze and recovery after
+`requeueProvenUnsent`, 32 coordinator close-vs-prepare races, and the
+source-compiled SHARED Counter rejecting a second physical send before its
+drain receipt completes. These are **committed tests, not executed test
+passes** until exact-head JDK25/Graal CI runs.
+
+**Important limitations:** the ledger is an in-memory trusted-host guard,
+not durable deduplication, a cryptographically authenticated
+`mail.done()` receipt, or an exactly-once side-effect guarantee. External
+transport ambiguity still requires supervisory quarantine/reconciliation.
+The coordinator is not yet the physical ActorRef publication authority.
+PRIVATE and UNTRUSTED remain disabled for this same-process bridge.
