@@ -5038,6 +5038,14 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         where + " cannot use SharedMutex<T> with isoactor/private actors");
             }
+            // A private/untrusted sender cannot grant a live shared-memory
+            // capability even when the destination actor is SHARED. Match
+            // ActorRuntime.requireMutexTransport's sender-domain check.
+            if (currentActorKind == Ast.ActorKind.PRIVATE
+                    || currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                throw new IllegalArgumentException(
+                        where + " cannot send SharedMutex<T> from a private/untrusted actor");
+            }
             if (named.arguments().size() != 1
                     || !isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())
                     || !isThreadSend(named.arguments().getFirst())) {
