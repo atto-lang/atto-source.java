@@ -3767,10 +3767,21 @@ public final class TypeChecker {
                             "guest scalar task requires a lexical root-main local capture");
                 }
                 Type copiedType = typeOf(returned, env, generics, self);
-                if (copiedType instanceof Types.StringLiteral) return Primitive.STRING;
-                if (copiedType == Primitive.INT || copiedType == Primitive.BOOL
-                        || copiedType == Primitive.FLOAT
-                        || copiedType == Primitive.STRING) return copiedType;
+                Type ownedType = copiedType instanceof Types.StringLiteral
+                        ? Primitive.STRING : copiedType;
+                if (ownedType == Primitive.INT || ownedType == Primitive.BOOL
+                        || ownedType == Primitive.FLOAT
+                        || ownedType == Primitive.STRING) {
+                    // The selected scalar must have a resolved Send proof in
+                    // addition to the ownership pass and runtime copy check.
+                    if (!ThreadSafetyTraits.has(ownedType,
+                            ThreadSafetyTraits.Trait.SEND,
+                            (nominal, trait) -> false)) {
+                        throw new IllegalArgumentException(
+                                "guest scalar task capture failed Send proof");
+                    }
+                    return ownedType;
+                }
                 throw new IllegalArgumentException(
                         "guest scalar task capture requires a proven copyable int, bool, float or string");
             }

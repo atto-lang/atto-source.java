@@ -77,7 +77,10 @@ public final class ThreadSafetyTraits {
             if (type == Unknown.INSTANCE || type instanceof Generic
                     || type instanceof SelfType || type instanceof ClassNamespace
                     || type instanceof Function || type instanceof Types.Not) return false;
-            if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
+            // Neither void nor the null sentinel is an owned transferable value.
+            if (type instanceof Primitive primitive) {
+                return primitive != Primitive.VOID && primitive != Primitive.NULL;
+            }
             if (type instanceof StringLiteral || type instanceof BoolLiteral) return true;
 
             if (type instanceof Borrow borrow) {
@@ -106,12 +109,14 @@ public final class ThreadSafetyTraits {
                 return true;
             }
             if (type instanceof Record record) {
-                // Structural records are writable by default. Only the
-                // explicitly readonly record type can establish shared
-                // access, and every nested field must independently be Sync.
-                if (trait == Trait.SYNC && !record.readOnly()) return false;
+                // A readonly view does not certify that its backing allocation
+                // is frozen: another writable alias may still mutate it.
+                // Do not infer Sync from readonly projection alone until the
+                // compiler mints an independently proven immutable backing.
+                // Owned transfer remains Send when every field is Send.
+                if (trait == Trait.SYNC) return false;
                 for (Type member : record.members().values()) {
-                    if (!has(member, trait, nominalProof, visiting, depth + 1)) return false;
+                    if (!has(member, Trait.SEND, nominalProof, visiting, depth + 1)) return false;
                 }
                 return true;
             }
