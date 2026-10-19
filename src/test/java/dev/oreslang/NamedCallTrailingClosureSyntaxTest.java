@@ -7,14 +7,20 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.NamedCallBindingPlan;
 import dev.oreslang.types.ReturnCleanupChecker;
 import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Parser-stage contract for named value arguments plus the single final
- * anonymous trailing-closure exception. No executable named-call lowering is
- * claimed here.
+ * Named value arguments plus the single final anonymous trailing-closure
+ * exception. Required-arity calls to statically resolved source functions and
+ * methods are executable; constructors, dynamic/imported targets and generic
+ * callable inference remain staged/fail-closed.
  */
 final class NamedCallTrailingClosureSyntaxTest {
     private static Ast.Expr firstExpression(String expression) {
@@ -144,7 +150,7 @@ final class NamedCallTrailingClosureSyntaxTest {
     }
 
     @Test
-    void cleanupAnalysisRejectsStagedCallBeforeSkippingNestedEffects() {
+    void cleanupAnalysisTraversesStagedCallBeforeSemanticBinding() {
         Ast.Program program = Parser.parse("""
                 pub fnc work(int value): int { return value; }
                 pub fnc main(): void {
@@ -152,15 +158,11 @@ final class NamedCallTrailingClosureSyntaxTest {
                     return;
                 }
                 """);
-        IllegalArgumentException failure = assertThrows(
-                IllegalArgumentException.class,
-                () -> ReturnCleanupChecker.check(program));
-        assertTrue(failure.getMessage().contains("staged named/trailing-closure"),
-                failure::toString);
+        assertDoesNotThrow(() -> ReturnCleanupChecker.check(program));
     }
 
     @Test
-    void capabilityCheckerRejectsStagedCallWhenInvokedDirectly() {
+    void capabilityCheckerRequiresTheCompilerBindingProofWhenInvokedDirectly() {
         Ast.Program program = Parser.parse("""
                 pub fnc work(int value): int { return value; }
                 pub fnc main(): void {
@@ -168,24 +170,140 @@ final class NamedCallTrailingClosureSyntaxTest {
                     return;
                 }
                 """);
-        SecurityException failure = assertThrows(
-                SecurityException.class,
+        IllegalStateException unverified = assertThrows(
+                IllegalStateException.class,
                 () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
-        assertTrue(failure.getMessage().contains("staged named/trailing-closure"),
-                failure::toString);
+        assertTrue(unverified.getMessage().contains("compiler-verified"),
+                unverified::toString);
+
+        Ast.Program checked = TypeChecker.checkTypes(program);
+        assertDoesNotThrow(
+                () -> CapabilityChecker.check(checked, IsolatePolicy.developer()));
     }
 
     @Test
-    void compilerTypeAdmissionFailsClosedBeforeAnyRuntimeFallback() {
-        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+    void compilerAdmitsRequiredNamedCallAfterStaticBindingProof() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc work(int value): int { return value; }
+                pub fnc main(): void {
+                    work(value: 1);
+                    return;
+                }
+                """)));
+    }
+
+    @Test
+    void runtimeEvaluatesNamedArgumentsInSourceOrderThenPermutesAbiSlots() throws Exception {
+        String output = run("""
+                pub fnc mark(String value): String {
+                    stdio.stdout.write(value);
+                    return value;
+                }
+
+                pub fnc join(String first, String second): String {
+                    return first + second;
+                }
+
+                pub routine main(): void {
+                    val String joined = join(
+                        second: mark("2"),
+                        first: mark("1")
+                    );
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(joined);
+                    return;
+                }
+                """);
+        assertEquals("21|12", output);
+    }
+
+    @Test
+    void runtimeBindsFinalAnonymousFncOnlyToFinalCallableFormal() throws Exception {
+        String output = run("""
+                pub fnc apply(int value, Fnc<int, int> body): int {
+                    return body(value);
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(apply(
+                        value: 3,
+                        fnc(chunk) { return chunk + 4; }
+                    ));
+                    return;
+                }
+                """);
+        assertEquals("7", output);
+    }
+
+    @Test
+    void moduleStaticAndInstanceCallsUseTheSameCheckedPermutation() throws Exception {
+        String output = run("""
+                define module math
+                  pub fnc sub(int left, int right): int {
+                    return left - right;
+                  }
+
+                  pub define class C as
+                    pub static fnc ssub(int left, int right): int {
+                      return left - right;
+                    }
+
+                    pub sub(int left, int right): int {
+                      return left - right;
+                    }
+                  end
+                end
+
+                pub routine main(): void {
+                    val c = new math.C();
+                    stdio.stdout.write(math.sub(right: 2, left: 7));
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(math.C.ssub(right: 3, left: 8));
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(c.sub(right: 4, left: 9));
+                    return;
+                }
+                """);
+        assertEquals("5|5|5", output);
+    }
+
+    @Test
+    void genericAndDynamicNamedCallsRemainFailClosed() {
+        IllegalArgumentException generic = assertThrows(
+                IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        pub fnc work(int value): int { return value; }
+                        pub fnc identity<T>(T value): T { return value; }
                         pub fnc main(): void {
-                            work(value: 1);
+                            identity(value: 1);
                             return;
                         }
                         """)));
-        assertTrue(failure.getMessage().contains("named/trailing-closure"),
-                failure::toString);
+        assertTrue(generic.getMessage().contains("generic"), generic::toString);
+
+        IllegalArgumentException dynamic = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc main(): void {
+                            val Fnc<int, int> f = fnc(int x) { return x; };
+                            f(x: 1);
+                            return;
+                        }
+                        """)));
+        assertTrue(dynamic.getMessage().contains("statically resolved"),
+                dynamic::toString);
+    }
+
+    private static String run(String program) throws Exception {
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "named-calls.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(stdout)
+                .build()) {
+            context.eval(source);
+        }
+        return stdout.toString(StandardCharsets.UTF_8);
     }
 }
