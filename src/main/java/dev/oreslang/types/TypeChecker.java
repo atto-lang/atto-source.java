@@ -128,6 +128,10 @@ public final class TypeChecker {
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
                 "self", "null"));
+        // Sealed compiler intrinsics occupy the value namespace even though
+        // they have no guest-visible declaration object. Imports must never
+        // shadow them and thereby gain a trusted intrinsic effect/type path.
+        localNames.addAll(ML_SCALAR_INTRINSICS);
 
         for (Ast.ModuleDecl module : program.modules()) {
             if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
