@@ -611,6 +611,38 @@ public class TaskHandleTest {
         subscription.close();
     }
 
+    @Test void reusedCheckpointExceptionCannotCancelUnrelatedTask() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            TaskHandle<Integer> original = scope.startTask(resume -> {
+                assertTrue(scope.cancel("original stopping"));
+                OresScheduler.cancellationCheckpoint();
+                return OresScheduler.done(1);
+            });
+            assertInstanceOf(TaskHandle.Cancelled.class, done(original));
+            assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
+
+            // A host can retain a Throwable and rethrow it in another Task.
+            // Its runtime-private type alone is not cancellation authority.
+            final CancellationException captured;
+            try {
+                original.result().get(3, TimeUnit.SECONDS);
+                throw new AssertionError("checkpoint should have failed its result Future");
+            } catch (java.util.concurrent.ExecutionException expected) {
+                captured = assertInstanceOf(
+                        CancellationException.class, expected.getCause());
+            }
+
+            TaskHandle<Integer> unrelated = scheduler.startTracked(resume -> {
+                throw captured;
+            });
+            TaskHandle.TaskOutcome<Integer> outcome = done(unrelated);
+            assertInstanceOf(TaskHandle.Failed.class, outcome,
+                    "a stale marker from another Task is not cancellation");
+            assertFalse(unrelated.isCancellationRequested());
+        }
+    }
+
     @Test void guestCancellationExceptionWithoutRequestIsFailure() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             TaskHandle<Integer> h = scheduler.startTracked(r -> {
