@@ -226,6 +226,56 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         }
     }
 
+    /**
+     * Failed initial readiness has no returned router to own a live physical
+     * actor's generation lease. Pre-register this supervisor-owned quarantine
+     * BEFORE physical spawn, so failed stop/timeout can never orphan an old
+     * executable image or make context close look safe.
+     *
+     * This is a bounded host-only emergency ledger, NOT an automatic GC
+     * proof; supervisors must retry reapFailedInitialSpawns().
+     */
+    private static final Object failedSpawnLock = new Object();
+    private static final ArrayList<FailedInitialSpawn> failedInitialSpawns =
+            new ArrayList<>();
+    private static final int MAX_FAILED_INITIAL_SPAWNS = 1024;
+
+    private static final class FailedInitialSpawn {
+        final HotReloadManager.ActorGenerationView view;
+        final HotReloadManager.Generation.ActorRouteLease lease;
+        ActorRuntime.ActorRef<Object> physical;
+
+        FailedInitialSpawn(
+                HotReloadManager.ActorGenerationView view,
+                HotReloadManager.Generation.ActorRouteLease lease) {
+            this.view = view;
+            this.lease = lease;
+        }
+    }
+
+    /**
+     * Host supervisor retry: release a failed spawn's generation pin ONLY
+     * after its exact ActorRuntime reports physical finalization. A failed
+     * lease debit keeps the owner recorded for another retry.
+     */
+    public static int reapFailedInitialSpawns() {
+        requireBlockingHostSurface("reap failed initial source actor spawns");
+        synchronized (failedSpawnLock) {
+            int retired = 0;
+            for (int i = failedInitialSpawns.size() - 1; i >= 0; --i) {
+                FailedInitialSpawn pending = failedInitialSpawns.get(i);
+                if (pending.physical == null
+                        || pending.view.runtime().physicallyFinalizedForHotUpgrade(
+                                pending.physical)) {
+                    pending.lease.close();
+                    failedInitialSpawns.remove(i);
+                    retired++;
+                }
+            }
+            return retired;
+        }
+    }
+
     private final Object routeLock = new Object();
     // Serializes multiple supervisor close attempts; unlike the routeLock,
     // it may be held while waiting for physical actor finalization.
@@ -307,33 +357,84 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         ImageReceipts firstImage = ImageReceipts.from(view, actorTypeName);
         HotReloadManager.Generation.ActorRouteLease generationLease =
                 generation.pinActorRoute();
-        ActorRuntime.ActorRef<Object> physical = null;
-        boolean ready = false;
+        FailedInitialSpawn ownership = null;
+        boolean registered = false;
+        boolean successful = false;
+        Throwable primaryFailure = null;
         try {
-            physical = view.runtime().spawnCodeActor(
-                    kind,
-                    view.policy(),
-                    view.executor(),
-                    actorTypeName);
+            // Record the pin before an executable actor can possibly start.
+            // Quarantine registration may allocate; failure here still has no
+            // physical actor and is safe to release in the finalizer.
+            ownership = new FailedInitialSpawn(view, generationLease);
+            synchronized (failedSpawnLock) {
+                if (failedInitialSpawns.size() >= MAX_FAILED_INITIAL_SPAWNS)
+                    throw new IllegalStateException(
+                            "failed source actor spawn quarantine capacity exhausted");
+                failedInitialSpawns.add(ownership);
+                registered = true;
+            }
+            ActorRuntime.ActorRef<Object> physical =
+                    view.runtime().spawnCodeActor(
+                            kind, view.policy(), view.executor(), actorTypeName);
+            // Reference assignment is nonallocating. It precedes readiness
+            // blocking so stop timeout always retains a retriable owner.
+            ownership.physical = physical;
             physical.getReady().get(
-                    toNanosSaturated(readyTimeout),
-                    TimeUnit.NANOSECONDS);
-            ready = true;
-            return new LogicalSourceActorRouterV1(
-                    kind,
-                    actorTypeName,
-                    new Route(
-                            generation,
-                            generationLease,
-                            view,
-                            physical,
-                            1L,
-                            1L,
-                            firstImage));
+                    toNanosSaturated(readyTimeout), TimeUnit.NANOSECONDS);
+            LogicalSourceActorRouterV1 router = new LogicalSourceActorRouterV1(
+                    kind, actorTypeName,
+                    new Route(generation, generationLease, view, physical,
+                            1L, 1L, firstImage));
+            synchronized (failedSpawnLock) {
+                failedInitialSpawns.remove(ownership);
+            }
+            successful = true;
+            return router;
+        } catch (InterruptedException | ExecutionException | TimeoutException
+                | RuntimeException | Error failure) {
+            primaryFailure = failure;
+            throw failure;
         } finally {
-            if (!ready) {
-                if (physical != null) physical.stop();
-                generationLease.close();
+            if (!successful) {
+                Throwable cleanupFailure = null;
+                ActorRuntime.ActorRef<Object> physical =
+                        ownership == null ? null : ownership.physical;
+                if (physical != null) {
+                    try {
+                        physical.stop();
+                    } catch (RuntimeException | Error failure) {
+                        cleanupFailure = failure;
+                    }
+                }
+                // Unlike the old implementation, requesting stop alone does
+                // not authorize the generation pin debit. Keep the
+                // pre-registered owner until physical finalization succeeds.
+                try {
+                    if (!registered || physical == null
+                            || view.runtime().physicallyFinalizedForHotUpgrade(
+                                    physical)) {
+                        generationLease.close();
+                        if (registered) {
+                            synchronized (failedSpawnLock) {
+                                failedInitialSpawns.remove(ownership);
+                            }
+                        }
+                    }
+                } catch (RuntimeException | Error failure) {
+                    if (cleanupFailure == null) cleanupFailure = failure;
+                    else if (cleanupFailure != failure)
+                        cleanupFailure.addSuppressed(failure);
+                }
+                if (cleanupFailure != null) {
+                    if (primaryFailure != null) {
+                        if (cleanupFailure != primaryFailure)
+                            primaryFailure.addSuppressed(cleanupFailure);
+                    } else if (cleanupFailure instanceof RuntimeException failure) {
+                        throw failure;
+                    } else {
+                        throw (Error) cleanupFailure;
+                    }
+                }
             }
         }
     }
