@@ -665,3 +665,64 @@ to inspect organization Actions billing and runner policy through the
 connected GitHub interface are unsupported; no claim of verified minute
 exhaustion or successful cross-organization private source mirror is made.
 Security authorization issue #962 remains open.
+
+
+## Structured child lifetime completion — issue #1449
+
+**Audited defect.** A parent `TaskHandle.maybePublish()` previously flipped
+`published=true` before `TaskCancellation.retire()`; when the
+cancellation token still had children, `retire()` threw and the
+parent's `getDone()` could never settle. Merely swallowing the error
+would falsely claim descendant quiescence. Furthermore, cancellation
+cleared the revocation graph's child edges even if descendants were
+still physically running; that graph was not a join witness.
+
+**Implementation in staged PR #1407.**
+
+- `TaskCancellation` now tracks separate `lifetimeParent`/
+  `lifetimeChildren` relations, distinct from its cancellation
+  propagation `owner`/`children`. Cancellation clears revocation edges
+  without releasing physical-lifetime join slots.
+- `sealAndObserveChildQuiescence(...)` atomically seals admission and
+  subscribes to exactly one last-child retirement notification; child
+  retirement and transfer release the former owner's lifetime edge
+  under `GRAPH_LOCK`, then invoke the callback outside the lock.
+- `child()` and `adoptInto(...)` reject admission to a sealed or
+  retired owner. Transfer migrates both the revocation relationship
+  and the physical-lifetime responsibility.
+- `TaskHandle` uses a separate `retirementArmed` flag and waits for
+  child-lifetime drainage before `cancellation.retire()`, then flips
+  `published` and completes `getDone()`. The scheduler's own guest
+  quiescence and terminal outcome remain prerequisite conditions.
+- Parent `getDone()` now promises its own physical exit **and** every
+  currently owned descendant's retirement or explicit transfer.
+  This does not imply bounded latency: non-cooperative children can
+  keep the join pending, and unrelated detached Tasks are not owned.
+- The old `parentRetirementCannotOrphanLiveChildren` JUnit expectation
+  was corrected: cancellation alone cannot make parent retirement
+  legal while its child is still physically running.
+
+**New source JUnit checks** target parent success with an active child
+and scope, parent cancellation before child exit, late admission
+rejection, physical child grandparent lifetime accounting after
+cancel, reparenting to another live owner, and seal-vs-retirement
+races with exactly one callback. The current branch (which also
+received concurrent TaskHandle regressions) has **90 committed
+JUnit methods** (31 TaskCancellation, 42 TaskHandle, 17 TaskScope),
+still *not source-CI executed*.
+
+**Isolated carrier test:** private
+[opto-sync-test/go-java-validation Actions #39194916649](https://github.com/opto-sync-test/go-java-validation/actions/runs/39194916649)
+successfully compiled and executed a wholly independent Java 21
+`SourceFreeStructuredJoinCanary` (1,400 join/transfer/cancellation
+cases) alongside 5,950 earlier model checks, for **7,350 model
+cases**. All 16 job steps succeeded. It neither mirrored private
+Oreslang source nor established production JUnit/GraalVM parity.
+
+**Unresolved release gates:** original source Actions on
+[ci run #39194995384](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39194995384)
+and [fast-ci run #39194995328](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39194995328)
+failed with **zero steps executed**. The source `main` branch lacks
+required protection and the private cross-org destination allowlist
+is empty. Keep the issue and PR open/draft until authorized exact-source
+Maven/GraalVM tests verify this new descendant-join behavior.
