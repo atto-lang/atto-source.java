@@ -1197,6 +1197,13 @@ public final class OwnershipChecker {
             return new ValueInfo(elementType, elementKind, null);
         }
         if (expr instanceof Ast.NewExpr created) {
+            // Ownership analysis must independently reject staged named
+            // constructor arguments, including ASTs constructed by compiler
+            // passes that bypass source parsing/type analysis.
+            if (created.arguments().stream().anyMatch(
+                    arg -> arg instanceof Ast.NamedArgumentExpr)) {
+                throw error("named value arguments require checked declaration-bound invocation lowering");
+            }
             List<Ast.TypeRef> argumentTypes = new ArrayList<>(created.arguments().size());
             for (Ast.Expr arg : created.arguments()) {
                 ValueInfo info = checkExpr(arg, scope, true);
