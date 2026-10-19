@@ -17,9 +17,9 @@ public final class OresCompiler {
 
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
-        program = TypeChecker.checkTypes(program);
-        OwnershipChecker.check(program);
-        return program;
+        TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return checked.program();
     }
 
     /** Compiler diagnostics are returned explicitly instead of written to shared stderr. */
@@ -33,7 +33,7 @@ public final class OresCompiler {
 
     public static AnalysisResult analyzeWithDiagnostics(Ast.Program program) {
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
-        OwnershipChecker.check(checked.program());
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
         return new AnalysisResult(checked.program(), checked.warnings());
     }
 
