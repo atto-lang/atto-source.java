@@ -245,11 +245,20 @@ the following:
 - an empty bypass-actor list;
 - exactly `refs/heads/ci/oreslang-*` as the included ref pattern and no
   exclusions;
-- exactly one effective `update` restriction with
+- exactly one `update` restriction with
   `update_allows_fetch_and_merge=false`;
 - exactly one `deletion` restriction;
 - no `creation` restriction, so only the initial reviewed publisher create
   is possible before the ref becomes immutable.
+
+The publisher then queries GitHub's active-rules endpoint for the **exact**
+percent-encoded `ci/oreslang-<source>-<carrier>` branch name (the branch does
+not need to exist yet). It requires that the reviewed repository ruleset ID
+actually contributes one immutable `update` rule and one `deletion` rule to
+that exact ref. This second proof rejects a stored ruleset whose pattern or
+effective applicability has drifted even when the standalone ruleset object
+still looks plausible. The effective-rule proof is also repeated immediately
+before every destination write.
 
 Carrier CI independently requires the source-bearing ref to be exactly one
 snapshot commit above a carrier base that did not already contain
