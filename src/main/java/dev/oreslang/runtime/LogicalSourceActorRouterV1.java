@@ -284,18 +284,17 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     }
 
     /**
-     * Opaque, trusted-host-only cumulative physical-drain acknowledgment.
-     * This is bound to the exact immutable envelope AND the route instance
-     * that accepted it. It is NOT a remote authenticated mail.done() receipt:
-     * serialized send+drain is required until compiler-owned message IDs and
-     * authenticated per-message physical completions are available.
+     * Opaque, trusted-host physical completion acknowledgment for ONE
+     * runtime-admitted message. ActorRuntime mints the physical sequence and
+     * the non-cancellable terminal observer before physical admission.
+     * This is LOCAL provenance, not remote cryptographic authentication.
      */
     static final class ProxyDrainReceipt {
         private final LogicalSourceActorRouterV1 owner;
         private final Route routed;
         private final LogicalActorProxyMailboxV1 mailbox;
         private final LogicalActorProxyMailboxV1.Envelope envelope;
-        private final OresFuture<Void> drained;
+        private final ActorRuntime.PhysicalMailReceipt physicalReceipt;
         private boolean consumed;
 
         private ProxyDrainReceipt(
@@ -303,12 +302,12 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 Route routed,
                 LogicalActorProxyMailboxV1 mailbox,
                 LogicalActorProxyMailboxV1.Envelope envelope,
-                OresFuture<Void> drained) {
+                ActorRuntime.PhysicalMailReceipt physicalReceipt) {
             this.owner = owner;
             this.routed = routed;
             this.mailbox = mailbox;
             this.envelope = envelope;
-            this.drained = drained;
+            this.physicalReceipt = physicalReceipt;
         }
 
         void awaitAndComplete(
@@ -321,10 +320,17 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             if (exactEnvelope != envelope)
                 throw new SecurityException("foreign immutable proxy envelope receipt");
 
+            // Only the target runtime can mint the accepted physical
+            // sequence. It is not the proxy sequence: distinct physical
+            // incarnations have independent counters after hot upgrade.
+            if (physicalReceipt.physical() != routed.physical()
+                    || physicalReceipt.acceptedSequence() < 0)
+                throw new SecurityException("foreign physical mail receipt");
             // Completion may run guest turns: NEVER wait while holding the
             // route monitor. A timeout/interrupt is ambiguous physical work
             // and the calling bridge must fail sealed rather than retry.
-            drained.get(toNanosSaturated(timeout), TimeUnit.NANOSECONDS);
+            physicalReceipt.terminal().get(
+                    toNanosSaturated(timeout), TimeUnit.NANOSECONDS);
             synchronized (owner.routeLock) {
                 if (consumed)
                     throw new IllegalStateException("consumed physical drain receipt");
@@ -376,11 +382,13 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             // trusted caller cannot deliver the same logical envelope while
             // its first drain receipt is still pending.
             mailbox.beginPhysicalSendAttempt(envelope, expectedRouteEpoch);
-            current.physical.send(value);
-            // The bridge dispatches only ONE outstanding message at a time;
-            // its cumulative drain therefore acknowledges this exact prefix.
-            OresFuture<Void> drained = current.physical.drain();
-            return new ProxyDrainReceipt(this, current, mailbox, envelope, drained);
+            ActorRuntime.PhysicalMailReceipt physical =
+                    current.view.runtime().sendWithPhysicalReceipt(
+                            current.physical, value);
+            // Source ActorRuntime registers the exact accepted sequence's
+            // terminal observer at the mailbox admission linearization.
+            return new ProxyDrainReceipt(
+                    this, current, mailbox, envelope, physical);
         }
     }
 
