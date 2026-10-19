@@ -2205,6 +2205,9 @@ public final class ActorRuntime implements AutoCloseable {
         // A runtime-owned synchronous terminal subscriber may run on the
         // finalizer itself. It must not wait for its own pending completion.
         private volatile Thread physicalFinalizationOwnerThread;
+        // Stop may settle receipt/cancellation callbacks before the finalizer
+        // can run. A synchronous callback must not join its own stop thread.
+        private volatile Thread terminalSettlementOwnerThread;
         private volatile ActorOutputStream<Object> outputStream;
 
         private ActorRef(ActorId id, ActorKind kind, long generation) {
@@ -2289,7 +2292,8 @@ public final class ActorRuntime implements AutoCloseable {
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
             if (!physicallyFinalized.get()
-                    && physicalFinalizationOwnerThread == Thread.currentThread()) {
+                    && (physicalFinalizationOwnerThread == Thread.currentThread()
+                            || terminalSettlementOwnerThread == Thread.currentThread())) {
                 throw new IllegalStateException(
                         "actor terminal callback cannot join its own physical finalization");
             }
@@ -8098,6 +8102,9 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean finalCleanupStarted;
         private volatile boolean finalCleanupActive;
         private boolean finalized;
+        /** Teardown receipt/cancellation observers must settle before
+         * external physical finalization can certify code retirement. */
+        private boolean terminalSettlementPending;
         private volatile ActorTurnWatchdog.Lease watchdogLease;
         private long turnStartedWallNanos;
         private long turnStartedCpuNanos = -1L;
@@ -8434,6 +8441,7 @@ public final class ActorRuntime implements AutoCloseable {
             // fully crossed back out of the TurnExecutor boundary. For
             // Truffle-backed runtimes that boundary owns context enter/leave.
             if (finalized
+                    || terminalSettlementPending
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
@@ -9102,7 +9110,10 @@ public final class ActorRuntime implements AutoCloseable {
             List<DrainWaiter> failedDrainWaiters;
             List<PhysicalMailReceipt> failedPhysicalReceipts;
             synchronized (lifecycleLock) {
-                if (finalized) return;
+                // Another stop caller cannot take a second empty snapshot
+                // and publish physical retirement while the first caller is
+                // still settling its terminal observers.
+                if (finalized || terminalSettlementPending) return;
 
                 // Fail before mutation if any snapshot allocation cannot be
                 // reserved. A later supervisor retry still sees a live actor
@@ -9112,6 +9123,11 @@ public final class ActorRuntime implements AutoCloseable {
                         List.copyOf(pendingPhysicalReceipts.values());
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
+                // Once these snapshots are owned by this stop caller, their
+                // terminal callbacks are an outstanding physical lifetime.
+                // Keep this fence until all receipt and child cancellations
+                // are fully delivered. An OOME must leave retirement denied.
+                terminalSettlementPending = true;
 
                 if (recordCause && cause != null) {
                     ref.terminationCause.compareAndSet(null, cause);
@@ -9136,31 +9152,49 @@ public final class ActorRuntime implements AutoCloseable {
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
             // Publish failure only after teardown has released lifecycleLock.
-            for (PhysicalMailReceipt exact : failedPhysicalReceipts) {
-                exact.failTerminal(receiptDisposition, drainFailure);
-            }
-            for (DrainWaiter waiter : failedDrainWaiters) {
-                waiter.completion().failFromRuntime(drainFailure);
-            }
-
-            // Cancellation removes channel/select waiter registrations before
-            // any future channel activity can revive work for this dead actor.
-            for (OresFuture<?> future : pending) future.cancel(false);
-
-            for (ActorCell<?> child : descendants) {
-                if (receiptDisposition == PhysicalMailDisposition.RUNTIME_CLOSED) {
-                    child.terminateTree(
-                            null, false, PhysicalMailDisposition.RUNTIME_CLOSED);
-                    continue;
+            // This same thread owns terminal settlement; joining this actor
+            // from one of its own callbacks would deadlock the physical latch.
+            ref.terminalSettlementOwnerThread = Thread.currentThread();
+            boolean terminalSettlementComplete = false;
+            try {
+                for (PhysicalMailReceipt exact : failedPhysicalReceipts) {
+                    exact.failTerminal(receiptDisposition, drainFailure);
                 }
-                CancellationMode childMode =
-                        receiptDisposition == PhysicalMailDisposition.FORCE_CANCELLED
-                                ? CancellationMode.FORCE_ISOLATED
-                                : CancellationMode.STRUCTURED;
-                child.cancel(new ActorCancelledException(
-                        child.ref.id(),
-                        "parent actor " + ref.id() + " terminated",
-                        childMode));
+                for (DrainWaiter waiter : failedDrainWaiters) {
+                    waiter.completion().failFromRuntime(drainFailure);
+                }
+
+                // Cancellation removes channel/select waiter registrations
+                // before future channel activity can revive dead actor work.
+                for (OresFuture<?> future : pending) future.cancel(false);
+
+                for (ActorCell<?> child : descendants) {
+                    if (receiptDisposition == PhysicalMailDisposition.RUNTIME_CLOSED) {
+                        child.terminateTree(
+                                null, false, PhysicalMailDisposition.RUNTIME_CLOSED);
+                        continue;
+                    }
+                    CancellationMode childMode =
+                            receiptDisposition == PhysicalMailDisposition.FORCE_CANCELLED
+                                    ? CancellationMode.FORCE_ISOLATED
+                                    : CancellationMode.STRUCTURED;
+                    child.cancel(new ActorCancelledException(
+                            child.ref.id(),
+                            "parent actor " + ref.id() + " terminated",
+                            childMode));
+                }
+                terminalSettlementComplete = true;
+            } finally {
+                if (terminalSettlementComplete) {
+                    synchronized (lifecycleLock) {
+                        terminalSettlementPending = false;
+                        if (stopped.get()) finalizeStopLocked();
+                        lifecycleLock.notifyAll();
+                    }
+                }
+                // Even when a callback throws and the actor remains sealed,
+                // do not leave stale thread identity after unwinding.
+                ref.terminalSettlementOwnerThread = null;
             }
         }
     }
