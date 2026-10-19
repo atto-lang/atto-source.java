@@ -17,7 +17,8 @@ import java.util.SplittableRandom;
  */
 public final class OresTestExploration {
     public record Report(long exploredStates, long rejectedCycles, long stressCases,
-                         int strandedWaiters, int jvmDeadlockedThreads) {
+                         int strandedWaiters, int jvmDeadlockedThreads,
+                         long inputFingerprint) {
         public boolean ok() {
             return rejectedCycles > 0 && strandedWaiters == 0 && jvmDeadlockedThreads == 0;
         }
@@ -96,11 +97,14 @@ public final class OresTestExploration {
         // Exercise *actual* CriticalGate code, including cancellation and
         // direct FIFO handoff, with independently reproducible input seeds.
         SplittableRandom rng = new SplittableRandom(seed);
+        long inputFingerprint = 0xcbf29ce484222325L;
         for (int n = 0; n < stressCases; n++) {
             CriticalGate gate = new CriticalGate();
             CriticalGate.Ticket first = gate.newTicket();
             if (!first.enterAsync().isDone()) throw new AssertionError("initial admission");
             int count = 1 + rng.nextInt(12);
+            inputFingerprint = mix(inputFingerprint, n);
+            inputFingerprint = mix(inputFingerprint, count);
             List<CriticalGate.Ticket> tickets = new ArrayList<>();
             List<OresFuture<Void>> futures = new ArrayList<>();
             boolean[] cancelled = new boolean[count];
@@ -111,7 +115,9 @@ public final class OresTestExploration {
                     futures.add(ticket.enterAsync());
                 }
                 for (int i = 0; i < count; i++) {
-                    if (rng.nextBoolean()) {
+                    boolean attemptCancellation = rng.nextBoolean();
+                    inputFingerprint = mix(inputFingerprint, attemptCancellation ? 1 : 0);
+                    if (attemptCancellation) {
                         cancelled[i] = futures.get(i).cancel(false);
                         if (!cancelled[i]) throw new AssertionError("cancel lost while owner held");
                     }
@@ -145,7 +151,7 @@ public final class OresTestExploration {
         ThreadMXBean mxBean = ManagementFactory.getThreadMXBean();
         long[] stuck = mxBean.findDeadlockedThreads();
         return new Report(visited, cycleRejections, stressCases, remaining,
-                stuck == null ? 0 : stuck.length);
+                stuck == null ? 0 : stuck.length, inputFingerprint);
     }
 
     private static void checkConcurrentCancelHandoff(long seed, int iteration) {
@@ -196,6 +202,10 @@ public final class OresTestExploration {
             contender.close();
             follower.close();
         }
+    }
+
+    private static long mix(long accumulator, long value) {
+        return (accumulator ^ value) * 0x100000001b3L;
     }
 
     private static void enqueue(HashSet<State> seen, ArrayDeque<State> work, State value) {
