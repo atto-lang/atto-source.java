@@ -115,7 +115,18 @@ public final class LinkedProgramRunner {
         LinkedHashMap<String, Map<String, String>> resolutions = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, resolutions);
         ensureJavaEntryContainsOres(entry, units);
+        return hashCollectedSourceClosure(projectConfig, units, resolutions);
+    }
 
+    /**
+     * IMPORTANT: Hash the exact in-memory MixedSourceUnit objects that the
+     * compilation pipeline will consume, rather than reopening each source.
+     * This is also used by sourceClosureSha256's preflight snapshot.
+     */
+    private static String hashCollectedSourceClosure(
+            OresProjectConfig projectConfig,
+            Map<String, MixedSourceUnit> units,
+            Map<String, ? extends Map<String, String>> resolutions) throws IOException {
         LinkedHashMap<String, String> sourceText = new LinkedHashMap<>();
         for (var unit : units.values()) sourceText.put(unit.unitId(), unit.rawSource());
         Path manifest = projectConfig.manifestPath().orElse(null);
