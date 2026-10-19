@@ -253,4 +253,17 @@ final class SendSyncAndRegionPlannerTest {
                 new RegionAccessPlanner.Access(11, 3, "x", 10, 20, RegionAccessPlanner.Mode.WRITE)));
         assertEquals(3, valid.accesses().size());
     }
+
+    @Test
+    void recursiveGenericExpansionIsBoundedAndFailsClosed() {
+        // Each recursion expands Node<T> into Node<Option<T>>; the distinct
+        // generic instantiations must not defeat ordinary cycle detection.
+        var recursive = klass("Expanding", List.of("T"),
+                field("next", t("Expanding", t("Option", t("T"))), false));
+        SendSyncTraits checker = new SendSyncTraits(
+                new Ast.Program(List.of(new Ast.ModuleDecl("recursive", List.of(recursive)))),
+                java.util.Set.of("Option"));
+        assertFalse(checker.isSend(t("Expanding", t("int"))));
+        assertFalse(checker.isSync(t("Expanding", t("int"))));
+    }
 }
