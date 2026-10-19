@@ -7,23 +7,16 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Fail-closed native test entry point. The test body and suite orchestration
  * remain Oreslang source (stdlib/testing.ores), not Java/JUnit.
  *
- * --race and --fuzz are RESERVED until OresVM can prove their instrumentation
- * and replay contracts; accepting either and running ordinary tests would give
- * users a false safety assurance.
+ * --race remains unavailable until OresVM has true memory instrumentation.
+ * --fuzz accepts only real native seeded integer property generators;
+ * bounded CriticalGate stress must not be represented as guest schedule fuzzing.
  */
 final class OresTestCommand {
-    private static final Pattern SUMMARY = Pattern.compile(
-            "(?m)^ORES_TEST\\|SUMMARY\\|total=(\\d+)\\|passed=(\\d+)"
-            + "\\|failed=(\\d+)\\|skipped=(\\d+)\\|filtered=(\\d+)\\r?$");
-    private static final Pattern FUZZ_EVENT = Pattern.compile(
-            "(?m)^ORES_TEST\\|FUZZ\\|seed=(\\d+)\\|cases=(\\d+)\\r?$");
     private static final int MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
 
     /** Refuse oversized guest output before allocating an unbounded buffer. */
@@ -149,72 +142,32 @@ final class OresTestCommand {
         System.err.write(err.toByteArray());
         if (result.exitStatus() != 0) return result.exitStatus();
 
-        Matcher matches = SUMMARY.matcher(out.toString(StandardCharsets.UTF_8));
-        int summaries = 0;
-        boolean failed = false;
-        long tested = 0;
-        while (matches.find()) {
-            summaries++;
-            final long total, passed, failures, skipped;
-            try {
-                total = Long.parseLong(matches.group(1));
-                passed = Long.parseLong(matches.group(2));
-                failures = Long.parseLong(matches.group(3));
-                skipped = Long.parseLong(matches.group(4));
-            } catch (NumberFormatException invalid) {
-                return usage("invalid native test summary number");
-            }
-            if (total <= 0 || total > 1_000_000
-                    || passed > total || failures > total || skipped > total
-                    || passed + failures + skipped != total) {
-                return usage("inconsistent native test summary counts");
-            }
-            if (tested > 1_000_000 - total) {
-                return usage("native test summary exceeds aggregate limit");
-            }
-            tested += total;
-            failed |= failures > 0;
-        }
-        if (summaries == 0 || tested == 0) {
-            System.err.println("oreslang test: no native ORES_TEST summary; "
-                    + "call run_suite with machine=true and require_success");
+        String guestOutput = out.toString(StandardCharsets.UTF_8);
+        final OresTestReportParser.Suite suite;
+        try {
+            suite = OresTestReportParser.parseSuite(guestOutput);
+        } catch (IllegalArgumentException invalidReport) {
+            System.err.println("oreslang test: " + invalidReport.getMessage());
             return 1;
         }
-        if (failed) return 1;
+        if (suite.failed() > 0) return 1;
 
         if (fuzz) {
-            // Fuzz mode is enabled only for a suite that actually generated
-            // input values through native stdlib/testing.fuzz_int_cases.
-            // Merely repeating an unchanged test program is not input fuzzing.
-            Matcher fuzzEvents = FUZZ_EVENT.matcher(out.toString(StandardCharsets.UTF_8));
-            int generators = 0;
-            long generatedInputs = 0;
-            while (fuzzEvents.find()) {
-                final long guestSeed, cases;
-                try {
-                    guestSeed = Long.parseLong(fuzzEvents.group(1));
-                    cases = Long.parseLong(fuzzEvents.group(2));
-                } catch (NumberFormatException invalid) {
-                    return usage("invalid native input-fuzz report number");
-                }
-                if (guestSeed < 0 || guestSeed > 65520
-                        || cases < 1 || cases > 100_000
-                        || (seedSpecified && guestSeed != seed)
-                        || (runsSpecified && cases != runs)) {
-                    return usage("native fuzz seed/cases differ from requested --seed/--runs");
-                }
-                if (generatedInputs > 1_000_000 - cases) {
-                    return usage("native input-fuzz count exceeds aggregate limit");
-                }
-                generatedInputs += cases;
-                generators++;
-            }
-            if (generators == 0) {
-                return unsupported("--fuzz", "native suite did not execute any "
-                        + "fuzz_int_cases property generator");
+            // The suite must run native fuzz_int_cases and produce bounded,
+            // consistent input counts. CriticalGate stress alone is not
+            // guest-language input fuzzing.
+            final OresTestReportParser.FuzzCoverage coverage;
+            try {
+                coverage = OresTestReportParser.parseFuzz(
+                        guestOutput,
+                        seedSpecified ? Long.valueOf(seed) : null,
+                        runsSpecified ? Integer.valueOf(runs) : null);
+            } catch (IllegalArgumentException invalidFuzz) {
+                return unsupported("--fuzz", invalidFuzz.getMessage());
             }
             System.out.println("ORES_TEST|INPUT_FUZZ|scope=seeded-int-property"
-                    + "|generators=" + generators + "|generated=" + generatedInputs
+                    + "|generators=" + coverage.generators()
+                    + "|generated=" + coverage.generatedInputs()
                     + "|coverage_guided=false");
         }
 
