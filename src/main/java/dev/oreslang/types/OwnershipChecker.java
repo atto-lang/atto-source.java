@@ -1432,6 +1432,12 @@ public final class OwnershipChecker {
             }
             return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
         }
+
+        if (call.callee() instanceof Ast.MemberExpr builtinStringMember) {
+            ValueInfo builtinStringCall =
+                    checkBuiltinStringCall(builtinStringMember, call.arguments(), scope);
+            if (builtinStringCall != null) return builtinStringCall;
+        }
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
                 && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
@@ -1839,6 +1845,62 @@ public final class OwnershipChecker {
         return stdout.receiver() instanceof Ast.NameExpr stdio
                 && stdio.name().equals("stdio")
                 && scope.lookup("stdio") == null;
+    }
+
+    /**
+     * Ownership-side mirror of TypeChecker's sealed String builtin contracts.
+     * Keeping these result types concrete is security-relevant: otherwise
+     * split_literal() degrades to $infer$ and safe string indexing is
+     * misclassified as a move-only projection. Unknown/dynamic receivers
+     * remain conservative and fall through to ordinary call handling.
+     */
+    private ValueInfo checkBuiltinStringCall(
+            Ast.MemberExpr member, List<Ast.Expr> arguments, Scope scope) {
+        Ast.TypeRef receiver = receiverType(member.receiver(), scope);
+        if (receiver == null) return null;
+        if (receiver.isBorrow()) receiver = receiver.borrowedTarget();
+        if (!(receiver.name().equals("string") || receiver.name().equals("String"))) return null;
+
+        Ast.TypeRef result;
+        int expectedArity;
+        switch (member.member()) {
+            case "replace_literal" -> {
+                expectedArity = 2;
+                result = Ast.TypeRef.simple("string");
+            }
+            case "split_literal" -> {
+                expectedArity = 1;
+                result = new Ast.TypeRef(
+                        "List", List.of(Ast.TypeRef.simple("string")), false);
+            }
+            case "trim" -> {
+                expectedArity = 0;
+                result = Ast.TypeRef.simple("string");
+            }
+            case "is_identifier", "is_route_segment" -> {
+                expectedArity = 0;
+                result = Ast.TypeRef.simple("bool");
+            }
+            case "starts_with", "ends_with", "contains_literal" -> {
+                expectedArity = 1;
+                result = Ast.TypeRef.simple("bool");
+            }
+            default -> {
+                return null;
+            }
+        }
+
+        // TypeChecker owns exact argument typing. The ownership pass only
+        // preserves borrow/move effects and must not consume copyable String
+        // arguments while reconstructing the sealed builtin result type.
+        if (arguments.size() != expectedArity) return null;
+        for (Ast.Expr argument : arguments) {
+            ValueInfo info = checkExpr(argument, scope, false);
+            if (containsMutexGuardType(info.type)) {
+                throw error("guard-bearing values cannot cross String builtin calls");
+            }
+        }
+        return new ValueInfo(result, kindOfType(result), null);
     }
 
     private ValueInfo checkBuiltinSumCall(Ast.MemberExpr member, List<Ast.Expr> arguments, Scope scope) {
