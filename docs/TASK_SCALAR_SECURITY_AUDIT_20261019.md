@@ -55,11 +55,24 @@ broader Task execution gates without exact-head executable validation.
 
 ## Verification status
 
-**Actually executed:** Exact GitHub production `ScalarTaskPlan.java` blob
-(`80fe383cc95d4ce7a154c7af55e6d9546e8c8dac`) hash-matched locally;
-Java 21 `javac --release 21 -Xlint:all -Werror` compiled it against
-minimal test-only AST interfaces, and the isolated shape probe passed 8/8.
-This does **NOT** compile the whole production compiler, parser or runtime.
+**Actually executed (2026-10-19):** Exact GitHub production blobs
+`ScalarTaskPlan.java` (`80fe383cc95d4ce7a154c7af55e6d9546e8c8dac`)
+and `OresScalarTaskFrame.java`
+(`3d11cd5ddb3c85115b73e1cfe251810a604c3751`) were copied to an isolated
+Java 21 probe and **independently verified with `git hash-object`**.
+Both compiled with `javac --release 21 -Xlint:all -Werror` against
+minimal test-only AST/scheduler stubs. The shape validator passed 10/10
+assertions; scalar frame passed 13/13 assertions (copy semantics, checked
+addition, overflow/replay, mutable/native object denial, null and index
+bounds, 16-capture cap and string-size limit). These are **source-file-only
+smoke tests**, not the real scheduler, compiler, parser, or Graal guest runtime.
+
+The four upstream #1466 files at `78cbe9297f63705b2c728caf94478f3d171a7cc6`
+(`TaskAccessVerifier`, `ScopedTaskTypeBridgeTest`,
+`TaskAccessVerifierTest`, `TaskRegionHostScopeIntegrationTest`) were
+synchronized to the #1484 branch with verified **identical upstream Git
+blob SHA**. This is **content-level reconciliation** only; the descendant
+Git ancestry still needs semantic review/rebasing before merging.
 
 **Not executed/verified:** Maven/JUnit, complete TypeChecker/OwnershipChecker
 compilation, Graal polyglot `.ores` guest execution, scheduler cancellation/
@@ -98,3 +111,14 @@ independent security authorization.
 
 **No merge until executable checks run and blockers for the enabled slice
 are resolved.**
+
+
+## CI infrastructure evidence (October 19 follow-up)
+
+Run [fast-ci 39293938642](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39293938642)
+failed with zero steps (job 118201467279). Run
+[concurrency-contract 39293938694](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39293938694)
+failed with zero steps (job 118201465615). This is neither a real compiler
+failure nor a test pass; actual runner-allocation root cause remains unverified.
+Evidence was added to existing [CI blocker #963](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/963).
+Cross-org transfer remains prohibited by [#962](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/962).
