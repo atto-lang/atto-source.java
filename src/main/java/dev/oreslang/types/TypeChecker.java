@@ -4267,11 +4267,11 @@ public final class TypeChecker {
         if (result instanceof Tuple tuple) {
             List<Ast.TypeRef> elements =
                     tuple.elements().stream().map(this::taskOwnershipResultRef).toList();
-            return switch (tuple.kind()) {
-                case TUPLE -> Ast.TypeRef.tupleType(elements);
-                case FIXED_ARRAY -> Ast.TypeRef.fixedArrayType(elements);
-                case FIXED_LIST -> Ast.TypeRef.fixedListType(elements);
-            };
+            if (tuple.kind() != TupleKind.TUPLE) {
+                throw new IllegalArgumentException(
+                        "inferred Task tuple result requires a supported ownership shape");
+            }
+            return Ast.TypeRef.tupleType(elements);
         }
         if (result instanceof Record record) {
             Map<String, Ast.TypeRef> fields = new LinkedHashMap<>();
