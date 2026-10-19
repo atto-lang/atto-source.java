@@ -131,6 +131,49 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         }
     }
 
+    private enum UpgradePhase {
+        PREPARING,
+        STAGING,
+        PUBLISHED,
+        RETIRING,
+        RETIREMENT_PENDING,
+        COMPLETE,
+        ABANDONED
+    }
+
+    /**
+     * One supervisor-owned hot-upgrade transaction. All mutable publication
+     * authority between route freeze and commit is represented here.
+     */
+    private static final class SupervisorUpgradeTxn {
+        final Route prior;
+        final CandidateRetirement candidateRetirement;
+        final LogicalActorProxyMailboxV1 proxyMailbox;
+        LogicalActorProxyMailboxV1.FreezeTicket proxyTicket;
+        ActorRuntime.SourceActorTransfer transfer;
+        ActorRuntime.ActorRef<Object> replacement;
+        Route next;
+        UpgradePhase phase = UpgradePhase.PREPARING;
+        boolean candidateLeaseTransferred;
+
+        SupervisorUpgradeTxn(
+                Route prior,
+                CandidateRetirement candidateRetirement,
+                LogicalActorProxyMailboxV1 proxyMailbox) {
+            this.prior = Objects.requireNonNull(prior);
+            this.candidateRetirement =
+                    Objects.requireNonNull(candidateRetirement);
+            this.proxyMailbox = proxyMailbox;
+        }
+
+        boolean published() {
+            return phase == UpgradePhase.PUBLISHED
+                    || phase == UpgradePhase.RETIRING
+                    || phase == UpgradePhase.RETIREMENT_PENDING
+                    || phase == UpgradePhase.COMPLETE;
+        }
+    }
+
     public final class LogicalActorRef {
         private LogicalActorRef() { }
 
@@ -351,7 +394,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     // ambiguous. A subsequently bound proxy could otherwise refund a raw
     // delivery with a cumulative physical drain.
     private boolean rawAdmissionAttempted;
-    private boolean upgrading;
+    // Sole hot-upgrade publication authority while non-null. Guarded by routeLock.
+    private SupervisorUpgradeTxn activeUpgradeTxn;
     private boolean closed;
     // Under routeLock. A close timeout may retain the active physical actor
     // in retiredRoutes until another supervisor cleanup attempt reaps it.
@@ -520,7 +564,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             requireOpenLocked();
             if (boundProxyMailbox != null)
                 throw new IllegalStateException("logical route proxy already bound");
-            if (upgrading || rawAdmissionAttempted)
+            if (activeUpgradeTxn != null || rawAdmissionAttempted)
                 throw new IllegalStateException(
                         "proxy may not bind during upgrade or after raw actor send");
             var snapshot = mailbox.snapshot();
@@ -701,7 +745,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             synchronized (owner.routeLock) {
                 if (consumed)
                     throw new IllegalStateException("consumed physical mail receipt");
-                if (owner.closed || owner.upgrading || owner.active != routed
+                if (owner.closed || owner.activeUpgradeTxn != null || owner.active != routed
                         || owner.boundProxyMailbox != mailbox)
                     throw new SecurityException("physical actor route changed before receipt claim");
                 // Consume before any allocation-bearing mailbox observation.
@@ -723,7 +767,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                         "successful physical terminal Future lacks PROCESSED disposition");
             }
             synchronized (owner.routeLock) {
-                if (owner.closed || owner.upgrading || owner.active != routed
+                if (owner.closed || owner.activeUpgradeTxn != null || owner.active != routed
                         || owner.boundProxyMailbox != mailbox)
                     throw new SecurityException("physical actor route changed before completion");
                 if (mailbox.snapshot().routeEpoch() != routed.routeEpoch())
@@ -934,7 +978,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             HotReloadManager.Generation candidateGeneration,
             Duration readyTimeout)
             throws InterruptedException, ExecutionException, TimeoutException {
-        return upgradeInternal(candidateGeneration, readyTimeout, null, null);
+        return upgradeInternal(candidateGeneration, readyTimeout, null);
     }
 
     /**
@@ -946,12 +990,10 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     boolean upgradeToForProxy(
             HotReloadManager.Generation candidateGeneration,
             Duration readyTimeout,
-            LogicalActorProxyMailboxV1 mailbox,
-            LogicalActorProxyMailboxV1.FreezeTicket ticket)
+            LogicalActorProxyMailboxV1 mailbox)
             throws InterruptedException, ExecutionException, TimeoutException {
         Objects.requireNonNull(mailbox, "mailbox");
-        Objects.requireNonNull(ticket, "ticket");
-        return upgradeInternal(candidateGeneration, readyTimeout, mailbox, ticket);
+        return upgradeInternal(candidateGeneration, readyTimeout, mailbox);
     }
 
     /**
@@ -961,23 +1003,19 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
      */
     private void requireUpgradeAuthorityLocked(
             HotReloadManager.Generation candidateGeneration,
-            LogicalActorProxyMailboxV1 proxyMailbox,
-            LogicalActorProxyMailboxV1.FreezeTicket proxyTicket) {
+            LogicalActorProxyMailboxV1 proxyMailbox) {
         if (!Thread.holdsLock(routeLock))
             throw new IllegalStateException("upgrade preflight requires route monitor");
         requireOpenLocked();
-        if (upgrading)
+        if (activeUpgradeTxn != null)
             throw new IllegalStateException(
                     "logical actor upgrade already in progress");
         if (proxyMailbox == null) {
             if (boundProxyMailbox != null)
                 throw new SecurityException(
                         "bound proxy route requires supervisor-owned upgrade");
-        } else {
-            if (boundProxyMailbox != proxyMailbox)
-                throw new SecurityException("foreign proxy upgrade authority");
-            proxyMailbox.requireFreezeTicketForRouteEpoch(
-                    proxyTicket, active.routeEpoch);
+        } else if (boundProxyMailbox != proxyMailbox) {
+            throw new SecurityException("foreign proxy upgrade authority");
         }
         if (candidateGeneration == active.generation)
             throw new IllegalArgumentException(
@@ -986,11 +1024,32 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             throw new IllegalStateException("logical actor route epoch exhausted");
     }
 
+    private void requireActiveUpgradeLocked(SupervisorUpgradeTxn txn) {
+        if (!Thread.holdsLock(routeLock))
+            throw new IllegalStateException("upgrade state requires route monitor");
+        if (activeUpgradeTxn != txn)
+            throw new IllegalStateException(
+                    "supervisor upgrade transaction lost publication authority");
+    }
+
+    private void finishUpgradeLocked(
+            SupervisorUpgradeTxn txn, UpgradePhase terminalPhase) {
+        requireActiveUpgradeLocked(txn);
+        if (terminalPhase != UpgradePhase.COMPLETE
+                && terminalPhase != UpgradePhase.RETIREMENT_PENDING
+                && terminalPhase != UpgradePhase.ABANDONED) {
+            throw new IllegalArgumentException(
+                    "nonterminal supervisor upgrade phase");
+        }
+        txn.phase = terminalPhase;
+        activeUpgradeTxn = null;
+        routeLock.notifyAll();
+    }
+
     private boolean upgradeInternal(
             HotReloadManager.Generation candidateGeneration,
             Duration readyTimeout,
-            LogicalActorProxyMailboxV1 proxyMailbox,
-            LogicalActorProxyMailboxV1.FreezeTicket proxyTicket)
+            LogicalActorProxyMailboxV1 proxyMailbox)
             throws InterruptedException, ExecutionException, TimeoutException {
         Objects.requireNonNull(candidateGeneration, "candidateGeneration");
         Objects.requireNonNull(readyTimeout, "readyTimeout");
@@ -1004,27 +1063,14 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                             + "from the same HotReloadManager");
         }
 
-        // Refuse unauthorized, frozen-ticket, stale-route or same-generation
-        // requests BEFORE invoking the candidate loader/compiler. Otherwise
-        // a denied host request could still compile/link/pin arbitrary code.
-        // Revalidate after linking: another supervisor may have closed or
-        // upgraded the logical route while the loader worked.
         synchronized (routeLock) {
-            requireUpgradeAuthorityLocked(
-                    candidateGeneration, proxyMailbox, proxyTicket);
+            requireUpgradeAuthorityLocked(candidateGeneration, proxyMailbox);
         }
 
-        // Authorized candidate linking is deliberately outside routeLock:
-        // message admission on the old route must not wait for compilation.
         HotReloadManager.ActorGenerationView candidate =
                 candidateGeneration.linkActorGeneration(actorTypeName);
         ImageReceipts candidateImage =
                 ImageReceipts.from(candidate, actorTypeName);
-        // A compiler-ABI-bound proxy retains already-admitted immutable
-        // messages across hot replacement. Reject a different receive ABI
-        // before acquiring a generation lease, freezing physical ingress or
-        // restoring state: old envelopes must never be interpreted under
-        // the candidate's different source message contract.
         if (typedWireBinding != null) {
             var candidateKind = candidate.executor()
                     .actorProxyWireScalarKind(actorTypeName)
@@ -1048,166 +1094,171 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                         "source actor compiler message ABI changed across logical route upgrade");
             }
         }
+
         HotReloadManager.Generation.ActorRouteLease candidateLease =
                 candidateGeneration.pinActorRoute();
-
-        Route prior = null;
-        CandidateRetirement candidateRetirement = null;
-        boolean pauseOwned = false;
-        ActorRuntime.SourceActorTransfer transfer = null;
-        ActorRuntime.ActorRef<Object> replacement = null;
-        boolean published = false;
-        boolean candidateLeaseTransferred = false;
+        SupervisorUpgradeTxn txn = null;
         Throwable primaryFailure = null;
         try {
             synchronized (routeLock) {
-                // Repeat authorization with the latest route under the
-                // same publication monitor, after potentially slow linking.
-                requireUpgradeAuthorityLocked(
-                        candidateGeneration, proxyMailbox, proxyTicket);
+                requireUpgradeAuthorityLocked(candidateGeneration, proxyMailbox);
                 reapRetiredLocked();
-                prior = active;
+                Route prior = active;
+                CandidateRetirement candidateRetirement =
+                        new CandidateRetirement(
+                                candidateGeneration,
+                                candidateLease,
+                                candidate,
+                                prior.incarnation,
+                                prior.routeEpoch,
+                                candidateImage);
+                txn = new SupervisorUpgradeTxn(
+                        prior, candidateRetirement, proxyMailbox);
 
-                // Preallocate and register the candidate's retry owner before
-                // any physical actor is spawned. From this point onward no
-                // cleanup path needs to allocate ownership merely to keep the
-                // candidate generation pinned. Failure here is pre-admission:
-                // no candidate physical actor exists yet.
-                candidateRetirement = new CandidateRetirement(
-                        candidateGeneration,
-                        candidateLease,
-                        candidate,
-                        prior.incarnation,
-                        prior.routeEpoch,
-                        candidateImage);
+                // Candidate pin ownership is registered before any executable
+                // candidate exists. activeUpgradeTxn is then the single route,
+                // mailbox-freeze and publication authority.
                 retiredCandidates.add(candidateRetirement);
+                activeUpgradeTxn = txn;
 
-                upgrading = true;
-                pauseOwned = true;
+                try {
+                    if (proxyMailbox != null) {
+                        txn.proxyTicket =
+                                proxyMailbox.freezeDispatchForUpgrade();
+                        if (!txn.proxyTicket.drained()) {
+                            txn.proxyTicket.rollback();
+                            txn.proxyTicket = null;
+                            if (!retiredCandidates.remove(candidateRetirement)) {
+                                throw new IllegalStateException(
+                                        "undrained upgrade lost candidate owner");
+                            }
+                            finishUpgradeLocked(txn, UpgradePhase.ABANDONED);
+                            candidateLease.close();
+                            txn.candidateLeaseTransferred = true;
+                            return false;
+                        }
+                    }
+                    txn.phase = UpgradePhase.STAGING;
+                } catch (RuntimeException | Error setupFailure) {
+                    if (txn.proxyTicket != null) {
+                        try {
+                            txn.proxyTicket.rollback();
+                            txn.proxyTicket = null;
+                        } catch (RuntimeException | Error rollbackFailure) {
+                            if (rollbackFailure != setupFailure)
+                                setupFailure.addSuppressed(rollbackFailure);
+                        }
+                    }
+                    retiredCandidates.remove(candidateRetirement);
+                    finishUpgradeLocked(txn, UpgradePhase.ABANDONED);
+                    throw setupFailure;
+                }
             }
 
-            var started = prior.view.runtime().tryBeginSourceActorTransfer(
-                    prior.physical,
+            var started = txn.prior.view.runtime().tryBeginSourceActorTransfer(
+                    txn.prior.physical,
                     logicalId,
-                    prior.incarnation);
+                    txn.prior.incarnation);
             if (started.isEmpty()) return false;
-            transfer = started.get();
+            txn.transfer = started.get();
 
-            replacement = candidate.runtime().spawnCodeActorFromTransfer(
-                    transfer,
-                    candidate.executor());
+            ActorRuntime.ActorRef<Object> replacement =
+                    candidate.runtime().spawnCodeActorFromTransfer(
+                            txn.transfer,
+                            candidate.executor());
             synchronized (routeLock) {
-                if (candidateRetirement == null
-                        || candidateRetirement.physical != null) {
+                requireActiveUpgradeLocked(txn);
+                if (txn.phase != UpgradePhase.STAGING
+                        || txn.candidateRetirement.physical != null) {
                     throw new IllegalStateException(
-                            "candidate retirement ownership was not uniquely reserved");
+                            "candidate physical publication outside staging transaction");
                 }
-                candidateRetirement.physical = replacement;
+                txn.replacement = replacement;
+                txn.candidateRetirement.physical = replacement;
             }
             replacement.getReady().get(
                     toNanosSaturated(readyTimeout),
                     TimeUnit.NANOSECONDS);
 
             synchronized (routeLock) {
+                requireActiveUpgradeLocked(txn);
                 if (closed)
                     throw new IllegalStateException(
                             "logical actor router closed while upgrade staged");
-                if (!upgrading || active != prior)
+                if (txn.phase != UpgradePhase.STAGING
+                        || active != txn.prior) {
                     throw new IllegalStateException(
                             "logical actor route changed while candidate staged");
-                // Allocate the next route BEFORE committing the proxy epoch.
-                // Route lookup, physical send, and receipt retirement all take
-                // routeLock. The proxy bridge serializes pollDispatch against
-                // this same transaction with dispatchLock. Neither can observe
-                // one epoch changed without the other.
+                }
+
                 Route next = new Route(
                         candidateGeneration,
                         candidateLease,
                         candidate,
                         replacement,
-                        prior.incarnation,
-                        Math.addExact(prior.routeEpoch, 1L),
+                        txn.prior.incarnation,
+                        Math.addExact(txn.prior.routeEpoch, 1L),
                         candidateImage);
-                // Reserve the *old* generation's retirement ownership BEFORE
-                // the irreversible proxy/route publication. List growth can
-                // throw OOME; that must happen while the old route is still
-                // authoritative, not after the point of no return. This entry
-                // remains owned until the exact physical actor is finalized
-                // AND generationLease.close() succeeds.
-                if (retiredRoutes.contains(prior))
+                txn.next = next;
+
+                if (retiredRoutes.contains(txn.prior))
                     throw new IllegalStateException(
                             "active route already registered for retirement");
-                retiredRoutes.add(prior);
+                retiredRoutes.add(txn.prior);
                 try {
-                    if (proxyMailbox != null) {
-                        proxyMailbox.requireFreezeTicketForRouteEpoch(
-                                proxyTicket, prior.routeEpoch);
-                        proxyTicket.commit();
+                    if (txn.proxyTicket != null) {
+                        txn.proxyMailbox.requireFreezeTicketForRouteEpoch(
+                                txn.proxyTicket, txn.prior.routeEpoch);
+                        txn.proxyTicket.commit();
                     }
-                    // No throwing/allocation-bearing operation between proxy
-                    // commit and the authoritative physical route pointer swap.
+
+                    // Single point of no return: proxy epoch (when bound) and
+                    // physical route publish while this txn exclusively owns
+                    // routeLock and all candidate/retirement authority.
                     active = next;
-                    candidateLeaseTransferred = true;
-                    published = true;
-                    if (!retiredCandidates.remove(candidateRetirement)) {
+                    txn.candidateLeaseTransferred = true;
+                    txn.phase = UpgradePhase.PUBLISHED;
+                    if (!retiredCandidates.remove(
+                            txn.candidateRetirement)) {
                         throw new IllegalStateException(
-                                "published candidate lost its pre-reserved retirement owner");
+                                "published candidate lost its supervisor owner");
                     }
                 } finally {
-                    if (!published) retiredRoutes.remove(prior);
+                    if (!txn.published()) retiredRoutes.remove(txn.prior);
                 }
-                // Keep host route admission paused until the old physical
-                // incarnation is terminal and its generation lease is safe to
-                // release. The new route is authoritative but not yet open.
             }
 
-            // Route publication is the commit point. Only now make the stale
-            // physical ActorRef terminal and reopen no old ingress.
+            txn.phase = UpgradePhase.RETIRING;
             try {
-                transfer.retireSourceAfterPublication(replacement);
-            } catch (RuntimeException | Error retirementFailure) {
-                // A failed post-publication stop/wait cannot roll back the
-                // logical route. The pre-committed retirement record still
-                // owns the old code pin for later physical-finalization retry.
-                throw retirementFailure;
+                txn.transfer.retireSourceAfterPublication(replacement);
             } finally {
-                transfer = null;
+                txn.transfer = null;
             }
 
-            // The source was already physically drained. Keep its generation
-            // pinned until physical finalization is actually observed.
-            if (prior.physical.awaitTermination(
+            if (txn.prior.physical.awaitTermination(
                     toNanosSaturated(readyTimeout),
                     TimeUnit.NANOSECONDS)) {
                 synchronized (routeLock) {
-                    // Never forget a retired code-generation owner until its
-                    // physical finalization is verified and the pin debit has
-                    // succeeded. A corrupted generation counter or injected
-                    // retirement error keeps this record available for retry.
-                    if (!prior.view.runtime().physicallyFinalizedForHotUpgrade(
-                            prior.physical)) {
+                    requireActiveUpgradeLocked(txn);
+                    if (!txn.prior.view.runtime().physicallyFinalizedForHotUpgrade(
+                            txn.prior.physical)) {
                         throw new IllegalStateException(
                                 "old source actor terminated without verified "
                                         + "physical finalization");
                     }
-                    prior.generationLease.close();
-                    retiredRoutes.remove(prior);
+                    txn.prior.generationLease.close();
+                    retiredRoutes.remove(txn.prior);
+                    finishUpgradeLocked(txn, UpgradePhase.COMPLETE);
                 }
             } else {
                 synchronized (routeLock) {
-                    upgrading = false;
-                    pauseOwned = false;
-                    routeLock.notifyAll();
+                    requireActiveUpgradeLocked(txn);
+                    finishUpgradeLocked(
+                            txn, UpgradePhase.RETIREMENT_PENDING);
                 }
                 throw new IllegalStateException(
                         "old physical actor did not terminate after route publication; "
                                 + "its generation remains pinned for later reaping");
-            }
-            replacement = null; // authoritative route owns it
-            synchronized (routeLock) {
-                upgrading = false;
-                pauseOwned = false;
-                routeLock.notifyAll();
             }
             return true;
         } catch (InterruptedException
@@ -1220,7 +1271,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         } finally {
             Throwable cleanupFailure = null;
 
-            if (!published) {
+            if (txn != null && !txn.published()) {
+                ActorRuntime.ActorRef<Object> replacement = txn.replacement;
                 if (replacement != null) {
                     try {
                         replacement.stop();
@@ -1231,125 +1283,119 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                     try {
                         if (!candidate.runtime().physicallyFinalizedForHotUpgrade(
                                 replacement)) {
-                            // Ownership was pre-registered before spawn. Do not
-                            // allocate a Route or grow a ledger in this failure
-                            // path: merely transfer sole retry authority to the
-                            // existing owner and pin.
                             synchronized (routeLock) {
-                                if (candidateRetirement == null
-                                        || !retiredCandidates.contains(
-                                                candidateRetirement)) {
+                                if (!retiredCandidates.contains(
+                                        txn.candidateRetirement)) {
                                     throw new IllegalStateException(
                                             "unpublished candidate lost its "
-                                                    + "pre-reserved retirement owner");
+                                                    + "supervisor retirement owner");
                                 }
-                                candidateRetirement.retirementEligible = true;
+                                txn.candidateRetirement.retirementEligible = true;
                             }
-                            candidateLeaseTransferred = true;
+                            txn.candidateLeaseTransferred = true;
                         } else {
                             synchronized (routeLock) {
-                                if (candidateRetirement == null
-                                        || !retiredCandidates.remove(
-                                                candidateRetirement)) {
+                                if (!retiredCandidates.remove(
+                                        txn.candidateRetirement)) {
                                     throw new IllegalStateException(
                                             "finalized unpublished candidate lost "
-                                                    + "its pre-reserved retirement owner");
+                                                    + "its supervisor retirement owner");
                                 }
                             }
                         }
-                    } catch (RuntimeException | Error finalizationProbeFailure) {
+                    } catch (RuntimeException | Error probeFailure) {
                         if (cleanupFailure == null) {
-                            cleanupFailure = finalizationProbeFailure;
-                        } else {
-                            cleanupFailure.addSuppressed(finalizationProbeFailure);
+                            cleanupFailure = probeFailure;
+                        } else if (probeFailure != cleanupFailure) {
+                            cleanupFailure.addSuppressed(probeFailure);
                         }
-                        // We cannot prove reclamation. Fail closed by retaining
-                        // the already-registered candidate owner; no allocation
-                        // or list growth is required after the failure. Publish
-                        // retirement eligibility only after publication has
-                        // been definitively abandoned.
                         synchronized (routeLock) {
-                            if (candidateRetirement == null
-                                    || !retiredCandidates.contains(
-                                            candidateRetirement)) {
+                            if (!retiredCandidates.contains(
+                                    txn.candidateRetirement)) {
                                 throw new IllegalStateException(
                                         "ambiguous candidate cleanup lost its "
-                                                + "pre-reserved retirement owner");
+                                                + "supervisor retirement owner");
                             }
-                            candidateRetirement.retirementEligible = true;
+                            txn.candidateRetirement.retirementEligible = true;
                         }
-                        candidateLeaseTransferred = true;
+                        txn.candidateLeaseTransferred = true;
                     }
-                } else if (candidateRetirement != null) {
+                } else {
                     synchronized (routeLock) {
-                        if (!retiredCandidates.remove(candidateRetirement)) {
-                            throw new IllegalStateException(
-                                    "unspawned candidate lost its pre-reserved owner");
-                        }
+                        retiredCandidates.remove(txn.candidateRetirement);
                     }
                 }
 
-                if (transfer != null) {
+                if (txn.transfer != null) {
                     try {
-                        transfer.close();
+                        txn.transfer.close();
                     } catch (RuntimeException | Error rollbackFailure) {
                         if (cleanupFailure == null) {
                             cleanupFailure = rollbackFailure;
-                        } else {
+                        } else if (rollbackFailure != cleanupFailure) {
                             cleanupFailure.addSuppressed(rollbackFailure);
                         }
                     }
+                    txn.transfer = null;
                 }
 
-                // Route-level admission must never remain wedged merely
-                // because physical rollback/quarantine reported a failure.
-                // The old physical actor may still be ingress-frozen by the
-                // transfer, which correctly makes later sends fail sealed
-                // rather than block forever.
                 synchronized (routeLock) {
-                    if (pauseOwned) {
-                        upgrading = false;
-                        pauseOwned = false;
-                        routeLock.notifyAll();
+                    if (txn.proxyTicket != null) {
+                        try {
+                            txn.proxyTicket.rollback();
+                            txn.proxyTicket = null;
+                        } catch (RuntimeException | Error rollbackFailure) {
+                            if (cleanupFailure == null) {
+                                cleanupFailure = rollbackFailure;
+                            } else if (rollbackFailure != cleanupFailure) {
+                                cleanupFailure.addSuppressed(rollbackFailure);
+                            }
+                        }
+                    }
+                    if (activeUpgradeTxn == txn) {
+                        finishUpgradeLocked(txn, UpgradePhase.ABANDONED);
+                    }
+                }
+            } else if (txn != null) {
+                synchronized (routeLock) {
+                    if (activeUpgradeTxn == txn) {
+                        finishUpgradeLocked(
+                                txn, UpgradePhase.RETIREMENT_PENDING);
                     }
                 }
             }
 
-            if (published && pauseOwned) {
-                // Post-commit cleanup failure cannot roll routing back. Reopen
-                // the authoritative new route while retaining any unreaped old
-                // generation lease.
+            if (txn == null || !txn.candidateLeaseTransferred) {
+                boolean ledgerOwned;
                 synchronized (routeLock) {
-                    upgrading = false;
-                    pauseOwned = false;
-                    routeLock.notifyAll();
+                    ledgerOwned = txn != null
+                            && retiredCandidates.contains(
+                                    txn.candidateRetirement);
                 }
-            }
-
-            if (!candidateLeaseTransferred) {
-                // No executable candidate may remain owned by the quarantine
-                // ledger when the originating path releases this lease.
-                synchronized (routeLock) {
-                    if (candidateRetirement != null
-                            && retiredCandidates.contains(candidateRetirement)) {
-                        throw new IllegalStateException(
-                                "candidate generation lease still has a retirement owner");
-                    }
-                }
-                try {
-                    candidateLease.close();
-                } catch (RuntimeException | Error leaseFailure) {
-                    if (cleanupFailure == null) {
-                        cleanupFailure = leaseFailure;
-                    } else {
-                        cleanupFailure.addSuppressed(leaseFailure);
+                if (ledgerOwned) {
+                    IllegalStateException ownershipFailure =
+                            new IllegalStateException(
+                                    "candidate lease still owned by supervisor "
+                                            + "retirement transaction");
+                    if (cleanupFailure == null) cleanupFailure = ownershipFailure;
+                    else cleanupFailure.addSuppressed(ownershipFailure);
+                } else {
+                    try {
+                        candidateLease.close();
+                    } catch (RuntimeException | Error leaseFailure) {
+                        if (cleanupFailure == null) {
+                            cleanupFailure = leaseFailure;
+                        } else if (leaseFailure != cleanupFailure) {
+                            cleanupFailure.addSuppressed(leaseFailure);
+                        }
                     }
                 }
             }
 
             if (cleanupFailure != null) {
                 if (primaryFailure != null) {
-                    primaryFailure.addSuppressed(cleanupFailure);
+                    if (cleanupFailure != primaryFailure)
+                        primaryFailure.addSuppressed(cleanupFailure);
                 } else if (cleanupFailure instanceof RuntimeException runtimeFailure) {
                     throw runtimeFailure;
                 } else {
@@ -1421,7 +1467,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
 
     private void awaitUpgradeLocked() {
         boolean interrupted = false;
-        while (upgrading && !closed) {
+        while (activeUpgradeTxn != null && !closed) {
             try {
                 routeLock.wait();
             } catch (InterruptedException interruption) {
