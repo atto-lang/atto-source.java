@@ -892,6 +892,15 @@ public final class ActorRuntime implements AutoCloseable {
         requireRawFailureHostAccess("submit supervisor command");
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(operation, "operation");
+        // Publication requires the yet-to-be-integrated atomic route+
+        // code+state+epoch coordinator. An acknowledgement-only callback
+        // must never impersonate a successful hot upgrade or a completed
+        // graceful stop. Keep these commands disabled until they have
+        // independently verifiable lifecycle receipts.
+        if (operation == SupervisorOperation.COMMIT_NOTICE
+                || operation == SupervisorOperation.GRACEFUL_STOP)
+            throw new UnsupportedOperationException(
+                    "supervisor CONTROL operation requires atomic publication/lifecycle integration");
         if (!target.ownedBy(this))
             throw new ActorInvalidReferenceException(
                     "supervisor command target belongs to a different ActorRuntime");
