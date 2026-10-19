@@ -64,10 +64,12 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
 
     private static byte[] peerLocalVerdictWithValidMac(
             IpcReceiptCorrelation.Envelope message,
+            long physicalGeneration,
             IpcReceiptCorrelation.Stage localStage,
             byte[] key) throws Exception {
         byte[] frame = IpcAuthenticatedSocketTransport.encodeReceiptFrame(
-                message, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED, key);
+                message, physicalGeneration,
+                IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED, key);
         int bodyLength = frame.length - 32;
         // Receipt stage is deliberately the final authenticated body byte.
         frame[bodyLength - 1] = (byte) localStage.ordinal();
@@ -93,15 +95,18 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                             accepted.getInputStream());
                     var decoded = IpcAuthenticatedSocketTransport.decodeDataFrame(wire, key);
                     check(decoded.envelope().equals(message));
+                    check(decoded.physicalGeneration() == 11);
                     check(Arrays.equals(decoded.payload(), payload));
                     IpcAuthenticatedSocketTransport.writeWireFrame(
                             accepted.getOutputStream(),
                             IpcAuthenticatedSocketTransport.encodeReceiptFrame(
-                                    message, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED, key));
+                                    message, 11,
+                                    IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED, key));
                     IpcAuthenticatedSocketTransport.writeWireFrame(
                             accepted.getOutputStream(),
                             IpcAuthenticatedSocketTransport.encodeReceiptFrame(
-                                    message, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED, key));
+                                    message, 11,
+                                    IpcReceiptCorrelation.Stage.HANDLER_COMMITTED, key));
                 } catch (Throwable failure) {
                     peerFailure.compareAndSet(null, failure);
                 }
@@ -202,6 +207,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                     check(data.envelope().equals(maliciousMessage));
                     byte[] malicious = peerLocalVerdictWithValidMac(
                             maliciousMessage,
+                            73,
                             IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN,
                             key);
                     IpcAuthenticatedSocketTransport.writeWireFrame(
@@ -228,8 +234,55 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 } catch (IOException expected) {
                     check(expected.getMessage().contains("local-only"));
                 }
-                check(!submission.outcome().toCompletableFuture().isDone());
-                transport.requestClose();
+                awaitPhase(transport, IpcTransportSessionLease.Phase.RETIRED);
+                check(submission.outcome().toCompletableFuture().join()
+                        == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+                check(bridge.invariant());
+            } finally {
+                cleanup.shutdownNow();
+                cleanup.awaitTermination(2, TimeUnit.SECONDS);
+            }
+            peer.join(3000);
+            check(!peer.isAlive());
+            check(peerFailure.get() == null);
+        }
+
+        // Correctly authenticated receipts are also bound to the
+        // physical connection generation, preventing reconnect replay.
+        byte[] replayPayload = "generation replay".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var replayMessage = envelope(1, "generationReplay", 3, 4, replayPayload);
+        peerFailure.set(null);
+        try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress())) {
+            Thread peer = new Thread(() -> {
+                try (Socket accepted = server.accept()) {
+                    IpcAuthenticatedSocketTransport.readWireFrame(accepted.getInputStream());
+                    IpcAuthenticatedSocketTransport.writeWireFrame(
+                            accepted.getOutputStream(),
+                            IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                                    replayMessage, 80,
+                                    IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED, key));
+                    while (accepted.getInputStream().read() != -1) { }
+                } catch (Throwable failure) {
+                    peerFailure.compareAndSet(null, failure);
+                }
+            }, "ipc-test-peer-generation-replay");
+            peer.start();
+
+            ExecutorService cleanup = Executors.newSingleThreadExecutor();
+            try (Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                client.setSoTimeout(3000);
+                var bridge = new IpcReceiptCompletionBridge(1);
+                var transport = new IpcAuthenticatedSocketTransport(
+                        client, bridge, replayMessage, 81, 1, key, cleanup::execute);
+                var submission = transport.send(replayMessage, replayPayload);
+                check(!submission.writeAttemptFailed());
+                try {
+                    transport.readVerifiedReceipt();
+                    throw new AssertionError("old physical generation receipt accepted");
+                } catch (IOException expected) {
+                    check(expected.getMessage().contains("physical transport generation"));
+                }
                 awaitPhase(transport, IpcTransportSessionLease.Phase.RETIRED);
                 check(submission.outcome().toCompletableFuture().join()
                         == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
@@ -252,7 +305,8 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 try (Socket accepted = server.accept()) {
                     IpcAuthenticatedSocketTransport.readWireFrame(accepted.getInputStream());
                     byte[] receipt = IpcAuthenticatedSocketTransport.encodeReceiptFrame(
-                            tamperMessage, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED, key);
+                            tamperMessage, 74,
+                            IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED, key);
                     receipt[receipt.length - 1] ^= 0x01;
                     IpcAuthenticatedSocketTransport.writeWireFrame(
                             accepted.getOutputStream(), receipt);
@@ -276,8 +330,6 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 } catch (IOException expected) {
                     check(expected.getMessage().contains("authentication failed"));
                 }
-                check(!submission.outcome().toCompletableFuture().isDone());
-                transport.requestClose();
                 awaitPhase(transport, IpcTransportSessionLease.Phase.RETIRED);
                 check(submission.outcome().toCompletableFuture().join()
                         == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
