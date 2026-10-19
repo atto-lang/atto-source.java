@@ -560,12 +560,20 @@ def require_effective_carrier_source_rules(repository, branch, ruleset_id):
             or len(effective) >= 100
             or not all(isinstance(rule, dict) for rule in effective)):
         raise Denied("effective private carrier source-branch rules are unavailable or incomplete")
-    # A second active ruleset can independently block branch creation even
-    # when the reviewed immutable ruleset itself allows it. Detect that before
-    # reading or uploading private source; otherwise the final ref POST can
-    # fail predictably after private blobs/trees have already been created.
-    if any(rule.get("type") == "creation" for rule in effective):
-        raise Denied("effective private carrier policy blocks reviewed branch creation")
+    # A second active ruleset can independently reject the new branch or
+    # commit even when the reviewed immutable ruleset itself allows creation.
+    # Fail closed on rule semantics this publisher has not explicitly audited:
+    # otherwise GitHub can reject the final ref only after private blobs/trees
+    # have already been uploaded. Linear history is compatible with the
+    # publisher's single-parent snapshot commit; update/deletion are the exact
+    # immutable-ref controls required below.
+    allowed_effective_types = {"update", "deletion", "required_linear_history"}
+    unexpected_types = {
+        rule.get("type") for rule in effective
+        if rule.get("type") not in allowed_effective_types
+    }
+    if unexpected_types:
+        raise Denied("effective private carrier policy has unsupported branch rules")
     matched = [
         rule for rule in effective
         if type(rule.get("ruleset_id")) is int
