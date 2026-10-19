@@ -50,14 +50,14 @@ final class SealedActorTensorSnapshotTest {
 
                         assertThrows(IllegalArgumentException.class,
                                 () -> state.prepareTensorPublication(
-                                        authority, "weights",
+                                        authority, null, "weights",
                                         "run_id", "graph_id", "incarnation",
                                         new int[] {2, 2},
                                         new double[] {1, 2, 3}));
                         IllegalArgumentException duplicateField = assertThrows(
                                 IllegalArgumentException.class,
                                 () -> state.prepareTensorPublication(
-                                        authority, "weights",
+                                        authority, null, "weights",
                                         "version", "graph_id", "incarnation",
                                         new int[] {1},
                                         new double[] {1}));
@@ -65,13 +65,13 @@ final class SealedActorTensorSnapshotTest {
                                 duplicateField.getMessage());
                         assertThrows(IllegalArgumentException.class,
                                 () -> state.prepareTensorPublication(
-                                        authority, "weights",
+                                        authority, null, "weights",
                                         "run_id", "graph_id", "incarnation",
                                         new int[] {1},
                                         new double[] {Double.NaN}));
                         assertThrows(IllegalArgumentException.class,
                                 () -> state.prepareTensorPublication(
-                                        authority, "weights",
+                                        authority, null, "weights",
                                         "run_id", "graph_id", "incarnation",
                                         new int[] {1_048_577, 0},
                                         new double[0]));
@@ -79,7 +79,7 @@ final class SealedActorTensorSnapshotTest {
                         int[] shape = {2, 2};
                         double[] values = {1.0, 2.0, 3.0, 4.0};
                         var prepared = state.prepareTensorPublication(
-                                authority, "weights",
+                                authority, null, "weights",
                                 "run_id", "graph_id", "incarnation", shape, values);
 
                         // Mutating caller-owned inputs after preparation cannot
@@ -140,7 +140,7 @@ final class SealedActorTensorSnapshotTest {
                         IllegalArgumentException incomplete = assertThrows(
                                 IllegalArgumentException.class,
                                 () -> state.prepareTensorPublication(
-                                        incompleteAuthority, "weights",
+                                        incompleteAuthority, snapshot, "weights",
                                         "run_id", "graph_id", "incarnation",
                                         new int[] {2, 2},
                                         new double[] {5, 6, 7, 8}));
@@ -163,7 +163,7 @@ final class SealedActorTensorSnapshotTest {
                                         "version", "run_id", "graph_id", "incarnation"));
                         assertThrows(SecurityException.class,
                                 () -> state.prepareTensorPublication(
-                                        foreignAuthority, "weights",
+                                        foreignAuthority, snapshot, "weights",
                                         "run_id", "graph_id", "incarnation",
                                         new int[] {2, 2},
                                         new double[] {5, 6, 7, 8}));
@@ -184,8 +184,16 @@ final class SealedActorTensorSnapshotTest {
                         var afterFirstAuthority = state.critical(false,
                                 read -> read.snapshotScalars(
                                         "version", "run_id", "graph_id", "incarnation"));
+                        assertThrows(IllegalArgumentException.class,
+                                () -> state.prepareTensorPublication(
+                                        afterFirstAuthority, null, "weights",
+                                        "run_id", "graph_id", "incarnation",
+                                        new int[] {2, 2},
+                                        new double[] {5, 6, 7, 8}),
+                                "non-bootstrap update must name its source generation");
+
                         var staleRevision = state.prepareTensorPublication(
-                                afterFirstAuthority, "weights",
+                                afterFirstAuthority, snapshot, "weights",
                                 "run_id", "graph_id", "incarnation",
                                 new int[] {2, 2},
                                 new double[] {5, 6, 7, 8});
@@ -252,6 +260,8 @@ final class SealedActorTensorSnapshotTest {
         assertEquals(1, methods.size());
         assertEquals(SealedActorState.ScalarSnapshot.class,
                 methods.getFirst().getParameterTypes()[0]);
+        assertEquals(SealedActorState.TensorSnapshotF64.class,
+                methods.getFirst().getParameterTypes()[1]);
         assertFalse(Arrays.stream(methods.getFirst().getParameterTypes())
                 .anyMatch(type -> type == long.class),
                 "raw transaction identity counters must not be caller parameters");

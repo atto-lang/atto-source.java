@@ -330,6 +330,7 @@ public final class SealedActorState {
         private final long expectedRun;
         private final long expectedGraph;
         private final long expectedIncarnation;
+        private final TensorSnapshotF64 sourceSnapshot;
         private final TensorSnapshotF64 snapshot;
         private boolean consumed;
 
@@ -340,6 +341,7 @@ public final class SealedActorState {
                                   long expectedVersion, long expectedRevision,
                                   long expectedRun, long expectedGraph,
                                   long expectedIncarnation,
+                                  TensorSnapshotF64 sourceSnapshot,
                                   TensorSnapshotF64 snapshot) {
             this.issuer = issuer;
             this.tensorField = tensorField;
@@ -352,6 +354,7 @@ public final class SealedActorState {
             this.expectedRun = expectedRun;
             this.expectedGraph = expectedGraph;
             this.expectedIncarnation = expectedIncarnation;
+            this.sourceSnapshot = sourceSnapshot;
             this.snapshot = snapshot;
         }
     }
@@ -369,6 +372,7 @@ public final class SealedActorState {
 
     public TensorPublication prepareTensorPublication(
             ScalarSnapshot authority,
+            TensorSnapshotF64 sourceSnapshot,
             String tensorField,
             String runField, String graphField, String incarnationField,
             int[] shape, double[] values) {
@@ -411,6 +415,22 @@ public final class SealedActorState {
                 || expectedRun < 0 || expectedGraph < 0 || expectedIncarnation < 1)
             throw new IllegalArgumentException("ML_INVALID_TENSOR_PUBLICATION_IDENTITY");
 
+        if (expectedVersion == 0) {
+            if (sourceSnapshot != null)
+                throw new IllegalArgumentException("ML_UNEXPECTED_SOURCE_TENSOR");
+        } else {
+            if (sourceSnapshot == null)
+                throw new IllegalArgumentException("ML_SOURCE_TENSOR_REQUIRED");
+            if (sourceSnapshot.issuer != this || sourceSnapshot.erased)
+                throw new SecurityException("ML_INVALID_SOURCE_TENSOR_CAPABILITY");
+            sourceSnapshot.check();
+            if (sourceSnapshot.version != expectedVersion
+                    || sourceSnapshot.runId != expectedRun
+                    || sourceSnapshot.graphId != expectedGraph
+                    || sourceSnapshot.incarnation != expectedIncarnation)
+                throw new IllegalArgumentException("ML_SOURCE_TENSOR_IDENTITY_MISMATCH");
+        }
+
         TensorSnapshotF64 snapshot = new TensorSnapshotF64(
                 this, expectedRun, expectedGraph, expectedIncarnation,
                 expectedVersion + 1,
@@ -431,7 +451,8 @@ public final class SealedActorState {
                 this, tensorField, versionField,
                 runField, graphField, incarnationField,
                 expectedVersion, expectedRevision,
-                expectedRun, expectedGraph, expectedIncarnation, snapshot);
+                expectedRun, expectedGraph, expectedIncarnation,
+                sourceSnapshot, snapshot);
         try {
             // If retirement won during detached allocation/copy, do not let a
             // prepared capability escape after the actor generation is dead.
@@ -779,6 +800,13 @@ public final class SealedActorState {
                 throw new IllegalStateException("ML_STALE_GRAPH");
             if (readIntegral(publication.incarnationField) != publication.expectedIncarnation)
                 throw new IllegalStateException("ML_STALE_ACTOR_INCARNATION");
+            Object currentTensor = values.get(publication.tensorField);
+            if (publication.expectedVersion == 0) {
+                if (currentTensor != Uninitialized.INSTANCE)
+                    throw new IllegalStateException("ML_STALE_TENSOR_SOURCE");
+            } else if (currentTensor != publication.sourceSnapshot) {
+                throw new IllegalStateException("ML_STALE_TENSOR_SOURCE");
+            }
 
             long revision = nextMutationRevision();
             LinkedHashMap<String, Object> nextValues = new LinkedHashMap<>(values);

@@ -26,6 +26,11 @@ parity, GPU buffer leasing, or a distributed optimizer protocol.
   caller-supplied transaction counters; version/revision and the captured
   run/graph/incarnation values are derived from that one authenticated
   snapshot, closing stale-computation rebasing;
+- every non-bootstrap update must also name the issuer-owned published
+  `TensorSnapshotF64` generation used for computation; its
+  version/run/graph/incarnation metadata must match the authority snapshot,
+  and publication rechecks that the exact source snapshot object is still the
+  tensor stored in actor state before swapping generations;
 - preparation is forbidden while the current carrier owns a state loan and
   rechecks actor retirement after allocation/copy before capability escape;
 - publication revalidates mutation revision, run, graph, incarnation, and
@@ -71,8 +76,8 @@ The compiler promotion path is:
 - copy-out mutation cannot change backing data;
 - immutable snapshot escape from a closed state loan;
 - ordinary tensor write and scalar-publication bypass rejection;
-- incomplete/foreign snapshot-authority rejection and same-carrier live-loan
-  preparation rejection;
+- incomplete/foreign snapshot-authority rejection, missing/foreign source
+  tensor rejection, and same-carrier live-loan preparation rejection;
 - stale mutation-revision failure atomicity;
 - cross-actor read denial;
 - retirement revocation;
