@@ -236,6 +236,21 @@ final class NamedCallTrailingClosureSyntaxTest {
     }
 
     @Test
+    void asyncNamedCallUsesTheResumablePathAndKeepsFormalBinding() throws Exception {
+        String output = run("""
+                pub async fnc subtract(int left, int right): int {
+                    return left - right;
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(await subtract(right: 2, left: 9));
+                    return;
+                }
+                """);
+        assertEquals("7", output);
+    }
+
+    @Test
     void moduleStaticAndInstanceCallsUseTheSameCheckedPermutation() throws Exception {
         String output = run("""
                 define module math
