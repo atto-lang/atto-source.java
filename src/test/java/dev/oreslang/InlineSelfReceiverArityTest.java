@@ -27,15 +27,22 @@ final class InlineSelfReceiverArityTest {
                       pub zero(self): int { return 0; }
                       pub one(self, int x): int { return x; }
                       pub mutable(mut self, int x): int { return x; }
+                      pub typed(self Counter, int x): int { return x; }
+                      pub typed_mut(mut self Counter, int x): int { return x; }
                     end
                     """.formatted(kind));
-            assertEquals(3, owner.methods().size());
+            assertEquals(5, owner.methods().size());
             assertEquals(0, owner.methods().get(0).arity());
             assertEquals(1, owner.methods().get(1).arity());
             assertEquals(1, owner.methods().get(2).arity());
             assertEquals("self", owner.methods().get(0).explicitReceiverType().name());
             assertEquals("self", owner.methods().get(1).explicitReceiverType().name());
             assertTrue(owner.methods().get(2).explicitReceiverType().isBorrow());
+            assertEquals("Counter", owner.methods().get(3).explicitReceiverType().name());
+            assertEquals(1, owner.methods().get(3).arity());
+            assertTrue(owner.methods().get(4).explicitReceiverType().isBorrow());
+            assertEquals("Counter", owner.methods().get(4).explicitReceiverType().borrowedTarget().name());
+            assertEquals(1, owner.methods().get(4).arity());
             assertEquals(CallableSelector.instance("zero", 0),
                     CallableSelector.of(owner.methods().get(0)));
             assertEquals(CallableSelector.instance("one", 1),
@@ -45,6 +52,8 @@ final class InlineSelfReceiverArityTest {
                       pub zero(self): int { return 0; }
                       pub one(self, int x): int { return x; }
                       pub mutable(mut self, int x): int { return x; }
+                      pub typed(self Counter, int x): int { return x; }
+                      pub typed_mut(mut self Counter, int x): int { return x; }
                     end
                     """.formatted(kind))));
         }
@@ -59,7 +68,11 @@ final class InlineSelfReceiverArityTest {
                     "foo(): int { return 0; } foo(self): int { return 0; }",
                     "foo(self): int { return 0; } foo(): int { return 0; }",
                     "foo(int x): int { return x; } foo(mut self, int x): int { return x; }",
-                    "foo(self Counter)(int x): int { return x; } foo(self, int x): int { return x; }"
+                    "foo(self Counter)(int x): int { return x; } foo(self, int x): int { return x; }",
+                    "foo(int x): int { return x; } foo(self Counter, int x): int { return x; }",
+                    "foo(int x): int { return x; } foo(mut self Counter, int x): int { return x; }",
+                    "foo(): int { return 0; } foo(self Counter): int { return 0; }",
+                    "foo(self Counter)(int x): int { return x; } foo(self Counter, int x): int { return x; }"
             }) {
                 String source = "define " + kind + " Counter as " + pair + " end";
                 IllegalArgumentException error = assertThrows(
