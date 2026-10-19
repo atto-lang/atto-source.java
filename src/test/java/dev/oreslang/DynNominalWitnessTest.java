@@ -29,6 +29,25 @@ final class DynNominalWitnessTest {
     }
 
     @Test
+    void unknownAndGenericsCannotForgeNestedDynWitnesses() {
+        Types.Dyn witness = new Types.Dyn(new Types.Named("Deployable", List.of()));
+        List<Types.Type> targets = List.of(
+                new Types.ListType(witness),
+                new Types.Named("Option", List.of(witness)),
+                new Types.Record(java.util.Map.of("value", witness)),
+                new Types.Tuple(List.of(Types.Primitive.INT, witness)),
+                new Types.Function(List.of(witness), Types.Primitive.VOID),
+                new Types.Borrow(witness, false));
+        for (Types.Type target : targets) {
+            assertTrue(Types.containsDynWitness(target), () -> "missing witness in " + target);
+            assertFalse(Types.isAssignable(Types.Unknown.INSTANCE, target),
+                    () -> "Unknown must not fabricate " + target);
+            assertFalse(Types.isAssignable(new Types.Generic("T"), target),
+                    () -> "generic T must not fabricate " + target);
+        }
+    }
+
+    @Test
     void genericValueCannotBecomeErasedInterfaceWithoutProof() {
         String source = API + """
                 fnc unsafe<T>(T input): dyn Deployable {
