@@ -15,8 +15,18 @@ final class IpcTransportSessionLease {
     enum Phase { OPEN, CLOSING, FINALIZING, RETIRED, QUARANTINED }
 
     @FunctionalInterface interface FrameWriter {
-        /** Must not return before the physical write attempt has terminated. */
-        void write(IpcReceiptCorrelation.Envelope message) throws IOException;
+        /**
+         * Bound physical writer. The prepared authenticated frame is data,
+         * never authority; the writer identity itself cannot vary per send.
+         * Must not return before the physical write attempt has terminated.
+         */
+        void write(IpcReceiptCorrelation.Envelope message, byte[] preparedFrame)
+                throws IOException;
+    }
+
+    static final class PreDispatchRejectedException extends IllegalStateException {
+        PreDispatchRejectedException(String message) { super(message); }
+        PreDispatchRejectedException(String message, Throwable cause) { super(message, cause); }
     }
 
     @FunctionalInterface interface PhysicalCloser {
@@ -87,25 +97,32 @@ final class IpcTransportSessionLease {
      * monitors while this operation pins the underlying physical resource.
      */
     void writeFrame(long expectedGeneration,
-                    IpcReceiptCorrelation.Envelope message) throws IOException {
+                    IpcReceiptCorrelation.Envelope message,
+                    byte[] preparedFrame) throws IOException {
         Objects.requireNonNull(message, "message");
+        Objects.requireNonNull(preparedFrame, "preparedFrame");
         synchronized (this) {
             if (phase != Phase.OPEN || expectedGeneration != generation
                     || !sameTrustedEpoch(message) || activeWrites >= limit) {
-                throw new IllegalStateException("closed/stale/bounded IPC transport");
+                throw new PreDispatchRejectedException(
+                        "closed/stale/bounded IPC transport");
             }
             // No arbitrary user callbacks or memory allocation after
             // commitment until the writer has acquired the physical pin.
             ++activeWrites;
             try {
                 receipts.commitDispatch(message);
-            } catch (RuntimeException | Error failure) {
+            } catch (RuntimeException failure) {
+                --activeWrites;
+                throw new PreDispatchRejectedException(
+                        "IPC receipt dispatch commitment rejected", failure);
+            } catch (Error failure) {
                 --activeWrites;
                 throw failure;
             }
         }
         try {
-            writer.write(message);
+            writer.write(message, preparedFrame);
         } catch (IOException | RuntimeException | Error failure) {
             // A dispatch-committed failed write is INDETERMINATE, even when
             // the host call threw before reporting any accepted bytes.
