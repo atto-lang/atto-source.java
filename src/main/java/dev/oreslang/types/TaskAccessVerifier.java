@@ -268,6 +268,7 @@ final class TaskAccessVerifier {
 
     public synchronized boolean parentMayAccess(Claim claim) {
         Objects.requireNonNull(claim, "claim");
+        if (sealed) return false; // scope teardown never grants fresh authority
         Root root = claim.place().root();
         if (scopeDomain == null || !scopeDomain.equals(root.domain())) return false;
         Long current = knownGenerations.get(new AllocationKey(root.domain(), root.allocationId()));
@@ -325,6 +326,10 @@ final class TaskAccessVerifier {
             throw new IllegalStateException("TaskScope cannot finish before child quiescence");
         }
         sealed = true;
+        // No source permission is valid after scope teardown; retire
+        // provenance bookkeeping rather than retaining every old allocation.
+        knownGenerations.clear();
+        scopeDomain = null;
     }
 
     public synchronized int activeChildren() { return live.size(); }
