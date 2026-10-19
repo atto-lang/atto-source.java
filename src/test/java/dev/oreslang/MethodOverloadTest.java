@@ -166,6 +166,114 @@ final class MethodOverloadTest {
     }
 
     @Test
+    void inlineSelfReceiverConflictsWithImplicitReceiverAtCallerArity() {
+        IllegalArgumentException conflict = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class Foo as
+                            foo(int x): void { return; }
+                            foo(self, int x): void { return; }
+                          end
+                        end
+                        """)));
+        assertTrue(conflict.getMessage().contains("already has arity 1"));
+
+        IllegalArgumentException typedConflict = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class Foo as
+                            foo(self Foo)(int x): void { return; }
+                            foo(self, int x): void { return; }
+                          end
+                        end
+                        """)));
+        assertTrue(typedConflict.getMessage().contains("already has arity 1"));
+    }
+
+    @Test
+    void inlineSelfIsExcludedFromActorMethodArity() {
+        IllegalArgumentException conflict = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define actor Worker as
+                            pub handle(int x): void { return; }
+                            pub handle(self, int x): void { return; }
+                          end
+                        end
+                        """)));
+        assertTrue(conflict.getMessage().contains("already has arity 1"));
+    }
+
+    @Test
+    void inlineSelfAndInlineMutableSelfBindExactlyOneReceiver() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module m
+                  define class Foo as
+                    foo(self): int { return 1; }
+                    foo(self, int x): int { return x; }
+                    foo(mut self, int x, int y): int { return x + y; }
+                  end
+                end
+                """)));
+
+        IllegalArgumentException conflict = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class Foo as
+                            foo(int x): int { return x; }
+                            foo(mut self, int x): int { return x; }
+                          end
+                        end
+                        """)));
+        assertTrue(conflict.getMessage().contains("already has arity 1"));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                Parser.parse("""
+                        define module m
+                          define class Foo as
+                            foo(self,): void { return; }
+                          end
+                        end
+                        """));
+    }
+
+    @Test
+    void explicitSelfAtCallSiteIsARealUserArgumentNotASecondReceiver() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class Foo as
+                            foo(self, int x): int { return x; }
+                            pub test(): int { return self.foo(self, 5); }
+                          end
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("arity 2"));
+
+        // A separate two-user-argument signature may deliberately accept
+        // self as DATA. The first call-site self is still the receiver.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module m
+                  define class Foo as
+                    foo(self, self other, int x): int { return x; }
+                    pub test(): int { return self.foo(self, 5); }
+                  end
+                end
+                """)));
+    }
+
+    @Test
+    void staticMethodCannotDeclareInlineSelfReceiver() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module m
+                  define class Foo as
+                    pub static fnc foo(self, int x): int { return x; }
+                  end
+                end
+                """));
+    }
+
+    @Test
     void staticClassFunctionsUseTheSameArityOnlyRule() throws Exception {
         String output = run("""
                 define module m
