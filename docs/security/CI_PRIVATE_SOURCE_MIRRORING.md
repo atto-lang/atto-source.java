@@ -14,8 +14,13 @@ reviewed, protected-branch change.
 **Origin protection is mandatory.** Before reading private source files, the
 publisher now checks the live GitHub identity of
 `ores-truffle-oreslang/oreslang-source.java`, verifies that its official
-`main` branch reports `protected: true`, pins the policy read to that branch's
-Git commit, and compares its policy bytes with the local checkout policy.
+`main` branch reports `protected: true`, and reads branch-protection rules
+from GitHub. It requires `required_pull_request_reviews.require_code_owner_reviews`,
+`required_pull_request_reviews.dismiss_stale_reviews`, and
+`enforce_admins.enabled` all to be true. Missing or unreadable rules fail
+closed, even if GitHub reports `protected: true`. The publisher pins the
+policy read to that branch's Git commit and compares its policy bytes
+with the local checkout policy.
 It repeats these checks immediately before publishing the new CI ref. Merely
 adding the allowlist line to an unreviewed checkout does not authorize export,
 and a CODEOWNERS file without enforced branch protection is not sufficient.
