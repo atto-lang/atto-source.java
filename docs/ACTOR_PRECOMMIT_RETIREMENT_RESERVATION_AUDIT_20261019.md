@@ -87,3 +87,45 @@ typed message ABI, and authenticated external-resource retirement in one
 transaction. That separate implementation and exact-head tests remain P0.
 
 Keep hot-upgrade PR #1367 Draft.
+
+
+## Follow-up: unpublished candidate retirement ownership is pre-reserved
+
+A second allocation-order bug existed on the rollback side. Once a candidate
+physical actor had been spawned, a failed/ambiguous cleanup path created a new
+`Route` and grew `retiredRoutes` only after `stop()` or the physical
+finalization probe had already failed. If that emergency allocation itself
+threw OOME, the code correctly refused to close the candidate generation pin,
+but the retryable owner record could be lost. That prevents premature unload
+but converts bounded quarantine into an unowned permanent pin.
+
+The router now has a dedicated `CandidateRetirement` owner ledger. The owner
+object and ledger slot are allocated under `routeLock` **before any candidate
+physical actor is spawned**. The physical ActorRef is filled into that existing
+owner immediately after spawn. Therefore every execution-capable unpublished
+candidate is either:
+
+1. still owned by its pre-reserved candidate-retirement record;
+2. proven physically finalized, after which the owner is removed and the
+   originating upgrade path releases the generation lease; or
+3. successfully published, in which case lease ownership transfers to the new
+   active `Route` and the unpublished-candidate owner is removed under the same
+   publication monitor.
+
+No cleanup path allocates a new retirement `Route` or grows a retirement
+ledger after physical candidate admission. Finalization-probe exceptions and
+stop failures simply retain the existing owner. `reapRetired()` and router
+`close()` now include the candidate-retirement ledger and close the generation
+lease before forgetting its owner.
+
+Committed regression source covers:
+
+- candidate-owner ledger OOME before physical admission: route epoch stays old,
+  the candidate generation pin is released, and a repaired retry may upgrade;
+- a candidate dispatcher that accepts but never executes the initial schedule:
+  physical spawn occurs, ready times out, cleanup retains exactly one candidate
+  owner and one generation pin, a delayed stale schedule is inert, and
+  `reapRetired()` releases the pin exactly once after physical finalization.
+
+These JUnit tests are authored source only until an approved exact-tree runner
+executes them.
