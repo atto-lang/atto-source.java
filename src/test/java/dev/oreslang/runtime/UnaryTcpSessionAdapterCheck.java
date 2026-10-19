@@ -252,6 +252,18 @@ public final class UnaryTcpSessionAdapterCheck {
         copy[0] = 1;
         check(bytes.unsignedAt(0) == 255,
                 "OresBytes must not expose mutable backing storage");
+
+        byte[] tooLarge = new byte[UnaryTransportFrame.MAX_PAYLOAD_BYTES + 1];
+        try {
+            new UnaryTcpSessionAdapter.Request(
+                    new UnaryTcpSessionAdapter.PeerIdentity("peer:too-large"),
+                    8, 4, 2, tooLarge);
+            throw new AssertionError("request accepted a payload above the unary protocol limit");
+        } catch (IllegalArgumentException expected) { }
+        try {
+            UnaryTcpSessionAdapter.Reply.success(tooLarge);
+            throw new AssertionError("reply accepted a payload above the unary protocol limit");
+        } catch (IllegalArgumentException expected) { }
     }
 
     private static void echoAndReplayFence() throws Exception {
