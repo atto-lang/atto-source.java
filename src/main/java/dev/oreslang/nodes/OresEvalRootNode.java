@@ -1555,6 +1555,7 @@ public final class OresEvalRootNode extends RootNode {
                 Set<Object> seen) {
             if (expr == null) return false;
             if (expr instanceof Ast.AwaitExpr
+                    || expr instanceof Ast.StaticSelectExpr
                     || expr instanceof Ast.ChannelOpExpr channel
                         && channel.mode() == Ast.WaitMode.BLOCKING
                     || expr instanceof Ast.DynamicSelectExpr selected
@@ -3226,6 +3227,18 @@ public final class OresEvalRootNode extends RootNode {
                             operation,
                             env,
                             continuation);
+                    return;
+                }
+
+                if (expr instanceof Ast.StaticSelectExpr selected) {
+                    final OresFuture<Object> pending;
+                    try {
+                        pending = startTrackedVoidSelect(selected, env);
+                    } catch (RuntimeException | Error failure) {
+                        continuation.accept(task, null, failure);
+                        return;
+                    }
+                    continuation.accept(task, pending, null);
                     return;
                 }
 
@@ -6556,6 +6569,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.ChannelOpExpr channelOp) {
                 return evalChannelOperation(channelOp, env);
+            }
+            if (expr instanceof Ast.StaticSelectExpr selected) {
+                return startTrackedVoidSelect(selected, env);
             }
             if (expr instanceof Ast.DynamicSelectExpr selected) {
                 ChannelRuntime.SelectSet set = asSelectSet(eval(selected.cases(), env));
