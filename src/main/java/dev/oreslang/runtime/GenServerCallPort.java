@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -20,7 +19,13 @@ final class GenServerCallPort<T> {
 
     private final Object gate = new Object();
     private final GenServerReplyLedger ledger;
-    private Map<GenServerReplyLedger.Ticket, OresFuture<T>> futures = new HashMap<>();
+
+    // Single ownership index: no global map duplicate and no full-map scan
+    // when one actor incarnation fails. Every access is guarded by gate.
+    private Map<GenServerReplyLedger.Target,
+            Map<GenServerReplyLedger.Ticket, OresFuture<T>>> pendingByTarget =
+            new HashMap<>();
+    private int live;
 
     GenServerCallPort(int capacity) {
         ledger = new GenServerReplyLedger(capacity);
@@ -29,25 +34,55 @@ final class GenServerCallPort<T> {
     PendingCall<T> register(GenServerReplyLedger.Target target) {
         Objects.requireNonNull(target, "target");
         synchronized (gate) {
-            var ticket = ledger.register(target); // authority not published to guest DATA
+            var ticket = ledger.register(target);
             try {
-                // Future construction and map growth may fail under resource
-                // pressure. A successful ledger registration without a
-                // published future would otherwise leak scarce call credits.
+                // Allocate the externally returned handle before publishing
+                // into either index. On allocation failure retire the ticket.
                 OresFuture<T> future = new OresFuture<>(() -> cancel(ticket), () -> { });
-                futures.put(ticket, future);
-                return new PendingCall<>(ticket, future);
+                PendingCall<T> result = new PendingCall<>(ticket, future);
+                Map<GenServerReplyLedger.Ticket, OresFuture<T>> bucket =
+                        pendingByTarget.get(target);
+                if (bucket == null) {
+                    bucket = new HashMap<>();
+                    pendingByTarget.put(target, bucket);
+                }
+                if (bucket.putIfAbsent(ticket, future) != null)
+                    throw new IllegalStateException("duplicate GenServer call ticket");
+                live++;
+                return result;
             } catch (RuntimeException | Error failure) {
+                // This covers constructor/map-growth errors without stranding
+                // scarce ledger quota. No guest callbacks run under gate.
+                Map<GenServerReplyLedger.Ticket, OresFuture<T>> bucket =
+                        pendingByTarget.get(target);
+                if (bucket != null) {
+                    bucket.remove(ticket);
+                    if (bucket.isEmpty()) pendingByTarget.remove(target);
+                }
                 ledger.retire(ticket);
                 throw failure;
             }
         }
     }
 
+    /** Must be called with gate held, after ledger retirement succeeded. */
+    private OresFuture<T> unlink(GenServerReplyLedger.Ticket ticket) {
+        var target = ticket.target();
+        var bucket = pendingByTarget.get(target);
+        if (bucket == null)
+            throw new IllegalStateException("missing call target index");
+        OresFuture<T> future = bucket.remove(ticket);
+        if (future == null)
+            throw new IllegalStateException("missing reply future");
+        if (bucket.isEmpty()) pendingByTarget.remove(target);
+        live--;
+        return future;
+    }
+
     private boolean cancel(GenServerReplyLedger.Ticket ticket) {
         synchronized (gate) {
             if (!ledger.retire(ticket)) return false;
-            futures.remove(ticket);
+            unlink(ticket);
             return true;
         }
     }
@@ -58,8 +93,7 @@ final class GenServerCallPort<T> {
         OresFuture<T> future;
         synchronized (gate) {
             if (!ledger.tryReply(ticket, respondingActor)) return false;
-            future = futures.remove(ticket);
-            if (future == null) throw new IllegalStateException("missing reply future");
+            future = unlink(ticket);
         }
         // Completing an OresFuture may notify host waiters; never under gate.
         if (!future.completeFromRuntime(value)) {
@@ -75,8 +109,7 @@ final class GenServerCallPort<T> {
         OresFuture<T> future;
         synchronized (gate) {
             if (!ledger.tryReply(ticket, respondingActor)) return false;
-            future = futures.remove(ticket);
-            if (future == null) throw new IllegalStateException("missing failure future");
+            future = unlink(ticket);
         }
         if (!future.failFromRuntime(failure)) {
             throw new IllegalStateException("failure ledger/future settlement mismatch");
@@ -84,78 +117,81 @@ final class GenServerCallPort<T> {
         return true;
     }
 
-    /** Timeout only settles the awaiting call; accepted server work may continue. */
+    /** Timeout settles only the awaiting call; accepted work may continue. */
     boolean timeout(GenServerReplyLedger.Ticket ticket) {
+        // Preallocate terminal failure before revoking the only live ticket.
+        TimeoutException failure = new TimeoutException("GenServer deadline expired");
         OresFuture<T> future;
         synchronized (gate) {
             if (!ledger.retire(ticket)) return false;
-            future = futures.remove(ticket);
-            if (future == null) throw new IllegalStateException("missing timeout future");
+            future = unlink(ticket);
         }
-        if (!future.failFromRuntime(new TimeoutException("GenServer deadline expired"))) {
+        if (!future.failFromRuntime(failure)) {
             throw new IllegalStateException("timeout ledger/future settlement mismatch");
         }
         return true;
     }
 
-    /** Actor crash/restart fences only the specified generation's pending calls. */
+    /** Retire one generation in O(its pending calls), never O(all calls). */
     int failActor(GenServerReplyLedger.Target target, Throwable failure) {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(failure, "failure");
-        ArrayList<Map.Entry<GenServerReplyLedger.Ticket, OresFuture<T>>> selected =
-                new ArrayList<>();
+        Map<GenServerReplyLedger.Ticket, OresFuture<T>> selected;
         synchronized (gate) {
-            // Prepare all allocation BEFORE changing the correlation ledger.
-            // OOME halfway through collection cannot leave an untracked live
-            // future whose ticket was already retired.
-            for (var entry : futures.entrySet()) {
-                if (entry.getKey().matchesTarget(target))
-                    selected.add(Map.entry(entry.getKey(), entry.getValue()));
-            }
-            for (var entry : selected) {
-                if (!ledger.retire(entry.getKey()))
+            selected = pendingByTarget.get(target);
+            if (selected == null) return 0;
+            for (var ticket : selected.keySet()) {
+                if (!ledger.retire(ticket))
                     throw new IllegalStateException("call port/ledger retirement mismatch");
-                if (futures.remove(entry.getKey()) != entry.getValue())
-                    throw new IllegalStateException("call port/future retirement mismatch");
             }
+            pendingByTarget.remove(target);
+            live -= selected.size();
         }
-        for (var entry : selected) {
-            if (!entry.getValue().failFromRuntime(failure)) {
+        // No guest or completion callbacks execute under the port lock.
+        for (var future : selected.values()) {
+            if (!future.failFromRuntime(failure))
                 throw new IllegalStateException("actor exit/future settlement mismatch");
-            }
         }
         return selected.size();
     }
 
     /** Close claims all remaining calls before invoking any callbacks. */
     int close() {
-        Map<GenServerReplyLedger.Ticket, OresFuture<T>> discarded;
+        // Allocate a single shared terminal failure before taking authority.
+        IllegalStateException failure = new IllegalStateException("GenServer call port closed");
+        Map<GenServerReplyLedger.Target,
+                Map<GenServerReplyLedger.Ticket, OresFuture<T>>> discarded;
+        int count;
         synchronized (gate) {
-            int count = ledger.close();
-            if (count == 0) return 0;
-            if (futures.size() != count) {
+            count = ledger.close();
+            if (count != live)
                 throw new IllegalStateException("call port/ledger size mismatch");
-            }
-            // The ledger is terminal now: transfer the old map rather than
-            // allocate a second O(n) list of futures during shutdown. Do not
-            // invoke callbacks under the port lock.
-            discarded = futures;
-            futures = Map.of();
+            if (count == 0) return 0;
+            discarded = pendingByTarget;
+            pendingByTarget = Map.of();
+            live = 0;
         }
-        for (var future : discarded.values()) {
-            if (!future.failFromRuntime(new IllegalStateException("GenServer call port closed"))) {
-                throw new IllegalStateException("close/future settlement mismatch");
+        for (var bucket : discarded.values()) {
+            for (var future : bucket.values()) {
+                if (!future.failFromRuntime(failure))
+                    throw new IllegalStateException("close/future settlement mismatch");
             }
         }
-        return discarded.size();
+        return count;
     }
 
     int pendingCount() {
         synchronized (gate) {
-            if (ledger.pendingCount() != futures.size()) {
+            if (ledger.pendingCount() != live)
                 throw new IllegalStateException("call port/ledger size mismatch");
-            }
-            return futures.size();
+            return live;
+        }
+    }
+
+    /** Runtime diagnostics for empty-bucket retention and test assertions. */
+    int pendingTargetCount() {
+        synchronized (gate) {
+            return pendingByTarget.size();
         }
     }
 }
