@@ -36,6 +36,7 @@ final class IpcTransportSessionLease {
     private final long generation;
     private final int limit;
     private final IpcReceiptCompletionBridge receipts;
+    private final FrameWriter writer;
     private final PhysicalCloser closer;
     private final CleanupScheduler scheduler;
     private Phase phase = Phase.OPEN;
@@ -45,11 +46,14 @@ final class IpcTransportSessionLease {
     private Throwable closeFailure;
     private long cleanupAttempt;
     private boolean cleanupExecuting;
+    private long enqueueAttempt;
+    private Thread enqueueCaller;
 
     IpcTransportSessionLease(IpcReceiptCorrelation.Envelope trustedEpoch,
                              long generation, int limit,
                              IpcReceiptCompletionBridge receipts,
-                             PhysicalCloser closer, CleanupScheduler scheduler) {
+                             FrameWriter writer, PhysicalCloser closer,
+                             CleanupScheduler scheduler) {
         if (generation <= 0 || limit <= 0 || limit > 65536) {
             throw new IllegalArgumentException("invalid transport session policy");
         }
@@ -57,6 +61,7 @@ final class IpcTransportSessionLease {
         this.generation = generation;
         this.limit = limit;
         this.receipts = Objects.requireNonNull(receipts, "receipts");
+        this.writer = Objects.requireNonNull(writer, "writer");
         this.closer = Objects.requireNonNull(closer, "closer");
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
     }
@@ -81,10 +86,9 @@ final class IpcTransportSessionLease {
      * The transport callback is invoked OUTSIDE both session and receipt
      * monitors while this operation pins the underlying physical resource.
      */
-    void writeFrame(long expectedGeneration, IpcReceiptCorrelation.Envelope message,
-                    FrameWriter writer) throws IOException {
+    void writeFrame(long expectedGeneration,
+                    IpcReceiptCorrelation.Envelope message) throws IOException {
         Objects.requireNonNull(message, "message");
-        Objects.requireNonNull(writer, "writer");
         synchronized (this) {
             if (phase != Phase.OPEN || expectedGeneration != generation
                     || !sameTrustedEpoch(message) || activeWrites >= limit) {
@@ -167,6 +171,11 @@ final class IpcTransportSessionLease {
             }
             attempt = ++cleanupAttempt;
         }
+        Thread caller = Thread.currentThread();
+        synchronized (this) {
+            enqueueAttempt = attempt;
+            enqueueCaller = caller;
+        }
         try {
             scheduler.enqueue(() -> finalizePhysicalClose(attempt));
         } catch (RuntimeException | Error failure) {
@@ -177,6 +186,12 @@ final class IpcTransportSessionLease {
                     phase = Phase.QUARANTINED;
                 }
             }
+        } finally {
+            synchronized (this) {
+                if (enqueueAttempt == attempt && enqueueCaller == caller) {
+                    enqueueCaller = null;
+                }
+            }
         }
     }
 
@@ -184,6 +199,13 @@ final class IpcTransportSessionLease {
         synchronized (this) {
             if (phase != Phase.FINALIZING || cleanupAttempt != attempt
                     || cleanupExecuting) return;
+            if (enqueueAttempt == attempt && enqueueCaller == Thread.currentThread()) {
+                closeFailure = new IllegalStateException(
+                        "cleanup scheduler executed inline on requesting carrier");
+                enqueueCaller = null;
+                phase = Phase.QUARANTINED;
+                return;
+            }
             cleanupExecuting = true;
         }
         try {
