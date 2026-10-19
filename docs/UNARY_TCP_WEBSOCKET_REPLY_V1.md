@@ -170,21 +170,22 @@ arbitrary host exception, stack trace or `toString`.
 
 The byte counters are **wire/buffer admission counters**, not a claim that they
 measure every transient JVM object or actor-heap byte. ActorRuntime mailbox/
-heap limits remain an independent layer. The host one-shot actor bridge now
-uses a lazy immutable unsigned-byte view over the request's defensive
-`byte[]`, rather than eagerly allocating one boxed `Long` per wire byte before
-actor admission. ActorRuntime can therefore apply its message-graph node bound
-from the list size before a second large collection is materialized.
+heap limits remain an independent layer. Unary actor ingress now uses
+`OresBytes`, an immutable compact runtime value backed by one private
+`byte[]`. ActorRuntime treats it as one message-graph node while charging its
+logical mailbox/quota footprint as `24 + byteLength`. This removes the former
+one-node-per-octet graph ceiling without making large payloads free.
 
-The current Java one-shot bridge still does **not** promise that every
-wire-valid 1 MiB unary body is actor-executable: ActorRuntime currently caps a
-message graph at 100,000 nodes, so large byte-list payloads fail closed before
-guest execution. A production `Bytes` lowering needs a compact sendable value
-whose accounting is byte-based rather than one graph node per octet.
+The one-shot Java actor bridge can therefore carry the full wire-valid 1 MiB
+unary body through ActorRuntime admission without expanding it into a boxed
+integer list. The strict result codec likewise accepts `OresBytes` directly;
+bootstrap integer byte lists remain compatibility input until source-level
+`Bytes` parsing/typechecking/lowering uses the compact value end to end.
 
-The current adapter accepts an already-created `Socket`; a production listener
-must additionally own bind/accept permissions, backlog policy, concrete peer
-authentication and lifecycle supervision.
+The branch also includes the supervisor-owned TLS listener and concrete
+mutual-TLS authenticator described below; production deployment still requires
+reviewed certificate policy, endpoint permissions/configuration and full
+exact-head CI/native validation.
 
 ## Other unary transports — opt-in, not inferred
 
@@ -200,8 +201,9 @@ conversion is allowed without an explicit typed transport codec.
 ## Implemented and tested versus still missing
 
 The feature branch now adds `UnaryTransportFrame`, `UnaryReplySlot`,
-`UnaryRequestRegistry`, `UnaryInboundRequestRegistry`,
-`UnaryTcpSessionAdapter` and `UnaryTcpActorDispatcher`, dedicated
+`UnaryRequestRegistry`, `UnaryInboundRequestRegistry`, `OresBytes`,
+`UnaryTcpSessionAdapter`, `UnaryTcpActorDispatcher`,
+`UnaryTcpMutualTlsAuthenticator` and `UnaryTcpTlsListener`, dedicated
 standalone/JUnit checks and a repeatable warning-clean Java 21 smoke script.
 The separate inbound registry captures the bounded strictly-monotonic
 peer-ID/replay contract independently of the transport loop so future TCP,
