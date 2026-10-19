@@ -87,7 +87,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
             lanes.get(target).execute(task);
             if (target != lane) spills.incrementAndGet();
         } catch (RuntimeException | Error failure) {
-            task.releaseSlot();
+            task.rejectAdmission();
             throw failure;
         }
     }
@@ -96,6 +96,9 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         private final Runnable command;
         private final int assignedLane;
         private final AtomicBoolean released = new AtomicBoolean();
+        // 0=pending, 1=entered, 2=rejected. The task itself is the lock:
+        // no additional per-dispatch claim allocation in the actor hot path.
+        private int claim;
         private QueuedTurn(Runnable command, int assignedLane) {
             this.command = command;
             this.assignedLane = assignedLane;
@@ -106,7 +109,17 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
                 queueSlots.release();
             }
         }
+        private void rejectAdmission() {
+            synchronized (this) {
+                if (claim == 0) claim = 2;
+            }
+            releaseSlot();
+        }
         @Override public void run() {
+            synchronized (this) {
+                if (claim != 0) return;
+                claim = 1;
+            }
             releaseSlot();
             command.run();
         }
@@ -119,7 +132,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         var abandoned = new ArrayList<Runnable>();
         for (var lane : lanes) for (var pending : lane.shutdownNow()) {
             QueuedTurn task = (QueuedTurn) pending;
-            task.releaseSlot();
+            task.rejectAdmission();
             abandoned.add(task.command);
         }
         return List.copyOf(abandoned);
