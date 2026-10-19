@@ -930,6 +930,49 @@ public class TaskHandleTest {
         }
     }
 
+    @Test void concurrentCheckpointAndCancellationKeepFutureAndOutcomeConsistent()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            for (int iteration = 0; iteration < 500; iteration++) {
+                CountDownLatch entered = new CountDownLatch(1);
+                CountDownLatch release = new CountDownLatch(1);
+                AtomicInteger cleanup = new AtomicInteger();
+                TaskHandle<Integer> handle = scheduler.startTracked(resume -> {
+                    try {
+                        entered.countDown();
+                        awaitUninterruptibly(release);
+                        OresScheduler.cancellationCheckpoint();
+                        return OresScheduler.done(73);
+                    } finally {
+                        cleanup.incrementAndGet();
+                    }
+                });
+                assertTrue(entered.await(3, TimeUnit.SECONDS));
+                Thread canceller = new Thread(() -> handle.cancel("checkpoint race"));
+                canceller.start();
+                release.countDown();
+                canceller.join(3000);
+                assertFalse(canceller.isAlive());
+                TaskHandle.TaskOutcome<Integer> outcome = done(handle);
+                assertEquals(1, cleanup.get(), "guest finally must run once");
+                assertTrue(outcome instanceof TaskHandle.Cancelled<?>
+                        || outcome instanceof TaskHandle.Success<?>,
+                        "cancellation/completion race cannot invent Failed");
+                assertEquals(outcome instanceof TaskHandle.Cancelled<?>,
+                        handle.result().isCancelled(),
+                        "TaskHandle outcome and underlying Future must agree");
+                if (outcome instanceof TaskHandle.Success<?>) {
+                    assertEquals(73, handle.result().get(3, TimeUnit.SECONDS));
+                } else {
+                    assertThrows(CancellationException.class,
+                            () -> handle.result().get(3, TimeUnit.SECONDS));
+                }
+                assertEquals(outcome, done(handle),
+                        "getDone is an immutable physical-quiescence witness");
+            }
+        }
+    }
+
     @Test void raceCancellationVersusCompletionAlwaysYieldsOneOutcome() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(2)) {
             for (int i = 0; i < 100; i++) {
