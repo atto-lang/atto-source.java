@@ -4,6 +4,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.OwnershipChecker;
+import dev.oreslang.types.SendSyncTraits;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -133,6 +134,29 @@ final class TaskSpawnSendAdmissionTest {
             }
             """, "fails conservative Task Send preflight");
     }
+    @Test
+    @org.junit.jupiter.api.Timeout(5)
+    void astSendPreflightRejectsDeepAndWideTypeBombsWithoutPoisoning() {
+        SendSyncTraits preflight = new SendSyncTraits(new Ast.Program(java.util.List.of()));
+
+        Ast.TypeRef deep = new Ast.TypeRef("int", java.util.List.of(), false);
+        for (int i = 0; i < 12_000; i++) {
+            deep = new Ast.TypeRef("Option", java.util.List.of(deep), false);
+        }
+        assertFalse(preflight.mayBeSendAfterResolution(deep));
+
+        Ast.TypeRef wide = new Ast.TypeRef(
+                "Tuple",
+                java.util.Collections.nCopies(
+                        5_000, new Ast.TypeRef("int", java.util.List.of(), false)),
+                false);
+        assertFalse(preflight.mayBeSendAfterResolution(wide));
+
+        assertTrue(preflight.mayBeSendAfterResolution(
+                new Ast.TypeRef("int", java.util.List.of(), false)),
+                "resource-budget rejection must not poison the next preflight query");
+    }
+
     @Test
     void fullSourceCompilerStillRefusesToExecuteUnloweredTasks() {
         IllegalArgumentException failure = assertThrows(
