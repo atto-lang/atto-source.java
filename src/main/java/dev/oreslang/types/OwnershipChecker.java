@@ -860,6 +860,12 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.StagedCallExpr || expr instanceof Ast.StagedNewExpr) {
             throw error("named/trailing-closure call lowering is not yet enabled");
         }
+        if (expr instanceof Ast.TypeExpr) {
+            throw error("generic type-qualified expression is not a runtime ownership value");
+        }
+        if (expr instanceof Ast.CompoundAssignExpr) {
+            throw error("compound-place assignment ownership lowering is not yet enabled");
+        }
         if (expr instanceof Ast.MatchExpr match) {
             ValueInfo subject = checkExpr(match.subject(), scope, false);
             VarState source = match.subject() instanceof Ast.NameExpr name
