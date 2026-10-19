@@ -6,6 +6,8 @@ on:
       - 'src/main/java/dev/oreslang/runtime/OtpSupervisorCommandLaneV1.java'
       - 'src/test/java/dev/oreslang/runtime/OtpSupervisorCommandLaneV1Smoke.java'
       - 'src/test/java/dev/oreslang/runtime/OtpSupervisorCommandLaneV1Test.java'
+      - 'src/test/java/dev/oreslang/runtime/OtpSupervisorCommandDispatchTest.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'docs/OTP_PRIORITY_CONTROL_HOT_UPGRADE_V1.md'
       - '.github/workflows/otp-control-hotupgrade-v1.yml'
   workflow_dispatch:
@@ -41,5 +43,5 @@ jobs:
       - name: Full JUnit integration with source ActorRuntime CONTROL tests
         run: >
           mvn -B -ntp
-          -Dtest=OtpSupervisorCommandLaneV1Test,ActorSupervisorControlV2Test
+          -Dtest=OtpSupervisorCommandLaneV1Test,OtpSupervisorCommandDispatchTest,ActorSupervisorControlV2Test
           test
