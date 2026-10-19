@@ -75,6 +75,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.carrier_codeowners_text = (
             "/.github/private-oreslang-approved-source-snapshots.txt @ORESoftware\n"
             "/.github/CODEOWNERS @ORESoftware\n"
+            "/scripts/verify-oreslang-private-ci-snapshot.sh @ORESoftware\n"
             "/.github/workflows/ @ORESoftware\n"
         )
         self.carrier_codeowners_sha = None
@@ -496,6 +497,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.carrier_codeowners_text = (
             "/.github/private-oreslang-approved-source-snapshots.txt @ORESoftware\n"
             "/.github/CODEOWNERS @ORESoftware\n"
+            "/scripts/verify-oreslang-private-ci-snapshot.sh @ORESoftware\n"
             "/.github/workflows/ @ORESoftware\n"
         )
 
