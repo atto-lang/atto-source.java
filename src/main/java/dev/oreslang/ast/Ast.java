@@ -1146,7 +1146,7 @@ public final class Ast {
         }
     }
 
-    public enum ObjectKind { INFERRED_STRUCT, INFERRED_RECORD, EXPLICIT_STRUCT }
+    public enum ObjectKind { RECORD, INFERRED_STRUCT, INFERRED_RECORD, EXPLICIT_STRUCT }
 
     /** A field declaration in the closed shape of an explicit anonymous struct. */
     public record StructFieldSpec(String name, TypeRef type) {
@@ -1211,13 +1211,18 @@ public final class Ast {
             }
             return ObjectKind.INFERRED_STRUCT;
         }
+        /** True only when the source explicitly used infer and may introduce a captured type alias. */
         public boolean inferredAggregate() {
             return kind == ObjectKind.INFERRED_STRUCT || kind == ObjectKind.INFERRED_RECORD;
         }
         public boolean inferredStruct() { return kind == ObjectKind.INFERRED_STRUCT; }
         public boolean inferredRecord() { return kind == ObjectKind.INFERRED_RECORD; }
-        /** Only inferred records carry the readonly structural capability by construction. */
-        public boolean readonlyInferredAggregate() { return inferredRecord(); }
+        public boolean plainRecord() { return kind == ObjectKind.RECORD; }
+        public boolean structuralRecord() { return plainRecord() || inferredRecord(); }
+        /** All non-explicit aggregate literals infer their field types from initializer values. */
+        public boolean inferredFieldTypes() { return kind != ObjectKind.EXPLICIT_STRUCT; }
+        /** Compatibility helper: structural records carry the readonly record capability. */
+        public boolean readonlyInferredAggregate() { return structuralRecord(); }
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
     }
 
