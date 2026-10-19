@@ -79,8 +79,9 @@ and Sync. The sole sealed actor `state { ... }` remains inaccessible to Arc.
 ## Compiler and runtime integration order
 
 1. Merge or rebase Java dyn #1421 after Java JDK25/GraalVM verification.
-2. Reconcile `ThreadSafetyTraits` (#1439) with #1444's owned-Send checks and
-   AST/capture inference from #1447/#1452. Keep one canonical semantic result.
+2. Keep `ThreadSafetyTraits` (#1439/#1467) as the sole positive permission
+   authority. #1447/#1452 AST walkers are deny-only preflight and must resolve
+   captures/parameters/arguments to `Types.Type` before any scheduling grant.
 3. Check `dyn` in every generic substitution, implicit conversion, Task
    capture, async boundary and actor transport. No `dyn I + Send + Sync` until
    source syntax, nominal proof, ABI and lifetime agreement are implemented.
@@ -101,8 +102,9 @@ and Sync. The sole sealed actor `state { ... }` remains inaccessible to Arc.
   independent Sync evidence.
 - Unknown, unbound generic, cyclic type and nominal shadowing fail closed.
 - Deep and extremely wide/DAG-shaped inputs are bounded by depth, node/step
-  budgets and per-query identity memoization; budget exhaustion cannot poison
-  a subsequent independent query.
+  budgets and per-query memoization keyed by **node identity + trait + current
+  depth**. A shallow proof may never authorize the same node reached deeper
+  than the limit; budget exhaustion cannot poison a subsequent query.
 - Detached owned Send denies `&T` and `&mut T` even where raw Rust-style
   `Send` is true; deny deeply nested borrowing and budget-exhaustion
   without stack overflow or poisoning later valid queries.
