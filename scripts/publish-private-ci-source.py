@@ -27,7 +27,6 @@ MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
 MIRROR_DESTINATION = "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra"
-DEST_DEFAULT_BRANCH = "main"
 DEST_BASE_COMMIT = "4d1d65445a09eb47f383bd5dc373d36056346056"
 DEST_BASE_TREE = "825c75a6b4cf84c62510f717290d6c87f4611b9a"
 
@@ -79,6 +78,16 @@ def checked_repo(repository, expected_id):
             or result.get("private") is not True):
         raise Denied("destination identity, immutable ID, or private visibility changed")
     return result
+
+
+def checked_carrier(repository):
+    """Resolve only the immutable reviewed carrier object, never a mutable ref."""
+    result = gh_api(f"repos/{repository}/git/commits/{DEST_BASE_COMMIT}")
+    commit_sha = valid_sha(result.get("sha"))
+    tree_sha = valid_sha(result.get("tree", {}).get("sha"))
+    if commit_sha != DEST_BASE_COMMIT or tree_sha != DEST_BASE_TREE:
+        raise Denied("reviewed destination carrier commit/tree mismatch")
+    return commit_sha, tree_sha
 
 
 def require_preflight(repository, branch, root, source_pr, source_commit, source_tree,
@@ -337,18 +346,8 @@ def publish(repository, source, branch, trusted_root, source_pr=None,
     # Revalidate before the first private byte is uploaded.
     require_preflight(repository, branch, trusted_root, source_pr, source_commit,
                       source_tree, maintainer_comment, security_comment)
-    base = checked_repo(repository, expected_id)
-    default = base.get("default_branch")
-    if default != DEST_DEFAULT_BRANCH:
-        raise Denied("destination default branch is not the reviewed carrier branch")
-    base_ref = gh_api(f"repos/{repository}/git/ref/heads/{default}")
-    base_sha = valid_sha(base_ref.get("object", {}).get("sha"))
-    if base_sha != DEST_BASE_COMMIT:
-        raise Denied("destination carrier base commit changed after review")
-    base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
-    base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
-    if base_tree != DEST_BASE_TREE:
-        raise Denied("destination carrier base tree changed after review")
+    checked_repo(repository, expected_id)
+    base_sha, base_tree = checked_carrier(repository)
     def authorize_write():
         current_policy, current_id = checked_policy_fingerprint(
             trusted_root, repository)
@@ -404,6 +403,9 @@ def publish(repository, source, branch, trusted_root, source_pr=None,
     require_preflight(repository, branch, trusted_root, source_pr, source_commit,
                       source_tree, maintainer_comment, security_comment)
     authorize_write()
+    final_base_sha, final_base_tree = checked_carrier(repository)
+    if final_base_sha != base_sha or final_base_tree != base_tree:
+        raise Denied("reviewed destination carrier changed during transfer")
     # CREATE a new CI ref, never UPDATE an existing branch, tag, or main.
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
         "ref": "refs/heads/" + branch, "sha": commit_sha
