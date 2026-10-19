@@ -35,10 +35,16 @@ final class ActorRuntimePhysicalMailReceiptTest {
             assertEquals(0L, first.acceptedSequence());
             assertEquals(1L, second.acceptedSequence());
             assertNotSame(first.terminal(), second.terminal());
+            assertNull(first.terminalDisposition());
+            assertNull(second.terminalDisposition());
             assertFalse(first.terminal().cancel(false),
                     "a host observer may not cancel runtime message completion");
             first.terminal().get(5, TimeUnit.SECONDS);
             second.terminal().get(5, TimeUnit.SECONDS);
+            assertEquals(ActorRuntime.PhysicalMailDisposition.PROCESSED,
+                    first.terminalDisposition());
+            assertEquals(ActorRuntime.PhysicalMailDisposition.PROCESSED,
+                    second.terminalDisposition());
             assertEquals(7, sum.get());
             actor.stop();
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
@@ -63,12 +69,16 @@ final class ActorRuntimePhysicalMailReceiptTest {
                 assertTrue(entered.await(5, TimeUnit.SECONDS));
                 assertFalse(receipt.terminal().isDone(),
                         "mailbox acceptance is not physical processing completion");
+                assertNull(receipt.terminalDisposition(),
+                        "pending receipt cannot expose a terminal class");
                 assertThrows(java.util.concurrent.TimeoutException.class,
                         () -> receipt.terminal().get(10, TimeUnit.MILLISECONDS));
                 assertFalse(receipt.terminal().cancel(false),
                         "a timeout must not cancel or forge physical completion");
                 release.countDown();
                 receipt.terminal().get(5, TimeUnit.SECONDS);
+                assertEquals(ActorRuntime.PhysicalMailDisposition.PROCESSED,
+                        receipt.terminalDisposition());
             } finally {
                 release.countDown();
                 actor.stop();
@@ -196,6 +206,8 @@ final class ActorRuntimePhysicalMailReceiptTest {
                         "failed snapshot preparation must not publish stopped=true");
                 assertFalse(receipt.terminal().isDone(),
                         "exact receipt remains owned while the live receive is pending");
+                assertNull(receipt.terminalDisposition(),
+                        "failed teardown preparation cannot publish a terminal class");
             } finally {
                 drainsField.set(cell, original);
                 release.countDown();
@@ -204,6 +216,8 @@ final class ActorRuntimePhysicalMailReceiptTest {
             // Because failed teardown published no terminal actor state, the
             // original receive may finish normally and settle its exact receipt.
             receipt.terminal().get(5, TimeUnit.SECONDS);
+            assertEquals(ActorRuntime.PhysicalMailDisposition.PROCESSED,
+                    receipt.terminalDisposition());
             actor.stop();
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
         }
@@ -220,9 +234,14 @@ final class ActorRuntimePhysicalMailReceiptTest {
             actor.getReady().get(5, TimeUnit.SECONDS);
             var receipt = runtime.sendWithPhysicalReceipt(actor, 1);
             assertSame(actor, receipt.physical());
-            assertThrows(java.util.concurrent.ExecutionException.class,
+            var failure = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
                     () -> receipt.terminal().get(5, TimeUnit.SECONDS),
                     "terminal actor failure must fail, not acknowledge delivery");
+            assertInstanceOf(IllegalStateException.class, failure.getCause());
+            assertEquals("injected receive failure", failure.getCause().getMessage());
+            assertEquals(ActorRuntime.PhysicalMailDisposition.FAILED,
+                    receipt.terminalDisposition());
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
@@ -262,11 +281,230 @@ final class ActorRuntimePhysicalMailReceiptTest {
                 assertThrows(java.util.concurrent.ExecutionException.class,
                         () -> queued.terminal().get(5, TimeUnit.SECONDS),
                         "terminal actor failure must fail an accepted but undelivered successor");
+                assertEquals(ActorRuntime.PhysicalMailDisposition.FAILED,
+                        first.terminalDisposition());
+                assertEquals(ActorRuntime.PhysicalMailDisposition.FAILED,
+                        queued.terminalDisposition());
                 assertEquals(0, processedSuccessor.get(),
                         "queued mail must not run after fail-stop");
                 assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
             } finally {
                 releaseFailure.countDown();
+            }
+        }
+    }
+
+    @Test
+    void explicitStopMarksAcceptedActiveMailStoppedNotProcessed()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> {
+                        entered.countDown();
+                        release.await();
+                    });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            var receipt = runtime.sendWithPhysicalReceipt(actor, 1);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            var stopFailure = new AtomicReference<Throwable>();
+            Thread stopper = Thread.ofPlatform().start(() -> {
+                try {
+                    actor.stop();
+                } catch (Throwable failure) {
+                    stopFailure.set(failure);
+                }
+            });
+            try {
+                assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> receipt.terminal().get(5, TimeUnit.SECONDS));
+                assertEquals(ActorRuntime.PhysicalMailDisposition.STOPPED,
+                        receipt.terminalDisposition());
+            } finally {
+                release.countDown();
+            }
+            stopper.join(5_000);
+            assertFalse(stopper.isAlive());
+            assertNull(stopFailure.get());
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void structuredCancellationMarksAcceptedMailCancelled()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> {
+                        entered.countDown();
+                        release.await();
+                    });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            var receipt = runtime.sendWithPhysicalReceipt(actor, 1);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            try {
+                assertTrue(runtime.cancel(actor));
+                var failure = assertThrows(
+                        java.util.concurrent.ExecutionException.class,
+                        () -> receipt.terminal().get(5, TimeUnit.SECONDS));
+                var cancelled = assertInstanceOf(
+                        ActorRuntime.ActorCancelledException.class,
+                        failure.getCause());
+                assertEquals(ActorRuntime.CancellationMode.STRUCTURED,
+                        cancelled.mode());
+                assertEquals(ActorRuntime.PhysicalMailDisposition.CANCELLED,
+                        receipt.terminalDisposition());
+            } finally {
+                release.countDown();
+            }
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void forceCancellationMarksQueuedAcceptedMailForceCancelled()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            runtime.setForceCancellationTreeHook(request -> true);
+            var firstEntered = new CountDownLatch(1);
+            var releaseFirst = new CountDownLatch(1);
+            var successorRuns = new AtomicInteger();
+            var actor = runtime.<Integer>spawnPrivate(
+                    () -> (message, context) -> {
+                        if (message == 1) {
+                            firstEntered.countDown();
+                            releaseFirst.await();
+                        } else {
+                            successorRuns.incrementAndGet();
+                        }
+                    });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.send(1);
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+            var queued = runtime.sendWithPhysicalReceipt(actor, 2);
+            try {
+                assertTrue(runtime.cancel(
+                        actor, ActorRuntime.CancellationMode.FORCE_ISOLATED));
+                var failure = assertThrows(
+                        java.util.concurrent.ExecutionException.class,
+                        () -> queued.terminal().get(5, TimeUnit.SECONDS));
+                var cancelled = assertInstanceOf(
+                        ActorRuntime.ActorCancelledException.class,
+                        failure.getCause());
+                assertEquals(ActorRuntime.CancellationMode.FORCE_ISOLATED,
+                        cancelled.mode());
+                assertEquals(ActorRuntime.PhysicalMailDisposition.FORCE_CANCELLED,
+                        queued.terminalDisposition());
+                assertEquals(0, successorRuns.get());
+            } finally {
+                releaseFirst.countDown();
+            }
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void runtimeCloseMarksQueuedAcceptedMailRuntimeClosed()
+            throws Exception {
+        var runtime = new ActorRuntime();
+        var firstEntered = new CountDownLatch(1);
+        var releaseFirst = new CountDownLatch(1);
+        var successorRuns = new AtomicInteger();
+        var actor = runtime.<Integer>spawnShared(
+                () -> (message, context) -> {
+                    if (message == 1) {
+                        firstEntered.countDown();
+                        releaseFirst.await();
+                    } else {
+                        successorRuns.incrementAndGet();
+                    }
+                });
+        try {
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.send(1);
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+            var queued = runtime.sendWithPhysicalReceipt(actor, 2);
+
+            // Runtime shutdown interrupts dispatcher mechanics after publishing
+            // the runtime-specific receipt disposition. The first blocked turn
+            // is therefore allowed to unwind without processing its successor.
+            assertDoesNotThrow(runtime::close);
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> queued.terminal().get(5, TimeUnit.SECONDS));
+            assertEquals(ActorRuntime.PhysicalMailDisposition.RUNTIME_CLOSED,
+                    queued.terminalDisposition());
+            assertEquals(0, successorRuns.get());
+        } finally {
+            releaseFirst.countDown();
+            try {
+                runtime.close();
+            } catch (IllegalStateException ignored) {
+                // A failed assertion may leave a carrier outside the normal
+                // test ordering; the first close already sealed the runtime.
+            }
+        }
+    }
+
+    @Test
+    void completionRacingStructuredCancelSettlesExactlyOneDisposition()
+            throws Exception {
+        for (int attempt = 0; attempt < 64; ++attempt) {
+            try (var runtime = new ActorRuntime()) {
+                var entered = new CountDownLatch(1);
+                var release = new CountDownLatch(1);
+                var go = new CountDownLatch(1);
+                var actor = runtime.<Integer>spawnShared(
+                        () -> (message, context) -> {
+                            entered.countDown();
+                            release.await();
+                        });
+                actor.getReady().get(5, TimeUnit.SECONDS);
+                var receipt = runtime.sendWithPhysicalReceipt(actor, 1);
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                var callbacks = new AtomicInteger();
+                receipt.terminal().whenCompleteRuntime(
+                        (ignored, failure) -> callbacks.incrementAndGet());
+
+                Thread finisher = Thread.ofPlatform().start(() -> {
+                    try {
+                        go.await();
+                        release.countDown();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+                Thread canceller = Thread.ofPlatform().start(() -> {
+                    try {
+                        go.await();
+                        runtime.cancel(actor);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+                go.countDown();
+                finisher.join(5_000);
+                canceller.join(5_000);
+                assertFalse(finisher.isAlive() || canceller.isAlive());
+
+                try {
+                    receipt.terminal().get(5, TimeUnit.SECONDS);
+                } catch (java.util.concurrent.ExecutionException expected) {
+                    // Cancellation may win the lifecycleLock race.
+                }
+                var disposition = receipt.terminalDisposition();
+                assertTrue(
+                        disposition == ActorRuntime.PhysicalMailDisposition.PROCESSED
+                                || disposition
+                                == ActorRuntime.PhysicalMailDisposition.CANCELLED,
+                        "completion/cancel race published impossible disposition "
+                                + disposition);
+                assertEquals(1, callbacks.get(),
+                        "exact receipt must notify one terminal settlement");
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
             }
         }
     }
