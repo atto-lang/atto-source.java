@@ -183,8 +183,12 @@ bootstrap integer byte lists remain compatibility input until source-level
 `Bytes` parsing/typechecking/lowering uses the compact value end to end.
 
 The branch also includes the supervisor-owned TLS listener and concrete
-mutual-TLS authenticator described below; production deployment still requires
-reviewed certificate policy, endpoint permissions/configuration and full
+mutual-TLS authenticator described below. Production binding goes through
+`UnaryTcpTlsRuntime.bind(...)`, which rejects actor-carrier callers and applies
+the same scoped `RuntimePermissions.Permission.NET` check as `NativeHttp`
+**before** the server socket is created or bound. The lower-level
+already-bound-socket listener remains an internal/test injection seam.
+Production deployment still requires reviewed certificate policy and full
 exact-head CI/native validation.
 
 ## Other unary transports — opt-in, not inferred
@@ -203,7 +207,8 @@ conversion is allowed without an explicit typed transport codec.
 The feature branch now adds `UnaryTransportFrame`, `UnaryReplySlot`,
 `UnaryRequestRegistry`, `UnaryInboundRequestRegistry`, `OresBytes`,
 `UnaryTcpSessionAdapter`, `UnaryTcpActorDispatcher`,
-`UnaryTcpMutualTlsAuthenticator` and `UnaryTcpTlsListener`, dedicated
+`UnaryTcpMutualTlsAuthenticator`, `UnaryTcpTlsListener` and
+`UnaryTcpTlsRuntime`, dedicated
 standalone/JUnit checks and a repeatable warning-clean Java 21 smoke script.
 The separate inbound registry captures the bounded strictly-monotonic
 peer-ID/replay contract independently of the transport loop so future TCP,
