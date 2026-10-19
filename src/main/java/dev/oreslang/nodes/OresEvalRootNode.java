@@ -6,6 +6,7 @@ import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.types.ScalarTaskPlan;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
@@ -3108,6 +3109,23 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.AwaitExpr awaited) {
+                    if (awaited.expression() instanceof Ast.TaskExpr scalarTask) {
+                        // Only the frontend-approved immediate scalar await
+                        // may enter the guest Task execution path. Never
+                        // snapshot the Env or execute guest AST on the child.
+                        Ast.Expr capturedExpression = ScalarTaskPlan.returnedScalar(scalarTask);
+                        if (env.hasLiveMutexGuards()) {
+                            throw new IllegalStateException(
+                                    "scalar Task cannot launch while a MutexGuard is live");
+                        }
+                        Object copiedValue = eval(capturedExpression, env);
+                        // startCompilerScalarAwait verifies actor/trust/root
+                        // authority and copies only immutable host scalars.
+                        // The context retains a physical-completion fence.
+                        var child = context.startCompilerScalarAwait(copiedValue);
+                        suspendOnAwaitable(task, child, env, continuation);
+                        return;
+                    }
                     evalSuspendableExpr(
                             task,
                             awaited.expression(),
