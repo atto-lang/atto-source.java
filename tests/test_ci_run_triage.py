@@ -337,6 +337,20 @@ class VerifiedPRModeTests(unittest.TestCase):
                                  "repos/org/repo/actions/runs/42/jobs?per_page=100",
                                  "repos/org/repo/actions/runs/42", "repos/org/repo/pulls/17"])
 
+    def test_no_jobs_does_not_claim_job_provenance(self):
+        calls = []
+        def fetch(path):
+            calls.append(path)
+            if path.endswith("pulls/17"):
+                return self.PR
+            if "jobs?" in path:
+                return {"total_count": 0, "jobs": []}
+            return RUN
+        out = m.inspect("org/repo", 42, SHA, fetch=fetch, pr_number=17)
+        self.assertEqual(out["category"], "no_jobs_recorded")
+        self.assertTrue(out["pr_head_verified"])
+        self.assertFalse(out["job_provenance_verified"])
+
     def test_stale_pr_head_rejected_before_run_reads(self):
         fetch, calls = self._fetch(pr={"number": 17, "state": "open", "head": {"sha": "b" * 40}})
         with self.assertRaisesRegex(m.TriageError, "PR current head SHA"):
