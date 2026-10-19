@@ -801,6 +801,14 @@ public final class OresScheduler implements AutoCloseable {
                             task.resume(resume),
                             "OresScheduler task returned null Step");
                 } catch (Throwable failure) {
+                    if (TaskHandle.isAuthenticatedCheckpointCancellation(failure)) {
+                        // The private marker belongs to this exact Task domain
+                        // and its owner really requested cancellation. Revoke
+                        // the result Future instead of recording a failure.
+                        // The physical carrier remains live until afterTurn.
+                        completion.cancel(false);
+                        return;
+                    }
                     failTerminal(failure);
                     if (failure instanceof VirtualMachineError fatal) throw fatal;
                     if (failure instanceof ThreadDeath fatal) throw fatal;
