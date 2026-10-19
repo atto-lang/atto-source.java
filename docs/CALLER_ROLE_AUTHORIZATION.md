@@ -61,8 +61,14 @@ object**, not a string or user-controlled role parameter. The Java
 TypeChecker now hooks the index into direct function/routine, module-qualified,
 static method and nominal instance-method branches. The index derives the
 current caller's role set **only from the identity of its checked declaration**:
-user-provided role strings or sets cannot authorize calls. Unindexed guarded
-AST targets and reified function values fail closed. Lambda and deferred
+user-provided role strings or sets cannot authorize calls. **Any** unindexed direct function/method target now fails closed, even
+when an AST rewrite silently strips the `@CallableBy` annotation.
+The index records every verified callable identity (including unguarded
+declarations), and rejects raw names, null/foreign targets, detached AST
+copies and duplicate callable identity reuse. Reified unindexed callables
+also fail closed. This deliberately requires a future authenticated import
+binder for otherwise ordinary linked external class methods; a signature
+alone is no longer an authorization proof. Lambda and deferred
 expression checking clears the current caller identity to avoid inheriting
 authority. Module namespace values are rejected when they would expose a
 protected public function through an erased record-shaped callable field;
@@ -76,7 +82,7 @@ the standalone static index; the executable enum frontend remains gated.
 
 ## Incremental ABI and import boundary
 
-- `IncrementalCompiler.abiDigest` uses a versioned **v6** fingerprint for
+- `IncrementalCompiler.abiDigest` uses a versioned **v7** fingerprint for
   exported `@CallerRole` and `@CallableBy` metadata on public functions and
   methods. Role argument ordering is canonicalized for a stable digest.
   Public nominal enum case name, wire tag, payload type and declaration
@@ -85,9 +91,11 @@ the standalone static index; the executable enum frontend remains gated.
   referenced by the exported `@CallerRole` or `@CallableBy` annotations.
   Retagging a referenced private enum invalidates importing builds;
   unrelated private enums are excluded. When a public subclass inherits
-  public methods from local private ancestors, the ABI also fingerprints
-  those method signatures and caller-role contracts, as well as the private
-  enum schemas on which inherited roles depend. These fingerprints enable
+  public methods from private ancestors reachable within the same source
+  program, including ancestors declared in a different module, the ABI
+  fingerprints those method signatures and caller-role contracts, plus
+  private enum schemas belonging to the ancestor's defining module.
+  Unrelated private classes and enums remain outside that dependency set. These fingerprints enable
   cache invalidation; they are **not** authenticated call-site metadata.
 - `ImportGraph.validateLinkedImports` currently **rejects** cross-source
   import of a protected public function or class static method, and module or
