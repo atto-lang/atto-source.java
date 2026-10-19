@@ -277,6 +277,33 @@ final class TaskAccessVerifierTest {
         assertEquals(0, ledger.activeChildren());
     }
 
+    @Test void scopedTypeCapabilitiesFailClosedIndependentlyOfRawSend() {
+        var ledger = new TaskAccessVerifier();
+        var place = TaskAccessVerifier.Place.whole(WORLD);
+
+        var readonly = new Types.Record(
+                java.util.Map.of("value", Types.Primitive.INT), true);
+        assertThrows(IllegalArgumentException.class, () ->
+                ledger.admitScopedTyped(
+                        List.of(new TaskAccessVerifier.TypedClaim(
+                                write(place), readonly)),
+                        CORE));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                new TaskAccessVerifier.TypedClaim(
+                        read(place),
+                        new Types.Named("Option", List.of(
+                                new Types.Borrow(Types.Primitive.INT, false)))));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                new TaskAccessVerifier.TypedClaim(
+                        read(place),
+                        new Types.Dyn(new Types.Named(
+                                "Worker", List.of()))));
+
+        assertEquals(0, ledger.activeChildren());
+    }
+
     @Test void typedAdmissionRejectsEveryClaimBeforeAnyReservation() {
         var ledger = new TaskAccessVerifier();
         var pos = TaskAccessVerifier.Place.whole(WORLD).field("position", true);
