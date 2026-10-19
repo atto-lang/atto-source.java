@@ -20,6 +20,13 @@ final class ComputedAggregateIndexBoundaryTest {
                 () -> OresCompiler.parseAndTypeCheck(source));
     }
 
+    private static void deniedWithMessage(String source, String expectedFragment) {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(failure.getMessage().contains(expectedFragment), failure.getMessage());
+    }
+
     @Test
     void inferredStructWithComputedStringKeyRetainsHomogeneousFloatType() {
         accepted("""
@@ -124,15 +131,15 @@ final class ComputedAggregateIndexBoundaryTest {
 
     @Test
     void classesDoNotPermitUncheckedComputedPrivateOrPublicFieldAccess() {
-        denied("""
+        deniedWithMessage("""
                 define class Sample as
-                    pub val int x;
-                    val string secret;
+                    pub val int x = 3;
+                    val string secret = "hidden";
                 end
                 fnc bad(Sample sample, string field): int {
                     return sample[field];
                 }
-                """);
+                """, "indexing requires");
     }
 
     @Test
