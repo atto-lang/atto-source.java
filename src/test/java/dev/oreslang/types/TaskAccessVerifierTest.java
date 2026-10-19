@@ -133,7 +133,7 @@ final class TaskAccessVerifierTest {
         var ledger = new TaskAccessVerifier();
         ledger.admit(List.of(write(TaskAccessVerifier.Place.whole(WORLD))));
         var otherDomain = TaskAccessVerifier.Place.whole(
-                new TaskAccessVerifier.Root("ACTOR_PRIVATE", 33, 1, true));
+                new TaskAccessVerifier.Root("ACTOR_PRIVATE", "actor-33:epoch-1", 33, 1, true));
         assertThrows(IllegalArgumentException.class,
                 () -> ledger.admit(List.of(write(otherDomain))));
     }
@@ -231,7 +231,7 @@ final class TaskAccessVerifierTest {
         var verifier = new TaskAccessVerifier();
         var process = TaskAccessVerifier.Place.whole(WORLD);
         var actor = TaskAccessVerifier.Place.whole(
-                new TaskAccessVerifier.Root("ACTOR_PRIVATE", 50, 1, true));
+                new TaskAccessVerifier.Root("ACTOR_PRIVATE", "actor-50:epoch-1", 50, 1, true));
         var first = verifier.admit(List.of(read(process)));
         assertThrows(IllegalArgumentException.class,
                 () -> verifier.admit(List.of(read(actor))));
@@ -245,7 +245,7 @@ final class TaskAccessVerifierTest {
     @Test void directReadReadConflictQueryCannotBypassDomainBoundary() {
         var process = TaskAccessVerifier.Place.whole(WORLD);
         var privateActor = TaskAccessVerifier.Place.whole(
-                new TaskAccessVerifier.Root("ACTOR_PRIVATE", 50, 1, true));
+                new TaskAccessVerifier.Root("ACTOR_PRIVATE", "actor-50:epoch-1", 50, 1, true));
         assertTrue(TaskAccessVerifier.conflicts(read(process), read(privateActor)));
         assertTrue(TaskAccessVerifier.conflicts(read(privateActor), read(process)));
         assertFalse(TaskAccessVerifier.conflicts(read(process), read(process)));
@@ -255,13 +255,67 @@ final class TaskAccessVerifierTest {
         var verifier = new TaskAccessVerifier();
         var process = TaskAccessVerifier.Place.whole(WORLD);
         var actor = TaskAccessVerifier.Place.whole(
-                new TaskAccessVerifier.Root("ACTOR_PRIVATE", 50, 1, true));
+                new TaskAccessVerifier.Root("ACTOR_PRIVATE", "actor-50:epoch-1", 50, 1, true));
         assertThrows(IllegalArgumentException.class,
                 () -> verifier.admit(List.of(read(process), read(actor))));
         assertEquals(0, verifier.activeChildren());
         // Failed admission must not bind a partially selected domain.
         assertNotNull(verifier.admit(List.of(read(actor))));
         assertFalse(verifier.parentMayAccess(read(process)));
+    }
+
+    @Test void privateActorsWithTheSameDomainCategoryCannotShareClaims() {
+        var actorA = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("ACTOR_PRIVATE", "actor-A:epoch-1", 1, 1, true));
+        var actorB = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("ACTOR_PRIVATE", "actor-B:epoch-1", 2, 1, true));
+        var ledger = new TaskAccessVerifier();
+        var first = ledger.admit(List.of(read(actorA)));
+        assertTrue(TaskAccessVerifier.mayAlias(actorA, actorB));
+        assertTrue(TaskAccessVerifier.conflicts(read(actorA), read(actorB)),
+                "READ/READ does not authorize crossing actor heaps");
+        assertThrows(IllegalArgumentException.class,
+                () -> ledger.admit(List.of(read(actorB))));
+        assertFalse(ledger.parentMayAccess(read(actorB)));
+        ledger.quiescent(first);
+        assertThrows(IllegalArgumentException.class,
+                () -> ledger.admit(List.of(read(actorB))));
+    }
+
+    @Test void privateActorIdentityIncludesEpochAndCannotBeReused() {
+        var actorAOld = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("ACTOR_PRIVATE", "actor-A:epoch-1", 1, 1, true));
+        var actorANew = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("ACTOR_PRIVATE", "actor-A:epoch-2", 1, 1, true));
+        var ledger = new TaskAccessVerifier();
+        var ticket = ledger.admit(List.of(read(actorAOld)));
+        ledger.quiescent(ticket);
+        assertThrows(IllegalArgumentException.class,
+                () -> ledger.admit(List.of(read(actorANew))));
+        assertThrows(IllegalArgumentException.class,
+                () -> ledger.structuralBarrier(actorANew.root(), 2));
+    }
+
+    @Test void validatedClaimsWithinOnePrivateActorCanStillCoexist() {
+        var a = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("ACTOR_PRIVATE", "actor-A:epoch-1", 1, 1, true));
+        var b = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("ACTOR_PRIVATE", "actor-A:epoch-1", 2, 1, true));
+        var ledger = new TaskAccessVerifier();
+        assertNotNull(ledger.admit(List.of(read(a))));
+        assertNotNull(ledger.admit(List.of(read(b))));
+        assertEquals(2, ledger.activeChildren());
+    }
+
+    @Test void aCategoryOnlyActorRootIsNotValidAllocationProvenance() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new TaskAccessVerifier.Root("ACTOR_PRIVATE", 51, 1, true));
+        assertThrows(IllegalArgumentException.class,
+                () -> new TaskAccessVerifier.Root("UNTRUSTED", 51, 1, true));
+        assertThrows(IllegalArgumentException.class,
+                () -> new TaskAccessVerifier.Root("ACTOR_PRIVATE", "ACTOR_PRIVATE", 51, 1, true));
+        assertThrows(IllegalArgumentException.class,
+                () -> new TaskAccessVerifier.Root("ACTOR_PRIVATE", "", 51, 1, true));
     }
 
     @Test void staleParentQueriesDoNotReturnAuthorityAfterLayoutGenerationAdvance() {
