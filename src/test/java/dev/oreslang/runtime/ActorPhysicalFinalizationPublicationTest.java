@@ -144,6 +144,29 @@ final class ActorPhysicalFinalizationPublicationTest {
     }
 
     @Test
+    void realSchedulerTurnCannotJoinPhysicalActorFinalization()
+            throws Exception {
+        try (var runtime = new ActorRuntime();
+             var scheduler = new OresScheduler(1)) {
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            var denied = scheduler.start(resume -> {
+                assertThrows(SecurityException.class,
+                        () -> actor.awaitTermination(5, TimeUnit.SECONDS),
+                        "a real scheduler carrier must not block on actor finalization");
+                return OresScheduler.done(1);
+            });
+            assertEquals(1, denied.get(5, TimeUnit.SECONDS));
+            assertFalse(runtime.physicallyFinalizedForHotUpgrade(actor),
+                    "rejected scheduler join must not finalize the actor");
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
+                    "real host remains authorized to join finalized actor");
+        }
+    }
+
+    @Test
     void recordedPhysicalFinalizerCannotSynchronouslyWaitForItself()
             throws Exception {
         try (var runtime = new ActorRuntime()) {
