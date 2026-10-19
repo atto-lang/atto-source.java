@@ -151,6 +151,17 @@ class ClassifierTests(unittest.TestCase):
         self.assertNotIn("private", str(report).lower())
 
 
+    def test_successful_job_with_failed_step_is_not_clean_execution(self):
+        successful_run = dict(RUN, conclusion="success")
+        observed = m.assess(successful_run, [job("success", [
+            step("Run tests", "failure"), step("Complete job", "success")])], SHA)
+        self.assertEqual(observed["category"], "success_with_reported_failing_step")
+        uncertain = step("Run tests", "failure")
+        del uncertain["completed_at"]
+        outcome = m.assess(successful_run, [job("success", [
+            uncertain, step("Run tests", "success")])], SHA)
+        self.assertEqual(outcome["category"], "success_with_unverified_step_failure")
+
     def test_job_conclusion_must_not_be_overwritten_by_last_step(self):
         failing = job("failure", [step("Run tests", "failure"),
                                   step("Complete job", "success")])
