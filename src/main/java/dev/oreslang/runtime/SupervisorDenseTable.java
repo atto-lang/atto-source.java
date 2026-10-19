@@ -118,7 +118,8 @@ public final class SupervisorDenseTable implements AutoCloseable {
 
     public synchronized Handle add(long actorId, long state, long restarts, long policyRevision, long lastFailureNanos) {
         checkOpen();
-        ensureCapacity(Math.addExact(size, 1));
+        ensureCapacity(Math.max(Math.addExact(size, 1),
+                freeCount > 0 ? 0 : Math.addExact(nextSlot, 1)));
         final int slot;
         if (freeCount > 0) {
             slot = freeSlots[--freeCount];
@@ -130,8 +131,11 @@ public final class SupervisorDenseTable implements AutoCloseable {
         int row = size++;
         slotByDense[row] = slot;
         denseBySlot[slot] = row;
-        long[] fields = {actorId, state, restarts, policyRevision, lastFailureNanos};
-        for (int f = 0; f < FIELDS; f++) data[offset(layout, capacity, row, f)] = fields[f];
+        data[offset(layout, capacity, row, 0)] = actorId;
+        data[offset(layout, capacity, row, 1)] = state;
+        data[offset(layout, capacity, row, 2)] = restarts;
+        data[offset(layout, capacity, row, 3)] = policyRevision;
+        data[offset(layout, capacity, row, 4)] = lastFailureNanos;
         return new Handle(owner, slot, generationBySlot[slot]);
     }
 
