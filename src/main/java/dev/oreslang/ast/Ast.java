@@ -865,7 +865,7 @@ public final class Ast {
         }
     }
 
-    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
+    public sealed interface Expr permits LiteralExpr, NameExpr, TypeExpr, BinaryExpr, UnaryExpr, AssignExpr, CompoundAssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, StagedCallExpr, StagedNewExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
@@ -873,9 +873,34 @@ public final class Ast {
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
     public record NameExpr(String name) implements Expr { }
+
+    /**
+     * A statically written generic type qualifier in expression position, e.g.
+     * Region<Motion>.new(...). It is not a runtime class object and must be
+     * consumed by a statically resolved type-member operation before lowering.
+     */
+    public record TypeExpr(TypeRef type) implements Expr {
+        public TypeExpr { java.util.Objects.requireNonNull(type, "type qualifier"); }
+    }
+
     public record BinaryExpr(String operator, Expr left, Expr right) implements Expr { }
     public record UnaryExpr(String operator, Expr operand) implements Expr { }
     public record AssignExpr(Expr target, Expr value) implements Expr { }
+
+    /**
+     * Preserve compound-place syntax until ownership/type lowering can prove
+     * single evaluation of the target and one scoped mutable loan.
+     */
+    public record CompoundAssignExpr(Expr target, String operator, Expr value) implements Expr {
+        public CompoundAssignExpr {
+            java.util.Objects.requireNonNull(target, "compound assignment target");
+            java.util.Objects.requireNonNull(value, "compound assignment value");
+            if (!java.util.Set.of("+", "-", "*", "/", "%").contains(operator)) {
+                throw new IllegalArgumentException("unsupported compound assignment operator");
+            }
+        }
+    }
+
     public record ConditionalExpr(Expr condition, Expr whenTrue, Expr whenFalse) implements Expr { }
 
     /**
