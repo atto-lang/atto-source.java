@@ -178,6 +178,49 @@ Before authorizing any private source transfer, the security owner must:
 4. Verify the carrier's **merged** `.github/CODEOWNERS` exists on protected
    `main`. A proposed CODEOWNERS PR without an enforced merge gate is not enough.
 
+#### CI-ref ruleset admission proof required before publication
+
+GitHub documents a read-only `GET /repos/{owner}/{repo}/rules/branches/{branch}`
+endpoint that reports applicable **active** rules even if the target branch
+does not yet exist. This is useful for checking the prospective
+`ci/oreslang-*` namespace, but its response alone does not establish that
+an actor with bypass privileges cannot later rewrite a source-bearing ref.
+
+A production-grade pre-publication admission gate must independently prove
+all of the following before transferring source bytes:
+
+- The rule response is complete, authenticated for the reviewed **numeric**
+  destination repository ID, and covers the precise new branch name. Deny
+  unavailable, malformed, paginated/incomplete or permission-restricted
+  responses; empty active-rule lists are not positive evidence.
+- Active update and deletion restrictions apply to that branch. Inspect the
+  referenced ruleset identities, enforcement and bypass actors using an
+  authorized read path; a missing/hidden bypass list does **not** count as an
+  empty list. A rule barring force pushes alone still allows normal updates.
+- Prove with source-free synthetic refs that unauthorized direct/fast-forward
+  updates, force updates, deletion and bypass attempts fail, while approved
+  immutable-SHA test execution succeeds. Recheck rules before Git writes.
+- Pin the final carrier commit SHA and required check-run head SHA. Require
+  actual assigned runners and completed successful test steps; a passing
+  badge with zero runner steps or a different commit SHA is not proof.
+- Independently audit every eligible workflow and inherited permission/secret.
+  A no-source CI capacity run is not a credential-isolation proof.
+
+This is a **required future publisher implementation and independent security
+test**, not a claim that the current Python publisher already enforces
+CI-namespace rulesets. Source and carrier private-repository rulesets presently
+return HTTP 403 (plan feature unavailable); fail closed rather than making
+either repository public or exporting source first.
+
+Source-free hosted regression receipt: private Fiducia draft
+[PR #14](https://github.com/fiducia-cloud-test/java-client-consumer/pull/14),
+[Actions run #39314068026](https://github.com/fiducia-cloud-test/java-client-consumer/actions/runs/39314068026),
+exact head `75f52f2cd55d04cca8b4a0d82e8d62d74e9ceb88`, 47 pytest tests
+passed, all 10 job steps successful on assigned hosted runner `1000007269`.
+Those synthetic tests include wrong-head, zero-step, runner-not-assigned and
+malformed CI-ref SHA denial. They are **not** the checked-in publisher suite,
+actor compiler tests, or authorization to copy source.
+
 Live 2026-10-19 inspection of candidate
 `fiducia-cloud-test/java-client-consumer` found no `.github/CODEOWNERS` on
 `main` (404), no protected `main`, and an existing `live.yml` containing
@@ -187,6 +230,7 @@ is populated or leaked; it is a mandatory execution/credential-isolation review
 item. Carrier [CODEOWNERS PR #12](https://github.com/fiducia-cloud-test/java-client-consumer/pull/12)
 remains a draft proposal. **Do not publish source** until this separate gate
 is verified and independently approved.
+
 Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
 branches, including `main`, are never updated. Before declaring success,
 it verifies that the ref-creation response, fresh ref readback (including
