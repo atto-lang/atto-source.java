@@ -146,7 +146,7 @@ public final class IpcReceiptCorrelation {
      * This deliberately does not accept a Stage argument, preventing callers
      * from relabeling local admission failure as a remote handler result.
      */
-    public synchronized void rejectBeforeRemote(Envelope message) {
+    synchronized void rejectBeforeRemote(Envelope message) {
         Objects.requireNonNull(message, "message");
         Entry entry = pending.get(message.messageSequence());
         if (entry == null || !entry.envelope.equals(message)
