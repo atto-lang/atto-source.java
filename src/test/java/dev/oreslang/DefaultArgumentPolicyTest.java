@@ -253,5 +253,14 @@ final class DefaultArgumentPolicyTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new DefaultArgumentPolicy.Decision(Lowering.PASS_SUPPLIED_VALUE,
                         Literal.integer(3)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new DefaultArgumentPolicy.Decision(Lowering.DEFAULT_NONE,
+                        Literal.integer(3)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new DefaultArgumentPolicy.Decision(Lowering.DEFAULT_SOME,
+                        Literal.none()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new DefaultArgumentPolicy.Decision(Lowering.DEFAULT_SCALAR,
+                        Literal.none()));
     }
 }
