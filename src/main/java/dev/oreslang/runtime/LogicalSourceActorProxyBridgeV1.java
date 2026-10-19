@@ -383,18 +383,12 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
         synchronized (dispatchLock) {
             requireUsable();
             try {
-                // Freeze acquisition is part of the supervisor transaction,
-                // not a preflight outside its quarantine boundary.
-                var ticket = mailbox.freezeDispatchForUpgrade();
-                if (!ticket.drained()) {
-                    ticket.rollback();
-                    return false;
-                }
-                // Physical Route and mailbox epoch publish under one router
-                // monitor, after construction and validation of the new route.
+                // The router owns freeze acquisition, rollback and commit as
+                // part of one SupervisorUpgradeTxn. The bridge contributes
+                // only its dispatchLock serialization and mailbox identity;
+                // it never holds an independently reusable freeze capability.
                 if (!router.upgradeToForProxy(
-                        candidate, timeout, mailbox, ticket)) {
-                    ticket.rollback();
+                        candidate, timeout, mailbox)) {
                     return false;
                 }
                 if (mailbox.snapshot().routeEpoch() != router.ref().routeEpoch()) {
@@ -405,9 +399,10 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
                 return true;
             } catch (InterruptedException | ExecutionException | TimeoutException
                     | RuntimeException | Error uncertain) {
-                // An exception after physical publication is not a rollback
-                // permit. Leave the active ticket frozen and require supervisor
-                // retirement/reconciliation.
+                // The router transaction alone decides whether a precommit
+                // freeze was rolled back or publication became irreversible.
+                // Any exception remains fail-sealed at this bridge boundary
+                // and requires supervisor retirement/reconciliation.
                 poisonAndSealAdmission();
                 throw uncertain;
             }
