@@ -105,6 +105,23 @@ public final class UnaryTransportFrameCheck {
         byte[] tcp = UnaryTransportFrame.encodeTcp(fiveBytes);
         check(UnaryTransportFrame.readTcp(new ByteArrayInputStream(tcp), 5).payloadLength() == 5,
                 "TCP peer budget accepts exact payload limit");
+
+        var staged = new ByteArrayInputStream(tcp);
+        var head = UnaryTransportFrame.readTcpHead(staged, 5);
+        check(head.kind() == UnaryTransportFrame.Kind.REQUEST
+                        && head.correlationId() == 1
+                        && head.payloadBytes() == 5
+                        && staged.available() == 5,
+                "TCP header admission must stop before payload bytes");
+        check(UnaryTransportFrame.readTcpPayload(staged, head).payloadLength() == 5
+                        && staged.available() == 0,
+                "admitted TCP payload is read only after header validation");
+
+        var discarded = new ByteArrayInputStream(tcp);
+        var rejectedHead = UnaryTransportFrame.readTcpHead(discarded, 5);
+        UnaryTransportFrame.discardTcpPayload(discarded, rejectedHead);
+        check(discarded.available() == 0,
+                "rejected TCP payload can be drained without payload-sized allocation");
         try { UnaryTransportFrame.readTcp(new ByteArrayInputStream(tcp), 4);
               throw new AssertionError("TCP peer budget accepted oversized payload"); }
         catch (IOException expected) { }
