@@ -5042,7 +5042,8 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     where + " must be a concrete owned/sendable data type; borrows, functions, and unresolved types cannot cross an actor boundary");
         }
-        if (type instanceof Primitive || type instanceof StringLiteral) return;
+        if (type instanceof Primitive || type instanceof StringLiteral
+                || type instanceof Types.BoolLiteral) return;
         if (type instanceof ListType list) {
             validateActorCallableBoundaryType(list.element(), actorKind, false, where + " element", depth + 1, budget);
             return;
@@ -5184,7 +5185,7 @@ public final class TypeChecker {
         if (type == Unknown.INSTANCE || type instanceof SelfType || type instanceof Borrow
                 || type instanceof Function || type instanceof ClassNamespace) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
-        if (type instanceof StringLiteral) return true;
+        if (type instanceof StringLiteral || type instanceof Types.BoolLiteral) return true;
         if (type instanceof Generic generic) {
             Type bound = genericBindings.get(generic.name());
             return bound != null && bound != type && isSharedSafe(bound, seen, genericBindings, depth + 1, budget);
@@ -5203,6 +5204,12 @@ public final class TypeChecker {
             return true;
         }
         if (!(type instanceof Named named)) return false;
+
+        // These are sealed scalar metadata at runtime (ActorId is immutable,
+        // ActorKind is an enum). Enforce canonical zero-arity before admitting.
+        if (named.name().equals("ActorId") || named.name().equals("ActorKind")) {
+            return named.arguments().isEmpty();
+        }
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("Iterator")

@@ -28,6 +28,11 @@ final class ThreadSafetyTraitsTest {
         for (Trait trait : Trait.values()) {
             assertTrue(has(Types.Primitive.INT, trait));
             assertTrue(has(Types.Primitive.STRING, trait));
+            assertTrue(has(new Types.BoolLiteral(true), trait));
+            assertTrue(has(new Types.Named("ActorId", List.of()), trait));
+            assertTrue(has(new Types.Named("ActorKind", List.of()), trait));
+            assertFalse(has(new Types.Named("ActorId", List.of(Types.Primitive.INT)), trait));
+            assertFalse(has(new Types.Named("ActorKind", List.of(Types.Primitive.INT)), trait));
             // The view's readOnly capability is not deep-freeze evidence.
             boolean expected = trait == Trait.SEND;
             assertEquals(expected, has(frozen, trait));
@@ -152,6 +157,18 @@ final class ThreadSafetyTraitsTest {
     }
 
     @Test
+    void asyncBoundaryAcceptsSealedActorScalarMetadata() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                async fnc echo_actor_id(ActorId id): ActorId {
+                  return id;
+                }
+                async fnc echo_actor_kind(ActorKind kind): ActorKind {
+                  return kind;
+                }
+                """)));
+    }
+
+    @Test
     void threadTraitNeverOverridesExistingTaskOrActorTransportRules() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 async fnc bad(Channel<Future<int>> inbox): int {
@@ -246,6 +263,19 @@ final class ThreadSafetyTraitsTest {
                 method.invoke(checker, nested, new java.util.LinkedHashSet<>(), Map.of()));
         assertEquals(Boolean.TRUE,
                 method.invoke(checker, Types.Primitive.INT, new java.util.LinkedHashSet<>(), Map.of()));
+        assertEquals(Boolean.TRUE,
+                method.invoke(checker, new Types.BoolLiteral(true),
+                        new java.util.LinkedHashSet<>(), Map.of()));
+        assertEquals(Boolean.TRUE,
+                method.invoke(checker, new Types.Named("ActorId", List.of()),
+                        new java.util.LinkedHashSet<>(), Map.of()));
+        assertEquals(Boolean.TRUE,
+                method.invoke(checker, new Types.Named("ActorKind", List.of()),
+                        new java.util.LinkedHashSet<>(), Map.of()));
+        assertEquals(Boolean.FALSE,
+                method.invoke(checker,
+                        new Types.Named("ActorId", List.of(Types.Primitive.INT)),
+                        new java.util.LinkedHashSet<>(), Map.of()));
     }
 
 
@@ -314,6 +344,9 @@ final class ThreadSafetyTraitsTest {
                     new Types.Named(admitted, List.of()),
                     dev.oreslang.ast.Ast.ActorKind.SHARED, false, "message"));
         }
+        assertDoesNotThrow(() -> validate.invoke(checker,
+                new Types.BoolLiteral(true),
+                dev.oreslang.ast.Ast.ActorKind.SHARED, false, "message"));
         assertThrows(java.lang.reflect.InvocationTargetException.class, () -> validate.invoke(
                 checker,
                 new Types.Named("ActorId", List.of(Types.Primitive.INT)),

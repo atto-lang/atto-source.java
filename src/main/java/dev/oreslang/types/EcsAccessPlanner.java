@@ -43,10 +43,14 @@ public final class EcsAccessPlanner {
             if (name == null || name.isBlank()) {
                 throw new IllegalArgumentException("ECS system needs a name");
             }
-            accesses = List.copyOf(Objects.requireNonNull(accesses, "accesses"));
+            Objects.requireNonNull(accesses, "accesses");
+            // Enforce the bound before copying/enumerating the caller's list.
+            // Otherwise an oversized generated footprint can consume memory/time
+            // inside List.copyOf() before the planner budget is consulted.
             if (accesses.size() > MAX_ACCESSES_PER_SYSTEM) {
                 throw new IllegalArgumentException("ECS system access footprint exceeds the planner budget");
             }
+            accesses = List.copyOf(accesses);
         }
     }
 

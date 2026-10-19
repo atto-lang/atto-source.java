@@ -150,6 +150,12 @@ public final class ThreadSafetyTraits {
         }
         if (!(type instanceof Named named)) return false;
         String name = named.name();
+        // ActorId/ActorKind are sealed compiler/runtime scalar metadata. Their
+        // spelling is reserved and their canonical form has no type arguments;
+        // a nominal callback must not be able to bless forged generic arities.
+        if (name.equals("ActorId") || name.equals("ActorKind")) {
+            return named.arguments().isEmpty();
+        }
         if (name.equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (name.equals("Option") || name.equals("IteratorResult")) {
             return named.arguments().size() == 1

@@ -172,6 +172,28 @@ final class EcsAccessPlannerTest {
     }
 
     @Test
+    void oversizedFootprintIsRejectedBeforeCallerListEnumeration() {
+        java.util.concurrent.atomic.AtomicBoolean enumerated =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        List<Access> oversized = new java.util.AbstractList<>() {
+            @Override
+            public Access get(int index) {
+                enumerated.set(true);
+                throw new AssertionError("oversized footprint must be rejected before enumeration");
+            }
+
+            @Override
+            public int size() {
+                return EcsAccessPlanner.MAX_ACCESSES_PER_SYSTEM + 1;
+            }
+        };
+        assertThrows(IllegalArgumentException.class,
+                () -> new SystemAccess("oversized", oversized));
+        assertFalse(enumerated.get(),
+                "planner copied/enumerated an input it already knew exceeded the budget");
+    }
+
+    @Test
     void aSystemCanReadModifyWriteItsOwnRegionButSerializesWithOtherSystems() {
         Object allocation = new Object();
         SystemAccess update = sys("update",
