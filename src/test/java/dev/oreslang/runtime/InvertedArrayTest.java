@@ -148,6 +148,92 @@ final class InvertedArrayTest {
     }
 
     @Test
+    void parsesAndExecutesRestrictedSourceMethodsOnPhysicalColumns() {
+        Ast.ClassDecl declaration = declaration("""
+                define inverted class Particle as
+                    x: f64;
+                    y: f64;
+                    vx: f64;
+                    vy: f64;
+
+                    move(f64 dt): void {
+                        self.x = self.x + self.vx * dt;
+                        self.y = self.y + self.vy * dt;
+                    }
+                end
+                """);
+        assertEquals(1, declaration.methods().size());
+        try (var array = InvertedArray.fromClass(declaration, 2)) {
+            var h = array.pushValues(1.0, 2.0, 3.0, 4.0);
+            var row = array.row(h);
+            row.invoke("move", 0.1);
+            assertEquals(1.3, (double) row.get("x"), 1e-12);
+            assertEquals(2.4, (double) row.get("y"), 1e-12);
+            row.invoke("move", 0.1);
+            assertEquals(1.6, (double) row.get("x"), 1e-12);
+            assertEquals(2.8, (double) row.get("y"), 1e-12);
+            assertThrows(IllegalArgumentException.class, () -> row.invoke("move", 1));
+            assertThrows(IllegalArgumentException.class, () -> row.invoke("missing", 1.0));
+            array.eraseSwap(h);
+            assertThrows(IllegalArgumentException.class, () -> row.invoke("move", 1.0));
+        }
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(
+                Parser.parse("""
+                    define inverted class Particle as
+                        x: f64;
+                        move(f64 dt): void { self.x = self.x + dt; }
+                    end
+                    """)),
+                "The guest interpreter must remain disabled until compiler ownership admission");
+    }
+
+    @Test
+    void pureRowMethodsCommitAtomicallyWithoutLostConcurrentUpdates() throws InterruptedException {
+        var declaration = declaration("""
+                define inverted class Counter as
+                    value: f64;
+                    inc(f64 d): void { self.value = self.value + d; }
+                end
+                """);
+        try (var array = InvertedArray.fromClass(declaration, 1)) {
+            var handle = array.pushValues(0.0);
+            java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            Runnable increment = () -> {
+                try {
+                    for (int i = 0; i < 1000; ++i) array.invoke(handle, "inc", 1.0);
+                } catch (Throwable t) { failure.compareAndSet(null, t); }
+            };
+            Thread first = new Thread(increment);
+            Thread second = new Thread(increment);
+            first.start();
+            second.start();
+            first.join();
+            second.join();
+            assertNull(failure.get());
+            assertEquals(2000.0, array.read(handle, "value"));
+        }
+    }
+
+    @Test
+    void rejectsUnsupportedAndEffectfulMethodBodiesBeforeAllocatingOwner() {
+        String[] methods = {
+                "sleep(f64 x): void { await x; }",
+                "bad(f64 x): void { self.value = f(x); }",
+                "bad(f64 x): void { self.value = self.value / x; }",
+                "bad(f64 x): void { self.value = x; return; }",
+                "bad(f64 x): void { self.value = 1; }",
+                "bad(i32 x): void { self.value = self.value + x; }"
+        };
+        for (String method : methods) {
+            String source = "define inverted class Counter as value: f64; "
+                    + method + " end";
+            assertThrows(IllegalArgumentException.class,
+                    () -> InvertedArray.fromClass(declaration(source), 0), source);
+        }
+    }
+
+    @Test
     void rejectsUnprovedLayoutsAndGuestExecutionRemainsClosed() {
         String[] invalid = {
                 "define class NotInverted as x: i32; end",
@@ -158,8 +244,7 @@ final class InvertedArrayTest {
                 "define inverted class Bad as x: bigint; end",
                 "define inverted class Bad as x: int; end",
                 "define inverted class Bad as x: f64 = 9.0; end",
-                "define inverted class Bad as x: i32; x: i32; end",
-                "define inverted class WithMethods as x: f32; move(f32 dt): void as self.x = 2; end end"
+                "define inverted class Bad as x: i32; x: i32; end"
         };
         for (String src : invalid) {
             assertThrows(IllegalArgumentException.class,
