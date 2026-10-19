@@ -507,6 +507,32 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void uncheckedRewriteCannotInheritProofFromPrecheckedDestination() {
+        Ast.IndexExpr unchecked = new Ast.IndexExpr(
+                new Ast.NameExpr("record"), new Ast.NameExpr("key"));
+        Ast.IndexExpr targetField = new Ast.IndexExpr(
+                new Ast.NameExpr("record"), new Ast.NameExpr("key"));
+        Ast.CheckedIndexKeys.record(targetField, Set.of("id"));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedIndexKeys.propagate(unchecked, targetField));
+        assertEquals(false, Ast.CheckedIndexKeys.hasProjectionProof(unchecked));
+        assertEquals(Set.of("id"), Ast.CheckedIndexKeys.requirePlan(targetField));
+
+        Ast.IndexExpr targetTuple = new Ast.IndexExpr(
+                new Ast.NameExpr("values"), new Ast.NameExpr("position"));
+        Ast.CheckedIndexKeys.recordTupleSlot(targetTuple, 0);
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedIndexKeys.propagate(unchecked, targetTuple));
+        assertEquals(0, Ast.CheckedIndexKeys.knownTupleSlot(targetTuple));
+
+        Ast.IndexExpr fresh = new Ast.IndexExpr(
+                new Ast.NameExpr("array"), new Ast.LiteralExpr(0L));
+        assertDoesNotThrow(() -> Ast.CheckedIndexKeys.propagate(unchecked, fresh));
+        assertEquals(false, Ast.CheckedIndexKeys.hasProjectionProof(fresh));
+        assertDoesNotThrow(() -> Ast.CheckedIndexKeys.requireTupleSlot(fresh, 0));
+    }
+
+    @Test
     void optimizerRejectsLiteralOutsideCertifiedFieldViewWithoutInstallingProof() {
         Ast.IndexExpr checked = new Ast.IndexExpr(
                 new Ast.NameExpr("record"), new Ast.NameExpr("key"));
