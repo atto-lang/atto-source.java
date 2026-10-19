@@ -677,6 +677,9 @@ Bracket access is also the computed-property form for fixed products. It does
   must be valid for **every** possible destination field.
 - Dynamic class writes likewise require every field selectable by the key to be
   visible, mutable, and compatible with the assigned value.
+- Computed access participates in definite initialization. An exact indexed
+  write can initialize that declared explicit-struct field; a dynamic read is
+  rejected while any field in the closed shape remains uninitialized.
 - Projected borrows through computed aggregate/class/tuple indexes remain
   fail-closed until path-exclusive loan tracking can prove the selected place.
   Reading a value does not imply that a borrow of that computed place is safe.
