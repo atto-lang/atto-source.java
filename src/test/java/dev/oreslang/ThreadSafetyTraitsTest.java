@@ -136,6 +136,16 @@ final class ThreadSafetyTraitsTest {
                     "malformed nominal equality must not become an assignability proof");
             assertFalse(Types.isAssignable(malformed, valid));
             assertFalse(Types.isAssignable(valid, malformed));
+            for (Type wrapped : List.of(
+                    new Types.Named("Option", List.of(malformed)),
+                    new Types.ListType(malformed),
+                    new Types.Tuple(List.of(malformed)),
+                    new Types.Record(Map.of("value", malformed)),
+                    new Types.Borrow(malformed, false),
+                    new Types.Function(List.of(Types.Primitive.INT), malformed))) {
+                assertFalse(Types.isAssignable(wrapped, wrapped),
+                        "equal outer aggregate must not hide malformed nested nominal: " + wrapped);
+            }
         }
     }
 
