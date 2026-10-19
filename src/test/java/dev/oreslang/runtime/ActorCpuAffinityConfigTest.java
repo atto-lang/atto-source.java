@@ -50,6 +50,26 @@ final class ActorCpuAffinityConfigTest {
                         () -> ActorCpuAffinityConfig.budgetCpuCount(0)));
     }
 
+    @Test void laneOffsetsPartitionHardAffinitySetAcrossPools() {
+        int[] cpus = {0, 1, 2, 3, 4, 5, 6, 7};
+        assertEquals(0, ActorCpuAffinityConfig.cpuForLane(cpus, 0L, 0));
+        assertEquals(1, ActorCpuAffinityConfig.cpuForLane(cpus, 0L, 1));
+        assertEquals(2, ActorCpuAffinityConfig.cpuForLane(cpus, 2L, 0));
+        assertEquals(3, ActorCpuAffinityConfig.cpuForLane(cpus, 2L, 1));
+        assertEquals(4, ActorCpuAffinityConfig.cpuForLane(cpus, 2L, 2));
+        assertEquals(5, ActorCpuAffinityConfig.cpuForLane(cpus, 5L, 0));
+        assertEquals(6, ActorCpuAffinityConfig.cpuForLane(cpus, 5L, 1));
+    }
+
+    @Test void laneMappingWrapsWithoutOverflow() {
+        int[] cpus = {10, 20, 30};
+        assertEquals(10, ActorCpuAffinityConfig.cpuForLane(cpus, 3L, 0));
+        assertEquals(30, ActorCpuAffinityConfig.cpuForLane(cpus, Long.MAX_VALUE, 0));
+        assertEquals(10, ActorCpuAffinityConfig.cpuForLane(cpus, Long.MAX_VALUE, 1));
+        assertEquals(30, ActorCpuAffinityConfig.cpuForLane(cpus, 0L, -1));
+        assertEquals(-1, ActorCpuAffinityConfig.cpuForLane(new int[0], Long.MAX_VALUE, Integer.MAX_VALUE));
+    }
+
     private static void withProperties(String mode, String cpus, Runnable body) {
         String oldMode = System.getProperty(MODE);
         String oldCpus = System.getProperty(CPUS);
