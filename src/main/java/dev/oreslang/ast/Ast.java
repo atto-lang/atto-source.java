@@ -867,7 +867,7 @@ public final class Ast {
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
-            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
+            CallExpr, StagedCallExpr, StagedNewExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
@@ -935,6 +935,123 @@ public final class Ast {
         }
         public CallExpr(Expr callee, List<TypeRef> typeArguments, List<Expr> arguments) {
             this(callee, typeArguments, true, arguments);
+        }
+    }
+
+    /**
+     * One source call item. Named labels and trailing-closure origin are
+     * syntax metadata only; neither changes the runtime ABI or evaluation
+     * order. Omission is reserved for the existing optional-call design.
+     */
+    public record CallArgument(
+            String label, Expr value, boolean omitted, boolean spread, boolean trailingClosure) {
+        public CallArgument {
+            if (label != null && label.isBlank()) {
+                throw new IllegalArgumentException("call-argument label cannot be blank");
+            }
+            if (omitted == (value != null)) {
+                throw new IllegalArgumentException("a call item must have exactly one of value or omission");
+            }
+            if (spread && (omitted || label != null || trailingClosure)) {
+                throw new IllegalArgumentException("spread cannot be named, omitted, or a trailing closure");
+            }
+            if (trailingClosure && (omitted || label != null || spread
+                    || !(value instanceof LambdaExpr))) {
+                throw new IllegalArgumentException(
+                        "trailing closure must be an unlabeled anonymous lambda value");
+            }
+            if (!spread && value instanceof SpreadExpr) {
+                throw new IllegalArgumentException(
+                        "spread expression cannot masquerade as an ordinary call-item value");
+            }
+            if (spread && value instanceof SpreadExpr) {
+                throw new IllegalArgumentException(
+                        "spread call-item value must be the underlying expression, not nested spread");
+            }
+        }
+        public static CallArgument value(Expr value) {
+            return new CallArgument(null, java.util.Objects.requireNonNull(value), false, false, false);
+        }
+        public static CallArgument named(String label, Expr value) {
+            return new CallArgument(java.util.Objects.requireNonNull(label),
+                    java.util.Objects.requireNonNull(value), false, false, false);
+        }
+        public static CallArgument omit(String label) {
+            return new CallArgument(label, null, true, false, false);
+        }
+        public static CallArgument spread(Expr value) {
+            return new CallArgument(null, java.util.Objects.requireNonNull(value), false, true, false);
+        }
+        public static CallArgument trailingClosure(Expr value) {
+            return new CallArgument(null, java.util.Objects.requireNonNull(value), false, false, true);
+        }
+    }
+
+    /**
+     * Parser-stage named/trailing-closure representation. This is deliberately
+     * not executable until static signature binding, ownership/effect checking,
+     * source-order evaluation, and ABI slot permutation are all proven.
+     */
+    private static List<CallArgument> checkedStagedArguments(List<CallArgument> source) {
+        List<CallArgument> items = List.copyOf(source);
+        boolean seenNamed = false;
+        boolean hasStagedItem = false;
+        java.util.Set<String> labels = new java.util.HashSet<>();
+        for (int i = 0; i < items.size(); i++) {
+            CallArgument item = java.util.Objects.requireNonNull(items.get(i), "call item");
+            if (item.trailingClosure()) {
+                if (!seenNamed) {
+                    throw new IllegalArgumentException(
+                            "trailing-closure marker is reserved for a closure after named arguments");
+                }
+                if (i != items.size() - 1) {
+                    throw new IllegalArgumentException("trailing closure must be the final call item");
+                }
+                hasStagedItem = true;
+                continue;
+            }
+            if (item.label() != null) {
+                if (!labels.add(item.label())) {
+                    throw new IllegalArgumentException(
+                            "duplicate named call argument '" + item.label() + "'");
+                }
+                seenNamed = true;
+                hasStagedItem = true;
+            } else if (seenNamed) {
+                throw new IllegalArgumentException(
+                        "only one final anonymous trailing closure may follow named arguments");
+            }
+            if (item.omitted()) hasStagedItem = true;
+        }
+        if (!hasStagedItem) {
+            throw new IllegalArgumentException("ordinary calls must retain legacy call AST");
+        }
+        return items;
+    }
+
+    public record StagedCallExpr(
+            Expr callee, List<TypeRef> typeArguments,
+            boolean typeArgumentsPresent, List<CallArgument> arguments) implements Expr {
+        public StagedCallExpr {
+            java.util.Objects.requireNonNull(callee, "callee");
+            typeArguments = List.copyOf(typeArguments);
+            arguments = checkedStagedArguments(arguments);
+            if (!typeArgumentsPresent && !typeArguments.isEmpty()) {
+                throw new IllegalArgumentException("call-site type arguments require explicit marker");
+            }
+        }
+    }
+
+    /** Named constructor/actor arguments are staged; trailing closures are calls only. */
+    public record StagedNewExpr(
+            TypeRef type, List<CallArgument> arguments, boolean actorSpawn) implements Expr {
+        public StagedNewExpr {
+            java.util.Objects.requireNonNull(type, "constructed type");
+            arguments = checkedStagedArguments(arguments);
+            if (arguments.stream().anyMatch(item -> item.spread() || item.trailingClosure())) {
+                throw new IllegalArgumentException(
+                        "constructors do not admit unproved spreads or trailing closures");
+            }
         }
     }
 
