@@ -176,10 +176,18 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             throw new IllegalArgumentException(
                     "maxRetainedBytes must be at least maxMessageBytes");
         }
+        // This seam is host/test-only, but it must never import untracked
+        // envelopes that bypass the bounded admission and sequence counters.
+        ArrayDeque<Envelope> initialQueue =
+                Objects.requireNonNull(admissionQueue, "admissionQueue");
+        if (!initialQueue.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "injected logical mailbox queue must start empty");
+        }
         this.maxMessages = maxMessages;
         this.maxMessageBytes = maxMessageBytes;
         this.maxRetainedBytes = maxRetainedBytes;
-        this.queued = Objects.requireNonNull(admissionQueue, "admissionQueue");
+        this.queued = initialQueue;
     }
 
     /**
