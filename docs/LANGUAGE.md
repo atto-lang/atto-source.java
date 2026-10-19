@@ -691,7 +691,7 @@ const row = record{x: 3.0, y: "boo"};
 const yKey = "y";
 const string y = row[yKey];      // exact field type: string
 
-fnc lookup(record{x: float, y: string} row, string key): float | string {
+fnc lookup({x: float, y: string} row, string key): float | string {
     return row[key];             // dynamic key => float | string
 }
 
