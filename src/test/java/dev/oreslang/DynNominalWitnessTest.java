@@ -37,7 +37,10 @@ final class DynNominalWitnessTest {
                 new Types.Record(java.util.Map.of("value", witness)),
                 new Types.Tuple(List.of(Types.Primitive.INT, witness)),
                 new Types.Function(List.of(witness), Types.Primitive.VOID),
-                new Types.Borrow(witness, false));
+                new Types.Borrow(witness, false),
+                new Types.Named("Result", List.of(Types.Primitive.INT, witness)),
+                Types.unionOf(Types.Primitive.INT, witness),
+                Types.notOf(witness));
         for (Types.Type target : targets) {
             assertTrue(Types.containsDynWitness(target), () -> "missing witness in " + target);
             assertFalse(Types.isAssignable(Types.Unknown.INSTANCE, target),
@@ -45,6 +48,15 @@ final class DynNominalWitnessTest {
             assertFalse(Types.isAssignable(new Types.Generic("T"), target),
                     () -> "generic T must not fabricate " + target);
         }
+    }
+
+    @Test
+    void ordinaryNonDynUnknownCompatibilityRemainsUnchanged() {
+        assertTrue(Types.isAssignable(
+                Types.Unknown.INSTANCE,
+                new Types.Named("Option", List.of(Types.Primitive.INT))));
+        assertFalse(Types.containsDynWitness(
+                new Types.Named("Option", List.of(Types.Primitive.INT))));
     }
 
     @Test
