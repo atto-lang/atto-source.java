@@ -158,11 +158,19 @@ public final class SealedActorState {
             this.scalars = Map.copyOf(scalars);
         }
 
-        public long version() { return version; }
-        public long revision() { return revision; }
+        public long version() {
+            issuer.requireOwner();
+            return version;
+        }
+
+        public long revision() {
+            issuer.requireOwner();
+            return revision;
+        }
 
         /** Immutable scalar copied under the originating state loan. */
         public Object scalar(String name) {
+            issuer.requireOwner();
             if (!scalars.containsKey(name))
                 throw new IllegalArgumentException("scalar was not captured in snapshot: " + name);
             return scalars.get(name);
