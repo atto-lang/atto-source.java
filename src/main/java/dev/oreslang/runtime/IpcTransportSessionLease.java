@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.io.IOException;
 import java.util.Objects;
+import java.util.concurrent.CompletionStage;
 
 /**
  * Trusted host-side ownership of one IPC transport incarnation.
@@ -28,6 +29,27 @@ final class IpcTransportSessionLease {
         private static final long serialVersionUID = 1L;
         PreDispatchRejectedException(String message) { super(message); }
         PreDispatchRejectedException(String message, Throwable cause) { super(message, cause); }
+    }
+
+    static final class AdmittedWrite {
+        private final IpcTransportSessionLease owner;
+        private final IpcReceiptCorrelation.Envelope message;
+        private CompletionStage<IpcReceiptCorrelation.Stage> outcome;
+        private boolean started;
+        private boolean released;
+
+        private AdmittedWrite(IpcTransportSessionLease owner,
+                              IpcReceiptCorrelation.Envelope message) {
+            this.owner = owner;
+            this.message = message;
+        }
+
+        CompletionStage<IpcReceiptCorrelation.Stage> outcome() {
+            if (outcome == null) {
+                throw new IllegalStateException("IPC write admission incomplete");
+            }
+            return outcome;
+        }
     }
 
     @FunctionalInterface interface PhysicalCloser {
@@ -101,6 +123,73 @@ final class IpcTransportSessionLease {
                 && trustedEpoch.destinationIncarnation() == message.destinationIncarnation()
                 && trustedEpoch.routeEpoch() == message.routeEpoch()
                 && trustedEpoch.capabilityGeneration() == message.capabilityGeneration();
+    }
+
+    /**
+     * Owner-bound adapter path: phase check, correlation admission and dispatch
+     * commitment are one session-monitor transaction. A closing connection
+     * therefore cannot retire a correlation that was admitted only after close
+     * intent. The returned write remains physically pinned until writeAdmittedFrame.
+     */
+    AdmittedWrite admitAndCommitFrame(
+            long expectedGeneration,
+            IpcReceiptCorrelation.Envelope message) {
+        Objects.requireNonNull(message, "message");
+        AdmittedWrite admitted = new AdmittedWrite(this, message);
+        synchronized (this) {
+            if (phase != Phase.OPEN || expectedGeneration != generation
+                    || !sameTrustedEpoch(message) || activeWrites >= limit) {
+                throw new PreDispatchRejectedException(
+                        "closed/stale/bounded IPC transport");
+            }
+            if (physicalOwner == null) {
+                throw new IllegalStateException(
+                        "atomic IPC admission requires bound physical owner");
+            }
+            CompletionStage<IpcReceiptCorrelation.Stage> outcome =
+                    receipts.admitAndCommit(
+                            physicalOwner, message, generation);
+            ++activeWrites;
+            admitted.outcome = outcome;
+            return admitted;
+        }
+    }
+
+    void writeAdmittedFrame(AdmittedWrite admitted, byte[] preparedFrame)
+            throws IOException {
+        Objects.requireNonNull(admitted, "admitted");
+        Objects.requireNonNull(preparedFrame, "preparedFrame");
+        synchronized (this) {
+            if (admitted.owner != this || admitted.started || admitted.released
+                    || admitted.outcome == null || activeWrites <= 0) {
+                throw new IllegalArgumentException(
+                        "foreign/stale IPC admitted write");
+            }
+            admitted.started = true;
+        }
+        try {
+            writer.write(admitted.message, preparedFrame);
+        } catch (IOException | RuntimeException | Error failure) {
+            requestClose();
+            throw failure;
+        } finally {
+            releaseAdmittedWrite(admitted);
+        }
+    }
+
+    private void releaseAdmittedWrite(AdmittedWrite admitted) {
+        boolean finalize;
+        synchronized (this) {
+            if (admitted.owner != this || admitted.released || !admitted.started
+                    || activeWrites <= 0) {
+                throw new IllegalStateException(
+                        "IPC admitted write pin underflow/stale release");
+            }
+            admitted.released = true;
+            --activeWrites;
+            finalize = beginFinalization();
+        }
+        if (finalize) scheduleFinalization();
     }
 
     /**
