@@ -159,5 +159,47 @@ class SnapshotTests(unittest.TestCase):
                 g.verify_snapshot(self.root,self.src,files,SRC,run=self.fake_run)
 
 
+class ExactTreeRealGitTests(unittest.TestCase):
+    """Validate Git CLI semantics with real trees; no GitHub/network required."""
+    def setUp(self):
+        import subprocess
+        self.git_process = subprocess
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        (self.root / 'src' / 'nested').mkdir(parents=True)
+        (self.root / 'src' / 'a.ores').write_bytes(b'hello\n')
+        (self.root / 'src' / 'nested' / 'b.ores').write_bytes(b'world\n')
+        self.git('init', '-q')
+        self.git('config', 'user.name', 'Oreslang CI')
+        self.git('config', 'user.email', 'ci@invalid.example')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'test fixtures')
+        self.commit = self.git('rev-parse', 'HEAD').decode()
+        self.tree = self.git('rev-parse', 'HEAD:src').decode()
+        self.files = [('a.ores', b'hello\n', '100644'),
+                      ('nested/b.ores', b'world\n', '100644')]
+
+    def git(self, *args):
+        return self.git_process.run(['git', '-C', str(self.root), *args],
+                                    capture_output=True, check=True).stdout.strip()
+
+    def test_real_git_subtree_matches_pinned_byte_and_mode_ledger(self):
+        self.assertEqual(
+            g.verify_snapshot(self.root, self.root / 'src', self.files, self.commit),
+            self.tree)
+
+    def test_real_git_rejects_mutated_or_missing_source(self):
+        with self.assertRaisesRegex(g.AdmissionDenied, 'bytes differ'):
+            g.verify_snapshot(self.root, self.root / 'src',
+                [('a.ores', b'changed\n', '100644'), self.files[1]], self.commit)
+        with self.assertRaisesRegex(g.AdmissionDenied, 'file set'):
+            g.verify_snapshot(self.root, self.root / 'src',
+                self.files[:1], self.commit)
+        with self.assertRaisesRegex(g.AdmissionDenied, 'mode'):
+            g.verify_snapshot(self.root, self.root / 'src',
+                [('a.ores', b'hello\n', '100755'), self.files[1]], self.commit)
+
+
 if __name__ == '__main__':
     unittest.main()
