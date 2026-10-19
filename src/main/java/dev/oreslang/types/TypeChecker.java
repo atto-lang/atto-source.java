@@ -4791,12 +4791,18 @@ public final class TypeChecker {
         source = deref(source);
         if (source instanceof Record record) {
             Map<String, Type> remainder = new LinkedHashMap<>();
-            for (Map.Entry<String, Type> member : record.members().entrySet()) {
+            for (Map.Entry<String, Type> member : indexableRecordMembers(record).entrySet()) {
                 if (!selectedMembers.contains(member.getKey())) {
                     remainder.put(member.getKey(), member.getValue());
                 }
             }
-            return new Record(remainder, record.readOnly(), record.kind());
+            if (record.kind() == AggregateKind.STRUCT
+                    || record.kind() == AggregateKind.CONTRACT) {
+                // Removing fields destroys concrete struct identity, and an
+                // internal method-bearing contract must never escape as data.
+                return new Record(remainder, true, AggregateKind.RECORD);
+            }
+            return new Record(remainder, record.readOnly(), AggregateKind.RECORD);
         }
         if (source instanceof Union union) {
             List<Type> alternatives = new ArrayList<>(union.options().size());
