@@ -16,6 +16,12 @@ import java.util.Set;
  * events. Merely enabling this analyzer without compiler/runtime access hooks
  * cannot establish race freedom. Logical participant IDs survive carrier
  * migration; JVM thread IDs are deliberately not used as ownership IDs.
+ *
+ * CRITICAL: participant IDs denote independently executing logical task/message
+ * lifetimes (including distinct concurrent lanes within ONE actor), not actor
+ * reference IDs. Reusing the same participant ID for independent concurrent
+ * operations would merge their clocks and could hide a real race. Every guest
+ * instrumentation backend must enforce unique live logical participant IDs.
  */
 public final class ConcurrencyRaceAnalyzer {
     private static final int MAX_EVENTS = 100_000;
