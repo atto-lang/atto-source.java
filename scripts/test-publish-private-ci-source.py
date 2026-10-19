@@ -13,6 +13,7 @@ spec = importlib.util.spec_from_file_location("private_publisher", MODULE)
 pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
 ORIGINAL_VERIFY_PROTECTED_ORIGIN = pub.verify_protected_origin
+ORIGINAL_VERIFY_EXACT_SOURCE_TREE = pub.verified_exact_source_tree
 A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
 
 
@@ -230,20 +231,20 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             raise AssertionError("unexpected origin route: "+route)
         with patch.object(pub, "gh_api", side_effect=origin_api):
             self.assertEqual(
-                pub.verified_exact_source_tree(
+                ORIGINAL_VERIFY_EXACT_SOURCE_TREE(
                     [("hello.ores", data, "100644")], A), D)
             with self.assertRaisesRegex(pub.Denied, "differs"):
-                pub.verified_exact_source_tree(
+                ORIGINAL_VERIFY_EXACT_SOURCE_TREE(
                     [("hello.ores", data+b"dirty", "100644")], A)
             with self.assertRaisesRegex(pub.Denied, "differs"):
-                pub.verified_exact_source_tree(
+                ORIGINAL_VERIFY_EXACT_SOURCE_TREE(
                     [("hello.ores", data, "100755")], A)
             with self.assertRaisesRegex(pub.Denied, "differs"):
-                pub.verified_exact_source_tree(
+                ORIGINAL_VERIFY_EXACT_SOURCE_TREE(
                     [("hello.ores", data, "100644"),
                      ("untracked.secret", b"secret", "100644")], A)
             with self.assertRaisesRegex(pub.Denied, "differs"):
-                pub.verified_exact_source_tree([], A)
+                ORIGINAL_VERIFY_EXACT_SOURCE_TREE([], A)
         self.assertTrue(seen)
 
     def test_git_tree_attestation_refuses_truncation_and_symlinks(self):
@@ -256,7 +257,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             raise AssertionError(route)
         with patch.object(pub, "gh_api", side_effect=fake):
             with self.assertRaisesRegex(pub.Denied, "incomplete"):
-                pub.verified_exact_source_tree(
+                ORIGINAL_VERIFY_EXACT_SOURCE_TREE(
                     [("hello.ores", data, "100644")], A)
         def symlink(route, method="GET", payload=None):
             if route.endswith("/git/commits/"+A):
@@ -268,7 +269,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             raise AssertionError(route)
         with patch.object(pub, "gh_api", side_effect=symlink):
             with self.assertRaisesRegex(pub.Denied, "symlink"):
-                pub.verified_exact_source_tree(
+                ORIGINAL_VERIFY_EXACT_SOURCE_TREE(
                     [("hello.ores", data, "100644")], A)
 
     def test_publisher_rejects_mismatched_uploaded_tree_before_branch(self):
