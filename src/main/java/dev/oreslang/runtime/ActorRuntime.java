@@ -9244,103 +9244,66 @@ public final class ActorRuntime implements AutoCloseable {
              * These collections are all lifecycleLock-owned, so the snapshots
              * remain exact until the lock is released.
              */
-            final Throwable drainFailure =
-                    cause == null ? terminated(ref) : cause;
-            List<ActorCell<?>> descendants;
-            List<OresFuture<?>> pending;
-            List<DrainWaiter> failedDrainWaiters;
-            List<PhysicalMailReceipt> failedPhysicalReceipts;
+            final TerminalSettlementBatch batch;
             synchronized (lifecycleLock) {
-                // Another stop caller cannot take a second empty snapshot
-                // and publish physical retirement while the first caller is
-                // still settling its terminal observers.
-                if (finalized || terminalSettlementPending) return;
+                if (finalized) return;
+                if (terminalSettlementPending) {
+                    // A previous stop already published stopped=true and
+                    // transferred every exact receipt/operation/child to one
+                    // immutable batch. Never snapshot emptied ledgers again.
+                    // Reentrant/concurrent stop cannot steal the active
+                    // settlement owner or release the actor's code image.
+                    if (terminalSettlementActive) return;
+                    batch = Objects.requireNonNull(
+                            terminalSettlementBatch,
+                            "pending teardown lost its retryable batch");
+                    terminalSettlementActive = true;
+                } else {
+                    // Every fallible snapshot and the retry owner are created
+                    // before the first irreversible stopped/sealed transition.
+                    // Failure leaves the live actor and pending ledgers intact.
+                    Throwable drainFailure =
+                            cause == null ? terminated(ref) : cause;
+                    List<DrainWaiter> failedDrainWaiters =
+                            List.copyOf(pendingDrains);
+                    List<PhysicalMailReceipt> failedPhysicalReceipts =
+                            List.copyOf(pendingPhysicalReceipts.values());
+                    List<ActorCell<?>> descendants = List.copyOf(children);
+                    List<OresFuture<?>> pending = List.copyOf(pendingOperations);
+                    batch = new TerminalSettlementBatch(
+                            drainFailure, receiptDisposition,
+                            failedPhysicalReceipts, failedDrainWaiters,
+                            pending, descendants);
 
-                // Fail before mutation if any snapshot allocation cannot be
-                // reserved. A later supervisor retry still sees a live actor
-                // and the original receipt/operation ownership intact.
-                failedDrainWaiters = List.copyOf(pendingDrains);
-                failedPhysicalReceipts =
-                        List.copyOf(pendingPhysicalReceipts.values());
-                descendants = List.copyOf(children);
-                pending = List.copyOf(pendingOperations);
-                // Once these snapshots are owned by this stop caller, their
-                // terminal callbacks are an outstanding physical lifetime.
-                // Keep this fence until all receipt and child cancellations
-                // are fully delivered. An OOME must leave retirement denied.
-                terminalSettlementPending = true;
-
-                if (recordCause && cause != null) {
-                    ref.terminationCause.compareAndSet(null, cause);
-                }
-                stopped.set(true);
-                sealing = true;
-                upgradeIngressTicket = null;
-
-                // Snapshot ownership has transferred to local immutable lists.
-                // Settling any Future can invoke callbacks synchronously, so
-                // publication still happens only after lifecycleLock release.
-                pendingDrains.clear();
-                pendingPhysicalReceipts.clear();
-                pendingOperations.clear();
-                if (cause == null) mailbox.close();
-                else mailbox.close(cause);
-                continuationMailbox.close(cause);
-                drainMailboxReservations();
-                finalizeStopLocked();
-                lifecycleLock.notifyAll();
-            }
-
-            // Runtime Future callbacks can take other actor/lifecycle locks.
-            // Publish failure only after teardown has released lifecycleLock.
-            // This same thread owns terminal settlement; joining this actor
-            // from one of its own callbacks would deadlock the physical latch.
-            ref.terminalSettlementOwnerThread = Thread.currentThread();
-            boolean terminalSettlementComplete = false;
-            try {
-                for (PhysicalMailReceipt exact : failedPhysicalReceipts) {
-                    exact.failTerminal(receiptDisposition, drainFailure);
-                }
-                for (DrainWaiter waiter : failedDrainWaiters) {
-                    waiter.completion().failFromRuntime(drainFailure);
-                }
-
-                // Cancellation removes channel/select waiter registrations
-                // before future channel activity can revive dead actor work.
-                for (OresFuture<?> future : pending) future.cancel(false);
-
-                for (ActorCell<?> child : descendants) {
-                    if (receiptDisposition == PhysicalMailDisposition.RUNTIME_CLOSED) {
-                        child.terminateTree(
-                                null, false, PhysicalMailDisposition.RUNTIME_CLOSED);
-                        continue;
+                    // The batch is the durable settlement authority. Publish
+                    // before clearing pending ledgers or sealing user ingress.
+                    terminalSettlementBatch = batch;
+                    terminalSettlementPending = true;
+                    terminalSettlementActive = true;
+                    if (recordCause && cause != null) {
+                        ref.terminationCause.compareAndSet(null, cause);
                     }
-                    CancellationMode childMode =
-                            receiptDisposition == PhysicalMailDisposition.FORCE_CANCELLED
-                                    ? CancellationMode.FORCE_ISOLATED
-                                    : CancellationMode.STRUCTURED;
-                    child.cancel(new ActorCancelledException(
-                            child.ref.id(),
-                            "parent actor " + ref.id() + " terminated",
-                            childMode));
-                }
-                terminalSettlementComplete = true;
-            } finally {
-                try {
-                    if (terminalSettlementComplete) {
-                        synchronized (lifecycleLock) {
-                            terminalSettlementPending = false;
-                            if (stopped.get()) finalizeStopLocked();
-                            lifecycleLock.notifyAll();
-                        }
-                    }
-                } finally {
-                    // Also clear identity if the final callback itself
-                    // fails: a reused host carrier must not inherit stale
-                    // stop-thread authority or block future supervisor joins.
-                    ref.terminalSettlementOwnerThread = null;
+                    stopped.set(true);
+                    sealing = true;
+                    upgradeIngressTicket = null;
+
+                    pendingDrains.clear();
+                    pendingPhysicalReceipts.clear();
+                    pendingOperations.clear();
+                    if (cause == null) mailbox.close();
+                    else mailbox.close(cause);
+                    continuationMailbox.close(cause);
+                    drainMailboxReservations();
+                    // terminalSettlementPending fences physical finalization
+                    // until every out-of-monitor terminal observer completes.
+                    finalizeStopLocked();
+                    lifecycleLock.notifyAll();
                 }
             }
+            // This retryable owner advances each index only after its exact
+            // terminal notification has completed. If a callback/retirement
+            // debit fails, the same batch remains for a later supervisor stop.
+            settleTerminalBatch(batch);
         }
     }
 }
