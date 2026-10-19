@@ -49,7 +49,7 @@ final class LogicalActorUpgradeCoordinatorV1Test {
             var accepted = proxy.admit(bytes("still-open"));
             assertEquals(accepted.messageSequence(),
                     proxy.pollDispatch().messageSequence());
-            proxy.complete(accepted.messageSequence());
+            LogicalActorProxyMailboxTestAccess.complete(proxy, accepted.messageSequence());
         }
     }
 
