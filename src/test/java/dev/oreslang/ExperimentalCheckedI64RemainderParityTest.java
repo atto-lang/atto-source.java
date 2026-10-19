@@ -190,10 +190,12 @@ final class ExperimentalCheckedI64RemainderParityTest {
             if (right == 0L) right = -1L;
             BigInteger mathematical = BigInteger.valueOf(left)
                     .remainder(BigInteger.valueOf(right));
-            String expression = "((" + left + " % " + right + ") == ("
-                    + mathematical + ")) ? 43 : 1";
-            assertEquals(43, expression(expression),
-                    "guest % versus BigInteger, index=" + i
+            String guest = HEADER
+                    + "pub fnc checked_rem(int left, int right): int { return left % right; }\n"
+                    + "pub fnc main(): int { return (checked_rem(" + left
+                    + ", " + right + ") == (" + mathematical + ")) ? 43 : 1; }\n";
+            assertEquals(43, run(guest),
+                    "dynamic guest % versus BigInteger, index=" + i
                     + ", left=" + left + ", right=" + right);
             checked++;
         }
