@@ -1401,8 +1401,25 @@ def main(argv=None):
     p.add_argument("--expected-source-tree", required=True, help="pinned complete source Git tree SHA")
     p.add_argument("--expected-source-commit", required=True, help="pinned immutable private source commit SHA")
     args = p.parse_args(argv)
-    # Policy and code are taken from the same trusted checkout as this script.
-    root = Path(__file__).resolve().parent.parent
+    # An independently reviewed external bootstrap may execute the exact
+    # authenticated publisher bytes without executing the checkout-local file.
+    # In that case use the source root it already proved instead of deriving
+    # trust from a mutable local publisher pathname. Normal direct execution
+    # retains the legacy __file__ root, but is not itself a bootstrap boundary.
+    bootstrap_root = globals().get("_ORESLANG_VERIFIED_SOURCE_ROOT")
+    if bootstrap_root is None:
+        root = Path(__file__).resolve().parent.parent
+    elif isinstance(bootstrap_root, str):
+        try:
+            root = Path(bootstrap_root).resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            print("PRIVATE_CI_DESTINATION_REJECTED: verified bootstrap root is unavailable",
+                  file=sys.stderr)
+            return 1
+    else:
+        print("PRIVATE_CI_DESTINATION_REJECTED: verified bootstrap root is invalid",
+              file=sys.stderr)
+        return 1
     try:
         commit, count = publish(args.repository, args.source_dir, args.branch, root,
                                 args.expected_source_tree, args.expected_source_commit)
