@@ -436,8 +436,8 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             byte[] frame,
             IpcReceiptCorrelation.Envelope expectedEpoch,
             long expectedPhysicalGeneration,
-            byte[] expectedConnectionBinding,
             InboundReplayGate replayGate,
+            byte[] expectedConnectionBinding,
             byte[] key) throws IOException {
         Objects.requireNonNull(expectedEpoch, "expectedEpoch");
         Objects.requireNonNull(replayGate, "replayGate");
