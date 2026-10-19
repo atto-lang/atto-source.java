@@ -7,7 +7,7 @@ class InvertedArrayFormalTest(unittest.TestCase):
         self.assertIsNone(error, trace)
         self.assertGreater(states, 100)
         self.assertGreater(edges, states)
-        self.assertEqual(witnesses, {"disjoint-field-loans", "slot-reuse", "two-live-rows"})
+        self.assertEqual(witnesses, {"disjoint-field-loans", "shared-read-loans", "slot-reuse", "two-live-rows"})
 
     def test_negative_controls(self):
         expected = {
@@ -15,6 +15,8 @@ class InvertedArrayFormalTest(unittest.TestCase):
             "swap-identity": "DenseSlotBijection",
             "borrow-alias": "FieldBorrowConflict",
             "structural-borrow": "NoStructuralMutationDuringBorrow",
+            "foreign-owner": "ForeignOwnerRejected",
+            "slot-bounds": "InvalidHandleSlotRejected",
         }
         for mutant, property_name in expected.items():
             with self.subTest(mutant=mutant):

@@ -1,16 +1,18 @@
 # Bounded InvertedArray row-handle and field-loan safety model
 
-This is a bounded executable abstract state machine for the proposed inverted class / InvertedArray SoA storage in Java issue #1424. It checks two stable handle slots, up to three distinct logical rows, swap-delete physical compaction via stable slot-to-dense indirection, row generation increments on slot retirement, owner identity fencing, and disjoint field-sensitive read/write loans.
+This is a bounded executable abstract state machine for the proposed inverted class / InvertedArray SoA storage in Java issue #1424. It checks two stable handle slots, up to three distinct logical rows, swap-delete physical compaction via stable slot-to-dense indirection, row generation increments on slot retirement, owner identity fencing, and disjoint field-sensitive read/write loans. Each loan has a distinct identity, so two concurrent readers of the same slot and field can be modeled without collapsing into one set element.
 
-The model explores 1,285 reachable states / 4,056 transitions in its present bounds. Model checks include handle identity (no wrong logical row after reuse), no reuse ABA, physical-dense/handle-slot bijection, unique live rows, foreign-owner rejection, read/write conflicts on the same field, and no structural mutation while any column view is borrowed. Field loans on disjoint fields are permitted.
+The model exhaustively explores its finite reachable state space and reports counts at runtime; avoid treating an unverified hardcoded state count as evidence. Model checks include handle identity (no wrong logical row after reuse), no reuse ABA, physical-dense/handle-slot bijection, unique live rows, foreign-owner rejection, read/write conflicts on the same field, and no structural mutation while any column view is borrowed. Field loans on disjoint fields are permitted.
 
-Negative mutations MUST produce counterexamples: missing generation bump (HandleIdentityABA), swapping logical handle identities instead of only dense physical rows (DenseSlotBijection), read/write overlap on the same field (FieldBorrowConflict), and insertion/deletion while views remain live (NoStructuralMutationDuringBorrow).
+Negative mutations MUST produce counterexamples: missing generation bump (HandleIdentityABA), swapping logical handle identities instead of only dense physical rows (DenseSlotBijection), read/write overlap on the same field (FieldBorrowConflict), and insertion/deletion while views remain live (NoStructuralMutationDuringBorrow). Further negative mutations detect absent owner fencing and negative/out-of-bounds slots (Python negative indexing is not an acceptable runtime handle semantics).
 
 Run with Python 3.10+ (no dependencies):
 
     cd formal
     python3 -m unittest -v test_inverted_array_model
     python3 inverted_array_model.py
+    python3 inverted_array_model.py --mutant foreign-owner
+    python3 inverted_array_model.py --mutant slot-bounds
 
 ## Proof boundary
 
