@@ -27,6 +27,9 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
     private final LogicalActorProxyMailboxV1 mailbox;
     private volatile boolean poisoned;
     private volatile boolean closed;
+    // Under dispatchLock. Sealing admission does not prove that physical
+    // ActorRuntime.stop and generation retirement have completed.
+    private boolean physicallyRetired;
 
     private LogicalSourceActorProxyBridgeV1(
             LogicalSourceActorRouterV1 router,
@@ -207,21 +210,25 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
         requireHost();
         synchronized (dispatchLock) {
             synchronized (admissionLock) {
-                if (closed) return;
-                // Admission succeeded at the proxy, so dropping these bytes
-                // on close would silently break the logical delivery contract.
-                // Require the supervisor to finish/reconcile every envelope.
-                if (mailbox.snapshot().retainedMessages() != 0) {
-                    throw new IllegalStateException(
-                            "cannot close bounded proxy with outstanding or queued mail");
+                if (physicallyRetired) return;
+                if (!closed) {
+                    // Sealing is permanent once admission is quiescent. A
+                    // previously failed physical retirement must not reopen
+                    // admission during a later cleanup attempt.
+                    if (mailbox.snapshot().retainedMessages() != 0) {
+                        throw new IllegalStateException(
+                                "cannot close bounded proxy with outstanding or queued mail");
+                    }
+                    closed = true;
+                    poisoned = true;
                 }
-                closed = true;
-                poisoned = true;
             }
-            // If physical teardown fails, retain the proxy ledger for
-            // supervisor investigation. Do not assert completed actor cleanup.
+            // ActorRuntime.stop() has a bounded wait. If it throws, leave
+            // physicallyRetired=false so a later close retries the router's
+            // pinned-generation cleanup without admitting new messages.
             router.close();
             mailbox.close();
+            physicallyRetired = true;
         }
     }
 }
