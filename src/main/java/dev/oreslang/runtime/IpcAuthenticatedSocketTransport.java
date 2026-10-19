@@ -179,10 +179,17 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                 } catch (RuntimeException | Error cleanupFailure) {
                     sendFailure.addSuppressed(cleanupFailure);
                 }
-            } catch (IOException | RuntimeException | Error sendFailure) {
-                // Any failure after dispatch commitment is ambiguous. The lease
-                // requests close on bound-writer failure and never authorizes replay.
+            } catch (IOException | RuntimeException sendFailure) {
+                // Any ordinary failure after dispatch commitment is ambiguous.
+                // The lease requests close on bound-writer failure and never
+                // authorizes replay.
                 failure = sendFailure;
+            } catch (Error fatalHostFailure) {
+                // Never convert VM/linkage/resource Errors into an ordinary
+                // application-visible send result. IpcTransportSessionLease
+                // has already released its write pin and requested close when
+                // the bound physical writer threw.
+                throw fatalHostFailure;
             }
             return new SendSubmission(outcome, failure);
         }
