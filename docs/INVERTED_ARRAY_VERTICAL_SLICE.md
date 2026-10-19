@@ -68,7 +68,11 @@ production performance.
 
 ## Proof currently available
 
-- [Exact-source targeted carrier run #39199603070](https://github.com/scintilla-run-test/gleam-runner-conformance/actions/runs/39199603070):
+- [Final exact-source targeted carrier run #39199996790](https://github.com/scintilla-run-test/gleam-runner-conformance/actions/runs/39199996790):
+  all parser, TypeChecker, column-store, typed-array and bounded method-lowering
+  JUnit gates passed, including preventing a schema-only owner from silently
+  dropping declared methods.
+- [First passing source-method carrier run #39199603070](https://github.com/scintilla-run-test/gleam-runner-conformance/actions/runs/39199603070):
   Java 21 compilation, parser and TypeChecker regression tests, SoA storage
   JUnit, AST-derived typed owner tests, restricted method-plan tests, concurrent
   atomic row-update tests, negative unsupported-effect/type tests.
