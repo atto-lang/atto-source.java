@@ -59,8 +59,8 @@ final class AsyncRuntimePreparedTaskTest {
             assertTrue(submitted.isCancelled());
             assertNull(submitted.getDone().get(2, TimeUnit.SECONDS));
             assertTrue(submitted.isQuiescent());
-            assertTrue(entered.get() == 0 || entered.get() == 1,
-                    "a cancellation racing executor entry may win before or after guest entry, but must quiesce");
+            assertTrue(entered.get() <= 1,
+                    "a cancellation race must never execute the Task more than once");
         }
     }
 }
