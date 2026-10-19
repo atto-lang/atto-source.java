@@ -139,6 +139,29 @@ final class ActorHotUpgradeTaskBridgeV1Test {
     }
 
     @Test
+    void executingSchedulerTurnCannotLaunchUnscopedActorTask() throws Exception {
+        try (var runtime = new ActorRuntime();
+             var scheduler = new OresScheduler(1)) {
+            var actor = idleShared(runtime);
+            var nested = scheduler.start(resume -> {
+                assertThrows(SecurityException.class,
+                        () -> ActorHotUpgradeTaskBridgeV1.startPinned(
+                                runtime, actor, scheduler,
+                                child -> OresScheduler.done(77)));
+                return OresScheduler.done(1);
+            });
+            assertEquals(1, nested.get(WAIT_SECONDS, TimeUnit.SECONDS));
+            try (var freeze = runtime.freezeUserIngressForHotUpgrade(actor)) {
+                assertEquals(0, freeze.outstandingExternalPins(),
+                        "guest Task turn must not acquire unscoped code pins");
+                awaitDrain(freeze);
+            }
+            actor.send(1);
+            assertTrue(actor.awaitTermination(WAIT_SECONDS, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void wrongRuntimeCannotPinForeignActorOrLaunchTask()
             throws Exception {
         try (var source = new ActorRuntime();
