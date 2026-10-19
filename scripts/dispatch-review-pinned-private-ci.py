@@ -311,13 +311,16 @@ def create_authorization_ref(r,commit_sha):
     ci/authorized-<payload-sha> ref exists and points to the event SHA.
     """
     commit_sha=require_sha(commit_sha,"payload commit")
+    # Refresh reviewer, identity, snapshot and incident authority before the
+    # last pre-publication payload-ref read. The carrier still independently
+    # gates its exact event SHA; these reads are not an atomic Git ref lease.
+    refresh_authorization(r)
     payload_branch="ci/oreslang-"+r["source_tree_sha"]
     payload=PUB.gh_api(f"repos/{CARRIER_REPO}/git/ref/heads/{payload_branch}")
     obj=payload.get("object") or {}
     if (payload.get("ref")!="refs/heads/"+payload_branch or obj.get("type")!="commit"
             or require_sha(obj.get("sha"),"payload ref commit")!=commit_sha):
         raise Denied("payload ref changed before authorization handoff")
-    refresh_authorization(r)
     branch=authorization_ref_absent(commit_sha)
     created=PUB.gh_api(f"repos/{CARRIER_REPO}/git/refs",method="POST",
                        payload={"ref":"refs/heads/"+branch,"sha":commit_sha})
@@ -331,6 +334,14 @@ def create_authorization_ref(r,commit_sha):
             or authorized_obj.get("type")!="commit"
             or require_sha(authorized_obj.get("sha"),"authorization ref readback")!=commit_sha):
         raise Denied("authorization ref readback mismatch")
+    # A ref can move between our initial read and authorization POST. Require
+    # that the original payload ref still names the event commit.
+    verified_payload=PUB.gh_api(f"repos/{CARRIER_REPO}/git/ref/heads/{payload_branch}")
+    verified_obj=verified_payload.get("object") or {}
+    if (verified_payload.get("ref")!="refs/heads/"+payload_branch
+            or verified_obj.get("type")!="commit"
+            or require_sha(verified_obj.get("sha"),"payload ref post-write readback")!=commit_sha):
+        raise Denied("payload ref changed after authorization handoff")
     return branch
 
 def require_reviewed_ledgers(r):
