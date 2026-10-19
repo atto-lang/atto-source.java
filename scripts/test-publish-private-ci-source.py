@@ -2472,6 +2472,17 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "ruleset_source": "trusted/ci",
         })
         failures.append(creation_conflict)
+        for unsupported in (
+                "required_signatures", "pull_request",
+                "branch_name_pattern", "commit_message_pattern",
+                "required_status_checks", "required_deployments"):
+            conflicting = json.loads(json.dumps(valid))
+            conflicting.append({
+                "type": unsupported, "ruleset_id": 888,
+                "ruleset_source_type": "Repository",
+                "ruleset_source": "trusted/ci",
+            })
+            failures.append(conflicting)
         for response in failures:
             with self.subTest(response=response):
                 with patch.object(pub, "gh_api", return_value=response):
@@ -2612,7 +2623,32 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=block_creation):
             with patch.object(pub, "collect_source",
                               side_effect=AssertionError("private source read too early")):
-                with self.assertRaisesRegex(pub.Denied, "blocks reviewed branch creation"):
+                with self.assertRaisesRegex(pub.Denied, "unsupported branch rules"):
+                    pub.publish("trusted/ci", self.source, TEST_BRANCH,
+                                self.root, self.expected_tree, D)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_unaudited_effective_rule_denies_before_source_read(self):
+        original = self.fake_api
+        effective_route = (
+            "repos/trusted/ci/rules/branches/"
+            + TEST_BRANCH.replace("/", "%2F") + "?per_page=100&page=1")
+
+        def add_signature_requirement(route, method="GET", payload=None):
+            response = original(route, method, payload)
+            if route == effective_route:
+                response = json.loads(json.dumps(response))
+                response.append({
+                    "type": "required_signatures", "ruleset_id": 888,
+                    "ruleset_source_type": "Repository",
+                    "ruleset_source": "trusted/ci",
+                })
+            return response
+
+        with patch.object(pub, "gh_api", side_effect=add_signature_requirement):
+            with patch.object(pub, "collect_source",
+                              side_effect=AssertionError("private source read too early")):
+                with self.assertRaisesRegex(pub.Denied, "unsupported branch rules"):
                     pub.publish("trusted/ci", self.source, TEST_BRANCH,
                                 self.root, self.expected_tree, D)
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
