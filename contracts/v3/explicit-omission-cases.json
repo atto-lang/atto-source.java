@@ -1,0 +1,359 @@
+{
+  "schema": "oreslang.parameter-presence-v3.proposal",
+  "status": "spec-only; not executable",
+  "signatures": [
+    {
+      "name": "scalarDefault",
+      "parameters": [
+        [
+          "a",
+          "int",
+          true,
+          5
+        ],
+        [
+          "b",
+          "string",
+          true,
+          "charlie"
+        ],
+        [
+          "c",
+          "bool",
+          false,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "optionRequired",
+      "parameters": [
+        [
+          "a",
+          "Option<int>",
+          false,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "optionOmittable",
+      "parameters": [
+        [
+          "a",
+          "Option<int>",
+          true,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "optionDefault",
+      "parameters": [
+        [
+          "a",
+          "Option<int>",
+          true,
+          5
+        ]
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "named-default-middle",
+      "fn": "scalarDefault",
+      "args": [
+        {
+          "label": "c",
+          "type": "bool",
+          "value": true
+        }
+      ],
+      "accept": true,
+      "abi": [
+        "5",
+        "charlie",
+        "true"
+      ]
+    },
+    {
+      "id": "named-reorder",
+      "fn": "scalarDefault",
+      "args": [
+        {
+          "label": "c",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "label": "b",
+          "type": "string",
+          "value": "B"
+        },
+        {
+          "label": "a",
+          "type": "int",
+          "value": 9
+        }
+      ],
+      "accept": true,
+      "abi": [
+        "9",
+        "B",
+        "true"
+      ],
+      "evaluated_order": [
+        "c",
+        "b",
+        "a"
+      ]
+    },
+    {
+      "id": "required-missing",
+      "fn": "scalarDefault",
+      "args": [],
+      "accept": false,
+      "reason": "missing required c"
+    },
+    {
+      "id": "bad-positional-shift",
+      "fn": "scalarDefault",
+      "args": [
+        {
+          "type": "int",
+          "value": 1
+        },
+        {
+          "type": "bool",
+          "value": true
+        }
+      ],
+      "accept": false,
+      "reason": "second positional binds b, wrong type"
+    },
+    {
+      "id": "omitted-nontrailing",
+      "fn": "scalarDefault",
+      "args": [
+        {
+          "kind": "omit"
+        },
+        {
+          "label": "c",
+          "type": "bool",
+          "value": true
+        }
+      ],
+      "accept": true,
+      "abi": [
+        "5",
+        "charlie",
+        "true"
+      ]
+    },
+    {
+      "id": "positional-after-named",
+      "fn": "scalarDefault",
+      "args": [
+        {
+          "label": "c",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "type": "int",
+          "value": 1
+        }
+      ],
+      "accept": false,
+      "reason": "positional after named"
+    },
+    {
+      "id": "duplicate-label",
+      "fn": "scalarDefault",
+      "args": [
+        {
+          "label": "a",
+          "type": "int",
+          "value": 1
+        },
+        {
+          "label": "a",
+          "type": "int",
+          "value": 2
+        },
+        {
+          "label": "c",
+          "type": "bool",
+          "value": true
+        }
+      ],
+      "accept": false,
+      "reason": "duplicate label"
+    },
+    {
+      "id": "unknown-label",
+      "fn": "scalarDefault",
+      "args": [
+        {
+          "label": "z",
+          "type": "int",
+          "value": 1
+        },
+        {
+          "label": "c",
+          "type": "bool",
+          "value": true
+        }
+      ],
+      "accept": false,
+      "reason": "unknown label"
+    },
+    {
+      "id": "required-option",
+      "fn": "optionRequired",
+      "args": [],
+      "accept": false,
+      "reason": "Option alone does not confer omission"
+    },
+    {
+      "id": "supplied-none-required-option",
+      "fn": "optionRequired",
+      "args": [
+        {
+          "type": "Option<int>",
+          "value": "None"
+        }
+      ],
+      "accept": true,
+      "abi": [
+        "None"
+      ]
+    },
+    {
+      "id": "omitted-option",
+      "fn": "optionOmittable",
+      "args": [],
+      "accept": true,
+      "abi": [
+        "None"
+      ]
+    },
+    {
+      "id": "option-lifted",
+      "fn": "optionOmittable",
+      "args": [
+        {
+          "type": "int",
+          "value": 5
+        }
+      ],
+      "accept": true,
+      "abi": [
+        "Some(5)"
+      ]
+    },
+    {
+      "id": "option-default",
+      "fn": "optionDefault",
+      "args": [],
+      "accept": true,
+      "abi": [
+        "Some(5)"
+      ]
+    },
+    {
+      "id": "option-default-overridden-by-none",
+      "fn": "optionDefault",
+      "args": [
+        {
+          "type": "Option<int>",
+          "value": "None"
+        }
+      ],
+      "accept": true,
+      "abi": [
+        "None"
+      ]
+    },
+    {
+      "id": "option-default-explicit-omit",
+      "fn": "optionDefault",
+      "args": [
+        {
+          "kind": "underscore"
+        }
+      ],
+      "accept": true,
+      "abi": [
+        "Some(5)"
+      ]
+    },
+    {
+      "id": "required-explicit-omit",
+      "fn": "optionRequired",
+      "args": [
+        {
+          "kind": "omit"
+        }
+      ],
+      "accept": false,
+      "reason": "required slot"
+    },
+    {
+      "id": "required-option-no-underlying-lift",
+      "fn": "optionRequired",
+      "args": [
+        {
+          "type": "int",
+          "value": 5
+        }
+      ],
+      "accept": false,
+      "reason": "must supply typed Option"
+    }
+  ],
+  "declaration_errors": [
+    {
+      "source": "pub fnc invalid(int x?): void {}",
+      "reason": "non-Option omission needs a default"
+    },
+    {
+      "source": "@DefaultArgVals(y: 1) pub fnc invalid(int x): void {}",
+      "reason": "unknown formal key"
+    },
+    {
+      "source": "@DefaultArgVals(x: None) pub fnc invalid(int x): void {}",
+      "reason": "None cannot initialize int"
+    },
+    {
+      "source": "@DefaultArgVals(x: 1, x: 2) pub fnc invalid(int x): void {}",
+      "reason": "duplicate key"
+    },
+    {
+      "source": "@DefaultArgVals(x: getValue()) pub fnc invalid(int x): void {}",
+      "reason": "nonconstant default"
+    },
+    {
+      "source": "@DefaultArgVals(x: 5) pub fnc invalid(@Default(5) int x): void {}",
+      "reason": "duplicate normalized default"
+    },
+    {
+      "source": "pub fnc invalid(required Option<int> x?): void {}",
+      "reason": "required/omittable contradiction"
+    }
+  ],
+  "overload_errors": [
+    {
+      "a": "f(int a)",
+      "b": "f(int a, bool b?) [default false]",
+      "reason": "effective arity overlaps at 1"
+    },
+    {
+      "a": "f(int a?, bool b?) [two defaults]",
+      "b": "f()",
+      "reason": "effective arity overlaps at 0"
+    }
+  ]
+}
