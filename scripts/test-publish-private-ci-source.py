@@ -453,6 +453,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_empty_untracked_directory_rejected_before_upload(self):
+        # Git trees have no entries for empty directories. Do not certify
+        # a source snapshot containing a file-system-only directory.
+        (self.source / "unexpected-empty").mkdir()
+        with self.assertRaisesRegex(pub.Denied, "unattested empty directory"):
+            self.publish()
+        self.assertFalse(any(method == "POST"
+                             for method, _, _ in self.route_calls))
+
     def test_git_metadata_directory_rejected(self):
         (self.source / ".git").mkdir()
         with self.assertRaises(pub.Denied):
