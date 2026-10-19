@@ -2053,10 +2053,12 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
-        if (expr instanceof Ast.StagedCallExpr || expr instanceof Ast.StagedNewExpr) {
+        if (expr instanceof Ast.StagedCallExpr staged) {
+            return typeStagedRequiredCall(staged, env, generics, self);
+        }
+        if (expr instanceof Ast.StagedNewExpr) {
             throw new IllegalArgumentException(
-                    "named/trailing-closure call lowering is not yet enabled; "
-                            + "static signature, ownership/effect and source-order ABI proofs are required");
+                    "named constructor/actor argument lowering is not yet enabled");
         }
         if (expr instanceof Ast.TypeExpr) {
             throw new IllegalArgumentException(
@@ -4197,6 +4199,280 @@ public final class TypeChecker {
                     name + " scalar argument " + (i + 1));
         }
         return Primitive.BOOL;
+    }
+
+    /**
+     * First executable named-call slice: required parameters only and a
+     * statically resolved source declaration.  Evaluation order remains the
+     * lexical source-item order; only the checked runtime values are permuted
+     * into formal ABI order.
+     *
+     * <p>Generic callable inference, imported/dynamic callables, function-valued
+     * fields and named construction remain fail-closed until their independent
+     * lowering proofs land.</p>
+     */
+    private Type typeStagedRequiredCall(
+            Ast.StagedCallExpr call,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(
+                    "required named-call lowering does not yet admit call-site type arguments");
+        }
+
+        int arity = call.arguments().size();
+        if (call.callee() instanceof Ast.NameExpr functionName
+                && env.lookup(functionName.name()) == null) {
+            Ast.FunctionDecl target = findFunction(functionName.name(), arity);
+            if (target != null) {
+                rejectImplicitClassCallable(functionName.name());
+                if (!target.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "generic function '" + target.name()
+                                    + "' requires generic named-call inference lowering");
+                }
+                if (target.actorKind() != Ast.ActorKind.NONE
+                        && currentActorKind != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "actor callable '" + target.name()
+                                    + "' cannot be synchronously invoked from another actor turn; "
+                                    + "use mailbox-oriented actor composition");
+                }
+                Type result = checkStagedRequiredCallable(
+                        call,
+                        target.parameters(),
+                        target.returnType(),
+                        env,
+                        generics,
+                        self,
+                        null,
+                        Set.of(),
+                        Map.of(),
+                        "function",
+                        target.name(),
+                        "function " + target.name());
+                requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
+                return trapResult(
+                        target.trapped(),
+                        callableResult(target.async(), target.generator(), result));
+            }
+        }
+
+        if (call.callee() instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr namespace
+                    && env.lookup(namespace.name()) == null
+                    && modules.containsKey(namespace.name())) {
+                rejectUnimportedModuleNamespace(namespace.name());
+                Ast.FunctionDecl target = findQualifiedFunction(
+                        namespace.name() + "." + member.member(), arity);
+                if (target != null) {
+                    if (!target.genericParameters().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "generic function '" + namespace.name() + "." + target.name()
+                                        + "' requires generic named-call inference lowering");
+                    }
+                    if (target.actorKind() != Ast.ActorKind.NONE
+                            && currentActorKind != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "actor callable '" + namespace.name() + "." + target.name()
+                                        + "' cannot be synchronously invoked from another actor turn; "
+                                        + "use mailbox-oriented actor composition");
+                    }
+                    Type result = checkStagedRequiredCallable(
+                            call,
+                            target.parameters(),
+                            target.returnType(),
+                            env,
+                            generics,
+                            self,
+                            null,
+                            Set.of(),
+                            Map.of(),
+                            "module-function",
+                            namespace.name() + "." + target.name(),
+                            "function " + namespace.name() + "." + target.name());
+                    requireSuspendableCall(
+                            target.suspends(),
+                            "function '" + namespace.name() + "." + target.name() + "'");
+                    return trapResult(
+                            target.trapped(),
+                            callableResult(target.async(), target.generator(), result));
+                }
+            }
+
+            // The receiver is checked before any source argument, matching the
+            // runtime's receiver-before-arguments evaluation contract.
+            Type receiverValueType = deref(typeOf(member.receiver(), env, generics, self));
+            Type receiver = receiverDispatchType(receiverValueType);
+
+            if (receiver instanceof ClassNamespace classNamespace) {
+                Ast.ClassDecl klass = findClass(classNamespace.className());
+                if (klass == null) {
+                    throw new IllegalArgumentException(
+                            "unknown class namespace '" + classNamespace.className() + "'");
+                }
+                Ast.MethodDecl target =
+                        findStaticFunction(klass, member.member(), arity, new LinkedHashSet<>());
+                if (target == null) {
+                    throw new IllegalArgumentException(
+                            "named arguments require a statically resolved source callable; "
+                                    + "no static function '" + member.member()
+                                    + "' with arity " + arity + " on " + klass.name());
+                }
+                Ast.ClassDecl owner = findDeclaringClass(klass, target, new LinkedHashSet<>());
+                requireClassMemberVisible(
+                        target.visibility(), owner, "static function", target.name());
+                if (!target.genericParameters().isEmpty()
+                        || !owner.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "generic static function/class named calls require generic binding lowering");
+                }
+                Type result = checkStagedRequiredCallable(
+                        call,
+                        target.parameters(),
+                        target.returnType(),
+                        env,
+                        generics,
+                        self,
+                        null,
+                        Set.of(),
+                        Map.of(),
+                        "static-function",
+                        owner.name() + "." + target.name(),
+                        "static function " + owner.name() + "." + target.name());
+                requireSuspendableCall(
+                        target.suspends(), "static function '" + target.name() + "'");
+                return callableResult(target.async(), false, result);
+            }
+
+            if (receiver instanceof Named named) {
+                Ast.ClassDecl klass = findClass(named.name());
+                if (klass != null) {
+                    ResolvedMethod resolved = findMethodTarget(
+                            klass, named, member.member(), arity, new LinkedHashSet<>());
+                    if (resolved == null) {
+                        throw new IllegalArgumentException(
+                                "named arguments require a statically resolved source method; "
+                                        + "no method '" + member.member()
+                                        + "' with arity " + arity + " on " + named.name());
+                    }
+                    Ast.MethodDecl target = resolved.method();
+                    Ast.ClassDecl owner = resolved.owner();
+                    Named ownerType = resolved.ownerType();
+                    requireClassMemberVisible(
+                            target.visibility(), owner, "method", target.name());
+                    if (!target.genericParameters().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "generic method '" + owner.name() + "." + target.name()
+                                        + "' requires generic named-call inference lowering");
+                    }
+                    Map<String, Type> bindings =
+                            new HashMap<>(classGenericBindings(owner, ownerType));
+                    Set<String> callableGenerics =
+                            Set.copyOf(owner.genericParameters());
+                    Type callableReceiver = receiverValueType instanceof SelfType
+                            ? receiverValueType
+                            : named;
+                    Type result = checkStagedRequiredCallable(
+                            call,
+                            target.parameters(),
+                            target.returnType(),
+                            env,
+                            generics,
+                            self,
+                            callableReceiver,
+                            callableGenerics,
+                            bindings,
+                            "method",
+                            owner.name() + "." + target.name(),
+                            "method " + owner.name() + "." + target.name());
+                    requireSuspendableCall(target.suspends(), "method '" + target.name() + "'");
+                    return callableResult(target.async(), false, result);
+                }
+            }
+        }
+
+        throw new IllegalArgumentException(
+                "named arguments require a statically resolved source function, static function, or method");
+    }
+
+    private Type checkStagedRequiredCallable(
+            Ast.StagedCallExpr call,
+            List<Ast.Param> params,
+            Ast.TypeRef returnRef,
+            Env env,
+            Set<String> callerGenerics,
+            Type callerSelf,
+            Type callableSelf,
+            Set<String> callableGenerics,
+            Map<String, Type> bindings,
+            String targetKind,
+            String targetName,
+            String label) {
+        NamedCallBindingPlan.Plan plan =
+                NamedCallBindingPlan.bindRequired(params, call.arguments());
+
+        Set<String> unresolved = new HashSet<>(callableGenerics);
+        unresolved.removeAll(bindings.keySet());
+        List<Type> expectedByFormal = new ArrayList<>(params.size());
+        for (Ast.Param param : params) {
+            Type expected = substituteGenerics(
+                    resolveParam(param, callableGenerics, callableSelf),
+                    bindings);
+            if (containsGenericNamed(expected, unresolved)) {
+                throw new IllegalArgumentException(
+                        label + " has unresolved generic parameter types; "
+                                + "generic named-call inference lowering is required");
+            }
+            expectedByFormal.add(expected);
+        }
+
+        for (int sourceIndex = 0; sourceIndex < call.arguments().size(); sourceIndex++) {
+            Ast.CallArgument item = call.arguments().get(sourceIndex);
+            if (item.value() == null || item.omitted() || item.spread()) {
+                throw new IllegalArgumentException(
+                        "required named-call lowering admits only concrete, non-spread values");
+            }
+            int formalIndex = plan.formalIndexBySourceItem().get(sourceIndex);
+            Ast.Param formal = params.get(formalIndex);
+            Type expected = expectedByFormal.get(formalIndex);
+            Type actual = typeOfAgainstExpected(
+                    item.value(), expected, env, callerGenerics, callerSelf);
+            if (!formal.structural()) {
+                requireReadonlyCapabilityPreserved(
+                        actual,
+                        expected,
+                        "argument '" + formal.name() + "' to " + label);
+            }
+            requireMutableReferentCompatible(
+                    actual,
+                    formal.mutable(),
+                    "argument '" + formal.name() + "' to mutable parameter");
+            requireAssignable(
+                    actual,
+                    expected,
+                    "argument '" + formal.name() + "' to " + label);
+        }
+
+        Type result = substituteGenerics(
+                resolve(returnRef, callableGenerics, callableSelf),
+                bindings);
+        if (containsGenericNamed(result, unresolved)) {
+            throw new IllegalArgumentException(
+                    label + " has an unresolved generic return type");
+        }
+
+        Ast.CheckedNamedCallPlan.record(
+                call,
+                new Ast.NamedCallProof(
+                        plan.formalIndexBySourceItem(),
+                        plan.sourceItemIndexByFormal(),
+                        params.stream().map(Ast.Param::name).toList(),
+                        plan.trailingClosureFormalIndex(),
+                        targetKind,
+                        targetName));
+        return result;
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
