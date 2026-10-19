@@ -113,7 +113,7 @@ final class DopComputeCallSurfaceSyntaxTest {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(SAMPLE)));
-        assertTrue(failure.getMessage().contains("named/trailing-closure")
+        assertTrue(failure.getMessage().contains("direct or module function")
                         || failure.getMessage().contains("type-qualified")
                         || failure.getMessage().contains("compound-place"),
                 failure::toString);
