@@ -64,7 +64,7 @@ class CarrierTopologyPlanTest {
             for (int thief = 0; thief < workers; thief++) {
                 boolean[] visited = new boolean[workers];
                 for (int ordinal = 0; ordinal < workers - 1; ordinal++) {
-                    int v = p.victimAt(thief, ordinal, ordinal * 17 + 3);
+                    int v = p.victimAt(thief, ordinal, thief * 17 + 3);
                     assertNotEquals(thief, v);
                     assertFalse(visited[v], "duplicate locality victim");
                     visited[v] = true;
