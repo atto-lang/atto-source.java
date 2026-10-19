@@ -500,4 +500,34 @@ final class V3DefaultArgValsAdmissionTest {
         }
     }
 
+    @Test
+    void nestedBorrowOrInferenceCannotHideInsideStagedV3OptionSugar() {
+        Ast.TypeRef borrow = Ast.TypeRef.borrowed(Ast.TypeRef.simple("int"), false);
+        Ast.TypeRef nestedBorrow = new Ast.TypeRef("List", List.of(borrow), false);
+        Ast.TypeRef nestedInfer = new Ast.TypeRef("List",
+                List.of(Ast.TypeRef.inferred()), false);
+        Ast.TypeRef inferredArguments = new Ast.TypeRef("List", List.of(), true);
+
+        for (Ast.TypeRef payload : List.of(
+                borrow, nestedBorrow, nestedInfer, inferredArguments,
+                Ast.TypeRef.simple("void"))) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Ast.TypeRef.stagedV3Option(payload),
+                    "unlowered v3 Option cannot take an unsafe payload: " + payload);
+        }
+
+        Ast.TypeRef inner = Ast.TypeRef.stagedV3Option(Ast.TypeRef.simple("int"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Ast.TypeRef.stagedV3Option(inner));
+        assertThrows(IllegalArgumentException.class,
+                () -> Ast.TypeRef.stagedV3Option(
+                        new Ast.TypeRef("List", List.of(inner), false)));
+
+        // Explicit, nominally unresolved Option<int> remains a legal
+        // *preview* payload; the type checker must still establish identity.
+        Ast.TypeRef explicitOption = new Ast.TypeRef(
+                "Option", List.of(Ast.TypeRef.simple("int")), false);
+        assertTrue(Ast.TypeRef.stagedV3Option(explicitOption).isStagedV3Option());
+    }
+
 }
