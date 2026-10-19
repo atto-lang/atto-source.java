@@ -6111,6 +6111,14 @@ public final class ActorRuntime implements AutoCloseable {
     <M> PhysicalMailReceipt sendWithPhysicalReceipt(
             ActorRef<M> ref, M message) {
         requireSupervisorContext("issue physical actor mail receipt");
+        if (isActorCarrierThread()
+                || OresScheduler.current() != null
+                || OresScheduler.isSchedulerCarrierThread()
+                || AsyncRuntime.isAsyncCarrierThread()) {
+            throw new SecurityException(
+                    "physical actor receipt admission requires a trusted "
+                            + "host/supervisor thread, not an execution carrier");
+        }
         return sendInternal(ref, message, true);
     }
 
