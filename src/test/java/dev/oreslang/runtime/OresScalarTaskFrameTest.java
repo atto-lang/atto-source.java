@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Exact-source host-side execution tests; this does not open guest nb syntax. */
+/** Exact-source host-side execution tests; this does not open general guest Task syntax. */
 final class OresScalarTaskFrameTest {
     @Test
     void scalarCaptureIsIndependentOfParentBindingAndAwaitsOnRealScheduler() {
@@ -87,6 +87,17 @@ final class OresScalarTaskFrameTest {
         OresScalarTaskFrame once = OresScalarTaskFrame.returnConstant(1L);
         assertInstanceOf(OresScheduler.Done.class, once.resume(null));
         assertThrows(IllegalStateException.class, () -> once.resume(null));
+    }
+
+    @Test
+    void hugeScalarStringsFailBeforeSchedulerAdmission() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresScalarTaskFrame.returnConstant("x".repeat(1_048_577)));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresScalarTaskFrame.returnCapture(
+                        List.of("x".repeat(1_048_577)), 0));
+        assertDoesNotThrow(() ->
+                OresScalarTaskFrame.returnConstant("x".repeat(1_048_576)));
     }
 
     @Test
