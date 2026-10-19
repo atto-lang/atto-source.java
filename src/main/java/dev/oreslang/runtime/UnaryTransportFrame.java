@@ -19,7 +19,7 @@ import java.util.Objects;
  */
 final class UnaryTransportFrame {
     static final int VERSION = 1;
-    static final int ENVELOPE_BYTES = 18;
+    static final int ENVELOPE_BYTES = 26;
     static final int MAX_PAYLOAD_BYTES = 1 << 20;
     static final int MAX_ENVELOPE_BYTES = ENVELOPE_BYTES + MAX_PAYLOAD_BYTES;
 
@@ -34,12 +34,12 @@ final class UnaryTransportFrame {
         }
     }
 
-    record Envelope(Kind kind, long generation, long correlationId, byte[] payload) {
+    record Envelope(Kind kind, long sessionId, long generation, long correlationId, byte[] payload) {
         Envelope {
             Objects.requireNonNull(kind, "kind");
             Objects.requireNonNull(payload, "payload");
-            if (generation <= 0 || correlationId <= 0)
-                throw new IllegalArgumentException("generation and correlation ID must be positive");
+            if (sessionId <= 0 || generation <= 0 || correlationId <= 0)
+                throw new IllegalArgumentException("session, generation and correlation ID must be positive");
             if (payload.length > MAX_PAYLOAD_BYTES)
                 throw new IllegalArgumentException("unary payload exceeds configured limit");
             if (kind == Kind.CANCEL && payload.length != 0)
@@ -56,7 +56,8 @@ final class UnaryTransportFrame {
         byte[] payload = envelope.payload();
         ByteBuffer out = ByteBuffer.allocate(ENVELOPE_BYTES + payload.length).order(ByteOrder.BIG_ENDIAN);
         out.put((byte) VERSION).put((byte) envelope.kind().wire)
-                .putLong(envelope.generation()).putLong(envelope.correlationId()).put(payload);
+                .putLong(envelope.sessionId()).putLong(envelope.generation())
+                .putLong(envelope.correlationId()).put(payload);
         return out.array();
     }
 
@@ -68,14 +69,14 @@ final class UnaryTransportFrame {
         if (Byte.toUnsignedInt(in.get()) != VERSION)
             throw new IOException("unsupported unary envelope version");
         Kind kind = Kind.fromWire(Byte.toUnsignedInt(in.get()));
-        long generation = in.getLong(), correlationId = in.getLong();
-        if (generation <= 0 || correlationId <= 0)
-            throw new IOException("invalid unary generation or correlation ID");
+        long sessionId = in.getLong(), generation = in.getLong(), correlationId = in.getLong();
+        if (sessionId <= 0 || generation <= 0 || correlationId <= 0)
+            throw new IOException("invalid unary session, generation or correlation ID");
         byte[] payload = new byte[in.remaining()];
         in.get(payload);
         if (kind == Kind.CANCEL && payload.length != 0)
             throw new IOException("cancel envelope contains payload");
-        return new Envelope(kind, generation, correlationId, payload);
+        return new Envelope(kind, sessionId, generation, correlationId, payload);
     }
 
     /** One WebSocket binary MESSAGE, after RFC 6455 reassembly/validation. */
