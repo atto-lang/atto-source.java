@@ -42,13 +42,14 @@ done
 # A full HEAD/tree digest is authoritative. These pinned blobs additionally
 # show exactly WHICH reviewed hot/Task safety seams are present in that tree.
 reviewed_blobs=(
-  'src/main/java/dev/oreslang/runtime/LogicalActorProxyMailboxV1.java:a11ff977f32952b19d115a46b49f1083a7d6e6b3'
+  'src/main/java/dev/oreslang/runtime/ActorUpgradeAtomicPublicationV1.java:c5b5c5bfcba246fba9a65574a4e961c2b2733d8d'
+  'src/main/java/dev/oreslang/runtime/LogicalActorProxyMailboxV1.java:f3182684b3af0101f6f218b8f9306ac819d0ebae'
   'src/main/java/dev/oreslang/runtime/LogicalSourceActorRouterV1.java:11362a6706729f6f903addc66e83cd82e2e2a853'
-  'src/main/java/dev/oreslang/runtime/ActorUpgradeEpochGate.java:6a915cf2d084426eef0f06abe50fbb3f31a7c63a'
+  'src/main/java/dev/oreslang/runtime/ActorUpgradeEpochGate.java:0c0315f643fc25b3335e77e64375666cbc2e6d05'
   'src/main/java/dev/oreslang/runtime/OresTaskScope.java:6220209e55dc43311e7d2ead98225e916ee9540e'
   'src/main/java/dev/oreslang/runtime/OresContext.java:c0e8d02cacb036c8570cb4bb5a6c3967ab6030b8'
-  'src/main/java/dev/oreslang/runtime/ActorRoutePublicationV1.java:790ad06cba2b430781695c27419727c7598255f2'
-  'src/main/java/dev/oreslang/runtime/ActorUpgradePreflightV1.java:3e6b9fae365332ca8fbf325ff2f7d8568a654b4f'
+  'src/main/java/dev/oreslang/runtime/ActorRoutePublicationV1.java:35b71145d905827a5f7d2f0a0a5b7fa5ec83e104'
+  'src/main/java/dev/oreslang/runtime/ActorUpgradePreflightV1.java:74f8bc8070449f9448997c8d3b714ddfd58e4a00'
 )
 for record in "${reviewed_blobs[@]}"; do
   path="${record%%:*}"
@@ -67,11 +68,11 @@ test_classes=(
   ActorTaskGenerationBridgeTest
   ActorUpgradePreflightV1Test
   ActorRoutePublicationV1Test
+  ActorUpgradeAtomicPublicationV1Test
   LogicalActorProxyMailboxV1Test
   OresTaskScopeFrameTest
   SourceActorHotUpgradeExecutionTest
   LogicalSourceActorCrossContextUpgradeTest
-  HotReloadTransactionalPublicationTest
 )
 selection="$(IFS=,; echo "${test_classes[*]}")"
 
