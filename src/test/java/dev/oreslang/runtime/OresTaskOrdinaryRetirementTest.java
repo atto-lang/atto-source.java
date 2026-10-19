@@ -3,7 +3,9 @@ package dev.oreslang.runtime;
 import java.lang.reflect.Field;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
@@ -102,6 +104,40 @@ final class OresTaskOrdinaryRetirementTest {
             ownerField.set(scope, original);
             scope.close();
             runtime.close();
+        }
+    }
+
+    @Test
+    void physicalExitWaitsUntilTrustedRetirementCallbackFinishes() throws Exception {
+        try (var runtime = new AsyncRuntime()) {
+            var enteredRetirement = new CountDownLatch(1);
+            var allowRetirement = new CountDownLatch(1);
+            var admission = runtime.<Integer>prepareTaskAdmission();
+            admission.installRetirement(() -> {
+                enteredRetirement.countDown();
+                boolean interrupted = false;
+                for (;;) {
+                    try {
+                        allowRetirement.await();
+                        break;
+                    } catch (InterruptedException ignored) {
+                        interrupted = true;
+                    }
+                }
+                if (interrupted) Thread.currentThread().interrupt();
+            });
+            try {
+                runtime.submitPreparedTask(admission, () -> 37);
+                assertEquals(37, AsyncRuntime.await(admission.owner.getAwaited()));
+                assertTrue(enteredRetirement.await(3, TimeUnit.SECONDS));
+                assertFalse(admission.owner.getDone().isDone(),
+                        "result settlement is not trusted physical retirement");
+                assertFalse(admission.owner.isQuiescent());
+            } finally {
+                allowRetirement.countDown();
+            }
+            assertNull(AsyncRuntime.await(admission.owner.getDone()));
+            assertTrue(admission.owner.isQuiescent());
         }
     }
 
