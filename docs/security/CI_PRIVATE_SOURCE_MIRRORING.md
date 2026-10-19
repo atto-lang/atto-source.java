@@ -11,6 +11,23 @@ default**. No cross-repository mirroring is authorized until maintainers and
 security reviewers explicitly add an exact `owner/repo` destination through a
 reviewed, protected-branch change.
 
+**Origin protection is mandatory.** Before reading private source files, the
+publisher now checks the live GitHub identity of
+`ores-truffle-oreslang/oreslang-source.java`, verifies that its official
+`main` branch reports `protected: true`, pins the policy read to that branch's
+Git commit, and compares its policy bytes with the local checkout policy.
+It repeats these checks immediately before publishing the new CI ref. Merely
+adding the allowlist line to an unreviewed checkout does not authorize export,
+and a CODEOWNERS file without enforced branch protection is not sufficient.
+**At the 2026-10-19 audit, GitHub reported `main protected: false`, so the
+publisher deliberately fails closed until administrators enable protection
+and verify that CODEOWNER reviews are required.** GitHub returned a 403
+for ruleset inspection on the available repository plan, so this tool session
+could not independently establish an equivalent enforced ruleset.
+
+Until that prerequisite is met, do not mirror private blobs even if an
+allowlist pull request is approved. Source-free test suites are permissible.
+
 Do **not** accept a CI destination allowlist from environment variables or
 unreviewed workflow inputs: a caller must not be able to grant its own approval.
 Run the checked transfer from trusted, reviewed source, not an untrusted PR
