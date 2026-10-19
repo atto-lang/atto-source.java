@@ -36,6 +36,29 @@ final class ConcurrencyTestCommandTest {
     }
 
     @Test
+    void replayRejectsExplicitlyMismatchedSeedAndAdoptsRecordedSeed() throws Exception {
+        Path trace = tmp.resolve("seed.trace");
+        assertEquals(0, ConcurrencyTestCommand.run(new String[]{
+                "examples/native-testing.ores", "--seed=72", "--trace-output=" + trace
+        }));
+        assertEquals(72, dev.oreslang.runtime.ConcurrencyTestProbe.readTraceData(trace).seed());
+        assertEquals(2, ConcurrencyTestCommand.run(new String[]{
+                "examples/native-testing.ores", "--replay=" + trace, "--seed=73"
+        }));
+        assertEquals(0, ConcurrencyTestCommand.run(new String[]{
+                "examples/native-testing.ores", "--replay=" + trace
+        }));
+    }
+
+    @Test
+    void refusesOverflowedFuzzSeedRange() throws Exception {
+        assertEquals(2, ConcurrencyTestCommand.run(new String[]{
+                "examples/native-testing.ores", "--seed=" + Long.MAX_VALUE,
+                "--iterations=2"
+        }));
+    }
+
+    @Test
     void compilerFailureStillWritesTraceReceipt() throws Exception {
         Path invalid = tmp.resolve("invalid.ores");
         Path trace = tmp.resolve("invalid.trace");
