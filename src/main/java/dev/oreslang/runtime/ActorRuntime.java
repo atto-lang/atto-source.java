@@ -6516,22 +6516,41 @@ public final class ActorRuntime implements AutoCloseable {
                 // every pending operation/child instead of stranding shutdown.
                 ref.terminationCause.compareAndSet(null, failure);
             } finally {
-                synchronized (lifecycleLock) {
-                    terminationSealed = true;
-                    finalizeStopLocked();
-                    lifecycleLock.notifyAll();
+                // A done/ready/finalized Future must not publish before every
+                // owned async operation has received its cancellation request
+                // and descendants have been told to stop. Keep the sealing
+                // gate closed until all of these notifications are delivered.
+                try {
+                    for (OresFuture<?> future : pending) {
+                        try {
+                            future.cancel(false);
+                        } catch (VirtualMachineError | ThreadDeath fatal) {
+                            throw fatal;
+                        } catch (Throwable cancellationFailure) {
+                            ref.terminationCause.compareAndSet(
+                                    null, cancellationFailure);
+                        }
+                    }
+                    for (ActorCell<?> child : descendants) {
+                        try {
+                            child.cancel(new ActorCancelledException(
+                                    child.ref.id(),
+                                    "parent actor " + ref.id() + " terminated"));
+                        } catch (VirtualMachineError | ThreadDeath fatal) {
+                            throw fatal;
+                        } catch (Throwable cancellationFailure) {
+                            ref.terminationCause.compareAndSet(
+                                    null, cancellationFailure);
+                        }
+                    }
+                } finally {
+                    synchronized (lifecycleLock) {
+                        terminationSealed = true;
+                        finalizeStopLocked();
+                        lifecycleLock.notifyAll();
+                    }
+                    completeFinalizationIfReady();
                 }
-                completeFinalizationIfReady();
-            }
-
-            // Cancellation removes channel/select waiter registrations before
-            // any future channel activity can revive work for this dead actor.
-            for (OresFuture<?> future : pending) future.cancel(false);
-
-            for (ActorCell<?> child : descendants) {
-                child.cancel(new ActorCancelledException(
-                        child.ref.id(),
-                        "parent actor " + ref.id() + " terminated"));
             }
         }
     }
