@@ -69,11 +69,11 @@ final class LogicalActorProxyEnvelopeIdentityTest {
             assertEquals(1, snapshot.retainedMessages());
             assertEquals(1, snapshot.outstandingMessages());
 
-            // The failed integrity check happened before the physical-attempt
-            // ledger insertion, so exact unsent rollback authority remains.
-            mailbox.requeueProvenUnsent(envelope, 1L);
-            assertEquals(1, mailbox.snapshot().queuedMessages());
-            assertEquals(0, mailbox.snapshot().outstandingMessages());
+            // Integrity failure is pre-send, but corrupted bytes remain
+            // quarantined in the outstanding ledger and are never restored
+            // to the dispatch FIFO.
+            assertEquals(0, mailbox.snapshot().queuedMessages());
+            assertEquals(1, mailbox.snapshot().outstandingMessages());
         }
     }
 }
