@@ -150,12 +150,15 @@ public final class IpcReceiptCorrelation {
                 losses.add(new LostCorrelation(entry.envelope, entry.stage));
             }
         }
+        // Materialize immutable return value before touching the table:
+        // List.copyOf can allocate and throw OutOfMemoryError.
+        List<LostCorrelation> immutableLosses = List.copyOf(losses);
         // No allocation or user callbacks in the mutation/commit phase.
-        for (LostCorrelation loss : losses) {
+        for (LostCorrelation loss : immutableLosses) {
             Entry removed = pending.remove(loss.envelope().messageSequence());
             if (removed.stage == Stage.LOCAL_ADMITTED) --transportCredits;
         }
-        return List.copyOf(losses);
+        return immutableLosses;
     }
 
     public synchronized Counters counters() {
