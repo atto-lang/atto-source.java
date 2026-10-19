@@ -1079,17 +1079,25 @@ public final class Ast {
             return rewritten;
         }
 
-        /** Prevents an erased or widened runtime value from exposing hidden fields. */
-        public static synchronized void require(IndexExpr site, String key) {
+        /**
+         * Returns an immutable verified plan. Evaluators may cache this once
+         * per AST identity to avoid a global synchronized lookup per field read.
+         */
+        public static synchronized java.util.Set<String> requirePlan(IndexExpr site) {
             java.util.Objects.requireNonNull(site, "index site");
-            java.util.Objects.requireNonNull(key, "index key");
             expunge();
             java.util.Set<String> visible = KEYS.get(new IdentityKey(site, null));
             if (visible == null) {
                 throw new IllegalStateException(
                         "record/class indexing requires a checked access plan");
             }
-            if (!visible.contains(key)) {
+            return visible;
+        }
+
+        /** Prevents an erased or widened runtime value from exposing hidden fields. */
+        public static void require(IndexExpr site, String key) {
+            java.util.Objects.requireNonNull(key, "index key");
+            if (!requirePlan(site).contains(key)) {
                 throw new IllegalArgumentException(
                         "unknown or inaccessible field '" + key + "' in indexed view");
             }
