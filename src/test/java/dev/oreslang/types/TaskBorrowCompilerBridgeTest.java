@@ -143,6 +143,60 @@ final class TaskBorrowCompilerBridgeTest {
         assertEquals(0, ledger.activeClaims());
     }
 
+    @Test void forgedAllocationIdentityCannotEnterScalarCompilerBridge() {
+        var ledger = new TaskAccessVerifier();
+        var forged = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("PROCESS", 210, 1, true));
+        var trusted = new TaskAccessVerifier.Root("PROCESS", 211, 1, true);
+        var typeLookups = new AtomicInteger();
+        assertThrows(IllegalArgumentException.class, () ->
+                TaskBorrowCompilerBridge.admitResolvedScalars(
+                        ledger, List.of(write(forged)),
+                        p -> trusted,
+                        p -> {
+                            typeLookups.incrementAndGet();
+                            return Ast.TypeRef.simple("int");
+                        }));
+        assertEquals(0, typeLookups.get());
+        assertEquals(0, ledger.activeChildren());
+        assertEquals(0, ledger.activeClaims());
+    }
+
+    @Test void forgedUniquenessOrGenerationIsRejectedBeforeTypeLookup() {
+        var ledger = new TaskAccessVerifier();
+        var claimed = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("PROCESS", 212, 1, true));
+        var notProvenUnique =
+                new TaskAccessVerifier.Root("PROCESS", 212, 1, false);
+        var staleGeneration =
+                new TaskAccessVerifier.Root("PROCESS", 212, 2, true);
+        for (var trustedRoot : List.of(notProvenUnique, staleGeneration)) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    TaskBorrowCompilerBridge.admitResolvedScalars(
+                            ledger, List.of(read(claimed)),
+                            p -> trustedRoot,
+                            p -> Ast.TypeRef.simple("int")));
+            assertEquals(0, ledger.activeClaims());
+        }
+        assertThrows(IllegalArgumentException.class, () ->
+                TaskBorrowCompilerBridge.admitResolvedScalars(
+                        ledger, List.of(read(claimed)), p -> null,
+                        p -> Ast.TypeRef.simple("int")));
+    }
+
+    @Test void failedAllocationLookupDoesNotReserveEarlierClaims() {
+        var ledger = new TaskAccessVerifier();
+        var second = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("PROCESS", 213, 1, true));
+        assertThrows(IllegalArgumentException.class, () ->
+                TaskBorrowCompilerBridge.admitResolvedScalars(
+                        ledger, List.of(write(place()), write(second)),
+                        p -> p.equals(second) ? null : p.root(),
+                        p -> Ast.TypeRef.simple("int")));
+        assertEquals(0, ledger.activeClaims());
+        assertEquals(0, ledger.activeChildren());
+    }
+
     @Test void failedLaterTypeLookupDoesNotCommitAnyEarlierClaim() {
         var ledger = new TaskAccessVerifier();
         var second = TaskAccessVerifier.Place.whole(
