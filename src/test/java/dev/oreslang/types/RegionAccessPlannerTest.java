@@ -41,10 +41,11 @@ final class RegionAccessPlannerTest {
         var writePos2=system("position-2",access(POSITION,50,150,RegionAccessPlanner.Mode.WRITE));
         var readPos=system("sample-position",access(POSITION,30,40,RegionAccessPlanner.Mode.READ));
         var stages=RegionAccessPlanner.plan(List.of(readVel,readVel2,writePos,writePos2,readPos));
-        assertEquals(3,stages.size());
+        assertEquals(2,stages.size());
         assertEquals(List.of(readVel,readVel2,writePos),stages.get(0).parallel());
-        assertEquals(List.of(writePos2),stages.get(1).parallel());
-        assertEquals(List.of(readPos),stages.get(2).parallel());
+        // readPos [30,40) overlaps stage-zero writePos but is disjoint
+        // from stage-one writePos2 [50,150), so both may run together.
+        assertEquals(List.of(writePos2,readPos),stages.get(1).parallel());
     }
 
     @Test void differentAllocationsOrColumnsNeverAlias() {
