@@ -249,7 +249,12 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
     }
 
     private static void requireHost() {
-        if (ActorRuntime.inActorExecution() || OresScheduler.current() != null) {
+        if (ActorRuntime.inActorExecution()
+                || OresScheduler.current() != null
+                || OresScheduler.isSchedulerCarrierThread()
+                || AsyncRuntime.isAsyncCarrierThread()) {
+            // Carrier/terminal callbacks can run after CURRENT turn was
+            // cleared. They are still not a trusted blocking supervisor.
             throw new SecurityException(
                     "bounded logical source proxy bridge is a HOST-only API");
         }
