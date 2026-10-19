@@ -253,7 +253,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     }
 
     /** Package-local audit hook: exposes no key bytes. */
-    boolean keyMaterialDestroyed() {
+    boolean keyCloneZeroized() {
         for (byte value : macKey) if (value != 0) return false;
         return true;
     }
