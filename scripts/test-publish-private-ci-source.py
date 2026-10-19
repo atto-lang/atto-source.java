@@ -1726,9 +1726,33 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with patch.object(pub, "gh_api", side_effect=self.fake_api):
                 with patch.object(pub, "collect_source",
                                   side_effect=AssertionError("source bytes read")):
-                    with self.assertRaisesRegex(pub.Denied, "ID changed after reviewed preflight"):
+                    with self.assertRaisesRegex(pub.Denied, "preflight destination ID differs from reviewed policy"):
                         pub.publish("trusted/ci", self.source, "ci/oreslang-test",
                                     self.root, pinned, 1286, A)
+        self.assertFalse(any(method == "POST"
+                             for method, _, _ in self.route_calls))
+
+    def test_destination_id_swap_after_real_preflight_denies_before_read(self):
+        # The preflight checks the first destination metadata response, then
+        # the post-review lookup must reject the same slug with another ID.
+        pinned = self.expected_source_tree()
+        original = self.fake_api
+        observed = [0]
+        def replace_after_preflight(route, method="GET", payload=None):
+            if route == "repos/trusted/ci":
+                observed[0] += 1
+                if observed[0] >= 2:
+                    self.mock_destination_repo_id = 424243
+            return original(route, method, payload)
+        with patch.object(pub, "require_preflight", wraps=REAL_PREFLIGHT):
+            with patch.object(pub, "gh_api", side_effect=replace_after_preflight):
+                with patch.object(pub, "collect_source",
+                                  side_effect=AssertionError("source read")):
+                    with self.assertRaisesRegex(pub.Denied,
+                                               "ID changed after reviewed preflight"):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root, pinned, 1286, A)
+        self.assertGreaterEqual(observed[0], 2)
         self.assertFalse(any(method == "POST"
                              for method, _, _ in self.route_calls))
 
