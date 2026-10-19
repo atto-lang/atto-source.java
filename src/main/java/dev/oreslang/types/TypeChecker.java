@@ -4988,9 +4988,9 @@ public final class TypeChecker {
      * SharedMutex may be deliberately transported by a mailbox, but cannot
      * masquerade as an ordinary frozen actor-callable result.
      */
-    private void rejectLiveActorCallableResult(Type type, String where, int depth) {
-        if (depth > 256) {
-            throw new IllegalArgumentException(where + " exceeds actor result type nesting budget");
+    private void rejectLiveActorCallableResult(Type type, String where, int depth, int[] budget) {
+        if (depth > 256 || --budget[0] < 0) {
+            throw new IllegalArgumentException(where + " exceeds actor result type nesting budget (depth or proof work)");
         }
         if (type instanceof Named named) {
             if (named.name().equals("ActorRef") || named.name().equals("SharedMutex")) {
@@ -4999,17 +4999,17 @@ public final class TypeChecker {
                                 + " through data-only actor completion; use explicit mailbox transport");
             }
             for (Type argument : named.arguments()) {
-                rejectLiveActorCallableResult(argument, where, depth + 1);
+                rejectLiveActorCallableResult(argument, where, depth + 1, budget);
             }
         } else if (type instanceof ListType list) {
-            rejectLiveActorCallableResult(list.element(), where, depth + 1);
+            rejectLiveActorCallableResult(list.element(), where, depth + 1, budget);
         } else if (type instanceof Tuple tuple) {
-            for (Type item : tuple.elements()) rejectLiveActorCallableResult(item, where, depth + 1);
+            for (Type item : tuple.elements()) rejectLiveActorCallableResult(item, where, depth + 1, budget);
         } else if (type instanceof Union union) {
-            for (Type item : union.options()) rejectLiveActorCallableResult(item, where, depth + 1);
+            for (Type item : union.options()) rejectLiveActorCallableResult(item, where, depth + 1, budget);
         } else if (type instanceof Record record) {
             for (Type item : record.members().values()) {
-                rejectLiveActorCallableResult(item, where, depth + 1);
+                rejectLiveActorCallableResult(item, where, depth + 1, budget);
             }
         }
     }
@@ -5019,7 +5019,7 @@ public final class TypeChecker {
             Ast.ActorKind actorKind,
             boolean returnPosition,
             String where) {
-        validateActorCallableBoundaryType(type, actorKind, returnPosition, where, 0);
+        validateActorCallableBoundaryType(type, actorKind, returnPosition, where, 0, new int[] {100_000});
     }
 
     private void validateActorCallableBoundaryType(
@@ -5027,12 +5027,13 @@ public final class TypeChecker {
             Ast.ActorKind actorKind,
             boolean returnPosition,
             String where,
-            int depth) {
-        if (depth > 256) {
-            throw new IllegalArgumentException(where + " exceeds actor transport type nesting budget");
+            int depth,
+            int[] budget) {
+        if (depth > 256 || --budget[0] < 0) {
+            throw new IllegalArgumentException(where + " exceeds actor transport type nesting budget (depth or proof work)");
         }
         if (returnPosition && type == Primitive.VOID) return;
-        if (returnPosition) rejectLiveActorCallableResult(type, where, 0);
+        if (returnPosition) rejectLiveActorCallableResult(type, where, 0, budget);
         if (type == Primitive.VOID) {
             throw new IllegalArgumentException(where + " cannot be void");
         }
@@ -5043,24 +5044,24 @@ public final class TypeChecker {
         }
         if (type instanceof Primitive || type instanceof StringLiteral) return;
         if (type instanceof ListType list) {
-            validateActorCallableBoundaryType(list.element(), actorKind, false, where + " element", depth + 1);
+            validateActorCallableBoundaryType(list.element(), actorKind, false, where + " element", depth + 1, budget);
             return;
         }
         if (type instanceof Tuple tuple) {
             for (int i = 0; i < tuple.elements().size(); i++) {
-                validateActorCallableBoundaryType(tuple.elements().get(i), actorKind, false, where + " tuple element " + i, depth + 1);
+                validateActorCallableBoundaryType(tuple.elements().get(i), actorKind, false, where + " tuple element " + i, depth + 1, budget);
             }
             return;
         }
         if (type instanceof Union union) {
             for (Type option : union.options()) {
-                validateActorCallableBoundaryType(option, actorKind, false, where + " union member", depth + 1);
+                validateActorCallableBoundaryType(option, actorKind, false, where + " union member", depth + 1, budget);
             }
             return;
         }
         if (type instanceof Record record) {
             for (Map.Entry<String, Type> member : record.members().entrySet()) {
-                validateActorCallableBoundaryType(member.getValue(), actorKind, false, where + " field '" + member.getKey() + "'", depth + 1);
+                validateActorCallableBoundaryType(member.getValue(), actorKind, false, where + " field '" + member.getKey() + "'", depth + 1, budget);
             }
             return;
         }
@@ -5116,7 +5117,7 @@ public final class TypeChecker {
         }
 
         for (Type argument : named.arguments()) {
-            validateActorCallableBoundaryType(argument, actorKind, false, where + " type argument", depth + 1);
+            validateActorCallableBoundaryType(argument, actorKind, false, where + " type argument", depth + 1, budget);
         }
 
         // Built-in sum/container values are data-only when their arguments pass.
