@@ -481,7 +481,12 @@ class CommittedSourceTreeTests(unittest.TestCase):
         self.source = self.root / "source"
         self.source.mkdir()
         (self.root / "tools").mkdir()
+        (self.root / "scripts").mkdir()
         (self.root / ".github").mkdir()
+        for filename in ("check-private-ci-destination.sh",
+                         "run-in-private-ci-destination.sh",
+                         "publish-private-ci-source.py"):
+            shutil.copy2(MODULE.parent / filename, self.root / "scripts" / filename)
         (self.root / ".github/private-ci-approved-repositories.txt").write_text(
             "trusted/ci\n")
         shutil.copy2(MODULE.parent.parent / "tools/verify-exact-source-tree.sh",
