@@ -288,4 +288,58 @@ final class ActorRoutePublicationV1Test {
                 () -> new ActorRoutePublicationV1.StateSnapshot(
                         sha('1'), new byte[1024 * 1024 + 1]));
     }
+
+    @Test
+    void rejectedStageNeverStrandsOldAdmissionOrLosesBufferedMessages() {
+        try (var gate = new ActorUpgradeEpochGate(49, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = newAuthority(gate, mailbox)) {
+            authority.admit(new byte[]{11});
+            var wrongSchema = new ActorUpgradeEpochGate.Image(
+                    sha('b'), sha('9'), sha('2'), sha('3'));
+            assertThrows(SecurityException.class, () -> authority.stage(wrongSchema));
+            assertFalse(gate.frozen(), "incompatible image may not freeze Task admission");
+            assertFalse(mailbox.snapshot().dispatchFrozen(),
+                    "rejected staging cannot lock the old DATA route");
+            assertEquals(image('a'), authority.current().image());
+            assertEquals(1L, authority.current().routeEpoch());
+            assertEquals(1, mailbox.snapshot().retainedMessages());
+
+            assertTrue(authority.dispatchNext((route, envelope) -> {
+                assertEquals("old-physical", route);
+                assertEquals(1L, envelope.messageSequence());
+            }));
+            authority.complete(1L);
+            assertEquals(0, mailbox.snapshot().retainedMessages());
+
+            try (var valid = authority.stage(image('c'))) {
+                assertTrue(valid.quiescent());
+                assertTrue(valid.publish(state(17), "candidate"));
+            }
+            assertEquals(image('c'), authority.current().image());
+            assertEquals(2L, authority.current().routeEpoch());
+        }
+    }
+
+    @Test
+    void competingStagingAttemptCannotTakeOrReleaseAnotherStageFreeze() {
+        try (var gate = new ActorUpgradeEpochGate(50, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = newAuthority(gate, mailbox)) {
+            try (var first = authority.stage(image('b'))) {
+                assertThrows(IllegalStateException.class,
+                        () -> authority.stage(image('c')));
+                assertTrue(gate.frozen());
+                assertTrue(mailbox.snapshot().dispatchFrozen());
+                assertEquals(1L, authority.current().routeEpoch());
+            }
+            assertFalse(gate.frozen());
+            assertFalse(mailbox.snapshot().dispatchFrozen());
+            assertEquals(image('a'), authority.current().image());
+            try (var next = authority.stage(image('c'))) {
+                assertTrue(next.publish(state(12), "second-candidate"));
+            }
+            assertEquals(2L, authority.current().routeEpoch());
+        }
+    }
 }
