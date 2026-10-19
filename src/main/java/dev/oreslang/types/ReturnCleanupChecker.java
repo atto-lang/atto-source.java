@@ -273,6 +273,16 @@ public final class ReturnCleanupChecker {
     private static void expression(Ast.Expr expr, Scope scope, boolean inDefer, State state) {
         if (expr == null) return;
         if (expr instanceof Ast.StagedCallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.TypeExpr
+                    && member.member().equals("new")) {
+                for (Ast.CallArgument argument : call.arguments()) {
+                    if (argument.value() != null) {
+                        expression(argument.value(), scope, inDefer, state);
+                    }
+                }
+                return;
+            }
             if (inDefer && call.callee() instanceof Ast.NameExpr name) {
                 Binding target = scope.resolve(name.name());
                 if (target != null && (target.closure == null || target.reassigned)) {
