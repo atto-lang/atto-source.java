@@ -3072,7 +3072,7 @@ public final class OwnershipChecker {
         for (int i = 0; i < Math.min(argumentTypes.size(), fields.size()); i++) {
             ResolvedField target = fields.get(i);
             Ast.TypeRef fieldPattern = substituteType(
-                    target.field().type(),
+                    ownershipFieldType(target.field()),
                     genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
             inferGenericBindings(fieldPattern, argumentTypes.get(i), genericNames, bindings, Set.of());
         }
@@ -3803,7 +3803,7 @@ public final class OwnershipChecker {
             ResolvedField target = findFieldTarget(klass, concrete, name, new LinkedHashSet<>());
             if (target != null && target.field().visibility() == Ast.Visibility.PUBLIC) {
                 return substituteType(
-                        target.field().type(),
+                        ownershipFieldType(target.field()),
                         genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
             }
         }
