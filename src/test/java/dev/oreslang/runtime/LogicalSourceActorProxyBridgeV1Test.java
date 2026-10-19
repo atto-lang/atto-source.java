@@ -4,7 +4,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.time.Duration;
-import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -49,7 +48,7 @@ final class LogicalSourceActorProxyBridgeV1Test {
 
     private static long next(LogicalSourceActorProxyBridgeV1 bridge)
             throws Exception {
-        var step = bridge.ref().nextOutput(WAIT);
+        var step = bridge.nextOutput(WAIT);
         assertFalse(step.done(), "actor output must not terminate");
         return assertInstanceOf(Long.class, step.value().value());
     }
@@ -97,7 +96,7 @@ final class LogicalSourceActorProxyBridgeV1Test {
             var candidate = manager.stageActorGeneration("bridge-v2.ores", V2);
             try (var bridge = LogicalSourceActorProxyBridgeV1.spawnShared(
                     initial, "Counter", WAIT, 4, 8, 32)) {
-                var before = bridge.ref().address();
+                var before = bridge.address();
                 bridge.admitLong(41L);
                 assertTrue(bridge.dispatchOne(WAIT));
                 assertEquals(42L, next(bridge));
@@ -109,7 +108,7 @@ final class LogicalSourceActorProxyBridgeV1Test {
                 assertEquals(2, bridge.snapshot().queuedMessages());
                 assertTrue(bridge.upgradeTo(candidate, WAIT));
 
-                var after = bridge.ref().address();
+                var after = bridge.address();
                 assertEquals(before.actorId(), after.actorId());
                 assertEquals(before.incarnation(), after.incarnation());
                 assertEquals(before.routeEpoch() + 1L, after.routeEpoch());
@@ -128,7 +127,7 @@ final class LogicalSourceActorProxyBridgeV1Test {
     }
 
     @Test
-    void upgradeRefusesWhileOldDispatchedPrefixRemainsOutstanding()
+    void queuedBytesSurviveAQuiescentUpgrade()
             throws Exception {
         try (HotReloadManager manager =
                      new HotReloadManager(IsolatePolicy.developer(),
