@@ -159,10 +159,19 @@ public final class HttpResponseDraft {
 
     void writeClaimedTo(HttpExchange raw, BooleanSupplier cancelled,
                         Consumer<InputStream> activeBody, BodyOpener opener) throws IOException {
+        writeClaimedTo(raw, cancelled, activeBody, opener, () -> true, () -> { });
+    }
+
+    /** The callback linearizes success-header commitment against State.abort(). */
+    void writeClaimedTo(HttpExchange raw, BooleanSupplier cancelled,
+                        Consumer<InputStream> activeBody, BodyOpener opener,
+                        BooleanSupplier beginHeaders, Runnable headersSent) throws IOException {
         Objects.requireNonNull(raw, "exchange");
         Objects.requireNonNull(cancelled, "cancelled");
         Objects.requireNonNull(activeBody, "activeBody");
         Objects.requireNonNull(opener, "opener");
+        Objects.requireNonNull(beginHeaders, "beginHeaders");
+        Objects.requireNonNull(headersSent, "headersSent");
         if (!handedOff.get()) throw new IllegalStateException("response not handed off");
         if (!emissionStarted.compareAndSet(false, true))
             throw new IllegalStateException("response already emitted");
@@ -181,7 +190,12 @@ public final class HttpResponseDraft {
             try {
                 if (cancelled.getAsBoolean())
                     throw new IOException("HTTP response cancelled before headers");
+                // Atomic State monitor handoff: cancellation before this point
+                // prevents success headers; cancellation after it can only abort.
+                if (!beginHeaders.getAsBoolean())
+                    throw new IOException("HTTP response cancelled before header commitment");
                 raw.sendResponseHeaders(status, length);
+                headersSent.run();
                 if (suppress) return;
                 byte[] chunk = new byte[8192];
                 int count;
