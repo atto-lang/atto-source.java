@@ -470,6 +470,43 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         return settle(new Cancelled(cancelled), this::invokeCancelHook);
     }
 
+    /**
+     * Runtime-owned scope cancellation: revoke the producer immediately,
+     * defer potentially blocking synchronous subscriber callbacks until all
+     * sibling Task producers have also lost their execution authority.
+     * Ported from the TaskScope development branch; only trusted host scopes
+     * may use this two-phase cancellation boundary.
+     *
+     * @return single-use notification closure, or null when cancellation lost.
+     */
+    Runnable cancelDeferredNotification() {
+        if (state.get() != PENDING) return null;
+        BooleanSupplier admission = cancelAdmission;
+        if (admission == null || !admission.getAsBoolean()) return null;
+        Cancelled terminal = new Cancelled(
+                new CancellationException("OresFuture was cancelled"));
+        if (!state.compareAndSet(PENDING, terminal)) return null;
+        cancelAdmission = null;
+        // Do not allow a newly registered listener to bypass the owning
+        // scope's revoke-all-before-notify barrier.
+        invokeCancelHook();
+        AtomicBoolean delivered = new AtomicBoolean();
+        return () -> {
+            if (!delivered.compareAndSet(false, true)) return;
+            try {
+                cancelRevocationComplete.set(true);
+                RuntimeWaiterRegistration<T> waiter;
+                while ((waiter = waiters.poll()) != null) {
+                    notifyWaiter(waiter, terminal);
+                }
+            } finally {
+                Runnable drained = onNotificationDrained;
+                onNotificationDrained = null;
+                if (drained != null) drained.run();
+            }
+        };
+    }
+
     @Override
     public boolean isCancelled() {
         return state.get() instanceof Cancelled;
