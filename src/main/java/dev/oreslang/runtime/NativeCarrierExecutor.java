@@ -328,10 +328,12 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
             if (victimSlot >= enabled) continue;
             ArrayBlockingQueue<Runnable> victim = affinityQueues.get(victimSlot);
             if (victim.peek() == null) continue;
-            probes++;
             long oldestEnqueue = affinityLaneOldestEnqueueNanos.get(victimSlot);
             if (oldestEnqueue == 0L
                     || now - oldestEnqueue < AFFINITY_STEAL_GRACE_NANOS) continue;
+            // Young queues do not consume the bounded steal budget: otherwise
+            // many fresh same-LLC queues could conceal an old remote backlog.
+            probes++;
 
             Runnable stolen = victim.poll();
             if (stolen != null) {
