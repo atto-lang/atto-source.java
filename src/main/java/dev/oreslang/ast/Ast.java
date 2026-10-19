@@ -328,13 +328,27 @@ public final class Ast {
             List<TypeRef> interfaces,
             List<FieldDecl> fields,
             ConstructorDecl constructor,
-            List<MethodDecl> methods) implements Decl {
+            List<MethodDecl> methods,
+            boolean inverted) implements Decl {
         public ClassDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+            if (inverted && (isAbstract || actorKind != ActorKind.NONE || !parents.isEmpty())) {
+                throw new IllegalArgumentException(
+                        "inverted classes cannot be abstract, actors, or inherit other classes");
+            }
+        }
+
+        /** Existing AST clients construct ordinary classes by default. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract, ActorKind actorKind,
+                         List<String> genericParameters, List<TypeRef> parents,
+                         List<TypeRef> interfaces, List<FieldDecl> fields,
+                         ConstructorDecl constructor, List<MethodDecl> methods) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods, false);
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
