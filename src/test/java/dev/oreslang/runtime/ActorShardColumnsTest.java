@@ -20,7 +20,7 @@ final class ActorShardColumnsTest {
                 AtomicReference<Throwable> failure = new AtomicReference<>();
                 AtomicReference<ActorShardColumns> confined = new AtomicReference<>();
 
-                ActorRuntime.ActorRef<Integer> actor = runtime.spawnPrivateTrusted(
+                ActorRuntime.ActorRef<Integer> actor = runtime.spawnSharedTrusted(
                         factory -> {
                             ActorShardColumns[] store = new ActorShardColumns[1];
                             return (message, turn) -> {
@@ -53,7 +53,7 @@ final class ActorShardColumnsTest {
                 assertNull(failure.get());
                 assertThrows(SecurityException.class,
                         () -> confined.get().read(0, 0),
-                        "host cannot access a private actor's live region");
+                        "host cannot access an actor's live region");
                 assertThrows(SecurityException.class,
                         () -> confined.get().snapshotColumn(0));
                 actor.send(2);
@@ -68,6 +68,40 @@ final class ActorShardColumnsTest {
                 assertThrows(SecurityException.class,
                         () -> confined.get().integrate(0, 1, 1));
             }
+        }
+    }
+
+    @Test
+    void privateActorUsesDirectMemoryQuotaAndReleasesOnTermination() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnPrivateTrusted(
+                    context -> {
+                        // Only this owner-checked shard is retained by the
+                        // behavior. No mutable host AtomicReference or array
+                        // capture is accepted by private actor validation.
+                        final ActorShardColumns shard = new ActorShardColumns(
+                                ActorShardColumns.Layout.AOSOA, 65, 2, 8);
+                        if (!shard.isPrivateBacked()) {
+                            throw new AssertionError("private shards require arena backing");
+                        }
+                        return (message, turn) -> {
+                            for (int i = 0; i < shard.rows(); i++) {
+                                shard.write(i, 0, i);
+                                shard.write(i, 1, 2.0 * i);
+                            }
+                            shard.integrate(0, 1, 0.5);
+                            if (shard.read(64, 0) != 128.0) {
+                                throw new AssertionError("private AoSoA integration failed");
+                            }
+                        };
+                    });
+            actor.send(1);
+            actor.drain().get(5, TimeUnit.SECONDS);
+            assertTrue(runtime.privateMemoryBytes() >= 65L * 2L * Double.BYTES);
+            actor.gracefulStop().get(5, TimeUnit.SECONDS);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, runtime.privateMemoryBytes(),
+                    "private direct backing must release on termination");
         }
     }
 
