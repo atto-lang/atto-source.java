@@ -58,27 +58,34 @@ final class ActorFinalizationCallbackIsolationTest {
     @Test
     void callbackPublicationWaitsForTurnExecutorPhysicalExit() throws Exception {
         CountDownLatch guestFinished = new CountDownLatch(1);
+        CountDownLatch guestStopRequested = new CountDownLatch(1);
         CountDownLatch releaseContext = new CountDownLatch(1);
         ActorRuntime.TurnExecutor gated = turn -> {
             turn.run();
-            guestFinished.countDown();
-            boolean interrupted = false;
-            for (;;) {
-                try {
-                    releaseContext.await();
-                    break;
-                } catch (InterruptedException ex) {
-                    interrupted = true;
+            // Actor startup can cross TurnExecutor before any message; gate
+            // only the specific turn that actually requested actor shutdown.
+            if (guestStopRequested.getCount() == 0) {
+                guestFinished.countDown();
+                boolean interrupted = false;
+                for (;;) {
+                    try {
+                        releaseContext.await();
+                        break;
+                    } catch (InterruptedException ex) {
+                        interrupted = true;
+                    }
                 }
+                if (interrupted) Thread.currentThread().interrupt();
             }
-            if (interrupted) Thread.currentThread().interrupt();
         };
 
         try (ActorRuntime runtime = new ActorRuntime(
                 IsolatePolicy.developer(),
                 new ActorRuntime.DispatcherConfig(1, 1, 8, 64), gated)) {
-            var actor = runtime.<String>spawnShared(() -> (message, context) ->
-                    context.self().stop());
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                context.self().stop();
+                guestStopRequested.countDown();
+            });
             Object monitor = lifecycleLock(runtime, actor);
             AtomicBoolean callbackUnderMonitor = new AtomicBoolean(true);
             actor.done().whenCompleteRuntime((value, error) ->
