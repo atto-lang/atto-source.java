@@ -26,6 +26,14 @@ end-to-end contract, not evidence that parallel actor ECS already executes.
 * `ThreadSafetyTraits` is a conservative compiler-internal query for
   structural primitives, tuples, records, sum types, borrowed types, and
   certain explicitly recognized built-ins.
+* Owned mutable Array/List/Vector/Slice, ordinary writable record, FixedArray
+  and FixedList can be Send when all elements are Send, but are **not Sync**
+  just because those elements are Sync. Immutable Tuple and explicitly readonly
+  record types derive Sync only when all nested fields are also Sync. A
+  readonly outer record containing a mutable list remains non-Sync. Later
+  immutable buffer/container APIs must have separate, verified storage and
+  aliasing semantics; `rt share` cannot manufacture Sync from read-only
+  syntax alone.
 * `TypeChecker.validateAsyncBoundaryType` now requires both the pre-existing
   owned/task-safe test and a Send proof; the existing actor message-specific
   rejection rules remain intact.
