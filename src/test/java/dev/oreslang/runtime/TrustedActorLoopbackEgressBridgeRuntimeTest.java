@@ -25,6 +25,8 @@ final class TrustedActorLoopbackEgressBridgeRuntimeTest {
     private static volatile CountDownLatch spoofDenied;
     private static volatile AtomicReference<Throwable> actorFailure;
     private static volatile AtomicReference<TrustedActorLoopbackEgressBridge.Poll> response;
+    private static volatile CountDownLatch queuedSubmitted;
+    private static volatile AtomicReference<Throwable> queuedFailure;
 
     @Test void actualUntrustedTurnEnqueuesOnlyItsHostBoundRequest() throws Exception {
         observedTicket = new AtomicLong();
@@ -184,8 +186,8 @@ final class TrustedActorLoopbackEgressBridgeRuntimeTest {
     }
 
     @Test void terminatedActorCannotDispatchQueuedHostRequest() throws Exception {
-        var sent = new CountDownLatch(1);
-        var failure = new AtomicReference<Throwable>();
+        queuedSubmitted = new CountDownLatch(1);
+        queuedFailure = new AtomicReference<>();
         var queued = new AtomicReference<Runnable>();
         try (var runtime = new ActorRuntime();
              var server = new ServerSocket(0, 2, InetAddress.getByName("127.0.0.1"))) {
@@ -193,9 +195,9 @@ final class TrustedActorLoopbackEgressBridgeRuntimeTest {
                 try {
                     TrustedActorLoopbackEgressBridge.submitGetFromCurrentActor();
                 } catch (Throwable error) {
-                    failure.set(error);
+                    queuedFailure.set(error);
                 } finally {
-                    sent.countDown();
+                    queuedSubmitted.countDown();
                 }
             });
             var gate = new TrustedHierarchicalNetworkGate();
@@ -212,8 +214,8 @@ final class TrustedActorLoopbackEgressBridgeRuntimeTest {
                         runtime, actor, gate, child, supervisor, tenant,
                         server.getLocalPort(), deferredHostDispatch)) {
                     actor.send("submit");
-                    assertTrue(sent.await(3, TimeUnit.SECONDS));
-                    assertEquals(null, failure.get());
+                    assertTrue(queuedSubmitted.await(3, TimeUnit.SECONDS));
+                    assertEquals(null, queuedFailure.get());
                     assertNotNull(queued.get());
 
                     actor.stop();
@@ -230,6 +232,9 @@ final class TrustedActorLoopbackEgressBridgeRuntimeTest {
             } finally {
                 child.close(); supervisor.close(); tenant.close();
             }
+        } finally {
+            queuedSubmitted = null;
+            queuedFailure = null;
         }
     }
 
