@@ -8082,6 +8082,9 @@ public final class ActorRuntime implements AutoCloseable {
                         // This callback executes ONLY under the existing actor
                         // physical carrier and serialized state lease.
                         try (OtpSupervisorCommandLaneV1.Lease active = upgradeLease) {
+                            synchronized (lifecycleLock) {
+                                if (stopped.get() || finalized || forceKillFenced) break;
+                            }
                             OtpSupervisorCommandLaneV1.Command command = active.command();
                             if (!trustedFactory || codeExecutor != null
                                     || kind == ActorKind.UNTRUSTED)
