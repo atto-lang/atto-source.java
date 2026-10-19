@@ -318,8 +318,10 @@ primary         = literal
                 | explicit_struct_literal
                 | "(" expression ")" ;
 
-lambda          = [ "nlex" ] ( pipe_lambda | typed_legacy_lambda ) ;
+lambda          = [ "nlex" ] ( pipe_lambda | typed_legacy_lambda | anonymous_fnc_lambda ) ;
 pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" lambda_body ;
+anonymous_fnc_lambda
+                = "fnc" "(" [ lambda_param { "," lambda_param } ] ")" block ;
 lambda_param    = IDENT | type_ref IDENT ;
 typed_legacy_lambda
                 = "(" [ param_list ] ")" "->" lambda_body ;
