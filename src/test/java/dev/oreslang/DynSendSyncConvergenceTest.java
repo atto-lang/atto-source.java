@@ -195,6 +195,42 @@ final class DynSendSyncConvergenceTest {
     }
 
     @Test
+    void ownedSendRejectsEvenRustSendBorrowsUntilTaskScopesHaveLifetimeProofs() {
+        Types.Borrow shared = new Types.Borrow(Types.Primitive.INT, false);
+        Types.Borrow exclusive = new Types.Borrow(Types.Primitive.INT, true);
+        assertTrue(ThreadSafetyTraits.has(shared, Trait.SEND, TRUSTED_CORE));
+        assertTrue(ThreadSafetyTraits.has(exclusive, Trait.SEND, TRUSTED_CORE));
+        assertFalse(ThreadSafetyTraits.isOwnedSend(shared, TRUSTED_CORE));
+        assertFalse(ThreadSafetyTraits.isOwnedSend(exclusive, TRUSTED_CORE));
+        assertTrue(ThreadSafetyTraits.isOwnedSend(
+                new Types.ListType(Types.Primitive.INT), TRUSTED_CORE));
+    }
+
+    @Test
+    void nestedOwnedSendCannotHideBorrowInAnyStructuralContainer() {
+        Types.Type borrowed = new Types.Borrow(Types.Primitive.INT, false);
+        for (Types.Type candidate : List.of(
+                new Types.ListType(borrowed),
+                new Types.Tuple(List.of(Types.Primitive.INT, borrowed)),
+                new Types.Record(Map.of("hidden", borrowed), true),
+                new Types.Union(List.of(Types.Primitive.INT, borrowed)),
+                new Types.Named("Option", List.of(borrowed)),
+                new Types.Named("Result", List.of(Types.Primitive.INT, borrowed)),
+                new Types.Function(List.of(borrowed), Types.Primitive.INT))) {
+            assertFalse(ThreadSafetyTraits.isOwnedSend(candidate, TRUSTED_CORE),
+                    "detached Send leaked a nested borrow in " + candidate);
+        }
+    }
+
+    @Test
+    void ownedSendPreflightRejectsTypeDepthBombWithoutPoisoningQueries() {
+        Types.Type deep = Types.Primitive.INT;
+        for (int i = 0; i < 10000; i++) deep = new Types.ListType(deep);
+        assertFalse(ThreadSafetyTraits.isOwnedSend(deep, TRUSTED_CORE));
+        assertTrue(ThreadSafetyTraits.isOwnedSend(Types.Primitive.INT, TRUSTED_CORE));
+    }
+
+    @Test
     void unresolvedAndDeepTypesNeverGainSendOrSync() {
         Type nested = new Types.Dyn(new Types.Named("Worker", List.of()));
         for (int i = 0; i < 400; i++) nested = new Types.ListType(nested);
