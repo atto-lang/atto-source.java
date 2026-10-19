@@ -128,6 +128,77 @@ final class ThreadSafetyTraitsTest {
     }
 
     @Test
+    void malformedNominalNamesNeverBecomeAssignable() {
+        Type valid = new Types.Named("Known", List.of());
+        for (String invalid : new String[] {null, "", "   "}) {
+            Type malformed = new Types.Named(invalid, List.of());
+            assertFalse(Types.isAssignable(malformed, malformed),
+                    "malformed nominal equality must not become an assignability proof");
+            assertFalse(Types.isAssignable(malformed, valid));
+            assertFalse(Types.isAssignable(valid, malformed));
+        }
+    }
+
+    @Test
+    void legacySharedSafetyAndActorBoundariesDenyMalformedNominals() throws Exception {
+        var constructor = TypeChecker.class.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        var checker = constructor.newInstance();
+
+        var sharedSafe = TypeChecker.class.getDeclaredMethod(
+                "isSharedSafe", Types.Type.class, java.util.Set.class, java.util.Map.class);
+        sharedSafe.setAccessible(true);
+
+        var actorBoundary = TypeChecker.class.getDeclaredMethod(
+                "validateActorCallableBoundaryType",
+                Types.Type.class, dev.oreslang.ast.Ast.ActorKind.class,
+                boolean.class, String.class);
+        actorBoundary.setAccessible(true);
+
+        var asyncBoundary = TypeChecker.class.getDeclaredMethod(
+                "validateAsyncBoundaryType", Types.Type.class, boolean.class, String.class);
+        asyncBoundary.setAccessible(true);
+
+        for (String invalid : new String[] {null, "", "   "}) {
+            Type malformed = new Types.Named(invalid, List.of());
+            assertEquals(Boolean.FALSE, sharedSafe.invoke(
+                    checker, malformed, new java.util.LinkedHashSet<>(), Map.of()));
+
+            for (boolean completion : List.of(false, true)) {
+                var actorFailure = assertThrows(
+                        java.lang.reflect.InvocationTargetException.class,
+                        () -> actorBoundary.invoke(
+                                checker, malformed,
+                                dev.oreslang.ast.Ast.ActorKind.SHARED,
+                                completion, "malformed actor boundary"));
+                assertInstanceOf(IllegalArgumentException.class, actorFailure.getCause());
+                assertTrue(actorFailure.getCause().getMessage().contains("malformed nominal"),
+                        actorFailure.getCause().getMessage());
+            }
+
+            var asyncFailure = assertThrows(
+                    java.lang.reflect.InvocationTargetException.class,
+                    () -> asyncBoundary.invoke(
+                            checker, malformed, false, "malformed async boundary"));
+            assertInstanceOf(IllegalArgumentException.class, asyncFailure.getCause());
+            assertTrue(asyncFailure.getCause().getMessage().contains("task-safe"),
+                    asyncFailure.getCause().getMessage());
+        }
+
+        Type malformedTarget = new Types.Named(
+                "ActorRef", List.of(new Types.Named(null, List.of())));
+        var targetFailure = assertThrows(
+                java.lang.reflect.InvocationTargetException.class,
+                () -> actorBoundary.invoke(
+                        checker, malformedTarget,
+                        dev.oreslang.ast.Ast.ActorKind.SHARED,
+                        false, "actor ref"));
+        assertInstanceOf(IllegalArgumentException.class, targetFailure.getCause());
+        assertTrue(targetFailure.getCause().getMessage().contains("nonblank actor class name"),
+                targetFailure.getCause().getMessage());
+    }
+
+    @Test
     void mutableAndImmutableBorrowHaveDistinctSendRequirements() {
         Type sendOnly = new Types.Named("SendOnly", List.of());
         ThreadSafetyTraits.NominalProof proof =
