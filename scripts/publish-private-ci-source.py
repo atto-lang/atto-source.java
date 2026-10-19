@@ -253,7 +253,7 @@ def gh_api(route, method="GET", payload=None):
     # unexpected response shape still fails closed.
     effective_rules_route = re.fullmatch(
         r"repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/rules/branches/"
-        r"ci%2Foreslang-[a-f0-9]{40}-[a-f0-9]{40}\\?per_page=100&page=1", route)
+        r"ci%2Foreslang-[a-f0-9]{40}-[a-f0-9]{40}\?per_page=100&page=1", route)
     matching_refs_route = re.fullmatch(
         r"repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/git/matching-refs/heads/"
         r"ci/oreslang-[a-f0-9]{40}-[a-f0-9]{40}\?per_page=1&page=1", route)
