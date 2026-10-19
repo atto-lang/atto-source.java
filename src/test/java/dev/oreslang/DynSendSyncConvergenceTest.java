@@ -15,7 +15,31 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class DynSendSyncConvergenceTest {
     private static final ThreadSafetyTraits.NominalProof PERMISSIVE = (type, trait) -> true;
-    private static final ThreadSafetyTraits.NominalProof NO_NOMINAL = (type, trait) -> false;
+    private static final ThreadSafetyTraits.NominalProof TRUSTED_CORE = new ThreadSafetyTraits.NominalProof() {
+        @Override
+        public boolean has(Types.Named type, Trait trait) {
+            return false;
+        }
+
+        @Override
+        public boolean trustedIntrinsic(Types.Named type) {
+            return java.util.Set.of("Option", "Result", "Channel",
+                    "OptionUnwrapError", "IteratorResult").contains(type.name());
+        }
+    };
+    private static final ThreadSafetyTraits.NominalProof PERMISSIVE_TRUSTED_CORE =
+            new ThreadSafetyTraits.NominalProof() {
+                @Override
+                public boolean has(Types.Named type, Trait trait) {
+                    return true;
+                }
+
+                @Override
+                public boolean trustedIntrinsic(Types.Named type) {
+                    return TRUSTED_CORE.trustedIntrinsic(type);
+                }
+            };
+    private static final ThreadSafetyTraits.NominalProof NO_NOMINAL = TRUSTED_CORE;
 
     @Test
     void erasedDynCannotInheritSendOrSyncFromNominalInterfaceName() {
@@ -40,8 +64,8 @@ final class DynSendSyncConvergenceTest {
                 new Types.Named("UserWrapper", List.of(view)));
         for (Type type : nested) {
             for (Trait trait : Trait.values()) {
-                assertFalse(ThreadSafetyTraits.has(type, trait, PERMISSIVE),
-                        "dyn escaped thread trait rejection inside " + type);
+                assertFalse(ThreadSafetyTraits.has(type, trait, PERMISSIVE_TRUSTED_CORE),
+                        "dyn escaped trusted container or nominal derivation: " + type);
             }
         }
     }
@@ -61,6 +85,35 @@ final class DynSendSyncConvergenceTest {
                         "nominal callback manufactured runtime guarantee for " + name);
             }
         }
+    }
+
+    @Test
+    void genericNominalCallbackCannotSpoofCoreIntrinsicNames() {
+        for (Types.Named alleged : List.of(
+                new Types.Named("Option", List.of(Types.Primitive.INT)),
+                new Types.Named("Result", List.of(
+                        Types.Primitive.INT, Types.Primitive.STRING)),
+                new Types.Named("Channel", List.of(Types.Primitive.INT)),
+                new Types.Named("IteratorResult", List.of(Types.Primitive.INT)),
+                new Types.Named("OptionUnwrapError", List.of()))) {
+            for (Trait trait : Trait.values()) {
+                assertFalse(ThreadSafetyTraits.has(alleged, trait, PERMISSIVE),
+                        "untrusted callback manufactured intrinsic " + alleged);
+            }
+        }
+        assertTrue(ThreadSafetyTraits.has(
+                new Types.Named("Option", List.of(Types.Primitive.INT)),
+                Trait.SEND, TRUSTED_CORE));
+        assertTrue(ThreadSafetyTraits.has(
+                new Types.Named("Result", List.of(
+                        Types.Primitive.INT, Types.Primitive.STRING)),
+                Trait.SYNC, TRUSTED_CORE));
+        assertTrue(ThreadSafetyTraits.has(
+                new Types.Named("Channel", List.of(Types.Primitive.INT)),
+                Trait.SEND, TRUSTED_CORE));
+        assertFalse(ThreadSafetyTraits.has(
+                new Types.Named("Channel", List.of(Types.Primitive.INT)),
+                Trait.SYNC, TRUSTED_CORE));
     }
 
     @Test
