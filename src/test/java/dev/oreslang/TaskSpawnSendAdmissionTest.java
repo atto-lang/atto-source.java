@@ -158,6 +158,66 @@ final class TaskSpawnSendAdmissionTest {
     }
 
     @Test
+    void fullCompilerUsesResolvedSendAuthorityBeforeTaskExecutionGate() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                    pub fnc main(Future<int> pending): void {
+                        do nb { stdio.stdout.log(pending); };
+                        return;
+                    }
+                    """));
+        assertTrue(failure.getMessage().contains("concrete owned Send"),
+                failure::getMessage);
+    }
+
+    @Test
+    void positiveResolvedCaptureStillDoesNotEnableTaskExecution() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                    pub fnc main(Option<int> value): void {
+                        do nb { stdio.stdout.log(value); };
+                        return;
+                    }
+                    """));
+        assertTrue(failure.getMessage().contains("nb Task blocks"),
+                failure::getMessage);
+    }
+
+    @Test
+    void scheduledLambdaParameterUsesResolvedSendAuthority() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                    pub fnc main(Future<int> pending): void {
+                        let Task<int> t =
+                            (async task |Future<int> f| -> { return 1; })(pending);
+                        return;
+                    }
+                    """));
+        assertTrue(failure.getMessage().contains("concrete owned Send"),
+                failure::getMessage);
+    }
+
+    @Test
+    void userShadowedOptionCannotGainIntrinsicTaskSend() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                    define class Option<T> as
+                        T value;
+                    end
+                    pub fnc main(Option<int> value): void {
+                        do nb { stdio.stdout.log(value); };
+                        return;
+                    }
+                    """));
+        assertTrue(failure.getMessage().contains("concrete owned Send"),
+                failure::getMessage);
+    }
+
+    @Test
     void fullSourceCompilerStillRefusesToExecuteUnloweredTasks() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
