@@ -625,17 +625,178 @@ public final class Types {
     }
 
     public static Type unionOf(List<Type> types) {
-        java.util.ArrayList<Type> flattened = new java.util.ArrayList<>();
+        Objects.requireNonNull(types, "types");
+        java.util.ArrayList<Type> candidates = new java.util.ArrayList<>();
         for (Type type : types) {
-            if (type == Unknown.INSTANCE) return Unknown.INSTANCE;
-            if (type instanceof Union union) {
-                for (Type option : union.options()) if (!flattened.contains(option)) flattened.add(option);
-            } else if (!flattened.contains(type)) flattened.add(type);
+            if (type == null || type == Unknown.INSTANCE) return Unknown.INSTANCE;
+            if (type instanceof Union union) candidates.addAll(union.options());
+            else candidates.add(type);
         }
-        if (flattened.isEmpty()) return Unknown.INSTANCE;
+        if (candidates.isEmpty()) return Unknown.INSTANCE;
+
+        // Do not call List.contains()/record equals on compiler type graphs:
+        // Java record equality recursively re-expands shared DAGs. Validate
+        // first, then deduplicate through the bounded identity-pair proof.
+        for (Type candidate : candidates) {
+            if (!isStructurallyWellFormed(candidate)) return Unknown.INSTANCE;
+        }
+        RelationProof equalityProof = new RelationProof();
+        java.util.ArrayList<Type> flattened = new java.util.ArrayList<>();
+        outer:
+        for (Type candidate : candidates) {
+            for (Type existing : flattened) {
+                if (sameTypeChecked(existing, candidate, equalityProof)) continue outer;
+                if (equalityProof.exhausted) return Unknown.INSTANCE;
+            }
+            flattened.add(candidate);
+        }
         if (flattened.size() == 1) return flattened.getFirst();
-        flattened.sort(java.util.Comparator.comparing(Object::toString));
+
+        // Object.toString() on records has the same DAG-expansion problem.
+        // Use an exact deterministic structural order with a bounded shared
+        // comparison cache. An exhausted proof yields Unknown rather than
+        // spending unbounded compiler CPU.
+        CanonicalOrder order = new CanonicalOrder();
+        try {
+            flattened.sort((left, right) -> compareCanonical(left, right, order));
+        } catch (CanonicalOrderBudgetExceeded exhausted) {
+            return Unknown.INSTANCE;
+        }
         return new Union(flattened);
+    }
+
+    private static final class CanonicalOrder {
+        private int remaining = MAX_RELATION_PROOF_STEPS;
+        private final Map<TypePair, Integer> memo = new HashMap<>();
+
+        private void step() {
+            if (--remaining < 0) throw CanonicalOrderBudgetExceeded.INSTANCE;
+        }
+    }
+
+    private static final class CanonicalOrderBudgetExceeded extends RuntimeException {
+        private static final CanonicalOrderBudgetExceeded INSTANCE =
+                new CanonicalOrderBudgetExceeded();
+
+        private CanonicalOrderBudgetExceeded() {
+            super(null, null, false, false);
+        }
+    }
+
+    private static int compareCanonical(Type left, Type right, CanonicalOrder order) {
+        if (left == right) return 0;
+        TypePair key = new TypePair(left, right);
+        Integer cached = order.memo.get(key);
+        if (cached != null) return cached;
+        order.step();
+
+        int result = Integer.compare(typeRank(left), typeRank(right));
+        if (result == 0) {
+            if (left instanceof Primitive a && right instanceof Primitive b) {
+                result = Integer.compare(a.ordinal(), b.ordinal());
+            } else if (left instanceof Named a && right instanceof Named b) {
+                result = a.name().compareTo(b.name());
+                if (result == 0) result = compareCanonicalList(
+                        a.arguments(), b.arguments(), order);
+            } else if (left instanceof SelfType a && right instanceof SelfType b) {
+                result = compareCanonical(a.bound(), b.bound(), order);
+            } else if (left instanceof Borrow a && right instanceof Borrow b) {
+                result = Boolean.compare(a.mutable(), b.mutable());
+                if (result == 0) result = compareCanonical(a.target(), b.target(), order);
+            } else if (left instanceof ClassNamespace a && right instanceof ClassNamespace b) {
+                result = a.className().compareTo(b.className());
+            } else if (left instanceof Record a && right instanceof Record b) {
+                result = compareCanonicalRecord(a, b, order);
+                if (result == 0) result = Boolean.compare(a.readOnly(), b.readOnly());
+            } else if (left instanceof Function a && right instanceof Function b) {
+                result = compareCanonicalList(a.parameters(), b.parameters(), order);
+                if (result == 0) result = compareBooleanList(
+                        a.mutableParameters(), b.mutableParameters());
+                if (result == 0) result = Boolean.compare(a.async(), b.async());
+                if (result == 0) result = compareCanonical(a.result(), b.result(), order);
+            } else if (left instanceof ListType a && right instanceof ListType b) {
+                result = compareCanonical(a.element(), b.element(), order);
+            } else if (left instanceof Tuple a && right instanceof Tuple b) {
+                result = compareCanonicalList(a.elements(), b.elements(), order);
+                if (result == 0) result = Integer.compare(
+                        a.kind().ordinal(), b.kind().ordinal());
+            } else if (left instanceof Union a && right instanceof Union b) {
+                result = compareCanonicalList(a.options(), b.options(), order);
+            } else if (left instanceof Generic a && right instanceof Generic b) {
+                result = a.name().compareTo(b.name());
+            } else if (left instanceof StringLiteral a && right instanceof StringLiteral b) {
+                result = a.value().compareTo(b.value());
+            } else if (left instanceof BoolLiteral a && right instanceof BoolLiteral b) {
+                result = Boolean.compare(a.value(), b.value());
+            } else if (left instanceof Not a && right instanceof Not b) {
+                result = compareCanonical(a.excluded(), b.excluded(), order);
+            }
+        }
+        result = Integer.signum(result);
+        order.memo.put(key, result);
+        order.memo.put(new TypePair(right, left), -result);
+        return result;
+    }
+
+    private static int typeRank(Type type) {
+        if (type instanceof Primitive) return 0;
+        if (type instanceof BoolLiteral) return 1;
+        if (type instanceof StringLiteral) return 2;
+        if (type instanceof Named) return 3;
+        if (type instanceof Generic) return 4;
+        if (type instanceof ClassNamespace) return 5;
+        if (type instanceof Borrow) return 6;
+        if (type instanceof ListType) return 7;
+        if (type instanceof Tuple) return 8;
+        if (type instanceof Record) return 9;
+        if (type instanceof Function) return 10;
+        if (type instanceof SelfType) return 11;
+        if (type instanceof Not) return 12;
+        if (type instanceof Union) return 13;
+        return 14; // Unknown is returned before canonicalization.
+    }
+
+    private static int compareCanonicalList(
+            List<? extends Type> left, List<? extends Type> right, CanonicalOrder order) {
+        int size = Integer.compare(left.size(), right.size());
+        if (size != 0) return size;
+        for (int i = 0; i < left.size(); i++) {
+            int compared = compareCanonical(left.get(i), right.get(i), order);
+            if (compared != 0) return compared;
+        }
+        return 0;
+    }
+
+    private static int compareBooleanList(List<Boolean> left, List<Boolean> right) {
+        int size = Integer.compare(left.size(), right.size());
+        if (size != 0) return size;
+        for (int i = 0; i < left.size(); i++) {
+            int compared = Boolean.compare(left.get(i), right.get(i));
+            if (compared != 0) return compared;
+        }
+        return 0;
+    }
+
+    private static int compareCanonicalRecord(
+            Record left, Record right, CanonicalOrder order) {
+        java.util.ArrayList<String> leftKeys =
+                new java.util.ArrayList<>(left.members().keySet());
+        java.util.ArrayList<String> rightKeys =
+                new java.util.ArrayList<>(right.members().keySet());
+        leftKeys.sort(String::compareTo);
+        rightKeys.sort(String::compareTo);
+        int size = Integer.compare(leftKeys.size(), rightKeys.size());
+        if (size != 0) return size;
+        for (int i = 0; i < leftKeys.size(); i++) {
+            String leftKey = leftKeys.get(i);
+            String rightKey = rightKeys.get(i);
+            int compared = leftKey.compareTo(rightKey);
+            if (compared != 0) return compared;
+            compared = compareCanonical(
+                    left.members().get(leftKey), right.members().get(rightKey), order);
+            if (compared != 0) return compared;
+        }
+        return 0;
     }
 
     public static boolean isNumeric(Type type) {
