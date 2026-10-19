@@ -168,7 +168,8 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
             String linkedCodeSha256,
             String stateSchemaSha256,
             String messageAbiSha256,
-            boolean failSealed) {
+            boolean failSealed,
+            boolean retirementQuarantined) {
         /**
          * A diagnostic snapshot is not a usable publication certificate
          * after an ambiguous physical send or upgrade. Callers must inspect
@@ -179,7 +180,8 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
             // A fully coherent diagnostic may still represent a legitimate
             // in-progress supervisor freeze. Frozen dispatch is NOT an
             // authority to submit physical work, even before fail sealing.
-            return !failSealed && !mailbox.closed() && !mailbox.dispatchFrozen()
+            return !failSealed && !retirementQuarantined
+                    && !mailbox.closed() && !mailbox.dispatchFrozen()
                     && address.routeEpoch() == mailbox.routeEpoch();
         }
     }
@@ -236,7 +238,8 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
                     witness.linkedCodeSha256(),
                     witness.stateSchemaSha256(),
                     witness.messageAbiSha256(),
-                    poisoned || closed);
+                    poisoned || closed,
+                    witness.retirementQuarantined());
         }
     }
 
