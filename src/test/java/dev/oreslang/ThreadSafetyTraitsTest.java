@@ -268,7 +268,7 @@ final class ThreadSafetyTraitsTest {
                 boolean.class, String.class);
         validate.setAccessible(true);
         for (String unknown : List.of(
-                "UnknownOpaque", "ActorRef", "TcpListener", "ExecutionPermit")) {
+                "UnknownOpaque", "TcpListener", "ExecutionPermit")) {
             var exception = assertThrows(java.lang.reflect.InvocationTargetException.class,
                     () -> validate.invoke(checker,
                             new Types.Named(unknown, List.of()),
@@ -277,6 +277,12 @@ final class ThreadSafetyTraitsTest {
             assertTrue(exception.getCause().getMessage().contains("cannot transport unknown nominal type"),
                     exception.getCause().getMessage());
         }
+        var malformedRef = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                () -> validate.invoke(checker,
+                        new Types.Named("ActorRef", List.of()),
+                        dev.oreslang.ast.Ast.ActorKind.SHARED, false, "message"));
+        assertInstanceOf(IllegalArgumentException.class, malformedRef.getCause());
+        assertTrue(malformedRef.getCause().getMessage().contains("exactly one actor type argument"));
         for (String admitted : List.of("ActorId", "ActorKind")) {
             assertDoesNotThrow(() -> validate.invoke(checker,
                     new Types.Named(admitted, List.of()),
