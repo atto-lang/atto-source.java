@@ -29,6 +29,9 @@ AST helper API is therefore named `mayBeSendAfterResolution` /
   those names cannot impersonate the compiler intrinsic.
   Future runtime ABI changes must re-audit these compiler-specific
   trusted-intrinsic decisions before source execution.
+- The AST shape walker is bounded at 64 levels / 4,096 nodes before recursive
+  derivation, so deep or very wide unresolved capture types fail closed without
+  poisoning subsequent checks.
 - No automatic admission for `Arc`, `Shared`, `Mutex`, `RwLock`,
   `InvertedArray`, `Future`, `Task`, `Channel`, `ActorRef`,
   `ExecutionPermit`, `ThreadBound`, native pointers or unknown nominal
@@ -49,6 +52,7 @@ real Parser + OwnershipChecker regression cases for:
   capability rejection;
 - owned `Option<int>`/`Result<int,string>` positive captures;
 - immediate async/task lambda parameter/capture safety;
+- deep/wide AST type-bomb rejection with a healthy post-budget query;
 - preservation of the `OresCompiler.parseAndTypeCheck` failure for unlowered
   `nb` Task execution.
 
@@ -87,9 +91,11 @@ Cross references:
 ## Cross-branch exact implementation checkpoint
 
 The Task branch originated from #1447's bounded AST trait walker, but its
-current role has been deliberately narrowed to deny-only preflight. Current
-`SendSyncTraits.java` blob is **not** an authoritative semantic trait engine
-and must not be compared as permanent parity with #1439/#1467.
+current role has been deliberately narrowed to deny-only preflight. The latest
+copy also restores #1447's 64-depth / 4,096-node hostile-shape bound. Current
+`SendSyncTraits.java` blob is `6dcdb577037d6c1e38cbc02ad3c1b92ec9b1ae22`;
+it is **not** an authoritative semantic trait engine and must not be compared as
+permanent parity with #1439/#1467.
 The canonical PR may advance independently; recheck its latest head before
 merging, rather than assuming permanent branch parity. #1447 now includes an
 additional test showing that source classes named `ActorRef`, `Task`,
