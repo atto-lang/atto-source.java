@@ -4952,8 +4952,26 @@ public final class TypeChecker {
      */
     private boolean isThreadSend(Type type) {
         return ThreadSafetyTraits.has(type, ThreadSafetyTraits.Trait.SEND,
-                (nominal, trait) -> trait == ThreadSafetyTraits.Trait.SEND
-                        && isSharedSafe(nominal, new LinkedHashSet<>(), Map.of()));
+                new ThreadSafetyTraits.NominalProof() {
+                    @Override
+                    public boolean has(Named nominal, ThreadSafetyTraits.Trait trait) {
+                        return trait == ThreadSafetyTraits.Trait.SEND
+                                && isSharedSafe(nominal, new LinkedHashSet<>(), Map.of());
+                    }
+
+                    @Override
+                    public boolean trustedIntrinsic(Named named) {
+                        // Resolve the actual declaration before trusting a built-in
+                        // type constructor. Guest classes, interfaces and aliases
+                        // may not impersonate Option/Result/Channel by spelling.
+                        if (!Set.of("Option", "Result", "Channel",
+                                "OptionUnwrapError", "IteratorResult")
+                                .contains(named.name())) return false;
+                        return findClass(named.name()) == null
+                                && findInterface(named.name()) == null
+                                && findTypeAlias(named.name()) == null;
+                    }
+                });
     }
 
     private void validateAsyncBoundaryType(
