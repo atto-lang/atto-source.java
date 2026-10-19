@@ -1,7 +1,7 @@
 # Closed inferred records and data-oriented layout inversion
 
-Status (2026-10-18): `infer record` and `infer<T> record` parse as closed
-readonly structural aggregates on this branch. **AoS/SoA is a design and
+Status (2026-10-19): canonical `record {...}` plus compatibility `infer record`
+and `infer<T> record` parse as closed readonly structural aggregates on this branch. **AoS/SoA is a design and
 admission contract, NOT an executable language feature.** No SIMD, GPU,
 native backend, or cross-actor support is claimed by this document.
 
@@ -17,11 +17,12 @@ const Person p = infer<Person> record{
 The compiler infers field names/types, widens literal fields under the
 preexisting rules, and creates lexical structural alias `Person`, not nominal
 identity. Field order does not affect structural equivalence, but initializer
-effects retain source order. The AST now retains distinct `INFERRED_RECORD` and `INFERRED_STRUCT`
-source-origin tags, while both share the existing closed readonly aggregate
-type-checking, ownership and runtime semantics. This avoids dynamic maps or
-reflective keys and permits future formatting/layout tools to distinguish
-record syntax without changing field-name structural typing.
+effects retain source order. The AST retains distinct `INFERRED_RECORD` and
+`INFERRED_STRUCT` origins and the semantic checker now preserves that distinction:
+records are readonly structural rows, while inferred/explicit structs are exact
+closed concrete shapes. They are not implicitly assignment-compatible. This
+avoids dynamic maps or reflective keys while preventing a data-layout struct
+from silently erasing into a record shape.
 Computed keys are invalid, and mutable access cannot be recovered through
 aliases, casts, borrowing, or generic substitutions.
 
