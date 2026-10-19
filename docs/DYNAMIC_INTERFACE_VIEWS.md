@@ -11,10 +11,11 @@ LLVM/Wasm/freestanding trait-object ABI parity. A runtime fat pointer,
 `dyn Deployable` is neither `Any` nor unrestricted dynamic typing.
 The compiler first validates nominal interface conformance (ordinary
 `implements`), then allows a receiver to be called through an
-explicitly erased interface view. A `dyn` marker is retained in the
-source AST and currently resolves to the same nominal interface type
-as the pre-existing Java/Truffle interface reference. There is no
-new allocation or native fat pointer in this stage.
+explicitly erased interface view. A `dyn` marker survives both the source AST and static type checking as a
+separate `Types.Dyn` nominal witness. It can be constructed only by a proven
+class `implements` relationship or an already-checked compatible dyn witness.
+`Unknown`, unbound generic values, and structural lookalikes cannot forge it.
+There is no new allocation or native fat pointer in this stage.
 
 ```ores
 define interface Deployable as
@@ -58,6 +59,11 @@ a nominal reference view, not an implicit heap-boxing operation.
 6. Borrow/move/actor rules remain those of the existing reference
    representation. This implementation does not claim new sendability,
    cross-actor ownership, allocation freedom, or hot-reload safety.
+7. The compiler rejects `dyn Interface<T>` when its specialization contains
+   unresolved `Unknown` or generic variables. This is a conservative initial
+   restriction pending proof-carrying generic erasure.
+8. Buffered channels reject direct and nested erased interface views, including
+   ones found through concrete class fields and generic substitutions.
 
 ## Planned native and ownership contract (not implemented here)
 
@@ -85,6 +91,7 @@ verified migration before unloading.
 
 * Java/Truffle: nominal success and non-conformance; inherited contracts,
   generic interface specialization, field/generic-method/self rejection;
+  uncertainty and generic spoofing rejection; nested channel ownership;
   AOT-host execution; typed method dispatch.
 * LLVM: fail-closed unsupported constructs first, then verified native
   AOT interface-object lowering, deterministic drops, and sanitizer
