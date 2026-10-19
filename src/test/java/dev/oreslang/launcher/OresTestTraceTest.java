@@ -16,7 +16,7 @@ final class OresTestTraceTest {
     void recordedInputTraceReplaysOnlyMatchingSourceAndFingerprint() throws Exception {
         Path source = temporary.resolve("suite.ores");
         Path trace = temporary.resolve("gate.trace");
-        Files.writeString(source, "initial source bytes\n");
+        Files.writeString(source, "pub routine main(): void { return; }\n");
         var result = new OresTestExploration.Report(21, 4, 19, 0, 0, 1234567);
         OresTestTrace.write(trace, source, 42, 19, true, result);
         var recorded = OresTestTrace.read(trace, source);
@@ -34,10 +34,27 @@ final class OresTestTraceTest {
     void sourceMutationInvalidatesExistingTrace() throws Exception {
         Path source = temporary.resolve("mutable.ores");
         Path trace = temporary.resolve("mutable.trace");
-        Files.writeString(source, "v1\n");
+        Files.writeString(source, "pub routine main(): void { return; }\n");
         var result = new OresTestExploration.Report(21, 4, 0, 0, 0, 123);
         OresTestTrace.write(trace, source, 0, 0, true, result);
-        Files.writeString(source, "v2\n");
+        Files.writeString(source, "pub routine main(): void { return; } // changed\n");
+        assertThrows(IOException.class, () -> OresTestTrace.read(trace, source));
+    }
+
+    @Test
+    void importedDependencyMutationInvalidatesRecordedTrace() throws Exception {
+        Path source = temporary.resolve("imports.ores");
+        Path dependency = temporary.resolve("helper.ores");
+        Path trace = temporary.resolve("transitive.trace");
+        Files.writeString(dependency, "pub fnc helper(): int { return 1; }\n");
+        Files.writeString(source,
+                "import fnc helper from './helper';\n"
+                + "pub routine main(): void { return; }\n");
+        var report = new OresTestExploration.Report(21, 4, 0, 0, 0, 123);
+        OresTestTrace.write(trace, source, 0, 0, true, report);
+        String oldDigest = OresTestTrace.hash(source);
+        Files.writeString(dependency, "pub fnc helper(): int { return 2; }\n");
+        assertNotEquals(oldDigest, OresTestTrace.hash(source));
         assertThrows(IOException.class, () -> OresTestTrace.read(trace, source));
     }
 
@@ -45,7 +62,7 @@ final class OresTestTraceTest {
     void rejectMalformedAndOutOfBudgetTraceRecords() throws Exception {
         Path source = temporary.resolve("suite.ores");
         Path trace = temporary.resolve("gate.trace");
-        Files.writeString(source, "source\n");
+        Files.writeString(source, "pub routine main(): void { return; }\n");
         var result = new OresTestExploration.Report(0, 0, 3, 0, 0, 123);
         OresTestTrace.write(trace, source, 3, 3, false, result);
         String original = Files.readString(trace);
