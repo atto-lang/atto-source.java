@@ -10,6 +10,7 @@ import json
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 REPO_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 SHA_RE = re.compile(r"\A[a-f0-9]{40}\Z")
@@ -70,6 +71,23 @@ def _purpose(name):
     return "other_execution"
 
 
+def _valid_execution_interval(step):
+    """Accept only parseable, timezone-aware timestamps in chronological order."""
+    stamps = []
+    for field in ("started_at", "completed_at"):
+        raw = step.get(field)
+        if not isinstance(raw, str) or not raw.strip():
+            return False
+        try:
+            stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except (ValueError, OverflowError):
+            return False
+        if stamp.tzinfo is None or stamp.utcoffset() is None:
+            return False
+        stamps.append(stamp.astimezone(timezone.utc))
+    return stamps[0] <= stamps[1]
+
+
 def _classify_job(job, run, run_id=None):
     if not isinstance(job, dict):
         raise TriageError("invalid job metadata")
@@ -127,9 +145,7 @@ def _classify_job(job, run, run_id=None):
             raise TriageError("invalid step conclusion")
         # Completed step status and conclusion alone do not prove execution;
         # require an observable start and completion timestamp as well.
-        timed_execution = (step_status == "completed" and
-                           isinstance(step.get("started_at"), str) and bool(step["started_at"].strip()) and
-                           isinstance(step.get("completed_at"), str) and bool(step["completed_at"].strip()))
+        timed_execution = step_status == "completed" and _valid_execution_interval(step)
         purpose = _purpose(step.get("name"))
         if step_status == "completed" and step_conclusion in ("failure", "timed_out"):
             if timed_execution:
@@ -232,8 +248,9 @@ def _fetch_jobs_pages(repo, run_id, fetch):
         if type(count) is not int or not 0 <= count <= 10000 or (expected is not None and count != expected):
             raise TriageError("job pagination incomplete or inconsistent")
         expected = count
-        if len(batch) > 100 or (len(jobs) < count and not batch):
-            raise TriageError("job pagination incomplete or invalid")
+        remaining = count - len(jobs)
+        if len(batch) != min(100, remaining):
+            raise TriageError("job pagination incomplete or invalid page size")
         for job in batch:
             if not isinstance(job, dict) or not _positive_int(job.get("id")) or job["id"] in seen_ids:
                 raise TriageError("job pagination duplicate or invalid ID")
