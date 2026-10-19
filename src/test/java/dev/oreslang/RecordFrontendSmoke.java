@@ -189,6 +189,48 @@ public final class RecordFrontendSmoke {
                     .anyMatch(stmt -> stmt == proof.getKey());
             check(found, "proof must refer to an actual checked AST binding");
         }
+        // Short tuple aliases must have the same AST-identity-bound ownership
+        // proof as short record/struct aliases; computed indexing itself must
+        // not turn a heterogeneous finite tuple into an unchecked int.
+        String computedTuple = """
+                fnc get(): float {
+                    const T t = tuple(3.0, 4.0);
+                    const index = 0;
+                    return t[index];
+                }
+                """;
+        TypeChecker.TypeCheckResult tupleChecked =
+                TypeChecker.checkTypesWithDiagnostics(Parser.parse(computedTuple));
+        check(tupleChecked.shortInferredAliases().size() == 1,
+                "short tuple alias needs a typechecker-validated proof");
+        OwnershipChecker.check(tupleChecked.program(), tupleChecked.shortInferredAliases());
+
+        accepted("""
+                fnc get(): string {
+                    const T r = record{x: 3.0, y: "boo"};
+                    const key = "y";
+                    return r[key];
+                }
+                """);
+        accepted("""
+                fnc get(string key): float {
+                    const T d = infer<T> struct{x: 3.0, y: 4.0};
+                    return d[key];
+                }
+                """);
+        denied(() -> TypeChecker.check(Parser.parse("""
+                fnc bad(string key): int {
+                    const T r = record{x: 3.0, y: "boo"};
+                    return r[key];
+                }
+                """)), "heterogeneous dynamic field access cannot become int");
+        denied(() -> TypeChecker.check(Parser.parse("""
+                fnc bad(string key): int {
+                    const T empty = record{};
+                    return empty[key];
+                }
+                """)), "empty closed record must not return unknown type");
+
         System.out.println("RECORD_FRONTEND_SMOKE_PASS");
     }
 
