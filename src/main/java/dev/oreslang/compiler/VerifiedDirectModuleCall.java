@@ -70,6 +70,22 @@ public final class VerifiedDirectModuleCall {
         if (!(call.callee() instanceof Ast.NameExpr name)) {
             throw new IllegalArgumentException("direct module function only");
         }
+        if (name.name().equals(callerName)) {
+            throw new IllegalArgumentException("recursive direct calls need verified recursion context");
+        }
+        // TypeChecker validates the call, but this first issuer has no
+        // retained declaration-resolution map. Never assert ownership of
+        // an unqualified target when another source module defines it.
+        for (Ast.ModuleDecl other : checked.modules()) {
+            if (other == owner) continue;
+            for (Ast.Decl declaration : other.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl fn
+                        && fn.name().equals(name.name())) {
+                    throw new IllegalArgumentException(
+                            "cross-module target name requires resolved ownership proof");
+                }
+            }
+        }
         for (Ast.Param param : caller.parameters()) {
             if (param.optional() || param.name().equals(name.name())) {
                 throw new IllegalArgumentException("optional or shadowing caller formal");
