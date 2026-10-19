@@ -200,6 +200,37 @@ final class ActorTaskTerminationCascadeTest {
     }
 
     @Test
+    @Timeout(60)
+    void boundedShutdownStormCompletesEveryActorExactlyOnce() throws Exception {
+        // Burst actor termination without allocating a dedicated OS thread
+        // for each one. Each actor has its own finalization witness.
+        var config = new ActorRuntime.DispatcherConfig(4, 4, 512, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            java.util.concurrent.atomic.AtomicInteger exitCount =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            runtime.setActorExitHook(ignored -> exitCount.incrementAndGet());
+            for (int burst = 0; burst < 8; burst++) {
+                java.util.ArrayList<ActorRuntime.ActorRef<Integer>> refs =
+                        new java.util.ArrayList<>();
+                for (int i = 0; i < 32; i++) {
+                    refs.add(runtime.<Integer>spawnShared(
+                            () -> (message, context) -> context.self().stop()));
+                }
+                for (var ref : refs) ref.send(1);
+                for (var ref : refs) {
+                    assertTrue(ref.awaitTermination(10, TimeUnit.SECONDS),
+                            "actor did not reach its final witness during burst " + burst);
+                    assertTrue(ref.done().isDone(),
+                            "successful termination must have a settled done witness");
+                    assertNull(ref.done().get(2, TimeUnit.SECONDS));
+                }
+                assertEquals((burst + 1) * 32, exitCount.get(),
+                        "exit hooks must run exactly once per actor");
+            }
+        }
+    }
+
+    @Test
     void noTaskScopeActorStillWaitsForOwnedFutureCancellationCallbacks()
             throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
