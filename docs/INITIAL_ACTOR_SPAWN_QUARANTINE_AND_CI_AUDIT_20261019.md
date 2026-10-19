@@ -43,13 +43,19 @@ reporting the implementation complete.
 
 ## Real-source JUnit (committed but NOT EXECUTED)
 
-`LogicalSourceActorInitialSpawnQuarantineTest` uses a real compiler-linked
-SHARED source actor and a second real generation route lease. A package-level
-synthetic failed-spawn record tests: an in-progress provisional reservation
-is not reaped or canceled; after explicit failure-owner transfer, the
-real physical actor's finalization is required; an injected generation
-pin underflow leaves the quarantine owner recorded for retry; after repairing
-accounting, exactly one lease retirement succeeds.
+`LogicalSourceActorInitialSpawnQuarantineTest` includes TWO
+package-level fault-injection tests:
+
+1. A real compiler-linked SHARED source actor plus a second route lease:
+   the provisional owner cannot be reaped or cancelled; after explicit
+   failed-owner transfer, actual physical finalization is required;
+   generation-pin accounting underflow preserves the record; after repair,
+   the extra lease retires exactly once.
+2. A newly registered startup reservation with NO physical ActorRef:
+   a concurrent reaper must NOT reclaim this still-in-progress admission,
+   even though physical is null. After an explicit failed-startup handoff,
+   the otherwise unused generation lease may be safely released. This is
+   the exact case that exposed the original second-order reaper race.
 
 **Limitation:** The JUnit fixture injects a failed-spawn owner into the
 registry; it does not itself force the `spawn().getReady()` error path.
