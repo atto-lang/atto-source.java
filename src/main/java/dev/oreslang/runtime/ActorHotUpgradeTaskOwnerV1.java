@@ -113,6 +113,7 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
         requireHost();
         List<ActorHotUpgradeTaskBridgeV1.PinnedTask<?>> records =
                 new ArrayList<>();
+        List<ActorHotUpgradeTaskOwnerV1> visited = new ArrayList<>();
         ArrayDeque<ActorHotUpgradeTaskOwnerV1> pending =
                 new ArrayDeque<>();
         pending.add(this);
@@ -120,6 +121,7 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
         // Iterative traversal avoids stack overflow for deep child ownership.
         while (!pending.isEmpty()) {
             ActorHotUpgradeTaskOwnerV1 scope = pending.removeLast();
+            visited.add(scope);
             synchronized (scope.gate) {
                 scope.closed = true;
                 records.addAll(scope.active);
@@ -154,6 +156,8 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
         // Do not treat result cancellation as a physical-exit receipt.
         long deadline = System.nanoTime() + CLOSE_TIMEOUT_NANOS;
         boolean interrupted = false;
+        Set<ActorHotUpgradeTaskBridgeV1.PinnedTask<?>> exited =
+                new HashSet<>();
         for (var record : records) {
             for (;;) {
                 long remaining = deadline - System.nanoTime();
@@ -167,6 +171,7 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
                 try {
                     record.physicallyExited().get(
                             remaining, TimeUnit.NANOSECONDS);
+                    exited.add(record);
                     break;
                 } catch (InterruptedException interruptedHost) {
                     interrupted = true;
@@ -178,6 +183,15 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
                     else failure.addSuppressed(unsafe);
                     break;
                 }
+            }
+        }
+        // The physical-exit Future's state can become visible to get()
+        // before its callback removes the owner record. Reconcile successful
+        // exits synchronously so close() returning is also a strict scope
+        // bookkeeping barrier. Failed retirement records remain owned.
+        for (ActorHotUpgradeTaskOwnerV1 scope : visited) {
+            synchronized (scope.gate) {
+                scope.active.removeAll(exited);
             }
         }
         if (interrupted) Thread.currentThread().interrupt();
