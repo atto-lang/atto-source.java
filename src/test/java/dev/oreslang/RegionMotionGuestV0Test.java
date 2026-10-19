@@ -68,6 +68,35 @@ final class RegionMotionGuestV0Test {
         }
     }
 
+    @Test void constructorBoundsAndForeignHandlesRejectAtRuntime() {
+        for (String guest : new String[] {
+                "pub fnc main(): void { let r = Region.new<Motion>(2, 2, 0); return; }",
+                "pub fnc main(): void { let r = Region.new<Motion>(2, 2, 8); return; }",
+                "pub fnc main(): void { let r = Region.new<Motion>(4097, 2, 1); return; }",
+                "pub fnc main(): void { let r = Region.new<Motion>(0, 2, 1); return; }",
+                """
+                pub fnc main(): void {
+                    let a = Region.new<Motion>(2, 2, 1);
+                    let b = Region.new<Motion>(2, 2, 1);
+                    let handle = a.insert(1.0, 2.0, 3.0, 4.0);
+                    b.get_x(handle);
+                    return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                    let r = Region.new<Motion>(2, 2, 1);
+                    let handle = r.insert(1.0, 2.0, 3.0, 4.0);
+                    r.close();
+                    r.get_x(handle);
+                    return;
+                }
+                """
+        }) {
+            assertThrows(RuntimeException.class, () -> execute(guest), guest);
+        }
+    }
+
     @Test void absentLayoutAndStaleHandleFailAtRuntime() {
         String badLayout = """
                 pub fnc main(): void {
