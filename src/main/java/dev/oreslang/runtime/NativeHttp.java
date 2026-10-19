@@ -403,8 +403,15 @@ public final class NativeHttp implements AutoCloseable {
             } finally { synchronized (this) { transportClosed = true; } release(); } }); }
             catch (RejectedExecutionException closed) { release(); }
         }
-        void finish() {
-            synchronized (this) { if (terminal) return; terminal = true; }
+        void finish() throws IOException {
+            synchronized (this) {
+                // An abort/deadline may win after the wire writer finishes.
+                // Do not resolve the actor's respond()/finish() Future as
+                // successful when the request has already been terminated.
+                if (terminal)
+                    throw new IOException("HTTP request was aborted before response completion");
+                terminal = true;
+            }
             try { raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); }
         }
         void release() {
