@@ -121,7 +121,7 @@ public final class AsyncRuntime implements AutoCloseable {
     public <T> OresTask<T> submitTask(Task<T> task) {
         Objects.requireNonNull(task, "task");
         TaskExit exit = new TaskExit();
-        OresTask<T> owner = new OresTask<>(exit.quiesced);
+        OresTask<T> owner = OresTask.<T>preAdmitted(exit.quiesced);
         OresFuture<T> completion = submitInternal(task, exit);
         owner.attachCompletion(completion);
         return owner;
@@ -138,7 +138,7 @@ public final class AsyncRuntime implements AutoCloseable {
         private final AsyncRuntime runtime;
         private final Task<T> work;
         private final TaskExit exit = new TaskExit();
-        private final OresTask<T> owner = new OresTask<>(exit.quiesced);
+        private final OresTask<T> owner = OresTask.<T>preAdmitted(exit.quiesced);
         private final AtomicBoolean started = new AtomicBoolean();
 
         PreparedTask(AsyncRuntime runtime, Task<T> work) {
