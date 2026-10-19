@@ -318,6 +318,10 @@ def publish(repository, source, branch, trusted_root, source_pr=None,
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source, trusted_root)
+    # Approval can be revoked while a bounded source tree is being read.
+    # Revalidate before the first private byte is uploaded.
+    require_preflight(repository, trusted_root, source_pr, source_commit,
+                      source_tree, maintainer_comment, security_comment)
     base = checked_repo(repository, expected_id)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
@@ -367,6 +371,11 @@ def publish(repository, source, branch, trusted_root, source_pr=None,
         "tree": new_tree_sha, "parents": [base_sha]
     })
     commit_sha = valid_sha(commit.get("sha"))
+    authorize_write()
+    # A deleted/edited attestation or changed PR head must prevent publication
+    # even if private unreferenced blobs/trees were already uploaded.
+    require_preflight(repository, trusted_root, source_pr, source_commit,
+                      source_tree, maintainer_comment, security_comment)
     authorize_write()
     # CREATE a new CI ref, never UPDATE an existing branch, tag, or main.
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
