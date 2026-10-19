@@ -340,7 +340,7 @@ Python executable (including `PYTHON=/bin/true`), invokes the genuine
 tokens and Python startup hooks, and uses an empty temporary GitHub CLI
 configuration. Its SHA-256 manifest pins the nine script/test inputs plus
 the source CODEOWNERS file, protected destination allowlist, and private-CI
-workflow definition before and after execution. Twenty source-free
+workflow definition before and after execution. Twenty-two source-free
 adversarial runner self-tests check failure behavior, including interpreter
 substitution, Python startup injection, symlinks, mid-run policy edits,
 missing merged-main discovery, a truncated test suite, and a **full-size**
@@ -352,7 +352,11 @@ publisher tests and 10 merged-main cases (117 total), unique test IDs,
 equal discovered/executed counts, and mandatory adversarial test IDs
 for source-policy revocation, destination CODEOWNERS revocation,
 root-tree/commit/ref read-back, explicit-token isolation and TLS/proxy
-injection rejection, and merged-main provenance.
+injection rejection, and merged-main provenance. The full suite additionally
+rejects **any** skipped test, expected failure or unexpected success, even
+when unittest would normally report success or count the test as run.
+Runner self-tests exercise both skip and expected-failure masking of a
+mandatory security case.
 These checks are a regression-inventory guard, **not an attestation**
 that arbitrary renamed test bodies retain their intended assertions.
 A single passing test is not sufficient.
