@@ -1,6 +1,11 @@
 package dev.oreslang.types;
 
+import java.util.IdentityHashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+
+import dev.oreslang.ast.Ast;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
@@ -40,6 +45,7 @@ final class TaskCertifiedLayout {
         private final TaskAccessVerifier ledger = new TaskAccessVerifier();
         private final String ownerId;
         private long nextAllocationId = 1;
+        private final IdentityHashMap<Ast.Expr, Object> issuedSites = new IdentityHashMap<>();
         private boolean sealed;
 
         Emitter() {
@@ -57,6 +63,50 @@ final class TaskCertifiedLayout {
             // represent that analysis fact, NOT arbitrary source variable names.
             return new TaskAccessVerifier.Root(
                     "PROCESS", ownerId, nextAllocationId++, 1, true);
+        }
+
+        /**
+         * First source-front-end gateway: a fresh anonymous struct literal,
+         * not an arbitrary binding or borrowed value. The ownership pass must
+         * still prove its destination is owned and cannot escape during Tasks.
+         * One AST evaluation site cannot mint multiple independent roots in
+         * this analysis scope; a later loop lowering needs per-iteration IDs.
+         */
+        synchronized RecordStorage freshRecordLiteral(Ast.ObjectExpr expression,
+                                                     Types.Record shape) {
+            Objects.requireNonNull(expression, "expression");
+            Objects.requireNonNull(shape, "shape");
+            if (expression.inferredStruct() && !shape.readOnly()) {
+                throw new IllegalArgumentException(
+                        "inferred structs are readonly; cannot certify mutable layout");
+            }
+            if (expression.fields().size() != shape.members().size()) {
+                throw new IllegalArgumentException("struct literal fields differ from checked type");
+            }
+            Set<String> seen = new HashSet<>();
+            for (Ast.ObjectField field : expression.fields()) {
+                Types.Type expected = shape.members().get(field.name());
+                if (expected == null || !seen.add(field.name())
+                        || !(field.value() instanceof Ast.LiteralExpr literal)
+                        || !scalarLiteralMatches(literal.value(), expected)) {
+                    throw new IllegalArgumentException(
+                            "only exactly typed fresh scalar literals can issue field certificates");
+                }
+            }
+            if (issuedSites.containsKey(expression)) {
+                throw new IllegalStateException(
+                        "allocation site already certified; reuse original compiler storage identity");
+            }
+            RecordStorage result = freshRecord(shape);
+            issuedSites.put(expression, result);
+            return result;
+        }
+
+        private static boolean scalarLiteralMatches(Object value, Types.Type expected) {
+            if (expected == Types.Primitive.INT) return value instanceof Long;
+            if (expected == Types.Primitive.FLOAT) return value instanceof Double;
+            if (expected == Types.Primitive.BOOL) return value instanceof Boolean;
+            return false;
         }
 
         synchronized RecordStorage freshRecord(Types.Record shape) {
