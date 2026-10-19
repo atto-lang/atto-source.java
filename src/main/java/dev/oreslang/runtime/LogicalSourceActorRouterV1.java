@@ -282,6 +282,11 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             // Stage and validate the compiler ABI receipt before publishing
             // mailbox ownership. A failed compiler receipt must leave the
             // router unbound rather than half-authorize physical sends.
+            if (compilerAbiScalar
+                    && !active.view.executor().actorReceivesProxyLong(actorTypeName)) {
+                throw new SecurityException(
+                        "compiler-ABI scalar proxy requires resolved ActorMail<int> receive");
+            }
             SourceActorScalarWireV1.Binding proposed = compilerAbiScalar
                     ? new SourceActorScalarWireV1.Binding(
                             logicalId, active.incarnation,
@@ -729,6 +734,10 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         // restoring state: old envelopes must never be interpreted under
         // the candidate's different source message contract.
         if (scalarWireBinding != null) {
+            if (!candidate.executor().actorReceivesProxyLong(actorTypeName)) {
+                throw new SecurityException(
+                        "upgraded scalar actor lacks compiler ActorMail<int> receive proof");
+            }
             String candidateMessageAbi =
                     candidate.executor().actorMessageAbiSha256(actorTypeName);
             if (!scalarWireBinding.messageAbiSha256().equals(candidateMessageAbi)) {
