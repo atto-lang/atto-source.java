@@ -194,6 +194,37 @@ final class ThreadSafetyTraitsTest {
     }
 
     @Test
+    void malformedNonNominalMetadataFailsClosed() {
+        List<Type> malformed = List.of(
+                new Types.Generic(null),
+                new Types.Generic("   "),
+                new Types.StringLiteral(null),
+                new Types.ListType(null),
+                new Types.Borrow(null, false),
+                new Types.ClassNamespace(null),
+                new Types.ClassNamespace("   "),
+                new Types.Function(List.of(Types.Primitive.INT), (Type) null),
+                new Types.Record(Map.of("", Types.Primitive.INT)));
+
+        ThreadSafetyTraits.NominalProof permissive = (type, trait) -> true;
+        for (Type type : malformed) {
+            assertFalse(Types.isStructurallyWellFormed(type), type.toString());
+            assertFalse(Types.isAssignable(type, type), type.toString());
+            assertFalse(Types.areProvablyDisjoint(type, Types.Primitive.STRING), type.toString());
+            for (Trait trait : Trait.values()) {
+                assertFalse(ThreadSafetyTraits.has(type, trait, permissive),
+                        "malformed metadata cannot receive " + trait + ": " + type);
+            }
+        }
+
+        assertTrue(Types.isStructurallyWellFormed(new Types.Generic("T")));
+        assertTrue(Types.isStructurallyWellFormed(new Types.StringLiteral("")));
+        assertTrue(Types.isStructurallyWellFormed(new Types.ClassNamespace("Worker")));
+        assertTrue(Types.isStructurallyWellFormed(
+                new Types.Record(Map.of("value", Types.Primitive.INT))));
+    }
+
+    @Test
     void legacySharedSafetyAndActorBoundariesDenyMalformedNominals() throws Exception {
         var constructor = TypeChecker.class.getDeclaredConstructor();
         constructor.setAccessible(true);
@@ -226,7 +257,7 @@ final class ThreadSafetyTraitsTest {
                                 dev.oreslang.ast.Ast.ActorKind.SHARED,
                                 completion, "malformed actor boundary"));
                 assertInstanceOf(IllegalArgumentException.class, actorFailure.getCause());
-                assertTrue(actorFailure.getCause().getMessage().contains("malformed nominal"),
+                assertTrue(actorFailure.getCause().getMessage().contains("malformed type metadata"),
                         actorFailure.getCause().getMessage());
             }
 
@@ -235,7 +266,7 @@ final class ThreadSafetyTraitsTest {
                     () -> asyncBoundary.invoke(
                             checker, malformed, false, "malformed async boundary"));
             assertInstanceOf(IllegalArgumentException.class, asyncFailure.getCause());
-            assertTrue(asyncFailure.getCause().getMessage().contains("task-safe"),
+            assertTrue(asyncFailure.getCause().getMessage().contains("malformed type metadata"),
                     asyncFailure.getCause().getMessage());
         }
 
@@ -248,7 +279,7 @@ final class ThreadSafetyTraitsTest {
                         dev.oreslang.ast.Ast.ActorKind.SHARED,
                         false, "actor ref"));
         assertInstanceOf(IllegalArgumentException.class, targetFailure.getCause());
-        assertTrue(targetFailure.getCause().getMessage().contains("nonblank actor class name"),
+        assertTrue(targetFailure.getCause().getMessage().contains("malformed type metadata"),
                 targetFailure.getCause().getMessage());
     }
 
