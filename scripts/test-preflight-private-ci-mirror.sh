@@ -217,6 +217,10 @@ assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   SYNTH_DEST_BASE_COMMIT=fc49aa44726eac47301ae2d676c4b38954d3cc46 \
   SYNTH_DEST_BASE_TREE=1e9dec690e45df80758547e991d37f6b18872e33 \
   bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+assert_exit 1 run_preflight SYNTH_PROTECTED=false \
+  SYNTH_DEST_BASE_COMMIT=5e1079638ba322d0208631ef34fcbd3f129b40ab \
+  SYNTH_DEST_BASE_TREE=1f2f5d5f816213192d13c179d0e9381d00fdeaf7 \
+  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
 
 # Merely leaving protection disabled must never activate the fallback when
 # either classic protection or rulesets is actually available.
