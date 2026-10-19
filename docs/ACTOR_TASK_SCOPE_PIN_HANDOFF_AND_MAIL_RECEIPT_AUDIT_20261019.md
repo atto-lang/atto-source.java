@@ -122,3 +122,80 @@ live and its exact receipt has no terminal class, restores the ledger, retries
 runtime close, and requires that the receipt becomes `RUNTIME_CLOSED` and the
 full close succeeds. This source regression is committed but still awaits
 exact-tree JUnit execution.
+
+
+## Completion / rollback authority surface hardening
+
+A follow-up authority audit removed two package-private sequence-only mutation
+surfaces from the production logical mailbox.
+
+First, `LogicalActorProxyMailboxV1.complete(long)` was deleted. Production
+credit refund now has only the exact-envelope path
+`completeAfterPhysicalReceipt(envelope, routeEpoch)`, which requires the
+same outstanding immutable `Envelope` object, the current route epoch, and a
+recorded physical-send attempt. Synthetic sparse-watermark unit models use
+`LogicalActorProxyMailboxTestAccess` from `src/test` to invoke the private
+ledger state machine reflectively; reflection is not part of the production
+mailbox API. A regression inspects declared production methods and rejects any
+return of a one-argument `complete(long)` capability.
+
+Second, pre-send rollback changed from
+`requeueProvenUnsent(long sequence)` to
+`requeueProvenUnsent(Envelope exact, long expectedRouteEpoch)`. A copied
+envelope with equal sequence/payload, an envelope from another mailbox, a
+stale route epoch, a completed envelope, or any envelope whose physical-send
+attempt was already recorded fails closed. Only the exact latest outstanding
+object in the current epoch can be restored before physical submission.
+Low-level sequence-driven watermark tests again use a test-source-only adapter;
+real router/bridge integration tests exercise the exact production API.
+
+The reflective test adapter also acquires the mailbox's real private monitor
+before reading its synthetic outstanding ledger or invoking the private
+completion state machine. This keeps test concurrency semantics aligned with
+the production monitor instead of creating an unsynchronized surrogate.
+
+### Post-acceptance allocation boundary
+
+The router previously constructed `ProxyDrainReceipt` only after
+`ActorRuntime.sendWithPhysicalReceipt(...)` returned. That left an avoidable
+allocation after successful physical mailbox acceptance: OOME constructing the
+router receipt could strand accepted work with no returned host receipt handle.
+
+The router now allocates the `ProxyDrainReceipt` shell before
+`beginPhysicalSendAttempt(...)` and before physical admission. ActorRuntime
+already prepares its own exact receipt before mailbox acceptance. After a
+successful runtime send, the router performs only a volatile reference write
+to bind that runtime witness into the preallocated shell, then returns it.
+Therefore failure to allocate the router shell is still a definitely-unsent
+case and occurs before the physical-attempt ledger is changed.
+
+This does not turn an ambiguous failure after physical submission into a retry
+permit. Once the physical-attempt ledger is recorded, timeout, cancellation,
+carrier submission failure, terminal failure, or any other uncertain outcome
+remains outstanding/fail-sealed until supervisor reconciliation.
+
+### Executed source-free JDK25 authority oracle
+
+The independent public source-free oracle was extended without copying private
+Oreslang source. Commit
+`8a6c8f0799991cb1f2434ecdf69d0c34d21b5b6f`, workflow run
+`39313327723`, job `118268313042`, executed on Temurin JDK
+**25.0.4+1**. It compiled with
+`javac --release 25 -Xlint:all -Werror` and reported:
+
+```text
+PASS source-free hot-upgrade oracle
+route_race_rounds=2000
+terminal_race_rounds=10000
+runtime_close_retry=pass
+exact_envelope_rollback=pass
+send_vs_requeue_races=10000
+public_drain_slots=1024
+private_source_bytes=0
+```
+
+The new model rejects copied/foreign/stale rollback capabilities and races
+physical-send reservation against exact-envelope unsent rollback for 10,000
+rounds, requiring exactly one authority to win. This remains independent model
+evidence, not execution of the private Java source, Maven/JUnit, GraalVM,
+Native Image, or LLVM.
