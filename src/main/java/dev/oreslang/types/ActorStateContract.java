@@ -184,6 +184,75 @@ public final class ActorStateContract {
             visit(lambda.blockBody(), actor, keys, variable, false, instanceMethod, loanMode);
             return;
         }
+        // Two compiler-sealed ML intrinsics are the only calls allowed to
+        // receive the raw lexical state-loan parameter. They do not expose the
+        // loan itself: state_snapshot copies named detached scalar values into
+        // an issuer-bound capability, while publish_scalar_publication consumes
+        // a compiler-issued publication under the active WRITE loan. Keep this
+        // exception here, in the independent state-contract pass, instead of
+        // weakening the generic "loan name cannot be an argument" rule below.
+        if (activeAccess != null
+                && node instanceof Ast.CallExpr scalarIntrinsic
+                && scalarIntrinsic.callee() instanceof Ast.NameExpr intrinsicName
+                && intrinsicName.name().equals("state_snapshot")) {
+            if (scalarIntrinsic.typeArgumentsPresent()
+                    || scalarIntrinsic.arguments().size() < 3
+                    || !(scalarIntrinsic.arguments().getFirst() instanceof Ast.NameExpr loan)
+                    || !loan.name().equals(activeAccess)) {
+                throw new IllegalArgumentException(
+                        "state_snapshot requires the exact active actor state loan, "
+                                + "a version field, and at least one scalar field");
+            }
+            for (int i = 1; i < scalarIntrinsic.arguments().size(); i++) {
+                Ast.Expr argument = scalarIntrinsic.arguments().get(i);
+                if (!(argument instanceof Ast.LiteralExpr literal)
+                        || !(literal.value() instanceof String)) {
+                    throw new IllegalArgumentException(
+                            "state_snapshot field names must be compile-time string literals");
+                }
+            }
+            return;
+        }
+        if (activeAccess != null
+                && node instanceof Ast.CallExpr scalarIntrinsic
+                && scalarIntrinsic.callee() instanceof Ast.NameExpr intrinsicName
+                && intrinsicName.name().equals("publish_scalar_publication")) {
+            if (scalarIntrinsic.typeArgumentsPresent()
+                    || scalarIntrinsic.arguments().size() != 2
+                    || !(scalarIntrinsic.arguments().getFirst() instanceof Ast.NameExpr loan)
+                    || !loan.name().equals(activeAccess)) {
+                throw new IllegalArgumentException(
+                        "publish_scalar_publication requires the exact active actor state loan "
+                                + "and one compiler-issued publication");
+            }
+            if (accessMode != Ast.CriticalMode.WRITE) {
+                throw new IllegalArgumentException(
+                        "publish_scalar_publication requires a critical write actor state loan");
+            }
+            // The publication expression may contain ordinary detached values,
+            // but it must not smuggle the live loan as part of its expression.
+            if (referencesAccess(scalarIntrinsic.arguments().get(1), activeAccess)) {
+                throw new IllegalArgumentException(
+                        "publish_scalar_publication publication argument cannot contain the live state loan");
+            }
+            visit(
+                    scalarIntrinsic.arguments().get(1),
+                    actor,
+                    keys,
+                    activeAccess,
+                    nestedClosure,
+                    instanceMethod,
+                    accessMode);
+            return;
+        }
+        if (activeAccess != null
+                && node instanceof Ast.CallExpr scalarIntrinsic
+                && scalarIntrinsic.callee() instanceof Ast.NameExpr intrinsicName
+                && intrinsicName.name().equals("prepare_scalar_publication")) {
+            throw new IllegalArgumentException(
+                    "prepare_scalar_publication must run after the actor state loan is released");
+        }
+
         if (activeAccess != null
                 && (node instanceof Ast.AwaitExpr || node instanceof Ast.SelectStmt
                     || node instanceof Ast.DynamicSelectExpr || node instanceof Ast.ChannelOpExpr
