@@ -52,6 +52,9 @@ public final class ThreadSafetyTraits {
 
     public enum Trait { SEND, SYNC }
 
+    // Keep depth-keyed memoization collision-free if the trusted trait set grows.
+    private static final int TRAIT_COUNT = Trait.values().length;
+
     @FunctionalInterface
     public interface NominalProof {
         boolean has(Named type, Trait trait);
@@ -77,7 +80,7 @@ public final class ThreadSafetyTraits {
             // A positive proof at shallow depth MUST NOT authorize a deeper
             // occurrence whose descendants exceed MAX_TYPE_DEPTH. Include
             // depth in the cache key, not only node identity and trait.
-            int proofKey = depth * 2 + trait.ordinal();
+            int proofKey = depth * TRAIT_COUNT + trait.ordinal();
             Map<Integer, Boolean> cached = proven.get(type);
             if (cached != null && cached.containsKey(proofKey)) {
                 return cached.get(proofKey);
