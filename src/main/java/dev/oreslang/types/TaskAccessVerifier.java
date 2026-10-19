@@ -124,19 +124,39 @@ final class TaskAccessVerifier {
     }
 
     /**
-     * Validates the Send/Sync proof before reserving any access, using the
-     * existing internal auto-trait checker. READ requires T:Sync; WRITE
-     * requires T:Send. A passing proof still does NOT establish lifetime,
-     * actor-domain authorization, pinned code, or task quiescence.
+     * Lookup supplied by the trusted typed-place analysis, NOT from a
+     * user-written type annotation. The result must identify the referent at
+     * the *same projection path* and allocation generation as the claim.
+     */
+    @FunctionalInterface
+    public interface PlaceTypeProof {
+        Types.Type resolvedReferent(Place place);
+    }
+
+    /**
+     * Validate both the actual resolved referent type and Send/Sync proof
+     * before reserving any access. A caller may not claim e.g. an unsafe
+     * native handle has primitive type just to obtain a Send proof.
+     *
+     * <p>This remains a compiler-only ledger. It does not mint place/owner
+     * authority, grant actor-domain access, prove lifetime, or authenticate
+     * actual runtime quiescence.
      */
     public synchronized Ticket admitTyped(List<TypedClaim> requested,
-                             ThreadSafetyTraits.NominalProof nominalProof) {
+                             ThreadSafetyTraits.NominalProof nominalProof,
+                             PlaceTypeProof trustedPlaceTypes) {
         Objects.requireNonNull(nominalProof, "nominalProof");
+        Objects.requireNonNull(trustedPlaceTypes, "trustedPlaceTypes");
         List<TypedClaim> typed = List.copyOf(Objects.requireNonNull(requested, "claims"));
         for (TypedClaim claim : typed) {
+            Types.Type actual = trustedPlaceTypes.resolvedReferent(claim.claim().place());
+            if (actual == null || !actual.equals(claim.type())) {
+                throw new IllegalArgumentException(
+                        "Task claim referent type does not match resolved place type");
+            }
             ThreadSafetyTraits.Trait needed = claim.claim().mode() == Mode.READ
                     ? ThreadSafetyTraits.Trait.SYNC : ThreadSafetyTraits.Trait.SEND;
-            if (!ThreadSafetyTraits.has(claim.type(), needed, nominalProof)) {
+            if (!ThreadSafetyTraits.has(actual, needed, nominalProof)) {
                 throw new IllegalArgumentException("Task access requires proven " + needed);
             }
         }
