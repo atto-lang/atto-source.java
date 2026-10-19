@@ -180,41 +180,70 @@ final class TaskTransferProvenanceTest {
     }
 
     @Test
-    void arbitraryCallResultCannotSelfMintOwnedRvalueProof() {
-        IllegalArgumentException direct = assertThrows(
+    void compilerMintedFreshFunctionReturnCanCrossTaskBoundary() {
+        Ast.Program program = Parser.parse("""
+            pub fnc make(): Array<int> {
+                return arr[1, 2, 3];
+            }
+            pub fnc main(): void {
+                let Task<int> result =
+                    (async task |Array<int> value| -> { return 1; })(
+                        make());
+                return;
+            }
+            """);
+        Ast.BindingStmt binding =
+                (Ast.BindingStmt) main(program).body().get(0);
+        Ast.CallExpr boundary = (Ast.CallExpr) binding.initializer();
+
+        OwnershipChecker.CheckResult checked =
+                OwnershipChecker.checkWithTaskTransferProvenance(program);
+        assertEquals(
+                TaskTransferProvenance.TransferKind.OWNED_RVALUE,
+                checked.taskTransfers()
+                        .transfersFor(boundary).getFirst().kind());
+    }
+
+    @Test
+    void aliasingOrNestedCallReturnCannotSelfMintFreshOwnership() {
+        IllegalArgumentException alias = assertThrows(
                 IllegalArgumentException.class,
                 () -> OwnershipChecker.check(Parser.parse("""
-                    pub fnc make(): Array<int> {
-                        return arr[1, 2, 3];
+                    pub fnc alias(Array<int> value): Array<int> {
+                        return value;
                     }
                     pub fnc main(): void {
+                        let data = arr[1, 2, 3];
                         let Task<int> result =
                             (async task |Array<int> value| -> { return 1; })(
-                                make());
+                                alias(data));
                         return;
                     }
                     """)));
         assertTrue(
-                direct.getMessage().contains("rvalue provenance"),
-                direct::getMessage);
+                alias.getMessage().contains("rvalue provenance"),
+                alias::getMessage);
 
-        IllegalArgumentException nested = assertThrows(
+        IllegalArgumentException nestedCall = assertThrows(
                 IllegalArgumentException.class,
                 () -> OwnershipChecker.check(Parser.parse("""
-                    pub fnc make(): Array<int> {
+                    pub fnc seed(): Array<int> {
                         return arr[1, 2, 3];
+                    }
+                    pub fnc make(): Array<Array<int>> {
+                        return arr[seed()];
                     }
                     pub fnc main(): void {
                         let Task<int> result =
                             (async task |Array<Array<int>> value| -> {
                                 return 1;
-                            })(arr[make()]);
+                            })(make());
                         return;
                     }
                     """)));
         assertTrue(
-                nested.getMessage().contains("rvalue provenance"),
-                nested::getMessage);
+                nestedCall.getMessage().contains("rvalue provenance"),
+                nestedCall::getMessage);
     }
 
     @Test
