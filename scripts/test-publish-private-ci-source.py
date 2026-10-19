@@ -378,6 +378,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     pub.gh_api("repos/trusted/ci")
                 runner.assert_not_called()
 
+    def test_nonsticky_temp_parent_denies_before_network(self):
+        unsafe = type("FakeStat", (), {
+            "st_mode": 0o40777,
+            "st_uid": os.getuid(),
+        })()
+        with patch.object(pub.os, "stat", return_value=unsafe):
+            with patch.object(pub.subprocess, "run") as runner:
+                with self.assertRaisesRegex(
+                        pub.Denied, "trusted system temporary directory is unavailable"):
+                    pub.gh_api("repos/trusted/ci")
+                runner.assert_not_called()
+
     def test_real_preflight_never_executes_checkout_shell_or_inherited_bash_env(self):
         # Approval is now parsed strictly as data: even a script that
         # explicitly writes a marker must never be invoked by the publisher.
