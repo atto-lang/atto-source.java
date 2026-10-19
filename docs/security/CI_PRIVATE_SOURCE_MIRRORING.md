@@ -57,11 +57,13 @@ effective. Before reading potentially sensitive source bytes, the publisher
 runs `preflight-private-ci-mirror.sh`. That preflight verifies the exact clean
 source checkout, live same-repository PR head, fresh authenticated `main`,
 authoritative security-program blobs, applicable approval mode, policy row, and
-destination identity. It also requires the destination default branch, carrier
-base commit, and carrier base tree to equal the reviewed values embedded in the
-authoritative exporter. A carrier workflow/configuration change therefore
-invalidates authorization before private source bytes are read. The checked-in
-policy must explicitly list `owner/repo@numeric-id`.
+destination identity. It also resolves the reviewed destination carrier
+directly by its immutable Git commit SHA and requires that commit's tree to
+equal the reviewed carrier tree embedded in the authoritative exporter.
+Movement of the destination's mutable default branch is not an authorization
+input; changing the reviewed carrier commit/tree still requires a new reviewed
+policy/exporter revision. The checked-in policy must explicitly list
+`owner/repo@numeric-id`.
 
 The publisher then checks the live GitHub repository ID, full name and
 `visibility=private` / `private=true` before sending private bytes, and
@@ -70,14 +72,14 @@ write. Every GitHub API write is constructed from
 that **same validated owner/repo**, rather than a caller-provided URL, Git
 remote, shell command or separate destination argument. It creates blobs,
 then a **fresh standalone source tree with no `base_tree`**, followed by a
-root tree that replaces the **entire** `private-oreslang-source/` directory
-in the destination's default tree. This removes stale files from previous
-snapshots while preserving unrelated destination workflows and files.
-Finally, it creates a commit and the **new, approval-bound**
-`ci/oreslang-*` ref. Existing branches, including `main`, are never updated.
-The publisher also rejects a destination default-branch, base-commit, or
-base-tree change after review instead of silently inheriting a changed carrier
-workflow.
+root tree based on the immutable reviewed carrier tree that replaces the
+**entire** `private-oreslang-source/` directory. This removes stale private
+files while preserving only the workflows/files present in that reviewed
+carrier object. Finally, it creates a commit whose parent is the reviewed
+carrier commit and the **new, approval-bound** `ci/oreslang-*` ref. Existing
+branches, including `main`, are never updated. A later change to destination
+`main` neither grants nor revokes approval for an already reviewed immutable
+carrier.
 
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
 per file, requires the source directory to remain **inside the trusted
