@@ -56,6 +56,26 @@ final class FutureCompositionLanguageTest {
         assertEquals("seen:42:42:40", run(program));
     }
 
+    @Test
+    void voidFutureOnSuccessPassesNullThroughOneCallbackSlot() throws Exception {
+        String program = """
+                async fnc noValue(): void {
+                  return;
+                }
+
+                pub fnc main(): void {
+                  val Future<void> observed = noValue().onSuccess(|void ignored| -> {
+                    stdio.stdout.write("seen");
+                    return;
+                  });
+                  await observed;
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("seen", run(program));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "future-compose.ores")
