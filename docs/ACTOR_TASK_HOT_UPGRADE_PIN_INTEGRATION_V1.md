@@ -49,19 +49,37 @@ ActorRef and counter state; v2 behavior produces 45. A new trusted-only
 router/proxy hook registers the pin under the exact route lock that guards
 actor migration.
 
+The proxy's host-only `ActorHotUpgradeTaskOwnerV1` now owns nested child
+scopes, cancels each admitted child before joining, and holds the generation
+until `PinnedTask.physicallyExited()` completes. Regression cases cover a
+nested child/grandchild whose result Futures have already been cancelled while
+their carriers still execute, followed by a strict physical join and successful
+source v1→v2 migration. Another case builds **12,000 nested scopes** to
+exercise stack-safe quiescence observation and iterative close. The close
+reconciliation must remove **OwnershipSlot** entries by their associated
+`PinnedTask` identity; removing raw `PinnedTask` values from a
+`Set<OwnershipSlot>` was a no-op.
+
 These are JUnit **sources only**, not execution evidence until Maven/JDK25
 tests run on the exact Git head. The Tasks are intentionally host frames and
 do not claim source-compiled `task {}` exists.
 
 ## Known blocked production gates
 
-- **No TaskScope wiring yet.** The Task integration draft #1411 has
-  `OresTaskScope.startCompilerFrame(..., onPhysicalExit)`, while this actor
-  proxy draft is stacked on #1270/#1367. The final integration must have the
-  actor-owned TaskScope invoke this same pin lifecycle without ever allowing
-  a task to become a detached context-owned sibling. Do not enable source
-  guest Task lowering until captures/actor ownership, cancellation and quotas
-  have been proven.
+- **Compiler-owned TaskScope wiring is still absent.** The temporary
+  host-only `ActorHotUpgradeTaskOwnerV1` now owns descendant Task pins, but
+  does not provide compiler-issued actor/frame affinity. The Task integration
+  draft #1411 has `OresTaskScope.startCompilerFrame(..., onPhysicalExit)`.
+  Reconcile that API with the actor lifecycle fence instead of shipping two
+  competing scope protocols. Do not enable source guest Task lowering until
+  captures/actor ownership, cancellation, quotas and unload receipts have
+  been proven.
+- **Bounded close does not bound arbitrary synchronous Future subscribers.**
+  `cancelDeferredNotification()` revokes Task authority first; delivering
+  host subscriber callbacks can nevertheless block before the physical join
+  deadline starts. This is not permission to unload code while callbacks
+  might retain a generation. A production supervisor needs bounded,
+  authenticated notification-drain accounting and explicit quarantine.
 - **Generation ownership is incomplete.** The external counter is per actor
   cell, not a cryptographic/compiler-owned code image lease. Code-loader
   unload/retire must hold both physical actor context and *exact image*
