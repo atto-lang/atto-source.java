@@ -121,7 +121,7 @@ final class LogicalActorUpgradeCoordinatorV1Test {
             var queued = proxy.admit(bytes("new"));
             assertEquals(2L,queued.messageSequence());
             assertFalse(transaction.commit());
-            proxy.complete(first.messageSequence());
+            LogicalActorProxyMailboxTestAccess.complete(proxy, first.messageSequence());
             assertFalse(transaction.commit(), "Task must physically exit before upgrade");
             taskPin.close();
             assertTrue(transaction.drained());
