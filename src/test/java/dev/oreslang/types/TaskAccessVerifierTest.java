@@ -177,6 +177,36 @@ final class TaskAccessVerifierTest {
         assertTrue(TaskAccessVerifier.mayAlias(b, root));
     }
 
+    @Test void typedTaskAdmissionUsesSendForWriteAndSyncForRead() {
+        var ledger = new TaskAccessVerifier();
+        var unique = TaskAccessVerifier.Place.whole(WORLD);
+        var channel = new Types.Named("Channel", List.of(Types.Primitive.INT));
+        var syncRead = new TaskAccessVerifier.TypedClaim(read(unique), channel);
+        assertThrows(IllegalArgumentException.class,
+                () -> ledger.admitTyped(List.of(syncRead), (name, trait) -> false));
+        assertEquals(0, ledger.activeChildren());
+        var sendWrite = new TaskAccessVerifier.TypedClaim(write(unique), channel);
+        var ticket = ledger.admitTyped(List.of(sendWrite), (name, trait) -> false);
+        assertEquals(1, ledger.activeChildren());
+        ledger.quiescent(ticket);
+        assertThrows(IllegalArgumentException.class,
+                () -> ledger.admitTyped(List.of(new TaskAccessVerifier.TypedClaim(
+                        read(unique), new Types.Generic("T"))), (name, trait) -> true));
+        assertEquals(0, ledger.activeChildren());
+    }
+
+    @Test void typedAdmissionRejectsEveryClaimBeforeAnyReservation() {
+        var ledger = new TaskAccessVerifier();
+        var pos = TaskAccessVerifier.Place.whole(WORLD).field("position", true);
+        var vel = TaskAccessVerifier.Place.whole(WORLD).field("velocity", true);
+        assertThrows(IllegalArgumentException.class, () -> ledger.admitTyped(List.of(
+                new TaskAccessVerifier.TypedClaim(write(pos), Types.Primitive.INT),
+                new TaskAccessVerifier.TypedClaim(read(vel),
+                        new Types.Named("OpaqueHostHandle", List.of()))),
+                (name, trait) -> false));
+        assertEquals(0, ledger.activeChildren());
+    }
+
     @Test void illegalInputsFailClosed() {
         assertThrows(IllegalArgumentException.class,
                 () -> new TaskAccessVerifier.Root("", 1, 1, true));
