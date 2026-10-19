@@ -237,24 +237,88 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     public LogicalActorRef ref() { return logicalRef; }
 
     /**
-     * Trusted host bridge for serialized proxy delivery. Physical mailbox
-     * admission and the drain watermark are both acquired under the SAME
-     * route lookup monitor: an upgrade cannot cut between them. The returned
-     * future succeeds only when the physical actor has completed every
-     * accepted message through this send, not when it was merely enqueued.
-     *
-     * No guest-visible per-message receipt is claimed here. A separate
-     * compiler-owned wire codec and authenticated completion protocol are
-     * required before parallel/async proxy dispatch is supported.
+     * Opaque, trusted-host-only cumulative physical-drain acknowledgment.
+     * This is bound to the exact immutable envelope AND the route instance
+     * that accepted it. It is NOT a remote authenticated mail.done() receipt:
+     * serialized send+drain is required until compiler-owned message IDs and
+     * authenticated per-message physical completions are available.
      */
-    OresFuture<Void> sendAndDrainForProxy(Object message) {
+    static final class ProxyDrainReceipt {
+        private final LogicalSourceActorRouterV1 owner;
+        private final Route routed;
+        private final LogicalActorProxyMailboxV1.Envelope envelope;
+        private final OresFuture<Void> drained;
+        private boolean consumed;
+
+        private ProxyDrainReceipt(
+                LogicalSourceActorRouterV1 owner,
+                Route routed,
+                LogicalActorProxyMailboxV1.Envelope envelope,
+                OresFuture<Void> drained) {
+            this.owner = owner;
+            this.routed = routed;
+            this.envelope = envelope;
+            this.drained = drained;
+        }
+
+        void awaitAndComplete(
+                LogicalActorProxyMailboxV1 mailbox,
+                LogicalActorProxyMailboxV1.Envelope exactEnvelope,
+                Duration timeout)
+                throws InterruptedException, ExecutionException, TimeoutException {
+            Objects.requireNonNull(mailbox, "mailbox");
+            Objects.requireNonNull(timeout, "timeout");
+            if (timeout.isZero() || timeout.isNegative())
+                throw new IllegalArgumentException("drain deadline must be positive");
+            if (exactEnvelope != envelope)
+                throw new SecurityException("foreign immutable proxy envelope receipt");
+
+            // Completion may run guest turns: NEVER wait while holding the
+            // route monitor. A timeout/interrupt is ambiguous physical work
+            // and the calling bridge must fail sealed rather than retry.
+            drained.get(toNanosSaturated(timeout), TimeUnit.NANOSECONDS);
+            synchronized (owner.routeLock) {
+                if (consumed)
+                    throw new IllegalStateException("consumed physical drain receipt");
+                if (owner.closed || owner.upgrading || owner.active != routed)
+                    throw new SecurityException("physical actor route changed before completion");
+                if (mailbox.snapshot().routeEpoch() != routed.routeEpoch())
+                    throw new SecurityException("physical and proxy route epochs differ");
+                // Consume BEFORE touching mailbox accounting. If completion
+                // rejects or faults, no caller may replay the receipt; its
+                // logical delivery must be reconciled by the supervisor.
+                consumed = true;
+                mailbox.complete(envelope.messageSequence());
+            }
+        }
+    }
+
+    /**
+     * The only V1 wire format is a canonical big-endian signed 64-bit integer.
+     * Decode copied immutable bytes in the trusted runtime, not in an
+     * arbitrary producer callback, before physical mailbox admission.
+     */
+    ProxyDrainReceipt sendAndDrainForProxy(
+            LogicalActorProxyMailboxV1.Envelope envelope, long expectedRouteEpoch) {
         requireBlockingHostSurface("proxy-send a logical source actor");
+        Objects.requireNonNull(envelope, "envelope");
+        byte[] wire = envelope.payload();
+        if (wire.length != Long.BYTES)
+            throw new SecurityException("invalid canonical scalar proxy wire length");
+        long value = 0L;
+        for (byte octet : wire) value = (value << Byte.SIZE) | (octet & 255L);
         synchronized (routeLock) {
             awaitUpgradeLocked();
             requireOpenLocked();
             reapRetiredLocked();
-            active.physical.send(message);
-            return active.physical.drain();
+            Route current = active;
+            if (expectedRouteEpoch != current.routeEpoch)
+                throw new SecurityException("stale proxy dispatch route epoch");
+            current.physical.send(value);
+            // The bridge dispatches only ONE outstanding message at a time;
+            // its cumulative drain therefore acknowledges this exact prefix.
+            OresFuture<Void> drained = current.physical.drain();
+            return new ProxyDrainReceipt(this, current, envelope, drained);
         }
     }
 
