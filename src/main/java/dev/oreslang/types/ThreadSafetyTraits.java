@@ -129,9 +129,19 @@ public final class ThreadSafetyTraits {
             if (UNPROVEN_CAPABILITIES.contains(name)) {
                 return false;
             }
+            // The nominal callback must never turn an unresolved or
+            // capability-bearing generic argument into a valid auto-trait.
+            // This is intentionally stricter than Rust's PhantomData-style
+            // exceptions: a future trusted variance/phantom proof is needed
+            // before any argument may be ignored.
+            for (Type argument : named.arguments()) {
+                if (!has(argument, trait, nominalProof, visiting, depth + 1)) {
+                    return false;
+                }
+            }
             // Unknown nominal types are *not* automatically Send or Sync.
-            // Only a compiler-backed proof of the class's actual fields can
-            // allow a transfer. This also avoids trait spoofing by type names.
+            // The callback is compiler-trusted, but its result is still
+            // conditional on all nested type arguments passing the same trait.
             return nominalProof.has(named, trait);
         } finally {
             visiting.remove(type);
