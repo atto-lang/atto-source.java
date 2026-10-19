@@ -9,8 +9,9 @@ import java.util.HashSet;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * A structured actor Task must reserve ownership BEFORE admission acquires
- * an old-code generation pin. Host-only reflection injects a HashSet OOME.
+ * The canonical OresTaskScope must reserve ownership before executable
+ * scheduler admission. Host-only reflection injects a HashSet OOME after the
+ * router generation pin is acquired; TaskScope must release that unused pin.
  */
 @Timeout(45)
 final class ActorHotUpgradeTaskOwnerReservationTest {
@@ -43,17 +44,19 @@ final class ActorHotUpgradeTaskOwnerReservationTest {
                 var ownerField = LogicalSourceActorProxyBridgeV1.class
                         .getDeclaredField("taskOwner");
                 ownerField.setAccessible(true);
-                Object owner = ownerField.get(bridge);
-                var activeField = owner.getClass().getDeclaredField("active");
-                activeField.setAccessible(true);
-                Object original = activeField.get(owner);
+                var owner = (ActorHotUpgradeTaskOwnerV1) ownerField.get(bridge);
+                OresTaskScope canonical = owner.canonicalScopeForTesting();
+                var tasksField = OresTaskScope.class.getDeclaredField("tasks");
+                tasksField.setAccessible(true);
+                Object original = tasksField.get(canonical);
 
-                // This seam replaces an otherwise private host collection
-                // strictly within the test; guest actors cannot reach it.
-                activeField.set(owner, new HashSet<Object>() {
+                // Fault the canonical scope's ownership reservation. This must
+                // happen before router generation pinning/scheduler admission
+                // can become executable work.
+                tasksField.set(canonical, new HashSet<Object>() {
                     @Override public boolean add(Object slot) {
                         throw new OutOfMemoryError(
-                                "injected owned-slot allocation failure");
+                                "injected canonical TaskScope slot allocation failure");
                     }
                 });
                 try {
@@ -62,10 +65,11 @@ final class ActorHotUpgradeTaskOwnerReservationTest {
                                     scheduler,
                                     resume -> OresScheduler.done(1)));
                 } finally {
-                    activeField.set(owner, original);
+                    tasksField.set(canonical, original);
                 }
 
-                // The actor was never pinned by the rejected Task. Its real
+                // The route briefly acquired a generation pin, but canonical
+                // pre-admission failure released it exactly once. The real
                 // SHARED source generation can still change immediately.
                 assertTrue(bridge.upgradeTo(next, WAIT),
                         "pre-admission OOME cannot strand an actor generation pin");
