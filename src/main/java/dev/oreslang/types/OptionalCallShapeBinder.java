@@ -468,6 +468,30 @@ public final class OptionalCallShapeBinder {
         return List.copyOf(result);
     }
 
+    /**
+     * V2 staged shape bridge. Consume type-checker-VERIFIED intrinsic Option
+     * classifications rather than guessing from a TypeRef's simple name.
+     * This preserves legacy required-Option binding until a versioned module
+     * signature explicitly selects IMPLICIT_OPTION_OMISSION. No executable
+     * Option injection or source-call admission is authorized here.
+     */
+    public static List<Parameter> provenOptionParameterShapes(
+            List<OptionFormalPresencePolicy.Formal> verifiedFormals,
+            OptionFormalPresencePolicy.LanguageMode mode) {
+        Objects.requireNonNull(verifiedFormals, "verified formals");
+        Objects.requireNonNull(mode, "language mode");
+        List<Parameter> result = new ArrayList<>(verifiedFormals.size());
+        for (OptionFormalPresencePolicy.Formal formal : verifiedFormals) {
+            Objects.requireNonNull(formal, "verified formal");
+            boolean optional = OptionFormalPresencePolicy.omittable(formal, mode);
+            result.add(formal.variadic() ? Parameter.variadic(formal.name())
+                    : optional ? Parameter.optional(formal.name())
+                               : Parameter.required(formal.name()));
+        }
+        checkedParameters(result);
+        return List.copyOf(result);
+    }
+
     /** Structural binder proof only; executable Option<T> lowering is gated. */
     public static Plan bindParsedFormals(
             List<Ast.Param> formals, List<Ast.CallArgument> callItems) {
