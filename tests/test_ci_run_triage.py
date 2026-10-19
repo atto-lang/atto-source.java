@@ -23,6 +23,19 @@ def job(conclusion="failure", steps=None, **kwargs):
 
 
 class ClassifierTests(unittest.TestCase):
+    def test_unhashable_job_and_step_status_fail_closed(self):
+        # Malformed API fields should produce a controlled diagnostic failure,
+        # never an uncaught TypeError from set membership.
+        for invalid in ([], {}, ["completed"], {"status": "completed"}, 1, True):
+            with self.subTest(source="job", invalid=invalid):
+                with self.assertRaisesRegex(m.TriageError, "invalid job status"):
+                    m.classify(RUN, [job(steps=[], status=invalid)], SHA)
+            with self.subTest(source="step", invalid=invalid):
+                broken = step("Run tests", "failure")
+                broken["status"] = invalid
+                with self.assertRaisesRegex(m.TriageError, "invalid step status"):
+                    m.classify(RUN, [job(steps=[broken])], SHA)
+
     def test_non_string_run_status_and_conclusion_fail_closed(self):
         for field in ("status", "conclusion"):
             for bad in ([], {}, 17, True):
