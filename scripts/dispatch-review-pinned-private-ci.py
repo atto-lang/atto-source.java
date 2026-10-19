@@ -412,6 +412,34 @@ def verify_payload_root_entries(entries,r,provenance):
             or prov[0].get("mode")!="100644"):
         raise Denied("payload root tree does not contain exact source/provenance")
 
+def verify_unchanged_carrier_root(parent_entries,payload_entries):
+    """The source subtree and provenance are the ONLY permitted root changes."""
+    def indexed(entries,label):
+        if not isinstance(entries,list):
+            raise Denied(label+" root tree entries unavailable")
+        seen={}
+        for entry in entries:
+            if not isinstance(entry,dict):
+                raise Denied(label+" root tree entry is malformed")
+            path=entry.get("path")
+            if type(path) is not str or not path or "/" in path or path in seen:
+                raise Denied(label+" root tree contains duplicate/invalid paths")
+            typ=entry.get("type"); mode=entry.get("mode")
+            sha=require_sha(entry.get("sha"),label+" root tree entry")
+            if typ not in ("blob","tree","commit") or type(mode) is not str:
+                raise Denied(label+" root tree entry type/mode malformed")
+            seen[path]=(typ,mode,sha)
+        return seen
+    parent=indexed(parent_entries,"reviewed carrier parent")
+    payload=indexed(payload_entries,"payload")
+    allowed={PREFIX,PROVENANCE}
+    if allowed.intersection(parent):
+        raise Denied("reviewed carrier parent already has private source paths")
+    parent_other={k:v for k,v in parent.items() if k not in allowed}
+    payload_other={k:v for k,v in payload.items() if k not in allowed}
+    if parent_other!=payload_other:
+        raise Denied("payload modified files outside source/provenance scope")
+
 def cleanup_exact_payload_ref(r,commit_sha):
     branch="ci/oreslang-"+r["source_tree_sha"]
     ref=PUB.gh_api(f"repos/{CARRIER_REPO}/git/ref/heads/{branch}")
@@ -538,6 +566,12 @@ def dispatch(receipt_path,source_dir):
     if tree.get("sha")!=root_sha or tree.get("truncated") is not False:
         raise Denied("payload root tree readback invalid")
     verify_payload_root_entries(entries,r,provenance)
+    # GitHub tree creation is authenticated by readback, not trusted to
+    # preserve untouched carrier files merely because base_tree was supplied.
+    parent_root=PUB.gh_api(f"repos/{CARRIER_REPO}/git/trees/{base_tree}")
+    if (parent_root.get("sha")!=base_tree or parent_root.get("truncated") is not False):
+        raise Denied("reviewed carrier parent root tree readback unavailable")
+    verify_unchanged_carrier_root(parent_root.get("tree"),entries)
 
     # A stale authorization ref from any earlier failed attempt could let the
     # carrier pass its pre-checkout gate immediately when the payload ref is
