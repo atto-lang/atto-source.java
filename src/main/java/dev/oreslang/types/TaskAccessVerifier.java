@@ -156,6 +156,7 @@ public final class TaskAccessVerifier {
                 if (!af.name().equals(bf.name())) {
                     return !(af.disjointLayoutProven() && bf.disjointLayoutProven());
                 }
+                if (!af.disjointLayoutProven() || !bf.disjointLayoutProven()) return true;
                 continue;
             }
             if (ap instanceof Range ar && bp instanceof Range br) {
@@ -163,7 +164,8 @@ public final class TaskAccessVerifier {
                         && ar.disjointLayoutProven() && br.disjointLayoutProven()) {
                     return false;
                 }
-                if (ar.start() == br.start() && ar.end() == br.end()) continue;
+                if (ar.start() == br.start() && ar.end() == br.end()
+                        && ar.disjointLayoutProven() && br.disjointLayoutProven()) continue;
                 return true;
             }
             return true; // mixed/unknown projections: may alias
