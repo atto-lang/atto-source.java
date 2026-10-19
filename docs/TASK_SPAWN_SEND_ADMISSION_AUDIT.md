@@ -362,3 +362,94 @@ boundary, and completion steps all executed. This proves current Actions
 capacity there, but protected `main` still has an empty private-CI allowlist
 and #1430 has no independent approval, so no private source mirror is
 authorized.
+
+
+## Combined Task admission proof + fresh return summaries — 2026-10-19
+
+The compiler now has one proof-only join for detached Task transfers:
+
+`OwnershipChecker → TaskTransferProvenance → TypeChecker.checkTaskTransferProvenance → TaskSemanticAdmission → TaskAdmissionProof`
+
+`OresCompiler.proveTaskTransfers(program)` is the only front-end helper that
+joins those halves. It does **not** enable Task lowering or execution.
+
+### Joined proof invariants
+
+- ownership and semantic ledgers are sealed before joining;
+- both ledgers are bound to the exact same expanded `Ast.Program` instance;
+- every Task boundary remains identity-keyed;
+- transfer cardinality and transfer names must match exactly;
+- TypeChecker rejects cross-program provenance before doing semantic
+  resolution;
+- the resolved half uses the canonical
+  `ThreadSafetyTraits.isOwnedSend` / shared-safety gate;
+- semantic admission is globally capped at 4,096 transferred values per proof
+  bundle to bound resolved proof work;
+- every joined proof carries the mandatory release barrier
+  `PHYSICAL_TASK_SCOPE_DONE`, matching #1407's physical
+  `TaskScope.getDone()` quiescence contract;
+- ordinary `OresCompiler.analyze` still rejects Task source execution.
+
+### Compiler-minted fresh return provenance
+
+The ownership checker now indexes a deliberately narrow
+`ReturnOwnershipSummary.FRESH` for direct guest functions only when the body
+is exactly one return statement and the returned expression is recursively
+fresh-owned from literals / fresh list, tuple, struct/object or `new`
+construction (plus ownership-preserving cast/spread/trap/conditional wrappers).
+
+Names, borrows, runtime ownership calls, field/index projections, arbitrary
+calls, methods, async/generator functions, and multi-statement/multi-path
+bodies do not receive a fresh summary.
+
+This permits helpers such as:
+
+`make(): Array<int> { return arr[1, 2, 3]; }`
+
+to cross a detached Task boundary as `OWNED_RVALUE`, while
+`return value` and `return arr[otherCall()]` remain fail-closed.
+
+### Exact source state
+
+Current head before this documentation commit:
+`4166277a265b5b21df2c6c36ca136cca3a8e9cde`.
+
+Exact blobs:
+- `OwnershipChecker.java`: `a7d777595971b88d302cf6b6da7fde8f8fb888e2`
+- `TypeChecker.java`: `d45e812b169ba09ad0a43390f7bb66690061d798`
+- `TaskTransferProvenance.java`: `a859a5ca00272f00c10bcc50710150eaf984b059`
+- `TaskSemanticAdmission.java`: `c3df724cfcbcb8b01923eef4257a40187e789a47`
+- `TaskAdmissionProof.java`: `05e8f7b2c864015adbd02c33a76b01228c943144`
+- `OresCompiler.java`: `a9f86c91967a16bb986786f67de5a09e2407c444`
+- `TaskTransferProvenanceTest.java`: `ed96ab9769bc571d296a9551145bc0e8d0cddf4b` (9 tests)
+- `TaskAdmissionProofTest.java`: `5078b9f94cfd472d3c92768a759f4b52ccf57743` (4 tests)
+- `TaskAdmissionProofSmoke.java`: `bc0c4d587fb843fe8759e52672f67b5b4a24029e`
+- dependency-free Task smoke script:
+  `47e3289889d77296c30282bd4113d94e096b88b2`
+
+Targeted Task-admission inventory is now **38 committed JUnit methods**:
+13 spawn/preflight + 7 resolved authority + 5 capture analysis +
+9 transfer provenance + 4 combined-admission tests.
+
+Latest source-org fast-ci #39329957198 / job #118325332305 and
+concurrency-contract #39329957262 / job #118325332109 again reported
+**zero recorded steps**. No exact-source Maven/JUnit/GraalVM result is claimed.
+
+### Funded carrier evidence
+
+A private funded carrier executed an independent source-free model at
+`9e63bcc57c6e42eb48ad4c981d8d341a2e5df4e7`:
+run #39329867643 / job #118325046449 completed **SUCCESS** with
+**19/19 contracts PASS**, 0 failures/skips/cancellations, plus shell syntax
+PASS.
+
+The newest source-free contracts cover:
+- semantic + ownership join by exact Task boundary;
+- rejection of cross-program proof mixing;
+- narrow compiler-minted fresh-return summaries.
+
+This remains model/runner evidence only. No private Oreslang source was copied
+to the carrier.
+
+Exact-tree execution remains blocked until #1430 receives independent review
+and its allowlist lands on protected `main`.
