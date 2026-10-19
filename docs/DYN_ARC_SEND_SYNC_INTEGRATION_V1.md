@@ -30,6 +30,16 @@ admission through name impersonation. The source AST inference from #1447
 must converge on the same resolved identity check, not independently infer
 privileges from constructor spelling.
 
+**Owned Send:** `ThreadSafetyTraits.has(T, SEND)` is a type-level trait
+query, **not** sufficient to move a value into an independently scheduled
+Task. Detached async admission now uses `isOwnedSend(T, proof)`, which runs a
+bounded, iterative deep scan and rejects borrowed values even inside named
+generic containers, lists, tuples, readonly/writable records, unions, dynamic
+views, functions, self bounds or complements. A scoped Task can accept a
+borrow that satisfies Rust-style Send only after proving its lifetime,
+non-escape and physical quiescence independently. `isSharedSafe` remains
+a separate existing boundary; neither is actor Sendable.
+
 **Erased views:** current `Types.Dyn` carries nominal interface witness but
 no independently proved auto-trait bounds. Consequently *both* Send and Sync
 return false for `dyn I`, `&dyn I`, and containers holding them, regardless of
@@ -80,6 +90,9 @@ and Sync. The sole sealed actor `state { ... }` remains inaccessible to Arc.
 - Writable List/Record is Send but not Sync; `&List<T>` is not Send without
   independent Sync evidence.
 - Unknown, unbound generic, cyclic type and nominal shadowing fail closed.
+- Detached owned Send denies `&T` and `&mut T` even where raw Rust-style
+  `Send` is true; deny deeply nested borrowing and budget-exhaustion
+  without stack overflow or poisoning later valid queries.
 - `dyn I`, nested `Option<dyn I>`, `Result<_,dyn I>`, `Arc<dyn I>`,
   `&dyn I` remain non-Send and non-Sync in phase 1.
 - A user-defined `class Arc` or `class RwLock` must not mint an intrinsic.
