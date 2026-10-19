@@ -78,9 +78,23 @@ public final class VerifiedDirectModuleCall {
         // an unqualified target when another source module defines it.
         for (Ast.ModuleDecl other : checked.modules()) {
             if (other == owner) continue;
+            // The restricted proof has no linker namespace map. A same-name
+            // field/type in another module can also change unqualified
+            // callable resolution. Do not check only foreign functions.
             for (Ast.Decl declaration : other.declarations()) {
-                if (declaration instanceof Ast.FunctionDecl fn
-                        && fn.name().equals(name.name())) {
+                String exportedName = null;
+                if (declaration instanceof Ast.FunctionDecl fn) {
+                    exportedName = fn.name();
+                } else if (declaration instanceof Ast.FieldDecl field) {
+                    exportedName = field.name();
+                } else if (declaration instanceof Ast.ClassDecl klass) {
+                    exportedName = klass.name();
+                } else if (declaration instanceof Ast.InterfaceDecl iface) {
+                    exportedName = iface.name();
+                } else if (declaration instanceof Ast.TypeAliasDecl alias) {
+                    exportedName = alias.name();
+                }
+                if (name.name().equals(exportedName)) {
                     throw new IllegalArgumentException(
                             "cross-module target name requires resolved ownership proof");
                 }
@@ -117,7 +131,8 @@ public final class VerifiedDirectModuleCall {
         if (f.actorKind() != Ast.ActorKind.NONE || f.kind() != Ast.CallableKind.FNC
                 || f.async() || f.suspends() || f.generator() || f.trapped()
                 || f.structural() || f.nonLexical()
-                || !f.genericParameters().isEmpty() || !f.annotations().isEmpty()) return false;
+                || !f.genericParameters().isEmpty() || !f.genericSpecs().isEmpty()
+                || !f.annotations().isEmpty()) return false;
         for (Ast.Param p : f.parameters()) {
             if (p.optional() || p.structural() || p.mutable()) return false;
         }
