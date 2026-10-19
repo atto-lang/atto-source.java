@@ -1,155 +1,75 @@
 package dev.oreslang.runtime;
 
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
 import java.util.Objects;
-import java.util.Set;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 /**
- * Host/compiler-only actor-affine structured owner for the V1 source actor
- * hot-upgrade prototype. It is intentionally NOT a second upgrade authority:
- * every frame is admitted by the existing logical router and pinned by the
- * ActorRuntime lifecycle fence. The compiler's OresTaskScope branch must
- * ultimately absorb this adapter after cross-branch reconciliation.
+ * Actor/code-route binding for the canonical {@link OresTaskScope}.
  *
- * <p>Result Future settlement, including cancellation, never removes an owned
- * frame. Only successful physical exit AND generation-lease retirement does.
- * An unsuccessful retirement stays owned, fails close, and retains the actor's
- * generation pin for supervisor reconciliation.</p>
+ * <p>This is no longer a second Task ownership implementation. OresTaskScope
+ * owns cancellation, child scopes, physical joins and pre-admission owner
+ * reservation. This wrapper contributes only the actor route-epoch capability:
+ * root supervisor scope may bind the current route; descendants are pinned to
+ * the exact route epoch from which they were minted.</p>
  *
- * <p>This class is not guest-visible. Guest child Task capture/authorization,
- * mutable actor-state loans and untrusted fuel must be checked by the compiler
- * before enabling a source-level path.</p>
+ * <p>Guest source still cannot obtain this wrapper. Compiler lowering must
+ * eventually provide the same actor/route/code identity rather than invoking
+ * this trusted-host proof surface.</p>
  */
 final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
-    private static final long CLOSE_TIMEOUT_NANOS =
-            TimeUnit.SECONDS.toNanos(5);
     private final LogicalSourceActorRouterV1 router;
-    private final ActorHotUpgradeTaskOwnerV1 parent;
-    // 0 denotes the privileged logical-supervisor root owner. Descendant
-    // scopes bind to the exact physical code epoch at scope creation.
     private final long boundRouteEpoch;
-    private final Object gate = new Object();
-    // A scope must reserve its ownership record BEFORE asking the router
-    // to admit/pin a physical Task: HashSet growth can fail with OOME.
-    private static final class OwnershipSlot {
-        private ActorHotUpgradeTaskBridgeV1.PinnedTask<?> task;
-    }
-
-    private final Set<OwnershipSlot> active = new HashSet<>();
-    private final Set<ActorHotUpgradeTaskOwnerV1> children = new HashSet<>();
-    private boolean closed;
+    private final OresTaskScope scope;
 
     ActorHotUpgradeTaskOwnerV1(LogicalSourceActorRouterV1 router) {
-        this(router, 0L, null);
+        this(Objects.requireNonNull(router, "router"), 0L,
+                OresTaskScope.compilerOwned());
     }
 
     private ActorHotUpgradeTaskOwnerV1(
-            LogicalSourceActorRouterV1 router, long boundRouteEpoch,
-            ActorHotUpgradeTaskOwnerV1 parent) {
+            LogicalSourceActorRouterV1 router,
+            long boundRouteEpoch,
+            OresTaskScope scope) {
         this.router = Objects.requireNonNull(router, "router");
-        this.parent = parent;
         if (boundRouteEpoch < 0L)
             throw new IllegalArgumentException("invalid Task owner route epoch");
         this.boundRouteEpoch = boundRouteEpoch;
+        this.scope = Objects.requireNonNull(scope, "scope");
     }
 
     ActorHotUpgradeTaskOwnerV1 childScope() {
         requireHost();
-        synchronized (gate) {
-            ensureOpen();
-            // Root ownership spans logical actor incarnations, but each
-            // child scope is pinned to the current physical code epoch. An
-            // old child must never launch a captured frame on the successor.
-            long epoch = boundRouteEpoch == 0L
-                    ? router.ref().routeEpoch() : boundRouteEpoch;
-            ActorHotUpgradeTaskOwnerV1 child =
-                    new ActorHotUpgradeTaskOwnerV1(router, epoch, this);
-            children.add(child);
-            return child;
-        }
+        // Root is a stable logical-supervisor authority. Every descendant is
+        // bound to the physical code-route epoch current at first descent.
+        long epoch = boundRouteEpoch == 0L
+                ? router.ref().routeEpoch() : boundRouteEpoch;
+        return new ActorHotUpgradeTaskOwnerV1(
+                router, epoch, scope.childScope());
     }
 
     <T> OresFuture<T> start(
             OresScheduler scheduler, OresScheduler.Task<T> frame) {
         requireHost();
-        Objects.requireNonNull(scheduler, "scheduler");
-        Objects.requireNonNull(frame, "frame");
-        synchronized (gate) {
-            ensureOpen();
-            // Reserve ownership first: failure to grow the set must occur
-            // before actor generation pinning and scheduler admission.
-            OwnershipSlot slot = new OwnershipSlot();
-            active.add(slot);
-            // The router pins the current physical actor under routeLock;
-            // ActorRuntime freezes ingress under the cell lifecycle lock.
-            final ActorHotUpgradeTaskBridgeV1.PinnedTask<T> work;
-            try {
-                work = router.startHostPinnedTaskTrackedForUpgrade(
-                        scheduler, frame, boundRouteEpoch);
-            } catch (RuntimeException | Error admissionFailure) {
-                // Scheduler.start only throws before registering its runner;
-                // the actor bridge must retire that rejected generation pin.
-                active.remove(slot);
-                throw admissionFailure;
-            }
-            // No allocating ownership insertion remains after admission.
-            slot.task = work;
-            try {
-                work.physicallyExited().whenCompleteRuntime((ignored, failure) -> {
-                    // Result settlement is NOT physical retirement; only
-                    // successful onQuiescent generation release removes a slot.
-                    if (failure == null) {
-                        synchronized (gate) {
-                            active.remove(slot);
-                        }
-                    }
-                });
-            } catch (RuntimeException | Error callbackFailure) {
-                // An admitted frame remains in its pre-reserved slot. Seal
-                // further starts and require supervisor close/reconciliation.
-                closed = true;
-                throw callbackFailure;
-            }
-            return work.result();
-        }
+        OresTask<T> task = router.startCompilerTaskForUpgrade(
+                scope, scheduler, frame, boundRouteEpoch);
+        return task.getAwaited();
     }
 
     boolean physicallyQuiescent() {
-        // Child-scope nesting has no compiler-enforced depth bound yet.
-        // Traverse iteratively: recursive monitoring could overflow the host
-        // stack even though close() correctly walks the same tree iteratively.
-        // This is a host observation, not an atomic upgrade commit receipt;
-        // ActorRuntime's lifecycle fence remains the admission authority.
-        ArrayDeque<ActorHotUpgradeTaskOwnerV1> pending = new ArrayDeque<>();
-        pending.add(this);
-        while (!pending.isEmpty()) {
-            ActorHotUpgradeTaskOwnerV1 scope = pending.removeLast();
-            synchronized (scope.gate) {
-                if (!scope.active.isEmpty()) return false;
-                pending.addAll(scope.children);
-            }
-        }
-        return true;
+        return scope.physicallyQuiescent();
     }
 
-    // Package-only structural regression hook; not an upgrade authority.
     int retainedChildScopesForTesting() {
-        synchronized (gate) {
-            return children.size();
-        }
+        return scope.retainedChildScopesForTesting();
     }
 
-    private void ensureOpen() {
-        if (closed)
-            throw new RejectedExecutionException(
-                    "actor generation Task scope has closed admission");
+    OresTaskScope canonicalScopeForTesting() {
+        return scope;
+    }
+
+    @Override
+    public void close() {
+        requireHost();
+        scope.close();
     }
 
     private static void requireHost() {
@@ -160,126 +80,5 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
             throw new SecurityException(
                     "actor generation Task scope requires trusted host control");
         }
-    }
-
-    /**
-     * Cancel every owned frame BEFORE waiting for any physical exit. An exit
-     * fence may settle long after the result becomes cancelled. This host
-     * barrier has a finite deadline, and a timeout permanently closes new
-     * admission but leaves the old generation pinned and cleanup retryable.
-     */
-    @Override public void close() {
-        requireHost();
-        List<ActorHotUpgradeTaskBridgeV1.PinnedTask<?>> records =
-                new ArrayList<>();
-        List<ActorHotUpgradeTaskOwnerV1> visited = new ArrayList<>();
-        ArrayDeque<ActorHotUpgradeTaskOwnerV1> pending =
-                new ArrayDeque<>();
-        pending.add(this);
-        // Seal the entire child tree before notifying any Future listener.
-        // Iterative traversal avoids stack overflow for deep child ownership.
-        while (!pending.isEmpty()) {
-            ActorHotUpgradeTaskOwnerV1 scope = pending.removeLast();
-            visited.add(scope);
-            synchronized (scope.gate) {
-                scope.closed = true;
-                for (OwnershipSlot slot : scope.active) {
-                    if (slot.task == null)
-                        throw new IllegalStateException(
-                                "actor Task owner has an uncommitted admission slot");
-                    records.add(slot.task);
-                }
-                pending.addAll(scope.children);
-            }
-        }
-        Throwable failure = null;
-        List<Runnable> notifications = new ArrayList<>();
-        for (var record : records) {
-            try {
-                // Revoke EVERY owned scheduler producer before any subscriber
-                // can stall cancellation of its siblings. This is the same
-                // two-phase protocol used by the canonical TaskScope branch.
-                Runnable notify = record.result().cancelDeferredNotification();
-                if (notify != null) notifications.add(notify);
-            } catch (RuntimeException | Error cancellationFailure) {
-                if (failure == null) failure = cancellationFailure;
-                else if (failure != cancellationFailure)
-                    failure.addSuppressed(cancellationFailure);
-            }
-        }
-        for (Runnable notify : notifications) {
-            try {
-                notify.run();
-            } catch (RuntimeException | Error notificationFailure) {
-                if (failure == null) failure = notificationFailure;
-                else if (failure != notificationFailure)
-                    failure.addSuppressed(notificationFailure);
-            }
-        }
-
-        // Do not treat result cancellation as a physical-exit receipt.
-        long deadline = System.nanoTime() + CLOSE_TIMEOUT_NANOS;
-        boolean interrupted = false;
-        Set<ActorHotUpgradeTaskBridgeV1.PinnedTask<?>> exited =
-                new HashSet<>();
-        for (var record : records) {
-            for (;;) {
-                long remaining = deadline - System.nanoTime();
-                if (remaining <= 0L) {
-                    var timeout = new IllegalStateException(
-                            "actor Task generation retirement timed out; old image stays pinned");
-                    if (failure == null) failure = timeout;
-                    else failure.addSuppressed(timeout);
-                    break;
-                }
-                try {
-                    record.physicallyExited().get(
-                            remaining, TimeUnit.NANOSECONDS);
-                    exited.add(record);
-                    break;
-                } catch (InterruptedException interruptedHost) {
-                    interrupted = true;
-                } catch (ExecutionException | TimeoutException exitFailure) {
-                    var unsafe = new IllegalStateException(
-                            "actor Task generation did not retire safely",
-                            exitFailure);
-                    if (failure == null) failure = unsafe;
-                    else failure.addSuppressed(unsafe);
-                    break;
-                }
-            }
-        }
-        // The physical-exit Future's state can become visible to get()
-        // before its callback removes the owner record. Reconcile successful
-        // exits synchronously so close() returning is also a strict scope
-        // bookkeeping barrier. Failed retirement records remain owned.
-        for (ActorHotUpgradeTaskOwnerV1 scope : visited) {
-            synchronized (scope.gate) {
-                // active contains OwnershipSlot, not PinnedTask: compare
-                // slot.task against the physical-exit witness identities.
-                scope.active.removeIf(slot ->
-                        slot.task != null && exited.contains(slot.task));
-            }
-        }
-        // Post-order pruning: a successful physical join releases the
-        // parent's strong ownership of every fully closed leaf. Without this,
-        // a long-lived logical actor retained all prior TaskScope trees after
-        // hundreds of otherwise successful code-generation upgrades.
-        // A failed retirement remains active and its ancestors stay owned.
-        for (int i = visited.size() - 1; i >= 0; --i) {
-            ActorHotUpgradeTaskOwnerV1 scope = visited.get(i);
-            if (scope.parent == null) continue;
-            synchronized (scope.parent.gate) {
-                synchronized (scope.gate) {
-                    if (scope.closed && scope.active.isEmpty()
-                            && scope.children.isEmpty()) {
-                        scope.parent.children.remove(scope);
-                    }
-                }
-            }
-        }
-        if (interrupted) Thread.currentThread().interrupt();
-        if (failure instanceof Error error) throw error;
-        if (failure instanceof RuntimeException error) throw error;
     }
 }
