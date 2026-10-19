@@ -540,9 +540,11 @@ const position = record{x: 3.0, y: 4.0};
 Records are closed, field-name-based **structural** values rather than dynamic
 maps. Their field set is statically known, field order does not define type
 identity, and record assignment may use structural row compatibility under the
-normal readonly-capability rules. `infer record{...}` remains accepted as a
-compatibility spelling; `infer<T> record{...}` may capture a lexical structural
-alias, but it does not create nominal identity or a runtime type object.
+normal readonly-capability rules. Plain `record{...}` carries **no type-capture
+intent**: `const Row r = record{...}` requires `Row` to already exist.
+`infer record{...}` remains accepted as a compatibility spelling;
+`infer<T> record{...}` may capture a lexical structural alias, but it does not
+create nominal identity or a runtime type object.
 
 An inferred struct is deliberately different. `infer struct{...}` synthesizes a
 **concrete closed struct shape** from the initializer. Struct compatibility is
@@ -562,7 +564,9 @@ const Point p = infer struct{x: 3.0, y: 4.0};
 
 The alias is lexical and compile-time only. Existing types, imported names,
 builtins, generics, reserved forward declarations and conflicting definitions
-cannot be silently shadowed.
+cannot be silently shadowed. The declaration that *creates* a captured alias is
+a `const` declaration so the type introduction itself is stable; this does not
+make every later value of that captured type immutable.
 
 `infer` determines where the struct type comes from; it is **not** a freeze
 operator. Binding/referent mutability remains independent. A `const` binding
