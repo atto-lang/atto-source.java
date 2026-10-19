@@ -138,10 +138,10 @@ def require_canonical_workflow_header(workflow):
         r"permissions:\n"
         r"  contents: read\n"
     )
-    # str.count("\\njobs:\\n") is non-overlapping: adjacent root jobs keys
+    # str.count("\njobs:\n") is non-overlapping: adjacent root jobs keys
     # can share a newline and evade the duplicate counter. Match entire lines.
     if (not separator
-            or len(re.findall(r"(?m)^jobs:\\n", workflow)) != 1
+            or len(re.findall(r"(?m)^jobs:\n", workflow)) != 1
             or re.fullmatch(header, prefix) is None):
         raise ValueError("unreviewed private-CI workflow header or permissions")
 
@@ -257,13 +257,13 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
                     validate(self.owners, damaged)
 
     def test_adjacent_duplicate_root_jobs_keys_are_rejected(self):
-        damaged = self.workflow.replace("jobs:\\n", "jobs:\\njobs:\\n", 1)
-        self.assertEqual(len(re.findall(r"(?m)^jobs:\\n", damaged)), 2)
+        damaged = self.workflow.replace("jobs:\n", "jobs:\njobs:\n", 1)
+        self.assertEqual(len(re.findall(r"(?m)^jobs:\n", damaged)), 2)
         with self.assertRaisesRegex(ValueError, "workflow header or permissions"):
             validate(self.owners, damaged)
 
     def test_duplicate_root_jobs_keys_with_blank_line_are_rejected(self):
-        damaged = self.workflow.replace("jobs:\\n", "jobs:\\n\\njobs:\\n", 1)
+        damaged = self.workflow.replace("jobs:\n", "jobs:\n\njobs:\n", 1)
         with self.assertRaisesRegex(ValueError, "workflow header or permissions"):
             validate(self.owners, damaged)
 
