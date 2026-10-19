@@ -1,6 +1,6 @@
 # Named value arguments and named type metadata: pre-1.0 contract
 
-Status: **proposed contract / implementation not yet enabled**. This is an audit artifact, not a claim that the compiler accepts named value arguments.
+Status: **general named/optional value arguments remain proposed**. Draft Java PR #1335 contains a first, unverified executable subset for direct local non-generic function/routine calls with primitive scalar literal arguments, all required and supplied. This is not merged or confirmed by full project CI. LLVM and other surfaces remain gated.
 
 The staged next-mode proposal additionally makes a proven
 `Option<T>` formal omittable by default, with `required Option<T>` for an
@@ -120,3 +120,16 @@ The `IDENT ":"` recognition applies **only at the top level of a call argument i
 6. Enable CI parity and negative tests on exact Git trees before treating the feature as supported.
 
 **No runtime named-argument reflection or nominal-type overload matching is required.** This is compile-time sugar with strict contract checking.
+
+## Staged Java scalar-literal milestone (2026-10-19)
+
+Only the Java draft compiler branch currently attempts runtime lowering for:
+- Direct, non-generic, non-actor, non-suspending, non-generator, non-trapped local `fnc`/`routine` targets with no signature annotations
+- Primitive literal arguments (`int`, `float`, `bool`, `string`) only; every formal supplied
+- Positional prefix followed by named arguments, or all named arguments, bound by exact declared labels and full declared arity
+
+The parser retains `Ast.StagedCallExpr`. Before execution the preflight, deferred-cleanup checker, type checker, ownership checker, and runtime independently admit this narrow case and normalize it to the ordinary `Ast.CallExpr`. Reordering raw expressions is permitted ONLY because scalar literals have no effects, move-only ownership or suspension. Local shadowing or an unresolved declaration is a hard error.
+
+This is a bridge, not full named calls: nonliteral/effectful expressions, `None` as an expression, omitted `_`/`omit`, `T?` declarations, `@Default`, class methods and constructors, actors, variadic/rest parameters, imports/generics and dynamic targets remain disabled. Future support MUST retain source-order evaluated temporaries, checked nominal Option values, correct overload identity and ownership/effect guarantees; it may not generalize the literal-only permutation shortcut.
+
+Compilation and guest-execution tests in `DirectNamedLiteralCallExecutionTest` are committed but not confirmed on the full project's JDK 25 Maven/JUnit CI: upstream GitHub Actions continues to fail before recorded steps. Independent source-free funded-runner tests are not compiler execution evidence.
