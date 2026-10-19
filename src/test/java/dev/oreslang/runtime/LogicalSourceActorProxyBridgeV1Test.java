@@ -102,6 +102,47 @@ final class LogicalSourceActorProxyBridgeV1Test {
     }
 
     @Test
+    void scalarUpgradeRequiresCandidateCompilerProofBeforePhysicalHandoff()
+            throws Exception {
+        String wrongReceive = """
+                define actor Counter as
+                  let int count;
+                  on_start(): void { self.count = 999; return; }
+                  receive(ActorMail<string> mail): void {
+                    self.send(self.count);
+                    return;
+                  }
+                end
+                pub routine main(): void { return; }
+                """;
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("proof-v1.ores", V1);
+            var incompatible = manager.stageActorGeneration(
+                    "wrong-receive-v2.ores", wrongReceive);
+            try (var bridge = LogicalSourceActorProxyBridgeV1.spawnSharedAbiBoundLong(
+                    first, "Counter", WAIT, 2,
+                    SourceActorScalarWireV1.BYTE_LENGTH,
+                    SourceActorScalarWireV1.BYTE_LENGTH * 2L)) {
+                bridge.admitLong(41L);
+                assertTrue(bridge.dispatchOne(WAIT));
+                assertEquals(42L, next(bridge));
+                var old = bridge.publication();
+                assertThrows(SecurityException.class,
+                        () -> bridge.upgradeTo(incompatible, WAIT),
+                        "candidate compiler must prove ActorMail<int> before old ingress freeze");
+                assertTrue(bridge.failSealed(),
+                        "invalid upgrade requires supervised reconciliation");
+                assertEquals(old.address().routeEpoch(),
+                        bridge.publication().address().routeEpoch(),
+                        "denied compiler type cannot publish new route");
+                assertEquals(old.generationId(), bridge.publication().generationId());
+                assertEquals(0, bridge.snapshot().retainedMessages());
+            }
+        }
+    }
+
+    @Test
     void compilerAbiBoundScalarMessagesSurviveSourceUpgradeWithQueuedMail()
             throws Exception {
         try (HotReloadManager manager = new HotReloadManager(
