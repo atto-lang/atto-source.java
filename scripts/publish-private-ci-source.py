@@ -27,8 +27,8 @@ MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
 MIRROR_DESTINATION = "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra"
-DEST_BASE_COMMIT = "fc49aa44726eac47301ae2d676c4b38954d3cc46"
-DEST_BASE_TREE = "1e9dec690e45df80758547e991d37f6b18872e33"
+DEST_BASE_COMMIT = "5e1079638ba322d0208631ef34fcbd3f129b40ab"
+DEST_BASE_TREE = "1f2f5d5f816213192d13c179d0e9381d00fdeaf7"
 
 
 class Denied(RuntimeError):
@@ -394,7 +394,8 @@ def publish(repository, source, branch, trusted_root, source_pr=None,
     authorize_write()
     commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
         "message": (
-            f"ci: exact private Oreslang tree {source_commit} tree {source_tree}"
+            f"ci: exact private Oreslang tree {source_commit} tree {source_tree}\n"
+            f"carrier-base {base_sha} tree {base_tree}"
         ),
         "tree": new_tree_sha, "parents": [base_sha]
     })
