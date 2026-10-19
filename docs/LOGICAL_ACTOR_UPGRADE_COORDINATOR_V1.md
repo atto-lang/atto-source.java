@@ -215,3 +215,20 @@ and the compiler/scheduler's Task/continuation/FFI code-generation pins into
 one CONTROL-owned publication boundary. The earlier
 `LogicalActorUpgradeCoordinatorV1` remains a host-only staged seam; it is
 not yet the same physical actor-route authority.
+
+### Exception boundaries / non-cached sequence hardening
+
+The SHARED bridge's `dispatchOne` and `upgradeTo` now include
+`pollDispatch` and `freezeDispatchForUpgrade` respectively inside the
+same fail-seal exception handler. Corruption or an unexpected failure during
+reservation must quarantine the bridge, not allow a subsequent send to bypass
+uncertain credit/freeze state.
+
+For message sequences outside Java's cached boxed-`Long` range, the mailbox
+now reserves its `Long` key before changing transport accounting. The
+sparse-completion-watermark advance uses existing `TreeSet` entries via
+`first()/pollFirst()` rather than constructing a new boxed key after a
+credit refund. An additional regression source covers 136 serial logical
+sequences, out-of-order sparse convergence and proven-unsent requeue.
+These strengthen exception safety but cannot replace fault-injection
+execution, full runtime JUnit, or exact-head native/Graal testing.
