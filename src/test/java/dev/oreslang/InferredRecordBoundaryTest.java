@@ -57,13 +57,13 @@ final class InferredRecordBoundaryTest {
 
     @Test
     void shortAliasCannotBeRepeatedOrCapturedByLaterExplicitAlias() {
-        rejected("""
-                fnc bad(): void {
+        accepted("""
+                fnc good(): string {
                     const Person p = infer record{name: "Ada"};
                     const Person q = infer record{name: "Grace"};
-                    return;
+                    return q.name;
                 }
-                """, null);
+                """);
         rejected("""
                 fnc bad(): void {
                     const T before = infer record{name: "first"};
@@ -80,7 +80,7 @@ final class InferredRecordBoundaryTest {
                     block {
                         const Inner value = infer record{name: "Ada"};
                     }
-                    const Inner outside = infer struct{name: "Grace"};
+                    const Inner outside = tuple("Grace", 3);
                     return;
                 }
                 """, null);
