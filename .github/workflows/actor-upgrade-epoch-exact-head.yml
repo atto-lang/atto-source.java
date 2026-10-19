@@ -72,7 +72,7 @@ jobs:
               "ActorHotReloadPlacementAndTaskPinTest": 7,
               "ActorTaskGenerationBridgeTest": 5,
               "ActorUpgradePreflightV1Test": 5,
-              "ActorRoutePublicationV1Test": 9,
+              "ActorRoutePublicationV1Test": 10,
               "ActorUpgradeAtomicPublicationV1Test": 8,
               "LogicalActorProxyMailboxV1Test": 17,
           }
