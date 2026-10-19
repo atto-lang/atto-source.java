@@ -201,6 +201,73 @@ final class TaskCertifiedLayoutTest {
         }
     }
 
+    @Test void freshAnonymousScalarLiteralIsAcceptedOnlyWithReadonlyShape() {
+        var issuer = new TaskCertifiedLayout.Emitter();
+        var expression = new dev.oreslang.ast.Ast.ObjectExpr(List.of(
+                new dev.oreslang.ast.Ast.ObjectField("x",
+                        new dev.oreslang.ast.Ast.LiteralExpr(2L)),
+                new dev.oreslang.ast.Ast.ObjectField("alive",
+                        new dev.oreslang.ast.Ast.LiteralExpr(true))));
+        var readonly = new Types.Record(
+                Map.of("x", Types.Primitive.INT, "alive", Types.Primitive.BOOL), true);
+        var record = issuer.freshRecordLiteral(expression, readonly);
+        assertNotNull(issuer.admit(List.of(record.readField("x"))));
+        assertThrows(IllegalArgumentException.class, () -> record.writeField("x"));
+    }
+
+    @Test void literalSiteCannotForgeMultipleIndependentAllocations() {
+        var issuer = new TaskCertifiedLayout.Emitter();
+        var literal = new dev.oreslang.ast.Ast.ObjectExpr(List.of(
+                new dev.oreslang.ast.Ast.ObjectField("x",
+                        new dev.oreslang.ast.Ast.LiteralExpr(2L))));
+        var shape = new Types.Record(Map.of("x", Types.Primitive.INT), true);
+        issuer.freshRecordLiteral(literal, shape);
+        assertThrows(IllegalStateException.class,
+                () -> issuer.freshRecordLiteral(literal, shape));
+        // A separate constructed source expression can represent a separate
+        // fresh owned allocation in this straight-line analysis scope.
+        issuer.freshRecordLiteral(new dev.oreslang.ast.Ast.ObjectExpr(List.of(
+                new dev.oreslang.ast.Ast.ObjectField("x",
+                        new dev.oreslang.ast.Ast.LiteralExpr(3L)))), shape);
+    }
+
+    @Test void borrowedSourceFieldCannotBeRelabeledAsFreshAllocation() {
+        var issuer = new TaskCertifiedLayout.Emitter();
+        var alias = new dev.oreslang.ast.Ast.ObjectExpr(List.of(
+                new dev.oreslang.ast.Ast.ObjectField("x",
+                        new dev.oreslang.ast.Ast.NameExpr("alreadyOwned"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> issuer.freshRecordLiteral(alias,
+                        new Types.Record(Map.of("x", Types.Primitive.INT), true)));
+    }
+
+    @Test void mismatchedOrDuplicateScalarLiteralFieldsDoNotMintProofs() {
+        var issuer = new TaskCertifiedLayout.Emitter();
+        var shape = new Types.Record(Map.of("x", Types.Primitive.INT), true);
+        var wrongType = new dev.oreslang.ast.Ast.ObjectExpr(List.of(
+                new dev.oreslang.ast.Ast.ObjectField("x",
+                        new dev.oreslang.ast.Ast.LiteralExpr(true))));
+        var duplicate = new dev.oreslang.ast.Ast.ObjectExpr(List.of(
+                new dev.oreslang.ast.Ast.ObjectField("x",
+                        new dev.oreslang.ast.Ast.LiteralExpr(1L)),
+                new dev.oreslang.ast.Ast.ObjectField("x",
+                        new dev.oreslang.ast.Ast.LiteralExpr(2L))));
+        assertThrows(IllegalArgumentException.class,
+                () -> issuer.freshRecordLiteral(wrongType, shape));
+        assertThrows(IllegalArgumentException.class,
+                () -> issuer.freshRecordLiteral(duplicate, shape));
+    }
+
+    @Test void inferredLiteralCannotBeCertifiedAsMutableStruct() {
+        var issuer = new TaskCertifiedLayout.Emitter();
+        var literal = new dev.oreslang.ast.Ast.ObjectExpr(List.of(
+                new dev.oreslang.ast.Ast.ObjectField("x",
+                        new dev.oreslang.ast.Ast.LiteralExpr(5L))));
+        assertThrows(IllegalArgumentException.class,
+                () -> issuer.freshRecordLiteral(literal,
+                        new Types.Record(Map.of("x", Types.Primitive.INT), false)));
+    }
+
     @Test void unsupportedLayoutDoesNotAccidentallyIssueAnyProof() {
         var issuer = new TaskCertifiedLayout.Emitter();
         var members = new java.util.HashMap<String, Types.Type>();
