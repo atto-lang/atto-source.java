@@ -133,5 +133,50 @@ final class SendSyncAndRegionPlannerTest {
                 new RegionAccessPlanner.Access(11, 0, "health", 0, 10, RegionAccessPlanner.Mode.WRITE));
         assertThrows(IllegalArgumentException.class, () ->
                 RegionAccessPlanner.plan(List.of(new RegionAccessPlanner.SystemAccess("empty", List.of()))));
+        assertThrows(IllegalArgumentException.class, () ->
+                new RegionAccessPlanner.SystemAccess("mixed", List.of(
+                        new RegionAccessPlanner.Access(11, 3, "health", 0, 10, RegionAccessPlanner.Mode.WRITE),
+                        new RegionAccessPlanner.Access(11, 4, "position", 0, 10, RegionAccessPlanner.Mode.READ))));
+        assertThrows(IllegalArgumentException.class, () ->
+                RegionAccessPlanner.plan(List.of(a, a)));
+    }
+
+    @Test
+    void randomizedStagesNeverOverlapWritersOrReorderDependencies() {
+        java.util.Random random = new java.util.Random(19931018L);
+        for (int iteration = 0; iteration < 500; iteration++) {
+            java.util.List<RegionAccessPlanner.SystemAccess> systems = new java.util.ArrayList<>();
+            for (int i = 0; i < 12; i++) {
+                long start = random.nextInt(40);
+                long end = start + random.nextInt(40) + 1;
+                String column = random.nextBoolean() ? "position" : "health";
+                RegionAccessPlanner.Mode mode = random.nextBoolean()
+                        ? RegionAccessPlanner.Mode.READ : RegionAccessPlanner.Mode.WRITE;
+                systems.add(sys("system" + i, column, start, end, mode));
+            }
+            var stages = RegionAccessPlanner.plan(systems);
+            java.util.Map<String, Integer> level = new java.util.HashMap<>();
+            for (int i = 0; i < stages.size(); i++) {
+                for (var system : stages.get(i)) {
+                    assertNull(level.put(system.name(), i), "system scheduled more than once");
+                    for (var other : stages.get(i)) {
+                        if (system != other) {
+                            assertFalse(RegionAccessPlanner.conflicts(system, other),
+                                    "conflicting systems admitted into one stage");
+                        }
+                    }
+                }
+            }
+            assertEquals(12, level.size());
+            for (int i = 0; i < systems.size(); i++) {
+                for (int j = i + 1; j < systems.size(); j++) {
+                    if (RegionAccessPlanner.conflicts(systems.get(i), systems.get(j))) {
+                        assertTrue(level.get(systems.get(i).name())
+                                < level.get(systems.get(j).name()),
+                                "dependent system overtook an earlier writer");
+                    }
+                }
+            }
+        }
     }
 }
