@@ -12,6 +12,10 @@ if [[ "${actual}" != "${EXPECTED_SOURCE_TREE_SHA}" ]]; then
   exit 2
 fi
 git diff --quiet HEAD -- || { echo "Tracked files modified before test" >&2; exit 2; }
+if [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+  echo "Untracked checkout files present before exact-tree test; refusing contaminated inputs" >&2
+  exit 2
+fi
 command -v mvn >/dev/null || { echo "Maven unavailable" >&2; exit 2; }
 java -version >&2
 
