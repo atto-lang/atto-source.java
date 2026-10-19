@@ -210,6 +210,30 @@ class DispatcherTest(unittest.TestCase):
         finally:
             MOD.PUB.gh_api=old_api; MOD.api_list=old_list; MOD.refresh_authorization=old_refresh
 
+    def test_wrong_authorization_creation_response_is_denied(self):
+        r=receipt(); commit="a"*40
+        old_api=MOD.PUB.gh_api; old_list=MOD.api_list; old_refresh=MOD.refresh_authorization
+        payload_branch="ci/oreslang-"+r["source_tree_sha"]
+        auth_branch="ci/authorized-"+commit
+        writes=[]
+        try:
+            def api(route,method="GET",payload=None):
+                if method=="POST":
+                    writes.append(payload)
+                    return {"ref":"refs/heads/"+auth_branch,
+                            "object":{"type":"commit","sha":"b"*40}}
+                self.assertTrue(route.endswith("/git/ref/heads/"+payload_branch))
+                return {"ref":"refs/heads/"+payload_branch,
+                        "object":{"type":"commit","sha":commit}}
+            MOD.PUB.gh_api=api
+            MOD.api_list=lambda route:[]
+            MOD.refresh_authorization=lambda _: None
+            with self.assertRaisesRegex(MOD.Denied,"creation response mismatch"):
+                MOD.create_authorization_ref(r,commit)
+            self.assertEqual(len(writes),1)
+        finally:
+            MOD.PUB.gh_api=old_api; MOD.api_list=old_list; MOD.refresh_authorization=old_refresh
+
     def test_wrapped_github_base64_is_accepted(self):
         import base64, hashlib
         raw=b"hello world"
