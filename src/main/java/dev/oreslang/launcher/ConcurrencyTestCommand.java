@@ -87,9 +87,29 @@ final class ConcurrencyTestCommand {
             System.err.println("oreslang test: not a file: " + entryPath);
             return 2;
         }
+        // This is the entry file digest, not a full linked-import closure hash.
+        // Replaying a program with changed entry bytes is always refused.
+        if (Files.size(entryPath) > 8L * 1024 * 1024) {
+            System.err.println("oreslang test: entry file exceeds 8 MiB provenance limit");
+            return 2;
+        }
+        String entrySha256 = java.util.HexFormat.of().formatHex(
+                java.security.MessageDigest.getInstance("SHA-256")
+                        .digest(Files.readAllBytes(entryPath)));
+        String backendId = mode + "-" + platform;
+        if (!backendId.matches("[A-Za-z0-9_.-]{1,80}")) {
+            System.err.println("oreslang test: invalid backend provenance identity");
+            return 2;
+        }
         List<String> replay = null;
         if (replayArg != null) {
             var trace = ConcurrencyTestProbe.readTraceData(Path.of(replayArg));
+            if (trace.entrySha256() == null
+                    || !entrySha256.equals(trace.entrySha256())
+                    || !backendId.equals(trace.backend())) {
+                System.err.println("oreslang test: replay source/backend provenance mismatch or legacy V1 trace");
+                return 2;
+            }
             if (seedSpecified && seed != trace.seed()) {
                 System.err.println("oreslang test: replay seed differs from recorded trace seed");
                 return 2;
@@ -112,7 +132,7 @@ final class ConcurrencyTestCommand {
             int result;
             int detected;
             try (ConcurrencyTestProbe.Session session = ConcurrencyTestProbe.start(
-                    runSeed, scheduleFuzz || fuzz, replay)) {
+                    runSeed, scheduleFuzz || fuzz, replay, entrySha256, backendId)) {
                 try {
                     var executed = LinkedProgramRunner.runWithExitStatus(
                             entryPath,
