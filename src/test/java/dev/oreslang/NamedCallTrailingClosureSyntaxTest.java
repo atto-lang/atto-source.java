@@ -206,6 +206,30 @@ final class NamedCallTrailingClosureSyntaxTest {
     }
 
     @Test
+    void capabilityChecksTheSelectedOverloadByNameAndArity() {
+        Ast.Program program = TypeChecker.checkTypes(Parser.parse("""
+                pub fnc work(): int {
+                    return 0;
+                }
+                pub fnc work(int value): int {
+                    val id = process.context_id;
+                    return value;
+                }
+                pub fnc main(): void {
+                    work(value: 1);
+                    return;
+                }
+                """));
+
+        SecurityException denied = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.untrustedActor()));
+        assertTrue(denied.getMessage().contains("PROCESS_INFO")
+                        || denied.getMessage().contains("process.context_id"),
+                denied::toString);
+    }
+
+    @Test
     void runtimeEvaluatesNamedArgumentsInSourceOrderThenPermutesValues() throws Exception {
         assertEquals("BA12", run("""
                 pub fnc mark(string label, int value): int {
