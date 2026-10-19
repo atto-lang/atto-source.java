@@ -865,8 +865,8 @@ public final class Ast {
         }
     }
 
-    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
+    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, CompoundAssignExpr, ConditionalExpr,
+            MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr, NamedArgumentExpr, TypeSpecializationExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
@@ -876,6 +876,20 @@ public final class Ast {
     public record BinaryExpr(String operator, Expr left, Expr right) implements Expr { }
     public record UnaryExpr(String operator, Expr operand) implements Expr { }
     public record AssignExpr(Expr target, Expr value) implements Expr { }
+    /**
+     * Single-evaluation compound write. Lowering must evaluate the receiver and
+     * index exactly once, then perform a checked unique-field update. This
+     * compiler IR is intentionally gated until that proof is available.
+     */
+    public record CompoundAssignExpr(Expr target, String operator, Expr value) implements Expr {
+        public CompoundAssignExpr {
+            java.util.Objects.requireNonNull(target, "compound assignment target");
+            java.util.Objects.requireNonNull(value, "compound assignment value");
+            if (!"+".equals(operator)) {
+                throw new IllegalArgumentException("unsupported compound assignment operator");
+            }
+        }
+    }
     public record ConditionalExpr(Expr condition, Expr whenTrue, Expr whenFalse) implements Expr { }
 
     /**
@@ -917,6 +931,34 @@ public final class Ast {
 
     /** Argument-list spread. The parser only constructs this inside call argument lists. */
     public record SpreadExpr(Expr expression) implements Expr { }
+
+    /**
+     * Runtime-call label, not a map entry or normal value expression. Retains
+     * lexical evaluation order within CallExpr.arguments for safe ABI binding.
+     */
+    public record NamedArgumentExpr(String label, Expr value) implements Expr {
+        public NamedArgumentExpr {
+            if (label == null || !label.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+                throw new IllegalArgumentException("invalid named call argument label");
+            }
+            java.util.Objects.requireNonNull(value, "named argument value");
+        }
+    }
+
+    /**
+     * Type arguments preceding member access, e.g. Region<Motion>.new(...).
+     * Unlike method-generic call arguments, the specialization belongs to the
+     * nominal receiver type. Never discard/rebind it to the method call.
+     */
+    public record TypeSpecializationExpr(Expr typeName, List<TypeRef> arguments) implements Expr {
+        public TypeSpecializationExpr {
+            java.util.Objects.requireNonNull(typeName, "type specialization receiver");
+            arguments = List.copyOf(arguments);
+            if (arguments.isEmpty()) {
+                throw new IllegalArgumentException("type member specialization requires a type argument");
+            }
+        }
+    }
 
     public record CallExpr(
             Expr callee,
