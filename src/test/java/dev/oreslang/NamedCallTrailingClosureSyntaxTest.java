@@ -2,6 +2,8 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.CapabilityChecker;
+import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.NamedCallBindingPlan;
 import dev.oreslang.types.ReturnCleanupChecker;
 import dev.oreslang.types.TypeChecker;
@@ -153,6 +155,22 @@ final class NamedCallTrailingClosureSyntaxTest {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> ReturnCleanupChecker.check(program));
+        assertTrue(failure.getMessage().contains("staged named/trailing-closure"),
+                failure::toString);
+    }
+
+    @Test
+    void capabilityCheckerRejectsStagedCallWhenInvokedDirectly() {
+        Ast.Program program = Parser.parse("""
+                pub fnc work(int value): int { return value; }
+                pub fnc main(): void {
+                    work(value: 1);
+                    return;
+                }
+                """);
+        SecurityException failure = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
         assertTrue(failure.getMessage().contains("staged named/trailing-closure"),
                 failure::toString);
     }
