@@ -36,7 +36,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.main_deletions_allowed = False
         self.main_review_bypass = {"users": [], "teams": [], "apps": []}
         self.source_codeowners = (
-            "".join("/" + path + " @ORESoftware\\n"
+            "".join("/" + path + " @ORESoftware\n"
                     for path in pub.SOURCE_SECURITY_PATHS)).encode("utf-8")
         self.source_codeowners_sha_override = None
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
@@ -803,7 +803,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_missing_source_main_codeowner_denies_before_source_read(self):
         # GitHub CODEOWNER enforcement alone does not cover an unowned script.
         self.source_codeowners = self.source_codeowners.replace(
-            b"/scripts/publish-private-ci-source.py @ORESoftware\\n", b"")
+            b"/scripts/publish-private-ci-source.py @ORESoftware\n", b"")
         pinned = self.expected_source_tree()
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             with patch.object(pub, "collect_source",
@@ -815,7 +815,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_source_main_codeowner_override_denies_before_source_read(self):
         self.source_codeowners += (
-            b"/.github/private-ci-approved-repositories.txt @attacker\\n")
+            b"/.github/private-ci-approved-repositories.txt @attacker\n")
         pinned = self.expected_source_tree()
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             with patch.object(pub, "collect_source",
@@ -855,7 +855,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             response = original(route, method, payload)
             if method == "POST" and route == "repos/trusted/ci/git/blobs":
                 self.source_codeowners += (
-                    b"/scripts/publish-private-ci-source.py @attacker\\n")
+                    b"/scripts/publish-private-ci-source.py @attacker\n")
             return response
         with patch.object(pub, "gh_api", side_effect=revoke_after_first_blob):
             with self.assertRaisesRegex(pub.Denied, "effective CODEOWNER"):
