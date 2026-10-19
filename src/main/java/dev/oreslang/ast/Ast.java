@@ -868,7 +868,7 @@ public final class Ast {
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
-            ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, TaskExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -1153,6 +1153,18 @@ public final class Ast {
         }
         public boolean inferredStruct() { return kind == ObjectKind.INFERRED_STRUCT; }
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
+    }
+
+    /**
+     * Lightweight Task expression (nb { ... }), returning Task<void>.
+     * Captures are proved at the ownership pass and materialized when
+     * execution is scheduled, not rebound to a physical Java carrier.
+     *
+     * The Phase-1 Task is void-returning. Scoped borrowed captures and
+     * value-returning Task<T> need additional checked lowering.
+     */
+    public record TaskExpr(List<Stmt> body) implements Expr {
+        public TaskExpr { body = List.copyOf(body); }
     }
 
     public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) implements Expr {
