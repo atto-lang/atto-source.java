@@ -860,13 +860,13 @@ public final class OwnershipChecker {
                         || binding.declaredType() == null
                         || !binding.declaredType().name().equals(shortAlias)
                         || !(binding.initializer() instanceof Ast.ObjectExpr object
-                             && object.readonlyInferredAggregate()))) {
+                             && object.inferredAggregate()))) {
                 throw error("invalid validated short inferred type alias");
             }
             if (value.type.name().equals("$infer$")
-                    || shortAlias != null && !value.type.isReadonlyRecordType()) {
+                    || shortAlias != null && !value.type.isClosedAggregateType()) {
                 throw error("cannot bind inferred alias '" + inferredAlias
-                        + "' to an unknown or mutable ownership type");
+                        + "' to an unknown or non-aggregate ownership type");
             }
             scope.defineInferredType(inferredAlias, value.type);
             storedType = value.type;
@@ -1182,8 +1182,8 @@ public final class OwnershipChecker {
             if (concreteReceiver != null && concreteReceiver.isBorrow()) {
                 concreteReceiver = concreteReceiver.borrowedTarget();
             }
-            if (concreteReceiver != null && concreteReceiver.isRecordType()) {
-                Ast.TypeRef valueType = concreteReceiver.recordMembers().get(member.member());
+            if (concreteReceiver != null && concreteReceiver.isClosedAggregateType()) {
+                Ast.TypeRef valueType = concreteReceiver.aggregateMembers().get(member.member());
                 if (valueType == null) {
                     throw error("unknown record field '" + member.member() + "'");
                 }
@@ -1363,9 +1363,10 @@ public final class OwnershipChecker {
                 }
                 if (!object.explicitStruct()) members.put(field.name(), info.type);
             }
-            Ast.TypeRef type = object.inferredStruct()
-                    ? Ast.TypeRef.readonlyRecordType(members)
-                    : Ast.TypeRef.recordType(members);
+            Ast.TypeRef type;
+            if (object.inferredRecord()) type = Ast.TypeRef.readonlyRecordType(members);
+            else if (object.inferredStruct() || object.explicitStruct()) type = Ast.TypeRef.structType(members);
+            else throw error("unknown anonymous aggregate kind " + object.kind());
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
@@ -2290,8 +2291,8 @@ public final class OwnershipChecker {
             Ast.TypeRef type = receiver.type();
             if (type.isBorrow()) type = type.borrowedTarget();
             Ast.TypeRef fieldType = null;
-            if (type.isRecordType()) {
-                fieldType = type.recordMembers().get(member.member());
+            if (type.isClosedAggregateType()) {
+                fieldType = type.aggregateMembers().get(member.member());
             } else {
                 Ast.ClassDecl klass = findClass(type.name());
                 if (klass != null) {
@@ -2837,10 +2838,11 @@ public final class OwnershipChecker {
             return overlayReadonlyCapabilities(source.borrowedTarget(), target);
         }
 
-        if (source.isRecordType() && target.isRecordType()) {
-            Map<String, Ast.TypeRef> sourceMembers = source.recordMembers();
+        if (source.isClosedAggregateType() && target.isClosedAggregateType()) {
+            if (source.isStructType() != target.isStructType()) return target;
+            Map<String, Ast.TypeRef> sourceMembers = source.aggregateMembers();
             Map<String, Ast.TypeRef> members = new LinkedHashMap<>();
-            for (Map.Entry<String, Ast.TypeRef> entry : target.recordMembers().entrySet()) {
+            for (Map.Entry<String, Ast.TypeRef> entry : target.aggregateMembers().entrySet()) {
                 Ast.TypeRef sourceMember = sourceMembers.get(entry.getKey());
                 members.put(
                         entry.getKey(),
@@ -2848,6 +2850,7 @@ public final class OwnershipChecker {
                                 ? entry.getValue()
                                 : overlayReadonlyCapabilities(sourceMember, entry.getValue()));
             }
+            if (target.isStructType()) return Ast.TypeRef.structType(members);
             return source.isReadonlyRecordType() || target.isReadonlyRecordType()
                     ? Ast.TypeRef.readonlyRecordType(members)
                     : Ast.TypeRef.recordType(members);
@@ -3603,21 +3606,23 @@ public final class OwnershipChecker {
 
     private Ast.TypeRef objectRestBindingType(Ast.TypeRef source, List<Ast.DestructureBinding> bindings) {
         Ast.TypeRef concrete = source.isBorrow() ? source.borrowedTarget() : source;
-        if (!concrete.isRecordType()) return Ast.TypeRef.inferred();
+        if (!concrete.isClosedAggregateType()) return Ast.TypeRef.inferred();
 
-        Map<String, Ast.TypeRef> remainder = new LinkedHashMap<>(concrete.recordMembers());
+        Map<String, Ast.TypeRef> remainder = new LinkedHashMap<>(concrete.aggregateMembers());
         for (Ast.DestructureBinding binding : bindings) {
             if (!binding.rest() && !binding.isDiscard()) remainder.remove(binding.name());
         }
-        return concrete.isReadonlyRecordType()
+        // Removing fields from a concrete struct no longer denotes that exact
+        // struct type. The rest projection is therefore a structural record.
+        return concrete.isReadonlyRecordType() || concrete.isStructType()
                 ? Ast.TypeRef.readonlyRecordType(remainder)
                 : Ast.TypeRef.recordType(remainder);
     }
 
     private Ast.TypeRef objectMemberBindingType(Ast.TypeRef concrete, String name) {
         if (concrete.isBorrow()) concrete = concrete.borrowedTarget();
-        if (concrete.isRecordType()) {
-            Ast.TypeRef member = concrete.recordMembers().get(name);
+        if (concrete.isClosedAggregateType()) {
+            Ast.TypeRef member = concrete.aggregateMembers().get(name);
             if (member != null) return member;
         }
         Ast.ClassDecl klass = findClass(concrete.name());
