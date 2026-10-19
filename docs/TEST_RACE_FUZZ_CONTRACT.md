@@ -153,3 +153,42 @@ destination list at `.github/private-ci-approved-repositories.txt` on
 `main`: it contains no approved repositories. Source mirroring requires a
 reviewed allowlist entry and destination privacy/permission verification;
 availability of GitHub Actions minutes is not authorization to copy source.
+
+## October 19: actor two-phase shutdown and dropped-dispatch retirement
+
+A new audit found two additional runtime hazards beyond cancellation of a
+physically executing critical owner:
+
+1. **Callbacks under actor `lifecycleLock`:** finalization previously called
+   source scheduler close, mailbox/channel close and drain, output close, exit
+   hook, and Future completion under the actor's lifecycle monitor. The
+   two-phase path now publishes a lock-protected readiness gate, then runs
+   potentially callback-bearing release steps outside that monitor. Queued
+   mailbox draining also rejects callers holding the lifecycle monitor.
+   Terminal publication follows owned-future/child cancellation requests.
+2. **Permanently queued dispatch reservations:** scheduler actor continuation
+   envelopes can be dropped when an actor stops. The scheduler must receive a
+   single-shot `abandoned()` signal for every queued turn that is discarded
+   without execution. A dispatch-local CAS arbitrates `run()` vs
+   `abandoned()`, so physical-retirement accounting decrements exactly once.
+   The same signal is applied to work returned by `shutdownNow()` on owned
+   executors. This matters for `critical` ticket release after cancellation.
+
+Added exact-source JUnit regression classes:
+`ActorFinalizationCallbackIsolationTest` and
+`SchedulerAbandonedDispatchTest`. They assert that actor exit and terminal
+callbacks run outside lifecycleLock, parent/task cancellation precedes
+publication, actor turn completion obeys the physical boundary, abandoned
+queued source Tasks cannot execute guest code, and retirement runs exactly once.
+
+Independently, a standalone Java 21 state model passed 200,000 sequential
+trial orderings and 5,000 three-way concurrent cancel/run/abandon races.
+**This is model-only evidence.** It does not mean the exact Oreslang source
+compiled or executed. Source CI on this branch was still queued/no confirmed
+steps when the changes were recorded. Do not merge until exact-head
+compiler/JUnit/GraalVM workflows have actually run and passed.
+
+Private CI transfer is blocked by the unmerged allowlist proposal
+[PR #1472](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1472).
+Even a private destination with a successfully executed Actions workflow is
+not eligible for source mirroring until approved through protected main.
