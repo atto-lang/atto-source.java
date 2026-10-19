@@ -298,26 +298,36 @@ public final class OresTaskScope implements AutoCloseable {
     /** Cancel all owned descendants. Does NOT imply physical quiescence. */
     public boolean cancel() {
         List<Runnable> notifications = new ArrayList<>();
-        // First close all child admissions and revoke all Task producers.
-        // Future cancellation notifies arbitrary synchronous host waiters;
-        // notifying one child before revoking its siblings can otherwise
-        // indefinitely delay their cancellation.
-        boolean won = cancelTreeIterative(notifications);
+        List<OresCancellationToken.Registration> toDetach = new ArrayList<>();
+        // Revoke the entire subtree before running ANY synchronous host
+        // detach or notification callback. An uncooperative observer must not
+        // leave a sibling Task or descendant with unrevoked authority.
+        boolean wonRoot = cancelTreeIterative(notifications, toDetach);
         Throwable firstFailure = null;
+        for (OresCancellationToken.Registration registration : toDetach) {
+            try {
+                registration.close();
+            } catch (RuntimeException | Error failure) {
+                if (firstFailure == null) firstFailure = failure;
+                else if (firstFailure != failure) firstFailure.addSuppressed(failure);
+            }
+        }
         for (Runnable notification : notifications) {
             try {
                 notification.run();
             } catch (RuntimeException | Error failure) {
                 if (firstFailure == null) firstFailure = failure;
-                else firstFailure.addSuppressed(failure);
+                else if (firstFailure != failure) firstFailure.addSuppressed(failure);
             }
         }
         if (firstFailure instanceof RuntimeException failure) throw failure;
         if (firstFailure instanceof Error failure) throw failure;
-        return won;
+        return wonRoot;
     }
 
-    private boolean cancelTreeIterative(List<Runnable> notifications) {
+    private boolean cancelTreeIterative(
+            List<Runnable> notifications,
+            List<OresCancellationToken.Registration> toDetach) {
         ArrayDeque<OresTaskScope> pending = new ArrayDeque<>();
         pending.add(this);
         boolean wonRoot = false;
@@ -327,9 +337,8 @@ public final class OresTaskScope implements AutoCloseable {
             final List<OresTask<?>> owned;
             final List<OresCancellationToken.Registration> inbound;
             synchronized (scope.gate) {
-                // A competing cancellation can claim this child before
-                // traversing its grandchildren. Never mistake a claimed
-                // cancellation flag for a completed subtree sweep.
+                // Concurrent cancel may already have claimed this scope.
+                // Traverse grandchildren regardless of the prior claim.
                 boolean firstClaim = !scope.cancelled;
                 scope.cancelled = true;
                 if (scope == this && firstClaim) wonRoot = true;
@@ -338,12 +347,9 @@ public final class OresTaskScope implements AutoCloseable {
                 inbound = new ArrayList<>(scope.externalCancellation);
                 scope.externalCancellation.clear();
             }
-            // Sever directed inbound links before delivering host callbacks;
-            // a cancelled scope must not remain retained by its old sources.
-            for (OresCancellationToken.Registration link : inbound) link.close();
-            // Iterative traversal avoids recursive stack exhaustion with
-            // deeply nested scope trees. Closure of the admission gate is
-            // ordered before task revocation and callback delivery.
+            // Registration detach may call host code or throw. Postpone it
+            // until no descendant has outstanding cancellation admission.
+            toDetach.addAll(inbound);
             pending.addAll(children);
             for (OresTask<?> task : owned) {
                 Runnable notification = task.cancelDeferredNotification();
