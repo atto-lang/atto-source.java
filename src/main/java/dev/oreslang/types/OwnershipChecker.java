@@ -2125,6 +2125,15 @@ public final class OwnershipChecker {
             throw error(callable + " argument " + position + " must be an explicit borrow");
         }
         ValueInfo argument = checkExpr(arg, scope, true);
+        // A receiver is a borrowed capability, even when its source type is
+        // spelled as the enclosing class. Passing self as an explicit ordinary
+        // argument must not turn that borrow into an owned, escaping class value.
+        // Copyable scalars retain their existing by-value forwarding behavior.
+        if (isBorrowValue(argument) && !isCopyType(param.type())) {
+            throw error(callable + " argument " + position
+                    + " cannot pass a borrowed value to an owned parameter; "
+                    + "use an explicit borrow parameter or pass an owned value");
+        }
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
         }
