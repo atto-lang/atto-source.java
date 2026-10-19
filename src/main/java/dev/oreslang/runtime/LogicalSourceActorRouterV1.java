@@ -704,6 +704,19 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
         // message admission on the old route must not wait for compilation.
         HotReloadManager.ActorGenerationView candidate =
                 candidateGeneration.linkActorGeneration(actorTypeName);
+        // A compiler-ABI-bound proxy retains already-admitted immutable
+        // messages across hot replacement. Reject a different receive ABI
+        // before acquiring a generation lease, freezing physical ingress or
+        // restoring state: old envelopes must never be interpreted under
+        // the candidate's different source message contract.
+        if (scalarWireBinding != null) {
+            String candidateMessageAbi =
+                    candidate.executor().actorMessageAbiSha256(actorTypeName);
+            if (!scalarWireBinding.messageAbiSha256().equals(candidateMessageAbi)) {
+                throw new SecurityException(
+                        "source actor compiler message ABI changed across logical route upgrade");
+            }
+        }
         HotReloadManager.Generation.ActorRouteLease candidateLease =
                 candidateGeneration.pinActorRoute();
 
