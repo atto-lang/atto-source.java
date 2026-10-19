@@ -63,18 +63,18 @@ final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher
             for (int i = 0; i < values.size(); i++) {
                 Object item = values.get(i);
                 final long octet;
-                if (item instanceof Byte value) {
-                    octet = Byte.toUnsignedInt(value);
-                } else if (item instanceof Short value) {
-                    octet = value.longValue();
-                } else if (item instanceof Integer value) {
-                    octet = value.longValue();
-                } else if (item instanceof Long value) {
-                    octet = value;
-                } else if (item instanceof BigInteger value
-                        && value.signum() >= 0
-                        && value.bitLength() <= 8) {
-                    octet = value.longValue();
+                if (item instanceof Byte byteValue) {
+                    octet = Byte.toUnsignedInt(byteValue);
+                } else if (item instanceof Short shortValue) {
+                    octet = shortValue.longValue();
+                } else if (item instanceof Integer intValue) {
+                    octet = intValue.longValue();
+                } else if (item instanceof Long longValue) {
+                    octet = longValue;
+                } else if (item instanceof BigInteger bigValue
+                        && bigValue.signum() >= 0
+                        && bigValue.bitLength() <= 8) {
+                    octet = shortValue.longValue();
                 } else {
                     throw new IllegalArgumentException(
                             "unary TCP result byte must be an integer in 0..255");
