@@ -114,7 +114,7 @@ final class DefaultArgValsStagingTest {
                 define module m
                   pub define class Linked as
                     @DefaultArgVals(x: 3)
-                    pub method(int x): int { return x; }
+                    pub handle(int x): int { return x; }
                   end
                 end
                 """);
