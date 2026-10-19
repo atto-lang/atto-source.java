@@ -66,7 +66,9 @@ def checked_repo(repository):
     if (not isinstance(result.get("full_name"), str)
             or result["full_name"].casefold() != repository.casefold()
             or result.get("visibility") != "private"
-            or result.get("private") is not True):
+            or result.get("private") is not True
+            or result.get("archived") is not False
+            or result.get("disabled") is not False):
         raise Denied("destination identity or private visibility changed")
     return result
 
@@ -288,6 +290,11 @@ def publish(repository, source, branch, trusted_root):
         live = checked_repo(repository)
         if type(live.get("id")) is not int or live["id"] != attestation["destination_id"]:
             raise Denied("private CI destination numeric identity changed")
+        source = gh_api("repos/" + pinned.SOURCE_REPO)
+        try:
+            pinned.check_identity(source, pinned.SOURCE_REPO, pinned.SOURCE_ID)
+        except pinned.AdmissionDenied as exc:
+            raise Denied("private CI source identity or private visibility changed") from exc
         current_policy = gh_api("repos/" + pinned.SOURCE_REPO + "/git/ref/heads/main")
         if (not isinstance(current_policy, dict)
                 or current_policy.get("object", {}).get("sha") != attestation["policy_sha"]):
