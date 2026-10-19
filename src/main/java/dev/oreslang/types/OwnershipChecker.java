@@ -1906,10 +1906,9 @@ public final class OwnershipChecker {
                         + " fails conservative Task Send preflight for owned transfer; resolved ThreadSafetyTraits remains authoritative");
             }
             if (value.kind == ValueKind.MOVE_ONLY
-                    && (argument instanceof Ast.MemberExpr
-                        || argument instanceof Ast.IndexExpr)) {
+                    && containsUntrackedProjection(argument)) {
                 throw error("scheduled lambda argument " + i
-                        + " cannot transfer a move-only projection until projection-level move tracking exists; move it into a named local first");
+                        + " cannot transfer a move-only value derived from a field/index projection until projection-level move tracking exists; move it into a named local first");
             }
             transfers.add(scheduledArgumentTransfer(
                     i, argument, value, scope));
@@ -2631,6 +2630,107 @@ public final class OwnershipChecker {
                     capture.name, source.type, kind));
         }
         return transfers;
+    }
+
+    /**
+     * Projection-level affine state does not exist yet. For a scheduled
+     * move-only argument, fail closed if any ownership-carrying expression
+     * underneath it reads a field/index place. This deliberately follows
+     * wrappers and aggregate constructors so a cast, rt take, tuple/object,
+     * call argument, conditional or match cannot launder an untracked place
+     * into an OWNED_RVALUE provenance proof.
+     */
+    private static boolean containsUntrackedProjection(Ast.Expr expression) {
+        if (expression == null) return false;
+        if (expression instanceof Ast.MemberExpr
+                || expression instanceof Ast.IndexExpr) return true;
+        if (expression instanceof Ast.CastExpr cast) {
+            return containsUntrackedProjection(cast.value());
+        }
+        if (expression instanceof Ast.SpreadExpr spread) {
+            return containsUntrackedProjection(spread.expression());
+        }
+        if (expression instanceof Ast.TrapExpr trapped) {
+            return containsUntrackedProjection(trapped.expression());
+        }
+        if (expression instanceof Ast.AwaitExpr awaited) {
+            return containsUntrackedProjection(awaited.expression());
+        }
+        if (expression instanceof Ast.UnaryExpr unary) {
+            return containsUntrackedProjection(unary.operand());
+        }
+        if (expression instanceof Ast.BinaryExpr binary) {
+            return containsUntrackedProjection(binary.left())
+                    || containsUntrackedProjection(binary.right());
+        }
+        if (expression instanceof Ast.AssignExpr assignment) {
+            return containsUntrackedProjection(assignment.target())
+                    || containsUntrackedProjection(assignment.value());
+        }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            return containsUntrackedProjection(conditional.condition())
+                    || containsUntrackedProjection(conditional.whenTrue())
+                    || containsUntrackedProjection(conditional.whenFalse());
+        }
+        if (expression instanceof Ast.MatchExpr match) {
+            if (containsUntrackedProjection(match.subject())) return true;
+            for (Ast.MatchValueArm arm : match.arms()) {
+                if (containsUntrackedProjection(arm.guard())
+                        || containsUntrackedProjection(arm.value())) return true;
+            }
+            return false;
+        }
+        if (expression instanceof Ast.TypeTestExpr test) {
+            return containsUntrackedProjection(test.value());
+        }
+        if (expression instanceof Ast.PatternTestExpr test) {
+            return containsUntrackedProjection(test.value());
+        }
+        if (expression instanceof Ast.CallExpr call) {
+            if (containsUntrackedProjection(call.callee())) return true;
+            for (Ast.Expr argument : call.arguments()) {
+                if (containsUntrackedProjection(argument)) return true;
+            }
+            return false;
+        }
+        if (expression instanceof Ast.RuntimeCallExpr runtime) {
+            for (Ast.Expr argument : runtime.arguments()) {
+                if (containsUntrackedProjection(argument)) return true;
+            }
+            return false;
+        }
+        if (expression instanceof Ast.NewExpr created) {
+            for (Ast.Expr argument : created.arguments()) {
+                if (containsUntrackedProjection(argument)) return true;
+            }
+            return false;
+        }
+        if (expression instanceof Ast.ChannelOpExpr channel) {
+            return containsUntrackedProjection(channel.channel())
+                    || containsUntrackedProjection(channel.value());
+        }
+        if (expression instanceof Ast.DynamicSelectExpr selected) {
+            return containsUntrackedProjection(selected.cases());
+        }
+        if (expression instanceof Ast.ListExpr list) {
+            for (Ast.Expr element : list.elements()) {
+                if (containsUntrackedProjection(element)) return true;
+            }
+            return false;
+        }
+        if (expression instanceof Ast.TupleExpr tuple) {
+            for (Ast.Expr element : tuple.elements()) {
+                if (containsUntrackedProjection(element)) return true;
+            }
+            return false;
+        }
+        if (expression instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) {
+                if (containsUntrackedProjection(field.value())) return true;
+            }
+            return false;
+        }
+        return false;
     }
 
     private TaskTransferProvenance.Transfer scheduledArgumentTransfer(
