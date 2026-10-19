@@ -490,3 +490,53 @@ not yet proven. Suspended Oreslang async finally/defer cleanup and
 compiler-generated loop checkpoint selection remain future integration
 work. Never inject cancellation inside a critical-write section, FFI, or
 ownership-sensitive/non-reentrant region without additional safety proofs.
+
+
+## Cancellation-link lifetime audit — source-observer retention
+
+A retired target token can remain reachable from a **long-lived upstream
+cancellation source** through the observer callback registered by
+`linkCancellationFrom(source)`. Merely making `target.cancel()` return
+false after retirement is not enough: without unregistering the upstream
+observer, the source still owns a strong reference to the completed
+target and its captured runtime context.
+
+**Fix in PR #1407:** the target tracks upstream cancellation subscriptions
+under `GRAPH_LOCK`. Retirement atomically takes and clears that set,
+then closes each external subscription **outside** the graph lock.
+Concurrent link creation rechecks `retired` while acquiring the target
+lock and closes an already-retired link rather than persisting it.
+Cancellation delivery remains idempotent; links are observation-only and
+do not grant guest authority. This change does not claim completed task
+children can be dropped without their own retirement.
+
+**Regression tests:** three new `TaskCancellationTest` methods cover
+an established link, a link attempted after retirement and a 150-run
+concurrent registration/retirement race. The established-link test
+additionally inspects the source's internal `observers` collection to
+prove the listener is actually removed, not merely made inert. The
+separate `TaskHandleTest.retiredAuthorityDoesNotRetainOrInvokeOldSubscriptions`
+assertion was fixed to require the terminal authority to reject late
+cancellation (not accept it).
+
+**Exact audited branch inventory at these commits:** 80 staged JUnit
+methods (27 TaskCancellation + 36 TaskHandle + 17 TaskScope). These tests
+are source-committed but **not executed** against production Maven/GraalVM.
+
+**Independent alternate Actions:** private
+`opto-sync-test/go-java-validation`,
+[run #39193467280](https://github.com/opto-sync-test/go-java-validation/actions/runs/39193467280),
+commit `e463c72a888226735ad2b37a98f6b3e355643831`:
+**14/14 workflow steps succeeded** on Java 21.0.12.1.
+Logs confirm 2,250 admission-model, 1,600 generic-lifecycle,
+900 observer-retirement, and 1,200 link-retention checks, totaling
+**5,950 independent source-free cases**. No private Oreslang source or
+cross-org tokens were used. This is evidence of runner availability
+and independently modeled invariants, **not** an exact-source compile,
+native-image test, production JUnit run or approval to mirror source.
+
+Open gates remain unchanged: source `main` is unprotected and its
+approved cross-org private CI destination list is empty; require
+independent security review and a provenance-pinned allowed destination
+before any full-tree transfer. Source-local Actions must execute genuine
+compiler/test steps before either draft can be merged.
