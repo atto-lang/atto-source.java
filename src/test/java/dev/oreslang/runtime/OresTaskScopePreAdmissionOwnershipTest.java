@@ -57,6 +57,33 @@ final class OresTaskScopePreAdmissionOwnershipTest {
     }
 
     @Test
+    void asyncOwnerSlotInsertThenThrowCannotRetainPhantomTask()
+            throws Exception {
+        try (var runtime = new AsyncRuntime();
+             var scope = new OresTaskScope(runtime)) {
+            Field field = tasksField();
+            Object original = field.get(scope);
+            var executed = new AtomicInteger();
+            field.set(scope, new HashSet<Object>() {
+                @Override public boolean add(Object value) {
+                    super.add(value);
+                    throw new OutOfMemoryError(
+                            "injected owner-set failure after insertion");
+                }
+            });
+            try {
+                assertThrows(OutOfMemoryError.class,
+                        () -> scope.submit(() -> executed.incrementAndGet()));
+                assertEquals(0, executed.get());
+                assertTrue(scope.physicallyQuiescent(),
+                        "insert-then-throw must not retain a phantom provisional child");
+            } finally {
+                field.set(scope, original);
+            }
+        }
+    }
+
+    @Test
     void compilerOwnerSlotOomeReleasesPreparedCodeLeaseExactlyOnce()
             throws Exception {
         try (var scheduler = new OresScheduler(1);
