@@ -54,7 +54,12 @@ pub fnc main(): int { return scale(1); }
 ```
 
 Marked source executes signed-64-bit addition, subtraction, multiplication
-and unary negation with overflow detection. Java/GraalVM uses
+and unary negation with overflow detection, plus signed remainder. Remainder
+is truncation-toward-zero (`-7 % 3 == -1`, `MIN_I64 % -1 == 0`), with
+remainder-by-zero emitting the provisional host diagnostic
+`ORES_I64_DIVISION_BY_ZERO` rather than an unclassified Java arithmetic
+message. `%` currently executes only in the checked runtime subset; it is
+not yet admitted by this experimental common HIR exporter. Java/GraalVM uses
 `Math.*Exact`; LLVM uses `llvm.sadd/ssub/smul.with.overflow.i64`, with
 checked negation lowered as zero-minus-operand. LLVM's experimental host
 failure path prints `ORES_I64_OVERFLOW` and exits with status 86; the
