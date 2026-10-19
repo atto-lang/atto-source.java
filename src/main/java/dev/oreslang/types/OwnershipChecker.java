@@ -891,7 +891,10 @@ public final class OwnershipChecker {
         state.borrowSource = value.borrowSource;
         state.borrowLease = value.borrowLease;
         if (binding.kind() == Ast.BindingKind.CONST) {
-            state.computedIndexConstant = directComputedIndexConstant(binding);
+            Object directSelector = directComputedIndexConstant(binding);
+            state.computedIndexConstant = directSelector != null
+                    ? directSelector
+                    : computedIndexConstant(binding.initializer(), scope);
         }
         scope.define(binding.name(), state);
     }
