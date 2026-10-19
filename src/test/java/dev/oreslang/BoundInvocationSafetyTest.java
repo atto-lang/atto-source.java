@@ -107,6 +107,47 @@ final class BoundInvocationSafetyTest {
     }
 
     @Test
+    void annotatedOrContractedModuleRequiresExpandedLexicalProof() {
+        Ast.ModuleDecl plain = Parser.parse("""
+                define module app as
+                    pub fnc work(int a): int { return a; }
+                end
+                """).modules().getFirst();
+        Ast.StagedCallExpr direct = new Ast.StagedCallExpr(
+                new Ast.NameExpr("work"), List.of(), false,
+                List.of(Ast.CallArgument.named("a", new Ast.LiteralExpr(4L))));
+        Ast.StagedCallExpr qualified = new Ast.StagedCallExpr(
+                new Ast.MemberExpr(new Ast.NameExpr("app"), "work"),
+                List.of(), false,
+                List.of(Ast.CallArgument.named("a", new Ast.LiteralExpr(4L))));
+
+        for (Ast.ModuleDecl unexpanded : List.of(
+                new Ast.ModuleDecl(plain.name(),
+                        List.of(new Ast.Annotation("audit", List.of())),
+                        List.of(), plain.declarations()),
+                new Ast.ModuleDecl(plain.name(), List.of(),
+                        List.of(Ast.TypeRef.simple("Contract")),
+                        plain.declarations()))) {
+            for (Ast.StagedCallExpr call : List.of(direct, qualified)) {
+                assertThrows(IllegalArgumentException.class,
+                        () -> BoundInvocation.bindLiteralModuleFunction(
+                                unexpanded, call));
+                assertThrows(IllegalArgumentException.class,
+                        () -> BoundInvocation.bindModuleFunction(
+                                unexpanded, call, List.of(INT)));
+            }
+        }
+
+        for (Ast.StagedCallExpr call : List.of(direct, qualified)) {
+            BoundInvocation preview =
+                    BoundInvocation.bindLiteralModuleFunction(plain, call);
+            assertEquals(BoundInvocation.Readiness.SHAPE_ONLY,
+                    preview.readiness());
+            assertThrows(IllegalStateException.class, preview::requireExecutable);
+        }
+    }
+
+    @Test
     void forgedModuleNoncallableNameCollisionRequiresRealLexicalResolution() {
         Ast.ModuleDecl original = Parser.parse("""
                 define module app as
