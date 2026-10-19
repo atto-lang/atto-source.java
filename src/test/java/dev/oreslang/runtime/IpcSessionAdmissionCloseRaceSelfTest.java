@@ -44,7 +44,7 @@ public final class IpcSessionAdmissionCloseRaceSelfTest {
                         cleanup::execute);
 
                 CountDownLatch fire = new CountDownLatch(1);
-                AtomicReference<IpcTransportSessionLease.AdmittedWrite> admitted =
+                AtomicReference<IpcTransportSessionLease.WriteAttempt> admitted =
                         new AtomicReference<>();
                 AtomicReference<Throwable> problem = new AtomicReference<>();
                 AtomicInteger rejected = new AtomicInteger();
@@ -52,9 +52,8 @@ public final class IpcSessionAdmissionCloseRaceSelfTest {
                 Thread sender = new Thread(() -> {
                     try {
                         fire.await();
-                        var write = lease.admitAndCommitFrame(77, message);
-                        admitted.set(write);
-                        lease.writeAdmittedFrame(write, new byte[] {1});
+                        admitted.set(lease.sendPreparedFrame(
+                                77, message, new byte[] {1}));
                     } catch (IpcTransportSessionLease.PreDispatchRejectedException expected) {
                         rejected.incrementAndGet();
                     } catch (Throwable failure) {
@@ -93,6 +92,7 @@ public final class IpcSessionAdmissionCloseRaceSelfTest {
                     admittedWins.incrementAndGet();
                     check(admitted.get().outcome().toCompletableFuture().join()
                             == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+                    check(admitted.get().error() == null);
                     check(bridge.counters().equals(
                             new IpcReceiptCorrelation.Counters(0, 0)));
                 }
@@ -113,7 +113,7 @@ public final class IpcSessionAdmissionCloseRaceSelfTest {
                 lease.requestClose();
                 check(lease.awaitTerminal(3000));
                 try {
-                    lease.admitAndCommitFrame(88, message);
+                    lease.sendPreparedFrame(88, message, new byte[] {1});
                     throw new AssertionError("closed session admitted receipt");
                 } catch (IpcTransportSessionLease.PreDispatchRejectedException expected) {
                     ++checks;
@@ -122,23 +122,55 @@ public final class IpcSessionAdmissionCloseRaceSelfTest {
                         new IpcReceiptCorrelation.Counters(0, 0)));
             }
 
-            // Deterministic admission-before-close: once committed, closing can
-            // only make the outcome uncertain, never a never-sent rejection.
+            // Deterministic admission-before-close: hold the physical writer
+            // open after commitment, then close. The one-call API retains the
+            // pin until the writer unwinds; there is no abandonable token.
             {
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var message = env(1);
                 Object owner = new Object();
                 bridge.claimPhysicalTransport(owner, message, 89);
+                CountDownLatch writerEntered = new CountDownLatch(1);
+                CountDownLatch releaseWriter = new CountDownLatch(1);
                 var lease = new IpcTransportSessionLease(
                         message, 89, 1, bridge, owner,
-                        (ignoredMessage, ignoredFrame) -> { },
+                        (ignoredMessage, ignoredFrame) -> {
+                            writerEntered.countDown();
+                            try {
+                                releaseWriter.await();
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                throw new java.io.IOException(
+                                        "writer interrupted", interrupted);
+                            }
+                        },
                         () -> { },
                         cleanup::execute);
-                var write = lease.admitAndCommitFrame(89, message);
+                AtomicReference<IpcTransportSessionLease.WriteAttempt> result =
+                        new AtomicReference<>();
+                AtomicReference<Throwable> failure = new AtomicReference<>();
+                Thread sender = new Thread(() -> {
+                    try {
+                        result.set(lease.sendPreparedFrame(
+                                89, message, new byte[] {1}));
+                    } catch (Throwable problem) {
+                        failure.set(problem);
+                    }
+                }, "ipc-deterministic-admitted-writer");
+                sender.start();
+                check(writerEntered.await(2, TimeUnit.SECONDS));
+                check(lease.snapshot().activeWrites() == 1);
                 lease.requestClose();
-                lease.writeAdmittedFrame(write, new byte[] {1});
+                check(lease.snapshot().phase() == IpcTransportSessionLease.Phase.CLOSING);
+                check(!lease.awaitTerminal(20));
+                releaseWriter.countDown();
+                sender.join(3000);
+                check(!sender.isAlive());
+                check(failure.get() == null);
+                check(result.get() != null);
+                check(result.get().error() == null);
                 check(lease.awaitTerminal(3000));
-                check(write.outcome().toCompletableFuture().join()
+                check(result.get().outcome().toCompletableFuture().join()
                         == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
                 check(bridge.invariant());
             }
