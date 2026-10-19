@@ -22,18 +22,23 @@ public final class UnloweredDefaultArgValsGuard {
                 } else if (decl instanceof Ast.FieldDecl field) {
                     rejectAnnotations(field.annotations(), "module field " + field.name());
                 } else if (decl instanceof Ast.ClassDecl klass) {
-                    for (Ast.FieldDecl field : klass.fields()) {
-                        rejectAnnotations(field.annotations(), klass.name() + "." + field.name());
-                    }
-                    if (klass.constructor() != null) {
-                        rejectAnnotations(klass.constructor().annotations(),
-                                "constructor " + klass.name());
-                    }
-                    for (Ast.MethodDecl method : klass.methods()) {
-                        rejectAnnotations(method.annotations(), "method " + klass.name() + "." + method.name());
-                    }
+                    rejectClass(klass);
                 }
             }
+        }
+    }
+
+    /** Also validate linked/imported public classes before checker admission. */
+    public static void rejectClass(Ast.ClassDecl klass) {
+        Objects.requireNonNull(klass, "class");
+        for (Ast.FieldDecl field : klass.fields()) {
+            rejectAnnotations(field.annotations(), klass.name() + "." + field.name());
+        }
+        if (klass.constructor() != null) {
+            rejectAnnotations(klass.constructor().annotations(), "constructor " + klass.name());
+        }
+        for (Ast.MethodDecl method : klass.methods()) {
+            rejectAnnotations(method.annotations(), "method " + klass.name() + "." + method.name());
         }
     }
 
