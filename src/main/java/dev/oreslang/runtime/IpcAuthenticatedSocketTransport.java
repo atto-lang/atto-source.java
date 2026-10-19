@@ -35,9 +35,12 @@ import javax.crypto.spec.SecretKeySpec;
  */
 final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     private static final int MAGIC = 0x4f524553; // ORES
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
     private static final int TYPE_DATA = 1;
     private static final int TYPE_RECEIPT = 2;
+    private static final int RECEIPT_REMOTE_ACCEPTED = 1;
+    private static final int RECEIPT_HANDLER_COMMITTED = 2;
+    private static final int RECEIPT_HANDLER_FAILED = 3;
     private static final int MAC_BYTES = 32;
     private static final int MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
     private static final int MAX_TOKEN_BYTES = 96;
@@ -457,7 +460,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         try (DataOutputStream out = new DataOutputStream(raw)) {
             writeHeader(out, TYPE_RECEIPT, physicalGeneration);
             writeEnvelope(out, envelope);
-            out.writeByte(stage.ordinal());
+            out.writeByte(remoteReceiptWireCode(stage));
         }
         return appendMac(raw.toByteArray(), key);
     }
@@ -467,15 +470,15 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(authenticated))) {
             long physicalGeneration = requireHeader(in, TYPE_RECEIPT);
             IpcReceiptCorrelation.Envelope envelope = readEnvelope(in);
-            int ordinal = in.readUnsignedByte();
-            if (ordinal >= IpcReceiptCorrelation.Stage.values().length || in.available() != 0) {
-                throw new IOException("invalid IPC receipt stage/frame length");
+            int wireCode = in.readUnsignedByte();
+            if (in.available() != 0) {
+                throw new IOException("invalid IPC receipt frame length");
             }
-            IpcReceiptCorrelation.Stage stage = IpcReceiptCorrelation.Stage.values()[ordinal];
+            final IpcReceiptCorrelation.Stage stage;
             try {
-                requireRemoteReceiptStage(stage);
+                stage = remoteReceiptStage(wireCode);
             } catch (IllegalArgumentException invalid) {
-                throw new IOException("peer asserted local-only IPC verdict", invalid);
+                throw new IOException("peer asserted invalid IPC receipt code", invalid);
             }
             return new DecodedReceipt(envelope, physicalGeneration, stage);
         }
@@ -600,6 +603,26 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             }
         }
         return new String(bytes, StandardCharsets.US_ASCII);
+    }
+
+    private static int remoteReceiptWireCode(IpcReceiptCorrelation.Stage stage) {
+        requireRemoteReceiptStage(stage);
+        return switch (stage) {
+            case REMOTE_ACCEPTED -> RECEIPT_REMOTE_ACCEPTED;
+            case HANDLER_COMMITTED -> RECEIPT_HANDLER_COMMITTED;
+            case HANDLER_FAILED -> RECEIPT_HANDLER_FAILED;
+            default -> throw new IllegalArgumentException(
+                    "local-only/invalid peer receipt stage");
+        };
+    }
+
+    private static IpcReceiptCorrelation.Stage remoteReceiptStage(int wireCode) {
+        return switch (wireCode) {
+            case RECEIPT_REMOTE_ACCEPTED -> IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED;
+            case RECEIPT_HANDLER_COMMITTED -> IpcReceiptCorrelation.Stage.HANDLER_COMMITTED;
+            case RECEIPT_HANDLER_FAILED -> IpcReceiptCorrelation.Stage.HANDLER_FAILED;
+            default -> throw new IllegalArgumentException("invalid peer receipt wire code");
+        };
     }
 
     private static void requireRemoteReceiptStage(IpcReceiptCorrelation.Stage stage) {
