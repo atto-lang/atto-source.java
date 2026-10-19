@@ -340,18 +340,20 @@ public final class OresTaskScope implements AutoCloseable {
         }
 
         Throwable firstFailure = null;
-        for (OresCancellationToken.Registration link : allLinks) {
+        // Revocation of every producer takes priority over detaching
+        // external observers: host detach is permitted to block or throw.
+        for (OresTask<?> task : allTasks) {
             try {
-                link.close();
+                Runnable notification = task.cancelDeferredNotification();
+                if (notification != null) notifications.add(notification);
             } catch (RuntimeException | Error failure) {
                 if (firstFailure == null) firstFailure = failure;
                 else if (firstFailure != failure) firstFailure.addSuppressed(failure);
             }
         }
-        for (OresTask<?> task : allTasks) {
+        for (OresCancellationToken.Registration link : allLinks) {
             try {
-                Runnable notification = task.cancelDeferredNotification();
-                if (notification != null) notifications.add(notification);
+                link.close();
             } catch (RuntimeException | Error failure) {
                 if (firstFailure == null) firstFailure = failure;
                 else if (firstFailure != failure) firstFailure.addSuppressed(failure);
