@@ -78,8 +78,10 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         if (physicalGeneration <= 0) {
             throw new IllegalArgumentException("physical generation must be positive");
         }
-        if (maxOutstandingWrites <= 0 || maxOutstandingWrites > 65536) {
-            throw new IllegalArgumentException("invalid bounded IPC write capacity");
+        if (maxOutstandingWrites != 1) {
+            throw new IllegalArgumentException(
+                    "TCP physical write concurrency must be exactly one; "
+                    + "receipt lifetimes are bounded separately");
         }
         if (macKey == null || macKey.length < 32 || macKey.length > 128) {
             throw new IllegalArgumentException("IPC MAC key must be 32..128 bytes");
