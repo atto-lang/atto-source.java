@@ -469,6 +469,11 @@ public class TaskCancellationTest {
             assertFalse(((java.util.concurrent.atomic.AtomicBoolean)
                     active.get(link)).get(),
                     "retirement must unregister listener from long-lived source");
+            java.lang.reflect.Field pending =
+                    TaskCancellation.class.getDeclaredField("observers");
+            pending.setAccessible(true);
+            assertEquals(0, ((java.util.Set<?>) pending.get(source)).size(),
+                    "upstream source must not retain the completed target");
             assertTrue(source.cancel("upstream stopped"));
             assertFalse(target.isCancelled(),
                     "completed target must not be reactivated from a source link");
