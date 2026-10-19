@@ -587,6 +587,28 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void structuralFieldProofCannotFallThroughToRuntimeSequenceRead() {
+        Ast.IndexExpr structural = new Ast.IndexExpr(
+                new Ast.NameExpr("record"), new Ast.NameExpr("key"));
+        Ast.CheckedIndexKeys.record(structural, Set.of("id"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Ast.CheckedIndexKeys.requireTupleSlot(structural, 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> Ast.CheckedIndexKeys.requireTupleSlot(structural, 3));
+
+        Ast.IndexExpr validSequence = new Ast.IndexExpr(
+                new Ast.NameExpr("items"), new Ast.LiteralExpr(0L));
+        assertDoesNotThrow(() -> Ast.CheckedIndexKeys.requireTupleSlot(validSequence, 0));
+
+        Ast.IndexExpr positional = new Ast.IndexExpr(
+                new Ast.NameExpr("tuple"), new Ast.NameExpr("index"));
+        Ast.CheckedIndexKeys.recordTupleSlot(positional, 1);
+        assertDoesNotThrow(() -> Ast.CheckedIndexKeys.requireTupleSlot(positional, 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> Ast.CheckedIndexKeys.requireTupleSlot(positional, 0));
+    }
+
+    @Test
     void fieldProofRequiresExactAstIdentity() {
         Ast.IndexExpr first = new Ast.IndexExpr(
                 new Ast.NameExpr("data"), new Ast.LiteralExpr("x"));
