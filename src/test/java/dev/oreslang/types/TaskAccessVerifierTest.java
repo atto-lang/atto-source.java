@@ -19,6 +19,21 @@ final class TaskAccessVerifierTest {
         return new TaskAccessVerifier.Claim(place, TaskAccessVerifier.Mode.WRITE);
     }
 
+    private static ThreadSafetyTraits.NominalProof trustedCoreProof() {
+        return new ThreadSafetyTraits.NominalProof() {
+            @Override public boolean has(Types.Named type, ThreadSafetyTraits.Trait trait) {
+                return false;
+            }
+            @Override public boolean trustedIntrinsic(Types.Named type) {
+                return type.name().equals("Channel")
+                        || type.name().equals("Option")
+                        || type.name().equals("Result")
+                        || type.name().equals("IteratorResult")
+                        || type.name().equals("OptionUnwrapError");
+            }
+        };
+    }
+
     @Test void coexistingReadersAndExclusiveWriters() {
         var ledger = new TaskAccessVerifier();
         var place = TaskAccessVerifier.Place.whole(WORLD);
@@ -203,15 +218,20 @@ final class TaskAccessVerifierTest {
         var channel = new Types.Named("Channel", List.of(Types.Primitive.INT));
         var syncRead = new TaskAccessVerifier.TypedClaim(read(unique), channel);
         assertThrows(IllegalArgumentException.class,
-                () -> ledger.admitTyped(List.of(syncRead), (name, trait) -> false));
+                () -> ledger.admitTyped(
+                        List.of(syncRead), place -> channel, trustedCoreProof()));
         assertEquals(0, ledger.activeChildren());
         var sendWrite = new TaskAccessVerifier.TypedClaim(write(unique), channel);
-        var ticket = ledger.admitTyped(List.of(sendWrite), (name, trait) -> false);
+        var ticket = ledger.admitTyped(
+                List.of(sendWrite), place -> channel, trustedCoreProof());
         assertEquals(1, ledger.activeChildren());
         ledger.quiescent(ticket);
         assertThrows(IllegalArgumentException.class,
-                () -> ledger.admitTyped(List.of(new TaskAccessVerifier.TypedClaim(
-                        read(unique), new Types.Generic("T"))), (name, trait) -> true));
+                () -> ledger.admitTyped(
+                        List.of(new TaskAccessVerifier.TypedClaim(
+                                read(unique), new Types.Generic("T"))),
+                        place -> new Types.Generic("T"),
+                        (name, trait) -> true));
         assertEquals(0, ledger.activeChildren());
     }
 
@@ -219,11 +239,42 @@ final class TaskAccessVerifierTest {
         var ledger = new TaskAccessVerifier();
         var pos = TaskAccessVerifier.Place.whole(WORLD).field("position", true);
         var vel = TaskAccessVerifier.Place.whole(WORLD).field("velocity", true);
-        assertThrows(IllegalArgumentException.class, () -> ledger.admitTyped(List.of(
-                new TaskAccessVerifier.TypedClaim(write(pos), Types.Primitive.INT),
-                new TaskAccessVerifier.TypedClaim(read(vel),
-                        new Types.Named("OpaqueHostHandle", List.of()))),
+        assertThrows(IllegalArgumentException.class, () -> ledger.admitTyped(
+                List.of(
+                        new TaskAccessVerifier.TypedClaim(write(pos), Types.Primitive.INT),
+                        new TaskAccessVerifier.TypedClaim(read(vel),
+                                new Types.Named("OpaqueHostHandle", List.of()))),
+                place -> place.equals(pos)
+                        ? Types.Primitive.INT
+                        : new Types.Named("OpaqueHostHandle", List.of()),
                 (name, trait) -> false));
+        assertEquals(0, ledger.activeChildren());
+    }
+
+
+    @Test void typedAdmissionRejectsMismatchedAuthoritativePlaceTypeAtomically() {
+        var ledger = new TaskAccessVerifier();
+        var pos = TaskAccessVerifier.Place.whole(WORLD).field("position", true);
+        var vel = TaskAccessVerifier.Place.whole(WORLD).field("velocity", true);
+        var claims = List.of(
+                new TaskAccessVerifier.TypedClaim(write(pos), Types.Primitive.INT),
+                new TaskAccessVerifier.TypedClaim(write(vel), Types.Primitive.INT));
+        assertThrows(IllegalArgumentException.class, () -> ledger.admitTyped(
+                claims,
+                place -> place.equals(pos) ? Types.Primitive.INT : Types.Primitive.STRING,
+                trustedCoreProof()));
+        assertEquals(0, ledger.activeChildren());
+        assertFalse(ledger.parentMayAccess(write(pos)),
+                "failed unbound admission must not manufacture parent authority");
+    }
+
+    @Test void typedAdmissionRejectsMissingAuthoritativeTypeBeforeReservation() {
+        var ledger = new TaskAccessVerifier();
+        var pos = TaskAccessVerifier.Place.whole(WORLD).field("position", true);
+        assertThrows(NullPointerException.class, () -> ledger.admitTyped(
+                List.of(new TaskAccessVerifier.TypedClaim(write(pos), Types.Primitive.INT)),
+                place -> null,
+                trustedCoreProof()));
         assertEquals(0, ledger.activeChildren());
     }
 

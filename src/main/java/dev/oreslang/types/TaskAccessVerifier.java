@@ -115,7 +115,7 @@ final class TaskAccessVerifier {
         }
     }
 
-    /** A source-level admission claim with its precisely resolved referent type. */
+    /** A source-level admission claim with its expected referent type. */
     public record TypedClaim(Claim claim, Types.Type type) {
         public TypedClaim {
             Objects.requireNonNull(claim, "claim");
@@ -124,19 +124,40 @@ final class TaskAccessVerifier {
     }
 
     /**
-     * Validates the Send/Sync proof before reserving any access, using the
-     * existing internal auto-trait checker. READ requires T:Sync; WRITE
-     * requires T:Send. A passing proof still does NOT establish lifetime,
-     * actor-domain authorization, pinned code, or task quiescence.
+     * Trusted compiler resolver for the authoritative referent type of a place.
+     * The caller must derive this from resolved MIR/place typing, never from
+     * source metadata supplied by the Task expression itself.
      */
-    public synchronized Ticket admitTyped(List<TypedClaim> requested,
-                             ThreadSafetyTraits.NominalProof nominalProof) {
+    @FunctionalInterface
+    interface PlaceTypeResolver {
+        Types.Type resolve(Place place);
+    }
+
+    /**
+     * Validates the authoritative place type and Send/Sync proof before
+     * reserving any access. READ requires T:Sync; WRITE requires T:Send.
+     *
+     * <p>The claim-carried type is only an expected type used to detect stale or
+     * mismatched lowering. It is never itself accepted as authority.
+     */
+    public synchronized Ticket admitTyped(
+            List<TypedClaim> requested,
+            PlaceTypeResolver typeResolver,
+            ThreadSafetyTraits.NominalProof nominalProof) {
+        Objects.requireNonNull(typeResolver, "typeResolver");
         Objects.requireNonNull(nominalProof, "nominalProof");
         List<TypedClaim> typed = List.copyOf(Objects.requireNonNull(requested, "claims"));
         for (TypedClaim claim : typed) {
+            Types.Type authoritative = Objects.requireNonNull(
+                    typeResolver.resolve(claim.claim().place()),
+                    "authoritative Task place type");
+            if (!authoritative.equals(claim.type())) {
+                throw new IllegalArgumentException(
+                        "Task claim type does not match authoritative place type");
+            }
             ThreadSafetyTraits.Trait needed = claim.claim().mode() == Mode.READ
                     ? ThreadSafetyTraits.Trait.SYNC : ThreadSafetyTraits.Trait.SEND;
-            if (!ThreadSafetyTraits.has(claim.type(), needed, nominalProof)) {
+            if (!ThreadSafetyTraits.has(authoritative, needed, nominalProof)) {
                 throw new IllegalArgumentException("Task access requires proven " + needed);
             }
         }
