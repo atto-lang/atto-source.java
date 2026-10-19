@@ -112,7 +112,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             sessionLease.writeFrame(physicalGeneration, message, ignored -> {
                 // writeFrame invokes this callback only AFTER commitDispatch.
                 physicalWriterEntered.set(true);
-                byte[] frame = encodeDataFrame(message, body, macKey);
+                byte[] frame = encodeDataFrame(message, body, physicalGeneration, macKey);
                 synchronized (writeGate) {
                     writeWireFrame(output, frame);
                 }
@@ -144,10 +144,21 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         synchronized (readGate) {
             frame = readWireFrame(input);
         }
-        DecodedReceipt receipt = decodeReceiptFrame(frame, macKey);
-        requireTrustedEpoch(receipt.envelope());
-        receipts.acceptVerified(receipt.envelope(), receipt.stage());
-        return receipt.stage();
+        try {
+            DecodedReceipt receipt = decodeReceiptFrame(frame, macKey);
+            if (receipt.physicalGeneration() != physicalGeneration) {
+                throw new IOException("stale IPC physical transport generation");
+            }
+            requireTrustedEpoch(receipt.envelope());
+            receipts.acceptVerified(receipt.envelope(), receipt.stage());
+            return receipt.stage();
+        } catch (IOException | RuntimeException | Error failure) {
+            // Authentication, framing and state-machine violations are fatal
+            // to this physical session. Never continue parsing a desynchronized
+            // or hostile stream after an invalid receipt.
+            requestClose();
+            throw failure;
+        }
     }
 
     void requestClose() {
@@ -191,7 +202,10 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         boolean writeAttemptFailed() { return error != null; }
     }
 
-    record DecodedData(IpcReceiptCorrelation.Envelope envelope, byte[] payload) {
+    record DecodedData(
+            IpcReceiptCorrelation.Envelope envelope,
+            long physicalGeneration,
+            byte[] payload) {
         DecodedData {
             Objects.requireNonNull(envelope, "envelope");
             payload = Objects.requireNonNull(payload, "payload").clone();
@@ -201,11 +215,13 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
 
     private record DecodedReceipt(
             IpcReceiptCorrelation.Envelope envelope,
+            long physicalGeneration,
             IpcReceiptCorrelation.Stage stage) { }
 
     static byte[] encodeDataFrame(
             IpcReceiptCorrelation.Envelope envelope,
             byte[] payload,
+            long physicalGeneration,
             byte[] key) throws IOException {
         Objects.requireNonNull(envelope, "envelope");
         Objects.requireNonNull(payload, "payload");
@@ -217,7 +233,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         }
         ByteArrayOutputStream raw = new ByteArrayOutputStream();
         try (DataOutputStream out = new DataOutputStream(raw)) {
-            writeHeader(out, TYPE_DATA);
+            writeHeader(out, TYPE_DATA, physicalGeneration);
             writeEnvelope(out, envelope);
             out.writeInt(payload.length);
             out.write(payload);
@@ -228,7 +244,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     static DecodedData decodeDataFrame(byte[] frame, byte[] key) throws IOException {
         byte[] authenticated = verifyAndStripMac(frame, key);
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(authenticated))) {
-            requireHeader(in, TYPE_DATA);
+            long physicalGeneration = requireHeader(in, TYPE_DATA);
             IpcReceiptCorrelation.Envelope envelope = readEnvelope(in);
             int length = in.readInt();
             if (length < 0 || length > MAX_PAYLOAD_BYTES || length > in.available()) {
@@ -241,19 +257,20 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             if (!sha256Hex(payload).equals(envelope.payloadSha256())) {
                 throw new IOException("authenticated IPC payload digest mismatch");
             }
-            return new DecodedData(envelope, payload);
+            return new DecodedData(envelope, physicalGeneration, payload);
         }
     }
 
     static byte[] encodeReceiptFrame(
             IpcReceiptCorrelation.Envelope envelope,
+            long physicalGeneration,
             IpcReceiptCorrelation.Stage stage,
             byte[] key) throws IOException {
         Objects.requireNonNull(envelope, "envelope");
         requireRemoteReceiptStage(stage);
         ByteArrayOutputStream raw = new ByteArrayOutputStream();
         try (DataOutputStream out = new DataOutputStream(raw)) {
-            writeHeader(out, TYPE_RECEIPT);
+            writeHeader(out, TYPE_RECEIPT, physicalGeneration);
             writeEnvelope(out, envelope);
             out.writeByte(stage.ordinal());
         }
@@ -263,7 +280,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     private static DecodedReceipt decodeReceiptFrame(byte[] frame, byte[] key) throws IOException {
         byte[] authenticated = verifyAndStripMac(frame, key);
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(authenticated))) {
-            requireHeader(in, TYPE_RECEIPT);
+            long physicalGeneration = requireHeader(in, TYPE_RECEIPT);
             IpcReceiptCorrelation.Envelope envelope = readEnvelope(in);
             int ordinal = in.readUnsignedByte();
             if (ordinal >= IpcReceiptCorrelation.Stage.values().length || in.available() != 0) {
@@ -275,7 +292,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             } catch (IllegalArgumentException invalid) {
                 throw new IOException("peer asserted local-only IPC verdict", invalid);
             }
-            return new DecodedReceipt(envelope, stage);
+            return new DecodedReceipt(envelope, physicalGeneration, stage);
         }
     }
 
@@ -310,17 +327,27 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         return frame;
     }
 
-    private static void writeHeader(DataOutputStream out, int type) throws IOException {
+    private static void writeHeader(
+            DataOutputStream out, int type, long physicalGeneration) throws IOException {
+        if (physicalGeneration <= 0) {
+            throw new IllegalArgumentException("physical generation must be positive");
+        }
         out.writeInt(MAGIC);
         out.writeByte(VERSION);
         out.writeByte(type);
+        out.writeLong(physicalGeneration);
     }
 
-    private static void requireHeader(DataInputStream in, int type) throws IOException {
+    private static long requireHeader(DataInputStream in, int type) throws IOException {
         if (in.readInt() != MAGIC || in.readUnsignedByte() != VERSION
                 || in.readUnsignedByte() != type) {
             throw new IOException("invalid IPC frame header");
         }
+        long physicalGeneration = in.readLong();
+        if (physicalGeneration <= 0) {
+            throw new IOException("invalid IPC physical transport generation");
+        }
+        return physicalGeneration;
     }
 
     private static void writeEnvelope(
