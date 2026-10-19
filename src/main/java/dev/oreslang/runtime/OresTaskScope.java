@@ -477,8 +477,14 @@ public final class OresTaskScope implements AutoCloseable {
         try {
             cancel();
         } catch (RuntimeException | Error problem) {
-            // Revocation has already won for all children. Never abandon
-            // owned physical frames simply because a host notification fails.
+            // cancel() can now fail during its allocation-only preflight,
+            // BEFORE it seals any descendant. Such a failure is not a
+            // shutdown permit: joining an open tree could return while new
+            // child Tasks are admitted. Only continue after the atomic
+            // cancellation tree seal was actually committed.
+            if (!isCancelRequested()) throw problem;
+            // If a producer/subscriber notification failed after sealing,
+            // still join every physical frame before reporting that failure.
             cancellationFailure = problem;
         }
 
