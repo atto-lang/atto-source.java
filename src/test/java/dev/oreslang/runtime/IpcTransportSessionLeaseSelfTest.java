@@ -39,7 +39,7 @@ public final class IpcTransportSessionLeaseSelfTest {
         AtomicInteger writes = new AtomicInteger();
         AtomicInteger closes = new AtomicInteger();
         var transport = new IpcTransportSessionLease("session", 81, 1,
-                bridge, closes::incrementAndGet);
+                bridge, closes::incrementAndGet, Runnable::run);
         transport.writeFrame(81, frame, value -> writes.incrementAndGet());
         check(writes.get() == 1);
         check(!done.toCompletableFuture().isDone());
@@ -62,7 +62,7 @@ public final class IpcTransportSessionLeaseSelfTest {
         var rejectMessage = message(1, "reject");
         var rejected = rejectionBridge.admit(rejectMessage);
         var blocked = new IpcTransportSessionLease("reject", 15, 1,
-                rejectionBridge, () -> { });
+                rejectionBridge, () -> { }, Runnable::run);
         deny(() -> {
             try { blocked.writeFrame(14, rejectMessage, value -> {
                 throw new AssertionError("stale session wrote");
@@ -79,7 +79,7 @@ public final class IpcTransportSessionLeaseSelfTest {
         var failingFuture = failureBridge.admit(failingMessage);
         AtomicInteger failedCloses = new AtomicInteger();
         var failing = new IpcTransportSessionLease("failed", 55, 1,
-                failureBridge, failedCloses::incrementAndGet);
+                failureBridge, failedCloses::incrementAndGet, Runnable::run);
         try {
             failing.writeFrame(55, failingMessage, value -> {
                 throw new IOException("wire write was uncertain");
@@ -97,7 +97,7 @@ public final class IpcTransportSessionLeaseSelfTest {
         var quarantinedMessage = message(1, "quarantine");
         var quarantineFuture = quarantineBridge.admit(quarantinedMessage);
         var quarantine = new IpcTransportSessionLease("quarantine", 56, 1,
-                quarantineBridge, () -> { throw new IOException("close not confirmed"); });
+                quarantineBridge, () -> { throw new IOException("close not confirmed"); }, Runnable::run);
         quarantine.writeFrame(56, quarantinedMessage, value -> { });
         quarantine.requestClose();
         check(quarantine.snapshot().phase() == IpcTransportSessionLease.Phase.QUARANTINED);
@@ -117,7 +117,7 @@ public final class IpcTransportSessionLeaseSelfTest {
                     if (closeAttempts.incrementAndGet() == 1) {
                         throw new IOException("first close was unconfirmed");
                     }
-                });
+                }, Runnable::run);
         recovery.writeFrame(57, recoveryMessage, value -> { });
         recovery.requestClose();
         check(recovery.snapshot().phase() == IpcTransportSessionLease.Phase.QUARANTINED);
@@ -134,6 +134,45 @@ public final class IpcTransportSessionLeaseSelfTest {
         check(recovery.invariant());
         deny(recovery::retryQuarantinedClose);
 
+        // A trusted host scheduler must accept cleanup without running it on
+        // an actor carrier. No physical close or callback occurs before the
+        // queued cleanup task is actually executed on the host worker.
+        var deferredBridge = new IpcReceiptCompletionBridge(1);
+        var deferredMessage = message(1, "deferred");
+        var deferredResult = deferredBridge.admit(deferredMessage);
+        AtomicReference<Runnable> queuedCleanup = new AtomicReference<>();
+        AtomicInteger deferredCloses = new AtomicInteger();
+        var deferred = new IpcTransportSessionLease("deferred", 58, 1,
+                deferredBridge, deferredCloses::incrementAndGet,
+                cleanup -> {
+                    if (!queuedCleanup.compareAndSet(null, cleanup)) {
+                        throw new IllegalStateException("cleanup queue overflow");
+                    }
+                });
+        deferred.writeFrame(58, deferredMessage, value -> { });
+        deferred.requestClose();
+        check(deferred.snapshot().phase() == IpcTransportSessionLease.Phase.FINALIZING);
+        check(deferredCloses.get() == 0);
+        check(!deferredResult.toCompletableFuture().isDone());
+        queuedCleanup.get().run(); // explicit stand-in for isolated host worker
+        check(deferredCloses.get() == 1);
+        check(deferred.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
+        check(deferredResult.toCompletableFuture().join()
+                == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+
+        var deniedCleanupBridge = new IpcReceiptCompletionBridge(1);
+        var deniedCleanupMessage = message(1, "noWorker");
+        var deniedCleanupFuture = deniedCleanupBridge.admit(deniedCleanupMessage);
+        var deniedCleanup = new IpcTransportSessionLease("noWorker", 59, 1,
+                deniedCleanupBridge, () -> { },
+                cleanup -> { throw new IllegalStateException("host cleanup budget denied"); });
+        deniedCleanup.writeFrame(59, deniedCleanupMessage, value -> { });
+        deniedCleanup.requestClose();
+        check(deniedCleanup.snapshot().phase() == IpcTransportSessionLease.Phase.QUARANTINED);
+        check(!deniedCleanupFuture.toCompletableFuture().isDone());
+        check(deniedCleanup.closeFailure() instanceof IllegalStateException);
+        check(deniedCleanup.invariant());
+
         // Verify close never recycles a descriptor during a real host write.
         for (int trial = 0; trial < 512; ++trial) {
             var candidateBridge = new IpcReceiptCompletionBridge(1);
@@ -144,7 +183,7 @@ public final class IpcTransportSessionLeaseSelfTest {
             AtomicInteger closed = new AtomicInteger();
             AtomicReference<Throwable> failure = new AtomicReference<>();
             var candidate = new IpcTransportSessionLease("race", trial + 1L, 1,
-                    candidateBridge, closed::incrementAndGet);
+                    candidateBridge, closed::incrementAndGet, Runnable::run);
             long epoch = trial + 1L;
             Thread writer = new Thread(() -> {
                 try {
@@ -188,7 +227,7 @@ public final class IpcTransportSessionLeaseSelfTest {
             AtomicInteger wrote = new AtomicInteger();
             AtomicReference<Throwable> error = new AtomicReference<>();
             var contender = new IpcTransportSessionLease("compete", trial + 1L, 1,
-                    contenderBridge, closeCount::incrementAndGet);
+                    contenderBridge, closeCount::incrementAndGet, Runnable::run);
             long epoch = trial + 1L;
             Thread sender = new Thread(() -> {
                 try {
