@@ -201,6 +201,28 @@ final class ThreadSafetyTraitsTest {
                 new Types.Named("Wrapper", List.of(sendOnly)), Trait.SYNC, sendProof));
     }
 
+
+    @Test
+    void legacySharedSafetyWalkerIsBoundedBeforeSendChecks() throws Exception {
+        // Exercise the existing checker directly rather than requiring the
+        // parser to create an extremely deeply nested generic source type.
+        var ctor = TypeChecker.class.getDeclaredConstructor();
+        ctor.setAccessible(true);
+        var checker = ctor.newInstance();
+        var method = TypeChecker.class.getDeclaredMethod(
+                "isSharedSafe", Types.Type.class, java.util.Set.class, java.util.Map.class);
+        method.setAccessible(true);
+        Type nested = Types.Primitive.INT;
+        for (int i = 0; i < 8192; i++) {
+            nested = new Types.ListType(nested);
+        }
+        assertEquals(Boolean.FALSE,
+                method.invoke(checker, nested, new java.util.LinkedHashSet<>(), Map.of()));
+        assertEquals(Boolean.TRUE,
+                method.invoke(checker, Types.Primitive.INT, new java.util.LinkedHashSet<>(), Map.of()));
+    }
+
+
     @Test
     void sharedMutexAcceptsSendOwnedDataButRejectsUnprovenPayloads() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
