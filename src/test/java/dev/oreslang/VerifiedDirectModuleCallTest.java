@@ -102,6 +102,27 @@ final class VerifiedDirectModuleCallTest {
     }
 
     @Test
+    void foreignTypeDeclarationCannotSilentlyBecomeVerifiedModuleTarget() {
+        // Even if ordinary source name resolution admits this program, the
+        // restricted issuer cannot claim unqualified target ownership while
+        // another module declares a competing type/callable spelling.
+        String conflictingClass = """
+                define module other as
+                    define class target as
+                        constructor() { return; }
+                    end
+                end
+                define module app as
+                    pub fnc target(int x): int { return x; }
+                    pub fnc caller(): int { return target(42); }
+                end
+                """;
+        assertThrows(IllegalArgumentException.class, () ->
+                VerifiedDirectModuleCall.analyzeAndIssue(
+                        conflictingClass, "app", "caller"));
+    }
+
+    @Test
     void ambiguousOrRecursiveUnqualifiedTargetsNeedResolvedCallsiteEvidence() {
         String ambiguous = """
                 define module other as
