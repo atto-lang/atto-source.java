@@ -1350,6 +1350,9 @@ public final class OwnershipChecker {
                 }
             }
             checkLambda(body, scope, null);
+            // Export only proven lexical captures into the isolated Task.
+            // No whole-frame Env snapshot or implicit actor-private aliases.
+            task.bindCaptures(new ArrayList<>(captures.values.keySet()));
             return new ValueInfo(
                     new Ast.TypeRef("Task", List.of(Ast.TypeRef.simple("void")), false),
                     ValueKind.MOVE_ONLY, null);
