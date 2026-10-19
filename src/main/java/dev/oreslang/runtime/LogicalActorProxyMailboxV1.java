@@ -281,15 +281,17 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
     }
 
     /**
-     * Trusted transport rollback ONLY after proving physical send did not
-     * accept the message. Polling dispatch reserves sequence ownership before
-     * physical admission; without this operation an admission rejection would
-     * strand retained byte/message credits and prevent route quiescence.
+     * Trusted transport rollback ONLY before a physical send attempt has
+     * been recorded. Polling dispatch reserves sequence ownership before
+     * physical admission; this operation recovers a never-submitted dispatch
+     * without refunding any retained transport credit.
      *
-     * This is deliberately package-private; never expose it to guest actors
-     * or use it after an ambiguous send acknowledgement. An uncertain send
-     * must instead stay outstanding/quarantined until the supervisor resolves
-     * its identity, or a retry could duplicate an already accepted message.
+     * This is deliberately package-private. A sequence-only caller has no
+     * verifiable proof of non-acceptance after beginPhysicalSendAttempt().
+     * Therefore no recorded attempt can be requeued by this V1 API, even if
+     * a caller claims an external transport rejection. Uncertain sends stay
+     * outstanding/quarantined; any future retry must require a separately
+     * authenticated non-acceptance receipt with exact mailbox/epoch identity.
      *
      * Only the highest dispatched, still outstanding sequence can be restored,
      * before another dispatch and while no upgrade freeze ticket is active.
@@ -311,12 +313,18 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             // sequences outside Long's cache, autoboxing here may allocate.
             Long key = Long.valueOf(messageSequence);
             Envelope envelope = outstanding.get(key);
+            if (physicalSendAttempted.contains(key)) {
+                throw new IllegalStateException(
+                        "cannot requeue a physically attempted message without an "
+                                + "authenticated proof of non-acceptance");
+            }
             // ArrayDeque may grow here. Enqueue before mutating outstanding
             // state so allocation failure leaves the delivery authoritative
             // and its credits intact, never half-requeued.
             queued.addFirst(envelope);
             outstanding.remove(key);
-            physicalSendAttempted.remove(key);
+            // Never erase an attempted-send authorization: the assertion
+            // above proves this envelope was not physically submitted.
             highestDispatchedSequence--;
             // This is not logical completion: retain all message/byte credits
             // and preserve the original admission sequence for the next send.
