@@ -51,6 +51,36 @@ final class RuntimePermissionsTest {
     }
 
     @Test
+    void ipv6NetworkScopesAreStructuralAndPortAware() {
+        RuntimePermissions permissions = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "::1")
+                .withDenied(RuntimePermissions.Permission.NET, "[::1]:22");
+
+        assertEquals("[::1]:443", RuntimePermissions.networkEndpoint("::1", 443));
+        assertEquals("[::1]:443", RuntimePermissions.networkEndpoint("[::1]", 443));
+        assertTrue(permissions.allows(
+                RuntimePermissions.Permission.NET, "[::1]:443"));
+        assertFalse(permissions.allows(
+                RuntimePermissions.Permission.NET, "[::1]:22"));
+        assertFalse(permissions.allows(
+                RuntimePermissions.Permission.NET, "[::2]:443"));
+
+        RuntimePermissions portOnly = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "[2001:db8::1]:8443");
+        assertTrue(portOnly.allows(
+                RuntimePermissions.Permission.NET, "[2001:db8::1]:8443"));
+        assertFalse(portOnly.allows(
+                RuntimePermissions.Permission.NET, "[2001:db8::1]:8444"));
+        assertFalse(portOnly.allows(
+                RuntimePermissions.Permission.NET, "2001:db8::1"));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> RuntimePermissions.networkEndpoint("[::1", 443));
+        assertThrows(IllegalArgumentException.class,
+                () -> RuntimePermissions.networkEndpoint("::1]", 443));
+    }
+
+    @Test
     void applicationArgumentsRoundTripScopedRules() throws Exception {
         Path root = Files.createTempDirectory("ores-perm-roundtrip-");
         RuntimePermissions original = RuntimePermissions.denyAll()
