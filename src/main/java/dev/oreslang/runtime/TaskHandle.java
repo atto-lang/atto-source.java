@@ -55,6 +55,16 @@ public final class TaskHandle<T> {
     private final AtomicReference<TaskOutcome<T>> settledOutcome = new AtomicReference<>();
     private final AtomicBoolean quiescent = new AtomicBoolean();
     private final AtomicBoolean published = new AtomicBoolean();
+    // Cancellation requests may arrive on arbitrary host threads, including
+    // a parent actor stopping while this Task executes guest code. Serialize
+    // entering/leaving a resumable turn with revocation: a running turn is
+    // allowed to reach its boundary and run Java finally cleanup before its
+    // result is cancelled. No carrier is interrupted.
+    private final Object resumeBoundaryLock = new Object();
+    private boolean inResume;
+    // A guest exception wins over a concurrent cancellation request once
+    // it has escaped the guest turn. Do not erase it with source.cancel().
+    private boolean guestFailureInFlight;
     private final TaskCancellation.Subscription revoker;
 
     private TaskHandle(TaskCancellation parent) {
@@ -83,7 +93,14 @@ public final class TaskHandle<T> {
         return done;
     }
 
-    /** Requests cancellation; never claims the guest turn has exited. */
+    /**
+     * Requests cooperative cancellation. A queued/suspended task is revoked
+     * promptly; a running guest turn is allowed to finish its current
+     * compiler-generated resume and unwind local finally blocks first.
+     * Cancellation is observed no later than its next resume boundary.
+     * This does not interrupt native/FFI code or promise to run suspended
+     * async-finally state machines (a separate lowering contract).
+     */
     public boolean cancel(String reason) {
         // Validate even on an already-terminal handle: a caller must not be
         // able to bypass the public cancellation contract by racing completion.
@@ -108,8 +125,51 @@ public final class TaskHandle<T> {
     }
 
     private void cancelResultIfBound() {
-        OresFuture<T> current = result.get();
+        OresFuture<T> current;
+        synchronized (resumeBoundaryLock) {
+            if (inResume || guestFailureInFlight) return;
+            current = result.get();
+        }
         if (current != null) current.cancel(false);
+    }
+
+    /**
+     * The only TaskHandle-controlled guest entry point. The token check and
+     * execution lease are atomic with revocation's decision about whether to
+     * cancel the result immediately. Any request during guest execution is
+     * delivered AFTER the guest turn has exited this wrapper.
+     */
+    private OresScheduler.Step<T> resumeAtCancellationBoundary(
+            OresScheduler.Resume resume, OresScheduler.Task<T> task)
+            throws Exception {
+        synchronized (resumeBoundaryLock) {
+            if (cancellation.isCancelled()) throw new CancelledAtResume();
+            inResume = true;
+        }
+        boolean returnedNormally = false;
+        try {
+            // Invalid null Steps remain a guest failure rather than being
+            // rewritten to cancellation by a concurrent shutdown request.
+            OresScheduler.Step<T> step = Objects.requireNonNull(
+                    task.resume(resume), "OresScheduler task returned null Step");
+            returnedNormally = true;
+            return step;
+        } catch (Throwable failure) {
+            synchronized (resumeBoundaryLock) {
+                guestFailureInFlight = true;
+            }
+            throw failure;
+        } finally {
+            synchronized (resumeBoundaryLock) {
+                inResume = false;
+            }
+            // Completing one resume, including its synchronous finally
+            // clauses, is an explicit cancellation checkpoint. The scheduler
+            // will observe the terminal phase and never admit another turn.
+            if (returnedNormally && cancellation.isCancelled()) {
+                cancelResultIfBound();
+            }
+        }
     }
 
     private void onQuiescent() {
@@ -164,15 +224,13 @@ public final class TaskHandle<T> {
         TaskHandle<T> handle = new TaskHandle<>(parent);
         OresFuture<T> source;
         try {
-            source = scheduler.start(resume -> {
-                if (handle.cancellation.isCancelled()) {
-                    throw new CancelledAtResume();
-                }
-                return task.resume(resume);
-            }, handle::onQuiescent);
+            source = scheduler.start(
+                    resume -> handle.resumeAtCancellationBoundary(resume, task),
+                    handle::onQuiescent);
         } catch (RuntimeException | Error failure) {
             handle.revoker.close();
             handle.cancellation.cancel("admission rejected");
+            handle.cancellation.retire();
             throw failure;
         }
 
@@ -183,7 +241,7 @@ public final class TaskHandle<T> {
                 handle.onSettled(source, value, failure));
         // Cancellation can win before bind, after bind, or during subscriber
         // registration. The second check makes the early request observable.
-        if (handle.cancellation.isCancelled()) source.cancel(false);
+        if (handle.cancellation.isCancelled()) handle.cancelResultIfBound();
         return handle;
     }
 }
