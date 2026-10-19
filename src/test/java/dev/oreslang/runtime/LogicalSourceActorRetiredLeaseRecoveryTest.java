@@ -322,4 +322,86 @@ final class LogicalSourceActorRetiredLeaseRecoveryTest {
         }
     }
 
+
+    @Test
+    void activeCloseRetirementReservationOomeDoesNotSealOrStopActor()
+            throws Exception {
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var generation = manager.stageActorGeneration(
+                    "active-close-preflight-oome.ores", SOURCE);
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                    generation, ActorRuntime.ActorKind.SHARED, "Counter", WAIT)) {
+                Field registry = LogicalSourceActorRouterV1.class
+                        .getDeclaredField("retiredRoutes");
+                registry.setAccessible(true);
+                Object original = registry.get(router);
+                Field pins = HotReloadManager.Generation.class
+                        .getDeclaredField("actorRoutePins");
+                pins.setAccessible(true);
+                registry.set(router, new java.util.ArrayList<Object>() {
+                    @Override public boolean add(Object value) {
+                        throw new OutOfMemoryError(
+                                "injected close retirement pre-reservation OOME");
+                    }
+                });
+                try {
+                    assertThrows(OutOfMemoryError.class, router::close);
+                    assertEquals(1, pins.getInt(generation),
+                            "reservation failure must not debit active code lease");
+                    assertEquals(1L, router.ref().routeEpoch(),
+                            "no actor stop or logical seal before retirement owner exists");
+                    router.ref().send(41L);
+                    var output = router.ref().nextOutput(WAIT);
+                    assertFalse(output.done());
+                    assertEquals(42L,
+                            assertInstanceOf(Long.class, output.value().value()));
+                } finally {
+                    registry.set(router, original);
+                }
+                assertDoesNotThrow(router::close,
+                        "an unsealed actor can retry after retirement allocation recovers");
+                assertEquals(0, pins.getInt(generation));
+                assertThrows(IllegalStateException.class, router.ref()::routeEpoch);
+            }
+        }
+    }
+
+    @Test
+    void activeCloseLeaseDebitFailureRetainsRetryOwnerForSupervisorClose()
+            throws Exception {
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var generation = manager.stageActorGeneration(
+                    "active-close-debit-retry.ores", SOURCE);
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                    generation, ActorRuntime.ActorKind.SHARED, "Counter", WAIT)) {
+                Field pins = HotReloadManager.Generation.class
+                        .getDeclaredField("actorRoutePins");
+                pins.setAccessible(true);
+                Field retired = LogicalSourceActorRouterV1.class
+                        .getDeclaredField("retiredRoutes");
+                retired.setAccessible(true);
+                assertEquals(1, pins.getInt(generation));
+                // Corrupt a trusted supervisor accounting counter. The actor
+                // may finalize, but a failed pin debit must preserve its
+                // reserved retry owner instead of silently discarding it.
+                pins.setInt(generation, 0);
+                try {
+                    assertThrows(IllegalStateException.class, router::close);
+                    assertFalse(((java.util.List<?>) retired.get(router)).isEmpty(),
+                            "sealed actor still needs a retryable lease owner");
+                    assertThrows(IllegalStateException.class, router.ref()::routeEpoch);
+                } finally {
+                    pins.setInt(generation, 1);
+                }
+                assertDoesNotThrow(router::close,
+                        "supervisor retry must debit recovered pin exactly once");
+                assertEquals(0, pins.getInt(generation));
+                assertEquals(0, ((java.util.List<?>) retired.get(router)).size());
+                assertDoesNotThrow(router::close);
+            }
+        }
+    }
+
 }
