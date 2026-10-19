@@ -93,3 +93,43 @@ Task/continuation lifetime; compiler-owned immutable typed message generation;
 physical `mail.done()`/terminal receipt authentication with incarnation and
 message-sequence provenance; automated retirement/quarantine reconciliation;
 and target-specific PRIVATE/UNTRUSTED worker isolation.
+
+
+## October 19, 2026: transaction/route-publication audit
+
+- **One synchronization domain.** Coordinator `prepare`, `close`,
+  `quarantined`, and all transaction `drained`/`commit`/`rollback`
+  operations use the same coordinator monitor. A competing prepare cannot
+  observe partly retired transaction state or publish while prior rollback
+  is still in progress.
+- **Allocation-failure recovery.** If constructing the transaction fails
+  after `code.prepare`, abort the staged code candidate **before**
+  thawing the mailbox. If code abort fails, preserve the mailbox freeze and
+  quarantine instead of treating it as a successful rollback.
+- **Fail-closed gate failure.** Candidate abort, eligibility inspection, or
+  code publication errors mark the transaction terminal and the coordinator
+  quarantined; an external supervisor closing the code gate cannot silently
+  reopen DATA dispatch.
+- **No post-thaw throwing validation.** Mailbox freeze, commit and rollback
+  now perform structural checks before changing publication flags or route
+  epoch. After a successful check, their publication path consists only of
+  bounded, nonallocating scalar/reference writes and monitor notification.
+  An inconsistent ledger therefore cannot accidentally thaw dispatch.
+- **Regression tests authored, not claimed passed:** external gate close
+  during commit/abort, closed mailbox during drain inspection,
+  concurrent commit/prepare, and injected corrupt-ledger checks before
+  freeze/commit/rollback. The independent actor routing/ACK/Task pin
+  production gates above remain outstanding.
+
+### CI provenance and private source policy
+
+An exact-head JDK25/Graal build is still required. GitHub Actions runs that
+fail or queue before job steps are executed do not constitute test evidence.
+`.github/private-ci-approved-repositories.txt` on source `main` has no
+approved private destinations. Security issue #962 expressly forbids
+cross-organization private tree export pending protected-branch,
+security-reviewed source+numeric-destination authorization. Consequently,
+**do not mirror this private actor branch into another organization** merely
+to obtain Actions minutes, even using identical Git blobs and no personal
+access token. Once policy permits a carrier, verify exact nested Git-tree
+and immutable commit identity before claiming its JVM/native CI as evidence.
