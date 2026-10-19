@@ -183,6 +183,12 @@ New invariants:
 - a move-only member/index projection is rejected for scheduled arguments
   until projection-level move tracking exists; callers must first move the
   value into a named local;
+- that rejection follows ownership-bearing wrappers (including `rt take`,
+  casts, aggregates, calls' arguments, conditional/match values) so an
+  untracked projection cannot be laundered into `OWNED_RVALUE`;
+- callable selection itself is not treated as field extraction: a safe fresh
+  move-only result such as `optional.unwrap()` remains eligible for ordinary
+  ownership/provenance checking;
 - the ledger is sealed before it leaves `OwnershipChecker`;
 - both ordinary and explicitly linked-class ownership entrypoints can return
   the same sealed provenance result;
@@ -190,15 +196,15 @@ New invariants:
 
 New exact files/blobs at this audit point:
 
-- `OwnershipChecker.java`: `04bd1bbb1088e15ed0ac6a9e81fc90a25d2f5b1e`
+- `OwnershipChecker.java`: `c72d42845b688b498ed83c0a9ec913c25bab3fe5`
 - `TaskTransferProvenance.java`: `4f9e8a9b346eb2835ea3f05ae55bcda05c983d76`
-- `TaskTransferProvenanceTest.java`: `f1dd2e7ad921280a2a9f54b8cdcaa3ff1123d856` (4 JUnit methods)
+- `TaskTransferProvenanceTest.java`: `736a7b172c70337fc34c36e542a60541b60484df` (5 JUnit methods)
 - `TaskTransferProvenanceSmoke.java`: `8294f90a653bbb71ad0ba87fa57636ef1e499d23`
 - dependency-free Task smoke script: `87730f7739e2bffb5f8271d69cbc82f716fbd756`
 
-The targeted Task branch now has **27 committed JUnit methods** across
+The targeted Task branch now has **28 committed JUnit methods** across
 Task-spawn admission (13), resolved semantic authority (5), shared capture
-analysis (5), and transfer provenance (4).
+analysis (5), and transfer provenance (5).
 
 The ownership proof is not yet sufficient to enable source Tasks. The next
 front-end integration must return, for the same exact AST boundary, both:
@@ -211,7 +217,9 @@ second type resolver. It must then bind the admitted lifetime to #1407's
 physical `TaskScope.getDone()`/descendant-quiescence barrier. Cancellation
 request or result-Future settlement alone is never a release witness.
 
-Latest source-org Actions for the provenance head again failed before
-recording executable steps; no Maven/JUnit/GraalVM pass is claimed. The
+Latest audited branch head: `3717ac52717ca2eb7d153b47a79e5a3ab621624a`.
+Source-org fast-ci #39324361246 / job #118306236723 and
+concurrency-contract #39324362365 / job #118306241700 again failed with
+**zero recorded steps**. No Maven/JUnit/GraalVM pass is claimed. The
 authorized cross-org exact-tree path remains blocked until #1430 is
 independently approved and merged into protected `main`.
