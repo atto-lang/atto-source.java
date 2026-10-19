@@ -69,6 +69,46 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root)
 
+    def test_data_only_preflight_never_executes_checkout_guard(self):
+        with patch.object(pub, "checked_policy_fingerprint", return_value=b"approved"), \
+             patch.object(pub, "checked_repo", return_value={"id": 424242}), \
+             patch.object(pub.subprocess, "run",
+                          side_effect=AssertionError("checkout script executed")):
+            self.assertEqual(pub.require_preflight("trusted/ci", self.root),
+                             {"id": 424242})
+
+    def test_github_api_does_not_inherit_proxy_or_cli_configuration(self):
+        import os
+        from types import SimpleNamespace
+        poisoned = {"GH_TOKEN": "synthetic-test-token",
+                    "HTTPS_PROXY": "https://untrusted-proxy.invalid",
+                    "GH_CONFIG_DIR": "/untrusted", "GIT_CONFIG_COUNT": "1",
+                    "SSL_CERT_FILE": "/untrusted-ca.pem"}
+        with patch.dict(os.environ, poisoned, clear=True), \
+             patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"), \
+             patch.object(pub.subprocess, "run", return_value=SimpleNamespace(
+                 returncode=0, stdout='{"ok": true}', stderr="")) as execution:
+            self.assertEqual(pub.gh_api("repos/trusted/ci"), {"ok": True})
+        argv = execution.call_args.args[0]
+        env = execution.call_args.kwargs["env"]
+        self.assertEqual(argv[0], "/usr/bin/gh")
+        self.assertEqual(env["GH_HOST"], "github.com")
+        self.assertEqual(env["GH_TOKEN"], "synthetic-test-token")
+        for key in ("HTTPS_PROXY", "GH_CONFIG_DIR", "SSL_CERT_FILE",
+                    "GIT_CONFIG_COUNT", "GITHUB_TOKEN"):
+            self.assertNotIn(key, env)
+
+    def test_dual_or_missing_github_credentials_fail_closed(self):
+        import os
+        for credentials in ({}, {"GH_TOKEN": "one", "GITHUB_TOKEN": "two"}):
+            with self.subTest(credentials=tuple(credentials)), \
+                 patch.dict(os.environ, credentials, clear=True), \
+                 patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"), \
+                 patch.object(pub.subprocess, "run",
+                              side_effect=AssertionError("no credential request")):
+                with self.assertRaisesRegex(pub.Denied, "one explicit"):
+                    pub.gh_api("repos/trusted/ci")
+
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
         sha, count = self.publish()
         self.assertEqual((sha, count), (A, 1))
