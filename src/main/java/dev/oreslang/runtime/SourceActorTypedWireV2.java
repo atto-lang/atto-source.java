@@ -101,11 +101,11 @@ final class SourceActorTypedWireV2 {
             var result = encoder.encode(CharBuffer.wrap(value), utf8, true);
             if (result.isOverflow())
                 throw new IllegalArgumentException("typed actor UTF-8 exceeds bounded capacity");
-            result.throwException();
+            if (result.isError()) result.throwException();
             result = encoder.flush(utf8);
             if (result.isOverflow())
                 throw new IllegalArgumentException("typed actor UTF-8 exceeds bounded capacity");
-            result.throwException();
+            if (result.isError()) result.throwException();
         } catch (CharacterCodingException invalid) {
             throw new IllegalArgumentException("noncanonical UTF-16 actor string", invalid);
         }
