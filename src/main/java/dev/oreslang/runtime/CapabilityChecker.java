@@ -363,7 +363,13 @@ public final class CapabilityChecker {
             // A caller invoking CapabilityChecker directly without semantic
             // checking must not turn staged syntax into an authority bypass.
             Ast.CheckedNamedCallPlan.require(call);
-            checkExpr(call.callee(), policy);
+            if (call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.TypeExpr typeReceiver
+                    && member.member().equals("new")) {
+                checkType(typeReceiver.type(), policy);
+            } else {
+                checkExpr(call.callee(), policy);
+            }
             for (Ast.CallArgument argument : call.arguments()) {
                 if (argument.value() != null) {
                     checkExpr(argument.value(), policy);
