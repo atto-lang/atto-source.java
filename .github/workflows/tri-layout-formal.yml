@@ -10,6 +10,7 @@ on:
       - 'src/test/java/dev/oreslang/TriLayoutMotionStoreTest.java'
       - 'src/test/java/dev/oreslang/TriLayoutMotionFormalRefinementTest.java'
       - 'src/test/java/dev/oreslang/TriLayoutSelectableResidencyTest.java'
+      - 'src/test/java/dev/oreslang/TriLayoutSelectHardeningTest.java'
       - 'docs/SELECTABLE_LAYOUT_RESIDENCY_V1.md'
       - '.github/workflows/tri-layout-formal.yml'
   push:
@@ -25,6 +26,7 @@ on:
       - 'src/test/java/dev/oreslang/TriLayoutMotionStoreTest.java'
       - 'src/test/java/dev/oreslang/TriLayoutMotionFormalRefinementTest.java'
       - 'src/test/java/dev/oreslang/TriLayoutSelectableResidencyTest.java'
+      - 'src/test/java/dev/oreslang/TriLayoutSelectHardeningTest.java'
       - 'docs/SELECTABLE_LAYOUT_RESIDENCY_V1.md'
       - '.github/workflows/tri-layout-formal.yml'
 
@@ -61,4 +63,4 @@ jobs:
           distribution: temurin
           java-version: '21'
       - name: Execute actual Java host layout reference
-        run: mvn -B -ntp -Dtest=TriLayoutMotionStoreTest,TriLayoutMotionFormalRefinementTest,TriLayoutSelectableResidencyTest test
+        run: mvn -B -ntp -Dtest=TriLayoutMotionStoreTest,TriLayoutMotionFormalRefinementTest,TriLayoutSelectableResidencyTest,TriLayoutSelectHardeningTest test
