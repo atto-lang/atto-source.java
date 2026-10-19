@@ -109,9 +109,6 @@ def require_hardened_branch_rules(rules, label):
 
 
 
-    pass
-
-
 def valid_sha(value):
     if not isinstance(value, str) or not SHA.fullmatch(value):
         raise Denied("GitHub returned an invalid object SHA")
