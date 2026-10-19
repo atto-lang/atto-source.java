@@ -7,14 +7,19 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.NamedCallBindingPlan;
 import dev.oreslang.types.ReturnCleanupChecker;
 import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Parser-stage contract for named value arguments plus the single final
- * anonymous trailing-closure exception. No executable named-call lowering is
- * claimed here.
+ * anonymous trailing-closure exception plus the first executable required-call
+ * lowering for statically resolved direct/module functions.
  */
 final class NamedCallTrailingClosureSyntaxTest {
     private static Ast.Expr firstExpression(String expression) {
@@ -144,7 +149,7 @@ final class NamedCallTrailingClosureSyntaxTest {
     }
 
     @Test
-    void cleanupAnalysisRejectsStagedCallBeforeSkippingNestedEffects() {
+    void cleanupAnalysisTraversesSupportedStagedCallInsteadOfSkippingIt() {
         Ast.Program program = Parser.parse("""
                 pub fnc work(int value): int { return value; }
                 pub fnc main(): void {
@@ -152,40 +157,102 @@ final class NamedCallTrailingClosureSyntaxTest {
                     return;
                 }
                 """);
+        assertDoesNotThrow(() -> ReturnCleanupChecker.check(program));
+    }
+
+    @Test
+    void capabilityCheckerRequiresATypeCheckedNamedCallPlan() {
+        Ast.Program parsed = Parser.parse("""
+                pub fnc work(int value): int { return value; }
+                pub fnc main(): void {
+                    work(value: 1);
+                    return;
+                }
+                """);
+        assertThrows(
+                IllegalStateException.class,
+                () -> CapabilityChecker.check(parsed, IsolatePolicy.developer()));
+
+        Ast.Program checked = TypeChecker.checkTypes(parsed);
+        assertDoesNotThrow(
+                () -> CapabilityChecker.check(checked, IsolatePolicy.developer()));
+    }
+
+    @Test
+    void requiredNamedDirectFunctionIsExecutableButDynamicMemberRemainsClosed() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc work(int value): int { return value; }
+                pub fnc main(): void {
+                    work(value: 1);
+                    return;
+                }
+                """)));
+
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
-                () -> ReturnCleanupChecker.check(program));
-        assertTrue(failure.getMessage().contains("staged named/trailing-closure"),
-                failure::toString);
-    }
-
-    @Test
-    void capabilityCheckerRejectsStagedCallWhenInvokedDirectly() {
-        Ast.Program program = Parser.parse("""
-                pub fnc work(int value): int { return value; }
-                pub fnc main(): void {
-                    work(value: 1);
-                    return;
-                }
-                """);
-        SecurityException failure = assertThrows(
-                SecurityException.class,
-                () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
-        assertTrue(failure.getMessage().contains("staged named/trailing-closure"),
-                failure::toString);
-    }
-
-    @Test
-    void compilerTypeAdmissionFailsClosedBeforeAnyRuntimeFallback() {
-        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        pub fnc work(int value): int { return value; }
+                        define class Box as
+                            pub run(int value): int { return value; }
+                        end
                         pub fnc main(): void {
-                            work(value: 1);
+                            val Box b = new Box();
+                            b.run(value: 1);
                             return;
                         }
                         """)));
-        assertTrue(failure.getMessage().contains("named/trailing-closure"),
+        assertTrue(failure.getMessage().contains("direct or module function")
+                        || failure.getMessage().contains("instance/static"),
                 failure::toString);
     }
+
+    @Test
+    void runtimeEvaluatesNamedArgumentsInSourceOrderThenPermutesValues() throws Exception {
+        assertEquals("BA12", run("""
+                pub fnc mark(string label, int value): int {
+                    stdio.stdout.write(label);
+                    return value;
+                }
+                pub fnc combine(int first, int second): int {
+                    return first * 10 + second;
+                }
+                pub routine main(): void {
+                    val int result = combine(
+                        second: mark("B", 2),
+                        first: mark("A", 1)
+                    );
+                    stdio.stdout.write(result);
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void runtimeBindsFinalAnonymousClosureOnlyAfterNamedValues() throws Exception {
+        assertEquals("4", run("""
+                pub fnc apply(int value, Fnc<int, int> body): int {
+                    return body(value);
+                }
+                pub routine main(): void {
+                    val int result = apply(
+                        value: 3,
+                        fnc(int x) { return x + 1; }
+                    );
+                    stdio.stdout.write(result);
+                    return;
+                }
+                """));
+    }
+
+    private static String run(String program) throws Exception {
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "named-call.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(stdout).build()) {
+            context.eval(source);
+        }
+        return stdout.toString(StandardCharsets.UTF_8);
+    }
+
 }
