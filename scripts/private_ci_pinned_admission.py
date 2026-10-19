@@ -120,3 +120,60 @@ def verify(repository, trusted_root, fetch, *, env=None, git=git_value):
         raise AdmissionDenied('source checkout contains unreviewed changes')
     return {'source_sha':expected_source, 'source_tree':remote_tree,
             'policy_sha':expected_policy, 'destination_id':dest_id}
+
+
+def verify_snapshot(trusted_root, source_root, files, source_sha, *, run=subprocess.run):
+    """Every exported byte/mode/path must equal the pinned source Git tree.
+
+    Compare the *collected bytes*, not just checkout status; this defeats a
+    source-file mutation between the preflight Git status and file traversal.
+    """
+    require_sha(source_sha, 'source snapshot SHA')
+    try:
+        trusted = Path(trusted_root).resolve(strict=True)
+        source = Path(source_root).resolve(strict=True)
+        relative = source.relative_to(trusted)
+    except (OSError, RuntimeError, ValueError):
+        raise AdmissionDenied('source snapshot directory escapes reviewed checkout') from None
+    args = ['git', '-C', str(trusted), 'ls-tree', '-r', '-z', '--full-tree', source_sha]
+    if relative.parts:
+        args.extend(['--', relative.as_posix()])
+    try:
+        result = run(args, capture_output=True, timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        raise AdmissionDenied('pinned Git source tree could not be enumerated') from None
+    if result.returncode != 0 or len(result.stdout) > 524288:
+        raise AdmissionDenied('pinned Git source tree enumeration refused')
+    reference = {}
+    prefix = relative.as_posix() + '/' if relative.parts else ''
+    for item in result.stdout.split(b'\0'):
+        if not item:
+            continue
+        try:
+            header, path = item.split(b'\t', 1)
+            mode, kind, digest = header.split(b' ')
+            name = path.decode('utf-8')
+        except (ValueError, UnicodeError):
+            raise AdmissionDenied('malformed pinned source tree entry') from None
+        if (mode not in (b'100644', b'100755') or kind != b'blob'
+            or not SHA.fullmatch(digest.decode('ascii'))
+            or not name.startswith(prefix)):
+            raise AdmissionDenied('unsafe pinned source tree entry')
+        relative_path = name[len(prefix):]
+        if not relative_path or relative_path in reference:
+            raise AdmissionDenied('duplicate or malformed source tree path')
+        reference[relative_path] = (mode.decode('ascii'), digest.decode('ascii'))
+    if not reference or len(reference) != len(files):
+        raise AdmissionDenied('export file set differs from pinned source tree')
+    import hashlib
+    observed = set()
+    for name, data, mode in files:
+        if name in observed or name not in reference:
+            raise AdmissionDenied('unreviewed export path')
+        observed.add(name)
+        if not isinstance(data, bytes) or mode != reference[name][0]:
+            raise AdmissionDenied('unreviewed export file mode or data')
+        digest = hashlib.sha1(b'blob ' + str(len(data)).encode('ascii') + b'\0' + data).hexdigest()
+        if digest != reference[name][1]:
+            raise AdmissionDenied('exported source bytes differ from pinned Git object')
+    return True
