@@ -401,6 +401,13 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
 
     <T> ActorHotUpgradeTaskBridgeV1.PinnedTask<T> startHostPinnedTaskTrackedForUpgrade(
             OresScheduler scheduler, OresScheduler.Task<T> frame) {
+        return startHostPinnedTaskTrackedForUpgrade(
+                scheduler, frame, new ActorHotUpgradeTaskBridgeV1.PinnedTask<>());
+    }
+
+    <T> ActorHotUpgradeTaskBridgeV1.PinnedTask<T> startHostPinnedTaskTrackedForUpgrade(
+            OresScheduler scheduler, OresScheduler.Task<T> frame,
+            ActorHotUpgradeTaskBridgeV1.PinnedTask<T> reserved) {
         requireBlockingHostSurface("start pinned source actor Task proof");
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(frame, "frame");
@@ -409,7 +416,8 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             requireOpenLocked();
             reapRetiredLocked();
             return ActorHotUpgradeTaskBridgeV1.startPinnedTracked(
-                    active.view.runtime(), active.physical, scheduler, frame);
+                    active.view.runtime(), active.physical, scheduler, frame,
+                    reserved);
         }
     }
 
