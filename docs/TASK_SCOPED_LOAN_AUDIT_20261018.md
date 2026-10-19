@@ -60,10 +60,26 @@ The typed claim's referent type is also not yet checked against an authoritative
 MIR place type. `quiescent(ticket)` is not authenticated to a physical Task join,
 so the real runtime must not invoke it merely on cancellation or result settle.
 
-**New evidence:** 32 committed JUnit methods (including six additional owner,
+**New evidence:** 33 committed JUnit methods (including six additional owner,
 epoch, and resource-bound regressions), not run under Maven/GraalVM. The
 source-org fast-ci run [39194705587](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39194705587)
 and concurrency-contract run [39194705537](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39194705537)
 reported failures with **zero recorded steps** and no runner assigned on
 the inspected intermediate head. No compiler/JUnit pass is claimed, and
 no private Git tree was exported to another organization.
+
+### Final follow-up verification
+- `admitTyped` now performs auto-trait proof and loan reservation under one
+  synchronized compiler-analysis lock.
+- A deterministic 2,000-pair range-alias matrix checks READ/WRITE footprint
+  symmetry, half-open interval disjointness and conservative unverified parent
+  projections. The test is checked in, **not executed**.
+- Exact-head source files were re-read: 12/12 static checks passed (including
+  delimiter balance, owner-scoped allocation keys, trait admission signature,
+  cancellation preservation and test count). Static checks do not establish
+  Java compilation, JUnit passes, or physical runtime safety.
+- At source commit `e3c2a39e77fc5caf428380985ed2101914a7df7f`,
+  [fast-ci #39195061794](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39195061794),
+  [concurrency-contract #39195061990](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39195061990), and
+  [ci #39195061823](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39195061823)
+  all show **zero executed job steps** and no runner assignment.
