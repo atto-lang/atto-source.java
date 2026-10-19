@@ -355,19 +355,23 @@ public final class OresTaskScope implements AutoCloseable {
 
     /** Package/runtime observation only; not a code-unload authority. */
     boolean physicallyQuiescent() {
-        ArrayDeque<OresTaskScope> pending = new ArrayDeque<>();
-        pending.add(this);
-        while (!pending.isEmpty()) {
-            OresTaskScope scope = pending.removeLast();
-            synchronized (scope.gate) {
-                // Successful physical exit prunes the slot. Any retained slot
-                // is either still executing or has a failed trusted retirement
-                // callback, neither of which is safe code-unload evidence.
-                if (!scope.tasks.isEmpty()) return false;
-                pending.addAll(scope.childScopes);
+        // An observation must linearize with admission throughout the
+        // complete tree. Otherwise concurrent child insertion may produce
+        // a torn snapshot that incorrectly authorizes code-image unload.
+        synchronized (treeAdmissionGate) {
+            ArrayDeque<OresTaskScope> pending = new ArrayDeque<>();
+            pending.add(this);
+            while (!pending.isEmpty()) {
+                OresTaskScope scope = pending.removeLast();
+                synchronized (scope.gate) {
+                    // A failed physical lease release deliberately retains
+                    // its slot even after its guest result has settled.
+                    if (!scope.tasks.isEmpty()) return false;
+                    pending.addAll(scope.childScopes);
+                }
             }
+            return true;
         }
-        return true;
     }
 
     int retainedChildScopesForTesting() {
