@@ -84,11 +84,50 @@ final class ScopedTaskTypeBridgeTest {
                         TaskAccessVerifier.Mode.READ, 0, 16, source, lowered)),
                         SOURCE, NO_GUEST_UNSAFE));
         assertEquals(0, ledger.activeChildren());
-        var option = src("Option", src("int"));
-        var typedOption = new Types.Named("Option", List.of(Types.Primitive.INT));
+        // A primitive can be Sync when both representations prove it.
         assertNotNull(ledger.admitCoherentTyped(List.of(claim(
-                TaskAccessVerifier.Mode.READ, 0, 16, option, typedOption)),
-                SOURCE, NO_GUEST_UNSAFE));
+                TaskAccessVerifier.Mode.READ, 0, 16, src("int"),
+                Types.Primitive.INT)), SOURCE, NO_GUEST_UNSAFE));
+    }
+
+    @Test
+    void sameNamedImportedOptionAndResultCannotSpoofIntrinsics() {
+        var ledger = new TaskAccessVerifier();
+        for (String name : List.of("Option", "Result")) {
+            Ast.TypeRef source = name.equals("Option")
+                    ? src(name, src("int"))
+                    : src(name, src("int"), src("int"));
+            Types.Type internal = name.equals("Option")
+                    ? new Types.Named(name, List.of(Types.Primitive.INT))
+                    : new Types.Named(name, List.of(
+                            Types.Primitive.INT, Types.Primitive.INT));
+            // Both independent trait engines might otherwise accept matching
+            // type *names*. Without resolved intrinsic identity the bridge
+            // must deny, even when both element types are Send+Sync.
+            assertThrows(IllegalArgumentException.class,
+                    () -> ledger.admitCoherentTyped(List.of(claim(
+                            TaskAccessVerifier.Mode.READ, 0, 16, source, internal)),
+                            SOURCE, NO_GUEST_UNSAFE));
+            assertThrows(IllegalArgumentException.class,
+                    () -> ledger.admitCoherentTyped(List.of(claim(
+                            TaskAccessVerifier.Mode.WRITE, 0, 16, source, internal)),
+                            SOURCE, NO_GUEST_UNSAFE));
+        }
+        assertEquals(0, ledger.activeChildren());
+    }
+
+    @Test
+    void structurallyMatchingBorrowCannotSkipLifetimeAndQuiescenceProof() {
+        var ledger = new TaskAccessVerifier();
+        for (boolean mutable : new boolean[]{false, true}) {
+            Ast.TypeRef source = Ast.TypeRef.borrowed(src("int"), mutable);
+            Types.Type resolved = new Types.Borrow(Types.Primitive.INT, mutable);
+            assertThrows(IllegalArgumentException.class,
+                    () -> ledger.admitCoherentTyped(List.of(claim(
+                            TaskAccessVerifier.Mode.WRITE, 0, 16, source, resolved)),
+                            SOURCE, NO_GUEST_UNSAFE));
+        }
+        assertEquals(0, ledger.activeChildren());
     }
 
     @Test
