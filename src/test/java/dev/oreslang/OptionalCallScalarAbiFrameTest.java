@@ -56,6 +56,9 @@ final class OptionalCallScalarAbiFrameTest {
                 result.slots().get(2).value());
         assertEquals(new OptionalCallScalarAbiFrame.Required(
                 Ast.TypeRef.simple("bool"), false), result.slots().get(3).value());
+        assertSame(result.selected(), result.checkedSource().selectedDeclaration());
+        assertSame(result.checkedSource().lexical().source(),
+                result.checkedSource().lexical().tempRecipe().bound().source());
         assertEquals(BoundInvocation.Readiness.SHAPE_ONLY, result.readiness());
         assertThrows(IllegalStateException.class, result::requireExecutable);
     }
