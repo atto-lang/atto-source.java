@@ -14,14 +14,15 @@ Status: **partial executable Java scheduler hardening** on the draft branch `sch
 
 `ActorRuntime.ActorCell.runBatch` previously called `NativeCarrierExecutor.bindCurrentThreadToCpu(cpu)` for every accepted actor turn when `ores.actor.affinity=cpu`. The call reaches Linux `sched_setaffinity`. Each `ActorAffinityDispatcher` lane has a dedicated one-worker underlying dispatcher, so successive turns on one physical carrier use the same desired CPU. The branch introduces `CarrierCpuBinding` (one `ThreadLocal` per *OS worker*, not per actor) and `ensureCurrentCarrierCpu(cpu)`:
 
-- First admitted turn on a new physical worker performs mandatory hard binding before guest code.
+- For a native single-carrier hard-affinity lane, the designated pthread binds during executor startup; construction does not return until that carrier reports successful startup affinity. Therefore no actor runnable can be admitted before the native carrier is pinned.
+- The JVM-thread portability fallback cannot use the native carrier-startup handshake, so its first admitted actor turn still establishes hard affinity before guest code.
 - Later turns on that same worker and CPU skip the redundant native syscall.
 - A CPU change, elapsed 1-second reassertion interval, or non-monotonic clock observation triggers binding again. This is a **time-bounded reassertion**, not a claim of continuous kernel cpuset observation.
 - An OS failure does not cache a successful pin; existing actor failure handling remains responsible for fail-stopping the admitted actor turn.
 - Native carrier retirement clears the thread-local value. Replacement JVM fallback workers bind on their own thread-local first turn.
 - CPU validity remains checked before creating affinity lanes. Hard mode must not silently be interpreted as soft affinity on platforms without supported native CPU binding.
 
-**Not yet implemented:** pinning on worker creation before first turn, asynchronous CPU-hotplug subscription, syscall-level instrumentation, arbitrary external FFI affinity mutations detection between reassertions, or CPU-independent migrations/stealing of active actor turns. Need separate carefully-fenced work to provide those guarantees.
+**Not yet implemented:** asynchronous CPU-hotplug/cpuset subscription, a process-wide topology coordinator, arbitrary external FFI affinity-mutation notification between observations, or CPU-independent migrations/stealing of active actor turns. Native startup pinning and syscall-count validation are now executable; dynamic topology handling still needs separate carefully-fenced work.
 
 ### Opt-in default worker sizing for three actor domains
 
@@ -47,6 +48,7 @@ This is **not** yet a process-wide CPU coordinator: CONTROL/root/ordinary Task p
 ## Validation
 
 - Checked-in `CarrierCpuBindingTest`: skip repeated binds across 10,000 turn-like invocations; per-thread isolation, CPU change, timed reassertion, clock regression, native bind failure retry, invalid CPU.
+- Checked-in `NativeCarrierExecutorTest`: logical-turn multiplexing, startup CPU established before the first runnable, and rejection of multi-carrier pools for the single-CPU startup-pinning constructor.
 - Checked-in `ActorPoolSizingTest`: small CPU counts, 5-256 CPU budgets, explicit SHARED requests, fail-closed oversubscription and determinism.
 - Local OpenJDK 21 compiled exact GitHub blobs with `javac -Xlint:all -Werror` using minimal compatible JUnit test stubs. All **9** source test method bodies passed. This is **host-model-only** evidence; it is not a full Maven/JUnit, Graal Native Image, JNI integration or LLVM differential pass.
 - Exact PR-head GitHub CI and runnable benchmarks remain required.
