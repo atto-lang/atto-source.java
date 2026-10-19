@@ -248,7 +248,9 @@ final class LogicalSourceActorInitialSpawnQuarantineTest {
                     for (Object owner : ledger) {
                         Field ownerView = owner.getClass().getDeclaredField("view");
                         ownerView.setAccessible(true);
-                        if (ownerView.get(owner) != view) continue;
+                        if (!(ownerView.get(owner)
+                                instanceof HotReloadManager.ActorGenerationView pendingView)
+                                || pendingView.generation() != generation) continue;
                         Field eligible =
                                 owner.getClass().getDeclaredField("retryableFailure");
                         eligible.setAccessible(true);
