@@ -18,7 +18,8 @@ import java.util.function.Function;
  * source types, all projected paths, and non-process domains fail closed.
  *
  * <p>Not an executable source Task permission: provenance identity and
- * TaskScope lifetime still require MIR proof minting. The returned Admission's\n * one-shot PhysicalCompletion must be bound to physical Task exit
+ * TaskScope lifetime still require MIR proof minting. The returned Admission's
+ * one-shot PhysicalCompletion must be bound to physical Task exit
  * before Java or LLVM source admission can be enabled.
  */
 final class TaskBorrowCompilerBridge {
