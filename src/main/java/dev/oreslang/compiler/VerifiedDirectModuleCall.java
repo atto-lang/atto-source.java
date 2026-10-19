@@ -67,6 +67,10 @@ public final class VerifiedDirectModuleCall {
         } else {
             throw new IllegalArgumentException("call requires original CallExpr site");
         }
+        // This restricted proof denotes one positional source expression per
+        // formal. Explicit generic instantiation and pack/spread expansion
+        // need different type-substitution and source-to-slot witnesses.
+        requirePlainPositionalCallShape(call);
         if (!(call.callee() instanceof Ast.NameExpr name)) {
             throw new IllegalArgumentException("direct module function only");
         }
@@ -125,6 +129,25 @@ public final class VerifiedDirectModuleCall {
             throw new IllegalArgumentException("unverified direct function target");
         }
         return new VerifiedDirectModuleCall(checked, owner, caller, selected, call);
+    }
+
+    /**
+     * Source-shape guard independently testable with forged public AST nodes.
+     * Full TypeChecker approval alone does not authorize this narrower
+     * fixed-slot, non-generic positional-origin witness.
+     */
+    static void requirePlainPositionalCallShape(Ast.CallExpr call) {
+        Objects.requireNonNull(call, "original ordinary call");
+        if (call.typeArgumentsPresent() || !call.typeArguments().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "explicit type application needs checked substitution proof");
+        }
+        for (Ast.Expr argument : call.arguments()) {
+            if (argument instanceof Ast.SpreadExpr) {
+                throw new IllegalArgumentException(
+                        "spread arguments need checked expansion and ownership proof");
+            }
+        }
     }
 
     private static boolean ordinary(Ast.FunctionDecl f) {
