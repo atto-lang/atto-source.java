@@ -24,6 +24,8 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
     private final ParentEscalation escalation;
     private final Map<ActorRuntime.ActorRef<?>, TrustedSupervisorInbox.ChildBinding> bindings =
             new IdentityHashMap<>();
+    private final Map<TrustedSupervisorInbox.ChildBinding, Long> childIdsByBinding =
+            new IdentityHashMap<>();
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicLong childIds = new AtomicLong();
     private boolean closed;
@@ -49,6 +51,7 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
         TrustedSupervisorInbox.ChildBinding binding =
                 inbox.bindVerifiedChild(childId, child.generation());
         bindings.put(child, binding);
+        childIdsByBinding.put(binding, childId);
 
         child.getDone().whenCompleteRuntime((ignored, doneFailure) ->
                 onFinalized(child, binding, doneFailure));
@@ -74,7 +77,7 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
         if (result == TrustedSupervisorInbox.Admission.ESCALATE_TO_PARENT) {
             TrustedSupervisorInbox.FailureNotice notice =
                     new TrustedSupervisorInbox.FailureNotice(
-                            bindingChildId(binding), child.generation(), seq, faultCode);
+                            childIdFor(binding), child.generation(), seq, faultCode);
             if (!escalation.escalate(notice)) {
                 throw new IllegalStateException(
                         "supervisor CONTROL overflow escalation was not durably accepted");
@@ -105,14 +108,10 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
         return value;
     }
 
-    private static long bindingChildId(TrustedSupervisorInbox.ChildBinding binding) {
-        try {
-            var field = TrustedSupervisorInbox.ChildBinding.class.getDeclaredField("childId");
-            field.setAccessible(true);
-            return field.getLong(binding);
-        } catch (ReflectiveOperationException failure) {
-            throw new IllegalStateException("trusted child identity unavailable", failure);
-        }
+    private synchronized long childIdFor(TrustedSupervisorInbox.ChildBinding binding) {
+        Long value = childIdsByBinding.get(binding);
+        if (value == null) throw new IllegalStateException("trusted child identity unavailable");
+        return value;
     }
 
     private static long stableFaultCode(Throwable failure) {
@@ -137,5 +136,6 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
             revokeIfLive(binding);
         }
         bindings.clear();
+        childIdsByBinding.clear();
     }
 }
