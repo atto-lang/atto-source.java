@@ -55,6 +55,26 @@ jobs:
           [[ "$APPROVED_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$APPROVED_TREE" =~ ^[a-f0-9]{40}$ ]]
           test "$APPROVED_SHA" = "$GITHUB_SHA"
+      - name: Reject inherited process and Git injection before checkout
+        shell: python -I {0}
+        run: |
+          import os
+          import sys
+          blocked = {
+              "MAVEN_ARGS", "_JAVA_OPTIONS", "PYTHONPATH",
+              "PYTHONHOME", "PYTHONSTARTUP", "NODE_EXTRA_CA_CERTS",
+              "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+              "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+              "GIT_COMMON_DIR", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM",
+          }
+          blocked_prefixes = ("BASH_FUNC_", "GIT_CONFIG_")
+          inherited = sorted(key for key, value in os.environ.items()
+                             if value and (key in blocked or
+                                           key.startswith(blocked_prefixes)))
+          if inherited:
+              print("DENIED: unreviewed runner process overrides: " +
+                    ", ".join(inherited), file=sys.stderr)
+              raise SystemExit(1)
       - name: Checkout exact approved source inside original private repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -73,6 +93,16 @@ jobs:
             echo 'DENIED: masked index entry' >&2
             exit 1
           fi
+      - name: Reject repository Maven launch overrides after checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in .mvn/maven.config .mvn/jvm.config .mvn/extensions.xml; do
+            if [[ -e "$path" || -L "$path" ]]; then
+              echo "DENIED: unreviewed Maven configuration override: $path" >&2
+              exit 1
+            fi
+          done
       - name: Execute adversarial evidence-admission tests before compiler tests
         shell: bash
         run: |
