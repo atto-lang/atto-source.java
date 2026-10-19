@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
@@ -20,6 +21,59 @@ final class InferredRecordBoundaryTest {
         if (fragment != null) {
             assertTrue(failure.getMessage().contains(fragment), failure.getMessage());
         }
+    }
+
+    @Test
+    void exactAliasProofPassesThroughEveryCompilerEntryPoint() {
+        String source = """
+                fnc read(): string {
+                    const Person first = infer record{name: "Ada", age: 37};
+                    const Person second = infer struct{age: 42, name: "Grace"};
+                    return second.name;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertDoesNotThrow(() -> OresCompiler.analyze(Parser.parse(source)));
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckWithDiagnostics(source));
+    }
+
+    @Test
+    void structurallyEqualBindingsInDistinctScopesHaveDistinctAliasProofs() {
+        String source = """
+                fnc first(): string {
+                    const Profile profile = infer record{name: "Ada"};
+                    return profile.name;
+                }
+                fnc second(): string {
+                    const Profile profile = infer record{name: "Ada"};
+                    return profile.name;
+                }
+                """;
+        TypeChecker.TypeCheckResult checked =
+                TypeChecker.checkTypesWithDiagnostics(Parser.parse(source));
+        assertEquals(2, checked.shortInferredAliases().size(),
+                "equal-value AST nodes must not collapse lexical alias identities");
+        assertThrows(UnsupportedOperationException.class,
+                () -> checked.shortInferredAliases().clear(),
+                "typechecker proof map must be immutable");
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
+    void previouslyDeclaredTypeNeverAcquiresShortAliasAuthority() {
+        String source = """
+                type Person = {name: string};
+                fnc read(): string {
+                    const Person person = infer record{name: "Ada"};
+                    return person.name;
+                }
+                """;
+        TypeChecker.TypeCheckResult checked =
+                TypeChecker.checkTypesWithDiagnostics(Parser.parse(source));
+        assertTrue(checked.shortInferredAliases().isEmpty(),
+                "preexisting type declarations are not short aliases");
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
     }
 
     @Test
