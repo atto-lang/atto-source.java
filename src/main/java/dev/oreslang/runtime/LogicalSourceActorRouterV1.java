@@ -346,6 +346,11 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
      */
     <T> OresFuture<T> startHostPinnedTaskForUpgrade(
             OresScheduler scheduler, OresScheduler.Task<T> frame) {
+        return startHostPinnedTaskTrackedForUpgrade(scheduler, frame).result();
+    }
+
+    <T> ActorHotUpgradeTaskBridgeV1.PinnedTask<T> startHostPinnedTaskTrackedForUpgrade(
+            OresScheduler scheduler, OresScheduler.Task<T> frame) {
         requireBlockingHostSurface("start pinned source actor Task proof");
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(frame, "frame");
@@ -353,7 +358,7 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             awaitUpgradeLocked();
             requireOpenLocked();
             reapRetiredLocked();
-            return ActorHotUpgradeTaskBridgeV1.startPinned(
+            return ActorHotUpgradeTaskBridgeV1.startPinnedTracked(
                     active.view.runtime(), active.physical, scheduler, frame);
         }
     }
