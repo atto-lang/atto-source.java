@@ -1,0 +1,286 @@
+package dev.oreslang.runtime;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.lang.reflect.Field;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.AbstractExecutorService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * Focused supervisor-transaction regressions for logical source actor upgrade.
+ * These tests intentionally inspect private ownership ledgers only to inject
+ * deterministic faults; guest code has no access to these capabilities.
+ */
+@Timeout(60)
+final class LogicalSourceActorSupervisorUpgradeTxnTest {
+    private static final Duration WAIT = Duration.ofSeconds(5);
+
+    private static final String V1 = """
+            define actor Counter as
+              let int count;
+              on_start(): void { self.count = 1; return; }
+              receive(ActorMail<int> mail): void {
+                self.count = self.count + mail.value;
+                self.send(self.count);
+                return;
+              }
+            end
+            pub routine main(): void { return; }
+            """;
+
+    private static final String V2 = V1.replace(
+            "self.count = self.count + mail.value;",
+            "self.count = self.count + mail.value + 1;");
+
+    private static Object field(Object target, String name) throws Exception {
+        Field field = target.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(target);
+    }
+
+    private static Field generationPinsField() throws Exception {
+        Field pins = HotReloadManager.Generation.class
+                .getDeclaredField("actorRoutePins");
+        pins.setAccessible(true);
+        return pins;
+    }
+
+    @Test
+    void proxyTransactionOwnsFreezeAndRollsItBackAfterReadyTimeout()
+            throws Exception {
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("txn-freeze-v1.ores", V1);
+            var candidate =
+                    manager.stageActorGeneration("txn-freeze-v2.ores", V2);
+            var candidateView = candidate.linkActorGeneration("Counter");
+            ActorRuntime candidateRuntime = candidateView.runtime();
+
+            Field dispatcherField =
+                    ActorRuntime.class.getDeclaredField("sharedDispatcher");
+            dispatcherField.setAccessible(true);
+            ExecutorService original =
+                    (ExecutorService) dispatcherField.get(candidateRuntime);
+            AtomicReference<Runnable> captured = new AtomicReference<>();
+            ExecutorService blackHole = new AbstractExecutorService() {
+                private volatile boolean shutdown;
+
+                @Override public void execute(Runnable command) {
+                    if (shutdown) {
+                        throw new java.util.concurrent.RejectedExecutionException();
+                    }
+                    if (!captured.compareAndSet(null, command)) {
+                        throw new AssertionError(
+                                "candidate submitted more than one initial schedule");
+                    }
+                }
+
+                @Override public void shutdown() { shutdown = true; }
+                @Override public List<Runnable> shutdownNow() {
+                    shutdown = true;
+                    return List.of();
+                }
+                @Override public boolean isShutdown() { return shutdown; }
+                @Override public boolean isTerminated() { return shutdown; }
+                @Override public boolean awaitTermination(
+                        long timeout, TimeUnit unit) {
+                    return shutdown;
+                }
+            };
+
+            dispatcherField.set(candidateRuntime, blackHole);
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                         first, ActorRuntime.ActorKind.SHARED, "Counter", WAIT);
+                 var mailbox = new LogicalActorProxyMailboxV1(4, 8, 32)) {
+                router.bindProxyMailboxForSupervisor(mailbox);
+                Field txnField = LogicalSourceActorRouterV1.class
+                        .getDeclaredField("activeUpgradeTxn");
+                txnField.setAccessible(true);
+
+                AtomicReference<Throwable> failure = new AtomicReference<>();
+                Thread upgrader = Thread.ofPlatform().start(() -> {
+                    try {
+                        router.upgradeToForProxy(
+                                candidate, Duration.ofMillis(300), mailbox);
+                        failure.set(new AssertionError(
+                                "black-holed candidate unexpectedly published"));
+                    } catch (Throwable expected) {
+                        failure.set(expected);
+                    }
+                });
+
+                long admittedBy = System.nanoTime()
+                        + TimeUnit.SECONDS.toNanos(5);
+                while (captured.get() == null
+                        && System.nanoTime() < admittedBy) {
+                    Thread.sleep(2);
+                }
+                assertNotNull(captured.get(),
+                        "candidate physical actor must reach dispatcher admission");
+
+                Object txn = null;
+                long txnBy = System.nanoTime()
+                        + TimeUnit.SECONDS.toNanos(5);
+                while (txn == null && System.nanoTime() < txnBy) {
+                    txn = txnField.get(router);
+                    if (txn == null) Thread.sleep(2);
+                }
+                assertNotNull(txn, "staging must publish one supervisor transaction");
+
+                Field phase = txn.getClass().getDeclaredField("phase");
+                phase.setAccessible(true);
+                assertEquals("STAGING", phase.get(txn).toString());
+                assertTrue(mailbox.snapshot().dispatchFrozen(),
+                        "transaction must own the authoritative proxy freeze");
+                assertEquals(1L, mailbox.snapshot().routeEpoch());
+                assertTrue(router.proxyRouteEpochAlignedForTesting(mailbox));
+                assertEquals(0, router.reapRetired(),
+                        "staging candidate cannot be reaped by host observation");
+
+                upgrader.join(10_000);
+                assertFalse(upgrader.isAlive());
+                assertInstanceOf(
+                        java.util.concurrent.TimeoutException.class,
+                        failure.get());
+                assertNull(txnField.get(router),
+                        "rollback must clear the active supervisor transaction");
+                assertFalse(mailbox.snapshot().dispatchFrozen(),
+                        "prepublication timeout must rollback transaction freeze");
+                assertEquals(1L, mailbox.snapshot().routeEpoch());
+                assertEquals(1L, router.ref().routeEpoch());
+
+                // Cleanup requested stop before the black-holed runnable ever
+                // entered the actor carrier. Executing that stale schedule now
+                // must be inert and permit later physical-finalization reap.
+                captured.get().run();
+                long reapedBy = System.nanoTime()
+                        + TimeUnit.SECONDS.toNanos(5);
+                int reaped = 0;
+                while (reaped == 0 && System.nanoTime() < reapedBy) {
+                    reaped += router.reapRetired();
+                    if (reaped == 0) Thread.sleep(2);
+                }
+                assertEquals(1, reaped);
+                assertEquals(0, router.reapRetired());
+            } finally {
+                dispatcherField.set(candidateRuntime, original);
+                blackHole.shutdownNow();
+            }
+        }
+    }
+
+    @Test
+    void successfulProxyTransactionPublishesOneCoherentAuthority()
+            throws Exception {
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("txn-success-v1.ores", V1);
+            var second = manager.stageActorGeneration("txn-success-v2.ores", V2);
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                         first, ActorRuntime.ActorKind.SHARED, "Counter", WAIT);
+                 var mailbox = new LogicalActorProxyMailboxV1(4, 8, 32)) {
+                router.bindProxyMailboxForSupervisor(mailbox);
+                Field txnField = LogicalSourceActorRouterV1.class
+                        .getDeclaredField("activeUpgradeTxn");
+                txnField.setAccessible(true);
+                assertNull(txnField.get(router));
+
+                assertTrue(router.upgradeToForProxy(second, WAIT, mailbox));
+                assertNull(txnField.get(router),
+                        "completed publication cannot retain transaction authority");
+                assertFalse(mailbox.snapshot().dispatchFrozen());
+                assertEquals(2L, mailbox.snapshot().routeEpoch());
+                assertEquals(2L, router.ref().routeEpoch());
+
+                var witness = router.supervisorPublication(mailbox);
+                assertEquals(second.id(), witness.generationId());
+                assertEquals(2L, witness.address().routeEpoch());
+                assertEquals(2L, witness.mailbox().routeEpoch());
+                assertTrue(router.proxyRouteEpochAlignedForTesting(mailbox));
+            }
+        }
+    }
+
+    @Test
+    void preSpawnCandidateLeaseDebitFailureKeepsRetryableOwner()
+            throws Exception {
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("txn-debit-v1.ores", V1);
+            var candidate =
+                    manager.stageActorGeneration("txn-debit-v2.ores", V2);
+            Field pins = generationPinsField();
+
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                    first, ActorRuntime.ActorKind.SHARED, "Counter", WAIT)) {
+                ActorRuntime oldRuntime =
+                        first.linkActorGeneration("Counter").runtime();
+                var external = oldRuntime.pinExternalWorkForHotUpgrade(
+                        router.physicalRefForTesting());
+
+                Field candidates = LogicalSourceActorRouterV1.class
+                        .getDeclaredField("retiredCandidates");
+                candidates.setAccessible(true);
+                Object original = candidates.get(router);
+
+                var injected = new ArrayList<Object>() {
+                    @Override public boolean add(Object value) {
+                        try {
+                            // pinActorRoute() has already charged exactly one
+                            // candidate pin before owner registration.
+                            assertEquals(1, pins.getInt(candidate));
+                            pins.setInt(candidate, 0);
+                        } catch (IllegalAccessException failure) {
+                            throw new AssertionError(failure);
+                        }
+                        return super.add(value);
+                    }
+                };
+                candidates.set(router, injected);
+                try {
+                    var failure = assertThrows(
+                            IllegalStateException.class,
+                            () -> router.upgradeTo(candidate, WAIT));
+                    assertTrue(
+                            failure.getMessage().contains("route-pin underflow"),
+                            failure::getMessage);
+
+                    assertEquals(1, injected.size(),
+                            "failed debit must retain candidate retirement owner");
+                    Object owner = injected.getFirst();
+                    Field physical = owner.getClass().getDeclaredField("physical");
+                    physical.setAccessible(true);
+                    assertNull(physical.get(owner),
+                            "quiescence refusal occurred before candidate spawn");
+                    Field eligible = owner.getClass()
+                            .getDeclaredField("retirementEligible");
+                    eligible.setAccessible(true);
+                    assertTrue(eligible.getBoolean(owner),
+                            "failed debit must transfer retry authority to reaper");
+
+                    // Repair the injected accounting corruption. Reaper must
+                    // close the same lease before forgetting its owner.
+                    pins.setInt(candidate, 1);
+                    assertEquals(1, router.reapRetired());
+                    assertEquals(0, pins.getInt(candidate));
+                    assertTrue(injected.isEmpty());
+                    assertEquals(0, router.reapRetired());
+                } finally {
+                    try {
+                        external.close();
+                    } finally {
+                        candidates.set(router, original);
+                    }
+                }
+            }
+        }
+    }
+}
