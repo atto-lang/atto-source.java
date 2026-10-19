@@ -8,16 +8,21 @@ test("exact-source checkout precedes all source and JUnit gates",()=>{
   assert.match(yml,/git rev-parse HEAD/);
   const hash=yml.indexOf("Fail closed on scalar fixture/golden drift");
   const node=yml.indexOf("Host-only ADT + actor source-admission regressions");
+  const toolchain=yml.indexOf("Install pinned GraalVM/JDK 25");
+  const compile=yml.indexOf("Compile all production and test Java sources");
+  const negative=yml.indexOf("Execute parser-positive / runtime-negative admission JUnit");
   const gate=yml.indexOf("Fail closed on incomplete nominal runtime");
-  const java=yml.indexOf("Real negative-control and nominal-positive GraalVM JUnit");
+  const positive=yml.indexOf("Execute positive nominal ADT GraalVM JUnit");
   const maven=yml.indexOf("Execute real parser, effect, ownership and scalar actor guest");
-  assert(hash>0&&hash<node&&node<gate&&gate<java&&java<maven);
+  assert(hash>0&&hash<node&&node<toolchain&&toolchain<compile&&compile<negative&&negative<gate&&gate<positive&&positive<maven);
   assert.match(yml,/node scripts\/verify-adt-ml-integration\.mjs/);
 });
 test("source checks are not called Java/GraalVM certification",()=>{
   assert.match(yml,/Host-only ADT \+ actor source-admission regressions/);
   assert.match(yml,/TrainingErrorNominalResultGuestTest/);
-  assert.match(yml,/NominalActorBridgeFailClosedTest/);
+  assert.match(yml,/NominalActorBridgeFailClosedTest test/);
+  assert.match(yml,/DskipTests test-compile/);
+  assert.match(yml,/node scripts\/verify-adt-ml-integration\.mjs/);
   assert.match(yml,/MlActorStateScalarGuestTest/);
   assert.match(yml,/NODE_FINDS_NO_PRIVATE_CROSS_ORG_SOURCE|CROSS_ORG_PRIVATE_SOURCE_EXPORT=NONE|CROSS_ORG_PRIVATE_SOURCE_EXPORT=NONE|PRIVATE_SOURCE_NOT_MIRRORED=TRUE/);
 });
