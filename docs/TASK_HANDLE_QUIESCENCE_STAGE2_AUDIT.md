@@ -435,3 +435,58 @@ is empty. Previously reported private-source exposure remains an
 open security-review gate. Use an independently approved exact-tree
 destination or restore original source-local runner to execute these
 committed JUnit methods before merging.
+
+
+## Explicit in-turn safepoints / Task-domain isolation audit (2026-10-18)
+
+The trusted scheduler/runtime now offers `OresScheduler.cancellationRequested()`
+(a nonthrowing poll) and `OresScheduler.cancellationCheckpoint()` (an explicit
+compiler lowering target). During a tracked Task's `Task.resume` body, a
+pending cooperative cancellation causes the checkpoint to throw a
+runtime-private `CancelledAtResume` marker, unwinding the current Java
+`finally` blocks. The resulting TaskOutcome is Cancelled **only** if the
+current Task's own cancellation token is marked cancelled. It is not a
+host carrier interrupt, a guarantee of preempting native code, or automatic
+insertion at all watchdog polls.
+
+**Isolation finding:** a thread-local token without a logical Task-domain
+guard is not sufficient: VM-owned schedulers can execute an unrelated
+untracked Task inline on the same Java carrier. Such a nested Task could
+incorrectly observe its parent's pending cancellation. The checkpoint
+context now stores both token and `OresScheduler.currentTaskDomain()` and
+accepts the token only on exact domain identity. Nested tracked Tasks use
+their own context, nested untracked Tasks see no cancellation, and every
+turn restores its enclosing context and clears the host ThreadLocal.
+
+**Terminal classification finding:** code can capture a private cancellation
+marker from a previous cancelled Task's exceptional Future and throw it
+inside an unrelated Task. The Java private class by itself is not
+cancellation authority. `TaskHandle.onSettled` now requires the current
+Task's token to be cancelled before classifying such a marker as Cancelled.
+A stale marker otherwise remains a Failed task. Ordinary
+`OresFuture.isCancelled()` still denotes a genuine Future cancellation.
+
+**Committed JUnit regressions:** explicit cancellation safepoint unwinds
+synchronous cleanup before done, no-request checkpoint is inert, no
+ThreadLocal leak on return, 100 nested inline untracked Tasks cannot inherit
+parent cancellation, nested tracked Tasks have independent authorities,
+a cleanup exception wins over cancellation, and a runtime marker replay
+by an unrelated Task is diagnosed as Failed. The source JUnit classes are
+committed but have NOT executed in Maven/GraalVM due to the existing
+zero-step GitHub Actions failures.
+
+**Local model evidence:** a standalone Java 21 model compiled under
+`javac -Xlint:all` and passed 6,000 cases spanning logical Task-domain
+isolation, checkpoint/finally unwinding and cleanup-error priority. This is
+not actual Oreslang `TaskHandle`/Truffle scheduler compilation or JUnit
+evidence. Warnings concerned a model exception's missing serial UID and a
+deliberately throwing cleanup finally.
+
+**Limitations:** a direct external `result().cancel()` and scheduler hard
+close still take their separate immediate cancellation paths. Synchronous
+source Future subscribers may run on the guest carrier at a checkpoint and
+delay complete physical quiescence; bounded host notification latency is
+not yet proven. Suspended Oreslang async finally/defer cleanup and
+compiler-generated loop checkpoint selection remain future integration
+work. Never inject cancellation inside a critical-write section, FFI, or
+ownership-sensitive/non-reentrant region without additional safety proofs.
