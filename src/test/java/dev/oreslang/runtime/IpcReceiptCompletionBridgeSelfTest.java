@@ -60,9 +60,9 @@ public final class IpcReceiptCompletionBridgeSelfTest {
         check(result(second) == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
         denied(() -> gate.rejectBeforeRemote(one));
         check(!first.toCompletableFuture().isDone());
-        check(gate.transportLost("old") == 1);
+        check(gate.transportLost(one) == 1);
         check(result(first) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
-        check(gate.transportLost("old") == 0);
+        check(gate.transportLost(one) == 0);
         check(gate.invariant());
         denied(() -> gate.acceptVerified(one, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED));
 
@@ -107,7 +107,7 @@ public final class IpcReceiptCompletionBridgeSelfTest {
         denied(() -> localDenial.rejectBeforeRemote(deniedEnvelope));
         denied(() -> localDenial.acceptVerified(deniedEnvelope,
                 IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED));
-        check(localDenial.transportLost("local") == 0);
+        check(localDenial.transportLost(deniedEnvelope) == 0);
 
         var onTerminal = new IpcReceiptCompletionBridge(1);
         var three = env(1, "session");
@@ -159,7 +159,7 @@ public final class IpcReceiptCompletionBridgeSelfTest {
                 IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
         check(!uncertain.toCompletableFuture().isDone());
         check(afterClaim.counters().transportCredits() == 1);
-        check(afterClaim.transportLost("claim") == 1);
+        check(afterClaim.transportLost(claimedMessage) == 1);
         check(result(uncertain) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
         check(afterClaim.counters().pending() == 0);
         check(afterClaim.counters().transportCredits() == 0);
@@ -186,7 +186,7 @@ public final class IpcReceiptCompletionBridgeSelfTest {
             Thread eof = new Thread(() -> {
                 try {
                     fire.await();
-                    losses.addAndGet(closing.transportLost("closed"));
+                    losses.addAndGet(closing.transportLost(message));
                 } catch (Throwable failure) { problem.compareAndSet(null, failure); }
             });
             publisher.start();
@@ -243,12 +243,12 @@ public final class IpcReceiptCompletionBridgeSelfTest {
             if (committed.get() == 1) {
                 check(!future.toCompletableFuture().isDone());
                 check(competing.counters().transportCredits() == 1);
-                check(competing.transportLost("raced") == 1);
+                check(competing.transportLost(message) == 1);
                 check(result(future) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
             } else {
                 check(result(future) == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
                 denied(() -> competing.commitDispatch(message));
-                check(competing.transportLost("raced") == 0);
+                check(competing.transportLost(message) == 0);
             }
             check(competing.invariant());
             check(competing.counters().pending() == 0);
@@ -274,7 +274,7 @@ public final class IpcReceiptCompletionBridgeSelfTest {
             Thread eof = new Thread(() -> {
                 try {
                     start.await();
-                    lost.addAndGet(racing.transportLost("session"));
+                    lost.addAndGet(racing.transportLost(message));
                 } catch (Throwable e) { problem.compareAndSet(null, e); }
             });
             ack.start(); eof.start(); start.countDown();
