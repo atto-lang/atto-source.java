@@ -161,3 +161,57 @@ Latest source-org fast-ci #39318279186 / job #118285359818 and
 concurrency-contract #39318279228 / job #118285360290 again completed with
 **zero recorded steps**. They are infrastructure failures, not compiler/test
 results. No Maven/JUnit/GraalVM pass is claimed for this head.
+
+
+## Compiler-minted transfer provenance — 2026-10-19
+
+The ownership pass now produces a sealed, identity-bound
+`TaskTransferProvenance` ledger in addition to ordinary accept/reject
+diagnostics.
+
+This is deliberately an **ownership/provenance half-proof only**:
+`ThreadSafetyTraits` remains the sole resolved semantic Send/Sync authority.
+
+New invariants:
+
+- provenance is keyed by the exact checked Task AST node using identity, so an
+  equal-looking/reconstructed node cannot claim an existing proof;
+- a capture receives `UNIQUE_MOVE` only after the affine owner is actually
+  marked moved and has no live immutable or mutable borrow;
+- copy captures receive `COPY` and leave the original owner usable;
+- fresh/returned consuming arguments may receive `OWNED_RVALUE`;
+- a move-only member/index projection is rejected for scheduled arguments
+  until projection-level move tracking exists; callers must first move the
+  value into a named local;
+- the ledger is sealed before it leaves `OwnershipChecker`;
+- both ordinary and explicitly linked-class ownership entrypoints can return
+  the same sealed provenance result;
+- no provenance result is returned when ownership checking fails.
+
+New exact files/blobs at this audit point:
+
+- `OwnershipChecker.java`: `04bd1bbb1088e15ed0ac6a9e81fc90a25d2f5b1e`
+- `TaskTransferProvenance.java`: `4f9e8a9b346eb2835ea3f05ae55bcda05c983d76`
+- `TaskTransferProvenanceTest.java`: `f1dd2e7ad921280a2a9f54b8cdcaa3ff1123d856` (4 JUnit methods)
+- `TaskTransferProvenanceSmoke.java`: `8294f90a653bbb71ad0ba87fa57636ef1e499d23`
+- dependency-free Task smoke script: `87730f7739e2bffb5f8271d69cbc82f716fbd756`
+
+The targeted Task branch now has **27 committed JUnit methods** across
+Task-spawn admission (13), resolved semantic authority (5), shared capture
+analysis (5), and transfer provenance (4).
+
+The ownership proof is not yet sufficient to enable source Tasks. The next
+front-end integration must return, for the same exact AST boundary, both:
+
+1. resolved semantic eligibility from `ThreadSafetyTraits.isOwnedSend`; and
+2. the sealed `TaskTransferProvenance` ownership proof.
+
+A lowering-specific front-end result should combine those without inventing a
+second type resolver. It must then bind the admitted lifetime to #1407's
+physical `TaskScope.getDone()`/descendant-quiescence barrier. Cancellation
+request or result-Future settlement alone is never a release witness.
+
+Latest source-org Actions for the provenance head again failed before
+recording executable steps; no Maven/JUnit/GraalVM pass is claimed. The
+authorized cross-org exact-tree path remains blocked until #1430 is
+independently approved and merged into protected `main`.
