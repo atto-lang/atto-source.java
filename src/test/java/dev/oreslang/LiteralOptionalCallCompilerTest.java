@@ -108,4 +108,48 @@ final class LiteralOptionalCallCompilerTest {
     void checkedResultCannotBeConstructedOutsideTheFullCompiler() {
         assertEquals(0, LiteralOptionalCallCompiler.Result.class.getConstructors().length);
     }
+    @Test
+    void reordersRequiredAndOptionalScalarArgumentsAfterFullAdmission() {
+        String source = """
+                define module app as
+                    pub fnc pick(int a, string? label, bool enabled): int {
+                        return a;
+                    }
+                    pub fnc caller(): int {
+                        return pick(enabled: true, label: "Alice", a: 7);
+                    }
+                end
+                """;
+        var checked = LiteralOptionalCallCompiler.lowerAndAnalyze(source, "app", "caller");
+        assertEquals(3, checked.loweredCall().arguments().size());
+        assertEquals(7L, ((Ast.LiteralExpr) checked.loweredCall()
+                .arguments().get(0)).value());
+        var some = assertInstanceOf(Ast.CallExpr.class,
+                checked.loweredCall().arguments().get(1));
+        assertEquals("Some", ((Ast.NameExpr) some.callee()).name());
+        assertEquals("Alice", ((Ast.LiteralExpr) some.arguments().getFirst()).value());
+        assertEquals(true, ((Ast.LiteralExpr) checked.loweredCall()
+                .arguments().get(2)).value());
+    }
+
+    @Test
+    void omittedOptionalSlotDoesNotConsumeAnArgumentTemporary() {
+        String source = """
+                define module app as
+                    pub fnc pick(int a, string? label, bool enabled): int {
+                        return a;
+                    }
+                    pub fnc caller(): int {
+                        return pick(enabled: true, label: _, a: 7);
+                    }
+                end
+                """;
+        var checked = LiteralOptionalCallCompiler.lowerAndAnalyze(source, "app", "caller");
+        assertEquals(3, checked.loweredCall().arguments().size());
+        assertEquals("None", ((Ast.NameExpr) checked.loweredCall()
+                .arguments().get(1)).name());
+        assertEquals(7L, ((Ast.LiteralExpr) checked.loweredCall()
+                .arguments().get(0)).value());
+    }
+
 }

@@ -1021,3 +1021,38 @@ passed 50,000 seeded generated shapes (6,206 admitted and 43,794 rejected).
 It is not compiled JDK25 project source, Maven/JUnit, or a compiler runtime
 conformance result. The exact-tree suite remains pending a working,
 independently authorized private Actions destination.
+
+
+## Experimental real-checker scalar optional-call rewrite (October 2026)
+
+The **opt-in** `LiteralOptionalCallCompiler.lowerAndAnalyze(source, module, caller)`
+API now bridges a narrow, original-AST named/optional call into the existing
+ordinary `CallExpr` pipeline. Unlike shape previews, it constructs a fresh
+`Ast.Program` whose selected `T?` formals are explicit `Option<T>`
+formals, replacing each supplied scalar literal with exactly one `Some<T>`
+call, each omitted optional slot with `None`, and required scalars with their
+original literal ASTs. Slots are in formal order; literal inputs have no guest
+side effects to reorder. The entire rewritten program is then submitted
+to **both real front-end checkers** using `OresCompiler.analyze`; a
+private-constructor result is returned only after success and source-binding
+identity checks.
+
+The experimental boundary rejects imported/multi-module programs, unverified
+qualified or dynamic targets, constructors/methods/actors, nonliteral effects,
+spreads, generics, annotations, borrowed/mutable formals, incorrect scalar
+types, user-defined Some/None constructors, inferred non-scalar optional
+payload types, and existing Option<T> values without full ownership proof.
+It currently handles an **explicitly named or omitted staged call** in a
+single narrow linear function body, including `name: _`. Ordinary
+`greet()` without a staged source marker remains unsupported by this
+experimental API.
+
+**This does not enable general source-language optional calls.** The default
+`OresCompiler`, TypeChecker, OwnershipChecker and direct runtime admission
+remain fail-closed on original unlowered `T?`/`StagedCallExpr` source.
+The verified result is an AST intended for future authenticated runtime
+handoff, not a guest invocation. The JUnit methods include original
+`return match`, omission, named-order and negative type cases; **they
+have not passed** until actual Maven/GraalVM Actions execute on the exact
+Git tree. Do not promote this into the default compiler until provenance,
+effect order, nested expressions, receiver and async ownership are proven.
