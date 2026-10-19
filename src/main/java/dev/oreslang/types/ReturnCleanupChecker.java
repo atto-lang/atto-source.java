@@ -272,9 +272,32 @@ public final class ReturnCleanupChecker {
 
     private static void expression(Ast.Expr expr, Scope scope, boolean inDefer, State state) {
         if (expr == null) return;
-        if (expr instanceof Ast.StagedCallExpr || expr instanceof Ast.StagedNewExpr) {
+        if (expr instanceof Ast.StagedCallExpr call) {
+            if (inDefer && call.callee() instanceof Ast.NameExpr name) {
+                Binding target = scope.resolve(name.name());
+                if (target != null && (target.closure == null || target.reassigned)) {
+                    throw new IllegalArgumentException(
+                            "defer cannot verify reassigned or dynamic local callback '"
+                                    + name.name() + "'; use a statically known lexical callback");
+                }
+                if (target != null) {
+                    deferredLambda(target.closure, target.definingScope, state);
+                }
+            }
+            if (inDefer && call.callee() instanceof Ast.LambdaExpr lambda) {
+                deferredLambda(lambda, scope, state);
+            }
+            expression(call.callee(), scope, inDefer, state);
+            for (Ast.CallArgument argument : call.arguments()) {
+                if (argument.value() != null) {
+                    expression(argument.value(), scope, inDefer, state);
+                }
+            }
+            return;
+        }
+        if (expr instanceof Ast.StagedNewExpr) {
             throw new IllegalArgumentException(
-                    "staged named/trailing-closure calls must be lowered before return/cleanup analysis");
+                    "named constructor/actor calls must be lowered before return/cleanup analysis");
         }
         if (expr instanceof Ast.TypeExpr) {
             throw new IllegalArgumentException(
