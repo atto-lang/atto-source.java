@@ -2053,6 +2053,11 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.StagedCallExpr || expr instanceof Ast.StagedNewExpr) {
+            throw new IllegalArgumentException(
+                    "named/trailing-closure call lowering is not yet enabled; "
+                            + "static signature, ownership/effect and source-order ABI proofs are required");
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
             if (value == null) throw new IllegalArgumentException("standalone null values are forbidden; use Option<T>");
