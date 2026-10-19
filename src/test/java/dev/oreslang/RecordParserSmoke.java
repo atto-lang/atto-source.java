@@ -34,10 +34,12 @@ public final class RecordParserSmoke {
         check(ada.inferredTypeName() == null, "short form must not fabricate explicit infer<T>");
         check(grace.inferredTypeName() == null, "short struct has no explicit inferred alias");
         check("Contact".equals(contact.inferredTypeName()), "explicit infer<Contact> name");
-        check(((Ast.ObjectExpr) ada.initializer()).kind() == Ast.ObjectKind.INFERRED_RECORD,
-                "short record AST identity");
+        check(((Ast.ObjectExpr) ada.initializer()).kind() == Ast.ObjectKind.RECORD,
+                "canonical record AST identity");
         check(((Ast.ObjectExpr) grace.initializer()).kind() == Ast.ObjectKind.INFERRED_STRUCT,
                 "short struct AST identity");
+        check(((Ast.ObjectExpr) ada.initializer()).plainRecord(),
+                "canonical record must not carry infer alias intent");
         Ast.ObjectExpr c = (Ast.ObjectExpr) contact.initializer();
         check(c.inferredRecord() && c.readonlyInferredAggregate(), "named record readonly source kind");
         check(((Ast.ObjectExpr) grace.initializer()).inferredStruct(), "struct origin must remain distinct");
