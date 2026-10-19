@@ -606,7 +606,9 @@ public class TaskHandleTest {
         assertFalse(child.isOwnedBy(parent));
         assertTrue(parent.cancel("parent stopped"));
         assertFalse(child.isCancelled());
-        assertTrue(child.cancel("late direct cancellation"));
+        assertFalse(child.cancel("late direct cancellation"),
+                "retired authority cannot be resurrected by a late cancel");
+        assertFalse(child.isCancelled());
         assertEquals(0, callbacks.get());
         subscription.close();
     }
