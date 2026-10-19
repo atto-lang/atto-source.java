@@ -664,6 +664,41 @@ class DispatcherTest(unittest.TestCase):
         finally:
             MOD.PUB.gh_api=old_api; MOD.PUB.gh_api_no_content=old_no; MOD.api_list=old_list
 
+    def test_payload_must_preserve_every_reviewed_carrier_parent_entry(self):
+        from copy import deepcopy
+        base=[
+            {"path":".github","type":"tree","mode":"040000","sha":"1"*40},
+            {"path":"README.md","type":"blob","mode":"100644","sha":"2"*40},
+        ]
+        payload=deepcopy(base)+[
+            {"path":MOD.PREFIX,"type":"tree","mode":"040000","sha":"3"*40},
+            {"path":MOD.PROVENANCE,"type":"blob","mode":"100644","sha":"4"*40},
+        ]
+        MOD.verify_unchanged_carrier_root(base,payload)
+        tamper=[
+            lambda rows: rows.append(
+                {"path":"unauthorized.txt","type":"blob","mode":"100644","sha":"5"*40}),
+            lambda rows: rows.pop(0),
+            lambda rows: rows[0].__setitem__("sha","5"*40),
+            lambda rows: rows[1].__setitem__("mode","100755"),
+            lambda rows: rows[0].__setitem__("type","blob"),
+            lambda rows: rows.append(dict(rows[0])),
+            lambda rows: rows.append({"path":"bad/relative","type":"blob",
+                                     "mode":"100644","sha":"6"*40}),
+        ]
+        for change in tamper:
+            with self.subTest(change=change):
+                entries=deepcopy(payload); change(entries)
+                with self.assertRaises(MOD.Denied):
+                    MOD.verify_unchanged_carrier_root(base,entries)
+
+    def test_payload_rejects_parent_tree_with_reserved_source_paths(self):
+        parent=[{"path":MOD.PREFIX,"type":"tree","mode":"040000","sha":"1"*40}]
+        payload=parent+[{"path":MOD.PROVENANCE,"type":"blob",
+                         "mode":"100644","sha":"2"*40}]
+        with self.assertRaisesRegex(MOD.Denied,"already has private source paths"):
+            MOD.verify_unchanged_carrier_root(parent,payload)
+
     def test_payload_readback_rejects_duplicate_protected_entries(self):
         import hashlib
         r=receipt()
