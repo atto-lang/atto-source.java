@@ -116,7 +116,8 @@ final class OresTestTrace {
         if (runs < 0 || runs > 100_000 || stressCases != runs
                 || states < 0 || rejectedCycles < 0
                 || (modelCheck && (states == 0 || rejectedCycles == 0))
-                || (!modelCheck && (states != 0 || rejectedCycles != 0))) {
+                || (!modelCheck && (runs == 0
+                        || states != 0 || rejectedCycles != 0))) {
             throw new IOException("inconsistent critical exploration trace metadata");
         }
     }
