@@ -47,7 +47,11 @@ public final class ThreadSafetyTraits {
             "ReadLoan", "WriteLoan", "PartitionLoan", "BorrowGuard",
             "RawPointer", "Pointer", "OresPointer",
             "NativeHandle", "FfiHandle", "ThreadBound", "ThreadLocal",
-            "Rc", "RefCell", "Cell", "RwLockGuard");
+            "Rc", "RcWeak", "RefCell", "Cell", "RwLockGuard",
+            // Runtime wrappers need an authenticated intrinsic/layout witness.
+            // A nominal callback (even a permissive one) cannot enable them.
+            "Arc", "Weak", "Shared", "RwLock", "ReadGuard", "WriteGuard",
+            "NativePointer", "ActorState", "UnsafeCell", "AtomicRef", "TRef", "Ref");
 
     public enum Trait { SEND, SYNC }
 
