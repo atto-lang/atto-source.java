@@ -352,6 +352,11 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             // is mandatory; this receipt must NOT be retried.
             physicalReceipt.terminal().get(
                     toNanosSaturated(timeout), TimeUnit.NANOSECONDS);
+            if (physicalReceipt.terminalDisposition()
+                    != ActorRuntime.PhysicalMailDisposition.PROCESSED) {
+                throw new IllegalStateException(
+                        "successful physical terminal Future lacks PROCESSED disposition");
+            }
             synchronized (owner.routeLock) {
                 if (owner.closed || owner.upgrading || owner.active != routed
                         || owner.boundProxyMailbox != mailbox)
