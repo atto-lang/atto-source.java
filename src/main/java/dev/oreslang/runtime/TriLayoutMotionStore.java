@@ -227,6 +227,13 @@ public final class TriLayoutMotionStore implements AutoCloseable {
         requireNextEpoch();
         ensure(layout);
         for (int row = 0; row < size; row++) {
+            double nx = getField(layout, row, 0) + getField(layout, row, 2) * dt;
+            double ny = getField(layout, row, 1) + getField(layout, row, 3) * dt;
+            if (!Double.isFinite(nx) || !Double.isFinite(ny)) {
+                throw new ArithmeticException("integration would produce non-finite positions");
+            }
+        }
+        for (int row = 0; row < size; row++) {
             setField(layout, row, 0, getField(layout, row, 0) + getField(layout, row, 2) * dt);
             setField(layout, row, 1, getField(layout, row, 1) + getField(layout, row, 3) * dt);
         }
