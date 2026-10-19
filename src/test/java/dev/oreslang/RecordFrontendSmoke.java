@@ -143,6 +143,40 @@ public final class RecordFrontendSmoke {
                 }
                 """)), "concrete struct shapes require exact fields");
 
+        // Dynamic fixed-product access: exact singleton keys keep the selected
+        // field/slot type; truly dynamic keys use a safe union.
+        accepted("""
+                fnc read_record(): string {
+                    const row = record{x: 3.0, y: "boo"};
+                    const key = "y";
+                    return row[key];
+                }
+                fnc read_tuple(int index): float {
+                    const pair = tuple(3.0, 4.0);
+                    return pair[index];
+                }
+                fnc update_struct(string key): float {
+                    const Point seed = infer<Point> struct{x: 1.0, y: 2.0};
+                    val Point point = infer struct{x: 3.0, y: 4.0};
+                    point[key] = 9.0;
+                    return point[key];
+                }
+                """);
+        denied(() -> TypeChecker.check(Parser.parse("""
+                fnc bad(string key): void {
+                    const row = record{x: 3.0, y: "boo"};
+                    const float value = row[key];
+                    return;
+                }
+                """)), "heterogeneous dynamic record lookup must retain its union");
+        denied(() -> TypeChecker.check(Parser.parse("""
+                fnc bad(): void {
+                    val pair = tuple(1, 2);
+                    pair[0] = 3;
+                    return;
+                }
+                """)), "tuple values remain immutable positional products");
+
         // Failure gates must reach ownership analysis as well as type checking.
         denied(() -> TypeChecker.check(Parser.parse("""
                 fnc bad(): void {
