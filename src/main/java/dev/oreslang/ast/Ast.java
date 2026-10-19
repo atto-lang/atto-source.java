@@ -1163,8 +1163,37 @@ public final class Ast {
      * The Phase-1 Task is void-returning. Scoped borrowed captures and
      * value-returning Task<T> need additional checked lowering.
      */
-    public record TaskExpr(List<Stmt> body) implements Expr {
-        public TaskExpr { body = List.copyOf(body); }
+    public static final class TaskExpr implements Expr {
+        private final List<Stmt> body;
+        // Bound only by the ownership pass, before lowering/execution. null
+        // means an unchecked AST and MUST NOT be treated as empty captures.
+        private volatile List<String> capturedNames;
+
+        public TaskExpr(List<Stmt> body) {
+            this.body = List.copyOf(body);
+        }
+
+        public List<Stmt> body() { return body; }
+
+        public synchronized void bindCaptures(List<String> captures) {
+            java.util.Objects.requireNonNull(captures, "Task captures");
+            List<String> copy = List.copyOf(captures);
+            if (new java.util.HashSet<>(copy).size() != copy.size()) {
+                throw new IllegalArgumentException("duplicate Task capture");
+            }
+            if (capturedNames != null && !capturedNames.equals(copy)) {
+                throw new IllegalStateException("Task capture metadata changed after ownership checking");
+            }
+            capturedNames = copy;
+        }
+
+        public List<String> captures() {
+            List<String> proof = capturedNames;
+            if (proof == null) {
+                throw new IllegalStateException("nb Task reached runtime without ownership proof");
+            }
+            return proof;
+        }
     }
 
     public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) implements Expr {
