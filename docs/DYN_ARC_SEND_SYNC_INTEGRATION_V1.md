@@ -15,9 +15,12 @@ permission oracle. Avoid accepting guest-asserted `unsafe impl Send`/`Sync`.
 For a known, immutable scalar or a fully resolved aggregate, derive traits
 transitively; a writable list can be Send but does not become Sync by
 element-wise derivation alone. **A readonly record view is NOT frozen storage:**
-other aliases may still write its backing allocation. Record is currently
-Send-only even with a source readonly annotation; allow Sync only after an
-independent compiler-minted frozen/exclusive-backing witness exists. A shared borrow `&T` is Send iff T is Sync; an
+other aliases may still write its backing allocation. The raw structural trait
+query may report such a record as Send, but **detached `isOwnedSend` rejects
+readonly record capabilities (including nested views)** because the type alone
+does not prove that no writable alias remains behind. Admit detached readonly
+records, and any Sync proof, only after an independent compiler-minted frozen/
+exclusive-backing witness exists. A shared borrow `&T` is Send iff T is Sync; an
 exclusive borrow `&mut T` can be Send iff T is Send. The borrow checker must
 *separately* prove scope/outlives, exclusivity, physical quiescence, and
 no cross-await guard escape. Trait derivation is not an ownership transfer.
@@ -37,8 +40,10 @@ privileges from constructor spelling.
 query, **not** sufficient to move a value into an independently scheduled
 Task. Detached async admission now uses `isOwnedSend(T, proof)`, which runs a
 bounded, iterative deep scan and rejects borrowed values even inside named
-generic containers, lists, tuples, readonly/writable records, unions, dynamic
-views, functions, self bounds or complements. A scoped Task can accept a
+generic containers, lists, tuples, records, unions, dynamic views, functions,
+self bounds or complements. It also rejects readonly-record capabilities,
+directly or nested, because `overlayReadonlyCapabilities` can create an alias
+view without proving frozen or exclusive backing. A scoped Task can accept a
 borrow that satisfies Rust-style Send only after proving its lifetime,
 non-escape and physical quiescence independently. `isSharedSafe` remains
 a separate existing boundary; neither is actor Sendable.
@@ -89,10 +94,15 @@ and Sync. The sole sealed actor `state { ... }` remains inaccessible to Arc.
 
 ## Positive and negative source tests
 
-- Scalars, immutable tuples, readonly records and owned Send aggregates.
+- Scalars, immutable tuples and genuinely owned Send aggregates.
+- Raw readonly-record traits may be Send but detached owned-Send rejects the
+  view until frozen/exclusive backing provenance is compiler-minted.
 - Writable List/Record is Send but not Sync; `&List<T>` is not Send without
   independent Sync evidence.
 - Unknown, unbound generic, cyclic type and nominal shadowing fail closed.
+- Deep and extremely wide/DAG-shaped inputs are bounded by depth, node/step
+  budgets and per-query identity memoization; budget exhaustion cannot poison
+  a subsequent independent query.
 - Detached owned Send denies `&T` and `&mut T` even where raw Rust-style
   `Send` is true; deny deeply nested borrowing and budget-exhaustion
   without stack overflow or poisoning later valid queries.
