@@ -51,6 +51,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.mock_source_merged_at = None
         self.mock_source_merge_sha = A
         self.mock_source_main_sha = A
+        self.mock_source_repo_id = pub.TRUSTED_SOURCE_REPOSITORY_ID
         self.mock_source_pr_draft = False
         self.mock_source_pr_author = "trusted-contributor"
         self.mock_source_reviews = [{
@@ -62,6 +63,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         }]
         self.route_calls = []
         self.visibility = ["private"] * 100
+        self.mock_destination_repo_id = 424242
         self.mock_destination_default_branch = "main"
         self.mock_destination_main_sha = A
         self.dest_protected = True
@@ -83,6 +85,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
+        if route == f"repos/{pub.TRUSTED_SOURCE_REPOSITORY}":
+            return {"id": self.mock_source_repo_id,
+                    "full_name": pub.TRUSTED_SOURCE_REPOSITORY,
+                    "private": True, "visibility": "private",
+                    "default_branch": pub.TRUSTED_SOURCE_REF}
         branch_route = (f"repos/{pub.TRUSTED_SOURCE_REPOSITORY}/branches/"
                         f"{pub.TRUSTED_SOURCE_REF}")
         if route == branch_route:
@@ -148,7 +155,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == f"repos/{pub.TRUSTED_SOURCE_REPOSITORY}/pulls/1286/reviews?per_page=100":
             return {"reviews": self.mock_source_reviews}
         if route == "repos/trusted/ci":
-            return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
+            return dict(id=self.mock_destination_repo_id,
+                        full_name="trusted/ci", visibility=self.visibility.pop(0),
                         private=True, default_branch=self.mock_destination_default_branch)
         if route == "repos/trusted/ci/branches/main":
             return {"name": "main", "protected": self.dest_protected,
@@ -1656,6 +1664,45 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with self.assertRaisesRegex(pub.Denied, "revoked or absent"):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_source_repository_numeric_identity_cannot_be_replaced(self):
+        pinned = self.expected_source_tree()
+        self.mock_source_repo_id = pub.TRUSTED_SOURCE_REPOSITORY_ID + 1
+        with patch.object(pub, "gh_api", side_effect=self.fake_api):
+            with patch.object(pub, "collect_source",
+                              side_effect=AssertionError("source read")):
+                with self.assertRaisesRegex(pub.Denied, "immutable identity"):
+                    pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                self.root, pinned, 1286, A)
+        self.assertFalse(any(method == "POST"
+                             for method, _, _ in self.route_calls))
+
+    def test_destination_repository_id_must_be_numeric(self):
+        for bad_id in (None, True, "424242", 0, -1):
+            with self.subTest(id=bad_id):
+                self.route_calls.clear()
+                self.mock_destination_repo_id = bad_id
+                with self.assertRaisesRegex(pub.Denied, "destination identity"):
+                    self.publish()
+                self.assertFalse(any(method == "POST"
+                                     for method, _, _ in self.route_calls))
+        self.mock_destination_repo_id = 424242
+
+    def test_destination_numeric_id_change_stops_next_private_blob(self):
+        (self.source / "extra.ores").write_text("source-free fixture")
+        pinned = self.expected_source_tree()
+        old_api = self.fake_api
+        def change_id_after_upload(route, method="GET", payload=None):
+            response = old_api(route, method, payload)
+            if method == "POST" and route == "repos/trusted/ci/git/blobs":
+                self.mock_destination_repo_id = 424243
+            return response
+        with patch.object(pub, "gh_api", side_effect=change_id_after_upload):
+            with self.assertRaisesRegex(pub.Denied, "immutable repository identity"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, pinned, 1286, A)
+        writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
 
     def test_noncanonical_policy_line_separators_cannot_grant_approval(self):
         # Unicode-aware splitlines must never create an approving entry from
