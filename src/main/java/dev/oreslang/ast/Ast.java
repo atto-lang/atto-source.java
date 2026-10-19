@@ -598,9 +598,9 @@ public final class Ast {
                         || !declaredType.arguments().isEmpty() || declaredType.inferArguments()) {
                     throw new IllegalArgumentException("named inferred type must match the declared binding type");
                 }
-                if (!(initializer instanceof ObjectExpr object && object.inferredAggregate())
+                if (!(initializer instanceof ObjectExpr object && object.inferredStruct())
                         && !(initializer instanceof TupleExpr)) {
-                    throw new IllegalArgumentException("named inferred type requires infer struct, record or tuple literal");
+                    throw new IllegalArgumentException("named inferred type requires infer struct or tuple literal");
                 }
             }
         }
