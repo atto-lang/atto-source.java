@@ -1168,8 +1168,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
         @Override public void close() {
-            requireOwner();
-            release(true);
+            if (currentActor.get() != cell) {
+                throw new SecurityException("shard close requires its owning actor turn");
+            }
+            release(true); // idempotent; no second budget decrement
         }
         private void revokeFromActorStop() { release(false); }
     }
