@@ -202,13 +202,37 @@ final class TaskAccessVerifierTest {
         var unique = TaskAccessVerifier.Place.whole(WORLD);
         var channel = new Types.Named("Channel", List.of(Types.Primitive.INT));
         var syncRead = new TaskAccessVerifier.TypedClaim(read(unique), channel);
+
+        // A user-spelled nominal callback cannot manufacture the intrinsic.
         assertThrows(IllegalArgumentException.class,
-                () -> ledger.admitTyped(List.of(syncRead), (name, trait) -> false));
+                () -> ledger.admitTyped(List.of(syncRead), (name, trait) -> true));
         assertEquals(0, ledger.activeChildren());
+
+        ThreadSafetyTraits.NominalProof trustedChannel =
+                new ThreadSafetyTraits.NominalProof() {
+                    @Override
+                    public boolean has(
+                            Types.Named name,
+                            ThreadSafetyTraits.Trait trait) {
+                        return false;
+                    }
+
+                    @Override
+                    public boolean trustedIntrinsic(Types.Named name) {
+                        return name.name().equals("Channel");
+                    }
+                };
+
+        // Channel<T> is Send when T is Send, but intentionally not Sync.
+        assertThrows(IllegalArgumentException.class,
+                () -> ledger.admitTyped(List.of(syncRead), trustedChannel));
+        assertEquals(0, ledger.activeChildren());
+
         var sendWrite = new TaskAccessVerifier.TypedClaim(write(unique), channel);
-        var ticket = ledger.admitTyped(List.of(sendWrite), (name, trait) -> false);
+        var ticket = ledger.admitTyped(List.of(sendWrite), trustedChannel);
         assertEquals(1, ledger.activeChildren());
         ledger.retireAfterPhysicalQuiescence(ticket);
+
         assertThrows(IllegalArgumentException.class,
                 () -> ledger.admitTyped(List.of(new TaskAccessVerifier.TypedClaim(
                         read(unique), new Types.Generic("T"))), (name, trait) -> true));
