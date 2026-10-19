@@ -1,6 +1,9 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.BuildOptions;
+import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.compiler.TreeShaker;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -461,6 +464,46 @@ final class CheckedDynamicIndexAccessTest {
                 new Ast.NameExpr("first"), new Ast.NameExpr("index"));
         assertDoesNotThrow(() -> Ast.CheckedIndexKeys.propagate(first, clone));
         assertEquals(0, Ast.CheckedIndexKeys.knownTupleSlot(clone));
+    }
+
+    @Test
+    void buildOptimizerRetainsCheckedReceiverWhenFoldingConditionals() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                pub const bool first = true;
+                pub fnc select(string key): int {
+                  return (first ? infer struct{x: 7} : infer struct{x: 9})[key];
+                }
+                pub routine main(): void {
+                  stdio.stdout.write(select("x"));
+                  return;
+                }
+                """, BuildOptions.executable(java.util.Map.of("first", "true")));
+        Ast.FunctionDecl select = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(fn -> fn.name().equals("select"))
+                .findFirst().orElseThrow();
+        Ast.ReturnStmt returned = (Ast.ReturnStmt) select.body().getFirst();
+        Ast.IndexExpr indexed = (Ast.IndexExpr) returned.value();
+        assertTrue(indexed.receiver() instanceof Ast.ConditionalExpr,
+                "checked receiver cannot be replaced by a folded alternate");
+        assertEquals(Set.of("x"), Ast.CheckedIndexKeys.requirePlan(indexed));
+    }
+
+    @Test
+    void buildOptimizerLeavesIndexedReturnHelperUninlined() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                fnc pick(int index): int {
+                  return (7, 9)[index];
+                }
+                pub routine main(): void {
+                  stdio.stdout.write(pick(0));
+                  return;
+                }
+                """, BuildOptions.executable(java.util.Map.of()));
+        assertTrue(result.retained(Parser.ROOT_MODULE + ".pick"),
+                "indexed returns are not eligible for unchecked constant-call inlining");
     }
 
     @Test
