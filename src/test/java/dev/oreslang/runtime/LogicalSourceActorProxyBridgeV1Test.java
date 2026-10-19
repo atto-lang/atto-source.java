@@ -69,6 +69,13 @@ final class LogicalSourceActorProxyBridgeV1Test {
                     SourceActorScalarWireV1.BYTE_LENGTH,
                     SourceActorScalarWireV1.BYTE_LENGTH * 4L)) {
                 var logical = bridge.address();
+                var initialPublication = bridge.publication();
+                assertEquals(first.id(), initialPublication.generationId());
+                assertEquals(first.sha256(), initialPublication.codeSha256());
+                assertEquals(
+                        first.linkActorGeneration("Counter").executor()
+                                .actorCodeSha256("Counter"),
+                        initialPublication.linkedCodeSha256());
                 var firstMessage = bridge.admitLong(41L);
                 assertEquals(SourceActorScalarWireV1.BYTE_LENGTH,
                         firstMessage.payload().length);
@@ -80,8 +87,19 @@ final class LogicalSourceActorProxyBridgeV1Test {
                 var queuedAcrossUpgrade = bridge.admitLong(-1L);
                 assertEquals(1, bridge.snapshot().queuedMessages());
                 assertTrue(bridge.upgradeTo(second, WAIT));
-                assertEquals(2L, bridge.publication().address().routeEpoch());
-                assertEquals(2L, bridge.publication().mailbox().routeEpoch());
+                var successorPublication = bridge.publication();
+                assertEquals(2L, successorPublication.address().routeEpoch());
+                assertEquals(2L, successorPublication.mailbox().routeEpoch());
+                assertEquals(second.id(), successorPublication.generationId());
+                assertEquals(second.sha256(), successorPublication.codeSha256());
+                assertEquals(
+                        second.linkActorGeneration("Counter").executor()
+                                .actorCodeSha256("Counter"),
+                        successorPublication.linkedCodeSha256());
+                assertEquals(initialPublication.stateSchemaSha256(),
+                        successorPublication.stateSchemaSha256());
+                assertEquals(initialPublication.messageAbiSha256(),
+                        successorPublication.messageAbiSha256());
                 assertEquals(logical.actorId(), bridge.address().actorId());
                 assertEquals(logical.incarnation(), bridge.address().incarnation());
                 assertEquals(SourceActorScalarWireV1.BYTE_LENGTH,
