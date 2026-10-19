@@ -8580,7 +8580,7 @@ public final class OresEvalRootNode extends RootNode {
             // legacy remainder/division paths when the frontend misses a
             // type or expression admission case.
             if (experimentalCheckedI64) {
-                if (op != '+' && op != '-' && op != '*') {
+                if (op != '+' && op != '-' && op != '*' && op != '%') {
                     throw new IllegalArgumentException(
                             "checked-i64-v1 rejects arithmetic operator " + op);
                 }
@@ -8601,6 +8601,11 @@ public final class OresEvalRootNode extends RootNode {
             boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
+                if (experimentalCheckedI64 && op == '%' && y == 0L) {
+                    // Never leak a JVM-specific "/ by zero" message into the
+                    // checked-i64 cross-backend diagnostic contract.
+                    throw dev.oreslang.runtime.CheckedI64DivisionByZeroException.forRemainder();
+                }
                 if (experimentalCheckedI64 && (op == '+' || op == '-' || op == '*')) {
                     try {
                         return switch (op) {
