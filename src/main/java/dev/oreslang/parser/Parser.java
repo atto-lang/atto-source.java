@@ -1048,7 +1048,11 @@ public final class Parser {
             // 'self' is a receiver ONLY in the first declaration position
             // when it is a whole call item. A typed 'self peer' remains an
             // ordinary user-visible parameter and consumes an arity slot.
-            if (check(COMMA) || (check(RPAREN) && !checkNext(LPAREN))) {
+            // Permit the explicit two-list shorthand foo(self)(int x).
+            if (check(RPAREN) && checkNext(LPAREN)) {
+                receiverType = Ast.TypeRef.simple("self");
+                explicitReceiver = true;
+            } else if (check(COMMA) || check(RPAREN)) {
                 receiverType = Ast.TypeRef.simple("self");
                 inlineReceiver = true;
             } else {
