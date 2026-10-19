@@ -8344,6 +8344,11 @@ public final class TypeChecker {
         // A negative constraint requires positive evidence that values are disjoint.
         // The generic/Unknown and dynamic compatibility paths below are not evidence.
         if (expected instanceof Types.Not) return Types.isAssignable(actual, expected);
+        // Check before union/record/function compatibility. Otherwise an
+        // uncertain value can choose a non-dyn arm of a union or a permissive
+        // leaf conversion and thereby forge a nested dyn interface witness.
+        if (!actual.equals(expected) && Types.containsUncertainType(actual)
+                && Types.containsDynWitness(expected)) return false;
         if (expected instanceof SelfType expectedSelf) {
             if (!(actual instanceof SelfType actualSelf)) return false;
             return assignable(actualSelf.bound(), expectedSelf.bound())
