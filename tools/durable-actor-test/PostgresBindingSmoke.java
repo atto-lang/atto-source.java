@@ -129,6 +129,52 @@ public final class PostgresBindingSmoke {
                 && recovered.pendingOutbox().isEmpty(),
                 "failed atomic handoff left snapshot/inbox/outbox unchanged");
 
+        // Force a unique-key violation during the combined transaction.
+        // Neither consumed mail nor the new snapshot nor lease release may
+        // survive the rollback, even though commitOwnedTurnInTransaction
+        // performs the inbox update before inserting outbox intents.
+        var rollbackKey = new DurableActorStore.Address(
+                "binding-tenant", "workflow", "run", UUID.randomUUID().toString());
+        check(store.initialize(rollbackKey, initial), "rollback actor registered");
+        check(store.enqueue(rollbackKey, new DurableActorStore.Inbound("mail-a", bytes("a"))),
+                "first rollback mail enqueued");
+        var initialOwner = UUID.randomUUID();
+        var initialLease = store.acquireLease(rollbackKey, initialOwner);
+        var existingIntent = new DurableActorStore.Outbound(
+                "reused-intent", "stable:effect:1", bytes("outbound"));
+        check(store.commitAndHibernateOwnedTurn(new DurableActorStore.Turn(
+                rollbackKey, initialLease.activation().epoch(), 0, "mail-a",
+                next, List.of(existingIntent)), initialOwner) == 1,
+                "first atomic transition and release");
+        check(store.enqueue(rollbackKey, new DurableActorStore.Inbound("mail-b", bytes("b"))),
+                "second rollback mail enqueued");
+        var pendingOwner = UUID.randomUUID();
+        var pending = store.acquireLease(rollbackKey, pendingOwner);
+        var versionTwo = new DurableActorStore.Snapshot(
+                0, 1, "code-v1", 2, bytes("SHOULD-ROLLBACK"));
+        var collidingIntent = new DurableActorStore.Outbound(
+                "reused-intent", "different-effect", bytes("duplicate"));
+        rejects(() -> store.commitAndHibernateOwnedTurn(new DurableActorStore.Turn(
+                rollbackKey, pending.activation().epoch(), 1, "mail-b",
+                versionTwo, List.of(collidingIntent)), pendingOwner),
+                "duplicate outbox insert rolls back atomic state and lease release");
+        check(store.renewLease(rollbackKey, pending.activation().epoch(), pendingOwner),
+                "failed atomic transition retains the healthy lease owner");
+        rejects(() -> store.acquireLease(rollbackKey, UUID.randomUUID()),
+                "failed combined transaction cannot release healthy owner");
+        store.hibernateLease(rollbackKey, pending.activation().epoch(), pendingOwner);
+        var rolledBack = store.acquireLease(rollbackKey, UUID.randomUUID()).activation();
+        check(rolledBack.snapshot().stateVersion() == 1
+                && new String(rolledBack.snapshot().encodedState(),
+                        StandardCharsets.UTF_8).equals("done"),
+                "duplicate operation rolled back state mutation");
+        check(rolledBack.inbox().size() == 1
+                && rolledBack.inbox().getFirst().deliveryId().equals("mail-b"),
+                "duplicate operation rolled back consumed mail");
+        check(rolledBack.pendingOutbox().size() == 1
+                && rolledBack.pendingOutbox().getFirst().intentId().equals("reused-intent"),
+                "duplicate operation did not create partial outbox intents");
+
         System.out.println("POSTGRES_BINDING_ATOMIC_HANDOFF_PASS");
     }
 }
