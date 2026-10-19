@@ -66,11 +66,15 @@ host-only coordinator, now routes its canonical copied 8-byte signed scalar
 wire through `LogicalSourceActorRouterV1.sendAndDrainForProxy(envelope, epoch)`.
 That call checks the expected physical route epoch *before admission*.
 It produces a trusted, one-use `ProxyDrainReceipt` bound to the exact
-`Envelope` Java object and physical `Route` instance. The receipt waits
-outside the route monitor for the in-process physical drain to succeed, then
-takes the route monitor and verifies that the route and proxy epoch remain
-authoritative while completing proxy credit accounting. A foreign envelope,
-stale route, consumed receipt, or failed physical drain cannot refund credits.
+`Envelope` Java object, **owning proxy mailbox**, and physical `Route`
+instance. Before any physical send, the mailbox proves that this same
+envelope is currently outstanding under the intended epoch; copied bytes,
+matching sequences, and different mailboxes are insufficient. The receipt
+waits outside the route monitor for the in-process physical drain to succeed,
+then takes the route monitor and verifies the unchanged physical route and
+original mailbox ownership before completing proxy credit accounting.
+Foreign/queued/already-completed envelopes, stale epochs, consumed receipts,
+and failed physical drains cannot refund credits.
 
 This is stronger **local provenance** for the existing single-in-flight host
 scalar proof; it is **not** a cryptographic authentication mechanism or a
