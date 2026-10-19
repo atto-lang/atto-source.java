@@ -644,4 +644,61 @@ final class LogicalActorProxyMailboxV1Test {
             }
         }
     }
+    // Simulate a corrupted ledger only in a test. The check must run BEFORE
+    // any irreversible route epoch or dispatch-freeze mutation.
+    private static void setRetainedCountForCorruptionTest(
+            LogicalActorProxyMailboxV1 mailbox, int count) throws Exception {
+        var field = LogicalActorProxyMailboxV1.class.getDeclaredField("retainedMessages");
+        field.setAccessible(true);
+        field.setInt(mailbox, count);
+    }
+
+    @Test
+    void failedInvariantCheckCannotThawCommittedRoute() throws Exception {
+        try (var mailbox = new LogicalActorProxyMailboxV1(4, 8, 32)) {
+            var ticket = mailbox.freezeDispatchForUpgrade();
+            setRetainedCountForCorruptionTest(mailbox, 1);
+            try {
+                assertThrows(IllegalStateException.class, ticket::commit);
+            } finally {
+                setRetainedCountForCorruptionTest(mailbox, 0);
+            }
+            assertEquals(1L, mailbox.snapshot().routeEpoch());
+            assertTrue(mailbox.snapshot().dispatchFrozen());
+            ticket.rollback();
+        }
+    }
+
+    @Test
+    void failedInvariantCheckCannotThawRolledBackRoute() throws Exception {
+        try (var mailbox = new LogicalActorProxyMailboxV1(4, 8, 32)) {
+            var ticket = mailbox.freezeDispatchForUpgrade();
+            setRetainedCountForCorruptionTest(mailbox, 1);
+            try {
+                assertThrows(IllegalStateException.class, ticket::rollback);
+            } finally {
+                setRetainedCountForCorruptionTest(mailbox, 0);
+            }
+            assertEquals(1L, mailbox.snapshot().routeEpoch());
+            assertTrue(mailbox.snapshot().dispatchFrozen());
+            ticket.rollback();
+        }
+    }
+
+    @Test
+    void failedInvariantCheckCannotCreateOrphanFreeze() throws Exception {
+        try (var mailbox = new LogicalActorProxyMailboxV1(4, 8, 32)) {
+            setRetainedCountForCorruptionTest(mailbox, 1);
+            try {
+                assertThrows(IllegalStateException.class,
+                        mailbox::freezeDispatchForUpgrade);
+            } finally {
+                setRetainedCountForCorruptionTest(mailbox, 0);
+            }
+            assertFalse(mailbox.snapshot().dispatchFrozen());
+            var ticket = mailbox.freezeDispatchForUpgrade();
+            ticket.rollback();
+        }
+    }
+
 }
