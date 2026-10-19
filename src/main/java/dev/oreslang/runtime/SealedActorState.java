@@ -175,6 +175,17 @@ public final class SealedActorState {
                 throw new IllegalArgumentException("scalar was not captured in snapshot: " + name);
             return scalars.get(name);
         }
+
+        /**
+         * Compiler/runtime bridge for detached candidate construction. Source
+         * code never receives the issuer object itself; preparation remains
+         * authority-bound to this exact snapshot and actor incarnation.
+         */
+        public ScalarPublication preparePublication(
+                Map<String, Object> replacements) {
+            issuer.requireActorAuthority();
+            return issuer.prepareScalarPublication(this, replacements);
+        }
     }
 
     /**
