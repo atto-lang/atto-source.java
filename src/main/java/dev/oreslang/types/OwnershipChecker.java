@@ -857,7 +857,9 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
-        if (expr instanceof Ast.NamedArgumentExpr) {
+        if (expr instanceof Ast.NamedArgumentExpr
+                || (expr instanceof Ast.NewExpr created
+                    && created.arguments().stream().anyMatch(arg -> arg instanceof Ast.NamedArgumentExpr))) {
             throw error("named value arguments require checked declaration-bound invocation lowering");
         }
         if (expr instanceof Ast.TypeSpecializationExpr) {
