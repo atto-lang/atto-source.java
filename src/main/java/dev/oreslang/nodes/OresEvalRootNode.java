@@ -1267,14 +1267,19 @@ public final class OresEvalRootNode extends RootNode {
                 List<Ast.Stmt> body,
                 Env env) {
             SourceTask task = new SourceTask(body);
-            if (!ActorRuntime.inActorExecution()) {
-                throw new IllegalStateException(
-                        "detached source block task requires actor execution");
-            }
+            // Lexically snapshot at spawn time. Captured owned values were
+            // consumed by the compile-time ownership pass; no borrowed or
+            // actor-private handles are admitted by Task capture checking.
+            // The logical SourceTask is scheduler-owned and may migrate between
+            // host worker carriers. Actor Tasks remain supervised by CONTROL.
             task.initialBlockEnv = env.snapshot();
-            OresFuture<Object> future = context.actors().startActorTask(task);
-            context.actors().ownCurrentActorFuture(future);
-            return future;
+            if (ActorRuntime.inActorExecution()) {
+                OresFuture<Object> future = context.actors().startActorTask(task);
+                context.actors().ownCurrentActorFuture(future);
+                return future;
+            }
+            OresScheduler current = OresScheduler.current();
+            return (current != null ? current : context.vm().rootScheduler()).start(task);
         }
 
         private OresFuture<Object> startSourceMethodTask(
@@ -6108,6 +6113,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.TaskExpr task) {
+                return startSourceBlockTask(task.body(), env);
+            }
             if (expr instanceof Ast.MatchExpr valueMatch) {
                 Object subject = eval(valueMatch.subject(), env);
                 for (Ast.MatchValueArm arm : valueMatch.arms()) {
