@@ -83,6 +83,60 @@ public final class ThreadSafetyTraits {
         return has(type, trait, nominalProof, Collections.newSetFromMap(new IdentityHashMap<>()), 0);
     }
 
+    /**
+     * Detached tasks receive owned values. A Send borrow alone is insufficient:
+     * its source lifetime might end before the task physically becomes quiescent.
+     * Scope-bound Task loans require a separate, independently checked path.
+     */
+    public static boolean isOwnedSend(Type type, NominalProof nominalProof) {
+        Objects.requireNonNull(type, "type");
+        Objects.requireNonNull(nominalProof, "nominalProof");
+        return !hasEmbeddedBorrow(type) && has(type, Trait.SEND, nominalProof);
+    }
+
+    /**
+     * Iterative preflight avoids Java-stack overflow on adversarial nested types,
+     * and bounds the number of visited nodes. All unrecognized/cyclic type
+     * shapes still fail the normal Send proof.
+     */
+    private static boolean hasEmbeddedBorrow(Type root) {
+        record Pending(Type type, int depth) { }
+        java.util.ArrayDeque<Pending> pending = new java.util.ArrayDeque<>();
+        Set<Type> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        pending.push(new Pending(root, 0));
+        int nodes = 0;
+        while (!pending.isEmpty()) {
+            Pending current = pending.pop();
+            Type type = current.type();
+            if (type == null || current.depth() > MAX_TYPE_DEPTH
+                    || ++nodes > 4096) return true;
+            if (!visited.add(type)) continue;
+            if (type instanceof Borrow) return true;
+            int next = current.depth() + 1;
+            if (type instanceof Named named) {
+                for (Type arg : named.arguments()) pending.push(new Pending(arg, next));
+            } else if (type instanceof Types.Dyn dyn) {
+                pending.push(new Pending(dyn.interfaceType(), next));
+            } else if (type instanceof ListType list) {
+                pending.push(new Pending(list.element(), next));
+            } else if (type instanceof Tuple tuple) {
+                for (Type element : tuple.elements()) pending.push(new Pending(element, next));
+            } else if (type instanceof Record record) {
+                for (Type element : record.members().values()) pending.push(new Pending(element, next));
+            } else if (type instanceof Union union) {
+                for (Type element : union.options()) pending.push(new Pending(element, next));
+            } else if (type instanceof Function function) {
+                for (Type param : function.parameters()) pending.push(new Pending(param, next));
+                pending.push(new Pending(function.result(), next));
+            } else if (type instanceof SelfType self) {
+                pending.push(new Pending(self.bound(), next));
+            } else if (type instanceof Types.Not not) {
+                pending.push(new Pending(not.excluded(), next));
+            }
+        }
+        return false;
+    }
+
     private static boolean has(Type type, Trait trait, NominalProof nominalProof, Set<Type> visiting, int depth) {
         if (depth > MAX_TYPE_DEPTH) return false;
         // Never infer thread safety from cycles, unresolved types or missing
