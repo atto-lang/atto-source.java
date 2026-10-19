@@ -159,11 +159,17 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
     }
 
     private void revokeAfterTermination() {
-        closed = true;
-        HOST_BINDINGS.remove(bindingKey, this);
-        tickets.clear();
+        // A cached lookup may already hold this bridge. Revocation and ticket
+        // consumption must linearize on the SAME monitor as pollBoundTicket.
+        // In particular, no terminal ticket result may escape after this
+        // synchronized section has completed.
+        synchronized (this) {
+            closed = true;
+            HOST_BINDINGS.remove(bindingKey, this);
+            tickets.clear();
+        }
         // Actor completion listeners can run under ActorRuntime lifecycle
-        // locks. Real HTTP client shutdown must happen on a host thread.
+        // locks. Never perform HTTP cancellation in this callback.
         java.util.concurrent.CompletableFuture.runAsync(() -> broker.close());
     }
 
@@ -190,12 +196,15 @@ final class TrustedActorLoopbackEgressBridge implements AutoCloseable {
         }
     }
 
-    @Override public synchronized void close() {
+    @Override public void close() {
         requireHost();
-        closed = true;
-        HOST_BINDINGS.remove(bindingKey, this);
-        tickets.clear();
-        // Repeated close retries outstanding host cancellation.
+        synchronized (this) {
+            closed = true;
+            HOST_BINDINGS.remove(bindingKey, this);
+            tickets.clear();
+        }
+        // HTTP client cancellation may block. Keep it OUTSIDE the bridge
+        // monitor; repeated close still retries unsettled host exchanges.
         broker.close();
     }
 }
