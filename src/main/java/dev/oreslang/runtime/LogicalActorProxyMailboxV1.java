@@ -386,8 +386,42 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
      * Logical mail completion. This is the point at which proxy capacity is
      * refunded. Completion order may differ from admission/dispatch order.
      */
+    /**
+     * The real actor-router completion authority. This is not a generic
+     * sequence acknowledgment: the exact immutable Envelope must still be
+     * outstanding in the expected physical route epoch, and a physical send
+     * reservation must precede the terminal actor receipt. Validate and
+     * settle under ONE mailbox monitor to exclude forged, stale and raced
+     * credit refunds.
+     */
+    void completeAfterPhysicalReceipt(
+            Envelope envelope, long expectedRouteEpoch) {
+        Objects.requireNonNull(envelope, "envelope");
+        synchronized (lock) {
+            requireOpenLocked();
+            Long key = Long.valueOf(envelope.messageSequence());
+            if (routeEpoch != expectedRouteEpoch
+                    || outstanding.get(key) != envelope
+                    || !physicalSendAttempted.contains(key)) {
+                throw new SecurityException(
+                        "missing, foreign or stale physical completion authority");
+            }
+            completeLocked(envelope.messageSequence());
+        }
+    }
+
+    /**
+     * Trusted mailbox ledger primitive retained for unit models. Production
+     * physical receipts must use completeAfterPhysicalReceipt, not this
+     * sequence-only helper.
+     */
     void complete(long messageSequence) {
         synchronized (lock) {
+            completeLocked(messageSequence);
+        }
+    }
+
+    private void completeLocked(long messageSequence) {
             requireOpenLocked();
             // A boxed sequence key may allocate outside Java's Long cache.
             // Reserve it before the first completion/accounting mutation and
@@ -462,7 +496,6 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             }
             checkStructuralInvariantsLocked();
             lock.notifyAll();
-        }
     }
 
     /**
