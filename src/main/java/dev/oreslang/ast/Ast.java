@@ -94,7 +94,13 @@ public final class Ast {
             // This marker is an internal *formal slot* representation, not a
             // general nullable type. Enforce its invariants even when another
             // compiler pass constructs a TypeRef directly, bypassing the parser.
-            if (name.equals("$omittable_formal$")) {
+            if (name.equals("$v3_option_sugar$")) {
+                if (inferArguments || arguments.size() != 1 || arguments.getFirst().name().equals("void")
+                        || arguments.getFirst().isBorrow()
+                        || arguments.getFirst().isOmittableFormal()) {
+                    throw new IllegalArgumentException("invalid staged v3 Option type sugar");
+                }
+            } else if (name.equals("$omittable_formal$")) {
                 if (inferArguments || arguments.size() != 1) {
                     throw new IllegalArgumentException("malformed omittable formal marker");
                 }
@@ -122,6 +128,31 @@ public final class Ast {
             return false;
         }
         public static TypeRef simple(String name) { return new TypeRef(name, List.of(), false); }
+        /**
+         * Compiler-staged V3 type sugar. NEVER lower this marker as a nominal
+         * Option<T> before module-mode/type-identity/ownership verification.
+         */
+        public static TypeRef stagedV3Option(TypeRef value) {
+            return new TypeRef("$v3_option_sugar$", List.of(java.util.Objects.requireNonNull(value)), false);
+        }
+        public boolean isStagedV3Option() { return name.equals("$v3_option_sugar$"); }
+        public boolean containsStagedV3Option() {
+            if (isStagedV3Option()) return true;
+            for (TypeRef item : arguments) {
+                if (item.containsStagedV3Option()) return true;
+            }
+            return false;
+        }
+        /** Preview ONLY: produces an unproven type spelling, not a nominal Option identity. */
+        public TypeRef stagedV3PreviewType() {
+            if (isStagedV3Option()) {
+                return new TypeRef("Option",
+                        List.of(arguments.getFirst().stagedV3PreviewType()), false);
+            }
+            if (arguments.isEmpty()) return this;
+            return new TypeRef(name, arguments.stream()
+                    .map(TypeRef::stagedV3PreviewType).toList(), inferArguments);
+        }
         /** Only formal-parameter syntax T? may construct this compiler-only marker. */
         public static TypeRef omittableFormal(TypeRef inner) {
             java.util.Objects.requireNonNull(inner, "omittable formal type");
@@ -340,7 +371,8 @@ public final class Ast {
         public TypeRef valueType() { return optional() ? type.omittableValueType() : type; }
         /** Intended callee type; not executable until verified Option ABI lowering. */
         public TypeRef calleeType() {
-            return optional() ? new TypeRef("Option", List.of(valueType()), false) : type;
+            return optional() ? new TypeRef("Option", List.of(valueType()), false)
+                              : type.stagedV3PreviewType();
         }
         /** Compatibility construction: existing ordinary signatures have no defaults. */
         public Param(TypeRef type, String name, boolean structural, boolean mutable) {
