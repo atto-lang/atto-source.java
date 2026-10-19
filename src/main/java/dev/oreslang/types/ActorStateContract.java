@@ -197,6 +197,7 @@ public final class ActorStateContract {
             if (variable.equals("self")) {
                 throw new IllegalArgumentException("actor state access parameter cannot shadow self");
             }
+            rejectReservedMlBinding(variable, actor + ".handle_state");
             // A slim-arrow callback has an implicit return expression, not
             // an Ast.ReturnStmt. Applying escape checks only to ReturnStmt
             // silently exposes s.referenceField via |s| -> s.referenceField.
