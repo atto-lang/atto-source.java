@@ -21,7 +21,7 @@ class Tests(unittest.TestCase):
         self.root=Path(self.tmp.name)
         self.env={'ORES_PRIVATE_CI_REVIEWED_SOURCE_SHA':SRC,
                   'ORES_PRIVATE_CI_REVIEWED_POLICY_SHA':POL}
-        self.policy={'version':1,'repositories':[{'name':DST,'id':ID}]}
+        self.policy={'version':1,'repositories':[{'name':DST,'id':ID}], 'source_commits':[SRC]}
         self.src={'id':g.SOURCE_ID,'full_name':g.SOURCE_REPO,
                   'visibility':'private','private':True,'archived':False,'disabled':False}
         self.dst={'id':ID,'full_name':DST,'visibility':'private',
@@ -53,6 +53,17 @@ class Tests(unittest.TestCase):
         self.policy['repositories']=[]
         with self.assertRaisesRegex(g.AdmissionDenied,'not independently approved'):
             self.verify()
+    def test_caller_cannot_self_approve_arbitrary_source_sha(self):
+        self.policy['source_commits'] = []
+        with self.assertRaisesRegex(g.AdmissionDenied,'source commit absent'):
+            self.verify()
+        self.policy['source_commits'] = ['d' * 40]
+        with self.assertRaisesRegex(g.AdmissionDenied,'source commit absent'):
+            self.verify()
+        self.policy['source_commits'] = [SRC, SRC]
+        with self.assertRaisesRegex(g.AdmissionDenied,'source-commit approval'):
+            self.verify()
+
     def test_wrong_or_missing_id_denies(self):
         for invalid in (None,0,True,'779',780):
             self.dst['id']=invalid
