@@ -273,6 +273,34 @@ transfer. Issues #904 and #962 and publisher PR #954 must be
 independently resolved before any private Git object export. The
 capacity probe is not a substitute for that authorization.
 
+## October 19: Legacy shared-safety admission and exact planner tests
+
+* Legacy `isSharedSafe` walks, including the path used by
+  `SharedMutex<T>` mailbox admission, now share a per-invocation
+  **100,000-node traversal budget** in addition to the 256-level depth cap.
+  This closes the exponential-work case for compact shared-child type DAGs
+  and wide but shallow structural types. Budget exhaustion rejects a proof.
+* Actor transport's data-only built-ins enforce canonical type arities:
+  `Option<T>` (one), `Result<T,E>` (two), and
+  `OptionUnwrapError` (zero). A forged `Named` cannot acquire
+  transport permission merely by matching a reserved name.
+* Regression tests are committed for 35-level repeated-child DAGs,
+  oversized flat tuples, known-positive scalars, and valid/invalid arities.
+  Their JUnit results remain **unverified** while source Actions jobs fail
+  before execution.
+* The unmodified `EcsAccessPlanner.java` source was independently recovered
+  and checked against the exact Git blob SHA
+  `cd2191993991e2180851b5ef7edc23ea57a83851`; it compiled under local
+  Java 21 and passed **77,495 independent-oracle checks** (seed 20261019).
+  Covered randomized conflicts, read/read, alias identity, half-open spans,
+  stable batches, input validation, and proof work limits. This is real
+  single-component execution, **not** a full Maven/JUnit build and **not**
+  runtime ECS region-loan verification.
+* The alternative private organization's source-free Actions capacity proof
+  established runner execution, but source and carrier main remain unprotected
+  and the reviewed private transfer allowlists are empty. No private source
+  tree was mirrored across organizations.
+
 ## Planned actor/ECS design
 
 Actor isolation should remain the outer fault and networking boundary.
