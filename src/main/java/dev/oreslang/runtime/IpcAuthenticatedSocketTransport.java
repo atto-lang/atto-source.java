@@ -246,6 +246,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         if (timeoutMillis < 0 || timeoutMillis > 300_000) {
             throw new IllegalArgumentException("invalid IPC close wait");
         }
+        RuntimeBlockingGuard.requireBlockingHostThread("IPC transport close wait");
         requestClose();
         if (sessionLease.awaitTerminal(timeoutMillis)) return true;
         var snapshot = sessionLease.snapshot();
