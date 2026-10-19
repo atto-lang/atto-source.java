@@ -172,6 +172,45 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void closedRecordDoesNotDuplicateMoveOnlyFieldThroughLiteralIndex() {
+        String source = """
+                fnc bad(): Array<int> {
+                  const record = struct{items: Array<int>}{items: new Array<int>()};
+                  return record["items"];
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void dynamicClassIndexCannotExtractMoveOnlyField() {
+        String source = """
+                define class Store as
+                  pub val Array<int> items = new Array<int>();
+                end
+                fnc bad(string key): Array<int> {
+                  const store = new Store();
+                  return store[key];
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void fixedTupleReadCannotDuplicateMoveOnlyElement() {
+        String source = """
+                fnc bad(): Array<int> {
+                  const values = (new Array<int>(), 3);
+                  return values[0];
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void tupleIndexedWriteRejectedBeforeExecution() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(): void {
