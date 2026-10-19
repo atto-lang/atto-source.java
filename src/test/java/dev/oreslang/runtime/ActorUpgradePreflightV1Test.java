@@ -133,4 +133,22 @@ final class ActorUpgradePreflightV1Test {
             proxy.complete(message.messageSequence());
         }
     }
+
+    @Test
+    void lostCandidateAuthorityNeverReopensFrozenMailboxDispatch() {
+        try (ActorUpgradeEpochGate gate = new ActorUpgradeEpochGate(13, image('a'));
+             LogicalActorProxyMailboxV1 proxy =
+                     new LogicalActorProxyMailboxV1(2, 8, 16)) {
+            var preflight = ActorUpgradePreflightV1.prepare(
+                    gate, proxy, image('b'));
+            // Emulate terminal supervisor teardown invalidating the staged
+            // actor image while mailbox dispatch remains frozen.
+            gate.close();
+            assertThrows(IllegalStateException.class, preflight::close);
+            assertTrue(proxy.snapshot().dispatchFrozen(),
+                    "unknown actor epoch must NEVER reopen old DATA dispatch");
+            assertEquals(1, proxy.snapshot().routeEpoch());
+        }
+    }
+
 }
