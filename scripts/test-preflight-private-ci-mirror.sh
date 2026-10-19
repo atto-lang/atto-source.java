@@ -9,6 +9,9 @@ trap 'rm -rf "$tmp"' EXIT
 repo="$tmp/source"
 mkdir -p "$repo/scripts" "$repo/.github" "$tmp/bin"
 cp "$root/scripts/preflight-private-ci-mirror.sh" "$repo/scripts/"
+cp "$root/scripts/check-private-ci-destination.sh" "$repo/scripts/"
+cp "$root/scripts/run-in-private-ci-destination.sh" "$repo/scripts/"
+cp "$root/scripts/publish-private-ci-source.py" "$repo/scripts/"
 cp "$root/.github/private-ci-approved-repositories.txt" "$repo/.github/"
 
 git -C "$repo" init -q -b main
@@ -18,6 +21,9 @@ git -C "$repo" -c user.name=CI-Security -c user.email=ci-security@example.invali
 main_sha="$(git -C "$repo" rev-parse HEAD)"
 policy_blob="$(git -C "$repo" rev-parse "HEAD:.github/private-ci-approved-repositories.txt")"
 preflight_blob="$(git -C "$repo" rev-parse "HEAD:scripts/preflight-private-ci-mirror.sh")"
+guard_blob="$(git -C "$repo" rev-parse "HEAD:scripts/check-private-ci-destination.sh")"
+wrapper_blob="$(git -C "$repo" rev-parse "HEAD:scripts/run-in-private-ci-destination.sh")"
+publisher_blob="$(git -C "$repo" rev-parse "HEAD:scripts/publish-private-ci-source.py")"
 git -C "$repo" update-ref refs/remotes/origin/main "$main_sha"
 
 git -C "$repo" -c user.name=CI-Feature -c user.email=ci-feature@example.invalid \
@@ -89,7 +95,7 @@ esac
 EOF
 chmod +x "$tmp/bin/gh"
 
-approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=ores-truffle-oreslang/oreslang-source.java source_repo_id=1400792274 source_pr=1425 source_commit=$head source_tree=$tree destination_repo=ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra destination_repo_id=1412142815 policy_blob=$policy_blob preflight_blob=$preflight_blob"
+approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=ores-truffle-oreslang/oreslang-source.java source_repo_id=1400792274 source_pr=1425 source_commit=$head source_tree=$tree destination_repo=ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra destination_repo_id=1412142815 policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
 
 run_preflight() {
   (
@@ -147,7 +153,24 @@ git -C "$repo" -c user.name=CI-Feature -c user.email=ci-feature@example.invalid 
   commit -qm 'mutate preflight only on feature head'
 head="$(git -C "$repo" rev-parse HEAD)"
 tree="$(git -C "$repo" rev-parse HEAD^{tree})"
-approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=ores-truffle-oreslang/oreslang-source.java source_repo_id=1400792274 source_pr=1425 source_commit=$head source_tree=$tree destination_repo=ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra destination_repo_id=1412142815 policy_blob=$policy_blob preflight_blob=$preflight_blob"
+approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=ores-truffle-oreslang/oreslang-source.java source_repo_id=1400792274 source_pr=1425 source_commit=$head source_tree=$tree destination_repo=ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra destination_repo_id=1412142815 policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
+assert_exit 1 run_preflight SYNTH_PROTECTED=false \
+  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" 101 102
+
+# Reset to authoritative main, then mutate only the publisher. The approval
+# binds that blob too, so a feature branch cannot swap the copy routine after
+# security review.
+git -C "$repo" reset -q --hard "$main_sha"
+git -C "$repo" -c user.name=CI-Feature -c user.email=ci-feature@example.invalid \
+  commit --allow-empty -qm 'synthetic source PR head after reset'
+head="$(git -C "$repo" rev-parse HEAD)"
+printf '\n# synthetic unauthorized publisher mutation\n' >> "$repo/scripts/publish-private-ci-source.py"
+git -C "$repo" -c user.name=CI-Feature -c user.email=ci-feature@example.invalid add scripts/publish-private-ci-source.py
+git -C "$repo" -c user.name=CI-Feature -c user.email=ci-feature@example.invalid \
+  commit -qm 'mutate publisher only on feature head'
+head="$(git -C "$repo" rev-parse HEAD)"
+tree="$(git -C "$repo" rev-parse HEAD^{tree})"
+approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=ores-truffle-oreslang/oreslang-source.java source_repo_id=1400792274 source_pr=1425 source_commit=$head source_tree=$tree destination_repo=ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra destination_repo_id=1412142815 policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" 101 102
 
