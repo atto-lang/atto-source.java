@@ -149,7 +149,12 @@ final class ImportGraph {
                 String symbol = null;
                 if (functions && decl instanceof Ast.FunctionDecl fn
                         && fn.visibility() == Ast.Visibility.PUBLIC
-                        && fn.actorKind() == Ast.ActorKind.NONE
+                        // Named "import fnc" only exports ordinary functions.
+                        // Whole-module / wildcard imports may also surface
+                        // other public callable kinds; do not let an actor
+                        // entry's CallerRole grant disappear in that path.
+                        && (imported.kind() != Ast.ImportKind.FUNCTION
+                            || fn.actorKind() == Ast.ActorKind.NONE)
                         && (imported.kind() != Ast.ImportKind.FUNCTION
                             || fn.kind() == Ast.CallableKind.FNC)
                         && (imported.kind() == Ast.ImportKind.MODULE || imported.wildcard()
