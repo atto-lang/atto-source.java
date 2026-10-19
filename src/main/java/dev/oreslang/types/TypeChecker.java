@@ -2053,7 +2053,9 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
-        if (expr instanceof Ast.NamedArgumentExpr) {
+        if (expr instanceof Ast.NamedArgumentExpr
+                || (expr instanceof Ast.NewExpr created
+                    && created.arguments().stream().anyMatch(arg -> arg instanceof Ast.NamedArgumentExpr))) {
             throw new IllegalArgumentException("named value arguments require checked declaration-bound invocation lowering");
         }
         if (expr instanceof Ast.TypeSpecializationExpr) {
