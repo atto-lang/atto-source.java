@@ -355,6 +355,70 @@ SOURCE_ORIGIN = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_ORIGIN_ID = 1400792274
 
 
+
+TRUSTED_MAIN_FILES = (
+    ".github/private-ci-approved-repositories.txt",
+    "scripts/check-private-ci-destination.sh",
+    "scripts/run-in-private-ci-destination.sh",
+    "scripts/publish-private-ci-source.py",
+)
+
+
+def check_main_file_bytes(root, expected):
+    """Compare no-follow, single-link file contents to reviewed Git blob IDs."""
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise Denied("platform lacks safe policy-file descriptor reads")
+    dirs = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    reg = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    for path, committed_blob in expected.items():
+        opened = []
+        try:
+            opened.append(os.open(root, dirs))
+            parts = path.split("/")
+            for name in parts[:-1]:
+                opened.append(os.open(name, dirs, dir_fd=opened[-1]))
+            opened.append(os.open(parts[-1], reg, dir_fd=opened[-1]))
+            info = os.fstat(opened[-1])
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise Denied("reviewed policy file is not a single-link regular file")
+            if info.st_size > 256 * 1024:
+                raise Denied("reviewed policy file exceeds attestation bound")
+            with os.fdopen(os.dup(opened[-1]), "rb") as stream:
+                raw = stream.read(256 * 1024 + 1)
+            if len(raw) > 256 * 1024:
+                raise Denied("reviewed policy file exceeds attestation bound")
+        except OSError as exc:
+            raise Denied("reviewed policy file cannot be read safely") from exc
+        finally:
+            for fd in reversed(opened):
+                os.close(fd)
+        calculated = hashlib.sha1(
+            b"blob " + str(len(raw)).encode("ascii") + b"\\0" + raw
+        ).hexdigest()
+        if calculated != committed_blob:
+            raise Denied("policy or publisher file differs from reviewed main")
+
+
+def committed_main_file_blobs(root, main_sha):
+    """Bind the policy and executable source bytes to a specific main tree."""
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("GIT_")}
+    expected = {}
+    for name in TRUSTED_MAIN_FILES:
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--verify", main_sha + ":" + name],
+                cwd=root, env=env, text=True, capture_output=True,
+                timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise Denied("protected-main Git object lookup unavailable") from exc
+        if result.returncode:
+            raise Denied("security policy file absent from reviewed main")
+        expected[name] = valid_sha(result.stdout.strip())
+    check_main_file_bytes(root, expected)
+    return expected
+
+
 def checked_trusted_main_checkout(trusted_root):
     """Caller must execute reviewed policy + publisher from protected main."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
@@ -378,6 +442,8 @@ def checked_trusted_main_checkout(trusted_root):
     if (not isinstance(trusted_main.get("commit"), dict)
             or trusted_main["commit"].get("sha") != result.stdout.strip()):
         raise Denied("publisher policy must run from reviewed main HEAD")
+    blobs = committed_main_file_blobs(trusted_root, result.stdout.strip())
+    return result.stdout.strip(), blobs
 
 
 def committed_snapshot_tree(source_commit):
@@ -396,8 +462,8 @@ def publish(repository, source, branch, trusted_root, source_commit=None):
         raise Denied("invalid destination or isolated CI branch name")
     # CLI snapshot mode runs only from the repository's independently
     # authenticated protected-main HEAD; it does not execute PR-supplied code.
-    if source_commit is not None:
-        checked_trusted_main_checkout(trusted_root)
+    trust = (checked_trusted_main_checkout(trusted_root)
+             if source_commit is not None else None)
     # Approval comes before reading potentially sensitive source files.
     approved_repository = require_preflight(repository, trusted_root)
     if (not isinstance(approved_repository, dict)
@@ -430,6 +496,13 @@ def publish(repository, source, branch, trusted_root, source_commit=None):
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
     def authorize_write():
+        if trust is not None:
+            approved_main_sha, approved_files = trust
+            observed_main = gh_api("repos/" + SOURCE_ORIGIN + "/branches/main")
+            if (not isinstance(observed_main.get("commit"), dict)
+                    or observed_main["commit"].get("sha") != approved_main_sha):
+                raise Denied("reviewed protected-main source policy changed")
+            check_main_file_bytes(trusted_root, approved_files)
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
         current = checked_repo(repository)
