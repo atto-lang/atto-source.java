@@ -74,9 +74,14 @@ final class ActorHotUpgradeTaskOwnerV1 implements AutoCloseable {
 
     private static void requireHost() {
         if (ActorRuntime.inActorExecution()
+                || ActorRuntime.isActorCarrierThread()
+                || ActorRuntime.inActorGroupMailmanExecution()
                 || OresScheduler.current() != null
                 || OresScheduler.isSchedulerCarrierThread()
                 || AsyncRuntime.isAsyncCarrierThread()) {
+            // Closing a TaskScope joins physical children and can block.
+            // Terminal callbacks on actor/Mailman carriers are not trusted
+            // host supervisors even after CURRENT actor state is cleared.
             throw new SecurityException(
                     "actor generation Task scope requires trusted host control");
         }
