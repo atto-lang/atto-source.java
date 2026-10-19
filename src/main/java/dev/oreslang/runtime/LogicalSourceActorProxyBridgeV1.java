@@ -21,6 +21,7 @@ import java.util.concurrent.TimeoutException;
  */
 public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
     private final Object dispatchLock = new Object();
+    // Bridge audit: all upgrade publication is serialized by dispatchLock.
     // Separate from dispatchLock: admission remains open while upgrading,
     // but close must atomically seal admission before physical teardown.
     private final Object admissionLock = new Object();
