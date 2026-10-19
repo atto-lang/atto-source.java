@@ -212,6 +212,19 @@ final class GeneratorRuntimeTest {
                 assertInstanceOf(ChannelRuntime.ChannelClosedException.class, cause);
                 assertNotNull(cause.getCause());
                 assertEquals("boom", cause.getCause().getMessage());
+                // Exceptional close is terminal failure, never normal DONE:
+                // the buffered item was delivered exactly once and every
+                // later pull retains the channel close cause.
+                for (int attempt = 0; attempt < 3; attempt++) {
+                    var later = iterator.nextStep();
+                    java.util.concurrent.ExecutionException again = assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> later.get(2, TimeUnit.SECONDS));
+                    var channelClosed = assertInstanceOf(
+                            ChannelRuntime.ChannelClosedException.class, again.getCause());
+                    assertNotNull(channelClosed.getCause());
+                    assertEquals("boom", channelClosed.getCause().getMessage());
+                }
             }
         }
     }
