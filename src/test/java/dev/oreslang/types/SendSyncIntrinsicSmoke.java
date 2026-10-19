@@ -162,6 +162,18 @@ public final class SendSyncIntrinsicSmoke {
         expect(ThreadSafetyTraits.isOwnedSend(integer, CORE),
                 "primitive remains owned Send");
 
+        Type depthShared = integer;
+        for (int i = 0; i < 255; i++) depthShared = new Types.ListType(depthShared);
+        Type shallowPath = depthShared;
+        expect(supports(shallowPath, Trait.SEND, CORE),
+                "shallow path remains within depth limit");
+        expect(!supports(new Types.Tuple(List.of(
+                        shallowPath, new Types.ListType(shallowPath))),
+                Trait.SEND, CORE),
+                "shallow cached proof cannot authorize over-depth reused node");
+        expect(supports(shallowPath, Trait.SEND, CORE),
+                "depth-cache rejection must not poison fresh query");
+
         Type nested = integer;
         for (int i = 0; i < 400; i++) nested = new Types.ListType(nested);
         expect(!supports(nested, Trait.SEND, CORE), "deep Send must fail closed");
