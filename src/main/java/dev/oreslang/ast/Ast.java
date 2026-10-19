@@ -371,8 +371,11 @@ public final class Ast {
         public TypeRef valueType() { return optional() ? type.omittableValueType() : type; }
         /** Intended callee type; not executable until verified Option ABI lowering. */
         public TypeRef calleeType() {
-            return optional() ? new TypeRef("Option", List.of(valueType()), false)
-                              : type.stagedV3PreviewType();
+            // Legacy T? formal semantics remain an Option value at the callee.
+            // V3 type sugar remains an opaque unlowered marker here: ordinary
+            // callee accessors must NEVER silently grant nominal Option ABI.
+            // V3DefaultArgValsPolicy owns the ONLY non-executable preview.
+            return optional() ? new TypeRef("Option", List.of(valueType()), false) : type;
         }
         /** Compatibility construction: existing ordinary signatures have no defaults. */
         public Param(TypeRef type, String name, boolean structural, boolean mutable) {
