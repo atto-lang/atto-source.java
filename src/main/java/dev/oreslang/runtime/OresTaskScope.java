@@ -150,101 +150,121 @@ public final class OresTaskScope implements AutoCloseable {
         Objects.requireNonNull(frame, "frame");
         Objects.requireNonNull(onPhysicalExit, "onPhysicalExit");
 
-        // A provisional, fully observable physical lifetime is committed
-        // before executor admission. Never dispatch a Task while holding
-        // treeAdmissionGate or gate: scheduler/inline completion and external
-        // generation release callbacks can acquire unrelated host locks.
-        OresFuture<Void> preparedFence = null;
-        OresTask<T> preparedChild = null;
-        OwnershipSlot preparedSlot = null;
+        // Reserve the owner before executable dispatch, but never run a
+        // scheduler, guest turn or code-image release under admission locks.
+        OresFuture<Void> pendingFence = null;
+        OresTask<T> pendingOwner = null;
+        OwnershipSlot pendingSlot = null;
         try {
-            final OresFuture<Void> fence = new OresFuture<>();
-            preparedFence = fence;
-            final OresTask<T> child = OresTask.provisional(fence);
-            preparedChild = child;
-            final OwnershipSlot slot = new OwnershipSlot();
-            preparedSlot = slot;
-            slot.task = child;
-            fence.whenCompleteRuntime((ignored, failure) -> {
-                // A failed code-image release cannot be treated as
-                // successful quiescence; retain the slot for close().
-                if (failure == null) {
-                    synchronized (gate) {
-                        tasks.remove(slot);
-                    }
-                }
-            });
+            pendingFence = new OresFuture<>();
+            pendingOwner = OresTask.provisional(pendingFence);
+            pendingSlot = new OwnershipSlot();
+            pendingSlot.task = pendingOwner;
             synchronized (treeAdmissionGate) {
                 synchronized (gate) {
                     ensureAdmitting();
-                    if (!tasks.add(slot))
+                    if (!tasks.add(pendingSlot))
                         throw new IllegalStateException("duplicate Task ownership slot");
                 }
             }
-        } catch (RuntimeException | Error rejectedBeforeReservation) {
-            // If an adversarial/fault-injection collection inserted and
-            // then threw, remove the provisional slot before publishing
-            // the failed admission fence. No guest work was admitted.
-            if (preparedSlot != null) {
-                synchronized (gate) {
-                    tasks.remove(preparedSlot);
+        } catch (RuntimeException | Error preparationFailure) {
+            // A hostile collection can insert and then throw. An equally
+            // hostile remove must never suppress the required code release.
+            Throwable bookkeepingFailure = null;
+            if (pendingSlot != null) {
+                try {
+                    synchronized (gate) {
+                        tasks.remove(pendingSlot);
+                    }
+                } catch (RuntimeException | Error failure) {
+                    bookkeepingFailure = failure;
+                    if (failure != preparationFailure)
+                        preparationFailure.addSuppressed(failure);
                 }
             }
+            Throwable releaseFailure = null;
             try {
                 onPhysicalExit.run();
-                if (preparedFence != null)
-                    preparedFence.completeFromRuntime(null);
-            } catch (RuntimeException | Error releaseFailure) {
-                if (preparedFence != null)
-                    preparedFence.failFromRuntime(releaseFailure);
-                if (releaseFailure != rejectedBeforeReservation)
-                    rejectedBeforeReservation.addSuppressed(releaseFailure);
+            } catch (RuntimeException | Error failure) {
+                releaseFailure = failure;
+                if (failure != preparationFailure)
+                    preparationFailure.addSuppressed(failure);
             }
-            throw rejectedBeforeReservation;
+            if (pendingFence != null) {
+                Throwable fenceFailure = releaseFailure != null
+                        ? releaseFailure : bookkeepingFailure;
+                if (fenceFailure == null) pendingFence.completeFromRuntime(null);
+                else pendingFence.failFromRuntime(fenceFailure);
+            }
+            throw preparationFailure;
         }
-        final OresFuture<Void> exitFence = preparedFence;
-        final OresTask<T> ownedChild = preparedChild;
 
+        final OwnershipSlot ownedSlot = pendingSlot;
+        final OresFuture<Void> exitFence = pendingFence;
+        final OresTask<T> ownedChild = pendingOwner;
         final OresFuture<T> completion;
         try {
             completion = scheduler.start(resume -> {
-                // A parent cancelled during the provisional enqueue window
-                // cannot grant a later guest turn permission to run. This
-                // cooperative admission check never interrupts a pthread or
-                // releases locks belonging to an executing Task.
+                // Cancellation between reservation and Future binding seals
+                // admission to new guest turns, not the physical carrier.
                 if (isCancelRequested()) {
                     throw new java.util.concurrent.CancellationException(
                             "Task scope cancelled before guest turn");
                 }
                 return frame.resume(resume);
             }, () -> {
-                // Physical exit, not Future cancellation, is the only
-                // authority to retire the child's code/resource lease.
+                // Retire the code pin once, AFTER the final carrier turn.
+                // Do not discard a failed pin. Prune owner bookkeeping
+                // before completing the quiescence Future, because generic
+                // Future observers swallow callback exceptions.
                 try {
                     onPhysicalExit.run();
-                    exitFence.completeFromRuntime(null);
                 } catch (RuntimeException | Error releaseFailure) {
                     exitFence.failFromRuntime(releaseFailure);
+                    return;
+                }
+                try {
+                    synchronized (gate) {
+                        tasks.remove(ownedSlot);
+                    }
+                    exitFence.completeFromRuntime(null);
+                } catch (RuntimeException | Error bookkeepingFailure) {
+                    exitFence.failFromRuntime(bookkeepingFailure);
                 }
             });
         } catch (RuntimeException | Error rejectedBeforeDispatch) {
-            // OresScheduler.start throws only before TaskRunner registration.
-            // Cancel/close may already be waiting on our provisional fence,
-            // so publish that no guest turn was ever admitted.
+            // Scheduler.start is guaranteed to throw only before TaskRunner
+            // registration. Retire the code image before removing ownership;
+            // a failed remove is reported both to the caller and joiners.
+            Throwable releaseFailure = null;
             try {
                 onPhysicalExit.run();
-                exitFence.completeFromRuntime(null);
-            } catch (RuntimeException | Error releaseFailure) {
-                exitFence.failFromRuntime(releaseFailure);
-                if (releaseFailure != rejectedBeforeDispatch)
-                    rejectedBeforeDispatch.addSuppressed(releaseFailure);
+            } catch (RuntimeException | Error failure) {
+                releaseFailure = failure;
+                if (failure != rejectedBeforeDispatch)
+                    rejectedBeforeDispatch.addSuppressed(failure);
             }
+            Throwable bookkeepingFailure = null;
+            if (releaseFailure == null) {
+                try {
+                    synchronized (gate) {
+                        tasks.remove(ownedSlot);
+                    }
+                } catch (RuntimeException | Error failure) {
+                    bookkeepingFailure = failure;
+                    if (failure != rejectedBeforeDispatch)
+                        rejectedBeforeDispatch.addSuppressed(failure);
+                }
+            }
+            Throwable fenceFailure = releaseFailure != null
+                    ? releaseFailure : bookkeepingFailure;
+            if (fenceFailure == null) exitFence.completeFromRuntime(null);
+            else exitFence.failFromRuntime(fenceFailure);
             throw rejectedBeforeDispatch;
         }
 
-        // Cancellation may have sealed this parent while scheduler.start
-        // was pending. OresTask atomically publishes the completion and
-        // replays that cancellation without running observers under a lock.
+        // Cancellation may have sealed this scope while the scheduler was
+        // admitting the Task. The owner replays it without scope locks.
         ownedChild.attachCompletion(completion);
         return ownedChild;
     }
