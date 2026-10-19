@@ -371,4 +371,77 @@ public class TaskScopeTest {
         }
     }
 
+    @Test void rejectedDispatcherRacingScopeCancellationNeverPublishesPrematureJoin()
+            throws Exception {
+        CountDownLatch dispatchEntered = new CountDownLatch(1);
+        CountDownLatch releaseRejection = new CountDownLatch(1);
+        java.util.concurrent.Executor rejectingDispatcher = runnable -> {
+            dispatchEntered.countDown();
+            awaitUninterruptibly(releaseRejection);
+            throw new RejectedExecutionException("test dispatcher rejected");
+        };
+        try (OresScheduler scheduler =
+                     OresScheduler.runtimeOwned("rejected-admission-race",
+                             1, rejectingDispatcher)) {
+            TaskScope scope = scheduler.newTaskScope();
+            Field monitorField = TaskScope.class.getDeclaredField("admissionLock");
+            monitorField.setAccessible(true);
+            Object admissionMonitor = monitorField.get(scope);
+            AtomicReference<Boolean> notificationHeldLock = new AtomicReference<>();
+            scope.getDone().whenCompleteRuntime((ignored, failure) ->
+                    notificationHeldLock.set(Thread.holdsLock(admissionMonitor)));
+            AtomicReference<TaskHandle<Integer>> submitted = new AtomicReference<>();
+            AtomicReference<Throwable> submitFailure = new AtomicReference<>();
+            AtomicInteger guestRuns = new AtomicInteger();
+            Thread submitter = new Thread(() -> {
+                try {
+                    submitted.set(scope.startTask(resume -> {
+                        guestRuns.incrementAndGet();
+                        return OresScheduler.done(42);
+                    }));
+                } catch (Throwable failure) {
+                    submitFailure.set(failure);
+                }
+            });
+            submitter.start();
+            try {
+                assertTrue(dispatchEntered.await(3, TimeUnit.SECONDS),
+                        "expected scheduler to reach the blocked dispatcher");
+                CountDownLatch cancelled = new CountDownLatch(1);
+                AtomicReference<Throwable> cancelFailure = new AtomicReference<>();
+                Thread canceller = new Thread(() -> {
+                    try { assertTrue(scope.cancel("shutdown")); }
+                    catch (Throwable failure) { cancelFailure.set(failure); }
+                    finally { cancelled.countDown(); }
+                });
+                canceller.start();
+                assertTrue(cancelled.await(2, TimeUnit.SECONDS),
+                        "scope cancellation must not wait for scheduler rejection");
+                assertNull(cancelFailure.get());
+                assertFalse(scope.getDone().isDone(),
+                        "reserved child slot must keep scope join pending");
+                canceller.join(3000);
+                assertFalse(canceller.isAlive());
+            } finally {
+                releaseRejection.countDown();
+            }
+            submitter.join(3000);
+            assertFalse(submitter.isAlive());
+            if (submitFailure.get() != null) {
+                assertInstanceOf(RejectedExecutionException.class, submitFailure.get());
+            } else {
+                assertNotNull(submitted.get());
+                TaskHandle.TaskOutcome<Integer> outcome =
+                        submitted.get().getDone().get(3, TimeUnit.SECONDS);
+                assertTrue(outcome instanceof TaskHandle.Failed<?>
+                        || outcome instanceof TaskHandle.Cancelled<?>,
+                        "scheduler rejection must not appear as guest success");
+            }
+            assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
+            assertEquals(0, guestRuns.get());
+            assertEquals(Boolean.FALSE, notificationHeldLock.get(),
+                    "scope observers must not run under admissionLock");
+        }
+    }
+
 }
