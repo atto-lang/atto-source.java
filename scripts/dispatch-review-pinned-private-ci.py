@@ -544,13 +544,15 @@ def dispatch(receipt_path,source_dir):
     # recreated. Refuse before creating the source-bearing trigger.
     authorization_ref_absent(commit_sha)
     refresh_authorization(r,True); branch=branch_absent(r)
-    created=PUB.gh_api(f"repos/{CARRIER_REPO}/git/refs",method="POST",
-                       payload={"ref":"refs/heads/"+branch,"sha":commit_sha})
-    created_obj=created.get("object") or {}
-    if (created.get("ref")!="refs/heads/"+branch or created_obj.get("type")!="commit"
-            or require_sha(created_obj.get("sha"),"created ref commit")!=commit_sha):
-        raise Denied("carrier ref creation response mismatch")
     try:
+        # GitHub can create the ref and still return an invalid/truncated reply.
+        # Both creation and response checks must be inside the cleanup scope.
+        created=PUB.gh_api(f"repos/{CARRIER_REPO}/git/refs",method="POST",
+                           payload={"ref":"refs/heads/"+branch,"sha":commit_sha})
+        created_obj=created.get("object") or {}
+        if (created.get("ref")!="refs/heads/"+branch or created_obj.get("type")!="commit"
+                or require_sha(created_obj.get("sha"),"created ref commit")!=commit_sha):
+            raise Denied("carrier ref creation response mismatch")
         ref=PUB.gh_api(f"repos/{CARRIER_REPO}/git/ref/heads/{branch}")
         ref_obj=ref.get("object") or {}
         if (ref.get("ref")!="refs/heads/"+branch or ref_obj.get("type")!="commit"
@@ -563,7 +565,7 @@ def dispatch(receipt_path,source_dir):
             # response was malformed or interrupted. Remove that exact ref
             # first so a later retry cannot inherit stale authorization.
             cleanup_exact_authorization_ref_if_present(commit_sha)
-            cleanup_exact_payload_ref(r,commit_sha)
+            cleanup_exact_payload_ref_if_present(r,commit_sha)
         except Exception as cleanup:
             raise Denied(
                 "payload verification failed and exact ref cleanup could not be confirmed"
