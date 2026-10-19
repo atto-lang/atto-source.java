@@ -44,6 +44,7 @@ final class OresTaskProvisionalAdmissionTest {
         AtomicReference<Throwable> closingFailure = new AtomicReference<>();
         AtomicReference<OresTask<Integer>> admitted = new AtomicReference<>();
         AtomicInteger releases = new AtomicInteger();
+        AtomicInteger enteredGuest = new AtomicInteger();
         CountDownLatch cancellationReturned = new CountDownLatch(1);
         CountDownLatch closeReturned = new CountDownLatch(1);
         var scheduler = OresScheduler.runtimeOwned(
@@ -67,7 +68,10 @@ final class OresTaskProvisionalAdmissionTest {
             Thread admitting = Thread.ofVirtual().start(() -> {
                 try {
                     admitted.set(scope.startCompilerFrame(scheduler,
-                            resume -> new OresScheduler.Done<>(7),
+                            resume -> {
+                                enteredGuest.incrementAndGet();
+                                return new OresScheduler.Done<>(7);
+                            },
                             releases::incrementAndGet));
                 } catch (Throwable failure) {
                     admittingFailure.set(failure);
@@ -99,6 +103,8 @@ final class OresTaskProvisionalAdmissionTest {
                 closer.join();
                 assertNull(closingFailure.get(), String.valueOf(closingFailure.get()));
                 assertTrue(admitted.get().isQuiescent());
+                assertEquals(0, enteredGuest.get(),
+                        "cancelled provisional child must never enter guest source");
                 assertEquals(1, releases.get(), "generation lease released exactly once");
             } finally {
                 permitDispatch.countDown();
