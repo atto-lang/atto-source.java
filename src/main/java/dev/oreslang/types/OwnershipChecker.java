@@ -841,7 +841,7 @@ public final class OwnershipChecker {
 
         boolean readonlyRecord = value.type.isReadonlyRecordType();
         if (readonlyRecord && binding.mutableReferent()) {
-            throw error("infer struct values are closed and readonly; mutable bindings and mutable aliases are forbidden");
+            throw error("readonly structural records cannot gain mutable bindings or aliases");
         }
 
         value = retainBorrowForBinding(value);
@@ -2229,8 +2229,7 @@ public final class OwnershipChecker {
             VarState state = requireState(scope, name.name());
             requireUsable(state, name.name(), true);
             if (state.type.isReadonlyRecordType()) {
-                throw error("cannot mutate infer struct value '" + name.name()
-                        + "'; inferred structs are closed and readonly");
+                throw error("cannot mutate readonly structural record '" + name.name() + "'");
             }
             if (isMutexGuardType(state.type)) return;
             boolean mutableBorrow = state.kind == ValueKind.MUT_BORROW || (state.type.isBorrow() && state.type.mutableBorrow());
@@ -2350,8 +2349,7 @@ public final class OwnershipChecker {
         if (root.moved) throw error("cannot borrow moved value '" + owner.debugName + "'");
         if (mutable) {
             if (owner.type.isReadonlyRecordType()) {
-                throw error("cannot mutably borrow infer struct value '" + owner.debugName
-                        + "'; inferred structs are permanently readonly");
+                throw error("cannot mutably borrow readonly structural record '" + owner.debugName + "'");
             }
             if (owner.kind == ValueKind.IMM_BORROW)
                 throw error("cannot mutably reborrow a shared borrow '" + owner.debugName + "'");
