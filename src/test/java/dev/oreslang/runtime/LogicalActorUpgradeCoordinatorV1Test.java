@@ -67,7 +67,7 @@ final class LogicalActorUpgradeCoordinatorV1Test {
             assertFalse(proxy.snapshot().dispatchFrozen());
             assertFalse(coordinator.quarantined());
             assertEquals(1L,gate.epoch());
-            assertNotNull(proxy.pollDispatch()==null);
+            assertNull(proxy.pollDispatch());
         }
     }
 
