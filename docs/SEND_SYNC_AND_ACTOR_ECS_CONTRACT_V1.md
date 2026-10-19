@@ -219,6 +219,13 @@ are bitwise deterministic.
   visits without memoization), an unsafe capability-bearing DAG, and a
   100,001-element flat aggregate. Tests are committed but not execution
   verified until Maven/JUnit actually starts on the exact source tree.
+* Actor mailbox validation and actor-callable frozen-result scanning share
+  a separate 100,000-visit fail-closed work budget, on top of their existing
+  depth limits. A compact cyclic/diamond-shaped type graph or enormously
+  wide aggregate must not make the compiler spend unbounded CPU on actor
+  admission. Unlike the thread-safety trait derivation, actor validation
+  deliberately rejects an over-budget shared DAG until an independently
+  reviewed context-sensitive memoization proof is available.
 * The alternate private Actions capacity probe succeeded, establishing
   current runner execution in another organization. It **does not approve
   private source mirroring**: source main and candidate carrier main were
