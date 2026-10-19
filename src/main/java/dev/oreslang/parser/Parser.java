@@ -1022,26 +1022,38 @@ public final class Parser {
             throw error(peek(), "static class functions do not have a self receiver");
         }
 
-        // Pointerless receiver effects:
-        //   method(mut self)(params)       -> mutable receiver
-        //   method(self Foo)(params)       -> explicit read receiver
-        // Ordinary methods without either form receive read-only self.
+        // A leading 'self' is a receiver binder, not a caller-visible parameter.
+        // Inline receiver forms: method(self, int x), method(mut self, int x),
+        // method(self), and method(mut self).
+        // Existing split forms: method(self Foo)(int x), method(mut self)(int x).
+        // Keep the receiver out of MethodDecl.parameters and thus out of arity.
         int parameterStart = current;
         boolean explicitReceiver = false;
+        boolean inlineReceiver = false;
         if (mutableReceiver) {
             advance(); // mut
             consume(SELF, "mutable receiver syntax is 'mut self'");
-            Ast.TypeRef target = check(RPAREN) ? Ast.TypeRef.simple("self") : parseTypeRef();
-            receiverType = Ast.TypeRef.borrowed(target, true);
-            explicitReceiver = true;
+            if (check(COMMA) || (check(RPAREN) && !checkNext(LPAREN))) {
+                receiverType = Ast.TypeRef.borrowed(Ast.TypeRef.simple("self"), true);
+                inlineReceiver = true;
+            } else {
+                Ast.TypeRef target = check(RPAREN) ? Ast.TypeRef.simple("self") : parseTypeRef();
+                receiverType = Ast.TypeRef.borrowed(target, true);
+                explicitReceiver = true;
+            }
         } else if (check(SELF)) {
             advance();
-            Ast.TypeRef candidateReceiver = parseTypeRef();
-            if (check(RPAREN) && checkNext(LPAREN)) {
-                receiverType = candidateReceiver;
-                explicitReceiver = true;
+            if (check(COMMA) || (check(RPAREN) && !checkNext(LPAREN))) {
+                receiverType = Ast.TypeRef.simple("self");
+                inlineReceiver = true;
             } else {
-                current = parameterStart;
+                Ast.TypeRef candidateReceiver = parseTypeRef();
+                if (check(RPAREN) && checkNext(LPAREN)) {
+                    receiverType = candidateReceiver;
+                    explicitReceiver = true;
+                } else {
+                    current = parameterStart;
+                }
             }
         }
 
@@ -1053,6 +1065,9 @@ public final class Parser {
             params = parseParametersUntil(RPAREN);
             consume(RPAREN, "expected ')' after method parameters");
         } else {
+            if (inlineReceiver && match(COMMA) && check(RPAREN)) {
+                throw error(peek(), "expected a user parameter after explicit self receiver");
+            }
             params = parseParametersUntil(RPAREN);
             consume(RPAREN, "expected ')' after method parameters");
         }
