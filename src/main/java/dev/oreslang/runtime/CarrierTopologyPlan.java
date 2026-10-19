@@ -90,11 +90,29 @@ final class CarrierTopologyPlan {
 
     /** Linux cpuset is already validated by the native pthread binder. */
     static Location discover(int admittedCpu) {
-        if (admittedCpu < 0 || !System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("linux"))
+        if (admittedCpu < 0 || !System.getProperty("os.name", "")
+                .toLowerCase(java.util.Locale.ROOT).contains("linux"))
             return Location.UNKNOWN;
-        Path cpu = Path.of("/sys/devices/system/cpu", "cpu" + admittedCpu);
+        return discoverAt(admittedCpu, Path.of("/sys/devices/system/cpu"));
+    }
+
+    /** Package-private test seam for cpuset-restricted or incomplete sysfs. */
+    static Location discoverAt(int admittedCpu, Path sysCpuRoot) {
+        if (admittedCpu < 0 || sysCpuRoot == null) return Location.UNKNOWN;
+        Path cpu = sysCpuRoot.resolve("cpu" + admittedCpu);
         int pkg = readInt(cpu.resolve("topology/physical_package_id"));
-        int llc = readInt(cpu.resolve("cache/index3/id")); // never compare across unknown packages
+        // index3 is not universally an LLC; only trust an explicitly
+        // identified L3 unified cache. Unknown topology is always safe.
+        Path index3 = cpu.resolve("cache/index3");
+        int llc = -1;
+        if (readInt(index3.resolve("level")) == 3) {
+            try {
+                if ("Unified".equals(Files.readString(index3.resolve("type")).trim()))
+                    llc = readInt(index3.resolve("id"));
+            } catch (IOException | RuntimeException ignored) {
+                // Missing/unreadable sysfs must never alter correctness.
+            }
+        }
         int numa = -1;
         try (DirectoryStream<Path> nodes = Files.newDirectoryStream(cpu, "node*")) {
             for (Path node : nodes) {
