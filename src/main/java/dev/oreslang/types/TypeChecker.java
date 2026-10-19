@@ -7654,6 +7654,7 @@ public final class TypeChecker {
     }
 
     private boolean dynMentionsSelf(Ast.TypeRef ref) {
+        // Direct or nested receiver-self types cannot survive type erasure.
         return ref.name().equals("self") || ref.arguments().stream().anyMatch(this::dynMentionsSelf);
     }
 
