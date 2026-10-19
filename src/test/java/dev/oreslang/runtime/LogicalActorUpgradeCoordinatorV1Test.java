@@ -81,4 +81,56 @@ final class LogicalActorUpgradeCoordinatorV1Test {
                     () -> new LogicalActorUpgradeCoordinatorV1(gate,proxy));
         }
     }
+
+    @Test
+    void noSecondUpgradeMayStartWhileFirstIsFrozen() {
+        try (var gate = new ActorUpgradeEpochGate(20,image('a'));
+             var proxy = new LogicalActorProxyMailboxV1(8,64,512);
+             var coordinator = new LogicalActorUpgradeCoordinatorV1(gate,proxy)) {
+            var first = coordinator.prepare(image('b'));
+            assertThrows(IllegalStateException.class,
+                    () -> coordinator.prepare(image('c')));
+            assertThrows(IllegalStateException.class, coordinator::close);
+            first.rollback();
+            assertFalse(proxy.snapshot().dispatchFrozen());
+            var second = coordinator.prepare(image('c'));
+            assertTrue(second.commit());
+            assertEquals(image('c'),gate.image());
+            assertEquals(2L,proxy.snapshot().routeEpoch());
+        }
+    }
+
+    @Test
+    void externalClosureWhileFrozenCannotBeMistakenForCommittedRoute() {
+        var gate = new ActorUpgradeEpochGate(21,image('a'));
+        var proxy = new LogicalActorProxyMailboxV1(8,64,512);
+        var coordinator = new LogicalActorUpgradeCoordinatorV1(gate,proxy);
+        var tx = coordinator.prepare(image('b'));
+        proxy.close();
+        assertThrows(IllegalStateException.class,tx::commit);
+        assertEquals(image('a'),gate.image());
+        assertEquals(1L,gate.epoch());
+        assertThrows(IllegalStateException.class,coordinator::close);
+        assertThrows(IllegalStateException.class,tx::rollback);
+        // An unresolved/closed mailbox is not proof of a safe old-route
+        // restart; the supervisor must quarantine the actor incarnation.
+        gate.close();
+    }
+
+    @Test
+    void failedAbiPreparationRetainsOldActorAndFutureAdmissionCapacity() {
+        try (var gate = new ActorUpgradeEpochGate(22,image('a'));
+             var proxy = new LogicalActorProxyMailboxV1(3,64,192);
+             var coordinator = new LogicalActorUpgradeCoordinatorV1(gate,proxy)) {
+            var bad = new ActorUpgradeEpochGate.Image(
+                    hash('c'),hash('1'),hash('9'),hash('3'));
+            assertThrows(SecurityException.class, () -> coordinator.prepare(bad));
+            assertFalse(proxy.snapshot().dispatchFrozen());
+            var accepted = proxy.admit(bytes("after-refusal"));
+            assertEquals(1L,accepted.messageSequence());
+            assertEquals(1L,proxy.pollDispatch().messageSequence());
+            proxy.complete(1L);
+            assertEquals(0,proxy.snapshot().retainedMessages());
+        }
+    }
 }
