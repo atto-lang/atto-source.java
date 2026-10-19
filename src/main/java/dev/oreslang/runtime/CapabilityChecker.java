@@ -506,6 +506,13 @@ public final class CapabilityChecker {
                 checkExpr(f.value(), policy);
             }
         }
+        else if (expr instanceof Ast.TaskExpr task) {
+            // A Task executes later, potentially on a different carrier.
+            // Its entire body must receive the same isolate capability and
+            // imported-code checks as its lexical parent. A new AST expression
+            // is never an effect/capability admission escape hatch.
+            checkStatements(task.body(), policy);
+        }
         else if (expr instanceof Ast.LambdaExpr e) {
             if (e.expressionBody() != null) checkExpr(e.expressionBody(), policy);
             if (e.blockBody() != null) checkStatements(e.blockBody(), policy);
