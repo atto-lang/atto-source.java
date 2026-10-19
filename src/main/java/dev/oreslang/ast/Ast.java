@@ -1121,8 +1121,26 @@ public final class Ast {
             java.util.Objects.requireNonNull(rewritten, "rewritten index site");
             expunge();
             java.util.Set<String> visible = KEYS.get(new IdentityKey(original, null));
-            if (visible != null) record(rewritten, visible);
             Integer fixed = TUPLE_SLOTS.get(new IdentityKey(original, null));
+
+            // Even trusted optimizers may fold a computed index into a literal.
+            // The rewritten literal cannot contradict a previously proved
+            // closed-view key or positional slot. Validate *before* installing
+            // either proof, so a denied rewrite cannot leave partial authority.
+            if (rewritten.index() instanceof LiteralExpr literal) {
+                Object candidate = literal.value();
+                if (visible != null && (!(candidate instanceof String key)
+                        || !visible.contains(key))) {
+                    throw new IllegalStateException(
+                            "optimizer changed indexed field outside its checked view");
+                }
+                if (fixed != null && (!(candidate instanceof Long slot)
+                        || slot.longValue() != fixed.longValue())) {
+                    throw new IllegalStateException(
+                            "optimizer changed a certified tuple index slot");
+                }
+            }
+            if (visible != null) record(rewritten, visible);
             if (fixed != null) recordTupleSlot(rewritten, fixed);
             return rewritten;
         }
