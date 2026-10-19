@@ -20,7 +20,27 @@ import java.util.Objects;
 final class ActorHotUpgradeTaskBridgeV1 {
     private ActorHotUpgradeTaskBridgeV1() { }
 
+    /**
+     * A pinned frame has two distinct lifetimes: cancelable result
+     * settlement and trusted physical retirement. Never use the former as
+     * evidence for code-image unload or successful TaskScope joining.
+     */
+    record PinnedTask<T>(OresFuture<T> result, OresFuture<Void> physicallyExited) {
+        PinnedTask {
+            Objects.requireNonNull(result, "result");
+            Objects.requireNonNull(physicallyExited, "physicallyExited");
+        }
+    }
+
     static <T> OresFuture<T> startPinned(
+            ActorRuntime runtime,
+            ActorRuntime.ActorRef<?> actor,
+            OresScheduler scheduler,
+            OresScheduler.Task<T> frame) {
+        return startPinnedTracked(runtime, actor, scheduler, frame).result();
+    }
+
+    static <T> PinnedTask<T> startPinnedTracked(
             ActorRuntime runtime,
             ActorRuntime.ActorRef<?> actor,
             OresScheduler scheduler,
@@ -45,7 +65,22 @@ final class ActorHotUpgradeTaskBridgeV1 {
         ActorRuntime.HotUpgradeExternalLease generation =
                 runtime.pinExternalWorkForHotUpgrade(actor);
         try {
-            return scheduler.start(frame, generation::close);
+            var physicallyExited = new OresFuture<Void>();
+            var result = scheduler.start(frame, () -> {
+                // Invoke this only from the scheduler's final physical
+                // retirement callback; cancelled Future settlement may occur
+                // earlier while a frame is still executing on its carrier.
+                try {
+                    generation.close();
+                    physicallyExited.completeFromRuntime(null);
+                } catch (RuntimeException | Error retirementFailure) {
+                    // Do NOT forge a completed generation release. Keep the
+                    // failure observable by the structured Task owner; the
+                    // ActorRuntime pin remains live if its debit failed.
+                    physicallyExited.failFromRuntime(retirementFailure);
+                }
+            });
+            return new PinnedTask<>(result, physicallyExited);
         } catch (RuntimeException | Error rejectedBeforeAdmission) {
             // Scheduler.start throws only before registering the TaskRunner;
             // post-registration enqueue failures settle via onQuiescent.
