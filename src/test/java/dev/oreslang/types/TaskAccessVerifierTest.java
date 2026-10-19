@@ -469,6 +469,60 @@ final class TaskAccessVerifierTest {
         assertEquals(0, ledger.activeClaims());
     }
 
+    @Test void changingFieldProofFlagsCannotRetypeSamePhysicalPlace() {
+        var ledger = new TaskAccessVerifier();
+        var root = TaskAccessVerifier.Place.whole(WORLD);
+        var optimistic = root.field("position", true);
+        var conservative = root.field("position", false);
+        var initial = ledger.admitTyped(List.of(
+                        new TaskAccessVerifier.TypedClaim(read(optimistic), Types.Primitive.INT)),
+                (type, trait) -> false, place -> Types.Primitive.INT);
+        assertThrows(IllegalStateException.class, () -> ledger.admitTyped(List.of(
+                        new TaskAccessVerifier.TypedClaim(read(conservative), Types.Primitive.BOOL)),
+                (type, trait) -> false, place -> Types.Primitive.BOOL));
+        assertEquals(1, ledger.activeChildren());
+        ledger.quiescent(initial);
+        assertThrows(IllegalStateException.class, () -> ledger.admitTyped(List.of(
+                        new TaskAccessVerifier.TypedClaim(read(conservative), Types.Primitive.BOOL)),
+                (type, trait) -> false, place -> Types.Primitive.BOOL));
+        assertEquals(0, ledger.activeClaims());
+        var compatible = ledger.admitTyped(List.of(
+                        new TaskAccessVerifier.TypedClaim(read(conservative), Types.Primitive.INT)),
+                (type, trait) -> false, place -> Types.Primitive.INT);
+        ledger.quiescent(compatible);
+    }
+
+    @Test void allocationCannotUpgradeUniquenessAfterAnotherClaim() {
+        var ledger = new TaskAccessVerifier();
+        var uncertain = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("PROCESS", 801, 1, false));
+        var forgedUnique = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("PROCESS", 801, 1, true));
+        var first = admit(ledger, List.of(read(uncertain)));
+        assertThrows(IllegalStateException.class, () ->
+                admit(ledger, List.of(read(forgedUnique))));
+        assertEquals(1, ledger.activeChildren());
+        assertThrows(IllegalStateException.class, () ->
+                ledger.structuralBarrier(forgedUnique.root(), 2));
+        ledger.quiescent(first);
+        assertThrows(IllegalStateException.class, () ->
+                admit(ledger, List.of(read(forgedUnique))));
+        ledger.structuralBarrier(uncertain.root(), 2);
+    }
+
+    @Test void conflictingUniquenessWithinOneBatchIsAtomic() {
+        var ledger = new TaskAccessVerifier();
+        var unique = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("PROCESS", 802, 1, true));
+        var uncertain = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("PROCESS", 802, 1, false));
+        assertThrows(IllegalStateException.class,
+                () -> admit(ledger, List.of(read(unique), read(uncertain))));
+        assertEquals(0, ledger.activeChildren());
+        assertEquals(0, ledger.activeClaims());
+        assertNotNull(admit(ledger, List.of(read(uncertain))));
+    }
+
     @Test void racingWritersNeverAcquireTwoLiveLoans() throws Exception {
         var verifier = new TaskAccessVerifier();
         var place = TaskAccessVerifier.Place.whole(WORLD);
