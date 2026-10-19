@@ -8,9 +8,12 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.nio.file.FileVisitResult;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.stream.Stream;
 
 /**
  * Conservative workspace-wide source fingerprint for experimental replay.
@@ -51,12 +54,41 @@ public final class ConcurrencySourceFingerprint {
             throw new IllegalArgumentException("source workspace must be a real directory");
         }
         Path anchor = root.toRealPath(LinkOption.NOFOLLOW_LINKS);
-        List<Path> sourceFiles;
-        try (Stream<Path> paths = Files.walk(anchor)) {
-            sourceFiles = paths.filter(path -> included(anchor, path))
-                    .sorted(Comparator.comparing(path -> anchor.relativize(path).toString()))
-                    .limit(MAX_SOURCE_FILES + 1L).toList();
-        }
+        List<Path> sourceFiles = new ArrayList<>();
+        // Never walk generated or dependency directories: they may be huge and
+        // must not silently influence guest source replay provenance.
+        Files.walkFileTree(anchor, new SimpleFileVisitor<>() {
+            @Override
+            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs)
+                    throws IOException {
+                if (!dir.equals(anchor)) {
+                    if (anchor.relativize(dir).getNameCount() > 48) {
+                        throw new IOException("source workspace nesting budget exceeded");
+                    }
+                    String name = dir.getFileName().toString();
+                    if (name.equals(".git") || name.equals("target") || name.equals("build")
+                            || name.equals("dist") || name.equals("node_modules")
+                            || name.equals(".oreslang") || name.equals(".venv")
+                            || name.equals("__pycache__")) {
+                        return FileVisitResult.SKIP_SUBTREE;
+                    }
+                }
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                if (included(anchor, file)) {
+                    sourceFiles.add(file);
+                    if (sourceFiles.size() > MAX_SOURCE_FILES) {
+                        throw new IllegalArgumentException("source workspace file-count admission failed");
+                    }
+                }
+                return FileVisitResult.CONTINUE;
+            }
+        });
+        sourceFiles.sort(Comparator.comparing(
+                path -> anchor.relativize(path).toString()));
         if (sourceFiles.isEmpty() || sourceFiles.size() > MAX_SOURCE_FILES) {
             throw new IllegalArgumentException("source workspace file-count admission failed");
         }
