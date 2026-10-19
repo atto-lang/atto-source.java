@@ -106,7 +106,7 @@ expect_wrapper_reject trusted/ci
 printf 'trusted/ci #bad-comment\n' > "$policy"
 expect_fail trusted/ci
 
-printf 'trusted/ci@12345\ntrusted/ci@67890\n' > "$policy"
+printf 'trusted/ci@12345\nTRUSTED/CI@67890\n' > "$policy"
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 
