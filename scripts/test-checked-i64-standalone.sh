@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Trust only the current checkout: never mirror or fetch private source.
-# Compiles the production checked runtime's three source files unchanged,
-# plus its dependency-free BigInteger differential smoke harness.
+# Compiles the production checked runtime and source-header scanner
+# unchanged, then runs their dependency-free BigInteger and lexical smoke suites.
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
