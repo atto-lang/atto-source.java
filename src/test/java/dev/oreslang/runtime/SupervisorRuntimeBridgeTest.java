@@ -102,4 +102,43 @@ final class SupervisorRuntimeBridgeTest {
         }
     }
 
+    @Test
+    void failedMandatoryEscalationPoisonsBridgeAndBlocksNewAuthority() throws Exception {
+        try (var runtime = new ActorRuntime();
+             var inbox = new TrustedSupervisorInbox(1, 8, 4096, 1024);
+             var bridge = new SupervisorRuntimeBridge(runtime, inbox, notice -> false)) {
+            var occupied = runtime.<String>spawnShared(() -> (message, context) -> {
+                throw new IllegalStateException("occupy");
+            });
+            var overflow = runtime.<String>spawnShared(() -> (message, context) -> {
+                throw new IllegalArgumentException("overflow");
+            });
+            bridge.register(occupied);
+            bridge.register(overflow);
+
+            occupied.send("x");
+            assertThrows(Exception.class, () -> occupied.getDone().get(3, TimeUnit.SECONDS));
+            assertNotNull(inbox.pollControl());
+
+            var refill = runtime.<String>spawnShared(() -> (message, context) -> {
+                throw new RuntimeException("refill");
+            });
+            bridge.register(refill);
+            refill.send("x");
+            assertThrows(Exception.class, () -> refill.getDone().get(3, TimeUnit.SECONDS));
+
+            overflow.send("x");
+            assertThrows(Exception.class, () -> overflow.getDone().get(3, TimeUnit.SECONDS));
+
+            // Runtime completion callbacks may contain their own exception, so
+            // the durable assertion is the bridge's host-visible poison state.
+            assertFalse(bridge.healthy());
+            assertThrows(IllegalStateException.class, bridge::requireHealthy);
+
+            var later = runtime.<String>spawnShared(() -> (message, context) -> {});
+            assertThrows(IllegalStateException.class, () -> bridge.register(later));
+            later.stop();
+        }
+    }
+
 }
