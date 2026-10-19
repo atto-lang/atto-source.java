@@ -782,7 +782,8 @@ public final class OwnershipChecker {
         if (scope.visibleStates().stream().anyMatch(state -> !state.moved
                 && !("self".equals(state.debugName) && isActorConfinedBorrow(state) && state.immutableBorrows == 0 && !state.mutableBorrowed)
                 && (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
-                    || state.immutableBorrows > 0 || state.mutableBorrowed))) {
+                    || state.immutableBorrows > 0 || state.mutableBorrowed
+                    || !ownershipRoot(state).projectionLoans.isEmpty()))) {
             throw error("cannot " + operation + " while an ordinary borrow is live; end the lexical borrow before suspension");
         }
     }
@@ -807,25 +808,24 @@ public final class OwnershipChecker {
                 throw error("rt borrow expects exactly one argument");
             }
             BorrowPlace place = borrowPlace(runtime.arguments().getFirst(), scope);
-            beginPersistentBorrow(place.owner(), false);
+            ProjectionLoan projectionLoan = beginPersistentBorrow(place, false);
             value = new ValueInfo(
                     Ast.TypeRef.borrowed(place.type(), false),
                     ValueKind.IMM_BORROW,
                     ownershipRoot(place.owner()),
-                    true);
+                    true,
+                    projectionLoan);
         } else if (binding.initializer() instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
             // Legacy compatibility only. Canonical source uses rt borrow.
             boolean mutableBorrow = unary.operator().equals("&mut");
             BorrowPlace place = borrowPlace(unary.operand(), scope);
-            if (mutableBorrow && !(unary.operand() instanceof Ast.NameExpr)) {
-                throw error("mutable projected borrows need path-exclusive loan tracking");
-            }
-            beginPersistentBorrow(place.owner(), mutableBorrow);
+            ProjectionLoan projectionLoan = beginPersistentBorrow(place, mutableBorrow);
             value = new ValueInfo(
                     Ast.TypeRef.borrowed(place.type(), mutableBorrow),
                     mutableBorrow ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW,
                     ownershipRoot(place.owner()),
-                    true);
+                    true,
+                    projectionLoan);
         } else if (binding.initializer() instanceof Ast.LambdaExpr lambda) {
             value = checkLambda(lambda, scope, binding.name());
         } else {
@@ -904,6 +904,7 @@ public final class OwnershipChecker {
                 Origin.LOCAL);
         state.borrowSource = value.borrowSource;
         state.borrowLease = value.borrowLease;
+        state.projectionLoan = value.projectionLoan;
         if (binding.kind() == Ast.BindingKind.CONST) {
             Object directSelector = directComputedIndexConstant(binding);
             state.computedIndexConstant = directSelector != null
@@ -3507,15 +3508,25 @@ public final class OwnershipChecker {
                 throw error("cannot mutate '" + name + "' while mutably borrowed");
             if (root.immutableBorrows > 0)
                 throw error("cannot mutate '" + name + "' while immutably borrowed");
-        } else if (root.mutableBorrowed && !throughExclusiveView && !reservedReceiverRead) {
-            throw error("cannot read '" + name + "' while it is mutably borrowed");
+            if (!root.projectionLoans.isEmpty() && !throughExclusiveView)
+                throw error("cannot mutate '" + name + "' while a projected borrow is live");
+        } else {
+            if (root.mutableBorrowed && !throughExclusiveView && !reservedReceiverRead) {
+                throw error("cannot read '" + name + "' while it is mutably borrowed");
+            }
+            if (!throughExclusiveView && !reservedReceiverRead
+                    && root.projectionLoans.stream().anyMatch(ProjectionLoan::mutable)) {
+                throw error("cannot read '" + name
+                        + "' while an exclusive projected borrow is live");
+            }
         }
     }
 
     private void move(VarState state, String name) {
         VarState root = ownershipRoot(state);
         requireUsable(root, name, false);
-        if (root.immutableBorrows > 0 || root.mutableBorrowed) {
+        if (root.immutableBorrows > 0 || root.mutableBorrowed
+                || !root.projectionLoans.isEmpty()) {
             throw error("cannot move '" + name + "' while it is borrowed");
         }
 
@@ -3560,7 +3571,11 @@ public final class OwnershipChecker {
         Map<VarState, StateSnapshot> result = new IdentityHashMap<>();
         for (VarState state : scope.visibleStates()) {
             VarState root = ownershipRoot(state);
-            result.putIfAbsent(root, new StateSnapshot(root.moved, root.immutableBorrows, root.mutableBorrowed));
+            result.putIfAbsent(root, new StateSnapshot(
+                    root.moved,
+                    root.immutableBorrows,
+                    root.mutableBorrowed,
+                    List.copyOf(root.projectionLoans)));
         }
         return result;
     }
@@ -3572,6 +3587,8 @@ public final class OwnershipChecker {
             state.moved = saved.moved();
             state.immutableBorrows = saved.immutableBorrows();
             state.mutableBorrowed = saved.mutableBorrowed();
+            state.projectionLoans.clear();
+            state.projectionLoans.addAll(saved.projectionLoans());
         }
     }
 
@@ -4131,14 +4148,28 @@ public final class OwnershipChecker {
         private final ValueKind kind;
         private final VarState borrowSource;
         private final boolean borrowLease;
+        private final ProjectionLoan projectionLoan;
         private ValueInfo(Ast.TypeRef type, ValueKind kind, VarState borrowSource) {
-            this(type, kind, borrowSource, false);
+            this(type, kind, borrowSource, false, null);
         }
-        private ValueInfo(Ast.TypeRef type, ValueKind kind, VarState borrowSource, boolean borrowLease) {
+        private ValueInfo(
+                Ast.TypeRef type,
+                ValueKind kind,
+                VarState borrowSource,
+                boolean borrowLease) {
+            this(type, kind, borrowSource, borrowLease, null);
+        }
+        private ValueInfo(
+                Ast.TypeRef type,
+                ValueKind kind,
+                VarState borrowSource,
+                boolean borrowLease,
+                ProjectionLoan projectionLoan) {
             this.type = type;
             this.kind = kind;
             this.borrowSource = borrowSource;
             this.borrowLease = borrowLease;
+            this.projectionLoan = projectionLoan;
         }
     }
 
@@ -4153,6 +4184,9 @@ public final class OwnershipChecker {
         private boolean mutableBorrowed;
         private VarState borrowSource;
         private boolean borrowLease;
+        private ProjectionLoan projectionLoan;
+        /** Active disjoint/wildcard projection loans rooted at this owner. */
+        private final List<ProjectionLoan> projectionLoans = new ArrayList<>();
         /** Narrowing/pattern alias: ownership operations are forwarded to this root place. */
         private VarState aliasSource;
         /** Synthetic aggregate aliases, currently used by the implicit arguments tuple. */
@@ -4237,8 +4271,16 @@ public final class OwnershipChecker {
             closed = true;
             for (VarState state : locals.values()) {
                 if (state.borrowSource != null && state.borrowLease) {
-                    if (state.kind == ValueKind.MUT_BORROW) state.borrowSource.mutableBorrowed = false;
-                    else if (state.kind == ValueKind.IMM_BORROW) {
+                    if (state.projectionLoan != null) {
+                        ProjectionLoan loan = state.projectionLoan;
+                        if (loan.root() != state.borrowSource
+                                || !loan.root().projectionLoans.remove(loan)) {
+                            throw new IllegalStateException(
+                                    "Oreslang ownership invariant violated: missing projected borrow");
+                        }
+                    } else if (state.kind == ValueKind.MUT_BORROW) {
+                        state.borrowSource.mutableBorrowed = false;
+                    } else if (state.kind == ValueKind.IMM_BORROW) {
                         state.borrowSource.immutableBorrows--;
                         if (state.borrowSource.immutableBorrows < 0) {
                             throw new IllegalStateException("Oreslang ownership invariant violated: negative immutable borrow count");
@@ -4249,7 +4291,11 @@ public final class OwnershipChecker {
         }
     }
 
-    private record StateSnapshot(boolean moved, int immutableBorrows, boolean mutableBorrowed) { }
+    private record StateSnapshot(
+            boolean moved,
+            int immutableBorrows,
+            boolean mutableBorrowed,
+            List<ProjectionLoan> projectionLoans) { }
 
     private record Capture(String name, VarState source, boolean write) { }
 
