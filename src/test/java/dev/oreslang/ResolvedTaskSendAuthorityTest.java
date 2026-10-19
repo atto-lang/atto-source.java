@@ -148,6 +148,40 @@ final class ResolvedTaskSendAuthorityTest {
     }
 
     @Test
+    void opaqueImportedValueCannotBypassDetachedTaskCaptureAuthority() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    import fnc remote from './dep';
+                    pub fnc main(): void {
+                        do nb { remote(); };
+                        return;
+                    }
+                    """)));
+        assertTrue(failure.getMessage().contains("opaque imported runtime value"),
+                failure::getMessage);
+    }
+
+    @Test
+    void opaqueImportedValueCannotBypassScheduledLambdaCaptureAuthority() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    import fnc remote from './dep';
+                    pub fnc main(): void {
+                        let Task<int> result =
+                            (async task |int value| -> {
+                                remote();
+                                return value;
+                            })(1);
+                        return;
+                    }
+                    """)));
+        assertTrue(failure.getMessage().contains("opaque imported runtime value"),
+                failure::getMessage);
+    }
+
+    @Test
     void compilerInternalUnwrapErrorIsNotSourceNameable() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
