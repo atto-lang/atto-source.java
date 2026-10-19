@@ -49,6 +49,37 @@ final class ActorPhysicalFinalizationPublicationTest {
     }
 
     @Test
+    void synchronousTerminalCallbackCannotWaitForItsOwnFinalization()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            var denial = new AtomicBoolean();
+            var callbackFailure = new AtomicReference<Throwable>();
+            actor.getDone().whenCompleteRuntime((ignored, terminalFailure) -> {
+                try {
+                    IllegalStateException expected = assertThrows(
+                            IllegalStateException.class,
+                            () -> actor.awaitTermination(5, TimeUnit.SECONDS),
+                            "terminal callback must not join its own finalizer");
+                    assertTrue(expected.getMessage().contains(
+                            "cannot join its own physical finalization"));
+                    denial.set(true);
+                } catch (Throwable failure) {
+                    callbackFailure.set(failure);
+                }
+            });
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertNull(callbackFailure.get());
+            assertTrue(denial.get(),
+                    "host terminal subscriber must be rejected without deadlock");
+            assertTrue(runtime.physicallyFinalizedForHotUpgrade(actor));
+        }
+    }
+
+    @Test
     void blockedTerminalObserverCannotPublishEarlyCodeImageRetirement()
             throws Exception {
         try (var runtime = new ActorRuntime()) {
