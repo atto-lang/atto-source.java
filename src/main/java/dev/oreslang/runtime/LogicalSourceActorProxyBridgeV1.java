@@ -135,7 +135,19 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
             String codeSha256,
             String linkedCodeSha256,
             String stateSchemaSha256,
-            String messageAbiSha256) { }
+            String messageAbiSha256,
+            boolean failSealed) {
+        /**
+         * A diagnostic snapshot is not a usable publication certificate
+         * after an ambiguous physical send or upgrade. Callers must inspect
+         * the immutable quarantine flag instead of inferring health from
+         * matching generation, ABI and route epochs.
+         */
+        public boolean authoritativeForDispatch() {
+            return !failSealed && !mailbox.closed()
+                    && address.routeEpoch() == mailbox.routeEpoch();
+        }
+    }
 
     public Publication publication() {
         requireHost();
@@ -168,7 +180,8 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
                     witness.generationId(), witness.codeSha256(),
                     witness.linkedCodeSha256(),
                     witness.stateSchemaSha256(),
-                    witness.messageAbiSha256());
+                    witness.messageAbiSha256(),
+                    poisoned || closed);
         }
     }
 
