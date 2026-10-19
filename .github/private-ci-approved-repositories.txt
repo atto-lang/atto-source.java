@@ -2,3 +2,9 @@
 # No repositories are approved by default.
 # Changes must be reviewed by maintainers and security owners on a protected branch.
 # Format: one exact owner/repo per uncommented line, no whitespace or wildcards.
+#
+# PROPOSED, NOT AUTHORIZED WHILE THIS CHANGE IS IN A DRAFT PR.
+# Destination immutable repository ID observed: 1412142815
+# Security review: https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1084
+# The trusted main branch must be protected before this policy may be merged.
+ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra
