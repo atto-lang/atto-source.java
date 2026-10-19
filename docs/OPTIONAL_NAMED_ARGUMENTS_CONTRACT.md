@@ -1091,3 +1091,12 @@ optional parameters, explicit/default gate separation, and negatives for
 required or zero-formal signatures, ambiguity, generic type application,
 and nonempty calls. They are committed but **not claimed green** until a
 funded runner executes the exact source tree.
+
+
+## Literal-only Option ABI reference frame
+
+The Java compiler now contains `OptionalCallScalarAbiFrame.from(CheckedScalarInvocationWitness)`: an intentionally **non-executable** semantic reference for same-module, literal-only staged calls. It constructs immutable, declaration-ordered records representing three distinct typed cases: `Required(T value)`, `Some(Option<T>, T value)`, and `None(Option<T>)`. For both `Some(0)` and `Some(false)` the payload is preserved; omission has no evaluated source index and is not encoded as null, zero or false. Each ABI slot retains the original raw call-item index, including explicit positional/named `omit` and `_`; implicit omissions have index `-1`.
+
+Only the original checker-issued lexical and scalar-type witness can yield a complete `Frame`, whose constructor is private. This reference is deliberately narrower than execution: a supplied `Option<T>` (including `None` used as an expression), effectful expressions, borrowed values, imports, generics, methods, constructors, actors, and dynamic calls remain unsupported by the scalar frame. `Frame.requireExecutable()` throws, and the existing full compiler, ownership and Truffle runtime gates remain unchanged.
+
+This is **backend conformance scaffolding**, not an Oreslang runtime `Some`/`None` implementation, not full `TypeChecker`/ownership validation, and not guest-language execution. `OptionalCallScalarAbiFrameTest` supplies seven JUnit regression cases; merge acceptance still requires actual JDK25 Maven/JUnit and GraalVM/LLVM backend runs from an approved runner.
