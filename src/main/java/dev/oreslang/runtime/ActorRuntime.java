@@ -557,11 +557,13 @@ public final class ActorRuntime implements AutoCloseable {
         ExecutorService untrustedPool;
         try {
             privatePool = newActorDispatcher(dispatcherConfig.privateParallelism(),
-                    dispatcherConfig.maxActors(), "ores-private-actor-dispatcher-");
+                    dispatcherConfig.maxActors(), "ores-private-actor-dispatcher-", 0L);
             sharedPool = newActorDispatcher(dispatcherConfig.sharedParallelism(),
-                    dispatcherConfig.maxActors(), "ores-shared-actor-dispatcher-");
+                    dispatcherConfig.maxActors(), "ores-shared-actor-dispatcher-",
+                    (long) dispatcherConfig.privateParallelism());
             untrustedPool = newActorDispatcher(Math.max(1, dispatcherConfig.privateParallelism()),
-                    dispatcherConfig.maxActors(), "ores-untrusted-actor-dispatcher-");
+                    dispatcherConfig.maxActors(), "ores-untrusted-actor-dispatcher-",
+                    (long) dispatcherConfig.privateParallelism() + dispatcherConfig.sharedParallelism());
         } catch (RuntimeException | Error failure) {
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ACTOR_DISPATCHER_FAILED, 1L);
             if (privatePool != null) privatePool.shutdownNow();
@@ -6660,11 +6662,12 @@ public final class ActorRuntime implements AutoCloseable {
                 || executor instanceof ActorAffinityDispatcher lanes && lanes.nativeCarriers();
     }
 
-    private static ExecutorService newActorDispatcher(int parallelism, int capacity, String prefix) {
+    private static ExecutorService newActorDispatcher(
+            int parallelism, int capacity, String prefix, long cpuLaneOffset) {
         String mode = ActorCpuAffinityConfig.mode();
         if (mode.equals("none")) return newDispatcher(parallelism, capacity, prefix);
         int[] cpus = mode.equals("cpu") ? ActorCpuAffinityConfig.configuredCpus() : new int[0];
-        return new ActorAffinityDispatcher(parallelism, capacity, cpus,
+        return new ActorAffinityDispatcher(parallelism, capacity, cpus, cpuLaneOffset,
                 lane -> newDispatcher(1, capacity, prefix + "lane-" + lane + "-"));
     }
 
