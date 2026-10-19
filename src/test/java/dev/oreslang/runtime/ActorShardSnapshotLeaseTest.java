@@ -62,6 +62,8 @@ final class ActorShardSnapshotLeaseTest {
             foreign.send(1);
             assertTrue(foreignDone.await(5, TimeUnit.SECONDS));
             assertNull(foreignFailure.get());
+            foreign.gracefulStop().get(5, TimeUnit.SECONDS);
+            assertTrue(foreign.awaitTermination(5, TimeUnit.SECONDS));
             long snapshotBytes = 1000L * 32L * Double.BYTES;
             assertTrue(runtime.sharedMemoryBytes() >= before + snapshotBytes,
                     "all 1000 detached snapshots remain charged");
