@@ -205,6 +205,39 @@ public final class IpcTransportSessionLeaseSelfTest {
                 == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
         check(staleGate.invariant());
 
+        // Reusing both session text and FD generation cannot grant an old
+        // route/capability authority over a new logical transport epoch.
+        var epochBridge = new IpcReceiptCompletionBridge(2);
+        var previousRoute = message(1, "shared");
+        var upgradedRoute = new IpcReceiptCorrelation.Envelope(
+                "tenant", "sender", "worker", "shared", "a".repeat(64),
+                1, 2, 4, 5, 2, 2);
+        var oldReceipt = epochBridge.admit(previousRoute);
+        var newReceipt = epochBridge.admit(upgradedRoute);
+        var prior = new IpcTransportSessionLease(previousRoute, 77, 1,
+                epochBridge, () -> { }, Runnable::run);
+        deny(() -> {
+            try {
+                prior.writeFrame(77, upgradedRoute,
+                        ignoredFrame -> { throw new AssertionError("stale route wrote"); });
+            } catch (IOException impossible) { throw new AssertionError(impossible); }
+        });
+        prior.writeFrame(77, previousRoute, ignoredFrame -> { });
+        prior.requestClose();
+        check(oldReceipt.toCompletableFuture().join()
+                == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+        check(!newReceipt.toCompletableFuture().isDone());
+        check(epochBridge.counters().equals(new IpcReceiptCorrelation.Counters(1, 1)));
+        var successor = new IpcTransportSessionLease(upgradedRoute, 77, 1,
+                epochBridge, () -> { }, Runnable::run);
+        successor.writeFrame(77, upgradedRoute, ignoredFrame -> { });
+        epochBridge.acceptVerified(upgradedRoute, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+        epochBridge.acceptVerified(upgradedRoute, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+        check(newReceipt.toCompletableFuture().join()
+                == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+        successor.requestClose();
+        check(epochBridge.invariant());
+
         // Verify close never recycles a descriptor during a real host write.
         for (int trial = 0; trial < 512; ++trial) {
             var candidateBridge = new IpcReceiptCompletionBridge(1);
