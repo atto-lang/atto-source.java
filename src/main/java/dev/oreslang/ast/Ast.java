@@ -42,8 +42,48 @@ public final class Ast {
     public enum CallableKind { FNC, ROUTINE }
     public enum ActorKind { NONE, PRIVATE, SHARED, UNTRUSTED }
 
-    public record Annotation(String name, List<TypeRef> arguments) {
-        public Annotation { arguments = List.copyOf(arguments); }
+    /**
+     * Typed declaration-annotation entry. Not a guest expression or a
+     * generic-argument TypeRef; declaration-local defaults retain names
+     * independently of the existing positional annotation arguments.
+     */
+    public record NamedDefault(String formal, TypeRef literal) {
+        public NamedDefault {
+            if (formal == null || formal.isBlank()) {
+                throw new IllegalArgumentException("default value requires named formal");
+            }
+            java.util.Objects.requireNonNull(literal, "default literal");
+            boolean closed = literal.isIntLiteral() || literal.isBoolLiteral()
+                    || literal.isStringLiteral()
+                    || (literal.name().equals("None") && literal.arguments().isEmpty()
+                        && !literal.inferArguments());
+            if (!closed) throw new IllegalArgumentException("default must be closed literal");
+        }
+    }
+
+    public record Annotation(String name, List<TypeRef> arguments, List<NamedDefault> namedDefaults) {
+        public Annotation {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("annotation name missing");
+            arguments = List.copyOf(arguments);
+            namedDefaults = List.copyOf(namedDefaults);
+            if (name.equals("DefaultArgVals")) {
+                if (!arguments.isEmpty() || namedDefaults.isEmpty()) {
+                    throw new IllegalArgumentException("@DefaultArgVals requires named constants only");
+                }
+                java.util.Set<String> seen = new java.util.HashSet<>();
+                for (NamedDefault entry : namedDefaults) {
+                    if (!seen.add(entry.formal())) {
+                        throw new IllegalArgumentException("duplicate default for '" + entry.formal() + "'");
+                    }
+                }
+            } else if (!namedDefaults.isEmpty()) {
+                throw new IllegalArgumentException("named default values require @DefaultArgVals");
+            }
+        }
+        /** Compatibility with all existing annotations. */
+        public Annotation(String name, List<TypeRef> arguments) {
+            this(name, arguments, List.of());
+        }
     }
 
     public record TypeRef(String name, List<TypeRef> arguments, boolean inferArguments) {
@@ -255,13 +295,17 @@ public final class Ast {
      * but can never execute until type, ownership and ABI lowering are proven.
      */
     public record Param(TypeRef type, String name, boolean structural, boolean mutable,
-                        List<Annotation> annotations) {
+                        List<Annotation> annotations, boolean argumentOmittable) {
         public Param {
             java.util.Objects.requireNonNull(type, "formal type");
             if (name == null || name.isBlank()) {
                 throw new IllegalArgumentException("formal parameter needs a name");
             }
             annotations = List.copyOf(annotations);
+            if (argumentOmittable && (structural || mutable || type.isOmittableFormal())) {
+                throw new IllegalArgumentException(
+                        "v3 argument-name '?' requires a nonstructural nonmutable resolved value type");
+            }
             for (Annotation annotation : annotations) {
                 if (!annotation.name().equals("Default") || annotation.arguments().size() != 1) {
                     throw new IllegalArgumentException(
@@ -284,8 +328,15 @@ public final class Ast {
                         "mutable formal cannot be an optional T? slot without ownership lowering");
             }
         }
+        /** Legacy 'T? name' omittable formal; v3 uses the independent name suffix flag. */
         public boolean optional() { return type.isOmittableFormal(); }
         public boolean hasDefault() { return !annotations.isEmpty(); }
+        public boolean hasV3Presence() { return argumentOmittable; }
+        /** Old AST constructor; preserves the pre-v3 representation exactly. */
+        public Param(TypeRef type, String name, boolean structural, boolean mutable,
+                     List<Annotation> annotations) {
+            this(type, name, structural, mutable, annotations, false);
+        }
         public TypeRef valueType() { return optional() ? type.omittableValueType() : type; }
         /** Intended callee type; not executable until verified Option ABI lowering. */
         public TypeRef calleeType() {
