@@ -2428,6 +2428,9 @@ public final class Parser {
             }
             if (match(STRUCT)) {
                 initializer = parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
+            } else if (matchContextualIdentifier("record")) {
+                // Explicit alias capture remains available for structural records.
+                initializer = parseObjectLiteral(Ast.ObjectKind.INFERRED_RECORD, List.of());
             } else if (matchContextualKeyword("tuple")) {
                 consume(LPAREN, "expected '(' after infer<T> tuple");
                 List<Ast.Expr> items = parseArgumentsUntil(RPAREN);
@@ -2437,7 +2440,7 @@ public final class Parser {
                 }
                 initializer = new Ast.TupleExpr(items);
             } else {
-                throw error(peek(), "infer<T> requires a struct {...} or tuple (...) literal");
+                throw error(peek(), "infer<T> requires a struct {...}, record {...}, or tuple (...) literal");
             }
         } else {
             initializer = parseExpression();
