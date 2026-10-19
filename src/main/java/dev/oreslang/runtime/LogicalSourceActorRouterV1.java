@@ -330,25 +330,36 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             if (physicalReceipt.physical() != routed.physical()
                     || physicalReceipt.acceptedSequence() < 0)
                 throw new SecurityException("foreign physical mail receipt");
+            // Claim this capability BEFORE waiting. In particular timeout,
+            // interruption and terminal failure are ambiguous physical work:
+            // none may leave a reusable receipt that could later refund
+            // credits outside the owning supervisor's quarantine protocol.
+            // The route monitor also serializes two racing awaiters so only
+            // the first may ever observe/settle this physical acknowledgment.
+            synchronized (owner.routeLock) {
+                if (consumed)
+                    throw new IllegalStateException("consumed physical mail receipt");
+                if (owner.closed || owner.upgrading || owner.active != routed
+                        || owner.boundProxyMailbox != mailbox)
+                    throw new SecurityException("physical actor route changed before receipt claim");
+                if (mailbox.snapshot().routeEpoch() != routed.routeEpoch())
+                    throw new SecurityException("physical and proxy route epochs differ");
+                mailbox.requireOutstandingEnvelope(envelope, routed.routeEpoch());
+                consumed = true;
+            }
             // Completion may run guest turns: NEVER wait while holding the
-            // route monitor. A timeout/interrupt is ambiguous physical work
-            // and the calling bridge must fail sealed rather than retry.
+            // route monitor. After any failed wait, supervisor reconciliation
+            // is mandatory; this receipt must NOT be retried.
             physicalReceipt.terminal().get(
                     toNanosSaturated(timeout), TimeUnit.NANOSECONDS);
             synchronized (owner.routeLock) {
-                if (consumed)
-                    throw new IllegalStateException("consumed physical drain receipt");
                 if (owner.closed || owner.upgrading || owner.active != routed
                         || owner.boundProxyMailbox != mailbox)
                     throw new SecurityException("physical actor route changed before completion");
                 if (mailbox.snapshot().routeEpoch() != routed.routeEpoch())
                     throw new SecurityException("physical and proxy route epochs differ");
-                // Consume BEFORE touching mailbox accounting. The mailbox
-                // validates exact envelope identity, route epoch and a prior
-                // physical-send attempt under one lock, then refunds credits
-                // atomically. Any rejection leaves this receipt consumed and
-                // requires supervisor reconciliation rather than replay.
-                consumed = true;
+                // The mailbox validates exact envelope identity, route epoch
+                // and prior physical attempt before refunding any credit.
                 mailbox.completeAfterPhysicalReceipt(
                         envelope, routed.routeEpoch());
             }
