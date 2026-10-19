@@ -84,8 +84,8 @@ carrier.
 ## Reviewed destination execution containment
 
 The reviewed carrier is immutable Git commit
-`054b65982f0950a4e2f3fb4752e78f585198c2ff`, tree
-`09ccea168b563ee91f9cd7a938ddabb5a33078ec`. Authorization binds those Git
+`1012deffdaa3d0aec03a98073dc1f48ec1565c08`, tree
+`de8053d4005b326929e8734a5be741e82b40e9e7`. Authorization binds those Git
 objects directly; movement of destination `main` is not an authorization
 input.
 
