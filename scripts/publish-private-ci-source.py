@@ -24,6 +24,10 @@ MAX_SINGLE = 10 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
+POLICY_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
+POLICY_REF = "main"
+POLICY_PATH = ".github/private-ci-approved-repositories.txt"
+MAX_POLICY_BYTES = 16 * 1024
 
 
 class Denied(RuntimeError):
@@ -83,12 +87,28 @@ def require_preflight(repository, root):
     checked_repo(repository)
 
 
-def checked_policy_fingerprint(root, repository):
-    """Read approval only through directory descriptors and O_NOFOLLOW.
+def _policy_fingerprint(contents, repository):
+    if len(contents) > MAX_POLICY_BYTES:
+        raise Denied("private CI approval policy exceeds size limit")
+    try:
+        lines = contents.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise Denied("private CI approval policy cannot be decoded") from exc
+    approved = False
+    for line in lines:
+        if not line or line.startswith("#"):
+            continue
+        if not NAME.fullmatch(line):
+            raise Denied("private CI approval policy contains an invalid entry")
+        if line.casefold() == repository.casefold():
+            approved = True
+    if not approved:
+        raise Denied("destination approval was revoked or absent")
+    return hashlib.sha256(contents).digest()
 
-    A pathname symlink check followed by read_bytes() can be raced: the
-    unapproved file can briefly be replaced with an approved symlink.
-    """
+
+def checked_policy_fingerprint(root, repository):
+    """Read the local policy through directory descriptors and O_NOFOLLOW."""
     if (not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW")
             or not hasattr(os, "O_NONBLOCK")):
         raise Denied("OS cannot safely read the destination approval policy")
@@ -110,30 +130,36 @@ def checked_policy_fingerprint(root, repository):
                     details = os.fstat(stream.fileno())
                     if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
                         raise Denied("private CI approval policy is not a regular single-link file")
-                    contents = stream.read(16 * 1024 + 1)
+                    contents = stream.read(MAX_POLICY_BYTES + 1)
             finally:
                 os.close(policy_dir_fd)
         finally:
             os.close(root_fd)
     except OSError as exc:
         raise Denied("private CI approval policy cannot be opened safely") from exc
-    if len(contents) > 16 * 1024:
-        raise Denied("private CI approval policy exceeds size limit")
+    return _policy_fingerprint(contents, repository)
+
+
+def checked_protected_policy_fingerprint(repository):
+    """Verify approval against protected main, not merely the local checkout.
+
+    This prevents an unreviewed branch from self-authorizing a destination by
+    editing its local allowlist. The publisher still must itself come from a
+    trusted checkout; a maliciously modified publisher cannot self-attest.
+    """
+    response = gh_api(
+        f"repos/{POLICY_REPOSITORY}/contents/{POLICY_PATH}?ref={POLICY_REF}")
+    if response.get("type") != "file" or response.get("encoding") != "base64":
+        raise Denied("protected private CI approval policy has unexpected shape")
+    valid_sha(response.get("sha"))
+    encoded = response.get("content")
+    if not isinstance(encoded, str):
+        raise Denied("protected private CI approval policy is missing content")
     try:
-        lines = contents.decode("utf-8").splitlines()
-    except UnicodeDecodeError as exc:
-        raise Denied("private CI approval policy cannot be decoded") from exc
-    approved = False
-    for line in lines:
-        if not line or line.startswith("#"):
-            continue
-        if not NAME.fullmatch(line):
-            raise Denied("private CI approval policy contains an invalid entry")
-        if line.casefold() == repository.casefold():
-            approved = True
-    if not approved:
-        raise Denied("destination approval was revoked or absent")
-    return hashlib.sha256(contents).digest()
+        contents = base64.b64decode("".join(encoded.splitlines()), validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise Denied("protected private CI approval policy is not valid base64") from exc
+    return _policy_fingerprint(contents, repository)
 
 def collect_source(root, trusted_root):
     """Snapshot regular files using descriptor-relative, no-follow traversal.
@@ -252,6 +278,9 @@ def publish(repository, source, branch, trusted_root):
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
+    protected_policy = checked_protected_policy_fingerprint(repository)
+    if approved_policy != protected_policy:
+        raise Denied("local private CI approval policy differs from protected main")
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
     try:
@@ -269,7 +298,9 @@ def publish(repository, source, branch, trusted_root):
     base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
     def authorize_write():
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
-            raise Denied("private CI destination approval policy changed during transfer")
+            raise Denied("local private CI destination approval policy changed during transfer")
+        if checked_protected_policy_fingerprint(repository) != protected_policy:
+            raise Denied("protected private CI destination approval changed during transfer")
         checked_repo(repository)
 
     elements = []
