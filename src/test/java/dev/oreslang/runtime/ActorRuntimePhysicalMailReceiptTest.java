@@ -13,8 +13,9 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Product ActorRuntime physical mailbox tests: receipts are minted by the
- * exact acceptance linearization and cannot be confused with a generic
- * cumulative drain observer or the proxy's logical sequence.
+ * exact acceptance linearization, use an independently bounded exact-message
+ * ledger, and cannot be confused with generic cumulative drain observers or
+ * the proxy's logical sequence.
  */
 @Timeout(40)
 final class ActorRuntimePhysicalMailReceiptTest {
@@ -73,6 +74,64 @@ final class ActorRuntimePhysicalMailReceiptTest {
                 actor.stop();
                 assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
             }
+        }
+    }
+
+    @Test
+    void publicDrainQuotaCannotStarveExactSupervisorReceipt()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var firstEntered = new CountDownLatch(1);
+            var releaseFirst = new CountDownLatch(1);
+            var secondEntered = new CountDownLatch(1);
+            var releaseSecond = new CountDownLatch(1);
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> {
+                        if (message == 1) {
+                            firstEntered.countDown();
+                            if (!releaseFirst.await(5, TimeUnit.SECONDS))
+                                throw new AssertionError("first message not released");
+                        } else if (message == 2) {
+                            secondEntered.countDown();
+                            if (!releaseSecond.await(5, TimeUnit.SECONDS))
+                                throw new AssertionError("second message not released");
+                        }
+                    });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.send(1);
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+
+            // Exhaust the entire ordinary cumulative-drain observer budget
+            // against the blocked first message. Supervisor exact-message
+            // receipt metadata is a separate bounded authority domain and
+            // must remain available.
+            var publicDrains = new OresFuture<?>[1_024];
+            for (int i = 0; i < publicDrains.length; ++i) {
+                publicDrains[i] = actor.drain();
+                assertFalse(publicDrains[i].isDone());
+            }
+
+            var second = runtime.sendWithPhysicalReceipt(actor, 2);
+            assertEquals(1L, second.acceptedSequence());
+            assertFalse(second.terminal().isDone());
+
+            releaseFirst.countDown();
+            assertTrue(secondEntered.await(5, TimeUnit.SECONDS));
+            // All cumulative drains targeted sequence 0 and may now settle,
+            // but the exact receipt for physical sequence 1 must not.
+            for (var drain : publicDrains) {
+                drain.get(5, TimeUnit.SECONDS);
+            }
+            assertFalse(second.terminal().isDone(),
+                    "prefix-drain settlement cannot forge exact message completion");
+
+            releaseSecond.countDown();
+            second.terminal().get(5, TimeUnit.SECONDS);
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        } finally {
+            // Latches are local to the actor fixture; timeout failures cause
+            // ActorRuntime.close() to revoke the actor and receipt safely.
         }
     }
 
