@@ -193,6 +193,25 @@ public final class Types {
         return false;
     }
 
+    /**
+     * Reject unknown or generic source values that would fabricate a dyn
+     * witness hidden inside a container or callable contract.
+     */
+    public static boolean containsDynWitness(Type type) {
+        if (type instanceof Dyn) return true;
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsDynWitness);
+        if (type instanceof ListType list) return containsDynWitness(list.element());
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsDynWitness);
+        if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsDynWitness);
+        if (type instanceof Record record) return record.members().values().stream().anyMatch(Types::containsDynWitness);
+        if (type instanceof Function function) return function.parameters().stream().anyMatch(Types::containsDynWitness)
+                || containsDynWitness(function.result());
+        if (type instanceof Borrow borrow) return containsDynWitness(borrow.target());
+        if (type instanceof SelfType self) return containsDynWitness(self.bound());
+        if (type instanceof Not not) return containsDynWitness(not.excluded());
+        return false;
+    }
+
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
@@ -205,7 +224,10 @@ public final class Types {
         if (from instanceof Not) return to == Unknown.INSTANCE;
         if (from instanceof BoolLiteral && to == Primitive.BOOL) return true;
         if (from.equals(to)) return true;
-        // A new dyn witness cannot arise from dynamic compatibility or an unbound generic.
+        // Unknown or a generic must not forge a dyn witness even when it is
+        // nested inside List, Option, records, tuples, or callable types.
+        if ((from == Unknown.INSTANCE || from instanceof Generic) && containsDynWitness(to)) return false;
+        // A new direct dyn witness requires nominal proof in TypeChecker.
         if (from instanceof Dyn || to instanceof Dyn) return false;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
