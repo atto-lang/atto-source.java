@@ -55,12 +55,19 @@ public final class TaskTransferProvenance {
         public TransferKind kind() { return kind; }
     }
 
+    private final Ast.Program programIdentity;
     private final IdentityHashMap<Object, List<Transfer>> byBoundary =
             new IdentityHashMap<>();
     private int totalTransfers;
     private boolean sealed;
 
-    TaskTransferProvenance() { }
+    TaskTransferProvenance() { this(null); }
+
+    TaskTransferProvenance(Ast.Program programIdentity) {
+        this.programIdentity = programIdentity;
+    }
+
+    Ast.Program programIdentity() { return programIdentity; }
 
     void record(Object boundary, List<Transfer> transfers) {
         if (sealed) {
