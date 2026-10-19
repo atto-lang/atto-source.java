@@ -54,6 +54,83 @@ final class LogicalSourceActorProxyBridgeV1Test {
     }
 
     @Test
+    void compilerAbiBoundScalarMessagesSurviveSourceUpgradeWithQueuedMail()
+            throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("typed-scalar-v1.ores", V1);
+            var second = manager.stageActorGeneration("typed-scalar-v2.ores", V2);
+            assertThrows(IllegalArgumentException.class,
+                    () -> LogicalSourceActorProxyBridgeV1.spawnSharedAbiBoundLong(
+                            first, "Counter", WAIT, 4, 8, 288),
+                    "reject a too-small wire budget before creating a physical actor");
+            try (var bridge = LogicalSourceActorProxyBridgeV1.spawnSharedAbiBoundLong(
+                    first, "Counter", WAIT, 4,
+                    SourceActorScalarWireV1.BYTE_LENGTH,
+                    SourceActorScalarWireV1.BYTE_LENGTH * 4L)) {
+                var logical = bridge.address();
+                var firstMessage = bridge.admitLong(41L);
+                assertEquals(SourceActorScalarWireV1.BYTE_LENGTH,
+                        firstMessage.payload().length);
+                assertTrue(bridge.dispatchOne(WAIT));
+                assertEquals(42L, next(bridge));
+
+                // Queued immutable old-generation bytes must not be rebound
+                // to a new actor identity or mutable code/state pointer.
+                var queuedAcrossUpgrade = bridge.admitLong(-1L);
+                assertEquals(1, bridge.snapshot().queuedMessages());
+                assertTrue(bridge.upgradeTo(second, WAIT));
+                assertEquals(2L, bridge.publication().address().routeEpoch());
+                assertEquals(2L, bridge.publication().mailbox().routeEpoch());
+                assertEquals(logical.actorId(), bridge.address().actorId());
+                assertEquals(logical.incarnation(), bridge.address().incarnation());
+                assertEquals(SourceActorScalarWireV1.BYTE_LENGTH,
+                        queuedAcrossUpgrade.payload().length);
+
+                assertTrue(bridge.dispatchOne(WAIT));
+                assertEquals(43L, next(bridge));
+                bridge.admitLong(-2L);
+                assertTrue(bridge.dispatchOne(WAIT));
+                assertEquals(45L, next(bridge));
+                assertEquals(0, bridge.snapshot().retainedMessages());
+                assertEquals(3L, bridge.snapshot().completionWatermark());
+            }
+        }
+    }
+
+    @Test
+    void abiBoundRouteRejectsTamperedAndLegacyMailBeforePhysicalSubmission()
+            throws Exception {
+        try (HotReloadManager manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var generation = manager.stageActorGeneration("typed-reject.ores", V1);
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                          generation, ActorRuntime.ActorKind.SHARED,
+                          "Counter", WAIT);
+                 var proxy = new LogicalActorProxyMailboxV1(
+                         4, SourceActorScalarWireV1.BYTE_LENGTH,
+                         SourceActorScalarWireV1.BYTE_LENGTH * 4L)) {
+                router.bindProxyMailboxForSupervisor(proxy, true);
+                var binding = router.scalarWireBindingForProxy(proxy);
+                byte[] invalid = SourceActorScalarWireV1.encodeLong(binding, 41L);
+                invalid[63] ^= 1; // Compiler ABI digest, not message value.
+                var attempted = proxy.admit(invalid);
+                assertSame(attempted, proxy.pollDispatch());
+                assertThrows(SecurityException.class,
+                        () -> router.sendAndDrainForProxy(
+                                proxy, attempted, proxy.snapshot().routeEpoch()));
+                // The malformed frame was refused BEFORE reserving a physical
+                // send, so a trusted supervisor may requeue it without
+                // erasing uncertain physical delivery.
+                proxy.requeueProvenUnsent(attempted.messageSequence());
+                assertEquals(1, proxy.snapshot().queuedMessages());
+                assertEquals(0, proxy.snapshot().outstandingMessages());
+                assertEquals(1, proxy.snapshot().retainedMessages());
+            }
+        }
+    }
+
+    @Test
     void compiledActorDrainReceiptRejectsForgedEnvelopeStaleEpochAndReplay()
             throws Exception {
         try (HotReloadManager manager = new HotReloadManager(
