@@ -104,6 +104,24 @@ final class ActorFinalizationCallbackIsolationTest {
     }
 
     @Test
+    void actorDoneCannotPublishBeforeOwnedFutureCancellation() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            java.util.concurrent.atomic.AtomicReference<OresFuture<Void>> owned =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                OresFuture<Void> never = new OresFuture<>();
+                owned.set(context.runtime().ownCurrentActorFuture(never));
+                context.self().stop();
+            });
+            actor.send("stop");
+            actor.done().get(3, TimeUnit.SECONDS);
+            assertNotNull(owned.get());
+            assertTrue(owned.get().isCancelled(),
+                    "actor done must be published after owned operation cancellation");
+        }
+    }
+
+    @Test
     void simultaneousStopRequestsOnlyFinalizeOnce() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var actor = runtime.<String>spawnShared(() -> (message, context) -> { });
