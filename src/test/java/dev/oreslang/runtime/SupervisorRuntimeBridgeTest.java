@@ -95,7 +95,8 @@ final class SupervisorRuntimeBridgeTest {
         try (var runtime = new ActorRuntime();
              var foreign = new ActorRuntime();
              var inbox = new TrustedSupervisorInbox(4, 8, 4096, 1024);
-             var bridge = new SupervisorRuntimeBridge(runtime, inbox, notice -> true)) {
+             var table = new SupervisorDenseTable(SupervisorDenseTable.Layout.AOSOA, 8, 8);
+             var bridge = new SupervisorRuntimeBridge(runtime, inbox, table, notice -> true)) {
             var child = foreign.<String>spawnShared(() -> (message, context) -> {});
             assertThrows(IllegalArgumentException.class, () -> bridge.register(child));
             child.stop();
@@ -106,7 +107,8 @@ final class SupervisorRuntimeBridgeTest {
     void failedMandatoryEscalationPoisonsBridgeAndBlocksNewAuthority() throws Exception {
         try (var runtime = new ActorRuntime();
              var inbox = new TrustedSupervisorInbox(1, 8, 4096, 1024);
-             var bridge = new SupervisorRuntimeBridge(runtime, inbox, notice -> false)) {
+             var table = new SupervisorDenseTable(SupervisorDenseTable.Layout.AOSOA, 8, 8);
+             var bridge = new SupervisorRuntimeBridge(runtime, inbox, table, notice -> false)) {
             var occupied = runtime.<String>spawnShared(() -> (message, context) -> {
                 throw new IllegalStateException("occupy");
             });
@@ -140,5 +142,29 @@ final class SupervisorRuntimeBridgeTest {
             later.stop();
         }
     }
+
+    @Test
+    void liveChildMetadataWorksAcrossAllThreePhysicalLayouts() throws Exception {
+        for (SupervisorDenseTable.Layout layout : SupervisorDenseTable.Layout.values()) {
+            try (var runtime = new ActorRuntime();
+                 var inbox = new TrustedSupervisorInbox(4, 8, 4096, 1024);
+                 var table = new SupervisorDenseTable(layout, 2, 8);
+                 var bridge = new SupervisorRuntimeBridge(runtime, inbox, table, notice -> true)) {
+                var child = runtime.<String>spawnShared(
+                        () -> (message, context) -> context.self().stop());
+
+                bridge.register(child);
+                assertEquals(1, table.size());
+                assertEquals(layout, table.layout());
+
+                child.send("stop");
+                child.getDone().get(3, TimeUnit.SECONDS);
+
+                assertEquals(0, table.size());
+                assertNull(inbox.pollControl());
+            }
+        }
+    }
+
 
 }
