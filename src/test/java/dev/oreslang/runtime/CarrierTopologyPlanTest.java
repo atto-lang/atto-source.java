@@ -158,4 +158,22 @@ class CarrierTopologyPlanTest {
         }
     }
 
+    @Test void batchTopologyBuildsNeverScaleWithEveryWorker() {
+        for (int maximum = 1; maximum <= 512; maximum++) {
+            int published = 0;
+            for (int observed = 1; observed <= maximum; observed++) {
+                if (CarrierTopologyPlan.publishAfterWorker(observed, maximum))
+                    published++;
+            }
+            assertTrue(published <= 11, "unbounded O(worker²) plan rebuilding");
+            assertTrue(CarrierTopologyPlan.publishAfterWorker(maximum, maximum));
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> CarrierTopologyPlan.publishAfterWorker(0, 4));
+        assertThrows(IllegalArgumentException.class,
+                () -> CarrierTopologyPlan.publishAfterWorker(5, 4));
+        assertThrows(IllegalArgumentException.class,
+                () -> CarrierTopologyPlan.publishAfterWorker(1, 0));
+    }
+
 }
