@@ -186,6 +186,65 @@ final class OtpSupervisorCommandDispatchTest {
     }
 
     @Test
+    void stopRacingWithActiveUpgradeCommandNeverAcknowledgesQuarantine()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch commandEntered = new CountDownLatch(1);
+            CountDownLatch releaseCommand = new CountDownLatch(1);
+            var actor = runtime.<String>spawnShared(() ->
+                    new ActorRuntime.Behavior<String>() {
+                        @Override public void onMessage(
+                                String msg, ActorRuntime.ActorContext<String> context) { }
+
+                        @Override public void onSupervisorCommand(
+                                ActorRuntime.SupervisorCommandNotice notice,
+                                ActorRuntime.ActorContext<String> context)
+                                throws Exception {
+                            commandEntered.countDown();
+                            assertTrue(releaseCommand.await(10, TimeUnit.SECONDS));
+                        }
+                    });
+            runtime.submitSupervisorCommand(actor, 1,
+                    ActorRuntime.SupervisorOperation.PREPARE_UPGRADE, DIGEST);
+            assertTrue(commandEntered.await(10, TimeUnit.SECONDS));
+            try {
+                actor.stop(); // Concurrent stop revokes in-flight command lease.
+            } finally {
+                releaseCommand.countDown();
+            }
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            var stats = runtime.supervisorCommandStatsFor(actor);
+            assertEquals(1, stats.quarantined());
+            assertEquals(0, stats.acknowledged(),
+                    "stopped actor must never ACK an uncommitted upgrade");
+            assertEquals(0, stats.outstanding());
+            assertEquals(0, stats.inFlight());
+        }
+    }
+
+    @Test
+    void uncommittedOrStaleRouteEpochIsNotSupervisorAuthority() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() ->
+                    new ActorRuntime.Behavior<String>() {
+                        @Override public void onMessage(
+                                String msg, ActorRuntime.ActorContext<String> context) { }
+                        @Override public void onSupervisorCommand(
+                                ActorRuntime.SupervisorCommandNotice notice,
+                                ActorRuntime.ActorContext<String> context) { }
+                    });
+            for (long badEpoch : new long[] {0L, 2L, 42L, Long.MAX_VALUE}) {
+                assertThrows(IllegalStateException.class,
+                        () -> runtime.submitSupervisorCommand(actor, badEpoch,
+                                ActorRuntime.SupervisorOperation.PREPARE_UPGRADE, DIGEST));
+            }
+            assertEquals(0, runtime.supervisorCommandStatsFor(actor).outstanding());
+            actor.stop();
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void sourceActorAndActorTurnCannotMintSupervisorAuthority() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch completed = new CountDownLatch(1);
