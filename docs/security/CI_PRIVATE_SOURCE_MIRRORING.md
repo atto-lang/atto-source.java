@@ -17,6 +17,29 @@ Run the checked transfer from trusted, reviewed source, not an untrusted PR
 checkout. If an approval policy can be modified by the code under test, treat
 the result as untrusted.
 
+## Active release gates (October 2026)
+
+**This is proposed code, not a working or authorized private-source transfer.**
+The source repository's GitHub API currently reports `main.protected=false`,
+so the proposed publisher now denies private-source transfers. A matching
+SHA alone does not prove protected-branch review. Security owners must
+configure and verify branch protection (including CODEOWNER review as
+appropriate), resolve disclosure incident #832, and independently approve
+the exact destination via the protected policy file.
+
+For snapshot mode, the wrapper requires `--source-commit` with an exact
+lowercase 40-character Git commit SHA. The publisher verifies that GitHub's
+source-commit tree matches the collected snapshot. It checks the local
+publisher, wrapper, policy guard and allowlist bytes against their Git blob
+identities in the reviewed source-main commit, rechecking those files and the
+remote main commit/protected status before each transfer write. This is
+defense in depth; it is not proof that an unprotected branch was reviewed.
+
+The separate source-free Git oracle runs in a funded test organization and
+must **not** be mistaken for executing this private repository's exact
+publisher or compiler tests. Do not transfer private actor trees while the
+source allowlist remains empty.
+
 ## Destination-bound source snapshot publisher
 
 The only supported transfer entry point is **not an arbitrary command
@@ -26,7 +49,8 @@ directory, and a new isolated CI branch:
 ```bash
 scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
   --source-dir ./verified-source-tree \
-  --branch ci/oreslang-verified-20261013
+  --branch ci/oreslang-verified-20261013 \
+  --source-commit EXACT_40_HEX_COMMIT
 ```
 
 The checked-in policy file must explicitly list the destination. The
