@@ -6,6 +6,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Consumer;
@@ -36,7 +37,7 @@ public final class OresTaskScope implements AutoCloseable {
     private final List<OresCancellationToken.Registration> externalCancellation =
             new ArrayList<>();
     private final CountDownLatch fullyJoined = new CountDownLatch(1);
-    private boolean cancelled;
+    private volatile boolean cancelled;
     private boolean joining;
     private volatile Throwable closeFailure;
 
@@ -62,7 +63,15 @@ public final class OresTaskScope implements AutoCloseable {
 
         final OresTask<T> child;
         try {
-            child = runtime.submitTask(work);
+            child = runtime.submitTask(() -> {
+                // Cancellation may win after admission reservation but before
+                // the compatibility worker starts running guest code.
+                if (cancelled) {
+                    throw new CancellationException(
+                            "Task scope cancelled before host Task entry");
+                }
+                return work.run();
+            });
         } catch (RuntimeException | Error rejected) {
             // AsyncRuntime.submitTask already closes its own failed
             // registration. No work was admitted by this scope.
@@ -152,7 +161,17 @@ public final class OresTaskScope implements AutoCloseable {
         try {
             // No scope monitor may be held across enqueue, an inline worker
             // dispatch, source execution, or arbitrary Future callbacks.
-            completion = scheduler.start(frame, () -> {
+            completion = scheduler.start(resume -> {
+                // Check the scope's volatile cancellation decision at every
+                // continuation entry. Admission reserves lifetime, NOT a
+                // right to begin guest work after parent cancellation.
+                // In-flight turns still unwind at their own safe points.
+                if (cancelled) {
+                    throw new CancellationException(
+                            "Task scope cancelled before guest Task turn");
+                }
+                return frame.resume(resume);
+            }, () -> {
                 try {
                     onPhysicalExit.run();
                     exited.completeFromRuntime(null);
