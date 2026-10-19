@@ -103,7 +103,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     /** Bind once per physical worker and reassert at bounded intervals, not each actor turn. */
     static void ensureCurrentCarrierCpu(int cpu) {
         CarrierCpuBinding.ensureBound(cpu, NativeCarrierExecutor::bindCurrentThreadToCpu,
-                System::nanoTime);
+                NativeCarrierExecutor::currentCpu, System::nanoTime);
     }
 
     static int currentCpu() {
