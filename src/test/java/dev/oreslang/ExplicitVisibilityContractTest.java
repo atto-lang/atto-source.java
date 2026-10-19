@@ -142,6 +142,63 @@ final class ExplicitVisibilityContractTest {
     }
 
     @Test
+    void explicitPrivateMeansExactlyTheSameAsOmittedVisibility() {
+        Ast.TypeAliasDecl alias = assertInstanceOf(Ast.TypeAliasDecl.class,
+                onlyDeclaration("private type SecretId = int;"));
+        assertEquals(Ast.Visibility.PRIVATE, alias.visibility());
+        Ast.TypeAliasDecl definedAlias = assertInstanceOf(Ast.TypeAliasDecl.class,
+                onlyDeclaration("define private type SecretId = int;"));
+        assertEquals(Ast.Visibility.PRIVATE, definedAlias.visibility());
+
+        Ast.FunctionDecl fn = assertInstanceOf(Ast.FunctionDecl.class,
+                onlyDeclaration("private fnc helper(): int { return 1; }"));
+        assertEquals(Ast.Visibility.PRIVATE, fn.visibility());
+
+        Ast.Program parsed = Parser.parse("""
+                define module internal as
+                  private val int secret = 4;
+                  private fnc helper(): int { return secret; }
+                end
+                """);
+        assertEquals(Ast.Visibility.PRIVATE,
+                assertInstanceOf(Ast.FieldDecl.class, parsed.modules().getFirst()
+                        .declarations().get(0)).visibility());
+        assertEquals(Ast.Visibility.PRIVATE,
+                assertInstanceOf(Ast.FunctionDecl.class, parsed.modules().getFirst()
+                        .declarations().get(1)).visibility());
+
+        Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class, onlyDeclaration("""
+                define pub class Vault as
+                  private val int secret = 4;
+                  private get_secret(): int { return self.secret; }
+                  private static fnc seed(): int { return 4; }
+                end
+                """));
+        assertEquals(Ast.Visibility.PRIVATE, klass.fields().getFirst().visibility());
+        assertEquals(Ast.Visibility.PRIVATE, klass.methods().get(0).visibility());
+        assertEquals(Ast.Visibility.PRIVATE, klass.methods().get(1).visibility());
+    }
+
+    @Test
+    void explicitPrivateSymbolsCannotBeImportedFromAdjacentFiles() {
+        for (String declarationAndImport : new String[] {
+                "private fnc secret(): int { return 1; }|import fnc secret from './lib';",
+                "private class Secret as end|import class Secret from './lib';",
+                "private type Secret = int;|import type Secret from './lib';"
+        }) {
+            String[] parts = declarationAndImport.split("\\|", 2);
+            var files = Map.of(
+                    "src/lib.ores", parts[0],
+                    "src/use.ores", parts[1] + " pub fnc main(): void { return; }");
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> new IncrementalCompiler().compile(files));
+            assertTrue(error.getMessage().contains("does not match an exported declaration"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
     void conflictingPublicPrivateModifiersFailClosed() {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("define pub private class Vault as end"));
