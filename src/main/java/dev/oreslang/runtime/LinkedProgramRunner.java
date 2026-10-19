@@ -121,10 +121,15 @@ public final class LinkedProgramRunner {
         Path manifest = projectConfig.manifestPath().orElse(null);
         byte[] manifestText = new byte[0];
         if (manifest != null) {
-            if (Files.size(manifest) > 1024L * 1024L) {
-                throw new IOException("project manifest too large for test closure trace");
+            // Checking Files.size followed by readAllBytes has a TOCTOU hole:
+            // a concurrent writer can grow the file after the size check.
+            // Bound the actual allocation while reading the snapshot.
+            try (java.io.InputStream manifestInput = Files.newInputStream(manifest)) {
+                manifestText = manifestInput.readNBytes(1024 * 1024 + 1);
+                if (manifestText.length > 1024 * 1024) {
+                    throw new IOException("project manifest too large for test closure trace");
+                }
             }
-            manifestText = Files.readAllBytes(manifest);
         }
         return SourceClosureFingerprint.sha256(
                 sourceText, resolutions,
