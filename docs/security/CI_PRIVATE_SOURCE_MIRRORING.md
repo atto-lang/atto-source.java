@@ -16,8 +16,10 @@ publisher now checks the live GitHub identity of
 `ores-truffle-oreslang/oreslang-source.java`, verifies that its official
 `main` branch reports `protected: true`, and reads branch-protection rules
 from GitHub. It requires `required_pull_request_reviews.require_code_owner_reviews`,
-`required_pull_request_reviews.dismiss_stale_reviews`, and
-`enforce_admins.enabled` all to be true. Missing or unreadable rules fail
+`required_pull_request_reviews.dismiss_stale_reviews`,
+at least one required approving review, and `enforce_admins.enabled` to be
+true. Force pushes and branch deletions must be explicitly disabled, and any
+pull-request review bypass allowances are rejected. Missing or unreadable rules fail
 closed, even if GitHub reports `protected: true`. The publisher pins the
 policy read to that branch's Git commit and compares its policy bytes
 with the local checkout policy.
@@ -48,7 +50,8 @@ directory, and a new isolated CI branch:
 ```bash
 scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
   --source-dir ./verified-source-tree \
-  --branch ci/oreslang-verified-20261013
+  --branch ci/oreslang-verified-20261013 \
+  --source-commit FULL_40_CHARACTER_ORIGIN_COMMIT_SHA
 ```
 
 The checked-in policy file must explicitly list the destination. The
@@ -63,6 +66,17 @@ in the destination's default tree. This removes stale files from previous
 snapshots while preserving unrelated destination workflows and files.
 Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
 branches, including `main`, are never updated.
+
+An explicitly supplied `--source-commit` now pins the **exact original
+private Git commit**. Before uploading, the publisher retrieves that commit's
+source-tree hash and its complete, non-truncated recursive tree from the
+official origin. It rejects untracked/dirty/missing local files, differing
+executable modes, symlinks/submodules, or an incomplete tree. Every local
+path/mode/blob hash must match the origin tree exactly. After uploading,
+the newly assembled isolated subtree must have the **same Git tree SHA**
+as the verified original, before the private destination's root commit/ref
+can be created. No transfer is authorized merely because a filesystem
+directory has a trusted-looking name.
 
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
 per file, requires the source directory to remain **inside the trusted
