@@ -12,6 +12,7 @@ MODULE = Path(__file__).with_name("publish-private-ci-source.py")
 spec = importlib.util.spec_from_file_location("private_publisher", MODULE)
 pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
+ORIGINAL_VERIFY_PROTECTED_ORIGIN = pub.verify_protected_origin
 A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
 
 
@@ -31,6 +32,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
+        # Existing isolated transfer/FS tests model the downstream publisher;
+        # protected-source provenance gets independent real-guard tests below.
+        self.origin_guard = patch.object(pub, "verify_protected_origin")
+        self.origin_guard.start()
+        self.addCleanup(self.origin_guard.stop)
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
@@ -57,6 +63,82 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root)
+
+    def verified_origin_api(self, protected=True, policy=b"trusted/ci\\n"):
+        routes = []
+        def fake(route, method="GET", payload=None):
+            routes.append(route)
+            if route == "repos/"+pub.SOURCE_REPO:
+                return {"full_name": pub.SOURCE_REPO, "private": True}
+            if route == "repos/"+pub.SOURCE_REPO+"/branches/main":
+                return {"name": "main", "protected": protected,
+                        "commit": {"sha": A}}
+            if route == ("repos/"+pub.SOURCE_REPO+"/contents/"
+                         +pub.POLICY_PATH+"?ref="+A):
+                return {"path": pub.POLICY_PATH, "type": "file",
+                        "encoding": "base64",
+                        "content": base64.b64encode(policy).decode("ascii")}
+            return self.fake_api(route, method, payload)
+        return fake, routes
+
+    def test_origin_main_must_be_protected_before_export(self):
+        api, routes = self.verified_origin_api(protected=False)
+        with patch.object(pub, "verify_protected_origin",
+                          side_effect=ORIGINAL_VERIFY_PROTECTED_ORIGIN):
+            with patch.object(pub, "gh_api", side_effect=api):
+                with patch.object(pub, "collect_source") as collect:
+                    with self.assertRaisesRegex(pub.Denied, "not protected"):
+                        pub.publish("trusted/ci", self.source,
+                                    "ci/oreslang-test", self.root)
+                    collect.assert_not_called()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+        self.assertNotIn("repos/"+pub.SOURCE_REPO+"/contents/"
+                         +pub.POLICY_PATH+"?ref="+A, routes)
+
+    def test_origin_main_must_match_local_approved_policy(self):
+        api, _ = self.verified_origin_api(
+            protected=True, policy=b"# no authorized destination\\n")
+        with patch.object(pub, "verify_protected_origin",
+                          side_effect=ORIGINAL_VERIFY_PROTECTED_ORIGIN):
+            with patch.object(pub, "gh_api", side_effect=api):
+                with patch.object(pub, "collect_source") as collect:
+                    with self.assertRaisesRegex(pub.Denied, "diverges"):
+                        pub.publish("trusted/ci", self.source,
+                                    "ci/oreslang-test", self.root)
+                    collect.assert_not_called()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_protected_origin_verification_before_and_after_upload(self):
+        api, routes = self.verified_origin_api(protected=True)
+        with patch.object(pub, "verify_protected_origin",
+                          side_effect=ORIGINAL_VERIFY_PROTECTED_ORIGIN):
+            with patch.object(pub, "gh_api", side_effect=api):
+                sha, count = pub.publish("trusted/ci", self.source,
+                                         "ci/oreslang-test", self.root)
+        self.assertEqual((sha, count), (A, 1))
+        branch_reads = [r for r in routes
+                        if r == "repos/"+pub.SOURCE_REPO+"/branches/main"]
+        self.assertEqual(len(branch_reads), 2)
+
+    def test_protected_origin_recheck_rejects_last_minute_revocation(self):
+        api, routes = self.verified_origin_api(protected=True)
+        calls = [0]
+        def revoke(route, method="GET", payload=None):
+            if route == "repos/"+pub.SOURCE_REPO+"/branches/main":
+                calls[0] += 1
+                if calls[0] == 2:
+                    return {"name": "main", "protected": False,
+                            "commit": {"sha": A}}
+            return api(route, method, payload)
+        with patch.object(pub, "verify_protected_origin",
+                          side_effect=ORIGINAL_VERIFY_PROTECTED_ORIGIN):
+            with patch.object(pub, "gh_api", side_effect=revoke):
+                with self.assertRaisesRegex(pub.Denied, "not protected"):
+                    pub.publish("trusted/ci", self.source,
+                                "ci/oreslang-test", self.root)
+        self.assertEqual(calls[0], 2)
+        self.assertFalse(any(r == "repos/trusted/ci/git/refs"
+                             for m, r, _ in self.route_calls if m == "POST"))
 
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
         sha, count = self.publish()
