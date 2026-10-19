@@ -1482,8 +1482,12 @@ public final class TypeChecker {
             lexicalClassOrigin = klass;
             boolean previousMaySuspend = currentMaySuspend;
             boolean previousAsyncCallable = currentAsyncCallable;
+            boolean previousRootMain = currentRootMain;
+            Env previousRootLocalEnv = currentRootMainLocalEnv;
             currentAsyncCallable = method.async();
             currentMaySuspend = method.async() || method.suspends();
+            currentRootMain = false;
+            currentRootMainLocalEnv = null;
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
@@ -1492,6 +1496,8 @@ public final class TypeChecker {
                 lexicalClassOrigin = previousLexicalClass;
                 currentMaySuspend = previousMaySuspend;
                 currentAsyncCallable = previousAsyncCallable;
+                currentRootMain = previousRootMain;
+                currentRootMainLocalEnv = previousRootLocalEnv;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
@@ -4689,10 +4695,14 @@ public final class TypeChecker {
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
         boolean previousMaySuspend = currentMaySuspend;
         boolean previousAsyncCallable = currentAsyncCallable;
+        boolean previousRootMain = currentRootMain;
+        Env previousRootLocalEnv = currentRootMainLocalEnv;
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
         currentMaySuspend = false;
         currentAsyncCallable = false;
+        currentRootMain = false;
+        currentRootMainLocalEnv = null;
         try {
             if (lambda.expressionBody() != null) {
                 Type actual = typeOfAgainstExpected(
@@ -4706,6 +4716,8 @@ public final class TypeChecker {
             currentConstructorOwner = previousConstructorOwner;
             currentMaySuspend = previousMaySuspend;
             currentAsyncCallable = previousAsyncCallable;
+            currentRootMain = previousRootMain;
+            currentRootMainLocalEnv = previousRootLocalEnv;
         }
     }
 
@@ -4742,10 +4754,14 @@ public final class TypeChecker {
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
         boolean previousMaySuspend = currentMaySuspend;
         boolean previousAsyncCallable = currentAsyncCallable;
+        boolean previousRootMain = currentRootMain;
+        Env previousRootLocalEnv = currentRootMainLocalEnv;
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
         currentMaySuspend = false;
         currentAsyncCallable = false;
+        currentRootMain = false;
+        currentRootMainLocalEnv = null;
         try {
             if (lambda.expressionBody() != null) {
                 Type actual = typeOfAgainstExpected(
@@ -4763,6 +4779,8 @@ public final class TypeChecker {
             currentConstructorOwner = previousConstructorOwner;
             currentMaySuspend = previousMaySuspend;
             currentAsyncCallable = previousAsyncCallable;
+            currentRootMain = previousRootMain;
+            currentRootMainLocalEnv = previousRootLocalEnv;
         }
         if (lambda.blockBody() != null
                 && expected.result() != Primitive.VOID
