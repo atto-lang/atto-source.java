@@ -186,7 +186,8 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
                             StateSnapshot initialState, R initialPhysicalRoute) {
         Objects.requireNonNull(initial, "initial generation authority");
         this.mailbox = Objects.requireNonNull(mailbox, "logical mailbox");
-        if (!initial.admissionOpen() || initial.livePins() != 0)
+        if (!initial.admissionOpen() || initial.livePins() != 0
+                || initial.epoch() != 1L)
             throw new IllegalStateException("initial Task generation must be unpinned and open");
         if (initial.placement().actorKind() != ActorUpgradeEpochGate.ActorKind.SHARED)
             throw new SecurityException(
@@ -243,7 +244,17 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
             if (pending != null) return false;
             var envelope = mailbox.pollDispatch();
             if (envelope == null) return false;
-            submit.accept(active.physicalRoute(), envelope);
+            try {
+                submit.accept(active.physicalRoute(), envelope);
+            } catch (RuntimeException | Error unknownDelivery) {
+                // The physical transport may already have accepted the send.
+                // Never requeue, refund credits or publish over an ambiguous
+                // in-flight delivery without a trusted completion receipt.
+                poisoned = true;
+                throw new IllegalStateException(
+                        "ambiguous physical submit; logical DATA quarantined",
+                        unknownDelivery);
+            }
             return true;
         }
     }
@@ -265,6 +276,22 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
     private void requireOperational() {
         if (closed || poisoned)
             throw new IllegalStateException("logical actor authority closed or quarantined");
+        // Legacy host helpers can still mutate the generation gate and mailbox
+        // independently. Detect that divergence before admitting or dispatching
+        // any DATA: a route snapshot alone cannot authorize mismatched epochs.
+        var mailboxState = mailbox.snapshot();
+        var gate = active.taskAdmission();
+        boolean expectedFreeze = pending != null;
+        if (mailboxState.closed()
+                || mailboxState.routeEpoch() != active.routeEpoch()
+                || mailboxState.dispatchFrozen() != expectedFreeze
+                || gate.isClosed() || gate.actorIdentity() != active.actorIdentity()
+                || gate.epoch() != 1L || !gate.image().equals(active.image())
+                || gate.frozen() != expectedFreeze) {
+            poisoned = true;
+            throw new IllegalStateException(
+                    "logical route/generation/mailbox authority diverged; DATA quarantined");
+        }
     }
 
     @Override public void close() {
