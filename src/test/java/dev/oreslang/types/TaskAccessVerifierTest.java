@@ -376,6 +376,46 @@ final class TaskAccessVerifierTest {
         verifier.quiescent(a);
     }
 
+    @Test void quadraticAdmissionWorkBudgetIsAtomicAndReclaimable() {
+        var ledger = new TaskAccessVerifier();
+        var root = TaskAccessVerifier.Place.whole(WORLD);
+        var bulkReaders = java.util.Collections.nCopies(1024, read(root));
+        var first = ledger.admit(bulkReaders);
+        var second = ledger.admit(bulkReaders);
+        assertEquals(2, ledger.activeChildren());
+        assertEquals(2048, ledger.activeClaims());
+        // The third admission would exceed two million conservative
+        // pairwise checks; reject it before reserving any claim or ticket.
+        assertThrows(IllegalStateException.class, () -> ledger.admit(bulkReaders));
+        assertEquals(2, ledger.activeChildren());
+        assertEquals(2048, ledger.activeClaims());
+        ledger.requestCancel(first);
+        assertEquals(2048, ledger.activeClaims(),
+                "cancellation must not release any borrow");
+        ledger.quiescent(first);
+        assertEquals(1024, ledger.activeClaims());
+        var third = ledger.admit(bulkReaders);
+        assertEquals(2048, ledger.activeClaims());
+        ledger.quiescent(second);
+        ledger.quiescent(third);
+        assertEquals(0, ledger.activeClaims());
+        ledger.finishScope();
+    }
+
+    @Test void multipleSmallClaimsPreserveLiveBudgetAfterFailure() {
+        var ledger = new TaskAccessVerifier();
+        var root = TaskAccessVerifier.Place.whole(WORLD);
+        var first = ledger.admit(List.of(read(root), read(root)));
+        assertEquals(2, ledger.activeClaims());
+        assertThrows(IllegalArgumentException.class,
+                () -> ledger.admit(List.of(read(root), write(root))));
+        assertEquals(2, ledger.activeClaims());
+        ledger.quiescent(first);
+        assertEquals(0, ledger.activeClaims());
+        assertThrows(IllegalArgumentException.class, () -> ledger.quiescent(first));
+        assertEquals(0, ledger.activeClaims());
+    }
+
     @Test void racingWritersNeverAcquireTwoLiveLoans() throws Exception {
         var verifier = new TaskAccessVerifier();
         var place = TaskAccessVerifier.Place.whole(WORLD);
