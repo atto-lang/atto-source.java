@@ -292,17 +292,42 @@ public final class OresTaskScope implements AutoCloseable {
      */
     public void cancelWhen(OresCancellationToken token) {
         Objects.requireNonNull(token, "token");
-        synchronized (gate) {
-            ensureAdmitting();
-        }
-        OresCancellationToken.Registration registration =
-                token.onCancellationRequested(this::cancel);
         synchronized (treeAdmissionGate) {
             synchronized (gate) {
-                if (cancelled) registration.close();
-                else externalCancellation.add(registration);
+                ensureAdmitting();
             }
         }
+        // Registration can invoke the callback inline for an already
+        // cancelled source. Never call arbitrary token plumbing while holding
+        // either TaskScope admission monitor.
+        OresCancellationToken.Registration registration =
+                token.onCancellationRequested(this::cancel);
+        boolean owned = false;
+        try {
+            synchronized (treeAdmissionGate) {
+                synchronized (gate) {
+                    if (!cancelled && (runtime == null || !runtime.isClosed())) {
+                        // ArrayList growth is fallible. Claim ownership only
+                        // AFTER insertion returns; on failure detach the
+                        // independently registered upstream listener.
+                        externalCancellation.add(registration);
+                        owned = true;
+                    }
+                }
+            }
+        } catch (RuntimeException | Error admissionFailure) {
+            try {
+                registration.close();
+            } catch (RuntimeException | Error detachFailure) {
+                if (detachFailure != admissionFailure)
+                    admissionFailure.addSuppressed(detachFailure);
+            }
+            throw admissionFailure;
+        }
+        // A concurrent scope cancellation may have won between preflight
+        // and publication. A no-longer-owned listener must not retain this
+        // scope via the upstream token; detach outside all scope monitors.
+        if (!owned) registration.close();
     }
 
 
