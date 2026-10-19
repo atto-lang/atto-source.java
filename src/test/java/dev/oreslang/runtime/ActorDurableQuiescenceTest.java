@@ -20,6 +20,7 @@ final class ActorDurableQuiescenceTest {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         CountDownLatch delivered = new CountDownLatch(3);
+        CountDownLatch beforeFreeze = new CountDownLatch(2);
         AtomicInteger callbacks = new AtomicInteger();
         try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
                 new ActorRuntime.DispatcherConfig(2, 2, 1, 32))) {
@@ -31,6 +32,7 @@ final class ActorDurableQuiescenceTest {
                         throw new AssertionError("test callback was not released");
                 }
                 delivered.countDown();
+                if (message == 1 || message == 2) beforeFreeze.countDown();
             });
             try {
                 actor.send(1);
@@ -44,6 +46,7 @@ final class ActorDurableQuiescenceTest {
                 var rejected = assertThrows(java.util.concurrent.ExecutionException.class,
                         () -> pending.get(5, TimeUnit.SECONDS));
                 assertInstanceOf(IllegalStateException.class, rejected.getCause());
+                assertTrue(beforeFreeze.await(5, TimeUnit.SECONDS));
                 // Failed handoff automatically resumes dispatch for old mail.
                 // No previously acknowledged message was lost.
                 var proof = runtime.requestDurableQuiescence(actor)
@@ -143,6 +146,76 @@ final class ActorDurableQuiescenceTest {
                 proof.close();
             } finally {
                 releaseHostBoundary.countDown();
+                actor.cancel();
+            }
+        }
+    }
+
+    @Test
+    void hibernateAndResumeRaceHasOnlyOneWinner() throws Exception {
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                     new ActorRuntime.DispatcherConfig(2, 2, 1, 128));
+             var workers = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            for (int iteration = 0; iteration < 40; iteration++) {
+                CountDownLatch handled = new CountDownLatch(1);
+                var actor = runtime.<Integer>spawnShared(() -> (message, ctx) ->
+                        handled.countDown());
+                try {
+                    actor.ready().get(3, TimeUnit.SECONDS);
+                    var proof = runtime.requestDurableQuiescence(actor)
+                            .get(3, TimeUnit.SECONDS);
+                    CountDownLatch start = new CountDownLatch(1);
+                    var stop = workers.submit(() -> {
+                        if (!start.await(3, TimeUnit.SECONDS)) throw new AssertionError("race setup");
+                        try {
+                            proof.stopAfterHibernate();
+                            return true;
+                        } catch (IllegalStateException lost) {
+                            return false;
+                        }
+                    });
+                    var resume = workers.submit(() -> {
+                        if (!start.await(3, TimeUnit.SECONDS)) throw new AssertionError("race setup");
+                        proof.close();
+                        return true;
+                    });
+                    start.countDown();
+                    boolean stopped = stop.get(3, TimeUnit.SECONDS);
+                    assertTrue(resume.get(3, TimeUnit.SECONDS));
+                    if (stopped) {
+                        actor.done().get(3, TimeUnit.SECONDS);
+                        assertThrows(ActorRuntime.ActorTerminatedException.class,
+                                () -> actor.send(42));
+                        assertEquals(1L, handled.getCount(),
+                                "stopped actor must never run an unpersisted turn");
+                    } else {
+                        assertFalse(proof.valid());
+                        actor.send(42);
+                        assertTrue(handled.await(3, TimeUnit.SECONDS),
+                                "resumed actor should process newly accepted work");
+                    }
+                } finally {
+                    actor.cancel();
+                }
+            }
+        }
+    }
+
+    @Test
+    void callerCannotFabricateRuntimeFreezeByCompletingObserver() throws Exception {
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                     new ActorRuntime.DispatcherConfig(2, 2, 1, 32))) {
+            var actor = runtime.<String>spawnShared(() -> (message, ctx) -> {});
+            try {
+                actor.ready().get(3, TimeUnit.SECONDS);
+                var authoritativeCopy = runtime.requestDurableQuiescence(actor);
+                assertTrue(authoritativeCopy.complete(null));
+                var rejected = assertThrows(java.util.concurrent.CompletionException.class,
+                        () -> runtime.requestDurableQuiescence(actor).join());
+                assertInstanceOf(IllegalStateException.class, rejected.getCause());
+                assertThrows(ActorRuntime.ActorSealedException.class,
+                        () -> actor.send("not admitted while frozen"));
+            } finally {
                 actor.cancel();
             }
         }
