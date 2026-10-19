@@ -478,7 +478,7 @@ final class ActorPhysicalFinalizationPublicationTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void ambiguousPartialChannelCloseCannotCertifyRetirement()
+    void selectorFreeCompletedFirstChannelCloseCanResumeTeardown()
             throws Exception {
         try (var runtime = new ActorRuntime()) {
             var actor = runtime.<Integer>spawnShared(
@@ -496,9 +496,8 @@ final class ActorPhysicalFinalizationPublicationTest {
             faultField.setAccessible(true);
             faultField.set(cell, (Runnable) () -> {
                 throw new OutOfMemoryError(
-                        "injected after the first channel close");
+                        "injected after proven selector-free mailbox close");
             });
-
             var batchField = cell.getClass().getDeclaredField(
                     "terminalSettlementBatch");
             batchField.setAccessible(true);
@@ -507,27 +506,82 @@ final class ActorPhysicalFinalizationPublicationTest {
             var mailbox = (ChannelRuntime.Channel<?>) mailboxField.get(cell);
 
             assertThrows(OutOfMemoryError.class, actor::stop);
-            Object batch = batchField.get(cell);
-            assertNotNull(batch);
+            Object retained = batchField.get(cell);
+            assertNotNull(retained);
+            assertTrue(mailbox.closeSettledWithoutSelectorsForTeardown(),
+                    "the original close returned normally without pending select arms");
             assertFalse(runtime.physicallyFinalizedForHotUpgrade(actor));
-            var retry = assertThrows(IllegalStateException.class, actor::stop);
-            assertTrue(retry.getMessage().contains("independent reconciliation"));
             assertFalse(actor.awaitTermination(0, TimeUnit.NANOSECONDS));
-
-            // Test-only independently inspected quiescent fixture: the actor
-            // had no messages or channel select registrations. A real
-            // supervisor must have stronger authenticated proof before it
-            // could ever repair an ambiguous partial teardown.
-            assertEquals(0, mailbox.size());
-            assertEquals(0, mailbox.pendingRegistrations());
-            var ambiguousField = batch.getClass().getDeclaredField(
-                    "physicalTeardownAmbiguous");
-            ambiguousField.setAccessible(true);
+            // A second injection is unrelated to replay safety. Remove it
+            // without touching the batch's authoritative ambiguity marker.
             faultField.set(cell, null);
-            ambiguousField.setBoolean(batch, false);
             actor.stop();
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
             assertTrue(runtime.physicallyFinalizedForHotUpgrade(actor));
+            assertNull(batchField.get(cell),
+                    "verified retry consumes the same durable settlement owner");
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void channelCloseWithPendingSelectNeverForgesCompletionProof()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+
+            var registryField = ActorRuntime.class.getDeclaredField("actors");
+            registryField.setAccessible(true);
+            var registry = (java.util.Map<Object, Object>)
+                    registryField.get(runtime);
+            Object cell = registry.get(actor.id());
+            assertNotNull(cell);
+            var mailboxField = cell.getClass().getDeclaredField("mailbox");
+            mailboxField.setAccessible(true);
+            var mailbox = (ChannelRuntime.Channel<?>) mailboxField.get(cell);
+            var registeredRead = mailbox.readAsync();
+            assertFalse(registeredRead.isDone());
+            assertEquals(1, mailbox.pendingRegistrations());
+
+            var faultField = cell.getClass().getDeclaredField(
+                    "terminalTeardownAfterFirstCloseFaultForTesting");
+            faultField.setAccessible(true);
+            faultField.set(cell, (Runnable) () -> {
+                throw new OutOfMemoryError("injected after close with pending read");
+            });
+            var batchField = cell.getClass().getDeclaredField(
+                    "terminalSettlementBatch");
+            batchField.setAccessible(true);
+            try {
+                assertThrows(OutOfMemoryError.class, actor::stop);
+                Object batch = batchField.get(cell);
+                assertNotNull(batch);
+                assertFalse(mailbox.closeSettledWithoutSelectorsForTeardown(),
+                        "registration removal after close cannot forge pre-close proof");
+                assertFalse(runtime.physicallyFinalizedForHotUpgrade(actor));
+                faultField.set(cell, null);
+                var denial = assertThrows(IllegalStateException.class, actor::stop);
+                assertTrue(denial.getMessage().contains("independent reconciliation"));
+                assertFalse(actor.awaitTermination(0, TimeUnit.NANOSECONDS));
+                assertFalse(runtime.physicallyFinalizedForHotUpgrade(actor));
+
+                // No general completion-replay receipt exists for this
+                // fixture. Test-only manual repair occurs only after checking
+                // its registered read reached a terminal Future result and
+                // all channel registrations have detached. Not product API.
+                assertTrue(registeredRead.isDone());
+                assertEquals(0, mailbox.pendingRegistrations());
+                var ambiguousField = batch.getClass().getDeclaredField(
+                        "physicalTeardownAmbiguous");
+                ambiguousField.setAccessible(true);
+                ambiguousField.setBoolean(batch, false);
+                actor.stop();
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            } finally {
+                faultField.set(cell, null);
+            }
         }
     }
 }
