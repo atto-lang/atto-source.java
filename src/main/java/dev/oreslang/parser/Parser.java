@@ -1750,6 +1750,18 @@ public final class Parser {
             throw error(peek(), "trait declarations are static/module-scope declarations; runtime trait creation is forbidden");
         }
 
+        // task/nb are identical spellings for structured-concurrency scopes.
+        // Keep 'task' contextual, so ordinary identifiers retain their syntax.
+        if ((check(NB) || isContextualIdentifier("task"))
+                && current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals("scope")
+                && tokens.get(current + 2).type() == LBRACE) {
+            advance(); // task or nb
+            advance(); // scope
+            return new Ast.BlockStmt(parseBlock(), true);
+        }
+
         if (check(AT)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             if (!isBindingKind(peek().type())) {
