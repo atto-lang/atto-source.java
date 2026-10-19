@@ -1,6 +1,8 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.OptionalCallShapeBinder;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.TypeChecker;
@@ -97,6 +99,49 @@ final class DirectNamedLiteralCallExecutionTest {
                 pub routine main(): void {
                     const int pick = 9;
                     const int value = pick(a: 3);
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void directAstLoweringRejectsPrimitiveMismatchesWithoutTypeChecker() {
+        Ast.Program source = Parser.parse("""
+                pub fnc pick(int a, bool c): int { return a; }
+                """);
+        Ast.FunctionDecl target = (Ast.FunctionDecl)
+                source.modules().getFirst().declarations().getFirst();
+        Ast.StagedCallExpr forged = new Ast.StagedCallExpr(
+                new Ast.NameExpr("pick"), java.util.List.of(), false,
+                java.util.List.of(
+                        Ast.CallArgument.named("c", new Ast.LiteralExpr("true")),
+                        Ast.CallArgument.named("a", new Ast.LiteralExpr(3L))));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.lowerDirectScalarLiteralNamedCall(forged, target));
+    }
+
+    @Test
+    void directAstLoweringCannotPassStringIntoRequiredOption() {
+        Ast.Program source = Parser.parse("""
+                pub fnc pick(Option<string> b): int { return 1; }
+                """);
+        Ast.FunctionDecl target = (Ast.FunctionDecl)
+                source.modules().getFirst().declarations().getFirst();
+        Ast.StagedCallExpr forged = new Ast.StagedCallExpr(
+                new Ast.NameExpr("pick"), java.util.List.of(), false,
+                java.util.List.of(Ast.CallArgument.named("b", new Ast.LiteralExpr("fake"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallShapeBinder.lowerDirectScalarLiteralNamedCall(forged, target));
+    }
+
+    @Test
+    void scalarMismatchesRemainRejectedByTypechecker() {
+        String source = """
+                pub fnc pick(int a, bool c): int { return a; }
+                pub routine main(): void {
+                    val int result = pick(a: "three", c: true);
                     return;
                 }
                 """;
