@@ -60,7 +60,20 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
         }
     }
 
-    public LogicalSourceActorRouterV1.LogicalActorRef ref() { return router.ref(); }
+    /**
+     * Read-only logical address, never an ActorRef carrying a raw send().
+     * The bridge must not leak a bypass around its bounded proxy credits.
+     */
+    public LogicalSourceActorRouterV1.LogicalAddress address() {
+        return router.ref().address();
+    }
+
+    public GeneratorRuntime.Step<ActorRuntime.ActorOutput<Object>> nextOutput(
+            Duration timeout)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        requireHost();
+        return router.ref().nextOutput(timeout);
+    }
 
     public LogicalActorProxyMailboxV1.Snapshot snapshot() { return mailbox.snapshot(); }
 
@@ -72,6 +85,7 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
      * It does not claim physical delivery.
      */
     public LogicalActorProxyMailboxV1.Envelope admitLong(long value) {
+        requireHost();
         if (closed || poisoned)
             throw new IllegalStateException("logical proxy bridge is closed or fail-sealed");
         byte[] bytes = new byte[Long.BYTES];
@@ -91,6 +105,7 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
      */
     public boolean dispatchOne(Duration timeout)
             throws InterruptedException, ExecutionException, TimeoutException {
+        requireHost();
         Objects.requireNonNull(timeout, "timeout");
         if (timeout.isZero() || timeout.isNegative())
             throw new IllegalArgumentException("dispatch deadline must be positive");
@@ -127,6 +142,7 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
     public boolean upgradeTo(
             HotReloadManager.Generation candidate, Duration timeout)
             throws InterruptedException, ExecutionException, TimeoutException {
+        requireHost();
         Objects.requireNonNull(candidate, "candidate");
         Objects.requireNonNull(timeout, "timeout");
         if (timeout.isZero() || timeout.isNegative())
@@ -161,6 +177,13 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
         }
     }
 
+    private static void requireHost() {
+        if (ActorRuntime.inActorExecution() || OresScheduler.current() != null) {
+            throw new SecurityException(
+                    "bounded logical source proxy bridge is a HOST-only API");
+        }
+    }
+
     private static long toNanosSaturated(Duration timeout) {
         try {
             return timeout.toNanos();
@@ -175,6 +198,7 @@ public final class LogicalSourceActorProxyBridgeV1 implements AutoCloseable {
     }
 
     @Override public void close() {
+        requireHost();
         synchronized (dispatchLock) {
             if (closed) return;
             poisoned = true; // no new admission while physical teardown runs
