@@ -108,6 +108,27 @@ final class ActorUpgradeEpochGateTest {
     }
 
     @Test
+    void sequentialUpgradeGenerationsRetainActorIdentityAndInvalidateOldLeases() {
+        try (var gate = new ActorUpgradeEpochGate(92, image('a'))) {
+            long expectedEpoch = 1;
+            for (char nextCode : new char[] {'b', 'c', 'd', 'e', 'f'}) {
+                var lease = gate.pin();
+                var proposed = image(nextCode);
+                var candidate = gate.prepare(proposed);
+                assertTrue(gate.permits(lease),
+                        "existing pinned turn may drain while admission is frozen");
+                assertFalse(gate.publish(candidate));
+                lease.close();
+                assertTrue(gate.publish(candidate));
+                assertFalse(gate.permits(lease), "retired lease must not authorize new generation");
+                assertEquals(++expectedEpoch, gate.epoch());
+                assertEquals(proposed, gate.image());
+                assertEquals(92, gate.actorIdentity());
+            }
+        }
+    }
+
+    @Test
     void concurrentLeaseReleaseAndUpgradeCannotPublishEarly() throws Exception {
         try (var gate = new ActorUpgradeEpochGate(17, image('a'))) {
             var turn = gate.pin();
@@ -122,12 +143,18 @@ final class ActorUpgradeEpochGateTest {
                     turn.close();
                 } catch (Throwable t) { workerFailure.set(t); }
             });
+            worker.setDaemon(true);
             worker.start();
-            started.await();
-            assertFalse(gate.publish(next));
-            finish.countDown();
-            worker.join(5000);
-            assertFalse(worker.isAlive());
+            try {
+                assertTrue(started.await(5, java.util.concurrent.TimeUnit.SECONDS),
+                        "lease-release worker must start");
+                assertFalse(gate.publish(next),
+                        "publication must not race an outstanding lease");
+            } finally {
+                finish.countDown();
+                worker.join(5000);
+            }
+            assertFalse(worker.isAlive(), "lease-release worker did not terminate");
             assertNull(workerFailure.get());
             assertTrue(gate.publish(next));
             assertEquals(2, gate.epoch());

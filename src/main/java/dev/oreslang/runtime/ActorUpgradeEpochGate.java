@@ -47,11 +47,9 @@ final class ActorUpgradeEpochGate implements AutoCloseable {
         long epoch() { return epoch; }
 
         @Override public synchronized void close() {
-            if (released.get()) return;
-            // An accounting failure must not permanently discard the only
-            // lifetime token while the actor still needs to drain it.
-            owner.release();
-            released.set(true);
+            // Accounting and authorization retirement share the gate lock.
+            // Failed accounting retains the lease so retirement is retryable.
+            owner.release(this);
         }
     }
 
@@ -147,9 +145,13 @@ final class ActorUpgradeEpochGate implements AutoCloseable {
             throw new IllegalStateException("stale, foreign or retired upgrade candidate");
     }
 
-    private synchronized void release() {
+    private synchronized void release(Lease lease) {
+        if (lease.released.get()) return;
         if (pins <= 0) throw new IllegalStateException("actor pin accounting underflow");
         --pins;
+        // permits(), publish() and livePins() cannot observe a retired pin
+        // while its lease still authorizes work.
+        lease.released.set(true);
     }
 
     @Override public synchronized void close() {
