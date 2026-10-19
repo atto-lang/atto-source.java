@@ -41,30 +41,30 @@ final class SendSyncAndRegionPlannerTest {
                 klass("Safe", List.of(), field("v", t("i64"), false)),
                 klass("Mutable", List.of(), field("v", t("i64"), true)),
                 klass("Boxed", List.of("T"), field("v", t("T"), false)));
-        assertEquals(new SendSyncTraits.Traits(true, true), checker.derive(t("Safe")));
-        assertEquals(new SendSyncTraits.Traits(true, false), checker.derive(t("Mutable")));
-        assertTrue(checker.isSync(t("Boxed", t("Safe"))));
-        assertFalse(checker.isSync(t("Boxed", t("Mutable"))));
-        assertFalse(checker.isSend(t("Boxed", t("UnknownNative"))));
-        assertFalse(checker.isSend(Ast.TypeRef.borrowed(t("Mutable"), false)));
-        assertTrue(checker.isSend(Ast.TypeRef.borrowed(t("Mutable"), true)));
-        assertFalse(checker.isSync(Ast.TypeRef.borrowed(t("Mutable"), true)));
+        assertEquals(new SendSyncTraits.Traits(true, true), checker.derivePreflight(t("Safe")));
+        assertEquals(new SendSyncTraits.Traits(true, false), checker.derivePreflight(t("Mutable")));
+        assertTrue(checker.mayBeSyncAfterResolution(t("Boxed", t("Safe"))));
+        assertFalse(checker.mayBeSyncAfterResolution(t("Boxed", t("Mutable"))));
+        assertFalse(checker.mayBeSendAfterResolution(t("Boxed", t("UnknownNative"))));
+        assertFalse(checker.mayBeSendAfterResolution(Ast.TypeRef.borrowed(t("Mutable"), false)));
+        assertTrue(checker.mayBeSendAfterResolution(Ast.TypeRef.borrowed(t("Mutable"), true)));
+        assertFalse(checker.mayBeSyncAfterResolution(Ast.TypeRef.borrowed(t("Mutable"), true)));
     }
 
     @Test
     void standardReferenceWrappersAndInteriorCells() {
         SendSyncTraits checker = trusted(klass("Mutable", List.of(),
                 field("v", t("int"), true)));
-        assertTrue(checker.isSync(t("Arc", t("int"))));
-        assertFalse(checker.isSend(t("Arc", t("Mutable"))));
-        assertTrue(checker.isSync(t("Mutex", t("Mutable"))));
-        assertFalse(checker.isSync(t("RwLock", t("Mutable"))));
-        assertFalse(checker.isSend(t("Rc", t("int"))));
-        assertFalse(checker.isSend(t("Cell", t("int"))));
-        assertFalse(checker.isSync(t("Cell", t("int"))));
-        assertTrue(checker.isSend(t("Array", t("int"))));
-        assertFalse(checker.isSync(t("InvertedArray", t("int"))));
-        assertFalse(checker.isSend(t("MutexGuard", t("int"))));
+        assertTrue(checker.mayBeSyncAfterResolution(t("Arc", t("int"))));
+        assertFalse(checker.mayBeSendAfterResolution(t("Arc", t("Mutable"))));
+        assertTrue(checker.mayBeSyncAfterResolution(t("Mutex", t("Mutable"))));
+        assertFalse(checker.mayBeSyncAfterResolution(t("RwLock", t("Mutable"))));
+        assertFalse(checker.mayBeSendAfterResolution(t("Rc", t("int"))));
+        assertFalse(checker.mayBeSendAfterResolution(t("Cell", t("int"))));
+        assertFalse(checker.mayBeSyncAfterResolution(t("Cell", t("int"))));
+        assertTrue(checker.mayBeSendAfterResolution(t("Array", t("int"))));
+        assertFalse(checker.mayBeSyncAfterResolution(t("InvertedArray", t("int"))));
+        assertFalse(checker.mayBeSendAfterResolution(t("MutexGuard", t("int"))));
     }
 
     @Test
@@ -73,23 +73,26 @@ final class SendSyncAndRegionPlannerTest {
                 klass("Node", List.of(), field("next", t("Node"), false)),
                 klass("Duplicate", List.of(), field("v", t("int"), false)),
                 klass("Duplicate", List.of(), field("v", t("int"), false)));
-        assertFalse(checker.isSend(t("Node")));
-        assertFalse(checker.isSync(t("Node")));
-        assertFalse(checker.isSend(t("Duplicate")));
-        assertFalse(checker.isSend(t("UnknownForeign")));
-        assertFalse(checker.isSend(t("NativeHandle")));
-        assertFalse(checker.isSend(t("RawPointer", t("int"))));
-        assertFalse(checker.isSend(t("ExecutionPermit", t("int"))));
-        assertFalse(checker.isSend(Ast.TypeRef.inferred()));
+        assertFalse(checker.mayBeSendAfterResolution(t("Node")));
+        assertFalse(checker.mayBeSyncAfterResolution(t("Node")));
+        assertFalse(checker.mayBeSendAfterResolution(t("Duplicate")));
+        assertFalse(checker.mayBeSendAfterResolution(t("UnknownForeign")));
+        assertFalse(checker.mayBeSendAfterResolution(t("NativeHandle")));
+        assertFalse(checker.mayBeSendAfterResolution(t("RawPointer", t("int"))));
+        assertFalse(checker.mayBeSendAfterResolution(t("ExecutionPermit", t("int"))));
+        assertFalse(checker.mayBeSendAfterResolution(Ast.TypeRef.inferred()));
     }
 
     @Test
-    void errorsNameTheRequiredTraitAndDoNotGrantActorPermission() {
+    void preflightNeverClaimsPermissionOrActorAuthority() {
         SendSyncTraits checker = trusted();
-        assertTrue(checker.isSend(t("Result", t("int"), t("String"))));
-        assertFalse(checker.isSync(t("Result", t("int"), t("Cell", t("int")))));
-        assertThrows(IllegalArgumentException.class, () -> checker.requireSend(t("Rc", t("int"))));
-        assertThrows(IllegalArgumentException.class, () -> checker.requireSync(t("Cell", t("int"))));
+        assertTrue(checker.mayBeSendAfterResolution(
+                t("Result", t("int"), t("String"))),
+                "positive AST preflight is only a candidate for later semantic proof");
+        assertFalse(checker.mayBeSyncAfterResolution(
+                t("Result", t("int"), t("Cell", t("int")))));
+        assertFalse(checker.mayBeSendAfterResolution(t("Rc", t("int"))));
+        assertFalse(checker.mayBeSyncAfterResolution(t("Cell", t("int"))));
     }
 
     private static RegionAccessPlanner.SystemAccess sys(
@@ -192,19 +195,19 @@ final class SendSyncAndRegionPlannerTest {
         SendSyncTraits defaultChecker = traits();
         for (String intrinsic : List.of("Arc", "Weak", "Shared", "Mutex",
                 "RwLock", "Array", "List", "InvertedArray", "Option")) {
-            assertFalse(defaultChecker.isSend(t(intrinsic, t("int"))),
+            assertFalse(defaultChecker.mayBeSendAfterResolution(t(intrinsic, t("int"))),
                     "unlowered " + intrinsic + " cannot claim Send");
         }
-        assertFalse(defaultChecker.isSend(t("Result", t("int"), t("int"))));
+        assertFalse(defaultChecker.mayBeSendAfterResolution(t("Result", t("int"), t("int"))));
         SendSyncTraits spoofed = trusted(
                 klass("Arc", List.of("T"), field("hostPtr", t("NativeHandle"), false)),
                 klass("Mutex", List.of("T"), field("hostPtr", t("NativeHandle"), false)),
                 klass("Option", List.of("T"), field("hostPtr", t("NativeHandle"), false)),
                 klass("Result", List.of("T", "E"), field("hostPtr", t("NativeHandle"), false)));
-        assertFalse(spoofed.isSend(t("Arc", t("int"))));
-        assertFalse(spoofed.isSync(t("Mutex", t("int"))));
-        assertFalse(spoofed.isSend(t("Option", t("int"))));
-        assertFalse(spoofed.isSend(t("Result", t("int"), t("int"))));
+        assertFalse(spoofed.mayBeSendAfterResolution(t("Arc", t("int"))));
+        assertFalse(spoofed.mayBeSyncAfterResolution(t("Mutex", t("int"))));
+        assertFalse(spoofed.mayBeSendAfterResolution(t("Option", t("int"))));
+        assertFalse(spoofed.mayBeSendAfterResolution(t("Result", t("int"), t("int"))));
         assertThrows(IllegalArgumentException.class, () ->
                 new SendSyncTraits(new Ast.Program(List.of()),
                         java.util.Set.of("ForgedCompilerIntrinsic")));
@@ -218,14 +221,14 @@ final class SendSyncAndRegionPlannerTest {
                 klass("Channel", List.of("T"), field("id", t("int"), false)),
                 klass("ThreadBound", List.of("T"), field("id", t("int"), false)));
         for (String denied : List.of("ActorRef", "Task", "Channel", "ThreadBound")) {
-            assertFalse(forged.isSend(t(denied, t("int"))),
+            assertFalse(forged.mayBeSendAfterResolution(t(denied, t("int"))),
                     "capability spoof admitted Send: " + denied);
-            assertFalse(forged.isSync(t(denied, t("int"))),
+            assertFalse(forged.mayBeSyncAfterResolution(t(denied, t("int"))),
                     "capability spoof admitted Sync: " + denied);
         }
         SendSyncTraits ordinary = traits(
                 klass("SendableRecord", List.of(), field("id", t("int"), false)));
-        assertTrue(ordinary.isSend(t("SendableRecord")),
+        assertTrue(ordinary.mayBeSendAfterResolution(t("SendableRecord")),
                 "normal transparent value types still derive Send");
     }
 
@@ -263,8 +266,8 @@ final class SendSyncAndRegionPlannerTest {
         SendSyncTraits checker = new SendSyncTraits(
                 new Ast.Program(List.of(new Ast.ModuleDecl("recursive", List.of(recursive)))),
                 java.util.Set.of("Option"));
-        assertFalse(checker.isSend(t("Expanding", t("int"))));
-        assertFalse(checker.isSync(t("Expanding", t("int"))));
+        assertFalse(checker.mayBeSendAfterResolution(t("Expanding", t("int"))));
+        assertFalse(checker.mayBeSyncAfterResolution(t("Expanding", t("int"))));
     }
 
     @Test
@@ -274,7 +277,7 @@ final class SendSyncAndRegionPlannerTest {
             depthBomb = t("Option", depthBomb);
         }
         SendSyncTraits checker = trusted();
-        assertFalse(checker.isSend(depthBomb));
-        assertFalse(checker.isSync(depthBomb));
+        assertFalse(checker.mayBeSendAfterResolution(depthBomb));
+        assertFalse(checker.mayBeSyncAfterResolution(depthBomb));
     }
 }
