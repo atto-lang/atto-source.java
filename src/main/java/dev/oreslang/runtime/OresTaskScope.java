@@ -89,7 +89,10 @@ public final class OresTaskScope {
             children.add(child);
             final OresFuture<T> future;
             try {
-                future = scheduler.start(task, () -> childQuiescent(child));
+                future = scheduler.start(
+                        task,
+                        () -> childQuiescent(child),
+                        () -> childTerminal(child));
             } catch (RuntimeException | Error failure) {
                 // Admission can fail before TaskRunner ownership exists, in which
                 // case no onQuiescent callback will arrive.
@@ -98,7 +101,6 @@ public final class OresTaskScope {
             }
 
             child.future = future;
-            future.whenCompleteRuntime((value, failure) -> childTerminal(child));
             return future;
         }
     }
@@ -153,12 +155,24 @@ public final class OresTaskScope {
             }
         }
 
-        // Never run Future cancellation hooks or completion subscribers while
-        // holding the scope lock. A queued/never-started child may report
-        // quiescence synchronously from its cancellation hook.
+        // Two-phase structured cancellation: first claim every still-pending
+        // child, then revoke every claimed child before publishing any ordinary
+        // Future subscribers. A blocking subscriber on child A must never
+        // prevent revocation of child B.
+        ArrayList<OresFuture.RuntimeCancellation<?>> claimed =
+                new ArrayList<>(cancel.size());
         for (OresFuture<?> child : cancel) {
-            child.cancel(false);
+            OresFuture.RuntimeCancellation<?> cancellation =
+                    child.claimCancellationFromRuntime();
+            if (cancellation != null) claimed.add(cancellation);
         }
+        for (OresFuture.RuntimeCancellation<?> cancellation : claimed) {
+            cancellation.revoke();
+        }
+        for (OresFuture.RuntimeCancellation<?> cancellation : claimed) {
+            cancellation.publish();
+        }
+
         if (complete) completeDrain();
         return drained;
     }
