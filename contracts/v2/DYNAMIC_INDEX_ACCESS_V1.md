@@ -27,7 +27,8 @@ Every closed-record/class IndexExpr is checked by the frontend and receives a we
 - Signed, immutable integer aliases are folded conservatively; known negative and out-of-range tuple slots are rejected at compile time.
 - Tuple `tuple[index]` uses a checked positional slot when its integer key is proven and in range. The proof is AST-identity bound, propagated only through compiler-maintained rewrites, and **also checked against the runtime-evaluated index**. This prevents a stale rewrite from selecting a different affine slot.
 - Field-key and tuple-slot proofs are incompatible at any one indexing site. A compiler optimization must preserve exact proof semantics or retypecheck the rewritten expression.
-- This v1 proof store uses synchronized weak identity lookup on indexed reads. A future profiling-guided implementation may cache immutable checked plans per evaluator to reduce hot-path synchronization without changing the fail-closed contract.
+- The evaluator now caches each immutable compiler-certified field plan by `IndexExpr` object identity in its own synchronized `IdentityHashMap`. Actor carriers can access the cache concurrently. The global weak-identity proof registry is consulted only on the first access per evaluator and AST site. A missing proof is never cached; cache hits must still validate the **requested key**, not just the receiver or prior successful key.
+- The cache is bounded by the static indexing sites reachable by the evaluator's resident program. This is a localized performance optimization, **not** a new permission source; a fresh evaluator obtains proof authority from the type checker and compiler only.
 
 ## Ownership and projection integrity
 
@@ -45,6 +46,10 @@ Tuple indexed assignment must be statically rejected, as fixed tuple runtime val
 - `Pair<A,B>` is a positional two-field product: `p[0] : A`, `p[1] : B`, and `p[i] : A | B` for a runtime integer, with checked bounds.
 - `Entry<K,V>` is a named pair: `entry["key"] : K`, `entry["value"] : V`, and `entry[s] : K | V` for a runtime string. Numeric aliases `0`/`1` are a separate syntax decision.
 - Neither type is declared or lowered by this PR; tuple-of-two already supports the positional subset.
+
+## Deferred mutable indexed projection ownership
+
+The existing `OwnershipAndClosureTest.ordinaryIndexedProjectionIsAReadNotAnImplicitPartialMove` explicitly admits a record alias obtained from `items[0]`. Tightening all `Array/List<T>` indexed reads to require `Copy<T>` would regress this currently specified behavior. Until indexed place/loan and alias-lifetime semantics are reconciled, this PR does **not** silently redefine such reads as moves. A separate ownership-model change must prove how aliases, subsequent slot updates, actor isolation and deterministic drops interact. This is **not** a claim that general mutable list extraction is fully hardened.
 
 ## Verification gates
 
