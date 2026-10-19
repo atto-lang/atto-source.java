@@ -103,6 +103,8 @@ public final class TypeChecker {
     // The first executable guest nb path is confined to the VM-owned root
     // main, where the context can retain the copied scalar child until exit.
     private boolean currentRootMain;
+    /** Lexical boundary of the executing root main, never its module globals. */
+    private Env currentRootMainLocalEnv;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -672,10 +674,13 @@ public final class TypeChecker {
         currentAsyncCallable = fn.async();
         boolean previousMaySuspend = currentMaySuspend;
         boolean previousRootMain = currentRootMain;
+        Env previousRootLocalEnv = currentRootMainLocalEnv;
         currentRootMain = module.equals(Parser.ROOT_MODULE)
                 && fn.name().equals("main")
                 && fn.actorKind() == Ast.ActorKind.NONE
-                && fn.parameters().isEmpty();
+                && fn.parameters().isEmpty()
+                && !fn.async() && !fn.generator();
+        currentRootMainLocalEnv = currentRootMain ? env : null;
         // The module's root main runs inside a VM-owned root Task, and
         // remains an intentional compatibility boundary for existing source
         // programs that await without an explicit suspends modifier.
@@ -693,6 +698,7 @@ public final class TypeChecker {
             currentAsyncCallable = previousAsync;
             currentMaySuspend = previousMaySuspend;
             currentRootMain = previousRootMain;
+            currentRootMainLocalEnv = previousRootLocalEnv;
         }
 
         if (!fn.generator() && returns != Primitive.VOID && !definitelyReturns(fn.body())) {
@@ -3721,16 +3727,25 @@ public final class TypeChecker {
                 // captured. The only value crossing is a copied scalar.
                 if (!currentRootMain || currentActorKind != Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
-                            "guest scalar nb requires immediate await in VM-owned root main");
+                            "guest scalar task requires immediate await in VM-owned root main");
                 }
                 Ast.Expr returned = ScalarTaskPlan.returnedScalar(scalarTask);
+                // Only source-local bindings of this particular main are eligible.
+                // A globally visible name, imported constant, class member or
+                // runtime facade with a scalar-looking annotation is not a
+                // compiler-minted Task capture authorization.
+                if (returned instanceof Ast.NameExpr name
+                        && !rootMainHasLocalCapture(env, name.name())) {
+                    throw new IllegalArgumentException(
+                            "guest scalar task requires a lexical root-main local capture");
+                }
                 Type copiedType = typeOf(returned, env, generics, self);
                 if (copiedType instanceof Types.StringLiteral) return Primitive.STRING;
                 if (copiedType == Primitive.INT || copiedType == Primitive.BOOL
                         || copiedType == Primitive.FLOAT
                         || copiedType == Primitive.STRING) return copiedType;
                 throw new IllegalArgumentException(
-                        "guest scalar nb capture requires a proven copyable int, bool, float or string");
+                        "guest scalar task capture requires a proven copyable int, bool, float or string");
             }
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (awaitedType instanceof Named task
@@ -3961,6 +3976,8 @@ public final class TypeChecker {
             Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
             boolean previousMaySuspend = currentMaySuspend;
             boolean previousAsyncCallable = currentAsyncCallable;
+            boolean previousRootMain = currentRootMain;
+            Env previousRootLocalEnv = currentRootMainLocalEnv;
             Map<Env.Binding, Set<String>> outerInitialization = env.initializationSnapshot();
             if (nonLexical) currentClassOwner = null;
             // Plain lambdas execute synchronously within their caller. Never
@@ -3969,6 +3986,8 @@ public final class TypeChecker {
             // once their lowering is implemented.
             currentMaySuspend = false;
             currentAsyncCallable = false;
+            currentRootMain = false;
+            currentRootMainLocalEnv = null;
             // A lambda checked within a constructor runs on invocation, not
             // necessarily during initialization. It must never inherit the
             // constructor's one-time fixed-field initialization privilege.
@@ -3990,10 +4009,22 @@ public final class TypeChecker {
                 currentConstructorOwner = previousConstructorOwner;
                 currentMaySuspend = previousMaySuspend;
                 currentAsyncCallable = previousAsyncCallable;
+                currentRootMain = previousRootMain;
+                currentRootMainLocalEnv = previousRootLocalEnv;
             }
             return new Function(parameters, result);
         }
         return Unknown.INSTANCE;
+    }
+
+    /** Walk lexical block scopes only, stopping BEFORE global/module bindings. */
+    private boolean rootMainHasLocalCapture(Env at, String name) {
+        if (currentRootMainLocalEnv == null || name == null) return false;
+        for (Env cursor = at; cursor != null; cursor = cursor.parent) {
+            if (cursor.bindings.containsKey(name)) return true;
+            if (cursor == currentRootMainLocalEnv) return false;
+        }
+        return false;
     }
 
     private Type channelElementType(Type channel, String where) {
