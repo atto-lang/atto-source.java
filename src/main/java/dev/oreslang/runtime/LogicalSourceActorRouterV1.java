@@ -264,6 +264,15 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             int retired = 0;
             for (int i = failedInitialSpawns.size() - 1; i >= 0; --i) {
                 FailedInitialSpawn pending = failedInitialSpawns.get(i);
+                if (pending.physical != null
+                        && !pending.view.runtime().physicallyFinalizedForHotUpgrade(
+                                pending.physical)) {
+                    // Stop might originally have thrown before completing
+                    // its lifecycle transition. Retry a NONBLOCKING trusted
+                    // cancellation request here; never release the pin just
+                    // because cancellation was requested.
+                    pending.physical.cancel();
+                }
                 if (pending.physical == null
                         || pending.view.runtime().physicallyFinalizedForHotUpgrade(
                                 pending.physical)) {
