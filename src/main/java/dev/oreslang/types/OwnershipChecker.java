@@ -967,6 +967,9 @@ public final class OwnershipChecker {
             List<Ast.TypeRef> argumentTypes = new ArrayList<>(created.arguments().size());
             for (Ast.Expr arg : created.arguments()) {
                 ValueInfo info = checkExpr(arg, scope, true);
+                if (containsMlScalarCapabilityType(info.type)) {
+                    throw error("constructed objects cannot retain actor scalar snapshot/publication capabilities");
+                }
                 if (containsMutexGuardType(info.type)) {
                     throw error("MutexGuard cannot be stored in a constructed object");
                 }
@@ -999,6 +1002,9 @@ public final class OwnershipChecker {
                 // Waiting writers and failed immediate probes conservatively retain
                 // transferred ownership until the runtime supplies a recoverable send.
                 ValueInfo payload = checkExpr(channelOp.value(), scope, true);
+                if (containsMlScalarCapabilityType(payload.type)) {
+                    throw error("writech cannot transport actor scalar snapshot/publication capabilities");
+                }
                 if (containsMutexGuardType(payload.type)) {
                     throw error("writech cannot transport MutexGuard");
                 }
@@ -1061,6 +1067,9 @@ public final class OwnershipChecker {
             Ast.TypeRef elementType = null;
             for (Ast.Expr item : list.elements()) {
                 ValueInfo info = checkExpr(item, scope, true);
+                if (containsMlScalarCapabilityType(info.type)) {
+                    throw error("actor scalar snapshot/publication capabilities cannot be stored in an array/list");
+                }
                 if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in an array/list");
                 if (isBorrowValue(info)) throw error("borrowed references cannot be stored in an owned array/list until explicit container lifetimes are supported");
                 elementType = elementType == null
@@ -1077,6 +1086,9 @@ public final class OwnershipChecker {
             boolean copy = true;
             for (Ast.Expr item : tuple.elements()) {
                 ValueInfo info = checkExpr(item, scope, true);
+                if (containsMlScalarCapabilityType(info.type)) {
+                    throw error("actor scalar snapshot/publication capabilities cannot be stored in a tuple");
+                }
                 if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in a tuple");
                 if (isBorrowValue(info)) throw error("borrowed references cannot be stored in an owned tuple until explicit container lifetimes are supported");
                 copy &= info.kind == ValueKind.COPY;
@@ -1094,6 +1106,9 @@ public final class OwnershipChecker {
             }
             for (Ast.ObjectField field : object.fields()) {
                 ValueInfo info = checkExpr(field.value(), scope, true);
+                if (containsMlScalarCapabilityType(info.type)) {
+                    throw error("actor scalar snapshot/publication capabilities cannot be stored in a struct");
+                }
                 if (containsMutexGuardType(info.type)) {
                     throw error("MutexGuard cannot be stored in a struct");
                 }
@@ -1263,6 +1278,10 @@ public final class OwnershipChecker {
                 && factoryCall.member().equals("new")
                 && call.arguments().size() == 1) {
             ValueInfo owned = checkExpr(call.arguments().getFirst(), scope, true);
+            if (containsMlScalarCapabilityType(owned.type)) {
+                throw error(factory.name()
+                        + ".new cannot retain actor scalar snapshot/publication capabilities");
+            }
             if (owned.type != null && owned.type.isBorrow()) {
                 throw error(factory.name()
                         + ".new requires an owned value; borrowed values cannot become mutex state");
@@ -1280,6 +1299,10 @@ public final class OwnershipChecker {
                 return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
             }
             ValueInfo payload = checkExpr(call.arguments().getFirst(), scope, true);
+            if (containsMlScalarCapabilityType(payload.type)) {
+                throw error(name.name()
+                        + " cannot wrap actor scalar snapshot/publication capabilities");
+            }
             if (payload.kind == ValueKind.IMM_BORROW || payload.kind == ValueKind.MUT_BORROW
                     || (payload.type != null && payload.type.isBorrow())) {
                 throw error(name.name()
@@ -1997,6 +2020,23 @@ public final class OwnershipChecker {
             closure.close();
         }
         return new ValueInfo(Ast.TypeRef.simple("Fnc"), ValueKind.MOVE_ONLY, null);
+    }
+
+    private static boolean containsMlScalarCapabilityType(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.name().equals("$ActorScalarSnapshot")
+                || type.name().equals("$ActorScalarPublication")) {
+            return true;
+        }
+        if (type.isBorrow()) {
+            return containsMlScalarCapabilityType(type.borrowedTarget());
+        }
+        if (type.isRecordType()) {
+            return type.recordMembers().values().stream()
+                    .anyMatch(OwnershipChecker::containsMlScalarCapabilityType);
+        }
+        return type.arguments().stream()
+                .anyMatch(OwnershipChecker::containsMlScalarCapabilityType);
     }
 
     private static boolean isMlScalarSnapshotType(Ast.TypeRef type) {
