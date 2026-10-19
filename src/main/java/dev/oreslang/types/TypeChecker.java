@@ -4230,6 +4230,17 @@ public final class TypeChecker {
             Env env,
             Set<String> generics,
             Type self) {
+        if (call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.TypeExpr typeReceiver) {
+            if (!member.member().equals("new")) {
+                throw new IllegalArgumentException(
+                        "generic type-qualified expression only supports the checked .new constructor spelling; got ."
+                                + member.member());
+            }
+            return typeStagedRequiredConstructor(
+                    call, typeReceiver.type(), env, generics, self);
+        }
+
         if (call.typeArgumentsPresent()) {
             throw new IllegalArgumentException(
                     "required named-call lowering does not yet admit call-site type arguments");
@@ -4409,6 +4420,106 @@ public final class TypeChecker {
 
         throw new IllegalArgumentException(
                 "named arguments require a statically resolved source function, static function, or method");
+    }
+
+    private Type typeStagedRequiredConstructor(
+            Ast.StagedCallExpr call,
+            Ast.TypeRef sourceType,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(
+                    "Type<T>.new does not accept a second call-site type-argument list");
+        }
+        if (sourceType.inferArguments()) {
+            throw new IllegalArgumentException(
+                    "Type<>.new requires explicit type arguments in this first constructor-factory slice");
+        }
+
+        Ast.ClassDecl klass = findClass(sourceType.name());
+        if (klass == null) {
+            throw new IllegalArgumentException(
+                    "generic type-qualified .new requires a statically known source class; got '"
+                            + sourceType.name() + "'");
+        }
+        rejectUnimportedClassNamespace(klass);
+        if (klass.isAbstract()) {
+            throw new IllegalArgumentException(
+                    "cannot instantiate abstract class '" + klass.name() + "'");
+        }
+        if (klass.actorKind() != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "actor '" + klass.name()
+                            + "' cannot be constructed with Type<T>.new; use actor spawn");
+        }
+
+        Type resolved = resolve(sourceType, generics, self);
+        if (!(resolved instanceof Named nominal)) {
+            throw new IllegalArgumentException(
+                    "Type<T>.new target must resolve to a named class type");
+        }
+
+        Ast.ConstructorDecl constructor = klass.constructor();
+        if (constructor == null) {
+            throw new IllegalArgumentException(
+                    "Type<T>.new requires an explicit constructor on class '"
+                            + klass.name()
+                            + "'; legacy synthesized positional-field construction remains available only through new "
+                            + klass.name() + "(...)");
+        }
+
+        NamedCallBindingPlan.Plan plan =
+                NamedCallBindingPlan.bindRequired(
+                        constructor.parameters(), call.arguments());
+        Map<String, Type> classBindings = classGenericBindings(klass, nominal);
+        Set<String> classGenerics = Set.copyOf(klass.genericParameters());
+        Type constructorSelf = nominalClassType(klass);
+
+        List<Type> expectedByFormal =
+                new ArrayList<>(constructor.parameters().size());
+        for (Ast.Param param : constructor.parameters()) {
+            Type pattern = resolveParam(param, classGenerics, constructorSelf);
+            expectedByFormal.add(substituteGenerics(pattern, classBindings));
+        }
+
+        for (int sourceIndex = 0; sourceIndex < call.arguments().size(); sourceIndex++) {
+            Ast.CallArgument item = call.arguments().get(sourceIndex);
+            if (item.value() == null || item.omitted() || item.spread()) {
+                throw new IllegalArgumentException(
+                        "required Type<T>.new admits only concrete, non-spread values");
+            }
+            int formalIndex = plan.formalIndexBySourceItem().get(sourceIndex);
+            Ast.Param formal = constructor.parameters().get(formalIndex);
+            Type expected = expectedByFormal.get(formalIndex);
+            Type actual = typeOfAgainstExpected(
+                    item.value(), expected, env, generics, self);
+            if (!formal.structural()) {
+                requireReadonlyCapabilityPreserved(
+                        actual,
+                        expected,
+                        "constructor parameter '" + formal.name() + "'");
+            }
+            requireMutableReferentCompatible(
+                    actual,
+                    formal.mutable(),
+                    "constructor parameter '" + formal.name() + "'");
+            requireAssignable(
+                    actual,
+                    expected,
+                    "constructor parameter '" + formal.name() + "'");
+        }
+
+        Ast.CheckedNamedCallPlan.record(
+                call,
+                new Ast.NamedCallProof(
+                        plan.formalIndexBySourceItem(),
+                        plan.sourceItemIndexByFormal(),
+                        constructor.parameters().stream().map(Ast.Param::name).toList(),
+                        plan.trailingClosureFormalIndex(),
+                        "constructor",
+                        klass.name()));
+        return nominal;
     }
 
     private Type checkStagedRequiredCallable(
@@ -7510,6 +7621,9 @@ public final class TypeChecker {
             for (Ast.Expr argument : call.arguments()) {
                 rejectStaticClassGenericReferences(argument, classGenerics, klass, method);
             }
+        } else if (expression instanceof Ast.TypeExpr typeExpression) {
+            rejectStaticClassGenericReference(
+                    typeExpression.type(), classGenerics, klass, method);
         } else if (expression instanceof Ast.MemberExpr member) {
             rejectStaticClassGenericReferences(member.receiver(), classGenerics, klass, method);
         } else if (expression instanceof Ast.IndexExpr indexed) {
