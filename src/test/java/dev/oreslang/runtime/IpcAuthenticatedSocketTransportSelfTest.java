@@ -8,6 +8,7 @@ import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -340,6 +341,117 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             peer.join(3000);
             check(!peer.isAlive());
             check(peerFailure.get() == null);
+        }
+
+        // Close must actively interrupt a silent peer read; receipt
+        // retirement still waits for the trusted physical close worker.
+        byte[] silentPayload = "silent peer".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var silentMessage = envelope(1, "silentPeer", 3, 4, silentPayload);
+        peerFailure.set(null);
+        CountDownLatch peerSawData = new CountDownLatch(1);
+        try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress())) {
+            Thread peer = new Thread(() -> {
+                try (Socket accepted = server.accept()) {
+                    accepted.setSoTimeout(3000);
+                    IpcAuthenticatedSocketTransport.readWireFrame(accepted.getInputStream());
+                    peerSawData.countDown();
+                    while (accepted.getInputStream().read() != -1) { }
+                } catch (Throwable failure) {
+                    peerFailure.compareAndSet(null, failure);
+                }
+            }, "ipc-test-peer-silent-read");
+            peer.start();
+
+            ExecutorService cleanup = Executors.newSingleThreadExecutor();
+            try (Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                var bridge = new IpcReceiptCompletionBridge(1);
+                var transport = new IpcAuthenticatedSocketTransport(
+                        client, bridge, silentMessage, 90, 1, key, cleanup::execute);
+                var submission = transport.send(silentMessage, silentPayload);
+                check(!submission.writeAttemptFailed());
+                check(peerSawData.await(2, TimeUnit.SECONDS));
+                AtomicReference<Throwable> readFailure = new AtomicReference<>();
+                Thread reader = new Thread(() -> {
+                    try {
+                        transport.readVerifiedReceipt();
+                        readFailure.compareAndSet(null,
+                                new AssertionError("silent peer unexpectedly produced receipt"));
+                    } catch (IOException expected) {
+                        readFailure.compareAndSet(null, expected);
+                    }
+                }, "ipc-test-blocked-receipt-reader");
+                reader.start();
+                Thread.sleep(30);
+                check(reader.isAlive());
+                transport.requestClose();
+                reader.join(3000);
+                check(!reader.isAlive());
+                check(readFailure.get() instanceof IOException);
+                awaitPhase(transport, IpcTransportSessionLease.Phase.RETIRED);
+                check(submission.outcome().toCompletableFuture().join()
+                        == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+                check(bridge.invariant());
+            } finally {
+                cleanup.shutdownNow();
+                cleanup.awaitTermination(2, TimeUnit.SECONDS);
+            }
+            peer.join(3000);
+            check(!peer.isAlive());
+            check(peerFailure.get() == null);
+        }
+
+        // A peer that never reads must not pin a synchronous DATA writer
+        // forever. Closing the adapter aborts the Java Socket; the send lease
+        // is not retired until the writer unwinds.
+        byte[] blockedPayload = new byte[8 * 1024 * 1024];
+        Arrays.fill(blockedPayload, (byte) 0x5a);
+        var blockedMessage = envelope(1, "blockedWrite", 3, 4, blockedPayload);
+        peerFailure.set(null);
+        try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
+             Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort());
+             Socket peer = server.accept()) {
+            client.setSendBufferSize(1024);
+            ExecutorService cleanup = Executors.newSingleThreadExecutor();
+            try {
+                var bridge = new IpcReceiptCompletionBridge(1);
+                var transport = new IpcAuthenticatedSocketTransport(
+                        client, bridge, blockedMessage, 91, 1, key, cleanup::execute);
+                AtomicReference<IpcAuthenticatedSocketTransport.SendSubmission> sendResult =
+                        new AtomicReference<>();
+                AtomicReference<Throwable> sendFailure = new AtomicReference<>();
+                Thread sender = new Thread(() -> {
+                    try {
+                        sendResult.set(transport.send(blockedMessage, blockedPayload));
+                    } catch (Throwable failure) {
+                        sendFailure.compareAndSet(null, failure);
+                    }
+                }, "ipc-test-blocked-data-writer");
+                sender.start();
+                boolean observedPinnedWrite = false;
+                for (int i = 0; i < 400; ++i) {
+                    if (transport.snapshot().activeWrites() == 1 && sender.isAlive()) {
+                        observedPinnedWrite = true;
+                        break;
+                    }
+                    Thread.sleep(5);
+                }
+                check(observedPinnedWrite);
+                transport.requestClose();
+                sender.join(4000);
+                check(!sender.isAlive());
+                check(sendFailure.get() == null);
+                check(sendResult.get() != null);
+                check(sendResult.get().writeAttemptFailed());
+                awaitPhase(transport, IpcTransportSessionLease.Phase.RETIRED);
+                check(transport.snapshot().activeWrites() == 0);
+                check(sendResult.get().outcome().toCompletableFuture().join()
+                        == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+                check(bridge.invariant());
+            } finally {
+                cleanup.shutdownNow();
+                cleanup.awaitTermination(2, TimeUnit.SECONDS);
+            }
         }
 
         System.out.println("JAVA_IPC_AUTHENTICATED_SOCKET_HOST_PASS checks=" + checks);
