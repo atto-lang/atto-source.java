@@ -58,6 +58,12 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
      * blocked lane postpone stealing forever.</p>
      */
     private final AtomicLongArray affinityLaneOldestEnqueueNanos;
+    /** Precomputed immutable steal order; published only on carrier startup. */
+    private volatile CarrierTopologyPlan topologyPlan;
+    private final CarrierTopologyPlan.Location[] carrierLocations;
+    private final AtomicLong affinitySameLlcSteals = new AtomicLong();
+    private final AtomicLong affinitySameNumaSteals = new AtomicLong();
+    private final AtomicLong affinityRemoteSteals = new AtomicLong();
     private final int queueCapacity;
     private final int maximumPoolSize;
     private final long affinityBase;
@@ -115,6 +121,9 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         }
         this.affinityQueues = List.copyOf(lanes);
         this.affinityLaneOldestEnqueueNanos = new AtomicLongArray(maximumPoolSize);
+        this.carrierLocations = new CarrierTopologyPlan.Location[maximumPoolSize];
+        java.util.Arrays.fill(carrierLocations, CarrierTopologyPlan.Location.UNKNOWN);
+        this.topologyPlan = new CarrierTopologyPlan(carrierLocations);
         this.queueCapacity = queueCapacity;
         this.maximumPoolSize = maximumPoolSize;
         this.affinityBase = affinityBase;
@@ -193,6 +202,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         long affinityOrdinal = affinityBase + slot;
         int affinityTarget = nativeBindCurrentThreadToAffinityOrdinal(affinityOrdinal);
         CURRENT_AFFINITY_TARGET.set(affinityTarget);
+        publishCarrierLocation(slot, CarrierTopologyPlan.discover(affinityTarget));
         if (affinityTarget < 0) affinityBindingFailures.incrementAndGet();
         CURRENT_NATIVE_THREAD_ID.set(nativeCurrentThreadId());
         carrierThreads.set(slot, Thread.currentThread());
@@ -293,22 +303,32 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         }
     }
 
+    private synchronized void publishCarrierLocation(
+            int slot, CarrierTopologyPlan.Location location) {
+        carrierLocations[slot] = location;
+        // Only on native worker startup, never in the hot scheduling path.
+        topologyPlan = new CarrierTopologyPlan(carrierLocations);
+    }
+
     private Runnable pollStealableTask(int thiefSlot) {
         long now = System.nanoTime();
         int enabled = Math.max(1, corePoolSize.get());
         if (enabled <= 1) return null;
 
         int maxProbes = Math.min(enabled - 1, MAX_STEAL_PROBES);
-        int start = Math.floorMod(nextStealVictim.getAndIncrement(), enabled);
+        int rotation = nextStealVictim.getAndIncrement();
+        CarrierTopologyPlan plan = topologyPlan;
         int examined = 0;
         int probes = 0;
-        while (examined < enabled && probes < maxProbes) {
-            int victimSlot = (start + examined++) % enabled;
-            if (victimSlot == thiefSlot) continue;
-            probes++;
-
+        // Inspect all potential lanes in locality order. Only nonempty lanes
+        // consume the bounded dequeue-probe budget; remote peers remain
+        // stealable even with many empty nearer lanes.
+        while (examined < maximumPoolSize - 1 && probes < maxProbes) {
+            int victimSlot = plan.victimAt(thiefSlot, examined++, rotation);
+            if (victimSlot >= enabled) continue;
             ArrayBlockingQueue<Runnable> victim = affinityQueues.get(victimSlot);
             if (victim.peek() == null) continue;
+            probes++;
             long oldestEnqueue = affinityLaneOldestEnqueueNanos.get(victimSlot);
             if (oldestEnqueue == 0L
                     || now - oldestEnqueue < AFFINITY_STEAL_GRACE_NANOS) continue;
@@ -316,6 +336,11 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
             Runnable stolen = victim.poll();
             if (stolen != null) {
                 affinitySteals.incrementAndGet();
+                switch (plan.tier(thiefSlot, victimSlot)) {
+                    case 0 -> affinitySameLlcSteals.incrementAndGet();
+                    case 1 -> affinitySameNumaSteals.incrementAndGet();
+                    default -> affinityRemoteSteals.incrementAndGet();
+                }
                 clearLaneAgeIfEmpty(victimSlot, victim);
                 return stolen;
             }
@@ -579,6 +604,9 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     public long getCompletedTaskCount() { return completedTaskCount.get(); }
     public long getAffinityPreferredHitCount() { return affinityPreferredHits.get(); }
     public long getAffinityStealCount() { return affinitySteals.get(); }
+    public long getAffinitySameLlcStealCount() { return affinitySameLlcSteals.get(); }
+    public long getAffinitySameNumaStealCount() { return affinitySameNumaSteals.get(); }
+    public long getAffinityRemoteStealCount() { return affinityRemoteSteals.get(); }
     public long getAffinityGlobalSpillCount() { return affinityGlobalSpills.get(); }
     public int getAffinityBindingFailureCount() { return affinityBindingFailures.get(); }
     public int getLargestPoolSize() { return largestPoolSize.get(); }
