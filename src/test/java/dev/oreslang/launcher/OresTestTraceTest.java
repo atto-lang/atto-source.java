@@ -126,7 +126,7 @@ final class OresTestTraceTest {
     void rejectOversizedAndInvalidUtf8TraceDuringBoundedRead() throws Exception {
         Path source = temporary.resolve("bounded-source.ores");
         Path trace = temporary.resolve("bounded-trace.orestrace");
-        Files.writeString(source, "pub routine main(): void { return; }\\n".replace("\\n", "\n"));
+        Files.writeString(source, "pub routine main(): void { return; }\n");
         var report = new OresTestExploration.Report(21, 4, 3, 0, 0, 99);
         OresTestTrace.write(trace, source, 7, 3, true, report);
         byte[] valid = Files.readAllBytes(trace);
