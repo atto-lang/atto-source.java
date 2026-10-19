@@ -126,8 +126,12 @@ def require_exact_publisher_execution(workflow):
 def validate(codeowners, workflow):
     if len(SECURITY_PATHS) != len(set(SECURITY_PATHS)):
         raise ValueError("duplicated security manifest entry")
+    # Security files must agree on LF-only record boundaries. read_text()
+    # and splitlines() can otherwise normalize CR/Unicode separators.
+    if any(ch != "\n" and not (" " <= ch <= "~") for ch in codeowners):
+        raise ValueError("CODEOWNERS contains noncanonical ASCII LF bytes")
     entries = []
-    for raw in codeowners.splitlines():
+    for raw in codeowners.split("\n"):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -174,7 +178,7 @@ def validate(codeowners, workflow):
 class ProtectedReviewCoverageTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.owners = (ROOT / ".github" / "CODEOWNERS").read_text()
+        cls.owners = (ROOT / ".github" / "CODEOWNERS").read_bytes().decode("utf-8")
         cls.workflow = (ROOT / ".github" / "workflows"
                         / "private-ci-mirror-preflight.yml").read_text()
 
@@ -200,6 +204,13 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
 
     def test_current_checkout_is_reviewed_and_triggered(self):
         validate(self.owners, self.workflow)
+
+    def test_noncanonical_codeowners_separators_are_rejected(self):
+        for separator in ("\r", "\x0b", "\x0c", "\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=repr(separator)):
+                data = "# ignored" + separator + self.owners
+                with self.assertRaisesRegex(ValueError, "noncanonical ASCII LF"):
+                    validate(data, self.workflow)
 
     def test_missing_codeowner_is_rejected(self):
         damaged = self.owners.replace(
