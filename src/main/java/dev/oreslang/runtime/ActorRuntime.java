@@ -1130,6 +1130,15 @@ public final class ActorRuntime implements AutoCloseable {
             this.sharedBytes = block == null ? bytes : 0L;
         }
         boolean privateBacking() { return privateBlock != null; }
+        void attach(ActorShardColumns shard) {
+            synchronized (cell.lifecycleLock) {
+                requireOwner();
+                if (attachedShard != null) {
+                    throw new IllegalStateException("actor shard already attached");
+                }
+                attachedShard = Objects.requireNonNull(shard, "shard");
+            }
+        }
         boolean ownedBy(ActorRuntime runtime, ActorId actor) {
             return runtime == ActorRuntime.this && cell.ref.id().equals(actor);
         }
@@ -1152,6 +1161,9 @@ public final class ActorRuntime implements AutoCloseable {
         private void release(boolean ownerTurn) {
             if (!revoked.compareAndSet(false, true)) return;
             synchronized (cell.lifecycleLock) {
+                ActorShardColumns shard = attachedShard;
+                attachedShard = null;
+                if (shard != null) shard.revokeBackingFromLease();
                 cell.shardLeases.remove(this);
                 if (cell.shardReservedBytes < (privateBlock != null
                         ? privateBlock.capacity() : sharedBytes)) {
