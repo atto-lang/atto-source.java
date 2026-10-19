@@ -39,6 +39,21 @@ final class ConcurrencyTestCommandTest {
     }
 
     @Test
+    void rejectsProtocolEventsAfterSummaryAndUnknownEventKinds() {
+        assertFalse(ConcurrencyTestCommand.validNativeSuiteSummary(
+                "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=0\n"
+                + "ORES_TEST|PASS|late-case\n"));
+        assertFalse(ConcurrencyTestCommand.validNativeSuiteSummary(
+                "ORES_TEST|PASS|case\n"
+                + "ORES_TEST|UNKNOWN|forged-protocol\n"
+                + "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=0\n"));
+        assertFalse(ConcurrencyTestCommand.validNativeSuiteSummary(
+                "ORES_TEST|PASS|case\n"
+                + "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=0\n"
+                + "ORES_TEST|PASS|after-summary\n"));
+    }
+
+    @Test
     void rejectsMultiIterationTraceOverwriteAndSourceClobber() throws Exception {
         assertEquals(2, ConcurrencyTestCommand.run(new String[]{
                 "examples/native-testing.ores", "--iterations=3",
