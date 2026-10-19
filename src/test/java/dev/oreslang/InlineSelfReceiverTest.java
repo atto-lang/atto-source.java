@@ -105,6 +105,71 @@ final class InlineSelfReceiverTest {
     }
 
     @Test
+    void explicitSelfAtACallSiteCountsAsAnOrdinaryValueArgument() throws Exception {
+        // The dot's left operand is the bound receiver. An expression named
+        // self inside parentheses is never swallowed as another receiver.
+        String output = run("""
+                define class Foo as
+                  pub foo(int x): int { return x; }
+                  pub foo(self other, int x): int { return x + 10; }
+                  pub both(): int {
+                    return self.foo(5) + self.foo(self, 5);
+                  }
+                end
+                pub routine main(): void {
+                  val foo = new Foo();
+                  stdio.stdout.write(foo.both());
+                }
+                """);
+        assertEquals("20", output);
+    }
+
+    @Test
+    void explicitSelfAtACallSiteCannotFakeAnImplicitReceiverOrReduceArity() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Foo as
+                          pub foo(int x): int { return x; }
+                          pub bad(): int {
+                            return self.foo(self, 5);
+                          }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("arity 2"), error::getMessage);
+    }
+
+    @Test
+    void explicitSelfAsAValueCannotBypassSelectedOverloadTypeChecks() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Foo as
+                          pub foo(int x): int { return x; }
+                          pub foo(int a, int b): int { return a + b; }
+                          pub bad(): int {
+                            return self.foo(self, 5);
+                          }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("argument 1"), error::getMessage);
+    }
+
+    @Test
+    void inlineSelfCollisionIsIdenticalForOrdinaryClassAndActorMethods() {
+        for (String kind : new String[] {"class", "actor"}) {
+            for (String declarations : new String[] {
+                    "foo(int x): void { return; }\nfoo(self, int x): void { return; }",
+                    "foo(self, int x): void { return; }\nfoo(int x): void { return; }"
+            }) {
+                IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                        TypeChecker.check(Parser.parse(
+                                "define " + kind + " Foo as\n" + declarations + "\nend")));
+                assertTrue(error.getMessage().contains("already has arity 1"),
+                        kind + ": " + error.getMessage());
+            }
+        }
+    }
+
+    @Test
     void inlineMutableReceiverUsesExistingBorrowedMutabilitySemantics() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Counter as
