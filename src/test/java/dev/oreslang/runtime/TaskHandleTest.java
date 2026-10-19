@@ -29,6 +29,92 @@ public class TaskHandleTest {
         if (interrupted) Thread.currentThread().interrupt();
     }
 
+
+    private static TaskCancellation authorityOf(TaskHandle<?> handle) throws Exception {
+        java.lang.reflect.Field field = TaskHandle.class.getDeclaredField("cancellation");
+        field.setAccessible(true);
+        return (TaskCancellation) field.get(handle);
+    }
+
+    @Test void parentDoneAwaitsRunningChildPhysicalRetirement() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            TaskScope scope = scheduler.newTaskScope();
+            CountDownLatch parentEntered = new CountDownLatch(1);
+            CountDownLatch parentRelease = new CountDownLatch(1);
+            CountDownLatch childEntered = new CountDownLatch(1);
+            CountDownLatch childRelease = new CountDownLatch(1);
+            TaskHandle<Integer> parent = scope.startTask(resume -> {
+                parentEntered.countDown();
+                awaitUninterruptibly(parentRelease);
+                return OresScheduler.done(11);
+            });
+            assertTrue(parentEntered.await(3, TimeUnit.SECONDS));
+            TaskHandle<Integer> child = TaskHandle.start(scheduler, resume -> {
+                childEntered.countDown();
+                awaitUninterruptibly(childRelease);
+                return OresScheduler.done(22);
+            }, authorityOf(parent));
+            try {
+                assertTrue(childEntered.await(3, TimeUnit.SECONDS));
+                scope.seal();
+                parentRelease.countDown();
+                assertEquals(11, parent.result().get(3, TimeUnit.SECONDS));
+                assertFalse(parent.getDone().isDone(),
+                        "parent quiescence alone must not publish descendants");
+                assertFalse(scope.getDone().isDone(),
+                        "scope must inherit its child's physical lifetime barrier");
+                assertThrows(IllegalStateException.class, authorityOf(parent)::child,
+                        "finished parent's authority must seal new child admission");
+            } finally {
+                parentRelease.countDown();
+                childRelease.countDown();
+            }
+            assertEquals(new TaskHandle.Success<>(22), done(child));
+            assertEquals(new TaskHandle.Success<>(11), done(parent));
+            assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test void cancelledParentStillAwaitsRunningChildPhysicalRetirement()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            TaskScope scope = scheduler.newTaskScope();
+            CountDownLatch parentEntered = new CountDownLatch(1);
+            CountDownLatch parentRelease = new CountDownLatch(1);
+            CountDownLatch childEntered = new CountDownLatch(1);
+            CountDownLatch childRelease = new CountDownLatch(1);
+            TaskHandle<Integer> parent = scope.startTask(resume -> {
+                parentEntered.countDown();
+                awaitUninterruptibly(parentRelease);
+                return OresScheduler.done(11);
+            });
+            assertTrue(parentEntered.await(3, TimeUnit.SECONDS));
+            TaskHandle<Integer> child = TaskHandle.start(scheduler, resume -> {
+                childEntered.countDown();
+                awaitUninterruptibly(childRelease);
+                return OresScheduler.done(22);
+            }, authorityOf(parent));
+            try {
+                assertTrue(childEntered.await(3, TimeUnit.SECONDS));
+                assertTrue(scope.cancel("stop descendants"));
+                assertTrue(parent.isCancellationRequested());
+                assertTrue(child.isCancellationRequested());
+                parentRelease.countDown();
+                assertThrows(java.util.concurrent.CancellationException.class,
+                        () -> parent.result().get(3, TimeUnit.SECONDS));
+                assertFalse(parent.getDone().isDone(),
+                        "cancelled propagation edges are not quiescence");
+                assertFalse(scope.getDone().isDone());
+            } finally {
+                parentRelease.countDown();
+                childRelease.countDown();
+            }
+            assertInstanceOf(TaskHandle.Cancelled.class, done(child));
+            assertInstanceOf(TaskHandle.Cancelled.class, done(parent));
+            assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void explicitCheckpointUnwindsFinallyAfterCancellationRequest()
             throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
