@@ -242,6 +242,15 @@ final class TaskAccessVerifierTest {
         assertEquals(0, verifier.activeChildren());
     }
 
+    @Test void directReadReadConflictQueryCannotBypassDomainBoundary() {
+        var process = TaskAccessVerifier.Place.whole(WORLD);
+        var privateActor = TaskAccessVerifier.Place.whole(
+                new TaskAccessVerifier.Root("ACTOR_PRIVATE", 50, 1, true));
+        assertTrue(TaskAccessVerifier.conflicts(read(process), read(privateActor)));
+        assertTrue(TaskAccessVerifier.conflicts(read(privateActor), read(process)));
+        assertFalse(TaskAccessVerifier.conflicts(read(process), read(process)));
+    }
+
     @Test void aSingleTaskCannotMixReadOnlyTrustDomains() {
         var verifier = new TaskAccessVerifier();
         var process = TaskAccessVerifier.Place.whole(WORLD);
