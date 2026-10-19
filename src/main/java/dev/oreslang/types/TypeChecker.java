@@ -7661,8 +7661,17 @@ public final class TypeChecker {
     }
 
     private boolean dynMentionsSelf(Ast.TypeRef ref) {
-        // Direct or nested receiver-self types cannot survive type erasure.
-        return ref.name().equals("self") || ref.arguments().stream().anyMatch(this::dynMentionsSelf);
+        return dynMentionsSelf(ref, new LinkedHashSet<>());
+    }
+
+    private boolean dynMentionsSelf(Ast.TypeRef ref, Set<Ast.TypeAliasDecl> visitedAliases) {
+        if (ref.name().equals("self")) return true;
+        for (Ast.TypeRef argument : ref.arguments()) {
+            if (dynMentionsSelf(argument, visitedAliases)) return true;
+        }
+        Ast.TypeAliasDecl alias = findTypeAlias(ref.name());
+        return alias != null && visitedAliases.add(alias)
+                && dynMentionsSelf(alias.target(), visitedAliases);
     }
 
     private boolean containsDynTypeRef(Ast.TypeRef ref) {
@@ -8032,6 +8041,12 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("dyn requires an ordinary interface or trait, not '" + named.name() + "'");
             }
             requireDynCompatible(iface, new LinkedHashSet<>());
+            // A symbolic or unknown specialization cannot furnish a runtime
+            // nominal implementation proof under the current erased ABI.
+            if (containsUnknown(named) || containsGenericNamed(named, generics)) {
+                throw new IllegalArgumentException(
+                        "dyn interface arguments require concrete, proven types");
+            }
             // The Java/Truffle receiver ABI already stores class references
             // and performs runtime method selection. Erase only to the proven
             // nominal interface view; never erase to Any or a record shape.
