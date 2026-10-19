@@ -153,6 +153,30 @@ final class CallerRoleContractsTest {
     }
 
     @Test
+    void nullNamesAndForeignObjectsCannotMasqueradeAsCallableTargets() {
+        Ast.Program program = Parser.parse(ROLES + """
+                @CallerRole(Callers.A)
+                pub fnc allowed(): void {}
+                pub fnc plain(): void {}
+                """);
+        var index = CallerRoleContracts.validate(program);
+        var sourceCaller = function(program, "allowed");
+        assertThrows(IllegalArgumentException.class,
+                () -> index.requireDirectCall(null, sourceCaller, "absent"));
+        assertThrows(IllegalArgumentException.class,
+                () -> index.requireDirectCall("plain", sourceCaller, "plain"));
+        assertThrows(IllegalArgumentException.class,
+                () -> index.requireDirectCall(java.util.Set.of(
+                        "__root__.Callers.A"), sourceCaller, "fake"));
+        assertThrows(IllegalArgumentException.class,
+                () -> index.rejectReification(null, "missing"));
+        assertThrows(IllegalArgumentException.class,
+                () -> index.rejectReification("plain", "plain"));
+        assertDoesNotThrow(() -> index.requireDirectCall(
+                function(program, "plain"), sourceCaller, "plain"));
+    }
+
+    @Test
     void duplicateCallableIdentityInRewrittenProgramFailsIndexValidation() {
         Ast.Program parsed = Parser.parse(ROLES + """
                 pub fnc safe(): void {}
