@@ -140,8 +140,17 @@ request becomes a queued terminal reply and is released only after that reply
 is written or dropped. Response conversion also remains inside the
 per-connection byte budget, so one slow connection cannot monopolize the
 listener-wide response-memory allowance. Read,
-request-execution and terminal-write deadlines are distinct; a write deadline
-closes the whole TCP session because stream state is no longer trustworthy.
+request-execution and terminal-write deadlines are distinct. The read budget
+now also applies as an **absolute handshake or single-frame deadline**,
+independent of per-read SO_TIMEOUT, so an unauthenticated peer or a one-byte-
+at-a-time trickle cannot keep an incomplete frame alive indefinitely. That
+absolute deadline closes the socket on expiration. It bounds socket I/O, not
+a custom authenticator doing non-cooperative CPU work; production authenticators
+must honor socket closure/cancellation themselves. A write deadline closes the
+whole TCP session because stream state is no longer trustworthy. Faulty actor
+cancellation hooks (including callbacks that throw) are treated as best-effort
+for cancellation; they cannot block host-owned response-credit reclamation or
+the cancellation attempts for other pending requests.
 Overload/protocol failures use an empty opaque ERROR and never serialize an
 arbitrary host exception, stack trace or `toString`.
 
