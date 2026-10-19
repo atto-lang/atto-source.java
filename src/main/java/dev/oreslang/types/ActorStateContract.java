@@ -14,6 +14,16 @@ import java.util.Set;
  * actor's ordinary member namespace or to an escaped closure/argument.
  */
 public final class ActorStateContract {
+    private static final Set<String> ML_SCALAR_INTRINSICS = Set.of(
+            "state_snapshot",
+            "snapshot_int",
+            "snapshot_bool",
+            "snapshot_string",
+            "snapshot_version",
+            "snapshot_revision",
+            "prepare_scalar_publication",
+            "publish_scalar_publication");
+
     private ActorStateContract() { }
 
     public static boolean isStateField(Ast.FieldDecl field) {
@@ -105,6 +115,9 @@ public final class ActorStateContract {
             }
         }
         for (Ast.MethodDecl method : klass.methods()) {
+            for (Ast.Param parameter : method.parameters()) {
+                rejectReservedMlBinding(parameter.name(), klass.name() + "." + method.name());
+            }
             if (method.name().equals("handle_state")) {
                 throw new IllegalArgumentException("handle_state is a sealed actor intrinsic");
             }
@@ -117,6 +130,18 @@ public final class ActorStateContract {
                               String activeAccess, boolean nestedClosure, boolean instanceMethod,
                               Ast.CriticalMode accessMode) {
         if (node == null) return;
+        if (node instanceof Ast.BindingStmt binding) {
+            rejectReservedMlBinding(binding.name(), actor);
+        } else if (node instanceof Ast.DestructureBinding binding
+                && !binding.isDiscard()) {
+            rejectReservedMlBinding(binding.name(), actor);
+        } else if (node instanceof Ast.ForOfStmt loop) {
+            rejectReservedMlBinding(loop.bindingName(), actor);
+        } else if (node instanceof Ast.LambdaExpr lambda) {
+            for (Ast.Param parameter : lambda.parameters()) {
+                rejectReservedMlBinding(parameter.name(), actor);
+            }
+        }
         if (node instanceof Ast.CallExpr call
                 && call.callee() instanceof Ast.MemberExpr callee
                 && isSelf(callee.receiver()) && callee.member().equals("handle_state")) {
@@ -462,6 +487,15 @@ public final class ActorStateContract {
                     throw new IllegalStateException("failed to validate actor state AST", failure);
                 }
             }
+        }
+    }
+
+    private static void rejectReservedMlBinding(
+            String name,
+            String context) {
+        if (ML_SCALAR_INTRINSICS.contains(name)) {
+            throw new IllegalArgumentException(
+                    context + " binds reserved sealed ML intrinsic name '" + name + "'");
         }
     }
 
