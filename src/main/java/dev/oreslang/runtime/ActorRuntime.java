@@ -323,9 +323,22 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public static DispatcherConfig defaults() {
-            int cpus = Math.max(2, Runtime.getRuntime().availableProcessors());
-            int shared = Integer.getInteger("ores.runtime.actor.shared.parallelism", cpus);
-            return new DispatcherConfig(cpus, shared, 64, 16_384);
+            int cpus = Math.max(1, Runtime.getRuntime().availableProcessors());
+            String sizing = System.getProperty("ores.runtime.actor.pool-sizing", "legacy").trim();
+            if ("cpu-budget".equals(sizing)) {
+                String requested = System.getProperty("ores.runtime.actor.shared.parallelism");
+                Integer shared = requested == null ? null : Integer.valueOf(requested);
+                ActorPoolSizing.Plan plan = ActorPoolSizing.cpuBudgeted(cpus, shared);
+                return new DispatcherConfig(
+                        plan.privateWorkers(), plan.sharedWorkers(), 64, 16_384);
+            }
+            if (!"legacy".equals(sizing)) {
+                throw new IllegalArgumentException(
+                        "ores.runtime.actor.pool-sizing must be legacy or cpu-budget");
+            }
+            int legacyCpus = Math.max(2, cpus);
+            int shared = Integer.getInteger("ores.runtime.actor.shared.parallelism", legacyCpus);
+            return new DispatcherConfig(legacyCpus, shared, 64, 16_384);
         }
     }
 
