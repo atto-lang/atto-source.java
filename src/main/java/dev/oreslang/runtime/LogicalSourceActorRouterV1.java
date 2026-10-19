@@ -1164,7 +1164,14 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                     logicalId,
                     txn.prior.incarnation);
             if (started.isEmpty()) return false;
-            txn.transfer = started.get();
+            synchronized (routeLock) {
+                requireActiveUpgradeLocked(txn);
+                if (txn.phase != UpgradePhase.STAGING) {
+                    throw new IllegalStateException(
+                            "source transfer acquired outside staging transaction");
+                }
+                txn.transfer = started.get();
+            }
 
             ActorRuntime.ActorRef<Object> replacement =
                     candidate.runtime().spawnCodeActorFromTransfer(
@@ -1243,11 +1250,20 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 }
             }
 
-            txn.phase = UpgradePhase.RETIRING;
+            synchronized (routeLock) {
+                requireActiveUpgradeLocked(txn);
+                if (txn.phase != UpgradePhase.PUBLISHED) {
+                    throw new IllegalStateException(
+                            "old-route retirement started outside published transaction");
+                }
+                txn.phase = UpgradePhase.RETIRING;
+            }
             try {
                 txn.transfer.retireSourceAfterPublication(replacement);
             } finally {
-                txn.transfer = null;
+                synchronized (routeLock) {
+                    txn.transfer = null;
+                }
             }
 
             if (txn.prior.physical.awaitTermination(
@@ -1310,12 +1326,14 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                             txn.candidateLeaseTransferred = true;
                         } else {
                             synchronized (routeLock) {
-                                if (!retiredCandidates.remove(
+                                if (!retiredCandidates.contains(
                                         txn.candidateRetirement)) {
                                     throw new IllegalStateException(
                                             "finalized unpublished candidate lost "
                                                     + "its supervisor retirement owner");
                                 }
+                                // Keep ownership registered. The unified
+                                // lease-debit block below closes BEFORE forget.
                             }
                         }
                     } catch (RuntimeException | Error probeFailure) {
@@ -1342,7 +1360,9 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                             throw new IllegalStateException(
                                     "unspawned candidate lost its supervisor owner");
                         }
-                        txn.candidateRetirement.retirementEligible = true;
+                        // Do not publish retirement eligibility yet. The
+                        // originating finalizer still owns the first lease
+                        // debit attempt and must close-before-forget.
                     }
                 }
 
@@ -1410,35 +1430,67 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                                     cleanupFailure.addSuppressed(leaseFailure);
                                 }
                             }
-                        } else if (txn.candidateRetirement.physical == null) {
-                            // No physical actor can reference this code, but
-                            // lease debit is still fallible. Close BEFORE
-                            // forgetting the owner. On failure, publish the
-                            // owner to the retryable retirement ledger.
-                            try {
-                                candidateLease.close();
-                                retiredCandidates.remove(
-                                        txn.candidateRetirement);
-                            } catch (RuntimeException | Error leaseFailure) {
-                                txn.candidateRetirement.retirementEligible = true;
-                                txn.candidateLeaseTransferred = true;
-                                if (cleanupFailure == null) {
-                                    cleanupFailure = leaseFailure;
-                                } else if (leaseFailure != cleanupFailure) {
-                                    cleanupFailure.addSuppressed(leaseFailure);
+                        } else {
+                            ActorRuntime.ActorRef<Object> physical =
+                                    txn.candidateRetirement.physical;
+                            boolean physicallyReleasable = physical == null;
+                            if (physical != null) {
+                                try {
+                                    physicallyReleasable =
+                                            candidate.runtime()
+                                                    .physicallyFinalizedForHotUpgrade(
+                                                            physical);
+                                } catch (RuntimeException | Error probeFailure) {
+                                    txn.candidateRetirement.retirementEligible = true;
+                                    txn.candidateLeaseTransferred = true;
+                                    if (cleanupFailure == null) {
+                                        cleanupFailure = probeFailure;
+                                    } else if (probeFailure != cleanupFailure) {
+                                        cleanupFailure.addSuppressed(probeFailure);
+                                    }
                                 }
                             }
-                        } else {
-                            // An executable candidate is owned by the ledger;
-                            // cleanup above must explicitly transfer the pin.
-                            IllegalStateException ownershipFailure =
-                                    new IllegalStateException(
-                                            "physical candidate lease remained "
-                                                    + "owned without transfer");
-                            if (cleanupFailure == null) {
-                                cleanupFailure = ownershipFailure;
-                            } else {
-                                cleanupFailure.addSuppressed(ownershipFailure);
+
+                            if (!txn.candidateLeaseTransferred) {
+                                if (!physicallyReleasable) {
+                                    // An executable/unknown candidate must
+                                    // remain ledger-owned. This should normally
+                                    // have been transferred earlier, but fail
+                                    // closed rather than debit code under it.
+                                    txn.candidateRetirement.retirementEligible = true;
+                                    txn.candidateLeaseTransferred = true;
+                                    IllegalStateException ownershipFailure =
+                                            new IllegalStateException(
+                                                    "candidate physical lifetime "
+                                                            + "still owns generation lease");
+                                    if (cleanupFailure == null) {
+                                        cleanupFailure = ownershipFailure;
+                                    } else {
+                                        cleanupFailure.addSuppressed(
+                                                ownershipFailure);
+                                    }
+                                } else {
+                                    try {
+                                        // Fallible debit occurs while the
+                                        // owner is still registered and under
+                                        // the same route monitor as reaping.
+                                        candidateLease.close();
+                                        retiredCandidates.remove(
+                                                txn.candidateRetirement);
+                                        txn.candidateLeaseTransferred = true;
+                                    } catch (RuntimeException | Error leaseFailure) {
+                                        // Only now hand retry authority to
+                                        // opportunistic reapers.
+                                        txn.candidateRetirement.retirementEligible = true;
+                                        txn.candidateLeaseTransferred = true;
+                                        if (cleanupFailure == null) {
+                                            cleanupFailure = leaseFailure;
+                                        } else if (leaseFailure != cleanupFailure) {
+                                            cleanupFailure.addSuppressed(
+                                                    leaseFailure);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
