@@ -18,6 +18,14 @@ public final class Types {
     }
 
     /**
+     * Statically validated nominal interface view, retained throughout checking.
+     * This is not a runtime fat pointer and does not grant actor transport.
+     */
+    public record Dyn(Named interfaceType) implements Type {
+        public Dyn { Objects.requireNonNull(interfaceType, "dyn interface"); }
+    }
+
+    /**
      * Receiver-polymorphic type carried by the implicit instance receiver.
      *
      * <p>The bound is the nominal type whose members are available while checking
@@ -26,14 +34,6 @@ public final class Types {
      * actual receiver may be a more-derived subtype. Values already proven to
      * have the receiver-polymorphic self type may flow through aliases/parameters.
      */
-    /**
-     * Statically validated nominal interface view, retained throughout checking.
-     * This is not a runtime fat pointer and does not grant actor transport.
-     */
-    public record Dyn(Named interfaceType) implements Type {
-        public Dyn { Objects.requireNonNull(interfaceType, "dyn interface"); }
-    }
-
     public record SelfType(Type bound) implements Type {
         public SelfType { Objects.requireNonNull(bound, "self bound"); }
     }
