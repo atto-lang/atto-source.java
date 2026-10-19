@@ -49,6 +49,16 @@ public final class TaskResolvedSendIntrinsicSmoke {
 
     public static void main(String[] args) {
         Type integer = Types.Primitive.INT;
+        Type dyn = new Types.Dyn(
+                new Types.Named("Worker", List.of()));
+        expect(!Types.isAssignable(Types.Unknown.INSTANCE, dyn),
+                "unknown cannot fabricate direct dyn witness");
+        expect(!Types.isAssignable(
+                        new Types.Named("Option", List.of(Types.Unknown.INSTANCE)),
+                        new Types.Named("Option", List.of(dyn))),
+                "unknown nested payload cannot fabricate dyn witness");
+        expect(Types.isAssignable(dyn, dyn),
+                "an already validated identical dyn witness remains assignable");
         expect(ThreadSafetyTraits.has(integer, Trait.SEND, CORE),
                 "int Send");
         expect(ThreadSafetyTraits.has(integer, Trait.SYNC, CORE),
