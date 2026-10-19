@@ -13,7 +13,7 @@
 # security-critical export-path change invalidates approval.
 # The fallback itself is inert until independently reviewed and merged.
 #
-# Format: exact owner/repo@numeric-github-repository-id, ASCII LF only.
+# Format: exact ASCII owner/repo@numeric-github-repository-id rows; UTF-8 comments; LF-only.
 # This draft does NOT approve a destination; independent security review required.
 #
 # PROPOSED APPROVAL ONLY: this file is inert on this PR branch.
