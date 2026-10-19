@@ -3,12 +3,13 @@ package dev.oreslang.runtime;
 import java.io.IOException;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
+import java.util.AbstractList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.RandomAccess;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CancellationException;
@@ -107,14 +108,37 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
 
         /** Data-only message suitable for a runtime actor transport boundary. */
         Map<String, Object> actorMessage() {
-            List<Long> bytes = new ArrayList<>(payload.length);
-            for (byte value : payload) bytes.add((long) (value & 255));
             return Map.of(
                     "peer", peer.principal(),
                     "session_id", sessionId,
                     "generation", generation,
                     "correlation_id", correlationId,
-                    "payload", List.copyOf(bytes));
+                    "payload", new UnsignedByteList(payload));
+        }
+    }
+
+    /**
+     * Immutable lazy byte projection for actor ingress.
+     *
+     * <p>Do not eagerly box one Long per wire byte before ActorRuntime has had
+     * a chance to enforce its message-graph node bound. The backing array is
+     * the Request's private defensive copy and is never exposed or mutated.</p>
+     */
+    private static final class UnsignedByteList
+            extends AbstractList<Long> implements RandomAccess {
+        private final byte[] bytes;
+
+        private UnsignedByteList(byte[] bytes) {
+            this.bytes = Objects.requireNonNull(bytes, "bytes");
+        }
+
+        @Override public Long get(int index) {
+            Objects.checkIndex(index, bytes.length);
+            return (long) Byte.toUnsignedInt(bytes[index]);
+        }
+
+        @Override public int size() {
+            return bytes.length;
         }
     }
 
