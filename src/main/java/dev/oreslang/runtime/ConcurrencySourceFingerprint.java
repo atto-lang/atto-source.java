@@ -2,6 +2,9 @@ package dev.oreslang.runtime;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.channels.Channels;
+import java.nio.file.StandardOpenOption;
+import java.util.Set;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -24,6 +27,7 @@ import java.util.List;
  */
 public final class ConcurrencySourceFingerprint {
     private static final int MAX_SOURCE_FILES = 10_000;
+    private static final int MAX_VISITED_NODES = 250_000;
     private static final long MAX_SOURCE_BYTES = 64L * 1024 * 1024;
 
     private ConcurrencySourceFingerprint() { }
@@ -58,9 +62,18 @@ public final class ConcurrencySourceFingerprint {
         // Never walk generated or dependency directories: they may be huge and
         // must not silently influence guest source replay provenance.
         Files.walkFileTree(anchor, new SimpleFileVisitor<>() {
+            private int visited;
+
+            private void tickWalkBudget() {
+                if (++visited > MAX_VISITED_NODES) {
+                    throw new IllegalArgumentException("source workspace traversal budget exceeded");
+                }
+            }
+
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs)
                     throws IOException {
+                tickWalkBudget();
                 if (!dir.equals(anchor)) {
                     if (anchor.relativize(dir).getNameCount() > 48) {
                         throw new IOException("source workspace nesting budget exceeded");
@@ -78,6 +91,12 @@ public final class ConcurrencySourceFingerprint {
 
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                tickWalkBudget();
+                // Never silently omit a symlinked directory containing source
+                // dependencies, even if the symlink itself has no source suffix.
+                if (attrs.isSymbolicLink()) {
+                    throw new IllegalArgumentException("source workspace contains a symlink: " + file);
+                }
                 if (included(anchor, file)) {
                     sourceFiles.add(file);
                     if (sourceFiles.size() > MAX_SOURCE_FILES) {
@@ -115,7 +134,9 @@ public final class ConcurrencySourceFingerprint {
             digest.update((byte) 0);
             digest.update(Long.toString(size).getBytes(StandardCharsets.US_ASCII));
             digest.update((byte) 0);
-            try (InputStream in = Files.newInputStream(path)) {
+            // NOFOLLOW_LINKS also closes the check/open symlink race.
+            try (InputStream in = Channels.newInputStream(Files.newByteChannel(
+                    path, Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)))) {
                 int bytes;
                 long read = 0;
                 while ((bytes = in.read(buffer)) != -1) {
