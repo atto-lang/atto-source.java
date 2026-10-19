@@ -84,14 +84,22 @@ carrier.
 ## Reviewed destination execution containment
 
 The reviewed carrier is immutable Git commit
-`fc49aa44726eac47301ae2d676c4b38954d3cc46`, tree
-`1e9dec690e45df80758547e991d37f6b18872e33`. Authorization binds those Git
+`5e1079638ba322d0208631ef34fcbd3f129b40ab`, tree
+`1f2f5d5f816213192d13c179d0e9381d00fdeaf7`. Authorization binds those Git
 objects directly; movement of destination `main` is not an authorization
 input. The preflight also resolves
 `.github/workflows/private-oreslang-exact-tree.yml` from that immutable
 carrier commit and requires reviewed blob
-`6f532dfaa5149a023ca1ccd6ed3d8364c6df44e0`; it never trusts a cleanup
+`2d4b412ca8480d02fcd122a9cb7ee3a5d7d45227`; it never trusts a cleanup
 workflow fetched from mutable destination `main`.
+
+Every published carrier commit carries a second, machine-checked provenance line
+binding the reviewed carrier base commit and tree. The workflow fetches exactly
+one parent, requires that parent to equal the declared carrier base, verifies
+the parent tree, reconstructs the permitted root as the reviewed carrier tree
+plus the exact `private-oreslang-source` subtree, and requires that reconstructed
+root to equal `HEAD^{tree}`. This prevents a matching source subtree on an
+unreviewed carrier from producing acceptable evidence.
 
 The carrier treats the mirrored source and every source-owned build/test
 program as untrusted. For a real private source run it first requires the
@@ -116,20 +124,20 @@ canary bound to both a fixed fake source commit and the fixed synthetic canary
 tree; that fixture also asserts that GitHub/ACTIONS credential variables are
 absent, runner-private paths are hidden, and outbound TCP is unavailable.
 
-Source-free run `39328529900` validates the pinned carrier: exact-tree and
-concurrency, JDK 25/GraalVM verification, Native Image AOT/hybrid, and the
-approval-bound branch-cleanup job all completed successfully. The cleanup log
-confirms deletion of exactly the tested branch SHA, and the branch was
-independently verified absent afterward. This proves the carrier and containment
-harness only; it is not evidence that private Oreslang source passed any
-compiler test.
+Source-free provenance run `39328694706` validates the pinned carrier:
+exact-tree and concurrency, JDK 25/GraalVM verification, Native Image
+AOT/hybrid, and the approval-bound inline cleanup job all completed
+successfully. Its commit declared the actual reviewed carrier parent/tree, and
+all three source-executing jobs independently accepted that provenance before
+compiler work. Cleanup deleted the exact tested ref, which was independently
+verified absent afterward.
 
-Targeted source-free run `39328095244` also completed all four jobs
-successfully. Its synthetic tree contains the complete five-file computed-access
-test set, so the isolated `computed-access` command path executed successfully;
-the JDK 25/GraalVM and Native Image jobs also passed, and the cleanup job deleted
-the exact tested ref. As with the base canary, this is containment/harness
-evidence only, not private-source compiler evidence.
+Negative source-free run `39328782255` used the same synthetic source tree
+but deliberately declared the previous carrier base. All three source-executing
+jobs rejected it at the provenance gate before compiler work; the cleanup job
+still succeeded, and that test ref was also independently verified absent.
+These runs are containment/harness evidence only, not evidence that private
+Oreslang source passed compiler tests.
 
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
 per file, requires the source directory to remain **inside the trusted
