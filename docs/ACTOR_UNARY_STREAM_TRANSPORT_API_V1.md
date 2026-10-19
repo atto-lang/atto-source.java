@@ -38,18 +38,25 @@ The established legacy unqualified `define actor` + **sole** `run(T): R` may con
 
 `define unary tcp actor` and `define unary websocket actor` are **reserved/fail-closed**, not implied working aliases: unary TCP requires an explicit framed protocol and request correlation; WebSocket unary requires an explicit message/request-id correlation, close and timeout contract. Raw TCP reads can split/merge writes arbitrarily and are not request boundaries.
 
-**2026-10-19 host-framing milestone (not guest syntax support):** the private
-Java branch `feature/unary-tcp-websocket-contract-20261019` now contains
+**2026-10-19 host TCP milestone (not guest syntax support):** the private
+Java branch `feature/unary-tcp-websocket-contract-20261019` contains
 `UnaryTransportFrame` (strict length-prefixed TCP frames and complete
-WebSocket binary-message envelopes) and `UnaryReplySlot` (transport,
-supervisor-minted session ID, generation, correlation and exactly-one-terminal
-reply checks). The exact 26-byte envelope and its security limitations are
-specified in `UNARY_TCP_WEBSOCKET_REPLY_V1.md`. The standalone Java 21
-loopback/framing/race test executes, but the `define unary tcp actor` and
-`define unary websocket actor` declarations still **fail closed** pending
-actual parser, typechecker, session listener, authenticated dispatch, request
-admission and full CI implementation. A codec is not proof of a transport
-actor or WebSocket RFC 6455 support.
+WebSocket binary-message envelopes), `UnaryReplySlot` /
+`UnaryRequestRegistry`, `UnaryTcpSessionAdapter` and
+`UnaryTcpActorDispatcher`. TCP now has fixed-header admission before payload
+allocation, mandatory pre-frame authentication/session binding, per-connection
+and global work/payload budgets, read/request/write deadlines, inbound
+correlation replay fencing, cancellation propagation, and a PRIVATE/SHARED
+one-shot ActorRuntime mailbox bridge that waits for actor finalization before
+publishing success. The exact wire contract and remaining limitations are in
+`UNARY_TCP_WEBSOCKET_REPLY_V1.md`.
+
+This still does **not** enable `define unary tcp actor` or
+`define unary websocket actor`. A concrete production authenticator and
+supervisor-owned bind/accept listener, persistent source-actor lowering,
+UNTRUSTED source-executor binding, full Maven/Graal/LLVM validation, and real
+RFC 6455 networking remain fail-closed gates. A host adapter is not proof that
+the guest transport declarations execute.
 
 ## Handler API: one VM-owned dispatch path
 
