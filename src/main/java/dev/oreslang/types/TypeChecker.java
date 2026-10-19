@@ -2631,9 +2631,10 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             factory.name() + "<T> requires owned data; borrowed values cannot become mutex state");
                 }
-                if (factory.name().equals("SharedMutex") && !isSharedSafe(element, new LinkedHashSet<>(), Map.of())) {
+                if (factory.name().equals("SharedMutex")
+                        && (!isSharedSafe(element, new LinkedHashSet<>(), Map.of()) || !isThreadSend(element))) {
                     throw new IllegalArgumentException(
-                            "SharedMutex<T> requires shared-safe owned data; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
+                            "SharedMutex<T> requires shared-safe, Send owned data; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
                 }
                 return new Named(factory.name(), List.of(element));
             }
@@ -5029,9 +5030,10 @@ public final class TypeChecker {
                         where + " cannot use SharedMutex<T> with isoactor/private actors");
             }
             if (named.arguments().size() != 1
-                    || !isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
+                    || !isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())
+                    || !isThreadSend(named.arguments().getFirst())) {
                 throw new IllegalArgumentException(
-                        where + " requires SharedMutex<T> to contain shared-safe owned data");
+                        where + " requires SharedMutex<T> to contain shared-safe, Send owned data");
             }
             return;
         }
@@ -8162,9 +8164,9 @@ public final class TypeChecker {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("SharedMutex requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
                 if (element == Primitive.VOID) throw new IllegalArgumentException("SharedMutex<void> is invalid");
-                if (!isSharedSafe(element, new LinkedHashSet<>(), Map.of())) {
+                if (!isSharedSafe(element, new LinkedHashSet<>(), Map.of()) || !isThreadSend(element)) {
                     throw new IllegalArgumentException(
-                            "SharedMutex<T> requires a concrete shared-safe type; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
+                            "SharedMutex<T> requires a concrete shared-safe, Send type; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
                 }
                 yield new Named("SharedMutex", List.of(element));
             }
