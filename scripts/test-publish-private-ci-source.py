@@ -482,7 +482,17 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
-    def test_git_metadata_directory_rejected(self):
+    def test_checkout_root_git_metadata_is_excluded_from_snapshot(self):
+        metadata = self.root / ".git"
+        metadata.mkdir()
+        (metadata / "config").write_text("must not be exported")
+        files = pub.collect_source(self.root, self.root)
+        paths = [path for path, _, _ in files]
+        self.assertIn(".github/private-ci-approved-repositories.txt", paths)
+        self.assertIn("source/hello.ores", paths)
+        self.assertNotIn(".git/config", paths)
+
+    def test_nested_source_git_metadata_directory_rejected(self):
         (self.source / ".git").mkdir()
         with self.assertRaises(pub.Denied):
             self.publish()
