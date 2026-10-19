@@ -189,19 +189,42 @@ def classify(run, jobs, expected_head_sha):
     return assess(run, jobs, expected_head_sha)["category"]
 
 
+def _fetch_jobs_pages(repo, run_id, fetch):
+    """Read every jobs page, or reject a partial or racing snapshot."""
+    prefix = f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"
+    jobs = []
+    expected = None
+    seen_ids = set()
+    for page in range(1, 101):
+        response = fetch(prefix + ("" if page == 1 else f"&page={page}"))
+        if not isinstance(response, dict) or not isinstance(response.get("jobs"), list):
+            raise TriageError("job pagination incomplete: missing jobs collection")
+        count, batch = response.get("total_count"), response["jobs"]
+        if type(count) is not int or not 0 <= count <= 10000 or (expected is not None and count != expected):
+            raise TriageError("job pagination incomplete or inconsistent")
+        expected = count
+        if len(batch) > 100 or (len(jobs) < count and not batch):
+            raise TriageError("job pagination incomplete or invalid")
+        for job in batch:
+            if not isinstance(job, dict) or not _positive_int(job.get("id")) or job["id"] in seen_ids:
+                raise TriageError("job pagination duplicate or invalid ID")
+            seen_ids.add(job["id"])
+        jobs.extend(batch)
+        if len(jobs) == count:
+            return jobs
+        if len(jobs) > count:
+            raise TriageError("job pagination exceeded total count")
+    raise TriageError("job pagination exceeds safe page limit")
+
+
 def inspect(repo, run_id, expected_sha, fetch=get_json):
     if not isinstance(repo, str) or not REPO_RE.fullmatch(repo) or not _positive_int(run_id):
         raise TriageError("invalid repository or run ID")
     if not _valid_sha(expected_sha):
         raise TriageError("expected exact-head SHA required")
     run = fetch(f"repos/{repo}/actions/runs/{run_id}")
-    response = fetch(f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100")
-    if not isinstance(response, dict) or not isinstance(response.get("jobs"), list):
-        raise TriageError("missing jobs collection")
-    count = response.get("total_count")
-    if type(count) is not int or count < 0 or count != len(response["jobs"]):
-        raise TriageError("job pagination incomplete or invalid")
-    outcome = assess(run, response["jobs"], expected_sha, run_id=run_id)
+    jobs = _fetch_jobs_pages(repo, run_id, fetch)
+    outcome = assess(run, jobs, expected_sha, run_id=run_id)
     return {"repository": repo, "run_id": run_id, "head_sha": expected_sha,
             "conclusion": run.get("conclusion"), **outcome}
 
