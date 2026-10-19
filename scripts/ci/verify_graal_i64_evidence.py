@@ -54,8 +54,9 @@ def check_junit(xml_data):
                     "JUnit " + attr + " nonzero or missing")
         cases = suite.findall("testcase")
         require(len(cases) == tests, "JUnit test case count disagrees with XML")
-        require(all(not list(case) for case in cases),
-                "JUnit test contains failure or skipped evidence")
+        require(all(all(child.tag in {"system-out", "system-err"} for child in case)
+                    for case in cases),
+                "JUnit test contains failure, skipped or unexpected child evidence")
         total += tests
     require(total >= 17, "fewer than 16 numeric + 1 zero-divisor JUnit cases")
     return total
