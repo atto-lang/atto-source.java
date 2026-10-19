@@ -140,11 +140,11 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
      * Local-only verdicts are rejected both by codec policy and the ledger.
      */
     IpcReceiptCorrelation.Stage readVerifiedReceipt() throws IOException {
-        byte[] frame;
-        synchronized (readGate) {
-            frame = readWireFrame(input);
-        }
         try {
+            final byte[] frame;
+            synchronized (readGate) {
+                frame = readWireFrame(input);
+            }
             DecodedReceipt receipt = decodeReceiptFrame(frame, macKey);
             if (receipt.physicalGeneration() != physicalGeneration) {
                 throw new IOException("stale IPC physical transport generation");
@@ -153,16 +153,28 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             receipts.acceptVerified(receipt.envelope(), receipt.stage());
             return receipt.stage();
         } catch (IOException | RuntimeException | Error failure) {
-            // Authentication, framing and state-machine violations are fatal
-            // to this physical session. Never continue parsing a desynchronized
-            // or hostile stream after an invalid receipt.
+            // Authentication, framing, EOF and state-machine violations are
+            // fatal to this physical session. Never continue parsing a
+            // desynchronized or hostile stream after an invalid receipt.
             requestClose();
             throw failure;
         }
     }
 
     void requestClose() {
+        // First fence new send admission. Then actively close the Java Socket
+        // to interrupt a blocked physical read/write. The session lease still
+        // defers receipt retirement and reusable-generation status until all
+        // admitted write callbacks unwind and the authoritative close worker
+        // confirms physical closure.
         sessionLease.requestClose();
+        try {
+            socket.close();
+        } catch (IOException ignoredAbortFailure) {
+            // Best-effort abort only. IpcTransportSessionLease owns the
+            // authoritative close confirmation/quarantine decision and will
+            // retry/record failure on its cleanup worker.
+        }
     }
 
     IpcTransportSessionLease.Snapshot snapshot() {
