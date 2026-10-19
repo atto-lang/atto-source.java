@@ -3,6 +3,10 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.VerifiedDirectModuleCall;
 import org.junit.jupiter.api.Test;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Full-front-end admission proof for ordinary calls only. */
@@ -74,4 +78,27 @@ final class VerifiedDirectModuleCallTest {
     void constructorIsPrivateEvenThoughCheckedReferencesAreReadable() {
         assertEquals(0, VerifiedDirectModuleCall.class.getConstructors().length);
     }
+    @Test
+    void checkedPositionalCallRunsInRealGuestRuntime() throws Exception {
+        String source = """
+                define module app as
+                    pub fnc target(int x): int { return x; }
+                    pub fnc caller(): int { return target(42); }
+                end
+                pub routine main(): void {
+                    stdio.stdout.write(app.caller());
+                    return;
+                }
+                """;
+        var checked = VerifiedDirectModuleCall.analyzeAndIssue(source, "app", "caller");
+        assertEquals("target", ((Ast.NameExpr) checked.sourceCall().callee()).name());
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(out).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, "ordinary-call.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("42", out.toString(StandardCharsets.UTF_8));
+    }
+
 }
