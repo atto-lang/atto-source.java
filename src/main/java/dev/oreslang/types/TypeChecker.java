@@ -1824,15 +1824,24 @@ public final class TypeChecker {
                     ? actual
                     : overlayReadonlyCapabilities(actual, declaredAhead);
             requireAssignable(actual, declared, "initializer for " + binding.name());
+
+            // Resolve CONST selector metadata before defining the new binding so
+            // an initializer alias refers to the lexical source, not to the just-
+            // declared name in a shadowing scope.
+            Long constantInteger = null;
+            String constantString = null;
+            if (binding.kind() == Ast.BindingKind.CONST) {
+                constantInteger = constantTupleIndex(binding.initializer(), env);
+                constantString = constantStringKey(binding.initializer(), env);
+            }
+
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
             if (binding.kind() == Ast.BindingKind.CONST) {
-                Long constantInteger = constantIntegerLiteral(binding.initializer());
                 if (constantInteger != null) {
                     env.defineConstantInteger(binding.name(), constantInteger);
                 }
-                if (binding.initializer() instanceof Ast.LiteralExpr literal
-                        && literal.value() instanceof String constantString) {
+                if (constantString != null) {
                     env.defineConstantString(binding.name(), constantString);
                 }
             }
