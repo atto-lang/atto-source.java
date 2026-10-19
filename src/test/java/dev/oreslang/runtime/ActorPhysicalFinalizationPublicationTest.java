@@ -475,4 +475,59 @@ final class ActorPhysicalFinalizationPublicationTest {
             assertEquals(2, attempts.get());
         }
     }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void ambiguousPartialChannelCloseCannotCertifyRetirement()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+
+            var registryField = ActorRuntime.class.getDeclaredField("actors");
+            registryField.setAccessible(true);
+            var registry = (java.util.Map<Object, Object>)
+                    registryField.get(runtime);
+            Object cell = registry.get(actor.id());
+            assertNotNull(cell);
+            var faultField = cell.getClass().getDeclaredField(
+                    "terminalTeardownAfterFirstCloseFaultForTesting");
+            faultField.setAccessible(true);
+            faultField.set(cell, (Runnable) () -> {
+                throw new OutOfMemoryError(
+                        "injected after the first channel close");
+            });
+
+            var batchField = cell.getClass().getDeclaredField(
+                    "terminalSettlementBatch");
+            batchField.setAccessible(true);
+            var mailboxField = cell.getClass().getDeclaredField("mailbox");
+            mailboxField.setAccessible(true);
+            var mailbox = (ChannelRuntime.Channel<?>) mailboxField.get(cell);
+
+            assertThrows(OutOfMemoryError.class, actor::stop);
+            Object batch = batchField.get(cell);
+            assertNotNull(batch);
+            assertFalse(runtime.physicallyFinalizedForHotUpgrade(actor));
+            var retry = assertThrows(IllegalStateException.class, actor::stop);
+            assertTrue(retry.getMessage().contains("independent reconciliation"));
+            assertFalse(actor.awaitTermination(0, TimeUnit.NANOSECONDS));
+
+            // Test-only independently inspected quiescent fixture: the actor
+            // had no messages or channel select registrations. A real
+            // supervisor must have stronger authenticated proof before it
+            // could ever repair an ambiguous partial teardown.
+            assertEquals(0, mailbox.size());
+            assertEquals(0, mailbox.pendingRegistrations());
+            var ambiguousField = batch.getClass().getDeclaredField(
+                    "physicalTeardownAmbiguous");
+            ambiguousField.setAccessible(true);
+            faultField.set(cell, null);
+            ambiguousField.setBoolean(batch, false);
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(runtime.physicallyFinalizedForHotUpgrade(actor));
+        }
+    }
 }
