@@ -21,7 +21,10 @@ final class ActorPhysicalTurnGate {
         final Runnable task;
         final Consumer<Runnable> submit;
         final Consumer<Throwable> reject;
-        volatile boolean started; // same allocation as the queue entry
+        // Zero-cost-per-turn state: pending=0, running=1, rejected=2.
+        // Synchronization on the existing Pending object linearizes guest
+        // entry versus a submitter which enqueued work but then threw.
+        private int claim;
 
         Pending(Runnable task, Consumer<Runnable> submit, Consumer<Throwable> reject) {
             this.task = task;
@@ -77,7 +80,16 @@ final class ActorPhysicalTurnGate {
             try {
                 Pending accepted = item;
                 item.submit.accept(() -> {
-                    accepted.started = true;
+                    synchronized (accepted) {
+                        if (accepted.claim != 0) {
+                            // The executor threw after enqueueing us. Its
+                            // rejection has already relinquished admission;
+                            // a late callback must not enter actor code or
+                            // release the transferred permit a second time.
+                            return;
+                        }
+                        accepted.claim = 1;
+                    }
                     try {
                         accepted.task.run();
                     } finally {
@@ -86,16 +98,22 @@ final class ActorPhysicalTurnGate {
                 });
                 return;
             } catch (RuntimeException | Error failure) {
-                if (item.started) {
-                    // A direct/reentrant executor ran the guest callback and
-                    // its finally already released the physical permit. Do
-                    // NOT treat its exception as executor admission failure.
-                    throw failure;
+                synchronized (item) {
+                    if (item.claim == 1) {
+                        // An inline or already-running turn owns completion;
+                        // no duplicate rejection or physical release.
+                        throw failure;
+                    }
+                    if (item.claim != 0) {
+                        throw new IllegalStateException(
+                                "actor dispatch admitted or rejected twice", failure);
+                    }
+                    item.claim = 2;
                 }
                 try {
                     item.reject.accept(failure);
                 } catch (Throwable observerFailure) {
-                    // Never let a broken lifecycle observer strand the token.
+                    // A broken lifecycle observer cannot retain the permit.
                     if (observerFailure != failure) {
                         failure.addSuppressed(observerFailure);
                     }
@@ -105,8 +123,7 @@ final class ActorPhysicalTurnGate {
                         admitted--;
                         return;
                     }
-                    // Failed admission transfers the permit to the next
-                    // bounded FIFO successor, without carrier parking.
+                    // Transfer the permit to the next bounded FIFO successor.
                     item = pending.removeFirst();
                 }
             }
