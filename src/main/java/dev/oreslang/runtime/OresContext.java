@@ -186,7 +186,7 @@ public final class OresContext implements AutoCloseable {
         return compilerTaskScope.startCompilerFrame(vm.rootScheduler(), frame);
     }
     /**
-     * Narrow guest lowering target for `await nb { return scalar; }`.
+     * Narrow guest lowering target for `await task { return scalar; }`.
      *
      * <p>The frontend admits only this immediately awaited, scalar-copy-only
      * expression in trusted VM root main. Although that main executes inside
