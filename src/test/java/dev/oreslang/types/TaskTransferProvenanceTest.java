@@ -121,16 +121,107 @@ final class TaskTransferProvenanceTest {
     }
 
     @Test
-    void ownedResultOfMemberCallIsNotMistakenForFieldProjection() {
-        assertDoesNotThrow(() -> OwnershipChecker.check(
-                Parser.parse("""
-                    pub fnc main(Option<Array<int>> optional): void {
+    void ownedResultOfCompilerKnownMemberCallKeepsOwnedRvalueProof() {
+        Ast.Program program = Parser.parse("""
+            pub fnc main(Option<Array<int>> optional): void {
+                let Task<int> result =
+                    (async task |Array<int> value| -> { return 1; })(
+                        optional.unwrap());
+                return;
+            }
+            """);
+        Ast.BindingStmt binding = (Ast.BindingStmt) main(program).body().get(0);
+        Ast.CallExpr boundary = (Ast.CallExpr) binding.initializer();
+
+        OwnershipChecker.CheckResult checked =
+                OwnershipChecker.checkWithTaskTransferProvenance(program);
+        List<TaskTransferProvenance.Transfer> transfers =
+                checked.taskTransfers().transfersFor(boundary);
+
+        assertEquals(1, transfers.size());
+        assertEquals(
+                TaskTransferProvenance.TransferKind.OWNED_RVALUE,
+                transfers.getFirst().kind());
+    }
+
+    @Test
+    void freshLiteralAndExplicitTakeMintOwnedRvalueProofs() {
+        Ast.Program literalProgram = Parser.parse("""
+            pub fnc main(): void {
+                let Task<int> result =
+                    (async task |Array<int> value| -> { return 1; })(
+                        arr[1, 2, 3]);
+                return;
+            }
+            """);
+        Ast.BindingStmt literalBinding =
+                (Ast.BindingStmt) main(literalProgram).body().get(0);
+        Ast.CallExpr literalBoundary =
+                (Ast.CallExpr) literalBinding.initializer();
+        OwnershipChecker.CheckResult literalChecked =
+                OwnershipChecker.checkWithTaskTransferProvenance(
+                        literalProgram);
+        assertEquals(
+                TaskTransferProvenance.TransferKind.OWNED_RVALUE,
+                literalChecked.taskTransfers()
+                        .transfersFor(literalBoundary).getFirst().kind());
+
+        Ast.Program takeProgram = Parser.parse("""
+            pub fnc main(): void {
+                let data = arr[1, 2, 3];
+                let Task<int> result =
+                    (async task |Array<int> value| -> { return 1; })(
+                        rt take data);
+                return;
+            }
+            """);
+        Ast.BindingStmt takeBinding =
+                (Ast.BindingStmt) main(takeProgram).body().get(1);
+        Ast.CallExpr takeBoundary = (Ast.CallExpr) takeBinding.initializer();
+        OwnershipChecker.CheckResult takeChecked =
+                OwnershipChecker.checkWithTaskTransferProvenance(takeProgram);
+        assertEquals(
+                TaskTransferProvenance.TransferKind.OWNED_RVALUE,
+                takeChecked.taskTransfers()
+                        .transfersFor(takeBoundary).getFirst().kind());
+    }
+
+    @Test
+    void arbitraryCallResultCannotSelfMintOwnedRvalueProof() {
+        IllegalArgumentException direct = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse("""
+                    pub fnc make(): Array<int> {
+                        return arr[1, 2, 3];
+                    }
+                    pub fnc main(): void {
                         let Task<int> result =
                             (async task |Array<int> value| -> { return 1; })(
-                                optional.unwrap());
+                                make());
                         return;
                     }
                     """)));
+        assertTrue(
+                direct.getMessage().contains("rvalue provenance"),
+                direct::getMessage);
+
+        IllegalArgumentException nested = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse("""
+                    pub fnc make(): Array<int> {
+                        return arr[1, 2, 3];
+                    }
+                    pub fnc main(): void {
+                        let Task<int> result =
+                            (async task |Array<Array<int>> value| -> {
+                                return 1;
+                            })(arr[make()]);
+                        return;
+                    }
+                    """)));
+        assertTrue(
+                nested.getMessage().contains("rvalue provenance"),
+                nested::getMessage);
     }
 
     @Test
