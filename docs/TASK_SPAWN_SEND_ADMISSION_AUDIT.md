@@ -3,19 +3,21 @@
 Status: **draft compiler ownership pass; guest Task execution disabled** (2026-10-18).
 
 This branch stacks on the Java Task syntax/ownership parser PR #1377, not main.
-It imports and reuses the real AST-based `SendSyncTraits` evaluator from
-the Java type/ECS PR #1447, adding fail-closed exclusions for unresolved
-actor, Task, channel, native, thread-affine and lease capabilities. Do not
-publish a third independent Send/Sync API: the internal `ThreadSafetyTraits`
-on Java #1439 uses *resolved* `Types.Type` and must be reconciled with this
-source AST evaluator before merging.
+It carries an AST-level `SendSyncTraits` **deny-only syntax preflight** derived
+from #1447. It may reject obviously unsafe captures before affine moves, but a
+positive result is explicitly **not a Send permission**. The authoritative
+decision must later be made by `ThreadSafetyTraits` over resolved
+`Types.Type`, including owned-transfer provenance/lifetime checks. The public
+AST helper API is therefore named `mayBeSendAfterResolution` /
+`mayBeSyncAfterResolution` rather than `isSend` / `isSync`.
 
 ## Implemented source-phase admission
 
 - An `nb { ... }`, `task { ... }`, `do nb`, or `do task` captures outer
   values as an independent escaping activation. Before `checkLambda` can
   consume any affine value, `OwnershipChecker.validateScheduledCaptures`
-  collects transitive capture names and demands structurally proved `Send`.
+  collects transitive capture names and runs the conservative AST Send preflight.
+  Passing that preflight does not authorize scheduling.
 - Immediately invoked `async task |...|` and `async |...|` reject unproved
   non-Send closure captures, scheduled parameters and owned arguments.
   The original lexical borrow, actor-state, mutex-guard, constructor, move,
@@ -57,10 +59,12 @@ relabel syntax/ownership acceptance as actual runtime scheduling.
 
 ## Integration gates (not implemented)
 
-1. Reconcile AST `SendSyncTraits` (#1447) and lowered-type
-   `ThreadSafetyTraits` (#1439) into one authoritative compiler proof.
-   A conversion of an unresolved AST nominal to a resolved Type must not
-   upgrade `!Send` to `Send`.
+1. Complete removal of AST `SendSyncTraits` as a positive permission engine.
+   It is now deny-only preflight on this branch. After type resolution, every
+   Task capture/parameter/argument must call canonical `ThreadSafetyTraits`
+   (including `isOwnedSend`/transfer provenance). A conversion of an
+   unresolved AST nominal to a resolved Type must never upgrade rejected syntax
+   to permission, and AST acceptance must never bypass the resolved authority.
 2. Wire real Task AST captures, typed `Task<T>`/await and permitted
    region loans to #1448's `TaskAccessVerifier`; mint root ownership
    provenance only from verified compiler allocation/alias identity.
@@ -82,9 +86,10 @@ Cross references:
 
 ## Cross-branch exact implementation checkpoint
 
-The Task branch was resynchronized with #1447's updated bounded-depth
-`SendSyncTraits.java` at a **point-in-time Git blob**
-`cc03647b1e80ee7e9b44c0cd1fee9bc59ecb66bf`.
+The Task branch originated from #1447's bounded AST trait walker, but its
+current role has been deliberately narrowed to deny-only preflight. Current
+`SendSyncTraits.java` blob is **not** an authoritative semantic trait engine
+and must not be compared as permanent parity with #1439/#1467.
 The canonical PR may advance independently; recheck its latest head before
 merging, rather than assuming permanent branch parity. #1447 now includes an
 additional test showing that source classes named `ActorRef`, `Task`,
