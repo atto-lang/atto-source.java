@@ -36,7 +36,7 @@ isolated CI branch, and the exact source PR/commit/tree authorization:
 
 ```bash
 scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
-  --source-dir ./verified-source-tree \
+  --source-dir . \
   --branch ci/oreslang-verified-20261019 \
   --source-pr 1425 \
   --source-commit <40-hex-live-pr-head> \
@@ -69,9 +69,12 @@ branches, including `main`, are never updated.
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
 per file, requires the source directory to remain **inside the trusted
 checkout**, and walks the source **through directory file descriptors** to
-prevent parent-directory symlink swap races. It rejects symbolic links,
-hardlinks to outside files, FIFOs, `.git` directories, and other unsafe
-filesystem objects. Directory enumeration is bounded to 4,096 entries,
+prevent parent-directory symlink swap races. For an exact repository-tree
+export, pass the trusted checkout root as `--source-dir .`; the root
+`.git` metadata entry is excluded because it is not part of `HEAD^{tree}`.
+Nested `.git` paths remain rejected. The publisher also rejects symbolic
+links, hardlinks to outside files, FIFOs, and other unsafe filesystem
+objects. Directory enumeration is bounded to 4,096 entries,
 1,024 directories and a maximum depth of 64. It verifies every uploaded
 Git blob SHA-1 against the source bytes. It checks that the reviewed destination policy fingerprint and immutable
 repository ID have not changed before every API write, in addition to
