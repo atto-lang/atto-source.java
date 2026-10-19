@@ -23,7 +23,7 @@ final class TaskCertifiedLayoutTest {
 
     @Test void independentlyVerifiedScalarFieldsCanWriteConcurrently() {
         var issuer = new TaskCertifiedLayout.Emitter();
-        var record = issuer.freshRecord(RECORD);
+        var record = issuer.modelFreshRecordUnchecked(RECORD);
         var movement = issuer.admit(List.of(record.writeField("position")));
         var velocity = issuer.admit(List.of(record.writeField("velocity")));
         assertEquals(2, issuer.active());
@@ -36,7 +36,7 @@ final class TaskCertifiedLayoutTest {
 
     @Test void readReadCompatibleButWriteConflicts() {
         var issuer = new TaskCertifiedLayout.Emitter();
-        var record = issuer.freshRecord(RECORD);
+        var record = issuer.modelFreshRecordUnchecked(RECORD);
         var first = issuer.admit(List.of(record.readField("position")));
         var second = issuer.admit(List.of(record.readField("position")));
         assertThrows(IllegalArgumentException.class,
@@ -48,7 +48,7 @@ final class TaskCertifiedLayoutTest {
 
     @Test void adjacentFixedArrayRangesDoNotOverlap() {
         var issuer = new TaskCertifiedLayout.Emitter();
-        var array = issuer.freshFixedArray(array(
+        var array = issuer.modelFreshFixedArrayUnchecked(array(
                 Types.Primitive.INT, Types.Primitive.INT,
                 Types.Primitive.INT, Types.Primitive.INT));
         issuer.admit(List.of(array.writeRange(0, 2)));
@@ -61,7 +61,7 @@ final class TaskCertifiedLayoutTest {
     @Test void foreignCertificatesCannotBeAdmittedEvenIfReadOnly() {
         var first = new TaskCertifiedLayout.Emitter();
         var second = new TaskCertifiedLayout.Emitter();
-        var foreign = first.freshRecord(RECORD).readField("position");
+        var foreign = first.modelFreshRecordUnchecked(RECORD).readField("position");
         assertThrows(IllegalArgumentException.class,
                 () -> second.admit(List.of(foreign)));
         assertEquals(0, second.active());
@@ -78,18 +78,18 @@ final class TaskCertifiedLayoutTest {
                 Types.Primitive.STRING,
                 Types.Primitive.DECIMAL)) {
             assertThrows(IllegalArgumentException.class,
-                    () -> issuer.freshRecord(new Types.Record(
+                    () -> issuer.modelFreshRecordUnchecked(new Types.Record(
                             Map.of("scalar", Types.Primitive.INT, "bad", unknown))),
                     () -> "unsafe record member: " + unknown);
         }
         assertEquals(0, issuer.active());
-        assertNotNull(issuer.freshRecord(RECORD));
+        assertNotNull(issuer.modelFreshRecordUnchecked(RECORD));
     }
 
     @Test void cannotWriteReadonlyRecordAndCannotInventUnknownFields() {
         var issuer = new TaskCertifiedLayout.Emitter();
         var shape = new Types.Record(Map.of("position", Types.Primitive.INT), true);
-        var record = issuer.freshRecord(shape);
+        var record = issuer.modelFreshRecordUnchecked(shape);
         assertNotNull(issuer.admit(List.of(record.readField("position"))));
         assertThrows(IllegalArgumentException.class,
                 () -> record.writeField("position"));
@@ -100,18 +100,18 @@ final class TaskCertifiedLayoutTest {
     @Test void onlyFixedArraysArePartitionable() {
         var issuer = new TaskCertifiedLayout.Emitter();
         assertThrows(IllegalArgumentException.class,
-                () -> issuer.freshFixedArray(new Types.Tuple(
+                () -> issuer.modelFreshFixedArrayUnchecked(new Types.Tuple(
                         List.of(Types.Primitive.INT), Types.TupleKind.TUPLE)));
         assertThrows(IllegalArgumentException.class,
-                () -> issuer.freshFixedArray(new Types.Tuple(
+                () -> issuer.modelFreshFixedArrayUnchecked(new Types.Tuple(
                         List.of(Types.Primitive.INT), Types.TupleKind.FIXED_LIST)));
         assertThrows(IllegalArgumentException.class,
-                () -> issuer.freshFixedArray(array(Types.Primitive.INT, Types.Primitive.STRING)));
+                () -> issuer.modelFreshFixedArrayUnchecked(array(Types.Primitive.INT, Types.Primitive.STRING)));
     }
 
     @Test void arrayPartitionsCannotExceedProofBounds() {
         var issuer = new TaskCertifiedLayout.Emitter();
-        var array = issuer.freshFixedArray(array(Types.Primitive.INT, Types.Primitive.INT));
+        var array = issuer.modelFreshFixedArrayUnchecked(array(Types.Primitive.INT, Types.Primitive.INT));
         assertThrows(IllegalArgumentException.class, () -> array.writeRange(-1, 1));
         assertThrows(IllegalArgumentException.class, () -> array.writeRange(0, 3));
         assertThrows(IllegalArgumentException.class, () -> array.writeRange(0, 0));
@@ -121,7 +121,7 @@ final class TaskCertifiedLayoutTest {
 
     @Test void heterogeneousRangesRequireActualLayoutLowering() {
         var issuer = new TaskCertifiedLayout.Emitter();
-        var array = issuer.freshFixedArray(array(
+        var array = issuer.modelFreshFixedArrayUnchecked(array(
                 Types.Primitive.INT, Types.Primitive.FLOAT, Types.Primitive.INT));
         assertThrows(IllegalArgumentException.class,
                 () -> array.writeRange(0, 2));
@@ -134,7 +134,7 @@ final class TaskCertifiedLayoutTest {
 
     @Test void cancellationDoesNotReleaseVerifiedWriteLoan() {
         var issuer = new TaskCertifiedLayout.Emitter();
-        var record = issuer.freshRecord(RECORD);
+        var record = issuer.modelFreshRecordUnchecked(RECORD);
         var ticket = issuer.admit(List.of(record.writeField("health")));
         issuer.cancel(ticket);
         assertThrows(IllegalArgumentException.class,
@@ -146,19 +146,19 @@ final class TaskCertifiedLayoutTest {
 
     @Test void lateUseAfterFinalScopeCloseFailsClosed() {
         var issuer = new TaskCertifiedLayout.Emitter();
-        var record = issuer.freshRecord(RECORD);
+        var record = issuer.modelFreshRecordUnchecked(RECORD);
         var ticket = issuer.admit(List.of(record.readField("health")));
         issuer.quiescent(ticket);
         issuer.finish();
         assertThrows(IllegalStateException.class, () -> record.readField("health"));
         assertThrows(IllegalStateException.class, () -> issuer.admit(List.of()));
-        assertThrows(IllegalStateException.class, () -> issuer.freshRecord(RECORD));
+        assertThrows(IllegalStateException.class, () -> issuer.modelFreshRecordUnchecked(RECORD));
     }
 
     @Test void multipleFreshObjectsHaveDistinctCompilerAllocatedRoots() {
         var issuer = new TaskCertifiedLayout.Emitter();
-        var first = issuer.freshRecord(RECORD);
-        var second = issuer.freshRecord(RECORD);
+        var first = issuer.modelFreshRecordUnchecked(RECORD);
+        var second = issuer.modelFreshRecordUnchecked(RECORD);
         issuer.admit(List.of(first.writeField("position")));
         issuer.admit(List.of(second.writeField("position")));
         assertEquals(2, issuer.active());
@@ -166,8 +166,8 @@ final class TaskCertifiedLayoutTest {
 
     @Test void admissionOfMixedGoodAndForeignProofsIsAtomic() {
         var issuer = new TaskCertifiedLayout.Emitter();
-        var local = issuer.freshRecord(RECORD);
-        var foreign = new TaskCertifiedLayout.Emitter().freshRecord(RECORD);
+        var local = issuer.modelFreshRecordUnchecked(RECORD);
+        var foreign = new TaskCertifiedLayout.Emitter().modelFreshRecordUnchecked(RECORD);
         assertThrows(IllegalArgumentException.class,
                 () -> issuer.admit(List.of(
                         local.writeField("position"),
@@ -186,7 +186,7 @@ final class TaskCertifiedLayoutTest {
             for (int i = 0; i < 64; i++) {
                 outcomes.add(pool.submit(() -> {
                     barrier.await();
-                    return issuer.freshRecord(RECORD).writeField("position");
+                    return issuer.modelFreshRecordUnchecked(RECORD).writeField("position");
                 }));
             }
             barrier.countDown();
@@ -275,8 +275,8 @@ final class TaskCertifiedLayoutTest {
             members.put("f" + index, Types.Primitive.INT);
         }
         assertThrows(IllegalArgumentException.class,
-                () -> issuer.freshRecord(new Types.Record(members, false)));
+                () -> issuer.modelFreshRecordUnchecked(new Types.Record(members, false)));
         assertEquals(0, issuer.active());
-        assertNotNull(issuer.freshRecord(RECORD));
+        assertNotNull(issuer.modelFreshRecordUnchecked(RECORD));
     }
 }
