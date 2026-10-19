@@ -14,12 +14,14 @@ die() {
   exit 1
 }
 usage() {
-  echo "usage: bash preflight-private-ci-mirror.sh <source-commit-sha> <source-tree-sha>" >&2
+  echo "usage: bash preflight-private-ci-mirror.sh <source-pr-number> <source-commit-sha> <source-tree-sha>" >&2
   exit 2
 }
-[[ "$#" -eq 2 ]] || usage
-expected_commit="$1"
-expected_tree="$2"
+[[ "$#" -eq 3 ]] || usage
+source_pr="$1"
+expected_commit="$2"
+expected_tree="$3"
+[[ "$source_pr" =~ ^[1-9][0-9]{0,8}$ ]] || usage
 [[ "$expected_commit" =~ ^[0-9a-f]{40}$ ]] || usage
 [[ "$expected_tree" =~ ^[0-9a-f]{40}$ ]] || usage
 
@@ -40,6 +42,20 @@ actual_tree="$(git rev-parse --verify HEAD^{tree})" \
   || die "source tree mismatch"
 [[ -z "$(git status --porcelain=v1 --untracked-files=all --ignored)" ]] \
   || die "dirty tracked, untracked or ignored source checkout"
+
+# Bind the checkout to the current head of an open, same-repo pull request.
+# A caller-supplied but internally consistent commit/tree is insufficient.
+pr_head="$(gh api "repos/$SOURCE_REPO/pulls/$source_pr" --jq '.head.sha')" \
+  || die "cannot resolve authenticated source PR"
+pr_state="$(gh api "repos/$SOURCE_REPO/pulls/$source_pr" --jq '.state')" \
+  || die "cannot read source PR state"
+pr_base="$(gh api "repos/$SOURCE_REPO/pulls/$source_pr" --jq '.base.ref')" \
+  || die "cannot read source PR base"
+pr_repo="$(gh api "repos/$SOURCE_REPO/pulls/$source_pr" --jq '.head.repo.full_name')" \
+  || die "cannot read source PR repository"
+[[ "$pr_head" == "$expected_commit" && "$pr_state" == "open" \
+    && "$pr_base" == "main" && "$pr_repo" == "$SOURCE_REPO" ]] \
+  || die "source checkout is not the live head of an open same-repo PR"
 
 # Consult the *remote protected main policy*, never an arbitrary PR branch.
 # The local origin/main must be fresh and identical to GitHub's verified main.
@@ -86,8 +102,8 @@ IFS=$'\t' read -r actual_id actual_name actual_private actual_push < <(
 [[ "$actual_push" == "true" ]] \
   || die "insufficient destination permissions"
 
-printf 'PRIVATE_MIRROR_PREFLIGHT_PASS source_commit=%s source_tree=%s main_policy_sha=%s dest_repo_id=%s\n' \
-  "$actual_commit" "$actual_tree" "$main_sha" "$actual_id"
+printf 'PRIVATE_MIRROR_PREFLIGHT_PASS source_pr=%s source_commit=%s source_tree=%s main_policy_sha=%s dest_repo_id=%s\n' \
+  "$source_pr" "$actual_commit" "$actual_tree" "$main_sha" "$actual_id"
 
 # No transfer or workflow dispatch occurs. Human security-owner approval,
 # workflow isolation, exact mirrored-tree verification, retention and actual
