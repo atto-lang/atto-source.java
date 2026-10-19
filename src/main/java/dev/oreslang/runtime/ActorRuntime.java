@@ -1496,6 +1496,19 @@ public final class ActorRuntime implements AutoCloseable {
      * initializeActor after the ActorContext is installed, and subsequent
      * mailbox turns receive that actor-owned state explicitly.</p>
      */
+    /**
+     * Narrow compiler-issued proxy receive proof. The transport may encode
+     * only this exact primitive type; a digest alone is not type authority.
+     * Tags are stable ORM2 wire tags, never guest-supplied ordinals.
+     */
+    public enum ProxyWireScalarKind {
+        INT(1), BOOL(2), STRING(3);
+
+        private final int tag;
+        ProxyWireScalarKind(int tag) { this.tag = tag; }
+        public int tag() { return tag; }
+    }
+
     public interface ActorCodeExecutor {
         SharedCodeImageStore.CodeImage codeImage();
 
@@ -1550,6 +1563,16 @@ public final class ActorRuntime implements AutoCloseable {
          */
         default boolean actorReceivesProxyLong(String actorTypeName) {
             return false;
+        }
+
+        /**
+         * Compiler-private closed-world primitive receive type proof for
+         * bounded ORM2 actor mail. Default deny for unsupported compilers,
+         * inferred/aliased/unresolved types and arbitrary guest value graphs.
+         */
+        default Optional<ProxyWireScalarKind> actorProxyWireScalarKind(
+                String actorTypeName) {
+            return Optional.empty();
         }
 
         /**
