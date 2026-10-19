@@ -1100,7 +1100,16 @@ public final class OwnershipChecker {
             };
         }
         if (expr instanceof Ast.AssignExpr assignment) {
-            checkAssignmentTarget(assignment.target(), scope);
+            boolean directRebind = assignment.target() instanceof Ast.NameExpr;
+            // Runtime assignment is RHS-first. A projection target therefore
+            // must be validated after the RHS: the RHS may move or borrow the
+            // receiver, and a subsequent field/index write must see that state.
+            // Direct name rebinding is the exception because replacing a moved
+            // owner is legal; validate that target before checking the RHS, then
+            // restore usability only after a valid owned replacement exists.
+            if (directRebind) {
+                checkAssignmentTarget(assignment.target(), scope);
+            }
             ValueInfo assigned = checkExpr(assignment.value(), scope, true);
             if (containsMutexGuardType(assigned.type)) {
                 throw error("guard-bearing values cannot be assigned or overwritten; bind them once with val");
@@ -1108,9 +1117,9 @@ public final class OwnershipChecker {
             if (isBorrowValue(assigned)) {
                 throw error("borrowed references cannot be assigned into longer-lived storage; create a fresh lexical borrow binding instead");
             }
-            // The RHS must be checked while a transferred owner is still
-            // marked moved. Only after a valid owned replacement exists may a
-            // rebindable local become usable again.
+            if (!directRebind) {
+                checkAssignmentTarget(assignment.target(), scope);
+            }
             if (assignment.target() instanceof Ast.NameExpr name) {
                 ownershipRoot(requireState(scope, name.name())).moved = false;
             }
