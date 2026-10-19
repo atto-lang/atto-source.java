@@ -1064,6 +1064,9 @@ public final class Ast {
             java.util.Objects.requireNonNull(visibleKeys, "visible keys");
             java.util.Set<String> checked = java.util.Set.copyOf(visibleKeys);
             expunge();
+            if (TUPLE_SLOTS.containsKey(new IdentityKey(site, null))) {
+                throw new IllegalStateException("tuple slot proof cannot be reused as a field proof");
+            }
             java.util.Set<String> previous = KEYS.putIfAbsent(
                     new IdentityKey(site, CLEARED), checked);
             if (previous != null && !previous.equals(checked)) {
@@ -1081,6 +1084,9 @@ public final class Ast {
             java.util.Objects.requireNonNull(site, "index site");
             if (slot < 0) throw new IllegalArgumentException("tuple slot must be nonnegative");
             expunge();
+            if (KEYS.containsKey(new IdentityKey(site, null))) {
+                throw new IllegalStateException("field proof cannot be reused as a tuple slot proof");
+            }
             Integer previous = TUPLE_SLOTS.putIfAbsent(
                     new IdentityKey(site, CLEARED), slot);
             if (previous != null && previous.intValue() != slot) {
@@ -1093,6 +1099,15 @@ public final class Ast {
             java.util.Objects.requireNonNull(site, "index site");
             expunge();
             return TUPLE_SLOTS.get(new IdentityKey(site, null));
+        }
+
+        /** Runtime guard: optimizer clones must not change a certified tuple slot. */
+        public static void requireTupleSlot(IndexExpr site, int actual) {
+            Integer known = knownTupleSlot(site);
+            if (known != null && known.intValue() != actual) {
+                throw new IllegalArgumentException(
+                        "runtime index differs from the compiler-verified tuple slot");
+            }
         }
 
         /**
