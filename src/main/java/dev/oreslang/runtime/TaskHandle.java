@@ -41,8 +41,12 @@ public final class TaskHandle<T> {
      * report Cancelled even if a first resume races the binding path.
      */
     private static final class CancelledAtResume extends CancellationException {
-        private final TaskCancellation authority;
-        private final Object taskDomain;
+        private static final long serialVersionUID = 1L;
+        // Java Throwable is Serializable. Never export a Task's internal
+        // cancellation graph or execution-domain capability with an error.
+        // A deserialized marker has no authority and is an ordinary failure.
+        private final transient TaskCancellation authority;
+        private final transient Object taskDomain;
 
         CancelledAtResume(TaskCancellation authority, Object taskDomain) {
             super("task cancelled at a cooperative scheduler checkpoint");
@@ -58,6 +62,8 @@ public final class TaskHandle<T> {
      */
     static boolean isAuthenticatedCheckpointCancellation(Throwable failure) {
         return failure instanceof CancelledAtResume marker
+                && marker.authority != null
+                && marker.taskDomain != null
                 && marker.authority.isCancelled()
                 && marker.taskDomain == OresScheduler.currentTaskDomain();
     }
