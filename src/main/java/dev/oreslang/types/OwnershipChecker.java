@@ -42,6 +42,8 @@ public final class OwnershipChecker {
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    /** Only bindings admitted as new short aliases by the type checker. */
+    private final Map<Ast.BindingStmt, String> validatedShortAliases;
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -49,11 +51,25 @@ public final class OwnershipChecker {
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
 
     private OwnershipChecker(Ast.Program program) {
+        this(program, Map.of());
+    }
+
+    private OwnershipChecker(
+            Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
+        // Preserve AST declaration identity: equality-based maps can merge
+        // separate bindings with identical syntax in different scopes.
+        this.validatedShortAliases = new IdentityHashMap<>(validatedShortAliases);
         index(program);
     }
 
     public static Ast.Program check(Ast.Program program) {
-        OwnershipChecker checker = new OwnershipChecker(program);
+        return check(program, Map.of());
+    }
+
+    /** Called only after TypeChecker has proved which short forms create aliases. */
+    public static Ast.Program check(
+            Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
+        OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
         checker.validate(program);
         return program;
     }
@@ -824,14 +840,29 @@ public final class OwnershipChecker {
 
         value = retainBorrowForBinding(value);
         Ast.TypeRef storedType = binding.declaredType() == null ? value.type : binding.declaredType();
-        if (binding.inferredTypeName() != null) {
-            // The fresh type name does not exist at runtime. Preserve the concrete
-            // closed/readonly record or finite tuple for ownership and actor checks.
-            if (value.type.name().equals("$infer$")) {
-                throw error("cannot bind inferred alias '" + binding.inferredTypeName()
-                        + "' to an unknown ownership type");
+        String shortAlias = validatedShortAliases.get(binding);
+        String inferredAlias = binding.inferredTypeName() == null
+                ? shortAlias : binding.inferredTypeName();
+        if (inferredAlias != null) {
+            // The typechecker proves that short syntax creates a fresh alias;
+            // the ownership checker must not reinterpret opaque nominal names
+            // or trust a guess based only on capitalization.
+            if (shortAlias != null
+                    && (binding.inferredTypeName() != null
+                        || binding.kind() != Ast.BindingKind.CONST
+                        || binding.mutableReferent()
+                        || binding.declaredType() == null
+                        || !binding.declaredType().name().equals(shortAlias)
+                        || !(binding.initializer() instanceof Ast.ObjectExpr object
+                             && object.readonlyInferredAggregate()))) {
+                throw error("invalid validated short inferred type alias");
             }
-            scope.defineInferredType(binding.inferredTypeName(), value.type);
+            if (value.type.name().equals("$infer$")
+                    || shortAlias != null && !value.type.isReadonlyRecordType()) {
+                throw error("cannot bind inferred alias '" + inferredAlias
+                        + "' to an unknown or mutable ownership type");
+            }
+            scope.defineInferredType(inferredAlias, value.type);
             storedType = value.type;
         } else if (binding.declaredType() != null) {
             Ast.TypeRef scoped = scope.lookupInferredType(binding.declaredType().name());
