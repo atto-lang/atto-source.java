@@ -355,6 +355,59 @@ the source-org CI runner failure (zero test steps). The protected-main
 approval policy still has no authorized cross-org private-source mirror
 destination (#1368, #1409). No private source was exported.
 
+## Reserved versus wire-start versus headers-sent state (October 18, 2026)
+
+An additional cancellation audit separated three concepts that were previously
+represented by one `committed` flag on `NativeHttp.State`:
+
+1. `committed`: logical one-time actor response reservation (before opening
+   the body supplier and before any physical HTTP/1.1 write).
+2. `wireStarted`: a single attempt to emit response headers has been
+   authorized under the *same synchronized State monitor* used by
+   `State.abort()`. Cancellation before this point denies success headers;
+   once this point is reached the server **must not synthesize another HTTP
+   status**, even if the socket write has not returned.
+3. `headersSent`: `HttpExchange.sendResponseHeaders` returned successfully.
+   This is a transport API observation, not proof a remote peer received bytes.
+
+The response writer now accepts two trusted callbacks:
+`beginHeaders` (one-shot, checked before sending) and `headersSent` (called
+after a successful send). The old standalone writer overload remains for
+source-only host checks. Both `Exchange.respond(HttpResponseDraft)` and the
+older `respondBuffer`/`start` paths use the State-owned callbacks, so all
+three production response paths serialize cancellation against their first
+header emission. Blocking network I/O is never performed under the State
+ownership monitor. Abort does not generate another status after
+`wireStarted` becomes true; request completion still records an aborted
+response separately from a successfully completed response.
+
+Real HTTP/1.1 loopback regression
+`HttpResponseWireCommitCheck` exercises cancellation during a deliberately
+blocked stream opener before any headers and during a blocked body read after
+HTTP 200 headers are sent. It also checks exactly-once stream close and
+records the two distinct state outcomes. Five focused runs passed, as did
+three consecutive runs of the complete **nine-group** standalone Java21
+hardening suite. Across the three complete runs the new test exercised
+24 preheader cancellations and 24 postheader aborts; the earlier bounded
+producer, stream-close, preflight and HTTP socket checks remained green.
+The real HTTP test is also invoked by
+`HttpResponseWireCommitJUnitTest`, which must run with future Maven CI.
+
+Exact tested Git blob receipts:
+
+- `HttpResponseDraft.java`: `70ef2ab508399634fe829f21e9a52325515bfa3e`
+- `HttpResponseWireCommitCheck.java`: `9eed3553c110a226cba29cfc6e4606067001d5f6`
+- `scripts/test-http-response-hardening.sh`: `27acc9af98b902d28d7333f1d47ea290593b8df6`
+
+**Scope limitation:** the standalone test uses a synchronized test fixture to
+model the native State monitor; it does not execute the whole guest actor
+runtime, nor prove JDK25 Maven / Graal Native Image or LLVM behavior.
+Actual `NativeHttp.State` was changed in source, but complete integration
+validation remains a release gate. Source-org Actions currently fail before
+running steps. The approved private mirror list is empty and the protected
+branch security prerequisite remains unmet (#1368, #1409). No source was
+exported across organizations.
+
 ## Next implementation gates
 
 1. Establish a private, authorized CI runner; the source repository's checked-in
