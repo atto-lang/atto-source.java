@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.util.ArrayDeque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeSet;
@@ -140,6 +141,9 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
 
     private final ArrayDeque<Envelope> queued;
     private final Map<Long, Envelope> outstanding = new HashMap<>();
+    // This ledger records *attempted* physical admission, not completed work.
+    // An ambiguous send must remain reserved until trusted reconciliation.
+    private final HashSet<Long> physicalSendAttempted = new HashSet<>();
     private final TreeSet<Long> completedBeyondWatermark = new TreeSet<>();
 
     private long routeEpoch = 1L;
@@ -309,6 +313,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             // and its credits intact, never half-requeued.
             queued.addFirst(envelope);
             outstanding.remove(messageSequence);
+            physicalSendAttempted.remove(messageSequence);
             highestDispatchedSequence--;
             // This is not logical completion: retain all message/byte credits
             // and preserve the original admission sequence for the next send.
@@ -333,6 +338,32 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                 throw new SecurityException(
                         "foreign, completed or stale logical proxy envelope");
             }
+        }
+    }
+
+    /**
+     * Reserve a single trusted physical submission for an already dispatched
+     * envelope. This check and ledger insertion share the mailbox monitor:
+     * parallel trusted senders cannot submit one logical sequence twice.
+     * Reservation happens BEFORE physical mailbox acceptance; a send timeout
+     * or ambiguous failure must not clear it or automatically replay work.
+     * Only supervisor-proven-unsent requeue or terminal completion removes it.
+     */
+    void beginPhysicalSendAttempt(Envelope envelope, long expectedRouteEpoch) {
+        Objects.requireNonNull(envelope, "envelope");
+        synchronized (lock) {
+            requireOpenLocked();
+            if (expectedRouteEpoch != routeEpoch
+                    || outstanding.get(envelope.messageSequence()) != envelope) {
+                throw new SecurityException(
+                        "foreign, stale or non-outstanding physical send attempt");
+            }
+            if (physicalSendAttempted.contains(envelope.messageSequence())) {
+                throw new IllegalStateException(
+                        "logical proxy envelope already submitted to physical transport");
+            }
+            // HashSet growth can fail before send; never submit in that case.
+            physicalSendAttempted.add(envelope.messageSequence());
         }
     }
 
@@ -394,6 +425,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
 
             // No allocation-bearing insertion remains on the commit path.
             outstanding.remove(messageSequence);
+            physicalSendAttempted.remove(messageSequence);
             retainedMessages = nextRetainedMessages;
             retainedBytes = nextRetainedBytes;
 
@@ -481,6 +513,10 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             throw new IllegalStateException(
                     "logical proxy freeze-state invariant violated");
         }
+        if (!outstanding.keySet().containsAll(physicalSendAttempted)) {
+            throw new IllegalStateException(
+                    "physical send attempt is no longer an outstanding logical message");
+        }
         if (activeFreeze != null && activeFreeze.routeEpoch != routeEpoch) {
             throw new IllegalStateException(
                     "logical proxy freeze route invariant violated");
@@ -521,6 +557,7 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             }
             queued.clear();
             outstanding.clear();
+            physicalSendAttempted.clear();
             completedBeyondWatermark.clear();
             retainedMessages = 0;
             retainedBytes = 0;
