@@ -226,6 +226,9 @@ public final class TypeChecker {
     }
 
     private void collect(Ast.Program program) {
+        // No guest execution or imported symbol publication with unlowered
+        // declaration defaults. Stage parser metadata separately from ABI.
+        dev.oreslang.types.UnloweredDefaultArgValsGuard.reject(program);
         for (Ast.ModuleDecl module : program.modules()) {
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
