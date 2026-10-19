@@ -73,6 +73,18 @@ final class GuestScalarTaskAwaitTest {
     }
 
     @Test
+    void redundantLegacyNbTaskAliasDoesNotCreateNestedTasks() throws Exception {
+        String output = execute("""
+                pub fnc main(): void {
+                    let int result = await nb task { return 44; };
+                    stdio.stdout.write(result);
+                    return;
+                }
+                """);
+        assertTrue(output.contains("44"), output);
+    }
+
+    @Test
     void standaloneAndEscapingTaskHandlesStayRejected() {
         rejects("let Task<int> work = task { return 7; };");
         rejects("do task { return; };");
