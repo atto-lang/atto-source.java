@@ -46,4 +46,36 @@ final class NativeCarrierExecutorTest {
                     "completion accounting must publish after each carrier turn returns");
         }
     }
+
+    @Test
+    void hardAffinityCarrierIsPinnedBeforeItsFirstRunnable() throws Exception {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux"));
+        int cpu = NativeCarrierExecutor.currentCpu();
+        assertTrue(cpu >= 0);
+        try (NativeCarrierExecutor executor =
+                     new NativeCarrierExecutor(1, 1, 16, "ores-native-pinned-test-", cpu)) {
+            CountDownLatch done = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicInteger observed =
+                    new java.util.concurrent.atomic.AtomicInteger(-1);
+            executor.execute(() -> {
+                observed.set(NativeCarrierExecutor.currentCpu());
+                done.countDown();
+            });
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertEquals(cpu, observed.get(),
+                    "startup pinning must complete before the first submitted runnable");
+        }
+    }
+
+    @Test
+    void startupPinningRejectsMultiCarrierPools() {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux"));
+        int cpu = NativeCarrierExecutor.currentCpu();
+        assertTrue(cpu >= 0);
+        assertThrows(IllegalArgumentException.class,
+                () -> new NativeCarrierExecutor(1, 2, 16, "ores-native-invalid-pin-", cpu));
+    }
+
 }
