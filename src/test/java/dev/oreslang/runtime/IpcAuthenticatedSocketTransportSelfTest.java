@@ -126,6 +126,14 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             var bridge = new IpcReceiptCompletionBridge(2);
             try {
                 new IpcAuthenticatedSocketTransport(
+                        client, bridge, configMessage, 10, 1, key, new byte[16],
+                        IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+                throw new AssertionError("all-zero connection binding accepted");
+            } catch (IllegalArgumentException expected) {
+                check(expected.getMessage().contains("must not be all zero"));
+            }
+            try {
+                new IpcAuthenticatedSocketTransport(
                         client, bridge, configMessage, 10, 2, key, connectionBinding,
                         IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
                 throw new AssertionError("parallel TCP physical writers accepted");
@@ -401,7 +409,30 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         var replayDataMessage = envelope(1, "dataReplay", 3, 4, replayDataPayload);
         byte[] capturedData = IpcAuthenticatedSocketTransport.encodeDataFrame(
                 replayDataMessage, replayDataPayload, 82, connectionBinding, key);
-        // v2 changed receipt wire codes away from Java enum ordinals.
+
+        // A replacement physical connection must carry a fresh authenticated
+        // connection binding. Reusing key + epoch + physical generation alone
+        // is insufficient to make a captured old-connection frame valid.
+        byte[] replacementBinding = binding(91);
+        try {
+            IpcAuthenticatedSocketTransport.decodeDataFrame(
+                    capturedData, replayDataMessage, 82,
+                    new IpcAuthenticatedSocketTransport.InboundReplayGate(),
+                    replacementBinding, key);
+            throw new AssertionError(
+                    "captured DATA crossed replacement connection binding");
+        } catch (IOException expected) {
+            check(expected.getMessage().contains("connection binding"));
+        }
+        try {
+            IpcAuthenticatedSocketTransport.encodeDataFrame(
+                    replayDataMessage, replayDataPayload, 82,
+                    new byte[16], key);
+            throw new AssertionError("all-zero IPC connection binding accepted");
+        } catch (IllegalArgumentException expected) {
+            check(expected.getMessage().contains("must not be all zero"));
+        }
+        // v3 retains explicit receipt wire codes and adds a connection binding.
         // Even with a valid MAC, a captured v1-version header is rejected
         // rather than interpreted under the new state-code mapping.
         byte[] oldVersionData = capturedData.clone();
@@ -417,7 +448,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             IpcAuthenticatedSocketTransport.decodeDataFrame(
                     oldVersionData, replayDataMessage, 82,
                     new IpcAuthenticatedSocketTransport.InboundReplayGate(), connectionBinding, key);
-            throw new AssertionError("authenticated v1 DATA accepted by v2 transport");
+            throw new AssertionError("authenticated v1 DATA accepted by v3 transport");
         } catch (IOException expected) {
             check(expected.getMessage().contains("invalid IPC frame header"));
         }
