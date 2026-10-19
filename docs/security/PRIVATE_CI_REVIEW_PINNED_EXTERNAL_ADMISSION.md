@@ -144,6 +144,23 @@ These changes strengthen evidence, but do not authorize a transfer while
 independent reviewer policy remains disabled, either incident remains open,
 or any exact-head approval/ledger is missing.
 
+## Immutable carrier-parent scope verification
+
+The dispatcher does not rely solely on the presence of the approved source
+subtree and provenance record. It now re-reads the exact reviewed carrier
+parent tree by immutable SHA and the constructed payload root tree by immutable
+SHA, requires both readbacks to be complete (not truncated), and compares all
+top-level entries other than `private-oreslang-source` and
+`.private-ci-provenance.json`. Every unrelated path, Git object type, mode and
+blob/tree SHA must match the reviewed parent exactly. Unexpected additions,
+deletions, duplicates, or mode/content changes are denied before creating the
+source-bearing branch.
+
+This is not a substitute for the carrier's own push-event SHA, parent-commit,
+source-subtree and provenance validation before source checkout. It makes the
+dispatcher's source-export proof independently reject a carrier root-tree
+mutation even when the two expected payload entries remain intact.
+
 ## Execution binding
 
 The carrier validation workflow is **push-only** on
