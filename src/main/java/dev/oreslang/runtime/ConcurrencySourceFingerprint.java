@@ -25,11 +25,25 @@ public final class ConcurrencySourceFingerprint {
 
     private ConcurrencySourceFingerprint() { }
 
-    private static boolean included(Path path) {
+    private static boolean included(Path root, Path path) {
+        for (Path segment : root.relativize(path)) {
+            String part = segment.toString();
+            if (part.equals(".git") || part.equals("target") || part.equals("build")
+                    || part.equals("dist") || part.equals("node_modules")
+                    || part.equals(".oreslang") || part.equals(".venv")
+                    || part.equals("__pycache__")) {
+                return false;
+            }
+        }
         String name = path.getFileName().toString();
         return name.endsWith(".ores") || name.endsWith(".toml")
                 || name.endsWith(".wit") || name.endsWith(".tsp")
-                || name.equals("pom.xml");
+                || name.endsWith(".java") || name.endsWith(".c")
+                || name.endsWith(".cpp") || name.endsWith(".h")
+                || name.endsWith(".hpp") || name.endsWith(".rs")
+                || name.endsWith(".py") || name.endsWith(".xml")
+                || name.endsWith(".json") || name.endsWith(".yaml")
+                || name.endsWith(".yml") || name.endsWith(".gradle");
     }
 
     public static String ofWorkspace(Path root) throws IOException {
@@ -39,7 +53,7 @@ public final class ConcurrencySourceFingerprint {
         Path anchor = root.toRealPath(LinkOption.NOFOLLOW_LINKS);
         List<Path> sourceFiles;
         try (Stream<Path> paths = Files.walk(anchor)) {
-            sourceFiles = paths.filter(ConcurrencySourceFingerprint::included)
+            sourceFiles = paths.filter(path -> included(anchor, path))
                     .sorted(Comparator.comparing(path -> anchor.relativize(path).toString()))
                     .limit(MAX_SOURCE_FILES + 1L).toList();
         }
