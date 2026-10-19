@@ -62,7 +62,9 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
             TrustedSupervisorInbox.ChildBinding binding,
             Throwable doneFailure) {
         final Throwable failure = child.failure().orElse(doneFailure);
-        final long childId;
+        final TrustedSupervisorInbox.Admission result;
+        final TrustedSupervisorInbox.FailureNotice escalationNotice;
+
         synchronized (this) {
             bindings.remove(child, binding);
             Long knownChildId = childIdsByBinding.remove(binding);
@@ -70,28 +72,40 @@ final class SupervisorRuntimeBridge implements AutoCloseable {
                 if (closed) return;
                 throw new IllegalStateException("trusted child identity unavailable");
             }
-            childId = knownChildId;
+
             if (closed || failure == null) {
                 revokeIfLive(binding);
                 return;
             }
+
+            long seq = nextSequence();
+            long faultCode = stableFaultCode(failure);
+
+            /*
+             * Keep the bridge lifecycle lock through trusted ingress admission.
+             * close() uses the same bridge->inbox lock order, so it cannot revoke
+             * this binding in the gap between validation and CONTROL publication.
+             */
+            result = inbox.offerTrustedPanic(binding, seq, faultCode);
+            escalationNotice = result == TrustedSupervisorInbox.Admission.ESCALATE_TO_PARENT
+                    ? new TrustedSupervisorInbox.FailureNotice(
+                            knownChildId, child.generation(), seq, faultCode)
+                    : null;
+
+            if (result == TrustedSupervisorInbox.Admission.ACCEPTED) {
+                // The queued FailureNotice is detached value data. Retire the
+                // live child authority immediately; no binding leak is required.
+                revokeIfLive(binding);
+            } else if (result == TrustedSupervisorInbox.Admission.REJECTED) {
+                throw new IllegalStateException(
+                        "runtime-authenticated finalized child failure was rejected");
+            }
         }
 
-        long seq = nextSequence();
-        long faultCode = stableFaultCode(failure);
-        TrustedSupervisorInbox.Admission result =
-                inbox.offerTrustedPanic(binding, seq, faultCode);
-        if (result == TrustedSupervisorInbox.Admission.ESCALATE_TO_PARENT) {
-            TrustedSupervisorInbox.FailureNotice notice =
-                    new TrustedSupervisorInbox.FailureNotice(
-                            childId, child.generation(), seq, faultCode);
-            if (!escalation.escalate(notice)) {
-                throw new IllegalStateException(
-                        "supervisor CONTROL overflow escalation was not durably accepted");
-            }
-        } else if (result == TrustedSupervisorInbox.Admission.REJECTED) {
+        // External parent routing must never run under the bridge/inbox locks.
+        if (escalationNotice != null && !escalation.escalate(escalationNotice)) {
             throw new IllegalStateException(
-                    "runtime-authenticated finalized child failure was rejected");
+                    "supervisor CONTROL overflow escalation was not durably accepted");
         }
     }
 
