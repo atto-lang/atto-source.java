@@ -49,6 +49,77 @@ final class ActorOwnedTaskScopeTest {
     }
 
     @Test
+    void hostStopWaitsForOwnedTaskFinallyBeforePublishingActorDone()
+            throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(2, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            CountDownLatch childEntered = new CountDownLatch(1);
+            CountDownLatch releaseChild = new CountDownLatch(1);
+            AtomicInteger cleanupCount = new AtomicInteger();
+            AtomicReference<TaskHandle<Integer>> childRef = new AtomicReference<>();
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                childRef.set(context.runtime().startActorOwnedTask(resume -> {
+                    try {
+                        childEntered.countDown();
+                        boolean interrupted = false;
+                        for (;;) {
+                            try {
+                                releaseChild.await();
+                                break;
+                            } catch (InterruptedException ignored) {
+                                interrupted = true;
+                            }
+                        }
+                        if (interrupted) Thread.currentThread().interrupt();
+                        OresScheduler.cancellationCheckpoint();
+                        return OresScheduler.done(9);
+                    } finally {
+                        cleanupCount.incrementAndGet();
+                    }
+                }));
+            });
+            actor.send(1);
+            assertTrue(childEntered.await(5, TimeUnit.SECONDS));
+
+            AtomicReference<Throwable> stopError = new AtomicReference<>();
+            Thread stopper = new Thread(() -> {
+                try { actor.stop(); }
+                catch (Throwable problem) { stopError.set(problem); }
+            });
+            stopper.start();
+            try {
+                TaskHandle<Integer> child = childRef.get();
+                assertNotNull(child);
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (!child.isCancellationRequested()
+                        && System.nanoTime() < deadline) {
+                    Thread.onSpinWait();
+                }
+                assertTrue(child.isCancellationRequested(),
+                        "actor termination must request child cancellation");
+                assertFalse(child.result().isDone(),
+                        "running Task result waits for safe cancellation checkpoint");
+                assertFalse(child.getDone().isDone());
+                assertFalse(actor.done().isDone(),
+                        "actor may not finalize while its Task is in finally");
+                assertEquals(0, cleanupCount.get());
+            } finally {
+                releaseChild.countDown();
+            }
+
+            stopper.join(10000);
+            assertFalse(stopper.isAlive());
+            assertNull(stopError.get());
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            assertNull(actor.done().get(3, TimeUnit.SECONDS));
+            assertEquals(1, cleanupCount.get());
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    childRef.get().getDone().get(3, TimeUnit.SECONDS));
+            assertTrue(childRef.get().result().isCancelled());
+        }
+    }
+
+    @Test
     void actorStopCancelsSuspendedChildWithoutCancellingBorrowedFuture()
             throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
