@@ -1,0 +1,45 @@
+name: OTP split CONTROL and upgrade command contract
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/OtpSupervisorCommandLaneV1.java'
+      - 'src/test/java/dev/oreslang/runtime/OtpSupervisorCommandLaneV1Smoke.java'
+      - 'src/test/java/dev/oreslang/runtime/OtpSupervisorCommandLaneV1Test.java'
+      - 'docs/OTP_PRIORITY_CONTROL_HOT_UPGRADE_V1.md'
+      - '.github/workflows/otp-control-hotupgrade-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  control-host-and-actor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          distribution: graalvm
+          java-version: '25'
+          version: '25.3'
+          cache: maven
+      - name: Standalone exact checked-out host CONTROL smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/otp-control-standalone
+          javac --release 21 -Xlint:all -Werror \
+            -d target/otp-control-standalone \
+            src/main/java/dev/oreslang/runtime/OtpSupervisorCommandLaneV1.java \
+            src/test/java/dev/oreslang/runtime/OtpSupervisorCommandLaneV1Smoke.java
+          java -ea -cp target/otp-control-standalone \
+            dev.oreslang.runtime.OtpSupervisorCommandLaneV1Smoke
+      - name: Full JUnit integration with source ActorRuntime CONTROL tests
+        run: >
+          mvn -B -ntp
+          -Dtest=OtpSupervisorCommandLaneV1Test,ActorSupervisorControlV2Test
+          test
