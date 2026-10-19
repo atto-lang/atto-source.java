@@ -139,11 +139,13 @@ effect/ownership + Graal guest gate and compiler-negative cases for:
 
 ## Current verification boundary — 2026-10-19
 
-Exact source head `f95a116777c207cab07cac93c05374011c35e975` is authored but
-**not compiler-verified**. Source-org fast CI run `39329104036`, full CI run
-`39329103990`, and Graal conformance run `39329103945` all terminated before
-recording any job steps (`steps:null`). Those are infrastructure admission
-failures, not passing or failing Java tests.
+The current PR head is authored but **not compiler-verified**. Exact commit
+identity and the newest source-org run IDs are pinned in the pull-request
+description rather than self-referenced here (changing this document changes
+the Git commit). At the verification boundary, source-org fast CI, full CI,
+and Graal conformance continue terminating before recording any job steps
+(`steps:null`). Those are infrastructure admission failures, not passing or
+failing Java tests.
 
 An independently authored source-free model in
 `ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra#29`
