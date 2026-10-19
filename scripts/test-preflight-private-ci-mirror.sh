@@ -33,7 +33,7 @@ tree="$(git -C "$repo" rev-parse HEAD^{tree})"
 dest_branch="ci/oreslang-test"
 dest_base_commit="fc49aa44726eac47301ae2d676c4b38954d3cc46"
 dest_base_tree="1e9dec690e45df80758547e991d37f6b18872e33"
-dest_cleanup_blob="02f62cd41b8995a6bc7eca9c6f6aff32e698b2f2"
+dest_workflow_blob="6f532dfaa5149a023ca1ccd6ed3d8364c6df44e0"
 
 cat > "$tmp/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -128,8 +128,8 @@ case "$endpoint" in
       "${SYNTH_DEST_BASE_COMMIT:-fc49aa44726eac47301ae2d676c4b38954d3cc46}" \
       "${SYNTH_DEST_BASE_TREE:-1e9dec690e45df80758547e991d37f6b18872e33}"
     ;;
-  "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/contents/.github/workflows/private-oreslang-cleanup.yml?ref=main")
-    printf '%s\n' "${SYNTH_DEST_CLEANUP_BLOB:-02f62cd41b8995a6bc7eca9c6f6aff32e698b2f2}"
+  "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/contents/.github/workflows/private-oreslang-exact-tree.yml?ref=fc49aa44726eac47301ae2d676c4b38954d3cc46")
+    printf '%s\n' "${SYNTH_DEST_WORKFLOW_BLOB:-6f532dfaa5149a023ca1ccd6ed3d8364c6df44e0}"
     ;;
   *)
     printf 'unexpected synthetic gh endpoint: %s\n' "$endpoint" >&2
@@ -139,7 +139,7 @@ esac
 EOF
 chmod +x "$tmp/bin/gh"
 
-approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=ores-truffle-oreslang/oreslang-source.java source_repo_id=1400792274 source_pr=1425 source_commit=$head source_tree=$tree destination_repo=ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra destination_repo_id=1412142815 destination_branch=$dest_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree destination_cleanup_blob=$dest_cleanup_blob policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
+approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=ores-truffle-oreslang/oreslang-source.java source_repo_id=1400792274 source_pr=1425 source_commit=$head source_tree=$tree destination_repo=ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra destination_repo_id=1412142815 destination_branch=$dest_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree destination_workflow_blob=$dest_workflow_blob policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
 
 run_preflight() {
   (
@@ -181,9 +181,9 @@ assert_exit 1 run_preflight SYNTH_PROTECTED=false SYNTH_DEST_BRANCH_EXISTS=true 
   bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
 
 # Authorization is bound to the exact reviewed destination carrier base and
-# the trusted default-branch cleanup workflow that will erase the reachable ref.
+# the exact inline-cleanup workflow blob contained in that immutable carrier.
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
-  SYNTH_DEST_CLEANUP_BLOB=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  SYNTH_DEST_WORKFLOW_BLOB=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
 
 # Authorization is bound to the exact reviewed destination carrier base.
@@ -204,6 +204,14 @@ assert_exit 1 run_preflight SYNTH_PROTECTED=false \
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   SYNTH_DEST_BASE_COMMIT=054b65982f0950a4e2f3fb4752e78f585198c2ff \
   SYNTH_DEST_BASE_TREE=09ccea168b563ee91f9cd7a938ddabb5a33078ec \
+  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+assert_exit 1 run_preflight SYNTH_PROTECTED=false \
+  SYNTH_DEST_BASE_COMMIT=1012deffdaa3d0aec03a98073dc1f48ec1565c08 \
+  SYNTH_DEST_BASE_TREE=de8053d4005b326929e8734a5be741e82b40e9e7 \
+  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+assert_exit 1 run_preflight SYNTH_PROTECTED=false \
+  SYNTH_DEST_BASE_COMMIT=ec6a5ddc39dd5524285fcc18902d777c4827c666 \
+  SYNTH_DEST_BASE_TREE=c7eba95c9abfc008e395194360327026cf33bd9c \
   bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
 
 # Merely leaving protection disabled must never activate the fallback when
@@ -243,7 +251,7 @@ git -C "$repo" -c user.name=CI-Feature -c user.email=ci-feature@example.invalid 
   commit -qm 'mutate preflight only on feature head'
 head="$(git -C "$repo" rev-parse HEAD)"
 tree="$(git -C "$repo" rev-parse HEAD^{tree})"
-approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=ores-truffle-oreslang/oreslang-source.java source_repo_id=1400792274 source_pr=1425 source_commit=$head source_tree=$tree destination_repo=ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra destination_repo_id=1412142815 destination_branch=$dest_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree destination_cleanup_blob=$dest_cleanup_blob policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
+approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=ores-truffle-oreslang/oreslang-source.java source_repo_id=1400792274 source_pr=1425 source_commit=$head source_tree=$tree destination_repo=ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra destination_repo_id=1412142815 destination_branch=$dest_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree destination_workflow_blob=$dest_workflow_blob policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
 
@@ -260,7 +268,7 @@ git -C "$repo" -c user.name=CI-Feature -c user.email=ci-feature@example.invalid 
   commit -qm 'mutate publisher only on feature head'
 head="$(git -C "$repo" rev-parse HEAD)"
 tree="$(git -C "$repo" rev-parse HEAD^{tree})"
-approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=ores-truffle-oreslang/oreslang-source.java source_repo_id=1400792274 source_pr=1425 source_commit=$head source_tree=$tree destination_repo=ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra destination_repo_id=1412142815 destination_branch=$dest_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree destination_cleanup_blob=$dest_cleanup_blob policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
+approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=ores-truffle-oreslang/oreslang-source.java source_repo_id=1400792274 source_pr=1425 source_commit=$head source_tree=$tree destination_repo=ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra destination_repo_id=1412142815 destination_branch=$dest_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree destination_workflow_blob=$dest_workflow_blob policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
 
