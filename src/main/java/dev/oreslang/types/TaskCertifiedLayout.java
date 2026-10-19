@@ -100,7 +100,7 @@ final class TaskCertifiedLayout {
             if (issuedSites.size() >= 65536) {
                 throw new IllegalStateException("source allocation proof budget exceeded");
             }
-            RecordStorage result = freshRecord(shape);
+            RecordStorage result = modelFreshRecordUnchecked(shape);
             issuedSites.put(expression, result);
             return result;
         }
@@ -112,7 +112,8 @@ final class TaskCertifiedLayout {
             return false;
         }
 
-        synchronized RecordStorage freshRecord(Types.Record shape) {
+        /** Model fixture ONLY; not a source-level freshness or layout proof. */
+        synchronized RecordStorage modelFreshRecordUnchecked(Types.Record shape) {
             Objects.requireNonNull(shape, "record shape");
             if (shape.members().isEmpty() || shape.members().size() > 1024
                     || shape.members().values().stream().anyMatch(t -> !inlineScalar(t))) {
@@ -122,7 +123,8 @@ final class TaskCertifiedLayout {
             return new RecordStorage(this, newRoot(), Map.copyOf(shape.members()), shape.readOnly());
         }
 
-        synchronized FixedArrayStorage freshFixedArray(Types.Tuple shape) {
+        /** Model fixture ONLY; fixed-array physical layout is unverified. */
+        synchronized FixedArrayStorage modelFreshFixedArrayUnchecked(Types.Tuple shape) {
             Objects.requireNonNull(shape, "array shape");
             if (shape.kind() != Types.TupleKind.FIXED_ARRAY
                     || shape.elements().isEmpty() || shape.elements().size() > 65536
