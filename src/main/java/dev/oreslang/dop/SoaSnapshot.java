@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
 
 /**
  * Host-only, bounded, immutable AoS/SoA reference storage for statically closed
@@ -18,6 +19,7 @@ import java.util.Set;
 public final class SoaSnapshot {
     public static final int MAX_FIELDS = 64;
     public static final int MAX_CELLS = 1_000_000;
+    public static final int MAX_FIELD_NAME_UNITS = 1024;
     private static final Set<Class<?>> SCALARS = Set.of(
             String.class, Boolean.class, Integer.class,
             Long.class, Float.class, Double.class);
@@ -123,12 +125,25 @@ public final class SoaSnapshot {
         if (schema.size() > MAX_FIELDS) {
             throw new IllegalArgumentException("too many fields");
         }
-        Map<String, Class<?>> validated = new LinkedHashMap<>();
+        // Canonical host order must not depend on HashMap iteration order.
+        Map<String, Class<?>> validated = new TreeMap<>();
         for (var field : schema.entrySet()) {
             String name = Objects.requireNonNull(field.getKey(), "field name");
             // Spaces, punctuation, Unicode, and even empty quoted keys are data.
-            if (name.indexOf((char) 0) >= 0) {
-                throw new IllegalArgumentException("NUL in field name");
+            if (name.length() > MAX_FIELD_NAME_UNITS) {
+                throw new IllegalArgumentException("field name too long");
+            }
+            // Never normalize valid Unicode spelling; reject malformed UTF-16.
+            for (int i = 0; i < name.length(); i++) {
+                char code = name.charAt(i);
+                if (code == 0 || Character.isLowSurrogate(code)) {
+                    throw new IllegalArgumentException("invalid field name Unicode");
+                }
+                if (Character.isHighSurrogate(code)) {
+                    if (++i >= name.length() || !Character.isLowSurrogate(name.charAt(i))) {
+                        throw new IllegalArgumentException("invalid field name Unicode");
+                    }
+                }
             }
             Class<?> type = Objects.requireNonNull(field.getValue(), "field type");
             if (!SCALARS.contains(type)) {
@@ -136,7 +151,7 @@ public final class SoaSnapshot {
             }
             validated.put(name, type);
         }
-        return validated;
+        return new LinkedHashMap<>(validated);
     }
 
     private static Map<String, List<Object>> freezeColumns(
