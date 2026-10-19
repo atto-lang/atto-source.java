@@ -39,21 +39,55 @@ public final class LiteralOptionalCallCompiler {
         private final Ast.FunctionDecl checkedTarget;
         private final Ast.CallExpr loweredCall;
         private final SourceOrigin sourceOrigin;
+        private final List<OptionalCallTempLowering.ArgumentTemp> sourceCaptures;
+        private final List<OptionalCallTempLowering.AbiSlot> formalAbiSlots;
 
         private Result(Ast.Program program, Ast.FunctionDecl caller,
                        Ast.FunctionDecl target, Ast.CallExpr call,
-                       SourceOrigin origin) {
+                       SourceOrigin origin, OptionalCallTempLowering.Recipe recipe) {
             checkedProgram = Objects.requireNonNull(program);
             checkedCaller = Objects.requireNonNull(caller);
             checkedTarget = Objects.requireNonNull(target);
             loweredCall = Objects.requireNonNull(call);
             sourceOrigin = Objects.requireNonNull(origin);
+            // Keep an immutable trace of the original lexical call-item
+            // origins after the real TypeChecker and OwnershipChecker pass.
+            // This is diagnostic provenance, NOT evaluated guest values,
+            // executable temporaries, or a permission to skip semantic checks.
+            Objects.requireNonNull(recipe, "source ABI recipe");
+            if (recipe.targetKind()
+                    != OptionalCallTempLowering.TargetKind.STATIC_MODULE_FUNCTION) {
+                throw new IllegalArgumentException("checked literal call lost static target");
+            }
+            sourceCaptures = List.copyOf(recipe.argumentTemps());
+            formalAbiSlots = List.copyOf(recipe.abiSlots());
+            if (formalAbiSlots.size() != target.parameters().size()
+                    || formalAbiSlots.size() != call.arguments().size()) {
+                throw new IllegalArgumentException(
+                        "checked call and source ABI provenance have different arity");
+            }
+            for (int i = 0; i < formalAbiSlots.size(); i++) {
+                if (formalAbiSlots.get(i).formalIndex() != i
+                        || !formalAbiSlots.get(i).calleeType()
+                                .equals(target.parameters().get(i).type())) {
+                    throw new IllegalArgumentException(
+                            "checked callee ABI diverges from original formal proof");
+                }
+            }
         }
         public SourceOrigin sourceOrigin() { return sourceOrigin; }
         public Ast.Program checkedProgram() { return checkedProgram; }
         public Ast.FunctionDecl checkedCaller() { return checkedCaller; }
         public Ast.FunctionDecl checkedTarget() { return checkedTarget; }
         public Ast.CallExpr loweredCall() { return loweredCall; }
+        /** Original lexical argument occurrences; source preview metadata only. */
+        public List<OptionalCallTempLowering.ArgumentTemp> sourceCaptures() {
+            return sourceCaptures;
+        }
+        /** Full formal-order ABI mapping, including original omission origins. */
+        public List<OptionalCallTempLowering.AbiSlot> formalAbiSlots() {
+            return formalAbiSlots;
+        }
     }
 
     public static Result lowerAndAnalyze(String source, String moduleName,
@@ -374,7 +408,8 @@ public final class LiteralOptionalCallCompiler {
             throw new IllegalArgumentException(
                     "checked compiler output lost source binding identity");
         }
-        return new Result(checked, loweredCaller, loweredTarget, normal, sourceOrigin);
+        return new Result(checked, loweredCaller, loweredTarget, normal,
+                sourceOrigin, recipe);
     }
 
     private static Ast.Expr immediateExpression(Ast.Stmt statement) {
