@@ -301,7 +301,9 @@ public final class NativeHttp implements AutoCloseable {
             if (drained != null) return drained;
             drained = new OresFuture<>(() -> false, () -> { });
             stopAccepting();
-            io.execute(() -> {
+            // Drain must still be driven if the I/O pool was concurrently shut
+            // down. A rejected task must not strand the drained Future.
+            HttpResponseCleanupDispatcher.dispatch(io, () -> {
                 try { transport.stop((int) (((long) graceMillis + 999) / 1000)); }
                 finally {
                     synchronized (this) { transportStopped = true; }
