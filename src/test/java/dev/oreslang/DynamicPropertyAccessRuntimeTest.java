@@ -247,6 +247,42 @@ final class DynamicPropertyAccessRuntimeTest {
     }
 
     @Test
+    void exactPublicClassKeyDoesNotInheritPrivateSiblingRestrictions() {
+        String source = """
+                define class Secret as
+                    private val int hidden = 1;
+                    pub let int shown = 2;
+                end
+
+                pub fnc main(): void {
+                    val Secret secret = new Secret();
+                    secret["shown"] = 7;
+                    stdio.println(secret["shown"]);
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(OresLanguage.ID, source, "dynamic-property-exact-public-key.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(output)
+                    .build()) {
+                context.eval(program);
+            }
+        });
+
+        String text = output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
+        assertEquals("7\n", text);
+    }
+
+    @Test
     void inheritedComputedClassFieldsAndOwnerPrivateAccessExecuteAtRuntime() {
         String source = """
                 define class Parent<T> as
