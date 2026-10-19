@@ -8494,6 +8494,13 @@ public final class ActorRuntime implements AutoCloseable {
                 // successful receipt. The carrier identity check prevents a
                 // stale runnable from impersonating a new turn.
                 synchronized (lifecycleLock) {
+                    // Teardown snapshots can themselves allocate. Fence user
+                    // ingress and all future carrier turns BEFORE attempting
+                    // that fallible retirement. If stop() also fails (e.g.
+                    // emergency OOME), the actor remains sealed for trusted
+                    // supervisor retry rather than accepting new mail.
+                    sealing = true;
+                    forceKillFenced = true;
                     if (scheduledDispatchToken == dispatchTicket && !carrierActive) {
                         scheduledDispatchToken = null;
                         scheduled.set(false);
