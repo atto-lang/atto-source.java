@@ -1,6 +1,7 @@
 package dev.oreslang.types;
 
 import dev.oreslang.types.Types.*;
+import dev.oreslang.types.Types.Record;
 
 import java.util.Objects;
 import java.util.function.Predicate;
