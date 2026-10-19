@@ -223,3 +223,51 @@ committed methods, not yet source-CI verified.
 The stage-2 Git branch is still based on the previous stage-1 head.
 Review and merge the newly hardened stage-1 changes first, then rebase
 stage 2 and resolve any duplicate-cherry-pick conflicts before release.
+
+
+## Retired cancellation authority admission hardening
+
+The stage-2 `TaskCancellation.retire()` primitive originally detached
+existing registrations but left the retired token accepting late
+`onCancel`/`onRevoke` registrations, new children, transfers into the
+retired owner, and even late `cancel()` transitions. A retained late
+subscription could keep a completed Task's callback captures alive.
+
+A guarded `retired` state now closes the authority under `GRAPH_LOCK`.
+Further registration returns an already-closed subscription; new
+children/adoptions are rejected; cancellation after retirement is a
+no-op; and retirement is idempotent. An owner holding **live child
+authorities** cannot retire because that would orphan structured
+cancellation. These are internal host-lifetime semantics, not guest
+cancellation permissions or guaranteed scheduler quiescence.
+
+Four newly committed stage-2 `TaskCancellationTest` JUnit methods
+exercise registration after retirement, adoption/spawn rejection,
+retirement-versus-registration races, and orphan-prevention for live
+children. Thus the staged branch contains **61 JUnit methods**
+(21 cancellation, 24 TaskHandle, 16 TaskScope). Stage-1 contributes
+17; the 21 stage-2 cancellation methods include those inherited
+17 and four new methods. Never double-count them as 78.
+
+Local Java 21 testing, not GraalVM/Maven CI:
+- An independently adapted runtime-primitive source harness passed
+  2,400 cancellation cases and 2,000 retirement/race cases (**4,400**
+  total). The checked production `TaskScope.java` Git blob passed
+  3,500 checks with scheduler/Future doubles; these are not
+  compiler/runtime integration tests.
+- A completely source-free independent lifetime model ran under
+  private `opto-sync-test/go-java-validation` Actions
+  [#39181767823](https://github.com/opto-sync-test/go-java-validation/actions/runs/39181767823),
+  exact commit `d385c00a4ff9f9aba4e95ab7f46984e977ed2326`.
+  All **ten** job steps succeeded. Logs:
+  `SOURCE_FREE_CANARY_PASS cases=2250 java=21.0.12.1` and
+  `SOURCE_FREE_LIFECYCLE_PASS cases=1600 java=21.0.12.1`.
+  Neither model copied Oreslang source to the testing organization.
+
+Unresolved release gate: source `main` still lacks enforced branch
+protection, its reviewed private-carrier allowlist is empty, and
+private-source exposure issue #22 / publisher provenance issue #962
+remain open. Do NOT transfer actual source into any alternate repo
+without independent, numeric-ID-checked approval and exact-tree
+verification. Stage-1/2 remain stacked and draft; actual Graal/JUnit
+results are unknown.
