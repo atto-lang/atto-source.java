@@ -228,6 +228,50 @@ final class ActorRuntimePhysicalMailReceiptTest {
     }
 
     @Test
+    void failedActiveMessageAlsoFailsLaterQueuedExactReceipts()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var entered = new CountDownLatch(1);
+            var releaseFailure = new CountDownLatch(1);
+            var processedSuccessor = new AtomicInteger();
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> {
+                        if (message == 1) {
+                            entered.countDown();
+                            if (!releaseFailure.await(5, TimeUnit.SECONDS))
+                                throw new AssertionError("first message not released");
+                            throw new IllegalStateException("injected active receive failure");
+                        }
+                        processedSuccessor.incrementAndGet();
+                    });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            try {
+                var first = runtime.sendWithPhysicalReceipt(actor, 1);
+                assertTrue(entered.await(5, TimeUnit.SECONDS),
+                        "first accepted physical message must be executing");
+                var queued = runtime.sendWithPhysicalReceipt(actor, 2);
+                assertEquals(first.acceptedSequence() + 1L,
+                        queued.acceptedSequence());
+                assertFalse(first.terminal().isDone());
+                assertFalse(queued.terminal().isDone(),
+                        "queued successor cannot be acknowledged by earlier prefix");
+
+                releaseFailure.countDown();
+                assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> first.terminal().get(5, TimeUnit.SECONDS));
+                assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> queued.terminal().get(5, TimeUnit.SECONDS),
+                        "terminal actor failure must fail an accepted but undelivered successor");
+                assertEquals(0, processedSuccessor.get(),
+                        "queued mail must not run after fail-stop");
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            } finally {
+                releaseFailure.countDown();
+            }
+        }
+    }
+
+    @Test
     void physicalSequencesArePerActorNotLogicalProxySequenceNumbers()
             throws Exception {
         try (var runtime = new ActorRuntime()) {
