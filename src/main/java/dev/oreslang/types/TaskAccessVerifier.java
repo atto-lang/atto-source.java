@@ -87,6 +87,34 @@ public final class TaskAccessVerifier {
         }
     }
 
+    /** A source-level admission claim with its precisely resolved referent type. */
+    public record TypedClaim(Claim claim, Types.Type type) {
+        public TypedClaim {
+            Objects.requireNonNull(claim, "claim");
+            Objects.requireNonNull(type, "type");
+        }
+    }
+
+    /**
+     * Validates the Send/Sync proof before reserving any access, using the
+     * existing internal auto-trait checker. READ requires T:Sync; WRITE
+     * requires T:Send. A passing proof still does NOT establish lifetime,
+     * actor-domain authorization, pinned code, or task quiescence.
+     */
+    public Ticket admitTyped(List<TypedClaim> requested,
+                             ThreadSafetyTraits.NominalProof nominalProof) {
+        Objects.requireNonNull(nominalProof, "nominalProof");
+        List<TypedClaim> typed = List.copyOf(Objects.requireNonNull(requested, "claims"));
+        for (TypedClaim claim : typed) {
+            ThreadSafetyTraits.Trait needed = claim.claim().mode() == Mode.READ
+                    ? ThreadSafetyTraits.Trait.SYNC : ThreadSafetyTraits.Trait.SEND;
+            if (!ThreadSafetyTraits.has(claim.type(), needed, nominalProof)) {
+                throw new IllegalArgumentException("Task access requires proven " + needed);
+            }
+        }
+        return admit(typed.stream().map(TypedClaim::claim).toList());
+    }
+
     /** Opaque compiler-issued child identity. A cancelled Ticket is still live. */
     public static final class Ticket {
         private final long id;
