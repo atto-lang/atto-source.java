@@ -218,3 +218,24 @@ same safety properties without copying Oreslang private source: 17 Python
 protocol tests, a 22-check socket/HMAC Java canary, and a 2,060-check
 physical-owner/admission Java canary under JDK 17, 21 and 25. This is runner/JDK
 and model evidence only, not exact-source Java certification.
+
+
+## Protocol v3 connection binding / reconnect replay hardening
+
+Every authenticated DATA and receipt frame now carries a mandatory **128-bit per-physical-connection binding** inside the MACed protocol-v3 header. The binding is not a guest capability and need not be secret; it is freshness/channel-binding material supplied by the trusted broker or authenticated channel setup.
+
+Requirements:
+- Generate/derive a fresh non-zero 16-byte binding for every replacement physical connection. Suitable sources include an authenticated handshake transcript/exporter or a broker-generated cryptographic nonce distributed inside that authenticated setup.
+- Never derive the binding from guest-controlled fields, textual session names, file descriptors, process/thread IDs, timestamps alone, or a counter whose persistence/uniqueness is not protected across reconnect/restart domains.
+- Never reuse a binding merely because the MAC key, logical route epoch, actor incarnations, capability generation, or physical generation appear unchanged.
+- The adapter clones the broker input; caller mutation after construction cannot rewrite the live binding.
+- Protocol v3 rejects all-zero/default bindings before physical transport authority is claimed.
+- Both DATA and peer receipt decoding compare the expected connection binding in constant time after MAC verification. A captured valid frame from connection A therefore cannot be accepted on replacement connection B when B has a fresh binding, even if the embedding accidentally reused the same MAC key, transport epoch and physical generation.
+
+This deliberately avoids a process-global replay registry, which would otherwise introduce unbounded lifetime/DoS state. Global uniqueness is instead an authenticated connection-establishment responsibility and must be covered by the future real Java↔LLVM handshake.
+
+Evidence on Oct 19, 2026:
+- Java source blob `f769058d156aad580d9ca24d2af103208aea5f92` implements protocol v3 header binding for DATA and receipts.
+- Java socket self-test blob `4f1afae4578c48e8f31fa3be6ccd2e5c3649bbf5` includes cross-reconnect DATA replay, valid-HMAC stale receipt, and zero-binding rejection vectors.
+- Independent source-free funded-runner workflow `39342915708` passed its private-destination/no-source-fetch guard and six v3 oracle tests, including 100,000 reconnect binding rotations. No private Oreslang Java source was copied or executed there.
+- Exact-source Java/Maven/GraalVM execution remains a separate release gate.
