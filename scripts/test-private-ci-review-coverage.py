@@ -123,9 +123,31 @@ def require_exact_publisher_execution(workflow):
         raise ValueError("private-CI full publisher test step was modified or disabled")
 
 
+def require_canonical_workflow_header(workflow):
+    """Deny unreviewed trigger, permission, or workflow-level execution knobs."""
+    prefix, separator, _ = workflow.partition("jobs:\n")
+    header = (
+        r"\Aname: Private CI destination policy self-test\n"
+        r"on:\n"
+        r"  pull_request:\n"
+        r"    paths:\n"
+        r"(?:      - '[A-Za-z0-9._/-]+'\n)+"
+        r"  push:\n"
+        r"    paths:\n"
+        r"(?:      - '[A-Za-z0-9._/-]+'\n)+"
+        r"permissions:\n"
+        r"  contents: read\n"
+    )
+    if (not separator or workflow.count("\njobs:\n") != 1
+            or re.fullmatch(header, prefix) is None):
+        raise ValueError("unreviewed private-CI workflow header or permissions")
+
+
 def validate(codeowners, workflow):
     if len(SECURITY_PATHS) != len(set(SECURITY_PATHS)):
         raise ValueError("duplicated security manifest entry")
+    if any(ch != "\n" and not (" " <= ch <= "~") for ch in workflow):
+        raise ValueError("workflow contains noncanonical ASCII LF bytes")
     # Security files must agree on LF-only record boundaries. read_text()
     # and splitlines() can otherwise normalize CR/Unicode separators.
     if any(ch != "\n" and not (" " <= ch <= "~") for ch in codeowners):
@@ -173,6 +195,7 @@ def validate(codeowners, workflow):
     require_unconditional_test_step(
         active_job, "Validate offline regression runner",
         "bash scripts/test-run-private-ci-regressions-local.sh")
+    require_canonical_workflow_header(workflow)
 
 
 class ProtectedReviewCoverageTests(unittest.TestCase):
@@ -180,7 +203,7 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
     def setUpClass(cls):
         cls.owners = (ROOT / ".github" / "CODEOWNERS").read_bytes().decode("utf-8")
         cls.workflow = (ROOT / ".github" / "workflows"
-                        / "private-ci-mirror-preflight.yml").read_text()
+                        / "private-ci-mirror-preflight.yml").read_bytes().decode("utf-8")
 
     def test_runtime_source_owner_inventory_matches_review_manifest(self):
         # Two independently maintained security inventories must not drift:
@@ -211,6 +234,35 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
                 data = "# ignored" + separator + self.owners
                 with self.assertRaisesRegex(ValueError, "noncanonical ASCII LF"):
                     validate(data, self.workflow)
+
+    def test_noncanonical_workflow_bytes_are_rejected(self):
+        for separator in ("\r", "\x00", "\x0b", "\x0c", "\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=repr(separator)):
+                damaged = self.workflow.replace(
+                    "name: Private CI destination policy self-test",
+                    "name: Private CI destination policy self-test" + separator, 1)
+                with self.assertRaisesRegex(ValueError, "noncanonical ASCII LF"):
+                    validate(self.owners, damaged)
+
+    def test_workflow_header_cannot_escalate_permissions(self):
+        for replacement in ("  contents: write", "  contents: none",
+                            "  actions: write", "write-all"):
+            with self.subTest(permissions=replacement):
+                damaged = self.workflow.replace(
+                    "  contents: read", replacement, 1)
+                with self.assertRaisesRegex(ValueError, "workflow header or permissions"):
+                    validate(self.owners, damaged)
+
+    def test_workflow_cannot_add_triggers_or_global_environment(self):
+        for addition in ("  workflow_dispatch:\n",
+                         "env:\n  GH_DEBUG: api\n",
+                         "concurrency:\n  cancel-in-progress: false\n",
+                         "defaults:\n  run:\n    shell: bash\n"):
+            with self.subTest(addition=addition):
+                damaged = self.workflow.replace(
+                    "permissions:\n", addition + "permissions:\n", 1)
+                with self.assertRaisesRegex(ValueError, "workflow header or permissions"):
+                    validate(self.owners, damaged)
 
     def test_missing_codeowner_is_rejected(self):
         damaged = self.owners.replace(
