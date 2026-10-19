@@ -21,4 +21,9 @@ class IpcReceiptParityTest {
     void trustedPhysicalSessionWriteAndCloseDrain() throws Exception {
         IpcTransportSessionLeaseSelfTest.main(new String[0]);
     }
+
+    @Test
+    void authenticatedLoopbackSocketFramesAndReceipts() throws Exception {
+        IpcAuthenticatedSocketTransportSelfTest.main(new String[0]);
+    }
 }
