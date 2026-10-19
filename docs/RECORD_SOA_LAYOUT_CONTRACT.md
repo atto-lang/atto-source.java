@@ -17,8 +17,11 @@ const Person p = infer<Person> record{
 The compiler infers field names/types, widens literal fields under the
 preexisting rules, and creates lexical structural alias `Person`, not nominal
 identity. Field order does not affect structural equivalence, but initializer
-effects retain source order. The implementation reuses `INFERRED_STRUCT`
-readonly AST/runtime semantics, avoiding dynamic maps or reflective keys.
+effects retain source order. The AST now retains distinct `INFERRED_RECORD` and `INFERRED_STRUCT`
+source-origin tags, while both share the existing closed readonly aggregate
+type-checking, ownership and runtime semantics. This avoids dynamic maps or
+reflective keys and permits future formatting/layout tools to distinguish
+record syntax without changing field-name structural typing.
 Computed keys are invalid, and mutable access cannot be recovered through
 aliases, casts, borrowing, or generic substitutions.
 
@@ -41,13 +44,27 @@ The implementation validates exact row/column keys and every element type,
 checks equal column lengths, and caps fields at 64 and cells at 1,000,000.
 It copies inputs and exposes immutable column/row projections, so callers
 cannot mutate or observe mutations to backing input collections. Failures
-occur before returning a snapshot. Zero-row typed schemas work; empty-schema
-rows preserve their count when created from rows. Creating from an empty
-set of columns is rejected because a row count is not recoverable.
+occur before returning a snapshot. Input maps/lists **must not be mutated
+concurrently while a snapshot is being built**: this is not an atomic read
+of external mutable collections. Invalid or partially converted data never
+becomes visible through a returned snapshot. Zero-row typed schemas work;
+empty-schema rows preserve their count when created from rows. Creating from
+an empty set of columns is rejected because a row count is not recoverable.
+
+Host field names are canonicalized into Java `String` natural (UTF-16
+code-unit) order for deterministic column iteration independent of the input
+map's iteration order; this does **not** prescribe a cross-backend wire/ABI
+field order or change structural type identity. Valid names preserve exact
+Unicode spelling without normalization. Reject NUL, malformed surrogate
+sequences, and names longer than 1,024 UTF-16 code units. Empty, whitespace,
+punctuation and valid supplementary-plane Unicode keys are allowed.
 
 `scripts/check-soa-snapshot.sh` runs the standalone JDK smoke, while
 `SoaSnapshotTest` invokes the same checks through JUnit. The smoke includes
-300 seeded field-order/roundtrip cases. This is intentionally independent
+300 seeded field-order/roundtrip cases, plus Unicode rejection and
+canonical-column checks. The local audited build used OpenJDK 21
+`javac --release 21 -encoding UTF-8 -Xlint:all -Werror` and
+`java -Xmx96m -ea`. This is intentionally independent
 of actor memory domains, LLVM, guest compiler intrinsics, and FFI.
 
 ## Proposed columnar surface (future, NOT YET EXECUTABLE)
