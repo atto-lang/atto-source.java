@@ -1,0 +1,111 @@
+package dev.oreslang;
+
+import dev.oreslang.runtime.DisjointIntRegion;
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class DisjointIntRegionTest {
+    @Test
+    void tenWorkersUpdateDisjointRangesWithoutElementLocks() throws Exception {
+        final int workers = 10;
+        final int width = 1_000;
+        try (var region = new DisjointIntRegion(workers * width)) {
+            var original = region.takeRoot();
+            var parts = original.split(workers);
+            assertEquals(workers, parts.size());
+            assertThrows(IllegalStateException.class,
+                    () -> original.withWrite(loan -> loan.set(0, 99)));
+
+            var start = new CountDownLatch(1);
+            var done = new CountDownLatch(workers);
+            var failures = new java.util.concurrent.ConcurrentLinkedQueue<Throwable>();
+            var threads = new ArrayList<Thread>();
+            for (int i = 0; i < workers; i++) {
+                final int index = i;
+                threads.add(Thread.ofPlatform().start(() -> {
+                    try {
+                        start.await();
+                        parts.get(index).withWrite(loan -> {
+                            assertEquals(width, loan.length());
+                            for (int j = 0; j < loan.length(); j++) {
+                                loan.set(j, index + 1);
+                            }
+                        });
+                    } catch (Throwable failure) { failures.add(failure); }
+                    finally { done.countDown(); }
+                }));
+            }
+            start.countDown();
+            assertTrue(done.await(10, TimeUnit.SECONDS));
+            for (var thread : threads) thread.join();
+            assertTrue(failures.isEmpty(), failures.toString());
+            region.close();
+            int[] result = region.snapshotAfterClose();
+            for (int i = 0; i < result.length; i++) {
+                assertEquals((i / width) + 1, result[i], "index=" + i);
+            }
+        }
+    }
+
+    @Test
+    void capturedAndForeignCarrierLoansFailClosed() throws Exception {
+        try (var region = new DisjointIntRegion(3)) {
+            var permit = region.takeRoot();
+            AtomicReference<DisjointIntRegion.Loan> escaped = new AtomicReference<>();
+            permit.withWrite(loan -> {
+                escaped.set(loan);
+                loan.set(0, 7);
+                AtomicReference<Throwable> foreign = new AtomicReference<>();
+                Thread other = Thread.ofPlatform().start(() -> {
+                    try { loan.set(0, 99); }
+                    catch (Throwable failure) { foreign.set(failure); }
+                });
+                try { other.join(); } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(ex);
+                }
+                assertInstanceOf(IllegalStateException.class, foreign.get());
+            });
+            assertThrows(IllegalStateException.class, () -> escaped.get().get(0));
+            permit.withWrite(loan -> assertEquals(7, loan.get(0)));
+            assertThrows(IllegalStateException.class, region::takeRoot);
+        }
+    }
+
+    @Test
+    void retirementWaitsForPhysicalUnwindBeforeSnapshot() throws Exception {
+        var region = new DisjointIntRegion(5);
+        var permit = region.takeRoot();
+        CountDownLatch running = new CountDownLatch(1);
+        CountDownLatch finish = new CountDownLatch(1);
+        AtomicReference<Throwable> writer = new AtomicReference<>();
+        Thread worker = Thread.ofPlatform().start(() -> {
+            try {
+                permit.withWrite(loan -> {
+                    loan.set(0, 42);
+                    running.countDown();
+                    try { finish.await(); }
+                    catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                    assertThrows(IllegalStateException.class, () -> loan.set(1, 5));
+                });
+            } catch (Throwable failure) { writer.set(failure); }
+        });
+        assertTrue(running.await(5, TimeUnit.SECONDS));
+        region.close();
+        assertThrows(IllegalStateException.class, region::snapshotAfterClose);
+        finish.countDown();
+        worker.join();
+        assertNull(writer.get());
+        assertEquals(42, region.snapshotAfterClose()[0]);
+        assertThrows(IllegalStateException.class,
+                () -> permit.withWrite(loan -> loan.set(0, 4)));
+    }
+}
