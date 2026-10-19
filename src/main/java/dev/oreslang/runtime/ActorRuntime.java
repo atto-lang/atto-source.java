@@ -6668,13 +6668,25 @@ public final class ActorRuntime implements AutoCloseable {
         if (mode.equals("none")) return newDispatcher(parallelism, capacity, prefix);
         int[] cpus = mode.equals("cpu") ? ActorCpuAffinityConfig.configuredCpus() : new int[0];
         return new ActorAffinityDispatcher(parallelism, capacity, cpus, cpuLaneOffset,
-                lane -> newDispatcher(1, capacity, prefix + "lane-" + lane + "-"));
+                lane -> newDispatcher(
+                        1,
+                        capacity,
+                        prefix + "lane-" + lane + "-",
+                        ActorCpuAffinityConfig.cpuForLane(cpus, cpuLaneOffset, lane)));
     }
 
     private static ExecutorService newDispatcher(
             int parallelism,
             int readyQueueCapacity,
             String threadPrefix) {
+        return newDispatcher(parallelism, readyQueueCapacity, threadPrefix, -1);
+    }
+
+    private static ExecutorService newDispatcher(
+            int parallelism,
+            int readyQueueCapacity,
+            String threadPrefix,
+            int startupCpu) {
         String requested = System.getProperty(CARRIER_BACKEND_PROPERTY, "auto")
                 .trim()
                 .toLowerCase(java.util.Locale.ROOT);
@@ -6696,7 +6708,8 @@ public final class ActorRuntime implements AutoCloseable {
                         parallelism,
                         parallelism,
                         readyQueueCapacity,
-                        threadPrefix);
+                        threadPrefix,
+                        startupCpu);
             } catch (UnsatisfiedLinkError | SecurityException unavailable) {
                 if (requested.equals("native")) {
                     throw new IllegalStateException(
