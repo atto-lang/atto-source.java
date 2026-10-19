@@ -4,6 +4,11 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -107,6 +112,47 @@ final class InlineSelfReceiverArityTest {
                         """)));
         assertTrue(error.getMessage().contains("arity") || error.getMessage().contains("argument"),
                 error::getMessage);
+    }
+
+    @Test
+    void borrowedSelfCannotBecomeAnOwnedNonCopyArgument() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Counter as
+                          pub accept(self, Counter other, int x): int { return x; }
+                          pub run(self): int { return self.accept(self, 5); }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("borrowed value")
+                || error.getMessage().contains("argument"),
+                error::getMessage);
+    }
+
+    @Test
+    void inlineReceiverCallsExecuteWithOnlyUserArguments() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, """
+                define module m
+                  pub define class Counter as
+                    pub zero(self): int { return 7; }
+                    pub add_one(self, int x): int { return x + 1; }
+                  end
+                end
+                pub routine main(): void {
+                  val c = new m.Counter();
+                  stdio.stdout.write(c.add_one(4));
+                  stdio.stdout.write(c.zero());
+                }
+                """, "inline-self-arity.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        assertEquals("57", output.toString(StandardCharsets.UTF_8));
     }
 
     @Test
