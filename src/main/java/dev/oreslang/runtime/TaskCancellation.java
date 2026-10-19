@@ -116,7 +116,16 @@ final class TaskCancellation {
         dispatch(() -> {
             // Marked before any callback; observer delivery is buffered until
             // this entire admission batch has completed revocation callbacks.
-            for (Registration hook : revoke) hook.deliver();
+            Error firstFatal = null;
+            for (Registration hook : revoke) {
+                try {
+                    hook.deliver();
+                } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                    // This subtree is already marked cancelled. A failed
+                    // trusted revoker must not abandon sibling revocations.
+                    if (firstFatal == null) firstFatal = fatal;
+                }
+            }
             List<Registration> notify = new ArrayList<>();
             synchronized (GRAPH_LOCK) {
                 for (TaskCancellation node : marked) {
@@ -125,7 +134,16 @@ final class TaskCancellation {
                     node.observers.clear();
                 }
             }
-            for (Registration hook : notify) hook.deliver();
+            for (Registration hook : notify) {
+                try {
+                    hook.deliver();
+                } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                    if (firstFatal == null) firstFatal = fatal;
+                }
+            }
+            // Propagate fatal host errors, but never strand late observers
+            // behind an incomplete revocation barrier.
+            if (firstFatal != null) throw firstFatal;
         });
         return true;
     }
@@ -181,7 +199,18 @@ final class TaskCancellation {
         DISPATCH.set(queue);
         try {
             queue.addLast(action);
-            while (!queue.isEmpty()) queue.removeFirst().run();
+            Error firstFatal = null;
+            while (!queue.isEmpty()) {
+                try {
+                    queue.removeFirst().run();
+                } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                    // Nested cancellation is queued on this thread. Do not
+                    // discard already-admitted descendant cancellation batches
+                    // merely because a previous trusted hook failed.
+                    if (firstFatal == null) firstFatal = fatal;
+                }
+            }
+            if (firstFatal != null) throw firstFatal;
         } finally {
             DISPATCH.remove();
         }
