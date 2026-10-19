@@ -31,9 +31,9 @@ git -C "$repo" -c user.name=CI-Feature -c user.email=ci-feature@example.invalid 
 head="$(git -C "$repo" rev-parse HEAD)"
 tree="$(git -C "$repo" rev-parse HEAD^{tree})"
 dest_branch="ci/oreslang-test"
-dest_base_commit="fc49aa44726eac47301ae2d676c4b38954d3cc46"
-dest_base_tree="1e9dec690e45df80758547e991d37f6b18872e33"
-dest_workflow_blob="6f532dfaa5149a023ca1ccd6ed3d8364c6df44e0"
+dest_base_commit="5e1079638ba322d0208631ef34fcbd3f129b40ab"
+dest_base_tree="1f2f5d5f816213192d13c179d0e9381d00fdeaf7"
+dest_workflow_blob="2d4b412ca8480d02fcd122a9cb7ee3a5d7d45227"
 
 cat > "$tmp/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -123,13 +123,13 @@ case "$endpoint" in
       exit 1
     fi
     ;;
-  "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/git/commits/fc49aa44726eac47301ae2d676c4b38954d3cc46")
+  "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/git/commits/5e1079638ba322d0208631ef34fcbd3f129b40ab")
     printf '%s\t%s\n' \
-      "${SYNTH_DEST_BASE_COMMIT:-fc49aa44726eac47301ae2d676c4b38954d3cc46}" \
-      "${SYNTH_DEST_BASE_TREE:-1e9dec690e45df80758547e991d37f6b18872e33}"
+      "${SYNTH_DEST_BASE_COMMIT:-5e1079638ba322d0208631ef34fcbd3f129b40ab}" \
+      "${SYNTH_DEST_BASE_TREE:-1f2f5d5f816213192d13c179d0e9381d00fdeaf7}"
     ;;
-  "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/contents/.github/workflows/private-oreslang-exact-tree.yml?ref=fc49aa44726eac47301ae2d676c4b38954d3cc46")
-    printf '%s\n' "${SYNTH_DEST_WORKFLOW_BLOB:-6f532dfaa5149a023ca1ccd6ed3d8364c6df44e0}"
+  "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/contents/.github/workflows/private-oreslang-exact-tree.yml?ref=5e1079638ba322d0208631ef34fcbd3f129b40ab")
+    printf '%s\n' "${SYNTH_DEST_WORKFLOW_BLOB:-2d4b412ca8480d02fcd122a9cb7ee3a5d7d45227}"
     ;;
   *)
     printf 'unexpected synthetic gh endpoint: %s\n' "$endpoint" >&2
@@ -212,6 +212,10 @@ assert_exit 1 run_preflight SYNTH_PROTECTED=false \
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   SYNTH_DEST_BASE_COMMIT=ec6a5ddc39dd5524285fcc18902d777c4827c666 \
   SYNTH_DEST_BASE_TREE=c7eba95c9abfc008e395194360327026cf33bd9c \
+  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+assert_exit 1 run_preflight SYNTH_PROTECTED=false \
+  SYNTH_DEST_BASE_COMMIT=fc49aa44726eac47301ae2d676c4b38954d3cc46 \
+  SYNTH_DEST_BASE_TREE=1e9dec690e45df80758547e991d37f6b18872e33 \
   bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
 
 # Merely leaving protection disabled must never activate the fallback when
