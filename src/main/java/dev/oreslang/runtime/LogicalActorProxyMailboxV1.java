@@ -91,12 +91,15 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                     throw new IllegalStateException(
                             "logical route epoch exhausted");
                 }
+                // Verify invariants BEFORE the irreversible publication.
+                // No allocation or throwing validation may follow thaw: the
+                // code-generation gate may already have published new code.
+                checkStructuralInvariantsLocked();
                 LogicalActorProxyMailboxV1.this.routeEpoch =
-                        Math.addExact(routeEpoch, 1L);
+                        routeEpoch + 1L; // overflow checked above
                 dispatchFrozen = false;
                 activeFreeze = null;
                 consumed = true;
-                checkStructuralInvariantsLocked();
                 lock.notifyAll();
             }
         }
@@ -104,10 +107,11 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
         public void rollback() {
             synchronized (lock) {
                 requireTicketLocked(this);
+                // If corruption is detected, retain the frozen old route.
+                checkStructuralInvariantsLocked();
                 dispatchFrozen = false;
                 activeFreeze = null;
                 consumed = true;
-                checkStructuralInvariantsLocked();
                 lock.notifyAll();
             }
         }
@@ -399,11 +403,11 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             }
             // Construct first. Allocation failure must never strand ingress
             // in a frozen state with no valid rollback ticket.
+            checkStructuralInvariantsLocked();
             FreezeTicket ticket =
                     new FreezeTicket(routeEpoch, highestDispatchedSequence);
             activeFreeze = ticket;
             dispatchFrozen = true;
-            checkStructuralInvariantsLocked();
             return ticket;
         }
     }
