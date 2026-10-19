@@ -27,6 +27,10 @@ final class CheckedI64ArithmeticOracleTest {
                     CheckedI64DivisionByZeroException.class,
                     () -> CheckedI64Arithmetic.binary(operator, left, right));
             assertEquals("ORES_I64_DIVISION_BY_ZERO", zero.errorCode());
+            assertEquals("DivisionByZeroError", zero.guestErrorName());
+            assertEquals("Throw", zero.effectKind());
+            assertFalse(zero.getMessage().contains("/ by zero"),
+                    "checked failures must not leak JVM exception wording");
             return;
         }
         BigInteger exact = switch (operator) {
@@ -43,6 +47,12 @@ final class CheckedI64ArithmeticOracleTest {
             assertEquals("ORES_I64_OVERFLOW", overflow.errorCode());
             assertEquals(operator == '+' ? 1 : operator == '-' ? 2 : 3,
                     overflow.operationTag());
+            assertEquals(operator == '+' ? "add"
+                    : operator == '-' ? "subtract" : "multiply",
+                    overflow.operation());
+            assertEquals("ArithmeticOverflowError", overflow.guestErrorName());
+            assertEquals("Throw", overflow.effectKind());
+            assertEquals(0x494F0001, overflow.effectCode());
         } else {
             assertEquals(exact.longValueExact(),
                     CheckedI64Arithmetic.binary(operator, left, right),
@@ -78,6 +88,17 @@ final class CheckedI64ArithmeticOracleTest {
     }
 
     @Test
+    void boundedOperandsExerciseSuccessfulProductsAndSignedRemainders() {
+        Random random = new Random(0x5a4c13dbL);
+        for (int index = 0; index < 4096; index++) {
+            long left = random.nextInt(1_000_001) - 500_000L;
+            long right = index % 47 == 0 ? 0L
+                    : random.nextInt(1_000_001) - 500_000L;
+            for (char operator : OPS) assertPair(operator, left, right);
+        }
+    }
+
+    @Test
     void unaryNegationIsExactExceptAtSignedMinimum() {
         for (long value : new long[] {
             Long.MIN_VALUE, Long.MIN_VALUE + 1, -43, -1, 0, 1, 43,
@@ -88,6 +109,10 @@ final class CheckedI64ArithmeticOracleTest {
                         CheckedI64OverflowException.class,
                         () -> CheckedI64Arithmetic.negate(value));
                 assertEquals(4, overflow.operationTag());
+                assertEquals("negate", overflow.operation());
+                assertEquals("ArithmeticOverflowError", overflow.guestErrorName());
+                assertEquals("Throw", overflow.effectKind());
+                assertEquals(0x494F0001, overflow.effectCode());
             } else {
                 assertEquals(BigInteger.valueOf(value).negate().longValueExact(),
                         CheckedI64Arithmetic.negate(value));
