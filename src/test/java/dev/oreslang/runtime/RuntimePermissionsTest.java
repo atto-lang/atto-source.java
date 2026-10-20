@@ -107,21 +107,25 @@ final class RuntimePermissionsTest {
 
         RuntimePermissions hostWide = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "127.0.0.1");
-        assertTrue(hostWide.allows(
-                RuntimePermissions.Permission.NET,
-                RuntimePermissions.networkBindResource("127.0.0.1", 0)));
+        assertTrue(hostWide.allowsNetworkBind("127.0.0.1", 0));
+
+        RuntimePermissions hostWideWithPortDeny = hostWide.withDenied(
+                RuntimePermissions.Permission.NET, "127.0.0.1:22");
+        assertFalse(hostWideWithPortDeny.allowsNetworkBind("127.0.0.1", 0),
+                "ephemeral bind must fail closed when any matching port is denied");
+        assertTrue(hostWideWithPortDeny.allowsNetworkBind("127.0.0.1", 443));
+        assertFalse(hostWideWithPortDeny.allowsNetworkBind("127.0.0.1", 22));
 
         RuntimePermissions ipv6ExactZero = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "[::1]:0");
-        assertFalse(ipv6ExactZero.allows(
-                RuntimePermissions.Permission.NET,
-                RuntimePermissions.networkBindResource("::1", 0)));
+        assertFalse(ipv6ExactZero.allowsNetworkBind("::1", 0));
 
         RuntimePermissions ipv6HostWide = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "::1");
-        assertTrue(ipv6HostWide.allows(
-                RuntimePermissions.Permission.NET,
-                RuntimePermissions.networkBindResource("::1", 0)));
+        assertTrue(ipv6HostWide.allowsNetworkBind("::1", 0));
+        assertFalse(ipv6HostWide.withDenied(
+                        RuntimePermissions.Permission.NET, "[::1]:22")
+                .allowsNetworkBind("::1", 0));
     }
 
     @Test
