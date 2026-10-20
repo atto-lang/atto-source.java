@@ -133,6 +133,20 @@ public final class PortableModelGraphDigestV1 {
         if (b.unit() == null) out.u8(0); else { out.u8(1); out.string(b.unit()); }
     }
 
+    private static boolean samePort(Port a, Port b) {
+        if (a instanceof NominalPort x && b instanceof NominalPort y)
+            return x.typeAbi().equals(y.typeAbi()) && x.bytes() == y.bytes();
+        if (a instanceof BufferPort x && b instanceof BufferPort y) {
+            String lx = x.layout() == null
+                    ? (x.shape().isEmpty() ? "scalar" : "contiguous") : x.layout();
+            String ly = y.layout() == null
+                    ? (y.shape().isEmpty() ? "scalar" : "contiguous") : y.layout();
+            return x.dtype().equals(y.dtype()) && x.shape().equals(y.shape())
+                    && lx.equals(ly) && java.util.Objects.equals(x.unit(), y.unit());
+        }
+        return false;
+    }
+
     public static byte[] canonicalBytes(Graph graph) {
         if (graph.version() != 1 || graph.nodes().isEmpty() || graph.outputs().isEmpty())
             fail("MODEL_INVALID_RESOLVED_GRAPH");
@@ -168,10 +182,16 @@ public final class PortableModelGraphDigestV1 {
                     fail("MODEL_CONST_TYPE_MISMATCH");
                 encodeConstant(out, node.constArgs().get(i));
             }
+            if (node.inputs().size() != sig.inputs().size())
+                fail("MODEL_PORT_ARITY_MISMATCH");
             out.u32(node.inputs().size());
-            for (String parent : node.inputs()) {
+            for (int edge = 0; edge < node.inputs().size(); edge++) {
+                String parent = node.inputs().get(edge);
                 Integer p = ordinals.get(parent);
                 if (p == null || p >= index) fail("MODEL_FORWARD_OR_CYCLIC_EDGE");
+                Port upstream = graph.nodes().get(p).signature().output();
+                if (!samePort(upstream, sig.inputs().get(edge)))
+                    fail("MODEL_PORT_TYPE_MISMATCH");
                 out.u32(p);
             }
             out.u32(sig.inputs().size());
