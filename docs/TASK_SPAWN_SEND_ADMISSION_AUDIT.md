@@ -453,3 +453,109 @@ to the carrier.
 
 Exact-tree execution remains blocked until #1430 receives independent review
 and its allowlist lands on protected `main`.
+
+
+## Lexical transfer context + moved-parameter returns — 2026-10-19
+
+Substantive compiler head before this documentation commit:
+`0d0720329dd244e61fbee8663fb2968c50aaf8d2`.
+
+### Exact lexical semantic resolution
+
+`TaskTransferProvenance` now binds a compiler-only
+`LexicalTypeContext` to each exact Task AST boundary alongside its transfer
+ledger. The context is immutable and carries:
+
+- the exact lexical generic parameter names;
+- one of `NONE`, `CLASS_NOMINAL`, or `RECEIVER_POLYMORPHIC`;
+- the exact owning `Ast.ClassDecl` identity when a `self` context exists.
+
+`OwnershipChecker` mints that context while checking free functions, class
+initializers, constructors, instance methods and static methods. The semantic
+half consumes it only by the same boundary object identity.
+
+`TypeChecker.checkTaskTransferProvenance` no longer resolves every transfer
+with `Set.of(), null`. It resolves the original `Ast.TypeRef` under the exact
+lexical generic/`self` context. A receiver owner must also be the exact
+collected class object from the same expanded `Ast.Program`; a structurally
+identical/lookalike class is rejected.
+
+This is resolution context, **not thread-safety authority**. Unconstrained
+`Generic` and receiver-polymorphic `SelfType` remain fail-closed under the
+canonical `ThreadSafetyTraits.isOwnedSend` / shared-safety gate. Carrying the
+right lexical context cannot manufacture `Send`.
+
+### `MOVES_PARAMETER(n)` return ownership summaries
+
+Compiler-minted return provenance is now:
+
+- `UNKNOWN`;
+- `FRESH`;
+- `MOVES_PARAMETER(n)`.
+
+The summary remains intentionally narrow. It is minted only for an ordinary
+synchronous guest `fnc` that is not suspending, async, generator, trapped or
+actor-qualified and whose body is exactly one return statement.
+
+`MOVES_PARAMETER(n)` is minted only when that return is the exact name of a
+by-value, non-structural parameter. At the detached Task boundary, the call
+result is accepted only if the corresponding actual argument independently
+proves owned-rvalue provenance **after** normal call checking consumed it.
+Spread calls fail closed. Arbitrary/dynamic calls, methods, projections,
+borrowed parameters and aliases through local variables do not acquire this
+summary.
+
+The compiler therefore accepts a narrow helper such as:
+
+`moveThrough(Array<int> value): Array<int> { return value; }`
+
+when the actual argument has really been moved, without treating arbitrary
+call syntax as an ownership witness.
+
+### Regression inventory and execution boundary
+
+Targeted Task-admission JUnit inventory at the substantive head is **44
+committed methods**:
+
+- 13 spawn/preflight;
+- 7 resolved authority;
+- 5 capture analysis;
+- 14 transfer provenance;
+- 5 combined admission.
+
+New tests cover moved-parameter admission, exact boundary lexical-context
+binding, generic-context resolution before the concrete-Send denial,
+receiver-`self` resolution, foreign/lookalike class identity rejection and the
+combined admission proof for a moved return parameter.
+
+Source-org Actions at this head again produced zero-step jobs. Examples:
+
+- fast-ci run `39346596015`, job `118380571298`: **0 steps**;
+- concurrency-contract run `39346595801`, job `118380570182`: **0 steps**;
+- main CI test job `118380570328`: **0 steps**.
+
+These are runner/admission failures and provide no compiler evidence.
+
+The funded private carrier was updated only with an **independently authored,
+source-free model**. No Oreslang source/tree crossed repositories. Carrier head
+`7682fd7a045b8ad1e875e5b5ad59a906f20c0174`, run
+`39346685977`, job `118380867651`: **21/21 PASS**, zero failures,
+cancellations or skips; shell syntax PASS. The newest model checks narrow
+moved-parameter summaries and exact boundary/class lexical-context identity.
+
+This remains supporting model evidence, not Maven/JUnit/GraalVM evidence for
+the private Oreslang source.
+
+### Runtime convergence status
+
+The proof continues to require
+`TaskAdmissionProof.ReleaseBarrier.PHYSICAL_TASK_SCOPE_DONE`. The old #1407
+runtime branch is no longer the only live integration surface: later stacks
+(#1534, #1550, #1555) have strengthened physical-quiescence and structured
+Task-scope mechanics. Do not bolt a second release path onto #1452.
+
+The next integration must carry the **exact joined proof/boundary identity**
+into the current lowering stack and retain each transferred owner until that
+specific child has reached scheduler-confirmed physical quiescence. Logical
+result settlement, cancellation request, scope sealing, and ordinary Future
+subscriber delivery remain insufficient release witnesses.
