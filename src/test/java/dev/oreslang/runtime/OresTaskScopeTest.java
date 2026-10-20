@@ -353,4 +353,64 @@ final class OresTaskScopeTest {
         }
     }
 
+    @Test
+    void compilerRetirementWaitsForPhysicalQuiescence() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresTaskScope scope = new OresTaskScope(scheduler);
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicBoolean retired = new AtomicBoolean();
+
+            OresFuture<Integer> child = scope.forkCompilerAdmitted(
+                    resume -> {
+                        entered.countDown();
+                        assertTrue(release.await(5, TimeUnit.SECONDS));
+                        return OresScheduler.done(42);
+                    },
+                    () -> retired.set(true));
+
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            OresFuture<Void> drained = scope.quiesce();
+            assertFalse(retired.get(),
+                    "ownership must remain retained while the carrier executes");
+            assertFalse(drained.isDone());
+
+            release.countDown();
+            assertEquals(42, child.get(5, TimeUnit.SECONDS));
+            assertNull(drained.get(5, TimeUnit.SECONDS));
+            assertTrue(retired.get(),
+                    "physical Task completion must retire the ownership lease");
+            assertEquals(0, scope.activeChildren());
+        }
+    }
+
+    @Test
+    void retirementFailureSealsScopeAndCannotBecomeSuccessfulDrain()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresTaskScope scope = new OresTaskScope(scheduler);
+            RuntimeException retirementFailure =
+                    new RuntimeException("retirement failed");
+
+            OresFuture<Integer> child = scope.forkCompilerAdmitted(
+                    resume -> OresScheduler.done(7),
+                    () -> { throw retirementFailure; });
+            OresFuture<Void> drained = scope.quiesce();
+
+            assertEquals(7, child.get(5, TimeUnit.SECONDS));
+            java.util.concurrent.ExecutionException observed =
+                    assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> drained.get(5, TimeUnit.SECONDS));
+            assertSame(retirementFailure, observed.getCause());
+            assertFalse(scope.isOpen(),
+                    "failed retirement must seal the scope against new children");
+            assertEquals(1, scope.activeChildren(),
+                    "failed child remains pinned as a fail-closed reclamation witness");
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> scope.fork(resume -> OresScheduler.done(1)));
+        }
+    }
+
 }
