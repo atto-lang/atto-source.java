@@ -168,7 +168,7 @@ final class UnaryTcpActorDispatcherJUnitTest {
                         (short) 0,
                         1,
                         254L,
-                        BigInteger.valueOf(255))));
+                        BigInteger.valueOf(255))).toByteArray());
 
         assertThrows(IllegalArgumentException.class,
                 () -> codec.encode(List.of(1.0d)));
