@@ -3130,5 +3130,54 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
 
+    def test_main_direct_invocation_requires_independent_bootstrap(self):
+        argv = [
+            "trusted/ci", "--source-dir", str(self.source),
+            "--branch", TEST_BRANCH,
+            "--expected-source-tree", self.expected_tree,
+            "--expected-source-commit", D,
+        ]
+        old_root = pub.__dict__.pop("_ORESLANG_VERIFIED_SOURCE_ROOT", None)
+        old_blob = pub.__dict__.pop("_ORESLANG_VERIFIED_PUBLISHER_BLOB_SHA", None)
+        try:
+            with patch.object(
+                    pub, "publish",
+                    side_effect=AssertionError("direct invocation must not publish")) as publish:
+                self.assertEqual(pub.main(argv), 1)
+                publish.assert_not_called()
+        finally:
+            if old_root is not None:
+                pub.__dict__["_ORESLANG_VERIFIED_SOURCE_ROOT"] = old_root
+            if old_blob is not None:
+                pub.__dict__["_ORESLANG_VERIFIED_PUBLISHER_BLOB_SHA"] = old_blob
+
+    def test_main_accepts_only_bootstrap_attested_execution_context(self):
+        argv = [
+            "trusted/ci", "--source-dir", str(self.source),
+            "--branch", TEST_BRANCH,
+            "--expected-source-tree", self.expected_tree,
+            "--expected-source-commit", D,
+        ]
+        sentinel = object()
+        old_root = pub.__dict__.get("_ORESLANG_VERIFIED_SOURCE_ROOT", sentinel)
+        old_blob = pub.__dict__.get("_ORESLANG_VERIFIED_PUBLISHER_BLOB_SHA", sentinel)
+        pub.__dict__["_ORESLANG_VERIFIED_SOURCE_ROOT"] = str(self.root)
+        pub.__dict__["_ORESLANG_VERIFIED_PUBLISHER_BLOB_SHA"] = "f" * 40
+        try:
+            with patch.object(pub, "publish", return_value=(A, 1)) as publish:
+                self.assertEqual(pub.main(argv), 0)
+                self.assertTrue(publish.called)
+                self.assertEqual(publish.call_args.args[3], self.root.resolve())
+        finally:
+            if old_root is sentinel:
+                pub.__dict__.pop("_ORESLANG_VERIFIED_SOURCE_ROOT", None)
+            else:
+                pub.__dict__["_ORESLANG_VERIFIED_SOURCE_ROOT"] = old_root
+            if old_blob is sentinel:
+                pub.__dict__.pop("_ORESLANG_VERIFIED_PUBLISHER_BLOB_SHA", None)
+            else:
+                pub.__dict__["_ORESLANG_VERIFIED_PUBLISHER_BLOB_SHA"] = old_blob
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
