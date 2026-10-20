@@ -1029,6 +1029,14 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private OresScheduler.Step<Object> resumeSource(OresScheduler.Resume resume) {
+                // Every continuation dispatch revalidates hidden scoped-read
+                // authority. A child must never execute after its physical
+                // lifetime lease was retired, even if a future runtime
+                // accounting regression leaves the heap frame reachable.
+                if (initialBlockEnv != null) {
+                    initialBlockEnv.validateScopedReadTickets();
+                }
+
                 // An await starts a new physical dispatch quantum. Neither an
                 // await nor generator yield is counted as a cooperate handoff.
                 cooperationQuantum.beginDispatch();
@@ -1311,9 +1319,10 @@ public final class OresEvalRootNode extends RootNode {
                 List<OresTaskScope.ScopedReadClaim> readClaims) {
             SourceTask task = new SourceTask(body);
             // Lexically snapshot at spawn time. Captured owned values were
-            // consumed by the compile-time ownership pass; no borrowed or
-            // actor-private handles are admitted by Task capture checking.
-            // The logical SourceTask is scheduler-owned and may migrate between
+            // consumed by the compile-time ownership pass; scoped immutable
+            // borrows carry hidden runtime tickets backed by this structured
+            // scope's physical-lifetime read leases. Actor-private handles
+            // remain forbidden. The logical SourceTask may migrate between
             // host worker carriers. Actor Tasks remain supervised by CONTROL.
             task.initialBlockEnv = env.snapshot();
             OresTaskScope structuredScope = env.structuredTaskScope();
@@ -9303,6 +9312,21 @@ public final class OresEvalRootNode extends RootNode {
             cp.slots.putAll(slots);
             return cp;
         }
+
+        private void validateScopedReadTickets() {
+            for (Map.Entry<String, Slot> entry : slots.entrySet()) {
+                ScopedReadTicket ticket = entry.getValue().scopedReadTicket;
+                if (ticket == null) continue;
+                if (!ticket.lexicalScope().hasScopedReadLease(
+                        ticket.regionId(), ticket.generation())) {
+                    throw new IllegalStateException(
+                            "scoped read capture '" + entry.getKey()
+                                    + "' resumed after its physical-lifetime lease retired");
+                }
+            }
+            if (parent != null) parent.validateScopedReadTickets();
+        }
+
         private boolean hasLiveMutexGuards() {
             Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
             for (Slot slot : slots.values()) {
