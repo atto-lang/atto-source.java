@@ -14,10 +14,14 @@ import java.util.Map;
  * no fields, no exception handlers, no allocation/monitor/dynamic-dispatch
  * bytecodes, and invokestatic calls back into the same generated module.
  */
-final class RealtimeClassfileAudit {
+public final class RealtimeClassfileAudit {
     private static final int ACC_STATIC = 0x0008;
 
-    record Report(String className, int verifiedMethods, int bytecodeBytes, String assurance) { }
+    public record Report(
+            String className,
+            int verifiedMethods,
+            int bytecodeBytes,
+            String assurance) { }
 
     private sealed interface Cp permits Utf8Cp, IntegerCp, ClassCp, NameAndTypeCp, MethodRefCp, OtherCp { }
     private record Utf8Cp(String value) implements Cp { }
@@ -27,7 +31,7 @@ final class RealtimeClassfileAudit {
     private record MethodRefCp(int classIndex, int nameAndTypeIndex) implements Cp { }
     private record OtherCp(int tag) implements Cp { }
 
-    static Report audit(Path classFile) throws IOException {
+    public static Report audit(Path classFile) throws IOException {
         byte[] bytes = Files.readAllBytes(classFile);
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
             if (in.readInt() != 0xCAFEBABE) deny("bad classfile magic");
@@ -124,8 +128,11 @@ final class RealtimeClassfileAudit {
     }
 
     private static void auditCode(byte[] code, Cp[] cp, String ownClass, String method) {
+        boolean[] instructionStart = new boolean[code.length];
+        java.util.ArrayList<Integer> branchTargets = new java.util.ArrayList<>();
         int pc = 0;
         while (pc < code.length) {
+            instructionStart[pc] = true;
             int op = code[pc] & 0xff;
             int width;
             switch (op) {
@@ -137,11 +144,17 @@ final class RealtimeClassfileAudit {
                      0x7e,0x80,0x82,                       // iand,ior,ixor
                      0xac -> width = 1;                    // ireturn
                 case 0x10,0x15,0x36 -> width = 2;         // bipush,iload,istore
-                case 0x11,                                 // sipush
-                     0x99,0x9a,0x9b,0x9c,0x9d,0x9e,       // if*
+                case 0x11 -> width = 3;                    // sipush
+                case 0x99,0x9a,0x9b,0x9c,0x9d,0x9e,       // if*
                      0x9f,0xa0,0xa1,0xa2,0xa3,0xa4,       // if_icmp*
-                     0xa7 -> width = 3;                    // goto
+                     0xa7 -> {                              // goto
+                    if (pc > code.length - 3) deny("truncated branch in " + method);
+                    short offset = (short) u2(code, pc + 1);
+                    branchTargets.add(pc + (int) offset);
+                    width = 3;
+                }
                 case 0x12 -> {                             // ldc
+                    if (pc > code.length - 2) deny("truncated ldc in " + method);
                     requireIntegerConstant(cp, code[pc + 1] & 0xff);
                     width = 2;
                 }
@@ -161,6 +174,11 @@ final class RealtimeClassfileAudit {
             pc += width;
         }
         if (pc != code.length) deny("misaligned bytecode in " + method);
+        for (int target : branchTargets) {
+            if (target < 0 || target >= code.length || !instructionStart[target]) {
+                deny("branch target is outside an instruction boundary in " + method);
+            }
+        }
     }
 
     private static void requireOwnStaticCall(Cp[] cp, int index, String ownClass) {
