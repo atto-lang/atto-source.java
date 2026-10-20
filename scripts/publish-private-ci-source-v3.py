@@ -953,6 +953,167 @@ def delete_exact_ref(repository, ref_name, expected_sha, expected_repository_id)
     return True
 
 
+def direct_tree_entries(repository, tree_sha):
+    """Read every immediate tree entry, including empty directories.
+
+    Flattened recursive leaves alone cannot detect a newly-added empty
+    directory or an unexpected subtree replacement that contains no blobs.
+    """
+    tree_sha = valid_sha(tree_sha, "direct carrier tree SHA invalid")
+    response = legacy.gh_api(f"repos/{repository}/git/trees/{tree_sha}")
+    entries = response.get("tree") if isinstance(response, dict) else None
+    if (response.get("sha") != tree_sha
+            or response.get("truncated") is not False
+            or not isinstance(entries, list)):
+        raise Denied("carrier direct tree read-back is incomplete")
+    result = {}
+    modes = {
+        "tree": ("040000",),
+        "blob": ("100644", "100755", "120000"),
+        "commit": ("160000",),
+    }
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise Denied("carrier direct tree entry is malformed")
+        name = entry.get("path")
+        kind = entry.get("type")
+        mode = entry.get("mode")
+        if (not isinstance(name, str) or not name
+                or "/" in name or "\\x00" in name
+                or name in (".", "..") or name in result
+                or kind not in modes or mode not in modes[kind]):
+            raise Denied("carrier direct tree contains unsafe or duplicate entry")
+        result[name] = (
+            mode, kind,
+            valid_sha(entry.get("sha"), "carrier direct tree entry SHA invalid"),
+        )
+    return result
+
+
+def verify_carrier_directories(repository, base_tree, source_tree,
+                               receipt_sha, root_tree_sha):
+    """Prove the source subtree, receipt and all inherited directory objects.
+
+    Direct entries complement the recursive-leaf proof, which cannot by itself
+    detect empty-tree injection or unexpected changes to tree-only metadata.
+    """
+    original = direct_tree_entries(repository, base_tree)
+    current = direct_tree_entries(repository, root_tree_sha)
+    if legacy.PREFIX in original:
+        raise Denied("carrier base already has source prefix")
+    original_ci = original.get("ci")
+    actual_ci = current.get("ci")
+    if original_ci is not None and original_ci[:2] != ("040000", "tree"):
+        raise Denied("carrier base ci path is not a directory")
+    if actual_ci is None or actual_ci[:2] != ("040000", "tree"):
+        raise Denied("carrier published receipt directory missing")
+    base_ci = (
+        direct_tree_entries(repository, original_ci[2])
+        if original_ci else {}
+    )
+    if "oreslang-receipt.json" in base_ci:
+        raise Denied("carrier base already contains receipt")
+    published_ci = direct_tree_entries(repository, actual_ci[2])
+    expected_ci = dict(base_ci)
+    expected_ci["oreslang-receipt.json"] = (
+        "100644", "blob",
+        valid_sha(receipt_sha, "carrier receipt SHA invalid"),
+    )
+    if published_ci != expected_ci:
+        raise Denied("carrier receipt directory changed outside approved receipt")
+    expected_root = dict(original)
+    expected_root[legacy.PREFIX] = (
+        "040000", "tree",
+        valid_sha(source_tree, "carrier source tree SHA invalid"),
+    )
+    expected_root["ci"] = actual_ci
+    if current != expected_root:
+        raise Denied("carrier root directory differs from reviewed inheritance")
+
+
+def verified_recursive_leaves(repository, tree_sha):
+    """Read back a complete Git tree and return exact non-tree entries."""
+    tree_sha = valid_sha(tree_sha, "carrier tree SHA invalid")
+    listing = legacy.gh_api(
+        f"repos/{repository}/git/trees/{tree_sha}?recursive=1"
+    )
+    entries = listing.get("tree")
+    if (listing.get("sha") != tree_sha
+            or listing.get("truncated") is not False
+            or not isinstance(entries, list)):
+        raise Denied("carrier tree read-back is missing or truncated")
+    leaves = {}
+    seen = set()
+    allowed = {
+        "tree": {"040000"},
+        "blob": {"100644", "100755", "120000"},
+        "commit": {"160000"},
+    }
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise Denied("carrier tree read-back contains invalid entry")
+        rel = entry.get("path")
+        kind = entry.get("type")
+        mode = entry.get("mode")
+        if (not isinstance(rel, str) or not rel or rel.startswith("/")
+                or "\x00" in rel or rel in seen
+                or any(part in ("", ".", "..") for part in rel.split("/"))
+                or not isinstance(kind, str) or kind not in allowed
+                or not isinstance(mode, str) or mode not in allowed[kind]):
+            raise Denied("carrier tree read-back contains ambiguous entry")
+        seen.add(rel)
+        sha = valid_sha(entry.get("sha"), "carrier tree entry SHA invalid")
+        if kind != "tree":
+            leaves[rel] = (mode, kind, sha)
+    return leaves
+
+
+def verify_published_root_and_commit(
+        repository, base_tree, base_sha, source_tree, source_elements,
+        receipt_blob_sha, root_tree_sha, commit_sha):
+    """Attest stored carrier leaves and commit ancestry before any live refs."""
+    expected = verified_recursive_leaves(repository, base_tree)
+    for entry in source_elements:
+        if (not isinstance(entry, dict)
+                or entry.get("type") != "blob"
+                or entry.get("mode") not in ("100644", "100755")
+                or not isinstance(entry.get("path"), str)
+                or not entry["path"]):
+            raise Denied("source tree element is invalid during read-back")
+        full = legacy.PREFIX + "/" + entry["path"]
+        if full in expected:
+            raise Denied("source subtree collides with reviewed carrier base")
+        expected[full] = (
+            entry["mode"], "blob",
+            valid_sha(entry.get("sha"), "source tree element SHA invalid"),
+        )
+    if RECEIPT_PATH in expected:
+        raise Denied("receipt path collides with reviewed carrier base")
+    expected[RECEIPT_PATH] = (
+        "100644", "blob",
+        valid_sha(receipt_blob_sha, "receipt blob SHA invalid"),
+    )
+
+    observed = verified_recursive_leaves(repository, root_tree_sha)
+    if observed != expected:
+        raise Denied("stored carrier root tree differs from attested handoff")
+
+    stored = legacy.gh_api(
+        f"repos/{repository}/git/commits/{commit_sha}"
+    )
+    tree = stored.get("tree")
+    parents = stored.get("parents")
+    if (stored.get("sha") != commit_sha
+            or not isinstance(tree, dict)
+            or tree.get("sha") != root_tree_sha
+            or not isinstance(parents, list)
+            or len(parents) != 1
+            or not isinstance(parents[0], dict)
+            or parents[0].get("sha") != base_sha):
+        raise Denied("stored carrier commit tree or parent differs from attestation")
+
+
+
 def publish(repository, source, source_commit, source_pr, test_plan, trusted_root, now=None):
     if not legacy.NAME.fullmatch(repository):
         raise Denied("invalid destination repository")
@@ -1117,6 +1278,16 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         },
     )
     commit_sha = valid_sha(commit.get("sha"), "carrier commit SHA invalid")
+    # Compare stored ancestry, every inherited leaf, the source subtree SHA,
+    # and the immediate directory entries (including empty directory objects)
+    # before creating either source-bearing ref.
+    verify_carrier_directories(
+        repository, base_tree, source_tree, receipt_blob_sha, root_tree_sha
+    )
+    verify_published_root_and_commit(
+        repository, base_tree, contract["base_sha"], source_tree, elements,
+        receipt_blob_sha, root_tree_sha, commit_sha
+    )
 
     # Recheck both source policy/protection and the immutable carrier contract
     # immediately before making the source-bearing commit executable.
