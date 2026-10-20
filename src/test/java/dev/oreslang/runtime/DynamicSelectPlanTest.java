@@ -290,6 +290,22 @@ final class DynamicSelectPlanTest {
     }
 
     @Test
+    void repeatedlyCancelledPlanSelectionsDoNotKeepStaleRegistrations() {
+        var channel = new ChannelRuntime.Channel<Integer>(0);
+        var plan = ChannelRuntime.SelectPlan.of(ChannelRuntime.read(channel));
+        var stable = plan.selectSetSnapshot();
+        for (int iteration = 0; iteration < 1024; iteration++) {
+            var pending = plan.selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+            assertFalse(pending.isDone());
+            assertTrue(pending.cancel(false));
+            assertThrows(CancellationException.class, pending::join);
+            assertFalse(channel.tryWrite(iteration),
+                    "cancelled selection must not leave an old reader armed");
+            assertSame(stable, plan.selectSetSnapshot());
+        }
+    }
+
+    @Test
     void cancellationVersusRendezvousHasOneTerminalOwner() throws Exception {
         var workers = java.util.concurrent.Executors.newFixedThreadPool(2);
         try {
