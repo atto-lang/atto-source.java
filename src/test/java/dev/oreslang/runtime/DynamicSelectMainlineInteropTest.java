@@ -88,6 +88,28 @@ final class DynamicSelectMainlineInteropTest {
     }
 
     @Test
+    void dynamicPlanRejectsExcessArmsWithoutChangingItsVersion() {
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        var plan = new ChannelRuntime.DynamicSelectPlan<Integer>();
+        for (int i = 0; i < ChannelRuntime.MAX_SELECT_CASES; i++) {
+            plan.put(i, ChannelRuntime.read(channel));
+        }
+        long before = plan.version();
+        var stable = plan.selectSetSnapshot();
+        assertThrows(ChannelRuntime.SelectAdmissionException.class,
+                () -> plan.put(ChannelRuntime.MAX_SELECT_CASES,
+                        ChannelRuntime.read(channel)));
+        assertEquals(before, plan.version());
+        assertSame(stable, plan.selectSetSnapshot());
+        assertEquals(ChannelRuntime.MAX_SELECT_CASES, plan.size());
+
+        // Replacing an existing slot does not increase resource usage.
+        plan.put(0, ChannelRuntime.read(channel));
+        assertEquals(before + 1, plan.version());
+        assertEquals(ChannelRuntime.MAX_SELECT_CASES, plan.size());
+    }
+
+    @Test
     void allDefaultArmsCannotPolluteFairnessOnReusedSet() {
         var inbox = new ChannelRuntime.Channel<Integer>(1);
         var set = ChannelRuntime.SelectSet.of(
