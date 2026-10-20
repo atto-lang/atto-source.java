@@ -1800,7 +1800,9 @@ public final class ActorRuntime implements AutoCloseable {
         };
         OresFuture<T> future;
         try {
-            future = cell.sourceScheduler().startWithWallDeadline(resume -> {
+            future = cell.sourceScheduler().startWithWallDeadline(new OresScheduler.Task<T>() {
+                @Override
+                public OresScheduler.Step<T> resume(OresScheduler.Resume resume) throws Exception {
                 UntrustedLogicalQuota previous = CURRENT_UNTRUSTED_QUOTA.get();
                 CURRENT_UNTRUSTED_QUOTA.set(quota);
                 boolean entered = false;
@@ -1818,6 +1820,16 @@ public final class ActorRuntime implements AutoCloseable {
                         if (previous == null) CURRENT_UNTRUSTED_QUOTA.remove();
                         else CURRENT_UNTRUSTED_QUOTA.set(previous);
                     }
+                }
+                }
+
+                @Override
+                public void afterCarrierQuiescent(Runnable retire) {
+                    // Propagate the structured-Task retirement barrier through
+                    // UNTRUSTED quota enforcement. Otherwise its wrapping Task
+                    // would quiesce immediately and release actor memory while
+                    // descendants are still physically executing.
+                    task.afterCarrierQuiescent(retire);
                 }
             }, retireOnce, quota.remainingWallNanos(),
                     new UntrustedActorQuotaExceededException(
