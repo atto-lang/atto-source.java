@@ -350,7 +350,7 @@ this security PR, run:
 
 ```bash
 bash scripts/test-run-private-ci-regressions-local.sh
-env -i PATH=/usr/bin:/bin HOME=/ PRIVATE_CI_TEST_REPEATS=3 \\
+/usr/bin/env -i PATH=/usr/bin:/bin HOME=/ PRIVATE_CI_TEST_REPEATS=3 \\
   /bin/bash scripts/run-private-ci-regressions-local.sh
 ```
 
