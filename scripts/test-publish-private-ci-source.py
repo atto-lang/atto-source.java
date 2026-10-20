@@ -42,6 +42,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
+        self.real_tree_hash = pub.exact_tree_sha
+        self.tree_hash = patch.object(pub, "exact_tree_sha", return_value=D)
+        self.tree_hash.start()
+        self.addCleanup(self.tree_hash.stop)
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
@@ -103,19 +107,20 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(writes[3][2]["parents"], [A])
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
 
-    def test_exact_source_tree_mismatch_stops_before_carrier_commit_and_ref(self):
+    def test_exact_source_tree_mismatch_stops_before_any_upload(self):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             with self.assertRaisesRegex(
-                    pub.Denied, "source subtree does not match authorized source tree"):
+                    pub.Denied, "collected source tree does not match authorized source tree"):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test",
                             self.root, source_selector="pr:1425", source_commit=C, source_tree=C)
-        writes = [r for m, r, _ in self.route_calls if m == "POST"]
-        self.assertEqual(writes, [
-            "repos/trusted/ci/git/blobs",
-            "repos/trusted/ci/git/trees",
-        ])
-        self.assertFalse(any(r.endswith("/git/commits") or r.endswith("/git/refs")
-                             for r in writes))
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_exact_tree_hash_matches_git_for_single_file(self):
+        data = b"pub fnc main(): int { return 42; }\n"
+        self.assertEqual(
+            self.real_tree_hash([("hello.ores", data, "100644")]),
+            "d23e6623a46987bee9c8e7de8309074a94bb4a98",
+        )
 
     def test_existing_stale_files_cannot_survive_clean_source_snapshot(self):
         # Assume base_tree contains a stale private-oreslang-source/secret.ores.

@@ -48,7 +48,11 @@ scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
 ```
 
 The two comment flags are omitted only when protected-main authorization is
-effective. Before reading potentially sensitive source bytes, the publisher
+effective. The retained `run-in-private-ci-destination.sh` policy path is an isolated
+Python launcher rather than a shell program, so `BASH_ENV`, shell startup
+files, caller `PYTHONPATH`, and caller `PATH` cannot execute before the
+trusted environment is reduced to the fixed control-plane inputs. Before
+reading potentially sensitive source bytes, the publisher
 runs `preflight-private-ci-mirror.sh` from the trusted main control-plane checkout with a sanitized environment. That preflight verifies the exact clean source checkout, either a live same-repository `pr:<N>` head or the authenticated current `main` head, the clean trusted control-plane `main`, authoritative security-program blobs, applicable approval mode, policy row, and
 destination identity. It also resolves the reviewed destination carrier
 directly by its immutable Git commit SHA and requires that commit's tree to
@@ -63,7 +67,10 @@ The publisher then checks the live GitHub repository ID, full name and
 rechecks the immutable ID and private visibility immediately before each
 write. Every GitHub API write is constructed from
 that **same validated owner/repo**, rather than a caller-provided URL, Git
-remote, shell command or separate destination argument. It creates blobs,
+remote, shell command or separate destination argument. After source collection, the publisher reconstructs the complete
+Git tree SHA locally from the collected path/mode/blob bytes and requires it to
+equal the authorized source tree **before the first destination blob write**.
+The destination tree SHA is still verified again after upload. It creates blobs,
 then a **fresh standalone source tree with no `base_tree`**, followed by a
 root tree based on the immutable reviewed carrier tree that replaces the
 **entire** `private-oreslang-source/` directory. This removes stale private

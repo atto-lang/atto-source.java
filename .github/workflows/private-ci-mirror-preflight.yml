@@ -42,8 +42,8 @@ jobs:
       - name: Assert private CI guard fail-closed behavior
         run: |
           set -euo pipefail
-          bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh scripts/preflight-private-ci-mirror.sh scripts/test-preflight-private-ci-mirror.sh
-          python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py
+          bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/preflight-private-ci-mirror.sh scripts/test-preflight-private-ci-mirror.sh
+          python3 -m py_compile scripts/run-in-private-ci-destination.sh scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py
           bash scripts/test-private-ci-destination.sh
           bash scripts/test-preflight-private-ci-mirror.sh
           bash -n tools/verify-exact-source-tree.sh tools/test-verify-exact-source-tree.sh

@@ -393,6 +393,57 @@ def collect_source(root, trusted_root):
     return sorted(entries, key=lambda item: item[0])
 
 
+def exact_tree_sha(entries):
+    """Hash collected paths exactly as a Git tree before any destination write."""
+    root = {}
+
+    def blob_digest(data):
+        header = b"blob " + str(len(data)).encode("ascii") + bytes([0])
+        return hashlib.sha1(header + data).digest()
+
+    for rel, data, mode in entries:
+        if mode not in ("100644", "100755"):
+            raise Denied("unsupported source file mode in exact-tree hash")
+        parts = rel.split("/")
+        if not parts or any(not part for part in parts):
+            raise Denied("invalid source path in exact-tree hash")
+        node = root
+        for part in parts[:-1]:
+            existing = node.get(part)
+            if existing is None:
+                existing = {}
+                node[part] = existing
+            if not isinstance(existing, dict):
+                raise Denied("source path collides with a file")
+            node = existing
+        leaf = parts[-1]
+        if leaf in node:
+            raise Denied("duplicate source path")
+        node[leaf] = (mode, blob_digest(data))
+
+    def hash_directory(node):
+        encoded = []
+        for name, value in node.items():
+            raw_name = os.fsencode(name)
+            if bytes([0]) in raw_name or b"/" in raw_name:
+                raise Denied("unsupported source name in exact-tree hash")
+            if isinstance(value, dict):
+                mode = b"40000"
+                digest = hash_directory(value)
+                sort_key = raw_name + b"/"
+            else:
+                file_mode, digest = value
+                mode = file_mode.encode("ascii")
+                sort_key = raw_name
+            encoded.append((sort_key, mode + b" " + raw_name + bytes([0]) + digest))
+        encoded.sort(key=lambda item: item[0])
+        payload = b"".join(item[1] for item in encoded)
+        header = b"tree " + str(len(payload)).encode("ascii") + bytes([0])
+        return hashlib.sha1(header + payload).digest()
+
+    return hash_directory(root).hex()
+
+
 def publish(repository, source, branch, trusted_root, source_selector=None,
             source_commit=None, source_tree=None, maintainer_comment=None,
             security_comment=None):
@@ -409,6 +460,11 @@ def publish(repository, source, branch, trusted_root, source_selector=None,
     # deliberately separate trust domains. The preflight proves source identity;
     # collection is anchored to that exact checkout root and never to control files.
     files = collect_source(source, source)
+    # Prove the bytes/modes/paths match the authorized Git tree BEFORE any blob
+    # is uploaded. This prevents a source-root swap from leaking unrelated bytes
+    # as unreachable destination objects merely to fail the later remote tree check.
+    if exact_tree_sha(files) != source_tree:
+        raise Denied("collected source tree does not match authorized source tree")
     # Approval can be revoked while a bounded source tree is being read.
     # Revalidate before the first private byte is uploaded.
     require_preflight(repository, branch, trusted_root, source, source_selector, source_commit,
