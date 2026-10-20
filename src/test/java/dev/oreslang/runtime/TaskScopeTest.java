@@ -115,6 +115,10 @@ public class TaskScopeTest {
                     child.getDone().get(3, TimeUnit.SECONDS));
             assertEquals(1, retired.get(),
                     "loan retirement hook must fire exactly once from getDone");
+            assertSame(scope, retiredScope.get(),
+                    "retirement must be bound to the exact TaskScope");
+            assertSame(child, retiredChild.get(),
+                    "retirement must be bound to the exact TaskHandle");
 
             scope.seal();
             assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
