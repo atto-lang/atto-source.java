@@ -38,6 +38,11 @@ class IpcReceiptParityTest {
     }
 
     @Test
+    void authenticatedSocketFramesCrossForkedJvmBoundary() throws Exception {
+        IpcAuthenticatedSocketTwoProcessSelfTest.main(new String[0]);
+    }
+
+    @Test
     void actorCarriersCannotEnterBlockingIpcHostOperations() throws Exception {
         IpcBlockingGuardSelfTest.main(new String[0]);
     }
