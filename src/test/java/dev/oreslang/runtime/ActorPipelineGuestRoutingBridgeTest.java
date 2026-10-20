@@ -209,4 +209,50 @@ final class ActorPipelineGuestRoutingBridgeTest {
             terminal.getDone().get(5, TimeUnit.SECONDS);
         }
     }
+    @Test
+    void allRejectedGuestFanoutStillConsumesSourceTurnAndPreservesReceiptOrder()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var collected = new AtomicReference<List<Map<String, Object>>>();
+            var attempted = new CountDownLatch(1);
+            var source = runtime.<String>spawnShared(() -> (message, turn) -> {
+                collected.set(runtime.routeCurrentPipelineForwardAll("payload"));
+                assertThrows(SecurityException.class,
+                        () -> runtime.routeCurrentPipelineForwardAll("replayed"),
+                        "all-rejected fanout is still a one-shot DATA operation");
+                attempted.countDown();
+            });
+            var a = runtime.<String>spawnShared(() -> (message, turn) -> {
+                throw new AssertionError("retired sink a received DATA");
+            });
+            var b = runtime.<String>spawnShared(() -> (message, turn) -> {
+                throw new AssertionError("retired sink b received DATA");
+            });
+            var router = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, fanout(),
+                    Map.of("source", source, "worker-a", a, "worker-b", b),
+                    75, 8);
+            a.stop();
+            b.stop();
+            a.getDone().get(5, TimeUnit.SECONDS);
+            b.getDone().get(5, TimeUnit.SECONDS);
+            router.ingress("source", "begin");
+            assertTrue(attempted.await(8, TimeUnit.SECONDS));
+            source.drain().get(5, TimeUnit.SECONDS);
+            var receipts = collected.get();
+            assertNotNull(receipts);
+            assertEquals(2, receipts.size());
+            assertEquals("worker-a", receipts.get(0).get("target"));
+            assertEquals("worker-b", receipts.get(1).get("target"));
+            assertEquals(Boolean.FALSE, receipts.get(0).get("admitted"));
+            assertEquals(Boolean.FALSE, receipts.get(1).get("admitted"));
+            assertEquals("rejected", receipts.get(0).get("status"));
+            assertEquals("rejected", receipts.get(1).get("status"));
+            assertEquals(0, router.outstanding());
+            router.close();
+            source.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
 }
