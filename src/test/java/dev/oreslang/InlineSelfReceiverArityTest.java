@@ -69,6 +69,77 @@ final class InlineSelfReceiverArityTest {
     }
 
     @Test
+    void everyEquivalentOneArgumentReceiverSpellingCollidesInEitherOrder() {
+        String[] declarations = {
+                "pub foo(int x): int { return x; }",
+                "pub foo(self, int x): int { return x; }",
+                "pub foo(mut self, int x): int { return x; }",
+                "pub foo(self Foo)(int x): int { return x; }",
+                "pub foo(mut self)(int x): int { return x; }"
+        };
+        // Ten distinct pairs, in both declaration orders. Receiver borrowing
+        // and spelling never create a new (owner, method, arity) slot.
+        for (int i = 0; i < declarations.length; i++) {
+            for (int j = i + 1; j < declarations.length; j++) {
+                for (String[] order : new String[][] {
+                        {declarations[i], declarations[j]},
+                        {declarations[j], declarations[i]}
+                }) {
+                    String program = "define class Foo as\\n"
+                            + order[0] + "\\n" + order[1] + "\\nend";
+                    IllegalArgumentException error = assertThrows(
+                            IllegalArgumentException.class,
+                            () -> TypeChecker.check(Parser.parse(program)),
+                            "spelling pair " + i + ":" + j);
+                    assertTrue(error.getMessage().contains("already has arity 1"),
+                            error::getMessage);
+                }
+            }
+        }
+    }
+
+    @Test
+    void namedSelfTypedFirstParameterIsNotAReceiverMarker() {
+        // In foo(self other), 'other' is a real value parameter whose type
+        // is receiver-polymorphic self; foo(self, self other) normalizes to
+        // exactly the same foo/1 slot.
+        for (String[] order : new String[][] {
+                {"pub foo(self other): int { return 1; }",
+                 "pub foo(self, self other): int { return 2; }"},
+                {"pub foo(self, self other): int { return 2; }",
+                 "pub foo(self other): int { return 1; }"}
+        }) {
+            Ast.Program first = Parser.parse("define class Foo as\\n" + order[0] + "\\nend");
+            Ast.ClassDecl owner = (Ast.ClassDecl) first.modules().getFirst().declarations().getFirst();
+            Ast.MethodDecl decl = owner.methods().getFirst();
+            assertEquals(1, decl.arity());
+            assertEquals("other", decl.parameters().getFirst().name());
+            assertEquals("self", decl.parameters().getFirst().type().name());
+
+            IllegalArgumentException duplicate = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("define class Foo as\\n"
+                            + order[0] + "\\n" + order[1] + "\\nend")));
+            assertTrue(duplicate.getMessage().contains("already has arity 1"),
+                    duplicate::getMessage);
+        }
+    }
+
+    @Test
+    void zeroArgumentReceiverFormsAlsoCollideInActors() {
+        for (String[] order : new String[][] {
+                {"tick(): void { return; }", "tick(self): void { return; }"},
+                {"tick(mut self): void { return; }", "tick(): void { return; }"},
+                {"tick(self): void { return; }", "tick(mut self): void { return; }"}
+        }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("define actor A as\\n"
+                            + order[0] + "\\n" + order[1] + "\\nend")));
+            assertTrue(error.getMessage().contains("already has arity 0"),
+                    error::getMessage);
+        }
+    }
+
+    @Test
     void legacyTypedAndMutableReceiversCannotCreateShadowSlots() {
         for (String methods : new String[] {
                 "foo(self Foo)(int x): void { return; }\nfoo(self, int x): void { return; }",
