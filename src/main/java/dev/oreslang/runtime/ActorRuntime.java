@@ -466,6 +466,11 @@ public final class ActorRuntime implements AutoCloseable {
     private final Object runtimeLifecycleLock = new Object();
     private final Set<SyncCell<?>> syncCells = ConcurrentHashMap.newKeySet();
     private final Set<Shared<?>> sharedValues = ConcurrentHashMap.newKeySet();
+    /** Runtime-owned ETS tables; table storage is never actor-private heap state. */
+    private final Set<EtsTable<?, ?>> etsTables = ConcurrentHashMap.newKeySet();
+    /** Owner-linked ETS tables close when their creating actor retires. */
+    private final Map<ActorId, Set<EtsTable<?, ?>>> etsTablesByOwner =
+            new ConcurrentHashMap<>();
     /** Read-only parent-observable streams retained until drained/runtime close. */
     private final Set<ActorOutputStream<?>> actorOutputStreams =
             ConcurrentHashMap.newKeySet();
@@ -2940,6 +2945,18 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
+         * Runtime-internal join authority for runtime-owned named groups such as
+         * otp/pg. Package-private on purpose: guest actors must receive an
+         * explicit capability rather than minting one from a group id.
+         */
+        ActorGroupJoinCapability runtimeJoinCapability() {
+            synchronized (authorityLock) {
+                requireOpen();
+                return new ActorGroupJoinCapability(id, joinSecret);
+            }
+        }
+
+        /**
          * Invalidates previously issued join capabilities without disturbing
          * actors that are already members. Rotation and join admission are
          * linearized on authorityLock so a stale capability cannot validate
@@ -3795,6 +3812,44 @@ public final class ActorRuntime implements AutoCloseable {
         }
         group.currentMemberOrSystem("access ActorGroup " + id);
         return group;
+    }
+
+    /**
+     * Create a runtime-owned cooperation group even when invoked from an actor
+     * turn. Used by trusted runtime facilities (not guest code) that must
+     * outlive whichever actor first discovers or joins the group.
+     */
+    ActorGroup createRuntimeOwnedActorGroup() {
+        requireCallerRuntimeAffinity("create a runtime-owned ActorGroup");
+        requireNotActorGroupMailman("create a runtime-owned ActorGroup");
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (actorGroups.size() >= dispatcherConfig.maxActors()) {
+                throw new IllegalStateException(
+                        "ActorGroup runtime limit exceeded: maximum "
+                                + dispatcherConfig.maxActors());
+            }
+            while (true) {
+                ActorGroupId id = ActorGroupId.create();
+                ActorGroup group = new ActorGroup(id, null, policyCeiling);
+                if (actorGroups.putIfAbsent(id, group) == null) {
+                    if (closed.get()) {
+                        group.closeFromRuntime();
+                        throw new IllegalStateException("actor runtime closed during group creation");
+                    }
+                    return group;
+                }
+            }
+        }
+    }
+
+    /** Resolve one live runtime-local ActorRef for trusted runtime facades. */
+    ActorRef<?> resolveLocalActorRef(ActorId id) {
+        Objects.requireNonNull(id, "id");
+        ActorCell<?> cell = actors.get(id);
+        return cell == null || cell.stopped.get() ? null : cell.ref;
     }
 
     public ActorGroup createActorGroup() {
@@ -4903,6 +4958,7 @@ public final class ActorRuntime implements AutoCloseable {
             ActorGroup group = actorGroups.get(groupId);
             if (group != null) group.actorTerminated(cell.ref.id());
         }
+        closeOwnedEtsTables(cell.ref.id());
         if (actors.remove(cell.ref.id(), cell)) {
             int remaining = actorCount.decrementAndGet();
             if (remaining < 0) {
@@ -4910,6 +4966,70 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException("actor count accounting underflow");
             }
         }
+    }
+
+    /**
+     * Create a bounded runtime-owned ETS-style SET table. Source-level otp/ets
+     * decides the generic K/V types and table kind; this first substrate
+     * intentionally implements SET only and fails closed for future kinds.
+     */
+    public <K, V> EtsTable<K, V> createEtsTable(
+            int capacity,
+            EtsTable.Access access) {
+        requireCallerRuntimeAffinity("create an ETS table");
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+
+        ActorId owner = currentActorId().orElse(null);
+        ActorCell<?> ownerCell = owner == null ? null : actors.get(owner);
+        if (owner != null && (ownerCell == null || ownerCell.stopped.get())) {
+            throw new IllegalStateException("ETS owner actor is no longer alive");
+        }
+
+        EtsTable<K, V> table = new EtsTable<>(this, owner, capacity, access);
+        etsTables.add(table);
+        if (owner != null) {
+            etsTablesByOwner.computeIfAbsent(
+                    owner, ignored -> ConcurrentHashMap.newKeySet()).add(table);
+            // If retirement won the race before owner indexing completed,
+            // unregisterActor either observed the set or this recheck closes it.
+            if (ownerCell.stopped.get() || !actors.containsKey(owner)) {
+                table.closeFromRuntime();
+                throw new IllegalStateException("ETS owner stopped during table creation");
+            }
+        }
+        if (closed.get()) {
+            table.closeFromRuntime();
+            throw new IllegalStateException("actor runtime closed during ETS creation");
+        }
+        return table;
+    }
+
+    void unregisterEtsTable(EtsTable<?, ?> table) {
+        etsTables.remove(table);
+        table.ownerId().ifPresent(owner -> {
+            Set<EtsTable<?, ?>> owned = etsTablesByOwner.get(owner);
+            if (owned == null) return;
+            owned.remove(table);
+            if (owned.isEmpty()) etsTablesByOwner.remove(owner, owned);
+        });
+    }
+
+    private void closeOwnedEtsTables(ActorId owner) {
+        Set<EtsTable<?, ?>> owned = etsTablesByOwner.remove(owner);
+        if (owned == null) return;
+        for (EtsTable<?, ?> table : List.copyOf(owned)) {
+            table.closeFromRuntime();
+        }
+    }
+
+    /**
+     * Materialize a table value for the current caller. Private/untrusted
+     * actors get an isolated immutable copy; shared actors and host code may
+     * reuse the already-deeply-frozen representation.
+     */
+    Object materializeEtsValue(Object frozen) {
+        ActorKind kind = currentActorKind();
+        return isPrivateKind(kind) ? isolateCopy(frozen) : frozen;
     }
 
     public <T> SyncCell<T> syncCell(T initialValue) {
@@ -6859,6 +6979,9 @@ public final class ActorRuntime implements AutoCloseable {
         actorOutputStreams.clear();
         for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
         syncCells.clear();
+        for (EtsTable<?, ?> table : List.copyOf(etsTables)) table.closeFromRuntime();
+        etsTables.clear();
+        etsTablesByOwner.clear();
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
         sharedValues.clear();
         sharedMemoryBytes.set(0L);
