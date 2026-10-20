@@ -198,8 +198,15 @@ public final class Types {
         // Entry<K,V> has a dedicated nominal runtime tag (OresEntry). A
         // structural {key,value} record, sequence/tuple, or unrelated nominal
         // value cannot inhabit that domain merely by sharing its visible
-        // fields. Keep this proof Entry-specific: arbitrary classes may still
-        // participate in structural views elsewhere in the type system.
+        // fields. Two Entry domains are disjoint when either corresponding
+        // component domain is itself provably disjoint. Unknown/generic
+        // components remain conservative through the recursive proof.
+        if (isEntryNamed(first) && isEntryNamed(second)) {
+            Named a = (Named) first;
+            Named b = (Named) second;
+            return areProvablyDisjoint(a.arguments().get(0), b.arguments().get(0))
+                    || areProvablyDisjoint(a.arguments().get(1), b.arguments().get(1));
+        }
         if (isEntryNamed(first)) {
             return second instanceof Record
                     || second instanceof ListType
