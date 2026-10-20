@@ -41,6 +41,14 @@ import java.util.function.BiConsumer;
 public final class OresScheduler implements AutoCloseable {
     private static final AtomicLong NEXT_ID = new AtomicLong();
     private static final AtomicLong NEXT_DISPATCH_ID = new AtomicLong();
+
+    private static long allocatePositiveId(AtomicLong counter, String kind) {
+        long value = counter.incrementAndGet();
+        if (value <= 0) {
+            throw new IllegalStateException("OresScheduler " + kind + " id space exhausted");
+        }
+        return value;
+    }
     private static final ThreadLocal<OresScheduler> CURRENT = new ThreadLocal<>();
     /** The carrier still belongs to this scheduler during terminal callbacks. */
     private static final ThreadLocal<OresScheduler> CURRENT_CARRIER_SCHEDULER =
@@ -203,7 +211,7 @@ public final class OresScheduler implements AutoCloseable {
             throw new IllegalArgumentException("scheduler queue capacity must be positive");
         }
 
-        this.schedulerDomain = NEXT_ID.incrementAndGet();
+        this.schedulerDomain = allocatePositiveId(NEXT_ID, "scheduler-domain");
         this.name = "ores-user-scheduler-" + schedulerDomain;
         this.parallelism = parallelism;
         this.turnExecutor = Objects.requireNonNull(turnExecutor, "turnExecutor");
@@ -240,7 +248,7 @@ public final class OresScheduler implements AutoCloseable {
             ExecutorService ownedExecutor,
             TurnExecutor turnExecutor) {
         this.name = Objects.requireNonNull(name, "name");
-        this.schedulerDomain = NEXT_ID.incrementAndGet();
+        this.schedulerDomain = allocatePositiveId(NEXT_ID, "scheduler-domain");
         if (parallelism <= 0) {
             throw new IllegalArgumentException("scheduler parallelism must be positive");
         }
@@ -549,7 +557,7 @@ public final class OresScheduler implements AutoCloseable {
         OresScheduler prior = CURRENT.get();
         Long priorDispatch = CURRENT_DISPATCH_ID.get();
         CURRENT.set(this);
-        CURRENT_DISPATCH_ID.set(NEXT_DISPATCH_ID.incrementAndGet());
+        CURRENT_DISPATCH_ID.set(allocatePositiveId(NEXT_DISPATCH_ID, "dispatch"));
         try {
             turn.run();
         } finally {
@@ -700,10 +708,7 @@ public final class OresScheduler implements AutoCloseable {
         private TaskRunner(Task<T> task, Runnable onQuiescent,
                 boolean timedAdmission, Runnable onNotificationDrained) {
             this.task = task;
-            long execution = nextExecution.incrementAndGet();
-            if (execution <= 0) {
-                throw new IllegalStateException("OresScheduler execution id space exhausted");
-            }
+            long execution = allocatePositiveId(nextExecution, "execution");
             this.executionContext = ExecutionContext.task(schedulerDomain, execution);
             this.onQuiescent = onQuiescent;
             this.timedAdmission = timedAdmission;
