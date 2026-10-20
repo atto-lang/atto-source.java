@@ -34,7 +34,7 @@ public final class ModelRunFencing {
             String graphDigest,
             long graphGeneration,
             String instanceId,
-            long parameterVersion,
+            Long parameterVersion,
             String executionProfileDigest) {
         public RunStamp {
             requireId(runId, "MODEL_INVALID_RUN_ID");
@@ -42,7 +42,7 @@ public final class ModelRunFencing {
             requireDigest(graphDigest, "MODEL_INVALID_GRAPH_DIGEST");
             if (graphGeneration < 0) throw new IllegalArgumentException("MODEL_INVALID_GRAPH_GENERATION");
             requireId(instanceId, "MODEL_INVALID_INSTANCE_ID");
-            if (parameterVersion < 0) throw new IllegalArgumentException("MODEL_INVALID_PARAMETER_VERSION");
+            if (parameterVersion != null && parameterVersion < 0) throw new IllegalArgumentException("MODEL_INVALID_PARAMETER_VERSION");
             requireDigest(executionProfileDigest, "MODEL_INVALID_EXECUTION_PROFILE");
         }
     }
