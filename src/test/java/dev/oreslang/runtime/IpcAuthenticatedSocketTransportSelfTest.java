@@ -683,6 +683,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             transport.requestClose();
             check(closeCalled.await(2, TimeUnit.SECONDS));
             check(!transport.keyCloneZeroized());
+            check(!transport.connectionBindingCloneZeroized());
             check(reader.isAlive());
 
             releaseFinalRead.countDown();
@@ -692,6 +693,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             check(readStage.get() == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
             check(transport.requestCloseAndAwait(3000));
             check(transport.keyCloneZeroized());
+            check(transport.connectionBindingCloneZeroized());
             check(submission.outcome().toCompletableFuture().join()
                     == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
             check(bridge.invariant());
