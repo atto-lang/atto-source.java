@@ -49,6 +49,16 @@ final class MlScalarPublicationGuestLoweringTest {
                 output.toString(StandardCharsets.UTF_8));
     }
 
+    @Test void actorLifecycleBarriersAreCanonicalZeroArgMethods() throws Exception {
+        String source = Files.readString(FIXTURE);
+        assertRejected(source.replace(
+                "worker.get_ready()",
+                "worker.get_ready(1)"));
+        assertRejected(source.replace(
+                "worker.get_done()",
+                "worker.get_done(1)"));
+    }
+
     @Test void snapshotMustUseActiveLoanAndCapturedTypedFields() {
         assertRejected("""
             define actor Bad as
