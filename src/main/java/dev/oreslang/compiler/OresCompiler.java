@@ -52,6 +52,16 @@ public final class OresCompiler {
     }
 
     /**
+     * Experimental source-derived callback parameter may-effect summaries.
+     * Direct invocation and escapes are observations, not timing certification;
+     * unknown indirect dispatch, FFI and hot reload remain unverified.
+     */
+    public static java.util.Map<CallbackParameterEffects.Callable,
+            CallbackParameterEffects.Summary> analyzeCallbackEffects(String source) {
+        return CallbackParameterEffects.infer(parseAndTypeCheck(source));
+    }
+
+    /**
      * Opt-in RT primitive subset: perform the full existing type/ownership check
      * before admitting any source-level resource bounds or lowering to Java 8.
      * This is not a verified no-heap runtime or WCET proof. Consumers must run
