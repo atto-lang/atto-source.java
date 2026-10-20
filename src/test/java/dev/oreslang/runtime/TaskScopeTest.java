@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -19,6 +20,43 @@ final class TaskScopeTest {
         assertTrue(joined.isDone());
         assertDoesNotThrow(joined::join);
         assertThrows(IllegalStateException.class, scope::reserve);
+    }
+
+    @Test
+    void attachmentDoesNotAcquireScopeMonitorWhileHoldingTicket() throws Exception {
+        TaskScope scope = new TaskScope();
+        TaskScope.Registration ticket = scope.reserve();
+        OresFuture<Integer> child = new OresFuture<>();
+        CountDownLatch attached = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread worker = new Thread(() -> {
+            try {
+                ticket.attach(child);
+            } catch (Throwable thrown) {
+                failure.set(thrown);
+            } finally {
+                attached.countDown();
+            }
+        }, "task-scope-attach-lock-order");
+        worker.setDaemon(true);
+
+        // reserve(parent) may need scope -> registration while a scope is
+        // closing. Attachment must therefore never take registration -> scope.
+        // Holding the scope monitor here makes the old inversion deterministic:
+        // the old attach() blocks; the hardened volatile cancellation read does not.
+        synchronized (scope) {
+            worker.start();
+            assertTrue(attached.await(2, TimeUnit.SECONDS),
+                    "attachment must not wait for the scope monitor");
+        }
+        worker.join(2_000L);
+        assertFalse(worker.isAlive());
+        assertNull(failure.get());
+
+        assertTrue(child.cancel(false));
+        ticket.quiesced();
+        assertTrue(scope.close().isDone());
     }
 
     @Test
