@@ -43,6 +43,11 @@ public final class DeclaredEffectVerifier {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl function) {
+                    if (ACTIVE_ENUMS.get().contains(function.name())) {
+                        throw new IllegalArgumentException(
+                                "module function '" + function.name()
+                                        + "' shadows a nominal enum namespace");
+                    }
                     if (ML_SCALAR_INTRINSICS.contains(function.name())) {
                         throw new IllegalArgumentException(
                                 "module function '" + function.name()
@@ -154,6 +159,10 @@ public final class DeclaredEffectVerifier {
             throw new IllegalArgumentException(
                     callableName + " binds reserved sealed ML intrinsic name '"
                             + bound + "'");
+        }
+        if (bound != null && ACTIVE_ENUMS.get().contains(bound)) {
+            throw new IllegalArgumentException(
+                    callableName + " shadows nominal enum namespace '" + bound + "'");
         }
         if (node instanceof Iterable<?> items) {
             for (Object item : items) {
