@@ -9319,11 +9319,21 @@ public final class OresEvalRootNode extends RootNode {
                             || !a.equals(b)) return false;
                     continue;
                 }
-                if (a instanceof Number leftNumber && b instanceof Number rightNumber) {
-                    if (!numericValueEquals(leftNumber, rightNumber)) return false;
+                if (a instanceof Number || b instanceof Number) {
+                    if (!(a instanceof Number leftNumber)
+                            || !(b instanceof Number rightNumber)
+                            || !isTrustedGuestNumber(leftNumber)
+                            || !isTrustedGuestNumber(rightNumber)
+                            || !numericValueEquals(leftNumber, rightNumber)) {
+                        return false;
+                    }
                     continue;
                 }
                 if (a instanceof Complex || b instanceof Complex) {
+                    if ((a instanceof Number leftNumber && !isTrustedGuestNumber(leftNumber))
+                            || (b instanceof Number rightNumber && !isTrustedGuestNumber(rightNumber))) {
+                        return false;
+                    }
                     try {
                         Complex leftComplex = asComplex(a);
                         Complex rightComplex = asComplex(b);
@@ -9447,7 +9457,20 @@ public final class OresEvalRootNode extends RootNode {
             return true;
         }
 
+        private boolean isTrustedGuestNumber(Number value) {
+            Class<?> type = value.getClass();
+            return type == Byte.class
+                    || type == Short.class
+                    || type == Integer.class
+                    || type == Long.class
+                    || type == Float.class
+                    || type == Double.class
+                    || type == java.math.BigInteger.class
+                    || type == java.math.BigDecimal.class;
+        }
+
         private boolean numericValueEquals(Number left, Number right) {
+            if (!isTrustedGuestNumber(left) || !isTrustedGuestNumber(right)) return false;
             if (left instanceof java.math.BigDecimal || right instanceof java.math.BigDecimal
                     || left instanceof java.math.BigInteger || right instanceof java.math.BigInteger) {
                 try {
