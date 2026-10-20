@@ -1,0 +1,43 @@
+name: Default parameters staged compiler conformance
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/types/V3ScalarDefaultLiteralLowering.java'
+      - 'src/main/java/dev/oreslang/types/V3DefaultArgValsPolicy.java'
+      - 'src/main/java/dev/oreslang/types/V3CallLoweringPreview.java'
+      - 'src/main/java/dev/oreslang/types/V3SourceContractFingerprint.java'
+      - 'src/main/java/dev/oreslang/types/DefaultArgumentPolicy.java'
+      - 'src/main/java/dev/oreslang/types/OptionalCallShapeBinder.java'
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/test/java/dev/oreslang/V3DefaultBudgetAdmissionTest.java'
+      - 'src/test/java/dev/oreslang/V3ScalarDefaultLiteralLoweringTest.java'
+      - 'src/test/java/dev/oreslang/V3DefaultArgValsAdmissionTest.java'
+      - 'src/test/java/dev/oreslang/DefaultAnnotationAdmissionTest.java'
+      - 'src/test/java/dev/oreslang/DefaultArgumentPolicyTest.java'
+      - '.github/workflows/default-parameter-compiler-conformance.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  targeted-java:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Check actual compiler test classes on this PR head
+        run: |
+          java --version
+          mvn -B -ntp -Dtest=V3DefaultBudgetAdmissionTest,V3ScalarDefaultLiteralLoweringTest,V3DefaultArgValsAdmissionTest,DefaultAnnotationAdmissionTest,DefaultArgumentPolicyTest test
