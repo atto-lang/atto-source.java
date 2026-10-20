@@ -1334,21 +1334,40 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /** Trusted VM-owned metadata, never copied or serialized as guest mail. */
+    private record CallBinding(
+            GenerationalReplyRegistry.Ticket<?> ticket,
+            GenerationalReplyRegistry.Endpoint callee) {
+        private CallBinding {
+            Objects.requireNonNull(ticket, "reply ticket");
+            Objects.requireNonNull(callee, "callee endpoint");
+        }
+
+        void failUnanswered() {
+            if (ticket.state() == GenerationalReplyRegistry.State.PENDING) {
+                ticket.reject(callee,
+                        new IllegalStateException("unary actor message was not answered"));
+            }
+        }
+    }
+
     private record MessageEnvelope(
             Object value,
             Runnable release,
             Runnable continuation,
             ActorId sender,
-            long sequence) implements AutoCloseable {
+            long sequence,
+            CallBinding call) implements AutoCloseable {
         private static MessageEnvelope message(
                 Object value,
                 Runnable release,
                 ActorId sender,
-                long sequence) {
+                long sequence,
+                CallBinding call) {
             if (sequence < 0) {
                 throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
             }
-            return new MessageEnvelope(value, release, null, sender, sequence);
+            return new MessageEnvelope(value, release, null, sender, sequence, call);
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
@@ -1357,7 +1376,8 @@ public final class ActorRuntime implements AutoCloseable {
                     null,
                     Objects.requireNonNull(continuation, "continuation"),
                     null,
-                    -1L);
+                    -1L,
+                    null);
         }
 
         private boolean isContinuation() {
@@ -1366,7 +1386,11 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override
         public void close() {
-            if (release != null) release.run();
+            try {
+                if (call != null) call.failUnanswered();
+            } finally {
+                if (release != null) release.run();
+            }
         }
     }
 
@@ -1698,6 +1722,12 @@ public final class ActorRuntime implements AutoCloseable {
          */
         default Optional<ActorInboxMail<M>> currentMail() {
             return Optional.empty();
+        }
+
+        /** Host/runtime-only unary completion for the current admitted call.
+         * An ordinary send() has no reply capability and must fail closed. */
+        default <R> boolean replyCurrentCall(R value) {
+            throw new IllegalStateException("current actor message has no reply port");
         }
 
         /**
@@ -5294,6 +5324,21 @@ public final class ActorRuntime implements AutoCloseable {
 
     @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
+        sendInternal(ref, message, null);
+    }
+
+    /** Compiler/VM-only call admission. The reply ticket stays OUTSIDE the
+     * guest payload graph, preserving PRIVATE and UNTRUSTED isolation. The
+     * caller must already have reserved this ticket for its own endpoint. */
+    <M, R> void sendCall(
+            ActorRef<M> ref, M message,
+            GenerationalReplyRegistry.Ticket<R> ticket,
+            GenerationalReplyRegistry.Endpoint callee) {
+        sendInternal(ref, message, new CallBinding(ticket, callee));
+    }
+
+    @SuppressWarnings("unchecked")
+    private <M> void sendInternal(ActorRef<M> ref, M message, CallBinding call) {
         requireCallerRuntimeAffinity("send messages");
         if (currentActorKind() == ActorKind.UNTRUSTED) {
             throw new SecurityException("untrusted actors cannot send actor messages");
@@ -5404,7 +5449,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 exhausted);
                     }
                     envelope = MessageEnvelope.message(
-                            prepared, release, sender, sequence);
+                            prepared, release, sender, sequence, call);
                     if (!cell.mailbox.tryWrite(envelope)) {
                         throw new ActorMailboxFullException(ref.id());
                     }
@@ -7036,6 +7081,7 @@ public final class ActorRuntime implements AutoCloseable {
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
         private ActorInboxMail<M> activeMail;
+        private CallBinding activeCall;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
@@ -7746,6 +7792,19 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public Optional<ActorInboxMail<M>> currentMail() {
                         return Optional.ofNullable(activeMail);
                     }
+                    @Override public <R> boolean replyCurrentCall(R value) {
+                        if (!currentThreadOwnsActorExecutionLease() || activeCall == null) {
+                            throw new SecurityException("no admitted unary call on the current actor turn");
+                        }
+                        // Ownership proof and type-check happen before publishing to
+                        // caller Future. No raw actor-private pointer may escape.
+                        Object safe = isPrivateKind(kind) ? isolateCopy(value)
+                                : freezeForTransport(value);
+                        @SuppressWarnings("unchecked")
+                        GenerationalReplyRegistry.Ticket<Object> ticket =
+                                (GenerationalReplyRegistry.Ticket<Object>) activeCall.ticket();
+                        return ticket.reply(activeCall.callee(), safe);
+                    }
                     @Override public Optional<SharedCodeImageStore.CodeImage> codeImage() {
                         return Optional.ofNullable(codeImage);
                     }
@@ -7830,6 +7889,7 @@ public final class ActorRuntime implements AutoCloseable {
                                     activeEnvelope.sequence(),
                                     (M) activeEnvelope.value());
                             activeMail = mail;
+                            activeCall = activeEnvelope.call();
                             try {
                                 if (codeExecutor != null) {
                                     if (codeActorState == null
@@ -7852,6 +7912,10 @@ public final class ActorRuntime implements AutoCloseable {
                                     behavior.onMessage(mail.value(), context);
                                 }
                             } finally {
+                                // Suspended unary reply is fail-closed for now:
+                                // retaining this reply port across an await requires
+                                // compiler-owned continuation/frame handoff.
+                                activeCall = null;
                                 if (!sourceReceiveSuspended) activeMail = null;
                             }
                         }
