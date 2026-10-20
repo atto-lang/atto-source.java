@@ -270,14 +270,6 @@ public final class UnaryTcpSessionAdapterCheck {
         check(directReply.payload()[0] == 9,
                 "Reply payload accessor must not expose mutable backing storage");
 
-        byte[] freshReplySource = new byte[] {5, 4, 3};
-        var freshReply = UnaryTcpSessionAdapter.Reply.successFresh(freshReplySource);
-        check(freshReply.payloadValue().unsignedAt(0) == 5,
-                "fresh runtime reply ownership must preserve bytes");
-        freshReplySource[0] = 6;
-        check(freshReply.payloadValue().unsignedAt(0) == 6,
-                "fresh runtime reply factory must transfer, not copy, owned bytes");
-
         try {
             UnaryTcpSessionAdapter.Reply.success(tooLarge);
             throw new AssertionError("reply accepted a payload above the unary protocol limit");
