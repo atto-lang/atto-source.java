@@ -58,8 +58,18 @@ public final class CallbackParameterEffects {
             visitor.maySuspend = asyncOrSuspends;
             visitor.block(body, false);
             Callable key = new Callable(mod, name, params.size(), i);
-            if (result.putIfAbsent(key, visitor.summary()) != null)
-                throw new IllegalArgumentException("ambiguous callback summary " + key);
+            Summary previous = result.putIfAbsent(key, visitor.summary());
+            if (previous != null) {
+                // Oreslang may admit a same-name/arity overload with a
+                // distinct nominal Enum signature. Without the resolved
+                // overload identity, join conservatively rather than
+                // rejecting valid source or selecting an arbitrary body.
+                Summary next = visitor.summary();
+                result.put(key, new Summary(
+                        previous.mayInvokeInline() || next.mayInvokeInline(),
+                        true, // ambiguous dynamic selection or forwarding
+                        previous.maySuspendOrDefer() || next.maySuspendOrDefer()));
+            }
         }
     }
 
