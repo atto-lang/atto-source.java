@@ -35,6 +35,7 @@ mkdir -p "$tmp/classes"
 javac --release 21 -Xlint:all -Werror -d "$tmp/classes" \
     src/main/java/dev/oreslang/runtime/OresBytes.java \
     src/main/java/dev/oreslang/runtime/UnaryTransportFrame.java \
+    src/main/java/dev/oreslang/runtime/UnaryInboundRequestRegistry.java \
     src/main/java/dev/oreslang/runtime/UnaryTcpSessionAdapter.java \
     src/main/java/dev/oreslang/runtime/UnaryTcpMutualTlsAuthenticator.java \
     src/main/java/dev/oreslang/runtime/UnaryTcpTlsListener.java \
