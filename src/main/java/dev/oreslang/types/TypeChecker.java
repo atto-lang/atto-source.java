@@ -5305,6 +5305,16 @@ public final class TypeChecker {
             if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
             return result;
         }
+        if (receiver instanceof Named named
+                && named.name().equals("$EntryFactory")) {
+            if (member.member().equals("of")) {
+                throw new IllegalArgumentException(
+                        "Entry.of is a generic factory and is direct-call-only; "
+                                + "wrap Entry.of(key, value) in an explicit lambda to reify it");
+            }
+            throw new IllegalArgumentException(
+                    "unknown Entry member '" + member.member() + "'");
+        }
         if (receiver instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
