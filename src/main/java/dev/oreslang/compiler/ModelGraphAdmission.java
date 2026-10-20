@@ -44,7 +44,7 @@ public final class ModelGraphAdmission {
         }
     }
 
-    public record Node(int id, String op, String abi, Port input, Port output, boolean vjp) { }
+    public record Node(int id, String op, String abi, List<String> config, Port input, Port output, boolean vjp) {\n        public Node { config = List.copyOf(config); }\n    }
     public record ModelGraph(String name, Port input, Port output,
                              List<Node> nodes, long upperBoundBytes) {
         public ModelGraph { nodes = List.copyOf(nodes); }
