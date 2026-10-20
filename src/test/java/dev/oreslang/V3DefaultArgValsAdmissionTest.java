@@ -822,4 +822,32 @@ final class V3DefaultArgValsAdmissionTest {
                 V3SourceContractFingerprint.sha256Hex(List.of(omittableOption), List.of(noneDefault)));
     }
 
+    @Test
+    void v3SourceContractFingerprintPreflightsAdversarialTypeShapesWithoutRecursing() {
+        Ast.TypeRef deeplyNested = Ast.TypeRef.simple("int");
+        for (int i = 0; i < 5000; i++) {
+            deeplyNested = new Ast.TypeRef("List", List.of(deeplyNested), false);
+        }
+        Ast.TypeRef hugeDepth = deeplyNested;
+        // The budget MUST reject before the recursive declaration policy
+        // or preview/TypeRef rendering has an opportunity to overflow.
+        assertThrows(IllegalArgumentException.class,
+                () -> V3SourceContractFingerprint.sha256Hex(
+                        List.of(new Ast.Param(hugeDepth, "x")), List.of()));
+
+        Ast.TypeRef leaf = Ast.TypeRef.simple("int");
+        Ast.TypeRef overlyWide = new Ast.TypeRef(
+                "Tuple", java.util.Collections.nCopies(8300, leaf), false);
+        assertThrows(IllegalArgumentException.class,
+                () -> V3SourceContractFingerprint.sha256Hex(
+                        List.of(new Ast.Param(overlyWide, "x")), List.of()));
+
+        java.util.ArrayList<Ast.Param> tooMany = new java.util.ArrayList<>();
+        for (int i = 0; i < 1025; i++) {
+            tooMany.add(new Ast.Param(leaf, "arg" + i));
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> V3SourceContractFingerprint.sha256Hex(tooMany, List.of()));
+    }
+
 }
