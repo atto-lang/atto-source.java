@@ -146,6 +146,8 @@ public final class StaticFactsV0Exporter {
         }
 
         private void visitStatements(List<Ast.Stmt> body, String caller, List<Loop> loops) {
+            enterTraversal();
+            try {
             for (Ast.Stmt stmt : body) {
                 if (stmt instanceof Ast.ReturnStmt ret) {
                     visitExpr(ret.value(), caller);
@@ -184,6 +186,9 @@ public final class StaticFactsV0Exporter {
                     throw unsupported("statement " + stmt.getClass().getSimpleName());
                 }
             }
+            } finally {
+                traversalDepth--;
+            }
         }
 
         private void addLoop(List<Loop> loops) {
@@ -196,6 +201,8 @@ public final class StaticFactsV0Exporter {
 
         private void visitExpr(Ast.Expr expr, String caller) {
             if (expr == null) return;
+            enterTraversal();
+            try {
             if (expr instanceof Ast.NameExpr) return;
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (!(literal.value() instanceof Long || literal.value() instanceof Boolean)) {
@@ -231,6 +238,16 @@ public final class StaticFactsV0Exporter {
             } else {
                 throw unsupported("expression " + expr.getClass().getSimpleName());
             }
+            } finally {
+                traversalDepth--;
+            }
+        }
+
+        private void enterTraversal() {
+            if (traversalDepth >= MAX_AST_DEPTH) {
+                throw unsupported("nested AST exceeds recursive traversal depth budget");
+            }
+            traversalDepth++;
         }
 
         private static void scalarType(Ast.TypeRef type, boolean allowVoid) {
