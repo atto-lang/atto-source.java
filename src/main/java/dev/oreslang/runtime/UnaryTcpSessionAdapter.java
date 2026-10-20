@@ -161,13 +161,6 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             return new Reply(UnaryTransportFrame.Kind.REPLY, payload);
         }
 
-        static Reply successFresh(byte[] freshPayload) {
-            Objects.requireNonNull(freshPayload, "freshPayload");
-            return new Reply(
-                    UnaryTransportFrame.Kind.REPLY,
-                    OresBytes.wrapTrusted(freshPayload));
-        }
-
         static Reply error() {
             return new Reply(UnaryTransportFrame.Kind.ERROR, OresBytes.wrapTrusted(new byte[0]));
         }
