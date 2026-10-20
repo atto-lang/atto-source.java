@@ -117,6 +117,43 @@ final class FirstClassModelGraphTest {
     }
 
     @Test
+    void commonI64SubsetHasPinnedJavaLlvmGraphIdentity() {
+        String source = """
+                fnc Identity(int input): int {
+                  return input;
+                }
+
+                fnc AddDelta(int delta, int input): int {
+                  return input + delta;
+                }
+
+                pub define model PriceAdjust(delta: int = 2) as
+                  Identity()
+                  AddDelta(delta)
+                end
+                """;
+
+        ModelGraphCompiler.CompiledModel model =
+                ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(source))
+                        .find("PriceAdjust");
+        assertNotNull(model);
+        assertEquals(
+                "a65fbdcab7c63eccdb5ec19409decb2da18ca9598d4c36a773f92e8b6521531d",
+                model.graphDigest(),
+                "portable model graph identity must match the LLVM native golden");
+        assertEquals(
+                "4531d20945630eed7bb451d63ae73ca5637559c438f6e89be18bbcd96abe9473",
+                model.configuredGraphDigest(model.bindConfiguration(java.util.List.of())),
+                "configured model identity must match the LLVM native golden");
+        assertEquals(
+                "d1a687b328765fa99037eebc8cc08a3245b5b3e903f74535ffa0cad7da30cc32",
+                model.nodes().get(0).implementationDigest());
+        assertEquals(
+                "61ca0d20c6c6a1a6bc88efb761fd767510ac676fcaa59f0cea2617a1af17fb63",
+                model.nodes().get(1).implementationDigest());
+    }
+
+    @Test
     void modelStringIdentityUsesValidatedUtf8Bytes() {
         String source = """
                 fnc Append(string suffix, string input): string {
