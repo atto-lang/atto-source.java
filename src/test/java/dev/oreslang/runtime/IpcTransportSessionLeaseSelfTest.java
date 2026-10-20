@@ -342,6 +342,70 @@ public final class IpcTransportSessionLeaseSelfTest {
             check(bound.lease().invariant());
         }
 
+        // If scheduling/timeout quarantine is recorded first but an already
+        // claimed physical close later fails, the descriptor-close failure is
+        // authoritative. Do not leave a less relevant scheduler diagnostic as
+        // the apparent reason this generation can never be reused.
+        {
+            var precedenceMessage = message(1, "closeFailurePrecedence");
+            CountDownLatch writeEntered = new CountDownLatch(1);
+            CountDownLatch releaseWrite = new CountDownLatch(1);
+            AtomicReference<IpcTransportSessionLease.WriteAttempt> result =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> senderFailure = new AtomicReference<>();
+            var bound = bind(
+                    precedenceMessage, 571, 1,
+                    (value, preparedFrame) -> {
+                        writeEntered.countDown();
+                        try {
+                            if (!releaseWrite.await(3, TimeUnit.SECONDS)) {
+                                throw new IOException("precedence write timed out");
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new IOException(interrupted);
+                        }
+                    },
+                    () -> { },
+                    IpcTransportSessionLeaseSelfTest::offCallerCleanup);
+
+            Thread sender = new Thread(() -> {
+                try {
+                    result.set(send(bound, precedenceMessage));
+                } catch (Throwable failure) {
+                    senderFailure.set(failure);
+                }
+            }, "ipc-test-close-failure-precedence");
+            sender.start();
+            check(writeEntered.await(3, TimeUnit.SECONDS));
+
+            bound.lease().requestClose();
+            var schedulingFailure =
+                    new IllegalStateException("cleanup scheduling failed first");
+            check(bound.lease().quarantineIfUnsettled(schedulingFailure));
+            check(bound.lease().closeFailure() == schedulingFailure);
+
+            check(bound.lease().beginExternalPhysicalClose());
+            var physicalFailure =
+                    new IOException("physical descriptor close failed");
+            bound.lease().completeExternalPhysicalClose(physicalFailure);
+            check(bound.lease().closeFailure() == physicalFailure);
+            check(bound.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.QUARANTINED);
+            check(!bound.lease().snapshot().physicalCloseConfirmed());
+
+            releaseWrite.countDown();
+            sender.join(3000);
+            check(!sender.isAlive());
+            check(senderFailure.get() == null);
+            check(result.get() != null);
+            check(!result.get().outcome().toCompletableFuture().isDone());
+            check(bound.lease().snapshot().activeWrites() == 0);
+            deny(bound.lease()::retryQuarantinedClose);
+            check(bound.lease().closeFailure() == physicalFailure);
+            check(bound.lease().invariant());
+        }
+
         // Misconfigured caller-runs cleanup is detected before physical close.
         {
             var inlineMessage = message(1, "inline");
