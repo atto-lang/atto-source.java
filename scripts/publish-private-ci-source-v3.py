@@ -222,13 +222,20 @@ def parse_contract(raw, repository, source_pr, test_plan):
     }
 
 
-def checked_control_plane(root, main_sha):
-    """Bind the executing security programs byte-for-byte to protected main."""
+def require_control_plane_location(root):
+    """Require the executing modules to be the scripts under this trusted root."""
     root = root.resolve(strict=True)
     expected_v3 = (root / "scripts" / "publish-private-ci-source-v3.py").resolve(strict=True)
     expected_legacy = (root / "scripts" / "publish-private-ci-source.py").resolve(strict=True)
-    if Path(__file__).resolve(strict=True) != expected_v3 or LEGACY_PATH.resolve(strict=True) != expected_legacy:
+    if (Path(__file__).resolve(strict=True) != expected_v3
+            or LEGACY_PATH.resolve(strict=True) != expected_legacy):
         raise Denied("executing private CI publisher is outside the trusted control plane")
+
+
+def checked_control_plane(root, main_sha):
+    """Bind the executing security programs byte-for-byte to protected main."""
+    root = root.resolve(strict=True)
+    require_control_plane_location(root)
     for path in CONTROL_PLANE_PATHS:
         local = read_local_protected_file(root, path, MAX_CONTROL_PLANE_FILE)
         remote, _ = remote_file_at_source_main(path, main_sha, MAX_CONTROL_PLANE_FILE)
