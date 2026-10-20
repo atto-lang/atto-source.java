@@ -833,6 +833,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
     private final ActorPhysicalTurnGate physicalTurnGate;
+    /** Lazy bounded host domain for terminal ready/DONE/output/exit observers. */
+    private final ThreadPoolExecutor lifecycleObserverDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final AtomicLong watchdogOverruns = new AtomicLong();
     private final AtomicLong watchdogNoticesDropped = new AtomicLong();
@@ -1547,6 +1549,24 @@ public final class ActorRuntime implements AutoCloseable {
                 : CarrierBackend.JVM_THREAD_POOL;
     }
 
+
+    /** Coherent VM-wide execution-carrier permit pressure, when globally budgeted. */
+    public Optional<GlobalCarrierPressure> globalCarrierPressure() {
+        requireSupervisorContext("inspect global carrier permit pressure");
+        if (carrierPermitPool == null) return Optional.empty();
+        OresCarrierPermitPool.Snapshot pressure = carrierPermitPool.snapshot();
+        return Optional.of(new GlobalCarrierPressure(
+                pressure.maximum(),
+                pressure.totalHeld(),
+                pressure.free(),
+                pressure.controlHeld(),
+                pressure.privateHeld(),
+                pressure.sharedHeld(),
+                pressure.untrustedHeld(),
+                pressure.lifecycleHeld(),
+                pressure.deniedCapacity(),
+                pressure.deniedReserveProtection()));
+    }
 
     /**
      * A Java memory quota or direct ByteBuffer does NOT provide an independent
@@ -8607,20 +8627,6 @@ public final class ActorRuntime implements AutoCloseable {
                     firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
                 }
             }
-            drainMailboxReservations();
-            staticSelectCursors.clear();
-            codeActorState = null;
-            Throwable terminalOutput = ref.terminationCause.get();
-            outputStream.close(terminalOutput);
-            for (ActorShardLease lease : List.copyOf(shardLeases)) {
-                lease.revokeFromActorStop();
-            }
-            shardLeases.clear();
-            for (ActorShardSnapshotLease snapshot : List.copyOf(shardSnapshotLeases)) {
-                snapshot.revokeFromActorStop();
-            }
-            shardSnapshotLeases.clear();
-            if (memorySlice != null) memorySlice.close();
             try {
                 drainMailboxReservations();
             } catch (Throwable failure) {
@@ -8635,6 +8641,26 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (Throwable failure) {
                 firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
             }
+
+            // Current-main ECS/shard ownership must retire before the actor's
+            // memory slice is released. A broken lease is telemetry, not
+            // permission to strand authoritative actor finalization.
+            for (ActorShardLease lease : List.copyOf(shardLeases)) {
+                try {
+                    lease.revokeFromActorStop();
+                } catch (Throwable failure) {
+                    firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+                }
+            }
+            shardLeases.clear();
+            for (ActorShardSnapshotLease snapshot : List.copyOf(shardSnapshotLeases)) {
+                try {
+                    snapshot.revokeFromActorStop();
+                } catch (Throwable failure) {
+                    firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+                }
+            }
+            shardSnapshotLeases.clear();
 
             if (memorySlice != null) {
                 try {
