@@ -118,6 +118,32 @@ final class EntryGuestEqualityGraphTest {
     }
 
     @Test
+    void unknownHostNumberCallbacksAreNotInvoked() throws Exception {
+        GuestComparator guest = comparator();
+        java.util.concurrent.atomic.AtomicInteger callbacks =
+                new java.util.concurrent.atomic.AtomicInteger();
+        Number hostile = new Number() {
+            private AssertionError callback(String method) {
+                callbacks.incrementAndGet();
+                return new AssertionError("host Number." + method + " invoked");
+            }
+            @Override public int intValue() { throw callback("intValue"); }
+            @Override public long longValue() { throw callback("longValue"); }
+            @Override public float floatValue() { throw callback("floatValue"); }
+            @Override public double doubleValue() { throw callback("doubleValue"); }
+            @Override public String toString() { throw callback("toString"); }
+        };
+
+        assertFalse(guest.equal(
+                new OresEntry(hostile, "v"),
+                new OresEntry(1L, "v")));
+        assertFalse(guest.equal(
+                new OresEntry(1L, "v"),
+                new OresEntry(hostile, "v")));
+        assertEquals(0, callbacks.get());
+    }
+
+    @Test
     void unknownHostCollectionCallbacksAreNotInvoked() throws Exception {
         GuestComparator guest = comparator();
         List<Object> hostileList = new AbstractList<>() {
