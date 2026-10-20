@@ -247,8 +247,17 @@ public final class TreeShaker {
                 for (Ast.ObjectField field : object.fields()) {
                     if (containsNonInlineableExpression(field.value())) return true;
                 }
+                return false;
             }
-            return false;
+            if (expression instanceof Ast.LiteralExpr || expression instanceof Ast.NameExpr) {
+                return false;
+            }
+            // Expr is sealed. A newly added expression form must opt in here
+            // before constant-call substitution may cross it; otherwise a
+            // nested checked projection could be rewritten without retyping.
+            throw new IllegalStateException(
+                    "unhandled expression shape in constant-call inliner guard: "
+                            + expression.getClass().getName());
         }
 
         private Ast.Expr inlineConstantCall(
