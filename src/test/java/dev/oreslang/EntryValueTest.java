@@ -296,4 +296,47 @@ final class EntryValueTest {
                 """);
     }
 
+    @Test
+    void resumableCallsPreserveTupleFallbackAndSpreadExpansion() throws Exception {
+        String code = """
+                async fnc loadPair(): (int, int) {
+                  return tuple {7, 9};
+                }
+
+                async fnc scalar(): int {
+                  return 7;
+                }
+
+                async fnc total(): int {
+                  const entry = Entry.of(...(await loadPair()));
+                  const pair = tuple(await scalar(), entry.value);
+                  return pair[0] + pair[1];
+                }
+
+                pub fnc main(): void {
+                  stdio.println(await total());
+                  return;
+                }
+                """;
+
+        Ast.Program program = TypeChecker.check(Parser.parse(code));
+        OwnershipChecker.check(program);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                        OresLanguage.ID, code, "entry-resumable.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        assertEquals(
+                "16",
+                output.toString(StandardCharsets.UTF_8)
+                        .replace("\r\n", "\n")
+                        .strip());
+    }
+
 }
