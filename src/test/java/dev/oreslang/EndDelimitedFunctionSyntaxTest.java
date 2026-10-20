@@ -27,18 +27,18 @@ final class EndDelimitedFunctionSyntaxTest {
 
     @Test
     void optionalAsSeparatorNormalizesToSameAst() {
-        var withoutDo = Parser.parse("""
+        var withoutAs = Parser.parse("""
                 fnc identity(int x) -> int
                     return x
                 end
                 """);
         var withAs = Parser.parse("""
-                fnc identity(int x) -> int do
+                fnc identity(int x) -> int as
                     return x
                 end
                 """);
 
-        assertEquals(withoutDo, withAs);
+        assertEquals(withoutAs, withAs);
         assertDoesNotThrow(() -> TypeChecker.check(withAs));
     }
 
@@ -122,7 +122,7 @@ final class EndDelimitedFunctionSyntaxTest {
     @Test
     void asFollowsTheCompleteHigherOrderReturnType() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc callback() -> () => void do
+                fnc callback() -> () => void as
                     return || -> { return; };
                 end
                 """)));
@@ -131,13 +131,13 @@ final class EndDelimitedFunctionSyntaxTest {
     @Test
     void higherOrderReturnChecksReturnedLambdaSignature() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc callback() -> () => void do
+                fnc callback() -> () => void as
                     return |int value| -> { return; };
                 end
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc callback() -> () => void do
+                fnc callback() -> () => void as
                     return || -> { return 1; };
                 end
                 """)));
@@ -146,12 +146,12 @@ final class EndDelimitedFunctionSyntaxTest {
     @Test
     void nestedFunctionReturnTypesAssociateRightWithOptionalAs() {
         var inferredGrouping = Parser.parse("""
-                fnc higher_order() -> (int) => (string) => bool do
+                fnc higher_order() -> (int) => (string) => bool as
                     return missing_callback
                 end
                 """);
         var explicitGrouping = Parser.parse("""
-                fnc higher_order() -> (int) => ((string) => bool) do
+                fnc higher_order() -> (int) => ((string) => bool) as
                     return missing_callback
                 end
                 """);
@@ -210,7 +210,7 @@ final class EndDelimitedFunctionSyntaxTest {
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define contract CallbackFactory as
-                    fnc make() -> () => void do
+                    fnc make() -> () => void as
                         return || -> { return; };
                     end
                 end
@@ -218,7 +218,7 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
-    void commentsCannotMasqueradeAsOptionalDoOrCallableEnd() {
+    void commentsCannotMasqueradeAsOptionalAsOrCallableEnd() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
                 "fnc value() -> int /* as do end */ as /* end */ return 7; end // as do end\n")));
 
@@ -239,7 +239,7 @@ final class EndDelimitedFunctionSyntaxTest {
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc value() -> int /* boundary */
-                do
+                as
                     return 7
                 end
                 """));
@@ -264,7 +264,7 @@ final class EndDelimitedFunctionSyntaxTest {
                     return value + 1;
                 }
 
-                fnc callback() -> (int) => int do
+                fnc callback() -> (int) => int as
                     return increment;
                 end
                 """)));
@@ -276,7 +276,7 @@ final class EndDelimitedFunctionSyntaxTest {
                     return value + 1;
                 }
 
-                fnc callback() -> IntFn do
+                fnc callback() -> IntFn as
                     return increment;
                 end
                 """)));
@@ -288,7 +288,7 @@ final class EndDelimitedFunctionSyntaxTest {
                             return value + 1;
                         }
 
-                        fnc callback() -> (int) => int do
+                        fnc callback() -> (int) => int as
                             return direct_only;
                         end
                         """)));
@@ -296,7 +296,7 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
-    void routineUsesTheSameEndDelimitedAndCompactDoRules() {
+    void routineUsesTheSameEndDelimitedAndCompactAsRules() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 routine identity(int x) -> int
                     return x
