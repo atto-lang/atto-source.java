@@ -6185,6 +6185,7 @@ public final class ActorRuntime implements AutoCloseable {
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
         requireGraphDepth(depth);
+        if (value instanceof OresBytes bytes) return bytes.isolatedCopy();
         if (isScalar(value)) return value;
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("private actors cannot receive shared SyncCell values");
