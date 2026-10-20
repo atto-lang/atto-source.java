@@ -301,14 +301,14 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3.legacy, "checked_policy_fingerprint", return_value=POLICY),
                 patch.object(
                     v3.legacy, "verify_protected_origin", return_value=PROTECTED
-                ),
-                patch.object(v3, "checked_control_plane"),
-                patch.object(v3, "checked_contract", return_value=carrier),
+                ) as verify_origin,
+                patch.object(v3, "checked_control_plane") as control_plane,
+                patch.object(v3, "checked_contract", return_value=carrier) as checked_contract,
                 patch.object(
                     v3,
                     "verify_source_pr",
                     return_value=v3.SOURCE_REPOSITORY_ID,
-                ),
+                ) as verify_pr,
                 patch.object(
                     v3,
                     "checked_destination",
@@ -321,7 +321,7 @@ class PrivateCiV3Test(unittest.TestCase):
                         "3" * 40,
                         PLAN,
                     ),
-                ),
+                ) as checked_destination,
                 patch.object(
                     v3.legacy,
                     "collect_source",
@@ -332,7 +332,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     "verified_exact_source_tree",
                     return_value=SOURCE_TREE,
                 ),
-                patch.object(v3, "authorize_write"),
+                patch.object(v3, "authorize_write") as authorize_write,
                 patch.object(v3.legacy, "gh_api", side_effect=api),
             ):
                 result = v3.publish(
@@ -344,6 +344,13 @@ class PrivateCiV3Test(unittest.TestCase):
                     root,
                     now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                 )
+
+        self.assertEqual(verify_origin.call_count, 2)
+        self.assertEqual(control_plane.call_count, 2)
+        self.assertEqual(checked_contract.call_count, 2)
+        self.assertEqual(checked_destination.call_count, 2)
+        self.assertEqual(verify_pr.call_count, 2)
+        self.assertEqual(authorize_write.call_count, 7)
 
         self.assertEqual(result["branch"], "ci/oreslang-" + SOURCE_TREE)
         self.assertEqual(
