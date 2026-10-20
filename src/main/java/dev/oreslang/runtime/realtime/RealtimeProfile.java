@@ -18,7 +18,8 @@ public final class RealtimeProfile {
     public enum Failure {
         NONE,
         MISSING_TIMING_BUDGET,
-        MISSING_MEMORY_BUDGET,
+        MEMORY_BUDGET_UNPROVEN,
+        SCHEDULABILITY_UNPROVEN,
         MANAGED_HEAP_ACCESS,
         TRACING_GC_INTERFERENCE,
         RUNTIME_CODE_GENERATION,
@@ -58,6 +59,24 @@ public final class RealtimeProfile {
         }
     }
 
+    /**
+     * Evidence produced outside this scalar admission check.
+     *
+     * schedulabilityProven is for this exact Budget/scheduler/deployment;
+     * peakMemoryBytes is the proven reachable critical-path peak, not a
+     * caller-selected allocation target.
+     */
+    public record Proof(
+            boolean schedulabilityProven,
+            boolean peakMemoryProven,
+            long peakMemoryBytes) {
+        public Proof {
+            if (peakMemoryBytes < 0) {
+                throw new IllegalArgumentException("proven peak memory must be non-negative");
+            }
+        }
+    }
+
     public record Result(Failure failure) {
         public boolean admitted() {
             return failure == Failure.NONE;
@@ -67,7 +86,8 @@ public final class RealtimeProfile {
             return switch (failure) {
                 case NONE -> "OK";
                 case MISSING_TIMING_BUDGET -> "RT003_WCET_UNPROVEN";
-                case MISSING_MEMORY_BUDGET -> "RT009_SCHEDULING_UNPROVEN";
+                case MEMORY_BUDGET_UNPROVEN -> "RT001_UNBOUNDED_ALLOCATION";
+                case SCHEDULABILITY_UNPROVEN -> "RT009_SCHEDULING_UNPROVEN";
                 case MANAGED_HEAP_ACCESS -> "RT004_MANAGED_HEAP_ESCAPE";
                 case TRACING_GC_INTERFERENCE -> "RT011_COLLECTOR_INTERFERENCE";
                 case RUNTIME_CODE_GENERATION -> "RT005_DYNAMIC_CODE";
@@ -83,23 +103,21 @@ public final class RealtimeProfile {
 
     private RealtimeProfile() {}
 
+    /**
+     * Legacy/convenience entry point. Without independent scheduler and
+     * peak-memory evidence, hard-RT admission must fail closed.
+     */
     public static Result admitJavaHardRt(Effects effects, Budget budget) {
+        return admitJavaHardRt(effects, budget, new Proof(false, false, 0));
+    }
+
+    public static Result admitJavaHardRt(Effects effects, Budget budget, Proof proof) {
         Objects.requireNonNull(effects, "effects");
         Objects.requireNonNull(budget, "budget");
+        Objects.requireNonNull(proof, "proof");
 
-        // This scaffold intentionally uses a constrained-deadline periodic-task
-        // model. A zero period or deadline > period would require a different
-        // schedulability proof, so it fails closed here rather than silently
-        // changing the execution model.
-        if (budget.deadlineNs() == 0 || budget.wcetNs() == 0
-                || budget.periodNs() == 0 || budget.deadlineNs() > budget.periodNs()) {
+        if (budget.deadlineNs() == 0 || budget.wcetNs() == 0) {
             return new Result(Failure.MISSING_TIMING_BUDGET);
-        }
-        // A hard-RT path needs an explicit finite memory cap even before the
-        // compiler can provide a proven peak-footprint witness. Zero means the
-        // resource bound is absent, not "unlimited".
-        if (budget.maxMemoryBytes() == 0) {
-            return new Result(Failure.MISSING_MEMORY_BUDGET);
         }
         if (effects.managedHeapAccess()) {
             return new Result(Failure.MANAGED_HEAP_ACCESS);
@@ -139,6 +157,13 @@ public final class RealtimeProfile {
         }
         if (response > budget.deadlineNs()) {
             return new Result(Failure.MISSING_TIMING_BUDGET);
+        }
+        if (!proof.peakMemoryProven()
+                || proof.peakMemoryBytes() > budget.maxMemoryBytes()) {
+            return new Result(Failure.MEMORY_BUDGET_UNPROVEN);
+        }
+        if (!proof.schedulabilityProven()) {
+            return new Result(Failure.SCHEDULABILITY_UNPROVEN);
         }
         return new Result(Failure.NONE);
     }
