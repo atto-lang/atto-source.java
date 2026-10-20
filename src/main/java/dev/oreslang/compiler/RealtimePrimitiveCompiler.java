@@ -30,6 +30,13 @@ import javax.tools.ToolProvider;
  */
 public final class RealtimePrimitiveCompiler {
     public static final String CLASS_NAME = "RtPrimitiveModule";
+    private static final int MAX_FUNCTIONS = 128;
+    private static final int MAX_PARAMS = 32;
+    private static final int MAX_STMTS = 4096;
+    private static final int MAX_REACHABLE_CALL_DEPTH = 64;
+    private static final int MAX_AST_NESTING = 64;
+    private int visitedStatements;
+    private int currentNesting;
 
     private RealtimePrimitiveCompiler() { }
 
@@ -60,6 +67,9 @@ public final class RealtimePrimitiveCompiler {
         if (!module.annotations().isEmpty() || !module.contracts().isEmpty()) {
             throw invalid("module annotations/contracts have not been qualified for RT");
         }
+        if (module.declarations().size() > MAX_FUNCTIONS) {
+            throw invalid("too many functions for bounded real-time compilation");
+        }
         for (Ast.Decl declaration : module.declarations()) {
             if (!(declaration instanceof Ast.FunctionDecl fn)) {
                 throw invalid("only ordinary free functions are admitted");
@@ -71,14 +81,14 @@ public final class RealtimePrimitiveCompiler {
         }
     }
 
-    public static SourceReport analyze(Ast.Program checkedProgram, String entry,
+    static SourceReport analyze(Ast.Program checkedProgram, String entry,
                                        int arity, Budget budget) {
         RealtimePrimitiveCompiler compiler = new RealtimePrimitiveCompiler(checkedProgram);
         return compiler.report(entry, arity, budget);
     }
 
     /** Emits ordinary Java 8 classfile bytecode; does not load or execute it. */
-    public static Artifact compile(Ast.Program checkedProgram, String entry, int arity,
+    static Artifact compile(Ast.Program checkedProgram, String entry, int arity,
                                    Budget budget, Path outputDirectory) throws IOException {
         RealtimePrimitiveCompiler compiler = new RealtimePrimitiveCompiler(checkedProgram);
         SourceReport report = compiler.report(entry, arity, budget);
@@ -116,12 +126,14 @@ public final class RealtimePrimitiveCompiler {
         Ast.FunctionDecl fn = functions.get(id);
         if (fn == null) throw invalid("unknown or external function: " + id);
         if (!active.add(id)) throw invalid("recursive calls are not admitted: " + id);
+        if (active.size() > MAX_REACHABLE_CALL_DEPTH) throw invalid("call depth exceeds compiler safety ceiling");
         reachable.add(id);
         try {
             Set<String> locals = new HashSet<>();
             for (Ast.Param param : fn.parameters()) {
                 if (!locals.add(param.name())) throw invalid("duplicate parameter: " + param.name());
             }
+            if (!alwaysReturns(fn.body())) throw invalid("function can complete without returning: " + id);
             Cost body = statements(fn.body(), locals);
             Cost total = new Cost(plus(1, body.steps()), body.depth());
             costs.put(id, total);
@@ -131,10 +143,34 @@ public final class RealtimePrimitiveCompiler {
         }
     }
 
+    /**
+     * Every accepted non-void function must return on every path. Reject
+     * unreachable trailing statements: they cannot silently hide effects.
+     */
+    private static boolean alwaysReturns(List<Ast.Stmt> statements) {
+        boolean terminated = false;
+        for (Ast.Stmt stmt : statements) {
+            if (terminated) throw invalid("unreachable statement after guaranteed return");
+            if (stmt instanceof Ast.ReturnStmt) {
+                terminated = true;
+            } else if (stmt instanceof Ast.IfStmt cond) {
+                if (cond.branches().isEmpty()) throw invalid("empty conditional");
+                boolean branchesReturn = true;
+                for (Ast.IfBranch arm : cond.branches()) {
+                    branchesReturn &= alwaysReturns(arm.body());
+                }
+                boolean elseReturns = !cond.elseBody().isEmpty() && alwaysReturns(cond.elseBody());
+                terminated = branchesReturn && elseReturns;
+            }
+        }
+        return terminated;
+    }
+
     private Cost statements(List<Ast.Stmt> statements, Set<String> locals) {
         long steps = 0;
         int depth = 1;
         for (Ast.Stmt stmt : statements) {
+            if (++visitedStatements > MAX_STMTS) throw invalid("source AST exceeds statement budget");
             Cost cost = statement(stmt, locals);
             steps = plus(steps, cost.steps());
             depth = Math.max(depth, cost.depth());
@@ -177,6 +213,15 @@ public final class RealtimePrimitiveCompiler {
     }
 
     private Cost expression(Ast.Expr expr, Set<String> locals) {
+        if (++currentNesting > MAX_AST_NESTING) throw invalid("source AST expression nesting too deep");
+        try {
+            return expressionInner(expr, locals);
+        } finally {
+            currentNesting--;
+        }
+    }
+
+    private Cost expressionInner(Ast.Expr expr, Set<String> locals) {
         if (expr instanceof Ast.LiteralExpr lit) {
             Object v = lit.value();
             if (!(v instanceof Boolean) && !(v instanceof Byte) && !(v instanceof Short)
@@ -256,6 +301,7 @@ public final class RealtimePrimitiveCompiler {
             throw invalid("only synchronous, nongeneric, non-actor free functions are admitted");
         }
         javaType(fn.returnType());
+        if (fn.parameters().size() > MAX_PARAMS) throw invalid("too many parameters");
         for (Ast.Param param : fn.parameters()) {
             validateIdentifier(param.name());
             javaType(param.type());
