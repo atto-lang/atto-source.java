@@ -771,3 +771,65 @@ The source-free model is supplemental evidence only.
 Keep PR #1367 draft and production hot reload disabled
 until exact-head real JUnit, Graal Native Image, and
 independent security/merge approvals succeed.
+
+## Physical unregister throws after deletion — actor-slot recovery audit
+
+The termination path `ActorRuntime.unregisterActor()` previously
+ran `actors.remove(exactId, exactCell)` followed by `actorCount`
+debit. A faulting registry can delete the exact actor and then throw
+before returning its result. This strands the actor-count slot and
+interrupts finalization without publishing the ActorRef's durable
+physical-finalization marker. Once absent from the registry, a later
+`ActorRef.stop()` may no longer discover that cell for a retry.
+Missing registry entries are not by themselves proof of physical
+retirement, but the **same finalization owner** can verify the
+post-removal state and complete all remaining terminal callbacks.
+
+Production commit `4d614a656eb24a2a44374c5c8e617e54c10ac6c4`
+adds an exact per-ActorCell `physicalActorSlotDebited` ownership
+claim and checks the registry following a throwing removal.
+Only when that precise actor identity is absent can unregister
+advance to the once-only slot debit and resume finalization;
+if the cell still exists, the original error is propagated and
+physical retirement is NOT certified. After a successful
+remove-with-throw observation, remaining terminal notifications,
+parent unlink and physical-finalization marker still execute.
+This does not bypass any other failing cleanup stage.
+
+Real-runtime JUnit
+`ActorPhysicalFinalizationPublicationTest.registryRemovalAfterMutationCompletesFinalizationAndDebitsSlotOnce`
+was committed in `7e8a5666e306bb1627140909f5e9b6bbb11951c1`.
+It injects a trusted-test map whose exact actor removal succeeds
+and then throws `OutOfMemoryError`. It checks finished physical
+finalization, a removed registry entry, exactly one actor-slot
+debit and a repeat stop that cannot debit again.
+**The private-source JUnit has NOT executed.**
+
+The separate, independently authored source-free Java 21
+`UnregisterFaultOracle.java` compiled locally with
+`javac --release 21 -Xlint:all -Werror` and passed three consecutive
+runs of **245,001** checks each, including 5,000 four-worker
+retirement races, a before-removal failure that retains ownership,
+and a negative control that reproduces the old stranded slot.
+
+A separate source-free copy of the model ran successfully on funded
+Temurin JDK25 via
+https://github.com/gha-indie-worker/gha-indie-worker-e2e/actions/runs/39360160524
+(job `118424234678`, public commit
+`29865f37264830c0fbe20a1ef47e4144636f386b`).
+The log confirms `javac --release 25 -Xlint:all -Werror`
+and:
+```
+PASS independent physical unregister oracle checks=245001
+four_worker_races=5000 before_and_after_mutation=verified
+old_failure_negative_control=detected private_source_bytes=0
+```
+No private source was mirrored or supplied to this carrier; this
+is protocol-model evidence ONLY and does not certify product Java
+classes, Maven/JUnit, GraalVM/Native Image, or LLVM parity.
+
+The protected `main` private CI destination allowlist remains empty
+and #962/#904 are unresolved. Source-owned `ci`/`fast-ci` still
+fail with jobs recording no steps. Keep PR #1367 draft,
+production hot reload disabled, and the exact production test
+and source-owned/approved JDK25/Graal runner as release gates.
