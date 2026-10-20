@@ -5042,7 +5042,8 @@ public final class TypeChecker {
         }
 
         // Built-in sum/container values are data-only when their arguments pass.
-        if (named.name().equals("Option") || named.name().equals("Result")
+        if (named.name().equals("Bytes")
+                || named.name().equals("Option") || named.name().equals("Result")
                 || named.name().equals("OptionUnwrapError")) {
             return;
         }
@@ -5099,6 +5100,7 @@ public final class TypeChecker {
         }
         if (!(type instanceof Named named)) return false;
 
+        if (named.name().equals("Bytes") && named.arguments().isEmpty()) return true;
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("Iterator")
                 || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
