@@ -1050,6 +1050,14 @@ public final class Ast {
             }
             return depth;
         }
+
+        public static synchronized void copy(CallExpr source, CallExpr target) {
+            java.util.Objects.requireNonNull(source, "source checked Option call");
+            java.util.Objects.requireNonNull(target, "target checked Option call");
+            expunge();
+            Integer depth = DEPTHS.get(new IdentityKey(source, null));
+            if (depth != null) record(target, depth);
+        }
     }
 
     /**
