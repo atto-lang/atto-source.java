@@ -22,7 +22,7 @@ final class FirstClassModelGraphTest {
     // Pinned to common-source contracts/v1/model-graph/executable-v1-conformance.json.
     // A common corpus revision bump requires an explicit backend review/update.
     private static final String SHARED_EXECUTABLE_CORPUS_REVISION =
-            "model-core-i64-v1.2026-10-20.3";
+            "model-core-i64-v1.2026-10-20.4";
 
     private static final String PRICE_MODEL = """
             fnc ValidatePrice(float input): float {
@@ -48,7 +48,7 @@ final class FirstClassModelGraphTest {
 
     @Test
     void sharedExecutableCorpusRevisionIsExplicitlyPinned() {
-        assertEquals("model-core-i64-v1.2026-10-20.3",
+        assertEquals("model-core-i64-v1.2026-10-20.4",
                 SHARED_EXECUTABLE_CORPUS_REVISION);
     }
 
@@ -208,6 +208,17 @@ final class FirstClassModelGraphTest {
                 }
                 """);
         assertEquals("-9223372036854775808", output);
+    }
+
+    @Test
+    void duplicateModelParametersUseSharedDiagnostic() {
+        assertThrowsMessage("MODEL_DUPLICATE_PARAMETER", () ->
+                OresCompiler.parseAndTypeCheck("""
+                        fnc Identity(int input): int { return input; }
+                        define model Bad(delta: int, delta: int) as
+                          Identity()
+                        end
+                        """));
     }
 
     @Test
