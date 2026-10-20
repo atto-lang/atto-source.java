@@ -180,6 +180,21 @@ final class IpcActorRuntimeIntegrationTest {
                                         "host IPC DATA write failed",
                                         submission.error());
                             }
+                            submission.outcome().whenComplete((terminal, completionFailure) -> {
+                                if (RuntimeBlockingGuard.actorCarrierMarked()) {
+                                    asynchronousFailure.compareAndSet(
+                                            null,
+                                            new AssertionError(
+                                                    "IPC completion callback ran on actor carrier"));
+                                }
+                                if (completionFailure != null) {
+                                    asynchronousFailure.compareAndSet(
+                                            null, completionFailure);
+                                    self.send("failure");
+                                    return;
+                                }
+                                self.send("terminal:" + terminal.name());
+                            });
                             if (transport.readVerifiedReceipt()
                                     != IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED) {
                                 throw new AssertionError("missing authenticated remote ACK");
@@ -188,10 +203,6 @@ final class IpcActorRuntimeIntegrationTest {
                                     != IpcReceiptCorrelation.Stage.HANDLER_COMMITTED) {
                                 throw new AssertionError("missing authenticated handler COMMIT");
                             }
-                            var terminal = submission.outcome()
-                                    .toCompletableFuture()
-                                    .join();
-                            self.send("terminal:" + terminal.name());
                         } catch (Throwable failure) {
                             asynchronousFailure.compareAndSet(null, failure);
                             self.send("failure");
