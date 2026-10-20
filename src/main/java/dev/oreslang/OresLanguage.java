@@ -64,7 +64,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     }
 
     /**
-     * Trusted-host bridge for a single synchronous {@link Context#parse}-style
+     * Trusted-host bridge for a single synchronous Polyglot Context.parse-style
      * operation. The language parse boundary consumes the lease exactly once
      * and requires exact code-unit identity and exact source text.
      */
