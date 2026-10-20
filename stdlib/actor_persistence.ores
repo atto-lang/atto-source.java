@@ -124,4 +124,51 @@ define module actor_persistence as
   pub fnc cursor(int generation, int restored_version): Cursor {
     return new Cursor(generation, restored_version);
   }
+  // Non-durable replica progress for supervisor mirrors and caches.
+  // This watermark MUST NOT be confused with Cursor.durable().
+  // Full snapshots can skip versions; ordered deltas cannot.
+  pub define class ReplicaCursor as
+    let int generation;
+    let mut int applied_version;
+
+    pub constructor(int generation, int restored_version) {
+      if generation < 1 || restored_version < 0 ||
+         restored_version >= 2147483647; do
+        rt fail("actor_persistence: invalid replica incarnation");
+      fi
+      self.generation = generation;
+      self.applied_version = restored_version;
+    }
+
+    pub apply_snapshot(mut self)(int generation, int version): bool {
+      if generation != self.generation ||
+         version <= self.applied_version; do
+        return false;
+      fi
+      self.applied_version = version;
+      return true;
+    }
+
+    pub apply_delta(mut self)(int generation, int version): bool {
+      if generation != self.generation ||
+         self.applied_version >= 2147483647 ||
+         version != self.applied_version + 1; do
+        return false;
+      fi
+      self.applied_version = version;
+      return true;
+    }
+
+    pub applied(): int {
+      return self.applied_version;
+    }
+
+    pub incarnation(): int {
+      return self.generation;
+    }
+  end
+
+  pub fnc replica_cursor(int generation, int restored_version): ReplicaCursor {
+    return new ReplicaCursor(generation, restored_version);
+  }
 end
