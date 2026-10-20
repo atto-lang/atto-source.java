@@ -1,6 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Treat every source checkout as an untrusted Git repository. Object reads must
+# not honor replacement refs, lazily fetch missing promisor objects, prompt,
+# page through configured helpers, or inherit caller-controlled repository
+# routing state. Command-scope config also neutralizes the two common
+# executable repository hooks even though source worktree scans are forbidden.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_INDEX_FILE GIT_NAMESPACE
+export GIT_NO_REPLACE_OBJECTS=1
+export GIT_NO_LAZY_FETCH=1
+export GIT_TERMINAL_PROMPT=0
+export GIT_OPTIONAL_LOCKS=0
+export GIT_CONFIG_NOSYSTEM=1
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_PAGER=cat
+export PAGER=cat
+export GIT_ASKPASS=/bin/false
+export SSH_ASKPASS=/bin/false
+export GIT_CONFIG_COUNT=2
+export GIT_CONFIG_KEY_0=core.fsmonitor
+export GIT_CONFIG_VALUE_0=false
+export GIT_CONFIG_KEY_1=core.hooksPath
+export GIT_CONFIG_VALUE_1=/dev/null
+
 # READ-ONLY preflight. Never copies private source or grants authorization.
 # Run from an exact, clean checkout of the PRIVATE source repository before
 # contemplating a transfer, after the reviewed allowlist policy is effective.
