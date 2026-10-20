@@ -436,9 +436,10 @@ public final class ModelGraphCompiler {
         Ast.TypeRef outputType = nodes.getLast().outputType();
         String graphDigest = graphDigest(qualifiedName, parameters, nodes);
 
-        boolean scalarStatic = nodes.stream().allMatch(node ->
-                fixedScalarBytes(node.inputType()) >= 0
-                        && fixedScalarBytes(node.outputType()) >= 0);
+        // The graph is statically bounded, but this Java/Graal interpreter
+        // slice still constructs a ModelInstance and immutable configuration map.
+        // Do not claim freestanding or no-runtime-allocation until an AOT lowering
+        // proves that those objects are erased/preallocated on the selected target.
         return new CompiledModel(
                 qualifiedName,
                 declaration.name(),
@@ -448,8 +449,8 @@ public final class ModelGraphCompiler {
                 inputType,
                 outputType,
                 graphDigest,
-                scalarStatic,
-                scalarStatic,
+                false,
+                false,
                 true);
     }
 
