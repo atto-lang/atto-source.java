@@ -420,6 +420,11 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     // owner is retained until an explicit host reconciliation succeeds.
     // routeLock protects the field; closeLock serializes retry against close.
     private ActorRuntime.SourceActorTransfer pendingRollbackTransfer;
+    // A proxy freeze rollback can fail its structural validation while
+    // dispatch remains frozen. Preserve the exact ticket for a later
+    // host-authorized retry; clearing activeUpgradeTxn is not a thaw receipt.
+    // routeLock owns publication, closeLock serializes recovery and shutdown.
+    private LogicalActorProxyMailboxV1.FreezeTicket pendingProxyRollbackTicket;
 
     private LogicalSourceActorRouterV1(
             ActorRuntime.ActorKind kind,
@@ -1471,6 +1476,17 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                             txn.proxyTicket.rollback();
                             txn.proxyTicket = null;
                         } catch (RuntimeException | Error rollbackFailure) {
+                            // The mailbox may have rejected the rollback while
+                            // still holding the exact freeze. Never discard
+                            // its sole retry capability or reopen Task ingress.
+                            if (pendingProxyRollbackTicket != null
+                                    && pendingProxyRollbackTicket != txn.proxyTicket) {
+                                throw new IllegalStateException(
+                                        "a different unresolved proxy freeze owns rollback",
+                                        rollbackFailure);
+                            }
+                            pendingProxyRollbackTicket = txn.proxyTicket;
+                            retirementQuarantined = true;
                             if (cleanupFailure == null) {
                                 cleanupFailure = rollbackFailure;
                             } else if (rollbackFailure != cleanupFailure) {
@@ -1648,8 +1664,9 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             }
         }
         if (retirementQuarantined && activeUpgradeTxn == null
-                && pendingRollbackTransfer == null && retiredRoutes.isEmpty()
-                && retiredCandidates.isEmpty()) {
+                && pendingRollbackTransfer == null
+                && pendingProxyRollbackTicket == null
+                && retiredRoutes.isEmpty() && retiredCandidates.isEmpty()) {
             // A failed rollback may leave a physically live, unpublished
             // candidate even after every old route and transfer owner is gone.
             // Do not restore message/Task admission until ALL candidate
@@ -1696,6 +1713,40 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                     throw new IllegalStateException(
                             "actor rollback reconciliation owner changed");
                 pendingRollbackTransfer = null;
+                reapRetiredLocked();
+                return !retirementQuarantined;
+            }
+        }
+    }
+
+    /**
+     * Retry a failed PRE-publication proxy freeze rollback, retaining its
+     * original ticket until the mailbox itself confirms thaw. A physically
+     * live candidate or an unresolved source transfer must be reconciled
+     * first. This never commits a new route epoch or refunds message credits.
+     */
+    public boolean reconcileFailedProxyRollback() {
+        requireBlockingHostSurface("reconcile failed source proxy rollback");
+        synchronized (closeLock) {
+            synchronized (routeLock) {
+                if (activeUpgradeTxn != null)
+                    throw new IllegalStateException(
+                            "cannot reconcile proxy rollback during publication");
+                LogicalActorProxyMailboxV1.FreezeTicket ticket =
+                        pendingProxyRollbackTicket;
+                if (ticket == null) return !retirementQuarantined;
+                reapRetiredLocked();
+                if (pendingRollbackTransfer != null
+                        || !retiredRoutes.isEmpty()
+                        || !retiredCandidates.isEmpty()) {
+                    // Candidate physical completion, not merely rollback
+                    // eligibility, authorizes old proxy dispatch to resume.
+                    return false;
+                }
+                ticket.rollback();
+                // No fallible operation between successful rollback and
+                // forgetting the consumed ticket.
+                pendingProxyRollbackTicket = null;
                 reapRetiredLocked();
                 return !retirementQuarantined;
             }
@@ -1787,6 +1838,12 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                             "cannot retire source actor while an unpublished "
                                     + "candidate owns a failed rollback freeze; "
                                     + "reconcileFailedUpgradeRollback first");
+                }
+                if (pendingProxyRollbackTicket != null) {
+                    throw new IllegalStateException(
+                            "cannot retire source actor while proxy mailbox "
+                                    + "has an unresolved freeze; "
+                                    + "reconcileFailedProxyRollback first");
                 }
                 if (closed && activeRouteLeaseReleased
                         && retiredRoutes.isEmpty()
