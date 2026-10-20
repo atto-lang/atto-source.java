@@ -638,4 +638,18 @@ final class OresSchedulerTest {
         }
     }
 
+
+    @Test
+    void compilerAdmissionProtocolIsNotPublicHostApi() {
+        assertFalse(java.lang.reflect.Modifier.isPublic(
+                OresScheduler.CompilerAdmissionState.class.getModifiers()));
+        assertFalse(java.lang.reflect.Modifier.isPublic(
+                OresScheduler.CompilerChildLifecycle.class.getModifiers()));
+        var constructors = OresScheduler.CompilerTaskHandle.class
+                .getDeclaredConstructors();
+        assertEquals(1, constructors.length);
+        assertTrue(java.lang.reflect.Modifier.isPrivate(
+                constructors[0].getModifiers()));
+    }
+
 }
