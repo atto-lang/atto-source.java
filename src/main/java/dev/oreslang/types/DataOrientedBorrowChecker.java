@@ -47,6 +47,9 @@ public final class DataOrientedBorrowChecker {
             if (store == null || store.isBlank()) {
                 throw new IllegalArgumentException("DOP place requires store identity");
             }
+            requireNonBlankIfPresent(archetype, "archetype");
+            requireNonBlankIfPresent(component, "component");
+            requireNonBlankIfPresent(field, "field");
             if (epoch < 0) throw new IllegalArgumentException("negative storage epoch");
             if (component == null && field != null) {
                 throw new IllegalArgumentException("field requires component");
@@ -71,9 +74,11 @@ public final class DataOrientedBorrowChecker {
 
     public static boolean overlaps(Place left, Place right) {
         if (!left.store().equals(right.store())) return false;
-        // Epoch mismatch is never treated as safe disjointness: one of the
-        // handles is stale and must be rejected by requireCurrentEpoch.
-        if (left.epoch() != right.epoch()) return true;
+        if (left.epoch() != right.epoch()) {
+            throw new IllegalArgumentException(
+                    "cannot compare DOP places from different storage epochs: "
+                            + left.epoch() + " vs " + right.epoch());
+        }
         if (!sameOrWhole(left.archetype(), right.archetype())) return false;
         if (!sameOrWhole(left.component(), right.component())) return false;
         if (!sameOrWhole(left.field(), right.field())) return false;
@@ -109,5 +114,12 @@ public final class DataOrientedBorrowChecker {
 
     private static boolean sameOrWhole(String left, String right) {
         return left == null || right == null || left.equals(right);
+    }
+
+    private static void requireNonBlankIfPresent(String value, String label) {
+        if (value != null && value.isBlank()) {
+            throw new IllegalArgumentException(
+                    "DOP " + label + " identity cannot be blank");
+        }
     }
 }
