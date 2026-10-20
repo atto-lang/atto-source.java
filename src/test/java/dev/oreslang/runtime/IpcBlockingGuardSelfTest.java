@@ -46,6 +46,14 @@ public final class IpcBlockingGuardSelfTest {
         return binding;
     }
 
+    private static IpcPhysicalConnectionBroker.Authority authority(
+            long generation, byte[] key, byte[] binding) {
+        byte[] expectedBinding = binding.clone();
+        var broker = new IpcPhysicalConnectionBroker(target ->
+                System.arraycopy(expectedBinding, 0, target, 0, target.length));
+        return broker.mint(generation, key);
+    }
+
     private static void actorCarrierDenied(Runnable operation, String operationName) {
         RuntimeBlockingGuard.enterActorCarrier();
         try {
@@ -76,7 +84,8 @@ public final class IpcBlockingGuardSelfTest {
                 peer.setSoTimeout(150);
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, message, 301, 1, key, binding, cleanup::execute);
+                        client, bridge, message, 1,
+                        authority(301, key, binding), cleanup::execute);
 
                 actorCarrierDenied(
                         () -> transport.send(message, payload),
@@ -107,7 +116,8 @@ public final class IpcBlockingGuardSelfTest {
                  Socket peer = server.accept()) {
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, message, 302, 1, key, binding, cleanup::execute);
+                        client, bridge, message, 1,
+                        authority(302, key, binding), cleanup::execute);
 
                 DataOutputStream peerOut = new DataOutputStream(peer.getOutputStream());
                 peerOut.writeInt(1);
@@ -147,7 +157,8 @@ public final class IpcBlockingGuardSelfTest {
                 check(peer.isConnected());
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, message, 303, 1, key, binding, cleanup::execute);
+                        client, bridge, message, 1,
+                        authority(303, key, binding), cleanup::execute);
 
                 actorCarrierDenied(
                         transport::requestClose,
