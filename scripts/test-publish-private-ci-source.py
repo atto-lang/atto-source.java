@@ -545,7 +545,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_visibility_flip_aborts_before_next_write(self):
-        self.visibility = ["private", "private", "public"]
+        # Early data-only provenance check now verifies live privacy before source read.
+        self.visibility = ["private", "private", "private", "public"]
         with self.assertRaises(pub.Denied):
             self.publish()
         self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
@@ -851,10 +852,21 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             outside.rmdir()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
-    def test_denied_preflight_halts_before_api(self):
-        with patch.object(pub, "require_preflight", side_effect=pub.Denied("not approved")):
+    def test_denied_data_only_policy_halts_before_api(self):
+        with (
+            patch.object(
+                pub, "require_preflight",
+                side_effect=AssertionError("checkout shell must not run"),
+            ) as shell,
+            patch.object(
+                pub, "checked_policy_approval",
+                side_effect=pub.Denied("not approved"),
+            ) as policy,
+        ):
             with self.assertRaisesRegex(pub.Denied, "not approved"):
                 self.publish()
+        policy.assert_called_once_with(self.root, "trusted/ci")
+        shell.assert_not_called()
         self.assertEqual(self.route_calls, [])
 
     def test_oversized_source_file_rejected(self):
