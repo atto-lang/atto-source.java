@@ -111,6 +111,14 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (matchContextualIdentifier("model")) {
+                    modifiers = mergeModifiers(modifiers, parseModifiers());
+                    validateOnlyVisibilityModifiers(modifiers, "model declarations");
+                    rejectCallableStructuralAnnotation(annotations, "model declarations");
+                    rejectDiscardedDeclarationAnnotations(annotations, "model declarations");
+                    rootDeclarations.add(parseModel(modifiers.visibility));
+                    continue;
+                }
                 if (match(ACTOR, ISOACTOR)) {
                     rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations));
                     continue;
@@ -162,7 +170,7 @@ public final class Parser {
                     rootDeclarations.add(parseTypeAlias(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
+                throw error(previous(), "expected module, model, class, interface, trait, or type after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -304,6 +312,13 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (matchContextualIdentifier("model")) {
+                modifiers = mergeModifiers(modifiers, parseModifiers());
+                validateOnlyVisibilityModifiers(modifiers, "model declarations");
+                rejectCallableStructuralAnnotation(annotations, "model declarations");
+                rejectDiscardedDeclarationAnnotations(annotations, "model declarations");
+                return parseModel(modifiers.visibility);
+            }
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations);
             }
@@ -339,7 +354,7 @@ public final class Parser {
                 rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
                 return parseTypeAlias(modifiers.visibility);
             }
-            throw error(previous(), "expected class, interface, trait, or type after 'define'");
+            throw error(previous(), "expected model, class, interface, trait, or type after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -1086,6 +1101,77 @@ public final class Parser {
             return namespace + "." + symbol;
         }
         return consumeCallableName("expected method name (methods omit 'fnc')");
+    }
+
+    /**
+     * Parse only the stable v1 surface shape. Operation calls remain inert AST:
+     * no constructor, callback, import or model body expression executes here.
+     */
+    private Ast.ModelDecl parseModel(Ast.Visibility visibility) {
+        String name = consume(IDENT, "expected model name").lexeme();
+        List<Ast.ModelParam> parameters = new ArrayList<>();
+        java.util.Set<String> parameterNames = new java.util.HashSet<>();
+
+        if (match(LPAREN)) {
+            if (!check(RPAREN)) {
+                do {
+                    String parameterName = consume(IDENT,
+                            "expected model parameter name before ':'").lexeme();
+                    if (!parameterNames.add(parameterName)) {
+                        throw error(previous(), "duplicate model parameter '" + parameterName + "'");
+                    }
+                    consume(COLON, "expected ':' after model parameter name");
+                    Ast.TypeRef type = parseTypeRef();
+                    Ast.Expr defaultValue = match(EQUAL) ? parseExpression() : null;
+                    parameters.add(new Ast.ModelParam(type, parameterName, defaultValue));
+                } while (match(COMMA));
+            }
+            consume(RPAREN, "expected ')' after model parameters");
+        }
+
+        consume(AS, "expected 'as' after model header");
+        List<Ast.ModelOpCall> operations = new ArrayList<>();
+        while (!check(END) && !check(EOF)) {
+            if (!check(IDENT) || !checkNext(LPAREN)) {
+                throw error(peek(),
+                        "MODEL_NON_LAYER_EXPRESSION: model v1 body accepts only nominal operation calls");
+            }
+            String operation = advance().lexeme();
+            consume(LPAREN, "expected '(' after model operation name");
+
+            List<Ast.ModelArgument> arguments = new ArrayList<>();
+            java.util.Set<String> named = new java.util.HashSet<>();
+            boolean sawNamed = false;
+            if (!check(RPAREN)) {
+                do {
+                    if (check(IDENT) && checkNext(COLON)) {
+                        sawNamed = true;
+                        String argumentName = advance().lexeme();
+                        if (!named.add(argumentName)) {
+                            throw error(previous(),
+                                    "duplicate named model argument '" + argumentName + "'");
+                        }
+                        consume(COLON, "expected ':' after named model argument");
+                        arguments.add(new Ast.ModelArgument(argumentName, parseExpression()));
+                    } else {
+                        if (sawNamed) {
+                            throw error(peek(),
+                                    "positional model arguments must precede named arguments");
+                        }
+                        arguments.add(new Ast.ModelArgument(null, parseExpression()));
+                    }
+                } while (match(COMMA));
+            }
+            consume(RPAREN, "expected ')' after model operation arguments");
+            operations.add(new Ast.ModelOpCall(operation, arguments));
+            match(SEMICOLON);
+        }
+
+        if (operations.isEmpty()) {
+            throw error(peek(), "MODEL_EMPTY_BODY: model body must contain at least one operation");
+        }
+        consume(END, "expected 'end' to close model " + name);
+        return new Ast.ModelDecl(name, visibility, parameters, operations);
     }
 
     private Ast.TypeAliasDecl parseTypeAlias(Ast.Visibility visibility) {
