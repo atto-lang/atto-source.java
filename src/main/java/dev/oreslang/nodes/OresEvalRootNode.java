@@ -22,6 +22,7 @@ import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
+import dev.oreslang.runtime.TaskScope;
 import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
@@ -968,6 +969,7 @@ public final class OresEvalRootNode extends RootNode {
             private final OresObject receiver;
             private final List<Ast.Stmt> blockBody;
             private final List<?> arguments;
+            private TaskScope.Registration scopeRegistration;
             private Env initialBlockEnv;
 
             private SourceValueCont awaitingContinuation;
@@ -1008,6 +1010,11 @@ public final class OresEvalRootNode extends RootNode {
                     OresScheduler.Resume resume)
                     throws Exception {
                 try {
+                    if (resume.initial() && scopeRegistration != null) {
+                        // Only a physically dispatched child may admit
+                        // descendants into a scope that has started closing.
+                        scopeRegistration.beganExecution();
+                    }
                     return resumeSource(resume);
                 } catch (RuntimeException failure) {
                     awaitingContinuation = null;
@@ -1268,13 +1275,28 @@ public final class OresEvalRootNode extends RootNode {
             // normal lambda Env.snapshot() intentionally shares its Slot
             // instances and MUST NOT be used directly for cross-Task moves.
             Env captured = caller.taskProjection(task.captures());
-            return startSourceBlockTask(task.body(), captured);
+            TaskScope scope = caller.taskScope;
+            TaskScope.Registration child = scope == null
+                    ? null : scope.reserve(caller.taskScopeParent);
+            captured.taskScopeParent = child;
+            try {
+                OresFuture<Object> future = startSourceBlockTask(
+                        task.body(), captured,
+                        child == null ? () -> { } : child::quiesced);
+                if (child != null) child.attach(future);
+                return future;
+            } catch (RuntimeException | Error failure) {
+                if (child != null) child.failedAdmission(failure);
+                throw failure;
+            }
         }
 
         private OresFuture<Object> startSourceBlockTask(
                 List<Ast.Stmt> body,
-                Env env) {
+                Env env,
+                Runnable onQuiescent) {
             SourceTask task = new SourceTask(body);
+            task.scopeRegistration = env.taskScopeParent;
             // Lexically snapshot at spawn time. Captured owned values were
             // consumed by the compile-time ownership pass; no borrowed or
             // actor-private handles are admitted by Task capture checking.
@@ -1282,12 +1304,13 @@ public final class OresEvalRootNode extends RootNode {
             // host worker carriers. Actor Tasks remain supervised by CONTROL.
             task.initialBlockEnv = env.snapshot();
             if (ActorRuntime.inActorExecution()) {
-                OresFuture<Object> future = context.actors().startActorTask(task);
+                OresFuture<Object> future = context.actors().startActorTask(task, onQuiescent);
                 context.actors().ownCurrentActorFuture(future);
                 return future;
             }
             OresScheduler current = OresScheduler.current();
-            return (current != null ? current : context.vm().rootScheduler()).start(task);
+            return (current != null ? current : context.vm().rootScheduler())
+                    .start(task, onQuiescent);
         }
 
         private OresFuture<Object> startSourceMethodTask(
@@ -1472,7 +1495,7 @@ public final class OresEvalRootNode extends RootNode {
                         defer.expression(), seen);
             }
             if (stmt instanceof Ast.BlockStmt block) {
-                return block.body().stream().anyMatch(
+                return block.taskScope() || block.body().stream().anyMatch(
                         nested -> statementContainsPotentialSuspension(nested, seen));
             }
             if (stmt instanceof Ast.IfStmt conditional) {
@@ -2086,11 +2109,22 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (stmt instanceof Ast.BlockStmt block) {
-                    runBlock(
-                            task,
-                            block.body(),
-                            env,
-                            continuation);
+                    if (block.taskScope()) {
+                        TaskScope scope = new TaskScope();
+                        Env scopedEnv = new Env(env);
+                        scopedEnv.taskScope = scope;
+                        scopedEnv.taskScopeParent = null;
+                        runBlock(task, block.body(), scopedEnv, (t, flow) -> {
+                            // The barrier waits for both terminal notification
+                            // AND physical scheduler quiescence of every child.
+                            OresFuture<Void> joined = scope.close();
+                            t.suspend(joined, (resumed, ignored, failure) ->
+                                    continuation.accept(resumed, failure == null
+                                            ? flow : mergeCleanupFailure(flow, failure)));
+                        });
+                    } else {
+                        runBlock(task, block.body(), env, continuation);
+                    }
                     return;
                 }
 
@@ -5181,6 +5215,10 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
             if (stmt instanceof Ast.DeferStmt defer) { deferred.push(defer.expression()); return; }
             if (stmt instanceof Ast.BlockStmt block) {
+                if (block.taskScope()) {
+                    throw new IllegalStateException(
+                            "task scope requires a resumable source continuation");
+                }
                 executeBlock(
                         block.body(),
                         env,
@@ -9017,6 +9055,8 @@ public final class OresEvalRootNode extends RootNode {
         private final String lexicalModule;
         private final OresObject constructingObject;
         private final Map<String, Slot> slots = new HashMap<>();
+        private TaskScope taskScope;
+        private TaskScope.Registration taskScopeParent;
         private Env(Env parent) {
             this(
                     parent,
@@ -9068,6 +9108,8 @@ public final class OresEvalRootNode extends RootNode {
             this.lexicalContainerClass = lexicalContainerClass;
             this.lexicalModule = lexicalModule;
             this.constructingObject = constructingObject;
+            this.taskScope = parent == null ? null : parent.taskScope;
+            this.taskScopeParent = parent == null ? null : parent.taskScopeParent;
         }
 
         private Env lexicalBoundaryOnly() {
@@ -9115,6 +9157,10 @@ public final class OresEvalRootNode extends RootNode {
         private Env taskProjection(List<String> captureNames) {
             Env cp = new Env(null, descendantsNonLexical, accessClass,
                     null, lexicalModule, lexicalContainerClass);
+            // Only scheduler join authority is inherited; lexical value slots
+            // remain independently projected from compiler-proven captures.
+            cp.taskScope = taskScope;
+            cp.taskScopeParent = taskScopeParent;
             for (String name : captureNames) {
                 Slot slot = findTaskCapture(name);
                 if (slot == null || slot.value == MISSING) {
@@ -9139,6 +9185,8 @@ public final class OresEvalRootNode extends RootNode {
                     null,
                     lexicalModule);
             cp.slots.putAll(slots);
+            cp.taskScope = taskScope;
+            cp.taskScopeParent = taskScopeParent;
             return cp;
         }
         private boolean hasLiveMutexGuards() {

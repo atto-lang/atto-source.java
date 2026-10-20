@@ -89,6 +89,15 @@ public final class OresScheduler implements AutoCloseable {
     @FunctionalInterface
     public interface Task<T> {
         Step<T> resume(Resume resume) throws Exception;
+
+        /**
+         * Called after the final guest carrier has unwound, before the owning
+         * task is retired. Structured Tasks may defer this callback until all
+         * descendant carriers are quiescent. It must not execute guest code.
+         */
+        default void afterCarrierQuiescent(Runnable retire) {
+            retire.run();
+        }
     }
 
     /** Result of one resumable task turn. */
@@ -392,7 +401,13 @@ public final class OresScheduler implements AutoCloseable {
      * only after task execution is quiescent (or before it ever started).
      * Never use Future settlement alone to reclaim guest-owned resources.
      */
-    <T> OresFuture<T> start(Task<T> task, Runnable onQuiescent) {
+    /**
+     * Start a task with a physical-quiescence notification. Unlike Future
+     * settlement, this callback is invoked only after the executing carrier
+     * has left guest code, including cancellation and scheduler shutdown.
+     * Callbacks must not execute guest code or block the scheduler.
+     */
+    public <T> OresFuture<T> start(Task<T> task, Runnable onQuiescent) {
         return startAdmitted(task, onQuiescent, null, 0L, () -> { });
     }
 
@@ -1048,14 +1063,20 @@ public final class OresScheduler implements AutoCloseable {
                 // Keep the task observable in the scheduler's live set while a
                 // cancelled/failed guest turn is still physically executing.
                 // A terminal Future is not a carrier-exit witness.
-                tasks.remove(this);
-                cancelWallDeadline();
-                try {
-                    onQuiescent.run();
-                } finally {
-                    deadlineQuiescenceRetired.set(true);
-                    releaseDeadlineSlotIfRetired();
-                }
+                task.afterCarrierQuiescent(() -> {
+                    // A child can still own actor/arena memory even after this
+                    // parent's guest carrier has stopped. Keep the scheduler
+                    // live-set entry and quiescence callback until descendants
+                    // retire physically, not merely after Future cancellation.
+                    tasks.remove(this);
+                    cancelWallDeadline();
+                    try {
+                        onQuiescent.run();
+                    } finally {
+                        deadlineQuiescenceRetired.set(true);
+                        releaseDeadlineSlotIfRetired();
+                    }
+                });
             }
         }
 
