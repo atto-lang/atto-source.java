@@ -56,10 +56,10 @@ class OresSymbolTest {
         String maxBareName = "a".repeat(128);
         String longIdentifierName = "a".repeat(129);
         assertEquals("#" + maxBareName, OresSymbol.process(maxBareName).toString());
-        assertEquals("#\\"" + longIdentifierName + "\\"", OresSymbol.process(longIdentifierName).toString());
+        assertEquals("#\"" + longIdentifierName + "\"", OresSymbol.process(longIdentifierName).toString());
         assertNotSame(OresSymbol.process("ready"), OresSymbol.process("ready"));
         assertEquals(OresSymbol.process("ready"), OresSymbol.process("ready"));
-        for (String name : List.of(longIdentifierName, "café", "hello world", "quote\\" and slash\\\\ x")) {
+        for (String name : List.of(longIdentifierName, "café", "hello world", "quote\" and slash\\ x")) {
             String rendered = OresSymbol.process(name).toString();
             List<Token> tokens = new Lexer(rendered).scan();
             assertEquals(Token.Type.SYMBOL_LITERAL, tokens.getFirst().type());
