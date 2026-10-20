@@ -303,18 +303,22 @@ def manifest(files):
     return rows, hashlib.sha256(canonical_bytes(rows)).hexdigest()
 
 
-def authorize_write(root, repository, approved_policy, contract, protected_sha):
+def authorize_write(root, repository, approved_policy, contract):
+    """Cheap per-write guard: local approval bytes plus live carrier identity.
+
+    Protected-source main and the full immutable carrier contract are checked
+    before reading source bytes and again before refs are attached. Repeating
+    those multi-endpoint reads for every blob would multiply API traffic by
+    the file count without adding integrity: the reviewed source commit and
+    pinned destination base SHA are immutable. Privacy and repository identity
+    are the state that can change between individual writes, so those are
+    rechecked immediately before every write.
+    """
     if legacy.checked_policy_fingerprint(root, repository) != approved_policy:
         raise Denied("private CI destination approval policy changed during transfer")
-    legacy.checked_repo(repository)
-    if protected_main_sha() != protected_sha:
-        raise Denied("source protected main advanced during transfer")
-    # Contract bytes must still be exactly those reviewed at the protected SHA.
-    checked_contract(
-        root, repository, authorize_write.source_pr,
-        authorize_write.test_plan, protected_sha
-    )
-    checked_destination(repository, contract)
+    repo = legacy.checked_repo(repository)
+    if repo.get("id") != contract["repository_id"]:
+        raise Denied("carrier repository id changed during transfer")
 
 
 def publish(repository, source, source_commit, source_pr, test_plan, trusted_root, now=None):
@@ -347,14 +351,8 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     rows, manifest_sha256 = manifest(files)
     branch = "ci/oreslang-" + source_tree
 
-    # Closure state used only by the local authorization helper.
-    authorize_write.source_pr = source_pr
-    authorize_write.test_plan = contract["test_plan_path"]
-
     def auth():
-        authorize_write(
-            trusted_root, repository, approved_policy, contract, protected_sha
-        )
+        authorize_write(trusted_root, repository, approved_policy, contract)
 
     elements = []
     for rel, data, mode in files:
