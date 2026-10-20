@@ -109,6 +109,35 @@ public final class VerifyEffectClosure {
         require(trapDynamic.infer().get("caller").equals(
             Set.of(EffectContracts.Effect.UNKNOWN_CALL)),
             "trap must not hide unknown callback effects");
+        // An inferred/unbounded graph is useful for reporting but cannot
+        // certify executable closed-world code if any target remains unknown.
+        var openGraph = new EffectContracts.Graph();
+        openGraph.add(EffectContracts.Callable.inferred("entry", Set.of(),
+                List.of(EffectContracts.Call.unresolved("dynamic"))));
+        require(openGraph.validate().get("entry").equals(
+                Set.of(EffectContracts.Effect.UNKNOWN_CALL)),
+                "analysis must still disclose unknown effect facts");
+        try {
+            openGraph.validateClosedWorld();
+            throw new AssertionError("unbounded unresolved call certified");
+        } catch (IllegalArgumentException expected) {
+            require(expected.getMessage().contains("[unresolved] dynamic"),
+                    "closed-world negative must retain witness");
+        }
+        var fullyResolved = new EffectContracts.Graph();
+        fullyResolved.add(EffectContracts.Callable.inferred("callee", Set.of(
+                EffectContracts.Effect.IO), List.of()));
+        fullyResolved.add(EffectContracts.Callable.inferred("entry", Set.of(),
+                List.of(EffectContracts.Call.direct("callee"))));
+        require(fullyResolved.validateClosedWorld().get("entry").equals(
+                Set.of(EffectContracts.Effect.IO)),
+                "trusted known targets remain analyzable");
+        try {
+            new EffectContracts.Graph().validateClosedWorld();
+            throw new AssertionError("empty graph should not self-certify");
+        } catch (IllegalArgumentException expected) {
+            // No vacuous empty-program closed-world certificate.
+        }
         // Explicit effect ABI v1 parity with the native 10-bit mask.
         for (int mask = 0; mask <= dev.oreslang.types.EffectAbiV1.KNOWN_MASK; ++mask) {
             var row = dev.oreslang.types.EffectAbiV1.decode(mask);
