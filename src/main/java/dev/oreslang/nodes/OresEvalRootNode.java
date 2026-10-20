@@ -880,13 +880,27 @@ public final class OresEvalRootNode extends RootNode {
             return null;
         }
 
-        private Ast.ClassDecl checkedComputedClassView(Ast.Expr receiverExpression) {
+        private record CheckedRuntimeClassView(
+                Evaluator owner,
+                Ast.ClassDecl klass) { }
+
+        private CheckedRuntimeClassView checkedComputedClassView(
+                Ast.Expr receiverExpression) {
             String checkedClassName = Ast.CheckedClassView.lookup(receiverExpression);
             if (checkedClassName == null) {
                 throw new IllegalStateException(
                         "computed class indexing requires type-checked static receiver metadata");
             }
+
             Ast.ClassDecl checked = findClass(checkedClassName);
+            Evaluator checkedOwner = this;
+            if (checked == null) {
+                Object imported = importedValue(checkedClassName);
+                if (imported instanceof ClassFacade facade) {
+                    checkedOwner = facade.owner();
+                    checked = facade.klass();
+                }
+            }
             if (checked == null) {
                 throw new IllegalStateException(
                         "statically checked computed-access class '"
@@ -896,7 +910,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "statically checked computed-access receiver is not an ordinary class");
             }
-            return checked;
+            return new CheckedRuntimeClassView(checkedOwner, checked);
         }
 
         private Ast.ClassDecl staticClassView(Ast.Expr expression, Env env) {
@@ -4713,14 +4727,16 @@ public final class OresEvalRootNode extends RootNode {
 
                 String checkedClassName = Ast.CheckedClassView.lookup(receiverExpression);
                 if (checkedClassName != null) {
-                    Ast.ClassDecl staticClass = checkedComputedClassView(receiverExpression);
-                    OwnedField ownedField = findField(
+                    CheckedRuntimeClassView staticView =
+                            checkedComputedClassView(receiverExpression);
+                    Ast.ClassDecl staticClass = staticView.klass();
+                    OwnedField ownedField = staticView.owner().findField(
                             staticClass, key, new LinkedHashSet<>());
                     if (ownedField == null) {
                         throw new IllegalArgumentException(
                                 "unknown class field key " + staticClass.name() + "." + key);
                     }
-                    requireClassMemberVisible(
+                    staticView.owner().requireClassMemberVisible(
                             ownedField.field().visibility(),
                             ownedField.owner(),
                             env == null ? null : env.accessClass(),
@@ -4864,14 +4880,16 @@ public final class OresEvalRootNode extends RootNode {
                             "class field index must be a String");
                 }
 
-                Ast.ClassDecl staticClass = checkedComputedClassView(receiverExpression);
-                OwnedField targetField = findField(
+                CheckedRuntimeClassView staticView =
+                        checkedComputedClassView(receiverExpression);
+                Ast.ClassDecl staticClass = staticView.klass();
+                OwnedField targetField = staticView.owner().findField(
                         staticClass, fieldName, new LinkedHashSet<>());
                 if (targetField == null) {
                     throw new IllegalArgumentException(
                             "unknown class field key " + staticClass.name() + "." + fieldName);
                 }
-                requireClassMemberVisible(
+                staticView.owner().requireClassMemberVisible(
                         targetField.field().visibility(),
                         targetField.owner(),
                         env == null ? null : env.accessClass(),
