@@ -237,7 +237,11 @@ public final class LinkedProgramRunner {
                                 .buildLiteral();
                         try (OresLanguage.PrecheckedProgramScope ignored =
                                 OresLanguage.openPrecheckedProgram(
-                                        id, unit.sourceText(), unit.program())) {
+                                        id, unit.sourceText(), unit.checkedProgram())) {
+                            if (unit.checkedProgram() == null) {
+                                throw new IllegalStateException(
+                                        "incremental compiler unit lacks checked-program proof: " + id);
+                            }
                             parsedUnits.put(id, context.parse(source));
                         }
                     }
