@@ -37,6 +37,13 @@ MAX_CONTRACT = 64 * 1024
 MAX_PLAN = 64 * 1024
 RECEIPT_TTL = dt.timedelta(hours=24)
 SOURCE_REPOSITORY_ID = 1400792274
+CONTROL_PLANE_PATHS = (
+    "scripts/check-private-ci-destination.sh",
+    "scripts/run-in-private-ci-destination.sh",
+    "scripts/publish-private-ci-source.py",
+    "scripts/publish-private-ci-source-v3.py",
+)
+MAX_CONTROL_PLANE_FILE = 512 * 1024
 
 
 def valid_sha(value, label="invalid SHA"):
@@ -81,40 +88,52 @@ def safe_policy_path(value, prefix, suffix):
     return value
 
 
-def read_local_contract(root):
-    """Read the local protected contract through no-follow descriptors."""
+def read_local_protected_file(root, path, max_bytes):
+    """Read one protected control-plane file without following any symlink."""
+    if (not isinstance(path, str) or not isinstance(max_bytes, int)
+            or isinstance(max_bytes, bool) or max_bytes <= 0):
+        raise Denied("invalid protected local file request")
+    parts = PurePosixPath(path).parts
+    if (not parts or path.startswith("/") or "\\" in path
+            or any(part in ("", ".", "..", ".git") for part in parts)):
+        raise Denied("invalid protected local file path")
     if (not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW")
             or not hasattr(os, "O_NONBLOCK")):
-        raise Denied("OS cannot safely read carrier contract")
+        raise Denied("OS cannot safely read protected local files")
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
     root = root.resolve(strict=True)
+    opened = []
     try:
-        root_fd = os.open(root, directory_flags)
+        current = os.open(root, directory_flags)
+        opened.append(current)
+        for component in parts[:-1]:
+            current = os.open(component, directory_flags, dir_fd=current)
+            opened.append(current)
+        file_fd = os.open(parts[-1], file_flags, dir_fd=current)
         try:
-            github_fd = os.open(".github", directory_flags, dir_fd=root_fd)
-            try:
-                file_fd = os.open("private-ci-carrier-contracts.json",
-                                  file_flags, dir_fd=github_fd)
-                try:
-                    stream = os.fdopen(file_fd, "rb")
-                except BaseException:
-                    os.close(file_fd)
-                    raise
-                with stream:
-                    meta = os.fstat(stream.fileno())
-                    if not stat.S_ISREG(meta.st_mode) or meta.st_nlink != 1:
-                        raise Denied("carrier contract is not a regular single-link file")
-                    raw = stream.read(MAX_CONTRACT + 1)
-            finally:
-                os.close(github_fd)
-        finally:
-            os.close(root_fd)
+            stream = os.fdopen(file_fd, "rb")
+        except BaseException:
+            os.close(file_fd)
+            raise
+        with stream:
+            meta = os.fstat(stream.fileno())
+            if not stat.S_ISREG(meta.st_mode) or meta.st_nlink != 1:
+                raise Denied("protected local file is not a regular single-link file")
+            raw = stream.read(max_bytes + 1)
     except OSError as exc:
-        raise Denied("carrier contract cannot be opened safely") from exc
-    if not raw or len(raw) > MAX_CONTRACT:
-        raise Denied("carrier contract missing or exceeds size limit")
+        raise Denied("protected local file cannot be opened safely") from exc
+    finally:
+        for fd in reversed(opened):
+            os.close(fd)
+    if not raw or len(raw) > max_bytes:
+        raise Denied("protected local file missing or oversized")
     return raw
+
+
+def read_local_contract(root):
+    """Read the local protected contract through no-follow descriptors."""
+    return read_local_protected_file(root, CONTRACT_PATH, MAX_CONTRACT)
 
 
 def protected_main_sha():
@@ -144,7 +163,10 @@ def remote_file_at_source_main(path, main_sha, max_bytes):
         raise Denied("protected source policy file has invalid base64") from exc
     if not raw or len(raw) > max_bytes:
         raise Denied("protected source policy file missing or oversized")
-    return raw, valid_sha(item.get("sha"), "protected policy blob SHA invalid")
+    blob_sha = valid_sha(item.get("sha"), "protected policy blob SHA invalid")
+    if git_blob_sha(raw) != blob_sha:
+        raise Denied("protected source file blob digest mismatch")
+    return raw, blob_sha
 
 
 def parse_contract(raw, repository, source_pr, test_plan):
@@ -198,6 +220,20 @@ def parse_contract(raw, repository, source_pr, test_plan):
         "test_plan_path": plan_path,
         "test_plan_blob_sha": plan_blob,
     }
+
+
+def checked_control_plane(root, main_sha):
+    """Bind the executing security programs byte-for-byte to protected main."""
+    root = root.resolve(strict=True)
+    expected_v3 = (root / "scripts" / "publish-private-ci-source-v3.py").resolve(strict=True)
+    expected_legacy = (root / "scripts" / "publish-private-ci-source.py").resolve(strict=True)
+    if Path(__file__).resolve(strict=True) != expected_v3 or LEGACY_PATH.resolve(strict=True) != expected_legacy:
+        raise Denied("executing private CI publisher is outside the trusted control plane")
+    for path in CONTROL_PLANE_PATHS:
+        local = read_local_protected_file(root, path, MAX_CONTROL_PLANE_FILE)
+        remote, _ = remote_file_at_source_main(path, main_sha, MAX_CONTROL_PLANE_FILE)
+        if local != remote:
+            raise Denied("local private CI control plane diverges from protected source main")
 
 
 def checked_contract(root, repository, source_pr, test_plan, main_sha):
@@ -352,8 +388,8 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     # Authorize before reading private source bytes.
     legacy.require_preflight(repository, trusted_root)
     approved_policy = legacy.checked_policy_fingerprint(trusted_root, repository)
-    legacy.verify_protected_origin(repository, approved_policy)
-    protected_sha = protected_main_sha()
+    protected_sha = legacy.verify_protected_origin(repository, approved_policy)
+    checked_control_plane(trusted_root, protected_sha)
     contract = checked_contract(
         trusted_root, repository, source_pr, test_plan, protected_sha
     )
@@ -492,9 +528,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
 
     # Recheck both source policy/protection and the immutable carrier contract
     # immediately before making the source-bearing commit executable.
-    legacy.verify_protected_origin(repository, approved_policy)
-    if protected_main_sha() != protected_sha:
+    if legacy.verify_protected_origin(repository, approved_policy) != protected_sha:
         raise Denied("source protected main advanced before publication")
+    checked_control_plane(trusted_root, protected_sha)
     checked_contract(
         trusted_root, repository, source_pr,
         contract["test_plan_path"], protected_sha
