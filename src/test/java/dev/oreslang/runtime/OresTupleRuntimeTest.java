@@ -34,7 +34,10 @@ final class OresTupleRuntimeTest {
         assertEquals(1, tuple.get(0));
         assertEquals(2, tuple.get(1));
         assertThrows(UnsupportedOperationException.class, () -> tuple.elements().set(0, 9));
-        assertThrows(UnsupportedOperationException.class, () -> tuple.add(9));
+        // Nominal tuples do not even expose java.util.Collection mutators
+        // or inherited contains/remove callbacks that can invoke host equals.
+        assertFalse(tuple instanceof java.util.Collection<?>);
+        assertFalse(java.util.Collection.class.isAssignableFrom(tuple.getClass()));
         assertThrows(IndexOutOfBoundsException.class, () -> tuple.get(2));
 
         assertEquals(0, new OresTuple(List.of()).size());
