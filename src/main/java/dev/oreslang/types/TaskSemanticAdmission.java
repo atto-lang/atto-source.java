@@ -78,8 +78,16 @@ public final class TaskSemanticAdmission {
     }
 
     List<Entry> entriesForIdentity(Object boundary) {
-        List<Entry> entries = byBoundary.get(boundary);
-        return entries == null ? List.of() : entries;
+        Objects.requireNonNull(boundary, "Task boundary");
+        if (!sealed) {
+            throw new IllegalStateException(
+                    "Task semantic admission must be sealed before lookup");
+        }
+        if (!byBoundary.containsKey(boundary)) {
+            throw new IllegalArgumentException(
+                    "no Task semantic admission for exact AST boundary");
+        }
+        return byBoundary.get(boundary);
     }
 
     public List<Entry> entriesFor(Ast.Stmt boundary) {
