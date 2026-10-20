@@ -190,9 +190,18 @@ final class CpuTopology {
     }
 
     private static String readString(Path path) {
-        try {
-            String value = Files.readString(path).trim();
-            return value.length() <= 64 ? value : null;
+        // sysfs metadata is expected to be tiny. Reading the entire file
+        // before checking length lets a hostile/mis-mounted sysfs fixture
+        // allocate unbounded memory during carrier bootstrap.
+        try (var input = Files.newInputStream(path)) {
+            byte[] bounded = input.readNBytes(65);
+            if (bounded.length > 64) return null;
+            for (byte value : bounded) {
+                // Reject embedded NUL/non-ASCII metadata. Integer parsing
+                // and cache-kind checks are intentionally stricter still.
+                if (value == 0 || (value & 0x80) != 0) return null;
+            }
+            return new String(bounded, java.nio.charset.StandardCharsets.US_ASCII).trim();
         } catch (IOException | SecurityException ignored) {
             return null;
         }
