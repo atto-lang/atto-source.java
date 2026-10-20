@@ -26,12 +26,25 @@ public final class OresCompiler {
      * retain transferred ownership until TaskScope.getDone() physical
      * quiescence.</p>
      */
+    public enum AsyncReleaseBarrier {
+        /**
+         * Transferred ownership may be released only after the runtime has
+         * observed physical TaskScope descendant quiescence via getDone().
+         */
+        TASK_SCOPE_GET_DONE
+    }
+
     public record AsyncAdmissionResult(
             Ast.Program program,
             java.util.List<String> warnings,
-            AsyncTransferProvenance asyncTransfers) {
+            AsyncTransferProvenance asyncTransfers,
+            AsyncReleaseBarrier releaseBarrier) {
         public AsyncAdmissionResult {
             warnings = java.util.List.copyOf(warnings);
+            java.util.Objects.requireNonNull(
+                    asyncTransfers, "asyncTransfers");
+            java.util.Objects.requireNonNull(
+                    releaseBarrier, "releaseBarrier");
         }
     }
 
@@ -45,7 +58,8 @@ public final class OresCompiler {
         return new AsyncAdmissionResult(
                 checked.program(),
                 checked.warnings(),
-                owned.asyncTransfers());
+                owned.asyncTransfers(),
+                AsyncReleaseBarrier.TASK_SCOPE_GET_DONE);
     }
 
     /** Runs the complete front-end admission policy on an already parsed program. */
