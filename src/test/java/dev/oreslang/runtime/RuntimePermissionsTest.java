@@ -161,6 +161,56 @@ final class RuntimePermissionsTest {
     }
 
     @Test
+    void equivalentNetworkHostSpellingsCannotBypassDenies() {
+        RuntimePermissions dns = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.NET)
+                .withDenied(RuntimePermissions.Permission.NET, "example.com:22");
+        assertFalse(dns.allows(
+                RuntimePermissions.Permission.NET, "example.com.:22"),
+                "trailing-dot DNS spelling must not bypass a deny");
+        assertEquals(
+                "example.com:443",
+                RuntimePermissions.networkEndpoint("EXAMPLE.COM.", 443));
+
+        RuntimePermissions ipv6 = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.NET)
+                .withDenied(RuntimePermissions.Permission.NET, "[::1]:22");
+        assertFalse(ipv6.allows(
+                RuntimePermissions.Permission.NET,
+                "[0:0:0:0:0:0:0:1]:22"),
+                "expanded IPv6 spelling must not bypass a deny");
+        assertEquals(
+                RuntimePermissions.networkEndpoint("::1", 443),
+                RuntimePermissions.networkEndpoint(
+                        "0:0:0:0:0:0:0:1", 443));
+
+        RuntimePermissions ipv4 = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.NET)
+                .withDenied(RuntimePermissions.Permission.NET, "127.0.0.1:22");
+        assertFalse(ipv4.allows(
+                RuntimePermissions.Permission.NET, "127.000.000.001:22"),
+                "zero-padded IPv4 spelling must not bypass a deny");
+        assertEquals(
+                "127.0.0.1:443",
+                RuntimePermissions.networkEndpoint("127.000.000.001", 443));
+
+        RuntimePermissions wildcard = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "*.example.com.");
+        assertTrue(wildcard.allows(
+                RuntimePermissions.Permission.NET, "api.example.com.:443"));
+        assertFalse(wildcard.allows(
+                RuntimePermissions.Permission.NET, "example.com.:443"));
+
+        for (String ambiguous : java.util.List.of(
+                "127.1", "127.0.1", "::1%lo0", "[::1%1]")) {
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> RuntimePermissions.networkEndpoint(ambiguous, 443),
+                    ambiguous);
+        }
+    }
+
+    @Test
     void applicationArgumentsRoundTripScopedRules() throws Exception {
         Path root = Files.createTempDirectory("ores-perm-roundtrip-");
         RuntimePermissions original = RuntimePermissions.denyAll()
