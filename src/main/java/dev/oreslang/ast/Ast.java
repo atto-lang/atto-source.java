@@ -1122,6 +1122,82 @@ public final class Ast {
         }
     }
 
+    /**
+     * Compiler-verified field-name domain for a structural contract receiver.
+     * Runtime values satisfying a structural view may contain additional
+     * fields; computed access must remain bounded to the statically visible
+     * contract instead of exposing those extra fields.
+     */
+    public static final class CheckedStructuralFieldDomain {
+        private CheckedStructuralFieldDomain() { }
+
+        private static final java.lang.ref.ReferenceQueue<Expr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, java.util.Set<String>> DOMAINS =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey extends java.lang.ref.WeakReference<Expr> {
+            private final int hash;
+            private IdentityKey(
+                    Expr expression, java.lang.ref.ReferenceQueue<Expr> queue) {
+                super(expression, queue);
+                hash = System.identityHashCode(expression);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                Expr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends Expr> collected;
+            while ((collected = CLEARED.poll()) != null) {
+                DOMAINS.remove(collected);
+            }
+        }
+
+        public static synchronized void record(
+                Expr receiver, java.util.Collection<String> fieldNames) {
+            java.util.Objects.requireNonNull(receiver, "structural computed-index receiver");
+            java.util.Objects.requireNonNull(fieldNames, "checked structural field domain");
+            java.util.LinkedHashSet<String> checked = new java.util.LinkedHashSet<>();
+            for (String fieldName : fieldNames) {
+                if (fieldName == null || fieldName.isBlank()) {
+                    throw new IllegalArgumentException(
+                            "checked structural field names must be non-blank");
+                }
+                if (!checked.add(fieldName)) {
+                    throw new IllegalArgumentException(
+                            "checked structural field domain contains duplicate '" + fieldName + "'");
+                }
+            }
+            java.util.Set<String> domain = java.util.Set.copyOf(checked);
+            expunge();
+            IdentityKey key = new IdentityKey(receiver, CLEARED);
+            java.util.Set<String> old = DOMAINS.putIfAbsent(key, domain);
+            if (old != null && !old.equals(domain)) {
+                throw new IllegalStateException(
+                        "same computed-index receiver received inconsistent structural field domains");
+            }
+        }
+
+        public static synchronized java.util.Set<String> lookup(Expr receiver) {
+            java.util.Objects.requireNonNull(receiver, "structural computed-index receiver");
+            expunge();
+            return DOMAINS.get(new IdentityKey(receiver, null));
+        }
+
+        public static void copy(Expr source, Expr target) {
+            java.util.Objects.requireNonNull(source, "source structural computed-index receiver");
+            java.util.Objects.requireNonNull(target, "target structural computed-index receiver");
+            java.util.Set<String> domain = lookup(source);
+            if (domain != null) record(target, domain);
+        }
+    }
+
     public record MemberExpr(Expr receiver, String member) implements Expr { }
     public record IndexExpr(Expr receiver, Expr index) implements Expr { }
 
