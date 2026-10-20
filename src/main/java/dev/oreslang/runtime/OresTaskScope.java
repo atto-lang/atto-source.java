@@ -290,12 +290,22 @@ public final class OresTaskScope implements AutoCloseable {
         OresFuture<Void> pendingFence = null;
         OresTask<T> pendingOwner = null;
         OwnershipSlot pendingSlot = null;
+        boolean loanChildBindAttempted = false;
         boolean loanChildBound = false;
         try {
             pendingFence = new OresFuture<>();
             pendingOwner = OresTask.provisional(pendingFence);
-            loanRetirement.bindChild(compilerScopeEpoch, pendingOwner);
-            loanChildBound = true;
+            loanChildBindAttempted = true;
+            try {
+                loanRetirement.bindChild(compilerScopeEpoch, pendingOwner);
+                loanChildBound = true;
+            } catch (RuntimeException | Error childBindingFailure) {
+                // A trusted capability may throw after partially accepting
+                // the owner identity. Earlier rollback edges cannot safely
+                // prove that partial authority was not retained.
+                poisonCompilerLoan(loanRetirement, childBindingFailure);
+                throw childBindingFailure;
+            }
             pendingSlot = new OwnershipSlot();
             pendingSlot.task = pendingOwner;
             synchronized (treeAdmissionGate) {
@@ -321,22 +331,28 @@ public final class OresTaskScope implements AutoCloseable {
                 }
             }
             if (releaseFailure == null) {
-                try {
-                    if (!loanChildBound) {
-                        loanRetirement.retireBeforeChildBound(
-                                compilerScopeEpoch);
-                    } else {
-                        loanRetirement.retireBeforeSchedulerChildBound(
-                                compilerScopeEpoch,
-                                Objects.requireNonNull(
-                                        pendingOwner,
-                                        "bound provisional Task owner"));
-                    }
-                } catch (RuntimeException | Error failure) {
-                    releaseFailure = failure;
-                    poisonCompilerLoan(loanRetirement, failure);
-                    if (failure != preparationFailure) {
-                        preparationFailure.addSuppressed(failure);
+                if (loanChildBindAttempted && !loanChildBound) {
+                    // bindChild itself failed. Its partial state is unknowable,
+                    // so the poisoned capability remains the reclamation pin.
+                    releaseFailure = preparationFailure;
+                } else {
+                    try {
+                        if (!loanChildBindAttempted) {
+                            loanRetirement.retireBeforeChildBound(
+                                    compilerScopeEpoch);
+                        } else {
+                            loanRetirement.retireBeforeSchedulerChildBound(
+                                    compilerScopeEpoch,
+                                    Objects.requireNonNull(
+                                            pendingOwner,
+                                            "bound provisional Task owner"));
+                        }
+                    } catch (RuntimeException | Error failure) {
+                        releaseFailure = failure;
+                        poisonCompilerLoan(loanRetirement, failure);
+                        if (failure != preparationFailure) {
+                            preparationFailure.addSuppressed(failure);
+                        }
                     }
                 }
             }
@@ -378,6 +394,8 @@ public final class OresTaskScope implements AutoCloseable {
         final java.util.concurrent.atomic.AtomicReference<
                 OresScheduler.CompilerTaskHandle<?>> schedulerChild =
                 new java.util.concurrent.atomic.AtomicReference<>();
+        final java.util.concurrent.atomic.AtomicBoolean schedulerBindAttempted =
+                new java.util.concurrent.atomic.AtomicBoolean();
         final java.util.concurrent.atomic.AtomicBoolean neverStartedWitness =
                 new java.util.concurrent.atomic.AtomicBoolean();
 
@@ -388,12 +406,23 @@ public final class OresTaskScope implements AutoCloseable {
                             OresScheduler.CompilerTaskHandle<?> child) {
                         Objects.requireNonNull(
                                 child, "compiler scheduler child");
-                        if (schedulerChild.get() != null) {
+                        if (schedulerChild.get() != null
+                                || !schedulerBindAttempted.compareAndSet(
+                                        false, true)) {
                             throw new IllegalStateException(
                                     "compiler scheduler child bound more than once");
                         }
-                        loanRetirement.bindSchedulerChild(
-                                compilerScopeEpoch, ownedChild, child);
+                        try {
+                            loanRetirement.bindSchedulerChild(
+                                    compilerScopeEpoch, ownedChild, child);
+                        } catch (RuntimeException | Error bindingFailure) {
+                            // Do not regress to an owner-only rollback edge:
+                            // the capability may have partially accepted this
+                            // exact scheduler identity before throwing.
+                            poisonCompilerLoan(
+                                    loanRetirement, bindingFailure);
+                            throw bindingFailure;
+                        }
                         schedulerChild.set(child);
                     }
 
@@ -485,7 +514,13 @@ public final class OresTaskScope implements AutoCloseable {
                 try {
                     OresScheduler.CompilerTaskHandle<?> exact =
                             schedulerChild.get();
-                    if (exact == null) {
+                    if (exact == null
+                            && schedulerBindAttempted.get()) {
+                        // bindSchedulerChild itself failed. Its partial state
+                        // is unknowable and was poisoned by bind(); preserve
+                        // the owner slot and exact failed authority.
+                        releaseFailure = rejectedBeforeDispatch;
+                    } else if (exact == null) {
                         loanRetirement.retireBeforeSchedulerChildBound(
                                 compilerScopeEpoch, ownedChild);
                     } else if (!neverStartedWitness.get()) {
