@@ -82,7 +82,7 @@ public final class LinkedProgramRunner {
         Map<String, String> sources = oresSources(units);
         IncrementalCompiler.BuildResult build =
                 new IncrementalCompiler().compile(sources, importResolutions);
-        Map<String, Ast.Program> programs = parsePrograms(sources);
+        Map<String, Ast.Program> programs = checkedPrograms(build);
         if (policy != null) {
             for (Ast.Program program : programs.values()) {
                 CapabilityChecker.check(program, policy, permissionCheckMode);
@@ -196,7 +196,7 @@ public final class LinkedProgramRunner {
         Map<String, String> sources = oresSources(units);
         IncrementalCompiler.BuildResult build =
                 new IncrementalCompiler().compile(sources, importResolutions);
-        Map<String, Ast.Program> programs = parsePrograms(sources);
+        Map<String, Ast.Program> programs = checkedPrograms(build);
         int exitStatus = 0;
         String entryId = unitId(entry);
         MixedSourceUnit entryUnit = units.get(entryId);
@@ -228,7 +228,11 @@ public final class LinkedProgramRunner {
                         Source source = Source.newBuilder(OresLanguage.ID, unit.sourceText(), id)
                                 .mimeType(OresLanguage.MIME_TYPE)
                                 .buildLiteral();
-                        parsedUnits.put(id, context.parse(source));
+                        try (OresLanguage.PrecheckedProgramScope ignored =
+                                OresLanguage.openPrecheckedProgram(
+                                        id, unit.sourceText(), unit.program())) {
+                            parsedUnits.put(id, context.parse(source));
+                        }
                     }
 
                     for (Map.Entry<String, Map<String, String>> importer : importResolutions.entrySet()) {
@@ -352,10 +356,14 @@ public final class LinkedProgramRunner {
         }
     }
 
-    private static Map<String, Ast.Program> parsePrograms(Map<String, String> sources) {
+    private static Map<String, Ast.Program> checkedPrograms(
+            IncrementalCompiler.BuildResult build) {
         LinkedHashMap<String, Ast.Program> programs = new LinkedHashMap<>();
-        for (Map.Entry<String, String> source : sources.entrySet()) programs.put(source.getKey(), Parser.parse(source.getValue()));
-        return programs;
+        for (Map.Entry<String, IncrementalCompiler.CompiledUnit> unit
+                : build.units().entrySet()) {
+            programs.put(unit.getKey(), unit.getValue().program());
+        }
+        return Map.copyOf(programs);
     }
 
     private static Map<String, String> oresSources(Map<String, MixedSourceUnit> units) {
