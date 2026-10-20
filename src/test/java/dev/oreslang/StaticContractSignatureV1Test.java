@@ -2,7 +2,9 @@ package dev.oreslang;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.BuildOptions;
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
@@ -307,6 +309,25 @@ final class StaticContractSignatureV1Test {
 
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void treeShakerRetainsPrivateStaticContractReferencedByPublicClass() {
+        var result = OresCompiler.compileForBuild("""
+                define static contract Factory as
+                    fnc create(int id) -> int;
+                end
+
+                define pub class Widget implements static Factory as
+                    pub static fnc create(int id) -> int {
+                        return id;
+                    }
+                end
+                """, BuildOptions.library(Map.of()));
+
+        assertTrue(result.retained(Parser.ROOT_MODULE + ".Widget"));
+        assertTrue(result.retained(Parser.ROOT_MODULE + ".Factory"),
+                "implements-static dependency must keep its private contract declaration alive");
     }
 
     @Test
