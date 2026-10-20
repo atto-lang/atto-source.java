@@ -76,4 +76,23 @@ final class ActorSourceTaskMemoryQuiescenceTest {
             assertEquals(0, runtime.actorCount());
         }
     }
+    @Test
+    void stoppedActorRejectsNewSourceTaskWithoutLeakingLifetimeLease() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch refused = new CountDownLatch(1);
+            ActorRuntime.ActorRef<String> actor = runtime.spawnShared(
+                    () -> (message, context) -> {
+                        context.self().stop();
+                        assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                                () -> runtime.startActorTask(
+                                        resume -> OresScheduler.done(null)));
+                        refused.countDown();
+                    });
+            actor.send("stop");
+            assertTrue(refused.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, runtime.actorCount());
+        }
+    }
+
 }
