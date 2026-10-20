@@ -134,22 +134,22 @@ final class TaskScopeLoweringTest {
     }
 
     @Test
-    void borrowedTaskCaptureStillFailsClosedInsideScope() {
-        IllegalArgumentException failure = assertThrows(
-                IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck("""
-                        pub routine main(): void {
-                            let int value = 8;
-                            val ref = rt borrow value;
-                            nb scope {
-                                let worker = nb {
-                                    stdio.stdout.write(ref);
-                                };
-                            }
-                            return;
-                        }
-                        """));
-        assertTrue(failure.getMessage().toLowerCase().contains("borrow"));
+    void immutableBorrowCaptureIsAdmittedOnlyByStructuredScope() throws Exception {
+        String source = """
+                pub routine main(): void {
+                    let int value = 42;
+                    val ref = rt borrow value;
+                    nb scope {
+                        let worker = nb {
+                            stdio.stdout.write(ref);
+                        };
+                    }
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("42", run(source));
     }
 
     @Test
