@@ -249,9 +249,16 @@ def classify(run, jobs, expected_head_sha):
     return assess(run, jobs, expected_head_sha)["category"]
 
 
-def _fetch_jobs_pages(repo, run_id, fetch):
-    """Read every jobs page, or reject a partial or racing snapshot."""
-    prefix = f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"
+def _fetch_jobs_pages(repo, run_id, attempt, fetch):
+    """Read exactly one run attempt's jobs, or fail closed on incomplete pages.
+
+    The general /runs/{id}/jobs endpoint defaults to the latest attempt.
+    GitHub job objects do not necessarily expose run_attempt, so attempt
+    provenance comes from the explicit /attempts/{n}/jobs endpoint.
+    """
+    if not _positive_int(attempt):
+        raise TriageError("invalid run attempt")
+    prefix = f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100"
     jobs = []
     expected = None
     seen_ids = set()
@@ -305,13 +312,16 @@ def inspect(repo, run_id, expected_sha, fetch=get_json, pr_number=None):
         raise TriageError("initial run identity/head SHA mismatched")
     if not _positive_int(run.get("run_attempt")):
         raise TriageError("run attempt unavailable or invalid")
-    jobs = _fetch_jobs_pages(repo, run_id, fetch)
+    jobs = _fetch_jobs_pages(repo, run_id, run["run_attempt"], fetch)
     if pr_path:
-        # In strict PR mode, missing provenance is not evidence for this attempt.
+        # Attempt is established by the *scoped URL*, not by an optional
+        # run_attempt property in individual GitHub job responses.
+        # Still require each job's independently readable ID and SHA.
         for job in jobs:
             if (job.get("run_id") != run_id or
-                    job.get("run_attempt") != run["run_attempt"] or
-                    job.get("head_sha") != expected_sha):
+                    job.get("head_sha") != expected_sha or
+                    (job.get("run_attempt") is not None and
+                     job.get("run_attempt") != run["run_attempt"])):
                 raise TriageError("job exact-head/attempt provenance unverified")
     final_run = fetch(run_path)
     # The latest attempt can change while we page through jobs.
