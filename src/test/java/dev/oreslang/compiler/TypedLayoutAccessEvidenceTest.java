@@ -63,6 +63,17 @@ final class TypedLayoutAccessEvidenceTest {
         assertFalse(report.loops().getFirst().supportedDirectBody());
     }
 
+    @Test void refusesToAnalyzeSourceThatFailsNormalTypeChecking() {
+        assertThrows(RuntimeException.class, () ->
+                OresCompiler.inspectLayoutAccesses(
+                        "fnc f(): int { return unknown_variable; }"));
+    }
+
+    @Test void rejectsSourceOversizedBeforeParsing() {
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.inspectLayoutAccesses(" ".repeat(1_048_577)));
+    }
+
     @Test void cannotMakeUnsupportedOrHugeInputLookComplete() {
         var result = inspect(loop(new Ast.CallExpr(new Ast.NameExpr("work"),
                 List.of(), false, List.of(new Ast.NameExpr("row")))));
