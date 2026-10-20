@@ -17,6 +17,16 @@ import javax.net.ssl.SSLServerSocket;
 final class UnaryTcpTlsRuntime {
     private UnaryTcpTlsRuntime() { }
 
+    @FunctionalInterface
+    interface BindAuthority {
+        void require(String host, int port, String api);
+    }
+
+    @FunctionalInterface
+    interface EndpointFactory {
+        SSLServerSocket create() throws IOException;
+    }
+
     static UnaryTcpTlsListener bind(
             OresContext context,
             SSLContext tlsContext,
@@ -26,10 +36,37 @@ final class UnaryTcpTlsRuntime {
             UnaryTcpSessionAdapter.Limits limits,
             UnaryTcpMutualTlsAuthenticator.CertificateAuthorizer authorizer,
             UnaryTcpSessionAdapter.Dispatcher dispatcher) throws IOException {
-        if (ActorRuntime.inActorExecution())
-            throw new SecurityException("unary TCP listeners belong to the supervisor");
+        requireSupervisor();
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(tlsContext, "tlsContext");
+        return bind(
+                context::requireNetworkBind,
+                () -> (SSLServerSocket)
+                        tlsContext.getServerSocketFactory().createServerSocket(),
+                host,
+                port,
+                backlog,
+                limits,
+                authorizer,
+                dispatcher);
+    }
+
+    /**
+     * Package-private authority/factory seam for deterministic security tests.
+     * Production callers use the OresContext/SSLContext overload above.
+     */
+    static UnaryTcpTlsListener bind(
+            BindAuthority authority,
+            EndpointFactory endpointFactory,
+            String host,
+            int port,
+            int backlog,
+            UnaryTcpSessionAdapter.Limits limits,
+            UnaryTcpMutualTlsAuthenticator.CertificateAuthorizer authorizer,
+            UnaryTcpSessionAdapter.Dispatcher dispatcher) throws IOException {
+        requireSupervisor();
+        Objects.requireNonNull(authority, "authority");
+        Objects.requireNonNull(endpointFactory, "endpointFactory");
         Objects.requireNonNull(limits, "limits");
         Objects.requireNonNull(authorizer, "authorizer");
         Objects.requireNonNull(dispatcher, "dispatcher");
@@ -39,10 +76,13 @@ final class UnaryTcpTlsRuntime {
             throw new IllegalArgumentException("invalid unary TCP listener endpoint");
         }
 
-        context.requireNetworkBind(host, port, "unary.tcp.listen");
+        // Authorization must run before endpoint creation/bind. A denied scope
+        // must have zero observable networking side effects.
+        authority.require(host, port, "unary.tcp.listen");
 
-        SSLServerSocket endpoint = (SSLServerSocket)
-                tlsContext.getServerSocketFactory().createServerSocket();
+        SSLServerSocket endpoint = Objects.requireNonNull(
+                endpointFactory.create(),
+                "unary TCP endpoint factory returned null");
         boolean transferred = false;
         try {
             endpoint.bind(new InetSocketAddress(host, port), backlog);
@@ -59,5 +99,10 @@ final class UnaryTcpTlsRuntime {
                 }
             }
         }
+    }
+
+    private static void requireSupervisor() {
+        if (ActorRuntime.inActorExecution())
+            throw new SecurityException("unary TCP listeners belong to the supervisor");
     }
 }
