@@ -30,9 +30,12 @@ public final class EcsAccessPlanner {
     public enum Mode { READ, WRITE }
 
     /**
-     * Opaque allocation-provenance token. Only compiler code in this package
-     * can mint one; host/embedding callers cannot substitute arbitrary value
-     * objects and accidentally manufacture a false disjointness proof.
+     * Opaque allocation-provenance token. Callers cannot substitute arbitrary
+     * host values, strings, pointers, or equality-spoofing objects: identities
+     * are minted only by the dedicated compiler-facing factory below.
+     *
+     * The token is analysis metadata, not authority. The compiler must still
+     * prove that two distinct tokens denote distinct physical allocations.
      */
     public static final class AllocationIdentity {
         private AllocationIdentity() { }
