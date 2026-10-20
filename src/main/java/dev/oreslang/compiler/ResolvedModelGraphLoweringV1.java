@@ -33,13 +33,27 @@ public final class ResolvedModelGraphLoweringV1 {
         Objects.requireNonNull(trusted);
         Objects.requireNonNull(overrides);
 
+        if (source.operations().isEmpty())
+            throw new IllegalArgumentException("MODEL_EMPTY_BODY");
+        if (source.operations().size() > 64)
+            throw new IllegalArgumentException("MODEL_NODE_BUDGET");
+        if (source.formals().size() > 16)
+            throw new IllegalArgumentException("MODEL_FORMAL_BUDGET");
+
         Map<String, Ast.ModelValue> config = new HashMap<>();
         for (Ast.ModelFormal formal : source.formals()) {
+            if (!formal.name().matches("[A-Za-z][A-Za-z0-9_]{0,127}"))
+                throw new IllegalArgumentException("MODEL_NONCONSTANT_CONFIG");
+            // Verify even overridden or unused defaults: an invalid AST must
+            // never become valid simply because the bad field was dead.
+            ModelGraphAdmission.validDefault(formal);
             Ast.ModelValue value = overrides.get(formal.name());
             if (value == null) value = formal.defaultValue();
             if (value == null) throw new IllegalArgumentException("MODEL_NONCONSTANT_CONFIG");
             if (value.kind() == Ast.ModelValueKind.FORMAL)
                 throw new IllegalArgumentException("MODEL_NONCONSTANT_CONFIG");
+            ModelGraphAdmission.validDefault(
+                    new Ast.ModelFormal(formal.name(), formal.type(), value));
             if (config.putIfAbsent(formal.name(), value) != null)
                 throw new IllegalArgumentException("MODEL_DUPLICATE_FORMAL");
         }
@@ -57,6 +71,8 @@ public final class ResolvedModelGraphLoweringV1 {
                 throw new IllegalArgumentException("MODEL_ARITY_MISMATCH");
             if (index > 0 && sig.inputs().size() != 1)
                 throw new IllegalArgumentException("MODEL_ARITY_MISMATCH");
+            if (op.arguments().size() > 16)
+                throw new IllegalArgumentException("MODEL_ARGUMENT_BUDGET");
             if (op.arguments().size() != sig.constKinds().size())
                 throw new IllegalArgumentException("MODEL_CONST_ARITY_MISMATCH");
 
@@ -73,6 +89,7 @@ public final class ResolvedModelGraphLoweringV1 {
                     value = config.get(value.source());
                     if (value == null) throw new IllegalArgumentException("MODEL_UNKNOWN_FORMAL");
                 }
+                ModelGraphAdmission.validScalar(value, false);
                 constants.add(canonical(value, sig.constKinds().get(i)));
             }
 
