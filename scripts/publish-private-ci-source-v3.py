@@ -101,8 +101,7 @@ def read_local_protected_file(root, path, max_bytes):
     if (not parts or path.startswith("/") or "\\" in path
             or any(part in ("", ".", "..", ".git") for part in parts)):
         raise Denied("invalid protected local file path")
-    if (not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW")
-            or not hasattr(os, "O_NONBLOCK")):
+    if not legacy.safe_descriptor_flags_available():
         raise Denied("OS cannot safely read protected local files")
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
