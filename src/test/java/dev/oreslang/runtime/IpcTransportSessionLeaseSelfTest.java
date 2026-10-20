@@ -285,23 +285,53 @@ public final class IpcTransportSessionLeaseSelfTest {
         carrierCleanup.requestClose();
         check(carrierCleanup.snapshot().phase()
                 == IpcTransportSessionLease.Phase.FINALIZING);
+        CountDownLatch cleanupMonitorHeld = new CountDownLatch(1);
+        CountDownLatch releaseCleanupMonitor = new CountDownLatch(1);
+        Thread cleanupMonitorHolder = new Thread(() -> {
+            synchronized (carrierCleanup) {
+                cleanupMonitorHeld.countDown();
+                try {
+                    releaseCleanupMonitor.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            }
+        }, "ipc-test-cleanup-monitor-holder");
+        cleanupMonitorHolder.start();
+        check(cleanupMonitorHeld.await(2, TimeUnit.SECONDS));
+
+        AtomicReference<Throwable> actorCleanupFailure = new AtomicReference<>();
         Thread actorCleanupWorker = new Thread(() -> {
             RuntimeBlockingGuard.enterActorCarrier();
             try {
                 actorCarrierCleanup.get().run();
+            } catch (Throwable failure) {
+                actorCleanupFailure.set(failure);
             } finally {
                 RuntimeBlockingGuard.exitActorCarrier();
             }
         }, "ipc-test-illegal-actor-cleanup");
         actorCleanupWorker.start();
-        actorCleanupWorker.join(3000);
+        actorCleanupWorker.join(1000);
+        // The lifecycle monitor is deliberately still held by another thread:
+        // a guard placed inside synchronized(this) would strand this carrier.
         check(!actorCleanupWorker.isAlive());
+        check(actorCleanupFailure.get() instanceof IllegalStateException);
+        check(actorCleanupFailure.get().getMessage().contains(
+                "cannot block an actor carrier"));
         check(actorCarrierCloses.get() == 0);
+
+        releaseCleanupMonitor.countDown();
+        cleanupMonitorHolder.join(3000);
+        check(!cleanupMonitorHolder.isAlive());
+        check(carrierCleanup.snapshot().phase()
+                == IpcTransportSessionLease.Phase.FINALIZING);
+        check(carrierCleanup.quarantineIfUnsettled(actorCleanupFailure.get()));
         check(carrierCleanup.snapshot().phase()
                 == IpcTransportSessionLease.Phase.QUARANTINED);
         check(!carrierCleanupFuture.toCompletableFuture().isDone());
-        check(carrierCleanup.closeFailure() instanceof IllegalStateException);
-        check(carrierCleanup.closeFailure().getMessage().contains("actor carrier"));
+        check(carrierCleanup.closeFailure() == actorCleanupFailure.get());
         check(carrierCleanup.invariant());
 
         var deferredBridge = new IpcReceiptCompletionBridge(1);
