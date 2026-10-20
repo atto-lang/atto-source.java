@@ -183,6 +183,15 @@ The Java reference adapter provides three distinct entry points:
   registration, completion after registration, cancellation races and
   the case in which registration fails before returning its detach action.
 
+A further safety invariant is **terminal capability revocation**: externally
+retained callback handles cannot keep the completed Future's completion
+authority or buffered result payload alive. A terminal resolution, rejection,
+consumer cancellation, or failed/invalid registrar revokes the staged handle,
+clears its `OresFuture.Callback` target and any staged `T`, and runs the
+returned detach action once when one exists. A first late callback after
+revocation is ignored, but a second attempt is a programming error. This
+revocation does not itself establish physical callback quiescence.
+
 The cancellable variant stages early/synchronous callback signals until
 `register()` returns a non-null detach action. Thus registration failure,
 including a null detach action after `cb.resolve(value)`, rejects the future
