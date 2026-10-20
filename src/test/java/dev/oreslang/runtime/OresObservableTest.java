@@ -745,4 +745,30 @@ final class OresObservableTest {
         assertEquals(0, iterators.get(),
                 "take(0) must short-circuit without subscribing to the iterable");
     }
+
+    @Test
+    void fatalHostErrorsAreNeverConvertedToOrdinaryPullFailures() {
+        LinkageError fatal = new LinkageError("fatal class linkage");
+        Iterable<Integer> broken = () -> new java.util.Iterator<>() {
+            @Override
+            public boolean hasNext() {
+                throw fatal;
+            }
+            @Override
+            public Integer next() {
+                throw new AssertionError("must not consume");
+            }
+        };
+        OresSubscription<Integer> subscription = OresObservable.fromIterable(broken).subscribe();
+        assertSame(fatal, assertThrows(LinkageError.class, () -> subscription.next()));
+
+        OresSubscription<Integer> direct = new OresSubscription<>() {
+            @Override
+            protected OresFuture<OresNotification<Integer>> nextFromRuntime() {
+                throw fatal;
+            }
+        };
+        assertSame(fatal, assertThrows(LinkageError.class, () -> direct.next()));
+    }
+
 }
