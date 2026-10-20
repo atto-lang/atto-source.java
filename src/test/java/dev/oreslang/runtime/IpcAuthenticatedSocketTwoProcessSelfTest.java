@@ -51,6 +51,14 @@ public final class IpcAuthenticatedSocketTwoProcessSelfTest {
         return binding;
     }
 
+    private static IpcPhysicalConnectionBroker.Authority authority(
+            long generation, byte[] key, byte[] binding) {
+        byte[] expectedBinding = binding.clone();
+        var broker = new IpcPhysicalConnectionBroker(target ->
+                System.arraycopy(expectedBinding, 0, target, 0, target.length));
+        return broker.mint(generation, key);
+    }
+
     private static String digest(byte[] payload) {
         try {
             return HexFormat.of().formatHex(
@@ -178,8 +186,8 @@ public final class IpcAuthenticatedSocketTwoProcessSelfTest {
                     socket.setSoTimeout(5000);
                     var bridge = new IpcReceiptCompletionBridge(1);
                     var transport = new IpcAuthenticatedSocketTransport(
-                            socket, bridge, message, 501, 1,
-                            key, binding, cleanup::execute);
+                            socket, bridge, message, 1,
+                            authority(501, key, binding), cleanup::execute);
 
                     var submission = transport.send(message, PAYLOAD);
                     check(!submission.writeAttemptFailed());
@@ -221,8 +229,8 @@ public final class IpcAuthenticatedSocketTwoProcessSelfTest {
                     socket.setSoTimeout(5000);
                     var bridge = new IpcReceiptCompletionBridge(1);
                     var transport = new IpcAuthenticatedSocketTransport(
-                            socket, bridge, message, 502, 1,
-                            key, binding, cleanup::execute);
+                            socket, bridge, message, 1,
+                            authority(502, key, binding), cleanup::execute);
 
                     var submission = transport.send(message, PAYLOAD);
                     check(!submission.writeAttemptFailed());
