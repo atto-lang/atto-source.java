@@ -140,6 +140,25 @@ final class ModelGraphAdmissionTest {
 
 
     @Test
+    void directAstCannotRaiseHardParserNodeLimitOrForgeNames() {
+        Ast.ModelDecl ordinary = source("define model X as Apply() end");
+        Map<String, Signature> trusted = Map.of("Apply", op("Apply", USD, USD, false));
+        Ast.ModelDecl massive = new Ast.ModelDecl(ordinary.name(), ordinary.visibility(),
+                ordinary.formals(),
+                java.util.Collections.nCopies(65, ordinary.operations().getFirst()));
+        rejected("MODEL_NODE_BUDGET", massive, trusted, new Limits(1000, 1000, 100000));
+
+        Ast.ModelDecl malformedName = new Ast.ModelDecl("invalid model", ordinary.visibility(),
+                ordinary.formals(), ordinary.operations());
+        rejected("MODEL_NONCONSTANT_CONFIG", malformedName, trusted, DEFAULT);
+
+        Ast.ModelDecl malformedOp = new Ast.ModelDecl(ordinary.name(), ordinary.visibility(),
+                ordinary.formals(),
+                List.of(new Ast.ModelOperation("Apply.Other", List.of())));
+        rejected("MODEL_INVALID_OP_ID", malformedOp, trusted, DEFAULT);
+    }
+
+    @Test
     void directAstCannotBypassParserNumericValidation() {
         Ast.ModelDecl parsed = source("define model X(rate: int = 1) as Apply(rate) end");
         Map<String, Signature> trusted = Map.of("Apply", op("Apply", USD, USD, false));
