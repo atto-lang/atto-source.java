@@ -1,17 +1,16 @@
 package dev.oreslang.runtime;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Host/CONTROL-only foundation for future typed GenServer call/reply.
+ * Host-only bounded reply ledger. No per-call UUID, random source, hashing, or
+ * guest-observable handle. Do not serialize Ticket or treat a slot as authority.
  *
- * Tickets are opaque single-use local objects; they MUST NOT be serialized,
- * exposed as guest DATA, or mistaken for supervisor authority. This is only
- * correlation admission, not a guest GenServer or transport implementation.
- * No callbacks or guest code are invoked while holding the short ledger lock.
+ * This is not actor mailbox integration, network correlation, CONTROL, or a
+ * complete OresFuture implementation. No callbacks execute under the gate.
  */
 final class GenServerReplyLedger {
     record Target(UUID runtimeId, UUID actorId, long incarnation) {
@@ -25,18 +24,38 @@ final class GenServerReplyLedger {
     static final class Ticket {
         private final GenServerReplyLedger ledger;
         private final Target target;
-        private final UUID correlation;
+        private final int slotIndex;
+        private final long slotGeneration;
 
-        private Ticket(GenServerReplyLedger ledger, Target target, UUID correlation) {
+        private Ticket(GenServerReplyLedger ledger, Target target,
+                       int slotIndex, long slotGeneration) {
             this.ledger = ledger;
             this.target = target;
-            this.correlation = correlation;
+            this.slotIndex = slotIndex;
+            this.slotGeneration = slotGeneration;
         }
+
+        // Diagnostics for runtime-package tests; NOT remotely sendable IDs.
+        int slotIndex() { return slotIndex; }
+        long slotGeneration() { return slotGeneration; }
+        Target target() { return target; }
+        boolean matchesTarget(Target candidate) { return target.equals(candidate); }
+    }
+
+    private static final long MAX_SLOT_GENERATION = 0xffff_ffffL;
+
+    private static final class Slot {
+        private long generation = 1;
+        private Ticket current;
     }
 
     private final int capacity;
-    private final Map<UUID, Ticket> pending = new HashMap<>();
+    private final Object gate = new Object();
+    // Lazy slot expansion, bounded by capacity. Access always guarded by gate.
+    private final ArrayList<Slot> slots = new ArrayList<>();
+    private final ArrayDeque<Integer> free = new ArrayDeque<>();
     private boolean closed;
+    private int live;
 
     GenServerReplyLedger(int capacity) {
         if (capacity < 1 || capacity > 1_000_000)
@@ -46,50 +65,84 @@ final class GenServerReplyLedger {
 
     Ticket register(Target target) {
         Objects.requireNonNull(target, "target");
-        synchronized (pending) {
+        synchronized (gate) {
             if (closed) throw new IllegalStateException("ledger is closed");
-            if (pending.size() >= capacity) throw new IllegalStateException("bounded call quota exceeded");
-            UUID correlation;
-            do { correlation = UUID.randomUUID(); } while (pending.containsKey(correlation));
-            Ticket ticket = new Ticket(this, target, correlation);
-            pending.put(correlation, ticket);
-            return ticket;
+            if (live >= capacity) throw new IllegalStateException("bounded call quota exceeded");
+            final int index;
+            final Slot slot;
+            if (!free.isEmpty()) {
+                index = free.removeLast();
+                slot = slots.get(index);
+            } else {
+                if (slots.size() == capacity)
+                    throw new IllegalStateException("all reply slots permanently retired");
+                index = slots.size();
+                slot = new Slot();
+                slots.add(slot);
+            }
+            // Ticket construction can fail (e.g. OOM); do not strand a credit.
+            try {
+                Ticket ticket = new Ticket(this, target, index, slot.generation);
+                if (slot.current != null)
+                    throw new IllegalStateException("allocated occupied slot");
+                slot.current = ticket;
+                live++;
+                return ticket;
+            } catch (RuntimeException | Error failure) {
+                // A fresh never-used slot is still eligible for reuse.
+                free.addLast(index);
+                throw failure;
+            }
         }
     }
 
-    /**
-     * True at most once when target and incarnation match and ticket is live.
-     * Caller separately publishes the reply to a runtime-owned Future.
-     * False never settles another request and never proves actor death.
-     */
+    /** True only once for the exact live Ticket object and target incarnation. */
     boolean tryReply(Ticket ticket, Target respondingActor) {
         Objects.requireNonNull(respondingActor, "respondingActor");
         if (ticket == null || ticket.ledger != this || !ticket.target.equals(respondingActor))
             return false;
-        synchronized (pending) {
-            return pending.remove(ticket.correlation, ticket);
+        synchronized (gate) {
+            return claim(ticket);
         }
     }
 
-    /** Timeout/cancel retire correlation; accepted server work may still run. */
+    /** Timeout/cancel retire only the original ticket; accepted work continues. */
     boolean retire(Ticket ticket) {
         if (ticket == null || ticket.ledger != this) return false;
-        synchronized (pending) {
-            return pending.remove(ticket.correlation, ticket);
+        synchronized (gate) {
+            return claim(ticket);
         }
+    }
+
+    private boolean claim(Ticket ticket) {
+        if (closed || ticket.slotIndex >= slots.size() || ticket.slotIndex < 0)
+            return false;
+        Slot slot = slots.get(ticket.slotIndex);
+        if (slot.current != ticket || slot.generation != ticket.slotGeneration)
+            return false;
+        slot.current = null;
+        live--;
+        // Never wrap generation: permanently retire an exhausted slot.
+        if (slot.generation < MAX_SLOT_GENERATION) {
+            slot.generation++;
+            free.addLast(ticket.slotIndex);
+        }
+        return true;
     }
 
     int pendingCount() {
-        synchronized (pending) { return pending.size(); }
+        synchronized (gate) { return live; }
     }
 
-    /** Close atomically fences further registrations/replies; no callbacks. */
+    /** Close fences new calls, drops all retained tickets and clears memory. */
     int close() {
-        synchronized (pending) {
+        synchronized (gate) {
             if (closed) return 0;
             closed = true;
-            int discarded = pending.size();
-            pending.clear();
+            int discarded = live;
+            live = 0;
+            slots.clear();
+            free.clear();
             return discarded;
         }
     }
