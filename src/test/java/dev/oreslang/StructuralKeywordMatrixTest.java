@@ -160,6 +160,32 @@ final class StructuralKeywordMatrixTest {
     }
 
     @Test
+    void explicitReadonlyStructViewsAllowWidthButNeverRecoverStructOrWriteAuthority() {
+        Types.Record concreteStruct = Types.Record.struct(
+                Map.of("id", Types.Primitive.INT, "extra", Types.Primitive.STRING));
+        Types.Record exactStruct = Types.Record.struct(Map.of("id", Types.Primitive.INT));
+        Types.Record readonlyContract = new Types.Record(
+                Map.of("id", Types.Primitive.INT), true, Types.AggregateKind.CONTRACT);
+        Types.Record writableContract = new Types.Record(
+                Map.of("id", Types.Primitive.INT), false, Types.AggregateKind.CONTRACT);
+        Types.Record ordinaryRecord = new Types.Record(Map.of("id", Types.Primitive.INT));
+
+        assertTrue(Types.isAssignable(concreteStruct, readonlyContract),
+                "the structural keyword permits readonly width projection of structs");
+        assertFalse(Types.isAssignable(concreteStruct, writableContract),
+                "structural projections must not manufacture writable aliases");
+        assertFalse(Types.isAssignable(concreteStruct, ordinaryRecord),
+                "ordinary records cannot erase concrete struct identity");
+        assertFalse(Types.isAssignable(concreteStruct, exactStruct),
+                "ordinary struct assignment remains exact, not width-subtyped");
+        assertFalse(Types.isAssignable(readonlyContract, concreteStruct),
+                "readonly structural views cannot recover nominal struct identity");
+        assertFalse(Types.isAssignable(concreteStruct, new Types.Record(
+                Map.of("id", Types.Primitive.FLOAT), true, Types.AggregateKind.CONTRACT)),
+                "structural readonly projection cannot reinterpret numeric storage");
+    }
+
+    @Test
     void nestedStructuralLoansNeverExposeWritableRecords() {
         var parameterProgram = Parser.parse("""
                 fnc forbidden(structural { inner: { value: int } } loan): void {
