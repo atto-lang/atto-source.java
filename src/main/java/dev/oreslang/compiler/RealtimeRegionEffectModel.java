@@ -192,7 +192,7 @@ public final class RealtimeRegionEffectModel {
         private void apply(Op op) {
             Objects.requireNonNull(op, "unverified null operation");
             if (op instanceof Allocate a) {
-                if (a.bytes() < 0) deny("negative allocation");
+                if (a.bytes() <= 0) deny("allocation size must be positive");
                 Region r = region(a.region());
                 if (r.kind() != RegionKind.ACTOR_ARENA && r.kind() != RegionKind.SCOPED) {
                     deny("critical allocation into unmanaged or immutable region");
