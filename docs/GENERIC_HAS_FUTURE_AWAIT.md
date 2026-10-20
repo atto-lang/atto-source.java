@@ -81,6 +81,10 @@ the same positive and negative cases.
   A second explicit `await` is necessary to obtain `T`.
 - Module-qualified trait resolution, inherited class implementations, and
   inherited generic trait specializations have dedicated compile-time tests.
+- Generic inheritance traversal is path-local and checks nominal declaration
+  identity, not only fully instantiated type equality: `A<T> : A<Array<T>>`
+  must not cause unbounded recursion. Diamond paths are independently visited;
+  identical `HasFuture<T>` witnesses may agree, conflicting `T` must fail.
 - The ownership pass must project the awaited result to `T` with the correct
   Copy/move classification; it must not inherit the wrapper's ownership kind.
   A named `HasFuture<T>` receiver is borrowed immutably for the synchronous
