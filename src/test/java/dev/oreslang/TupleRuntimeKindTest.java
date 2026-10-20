@@ -123,6 +123,48 @@ final class TupleRuntimeKindTest {
     }
 
     @Test
+    void tuplePatternNeverAcceptsArrayEvenIfElementsMatch() throws Exception {
+        GuestRuntime guest = runtime();
+        Method patterns = guest.evaluator().getClass().getDeclaredMethod(
+                "patternMatches",
+                Ast.Pattern.class, Object.class, java.util.Map.class);
+        patterns.setAccessible(true);
+        Ast.TuplePattern shape = new Ast.TuplePattern(List.of(
+                new Ast.LiteralPattern(1L),
+                new Ast.LiteralPattern(2L)));
+
+        assertTrue((boolean) patterns.invoke(guest.evaluator(), shape,
+                new OresTuple(List.of(1L, 2L)),
+                new java.util.LinkedHashMap<String, Object>()));
+        assertFalse((boolean) patterns.invoke(guest.evaluator(), shape,
+                new ArrayList<>(List.of(1L, 2L)),
+                new java.util.LinkedHashMap<String, Object>()));
+    }
+
+    @Test
+    void privateIsolationCopyRetainsTupleTagNestedInEntry() throws Exception {
+        Method isolate = ActorRuntime.class.getDeclaredMethod(
+                "isolateCopy", Object.class);
+        isolate.setAccessible(true);
+        OresEntry value = new OresEntry(new OresTuple(List.of(3L, 4L)), "v");
+        OresEntry copy = assertInstanceOf(OresEntry.class, isolate.invoke(null, value));
+        OresTuple tuple = assertInstanceOf(OresTuple.class, copy.key());
+        assertNotSame(value.key(), tuple);
+        assertTrue(runtime().equal(tuple, value.key()));
+    }
+
+    @Test
+    void hostOperationsCannotTraverseCyclicTuplePayloads() {
+        ArrayList<Object> cycle = new ArrayList<>();
+        OresTuple tuple = new OresTuple(List.of(cycle));
+        cycle.add(tuple);
+        assertSame(tuple, tuple);
+        assertNotEquals(tuple, new OresTuple(List.of(cycle)));
+        assertEquals(System.identityHashCode(tuple), tuple.hashCode());
+        assertEquals("OresTuple<opaque>", tuple.toString());
+    }
+
+    @Test
     void asyncTupleReturnRemainsAValidRuntimeTuple() throws Exception {
         String code = """
                 async fnc pair(): (int, int) {
