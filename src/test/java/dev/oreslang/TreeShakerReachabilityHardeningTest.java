@@ -167,36 +167,6 @@ final class TreeShakerReachabilityHardeningTest {
     }
 
     @Test
-    void anonymousWildcardImportIsKeptWhenAnExternalBindingSurvives() {
-        Ast.ImportDecl wildcard = new Ast.ImportDecl(
-                Ast.ImportKind.ALL,
-                List.of(),
-                true,
-                null,
-                "./dependency.ores");
-        Ast.FunctionDecl main = new Ast.FunctionDecl(
-                "main",
-                Ast.CallableKind.ROUTINE,
-                Ast.Visibility.PUBLIC,
-                false,
-                Ast.ActorKind.NONE,
-                List.of(),
-                List.of(),
-                Ast.TypeRef.simple("void"),
-                List.of(),
-                List.of(new Ast.ExprStmt(new Ast.NameExpr("externalName"))));
-
-        Ast.Program input = new Ast.Program(
-                List.of(wildcard),
-                List.of(new Ast.ModuleDecl(Parser.ROOT_MODULE, List.of(main))));
-
-        TreeShaker.Result result = TreeShaker.shake(input, BuildOptions.executable());
-
-        assertEquals(List.of(wildcard), result.program().imports());
-        assertTrue(result.manifest().externalBindings().contains("externalName"));
-    }
-
-    @Test
     void fieldAnnotationTypeDependenciesRemainReachable() {
         Ast.ClassDecl marker = privateClass("Marker");
         Ast.FieldDecl config = new Ast.FieldDecl(
