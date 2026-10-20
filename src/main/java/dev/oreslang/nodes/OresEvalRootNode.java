@@ -6362,11 +6362,18 @@ public final class OresEvalRootNode extends RootNode {
                                 "enum constructor " + namespace.name() + "." + name
                                         + " expects " + expected + " argument(s)");
                     }
+                    Object payload = expected == 0 ? null : args.getFirst();
+                    if (enumCase.payload() != null
+                            && !oresTypeMatches(payload, enumCase.payload())) {
+                        throw new IllegalArgumentException(
+                                "enum payload for " + namespace.name() + "." + name
+                                        + " does not match " + enumCase.payload());
+                    }
                     return new EnumValue(
                             qualifiedEnumName(enumeration),
                             enumCase.name(),
                             enumCase.tag(),
-                            expected == 0 ? null : args.getFirst());
+                            payload);
                 };
             }
             if (receiver instanceof String text) {
