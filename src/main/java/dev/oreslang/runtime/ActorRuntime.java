@@ -7950,6 +7950,12 @@ public final class ActorRuntime implements AutoCloseable {
                         // and post-handler ownership checks have returned.
                         // If handler throws, MessageEnvelope.close rejects it.
                         if (activeEnvelope.call() != null) {
+                            // Unlowered source suspension cannot transfer unary
+                            // reply ownership to a continuation safely.
+                            if (sourceReceiveSuspended) {
+                                throw new IllegalStateException(
+                                        "unary actor reply cannot cross an unlowered suspension");
+                            }
                             activeEnvelope.call().commit();
                         }
                     }
