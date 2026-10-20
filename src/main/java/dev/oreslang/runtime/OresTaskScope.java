@@ -244,8 +244,21 @@ public final class OresTaskScope {
     private void completeDrain() {
         try {
             onClosed.accept(this);
-        } finally {
-            drained.completeFromRuntime(null);
+        } catch (RuntimeException | Error failure) {
+            // The drain Future is a lifetime/reclamation witness. Never report
+            // successful quiescence if the owning TaskRunner failed to
+            // deregister/finalize this scope. Surface the owner failure to the
+            // waiter and keep success fail-closed.
+            if (!drained.failFromRuntime(failure)) {
+                throw new IllegalStateException(
+                        "Task scope drain was already settled before owner failure",
+                        failure);
+            }
+            return;
+        }
+        if (!drained.completeFromRuntime(null)) {
+            throw new IllegalStateException(
+                    "Task scope drain completed more than once");
         }
     }
 }
