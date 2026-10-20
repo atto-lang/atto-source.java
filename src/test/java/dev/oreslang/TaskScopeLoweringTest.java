@@ -91,6 +91,28 @@ final class TaskScopeLoweringTest {
         assertEquals("42", run(source));
     }
 
+
+    @Test
+    void scopedTaskMayInvokeSuspendsCallableFromSynchronousParent() throws Exception {
+        String source = """
+                suspends fnc operation(): int {
+                    return 40;
+                }
+
+                pub routine main(): void {
+                    nb scope {
+                        let worker = nb {
+                            stdio.stdout.write(operation() + 2);
+                        };
+                    }
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("42", run(source));
+    }
+
     @Test
     void borrowedTaskCaptureStillFailsClosedInsideScope() {
         IllegalArgumentException failure = assertThrows(
