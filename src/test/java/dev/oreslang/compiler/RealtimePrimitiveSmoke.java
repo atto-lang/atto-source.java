@@ -63,12 +63,20 @@ public final class RealtimePrimitiveSmoke {
                 List.of(ret(new Ast.CallExpr(name("add1"), List.of(name("x"))))));
         Ast.Program simple = program(tick, plus);
         var artifact = RealtimePrimitiveCompiler.compile(simple, "tick", 1, budget, out);
-        if (!artifact.classFile().toFile().isFile() || artifact.bytecodeSha256().length() != 64
+        if (!artifact.classFile().toFile().isFile()
+                || !artifact.manifestFile().toFile().isFile()
+                || artifact.bytecodeSha256().length() != 64
                 || artifact.sourceReport().reachableFunctions() != 2
                 || artifact.sourceReport().maxCallDepth() != 2
                 || artifact.classfileReport().verifiedMethods() != 2
                 || !artifact.classfileReport().assurance().contains("CLASSFILE")) {
-            throw new AssertionError("missing classfile, call graph, bytecode audit, or fingerprint");
+            throw new AssertionError("missing classfile, manifest, call graph, bytecode audit, or fingerprint");
+        }
+        String manifest = Files.readString(artifact.manifestFile(), StandardCharsets.UTF_8);
+        if (!manifest.contains("schema=oreslang.realtime-artifact.v1")
+                || !manifest.contains("bytecode.sha256=" + artifact.bytecodeSha256())
+                || !manifest.contains("classfile.acyclic_call_graph=true")) {
+            throw new AssertionError("realtime artifact manifest is incomplete or not bound to classfile");
         }
 
         Path forbiddenOut = out.resolve("forbidden-classfile");
