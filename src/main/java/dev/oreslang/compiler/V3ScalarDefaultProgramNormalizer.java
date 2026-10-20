@@ -93,9 +93,6 @@ public final class V3ScalarDefaultProgramNormalizer {
             }
         }
         List<Ast.Decl> normalized = new ArrayList<>(module.declarations().size());
-        for (Ast.FunctionDecl fn : byName.values()) {
-            // Insertion order is reconstructed from the original module below.
-        }
         for (Ast.Decl declaration : module.declarations()) {
             Ast.FunctionDecl fn = (Ast.FunctionDecl) declaration;
             Set<String> parameters = new HashSet<>();
