@@ -16,4 +16,34 @@ class IpcReceiptParityTest {
     void terminalFutureAndTransportLossRaces() throws Exception {
         IpcReceiptCompletionBridgeSelfTest.main(new String[0]);
     }
+
+    @Test
+    void oneShotPhysicalBridgeBindingRejectsReconnectAba() {
+        IpcReceiptPhysicalBindingSelfTest.main(new String[0]);
+    }
+
+    @Test
+    void closeAndAdmissionLinearizeWithoutAmbiguousNeverSentWindow() throws Exception {
+        IpcSessionAdmissionCloseRaceSelfTest.main(new String[0]);
+    }
+
+    @Test
+    void trustedPhysicalSessionWriteAndCloseDrain() throws Exception {
+        IpcTransportSessionLeaseSelfTest.main(new String[0]);
+    }
+
+    @Test
+    void authenticatedLoopbackSocketFramesAndReceipts() throws Exception {
+        IpcAuthenticatedSocketTransportSelfTest.main(new String[0]);
+    }
+
+    @Test
+    void authenticatedSocketFramesCrossForkedJvmBoundary() throws Exception {
+        IpcAuthenticatedSocketTwoProcessSelfTest.main(new String[0]);
+    }
+
+    @Test
+    void actorCarriersCannotEnterBlockingIpcHostOperations() throws Exception {
+        IpcBlockingGuardSelfTest.main(new String[0]);
+    }
 }
