@@ -520,6 +520,37 @@ final class TaskAccessVerifierTest {
                 ledger.admit(List.of(read(process))));
     }
 
+    @Test
+    void sameCoordinatesCannotForgeExactTicketIdentity() throws Exception {
+        var verifier = new TaskAccessVerifier();
+        var exact = verifier.admit(List.of(
+                read(TaskAccessVerifier.Place.whole(WORLD))));
+
+        var epochField = TaskAccessVerifier.Ticket.class
+                .getDeclaredField("scopeEpoch");
+        var idField = TaskAccessVerifier.Ticket.class
+                .getDeclaredField("id");
+        epochField.setAccessible(true);
+        idField.setAccessible(true);
+
+        Object exactEpoch = epochField.get(exact);
+        long exactId = idField.getLong(exact);
+        var constructor = TaskAccessVerifier.Ticket.class
+                .getDeclaredConstructor(Object.class, long.class);
+        constructor.setAccessible(true);
+        var forged = constructor.newInstance(exactEpoch, exactId);
+
+        assertNotSame(exact, forged);
+        assertThrows(IllegalArgumentException.class,
+                () -> verifier.requestCancel(forged),
+                "same verifier epoch/id coordinates must not forge ticket identity");
+        assertEquals(1, verifier.activeChildren(),
+                "forged ticket must not mutate the live exact loan");
+
+        verifier.quiescent(exact);
+        assertEquals(0, verifier.activeChildren());
+    }
+
     @Test void illegalInputsFailClosed() {
         assertThrows(IllegalArgumentException.class,
                 () -> new TaskAccessVerifier.Root("", 1, 1, true));
