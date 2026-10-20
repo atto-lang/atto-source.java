@@ -134,4 +134,39 @@ final class TupleLiteralSyntaxTest {
         assertDoesNotThrow(() -> TypeChecker.check(parsed));
     }
 
+
+    @Test
+    void anyUserTupleFunctionFamilyDisablesBuiltinFallbackForOtherArities() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc tuple(int value): int {
+                          return value;
+                        }
+
+                        fnc main(): int {
+                          const values = tuple(1, 2, 3);
+                          return values[0];
+                        }
+                        """)));
+        assertTrue(
+                failure.getMessage().contains("tuple")
+                        || failure.getMessage().contains("call"),
+                failure.getMessage());
+    }
+
+    @Test
+    void explicitBraceTupleNeverResolvesThroughUserTupleFunction() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc tuple(int a, int b, int c): int {
+                  return a + b + c;
+                }
+
+                fnc main(): int {
+                  const values = tuple {1, 2, 3};
+                  return values[1];
+                }
+                """)));
+    }
+
 }
