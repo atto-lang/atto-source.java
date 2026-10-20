@@ -36,40 +36,56 @@ public final class SymbolPropertyKeyCodec {
 
     private SymbolPropertyKeyCodec() { }
 
+    private record KeyParts(byte kind, String value, int limit) { }
+
+    private static KeyParts keyParts(Object key) {
+        if (key instanceof String text) {
+            return new KeyParts(TEXT, text, MAX_TEXT_KEY_BYTES);
+        }
+        if (key instanceof OresSymbol symbol) {
+            return new KeyParts(
+                    symbol.kind() == OresSymbol.Kind.PROCESS
+                            ? PROCESS_SYMBOL : STABLE_SYMBOL,
+                    symbol.name(),
+                    MAX_SYMBOL_KEY_BYTES);
+        }
+        throw new IllegalArgumentException(
+                "key codec accepts only String or Symbol");
+    }
+
+    /**
+     * Return the exact v1 wire size without allocating an encoded frame.
+     * Package-private so OresKeyedMap can enforce quotas on hot lookup/write
+     * paths without constructing throwaway UTF-8 buffers.
+     */
+    static int encodedWireLength(Object key) {
+        KeyParts parts = keyParts(key);
+        String value = parts.value();
+
+        // A valid UTF-8 key cannot use fewer bytes than UTF-16 code units.
+        // Reject obviously oversized input before scanning every code point.
+        if (value.length() > parts.limit()) {
+            throw new IllegalArgumentException("key exceeds tagged wire length budget");
+        }
+        int utf8Bytes = strictUtf8Length(value);
+        if (utf8Bytes > parts.limit()
+                || parts.kind() != TEXT && utf8Bytes == 0) {
+            throw new IllegalArgumentException("key exceeds tagged wire length budget");
+        }
+        return HEADER_LENGTH + utf8Bytes;
+    }
+
     /** Return independent UTF-8 bytes; never leak a Symbol table/handle ID. */
     public static byte[] encode(Object key) {
-        final byte kind;
-        final String value;
-        final int limit;
-        if (key instanceof String text) {
-            kind = TEXT;
-            value = text;
-            limit = MAX_TEXT_KEY_BYTES;
-        } else if (key instanceof OresSymbol symbol) {
-            kind = symbol.kind() == OresSymbol.Kind.PROCESS
-                    ? PROCESS_SYMBOL : STABLE_SYMBOL;
-            value = symbol.name();
-            limit = MAX_SYMBOL_KEY_BYTES;
-        } else {
-            throw new IllegalArgumentException(
-                    "key codec accepts only String or Symbol");
+        KeyParts parts = keyParts(key);
+        int wireLength = encodedWireLength(key);
+        byte[] utf8 = strictEncode(parts.value());
+        if (wireLength != HEADER_LENGTH + utf8.length) {
+            throw new IllegalStateException("UTF-8 key length preflight disagrees with encoder");
         }
-
-        // Bound the input before allocating the UTF-8 encoder's buffer.
-        // A hostile text key may be multi-megabyte even though v1 accepts
-        // at most 16 KiB. UTF-16 code units are a lower bound on UTF-8 bytes
-        // for well-formed Unicode, so this precheck cannot reject a valid
-        // canonical key that the subsequent byte-budget check would accept.
-        if (value.length() > limit) {
-            throw new IllegalArgumentException("key exceeds tagged wire length budget");
-        }
-        byte[] utf8 = strictEncode(value);
-        if (utf8.length > limit || kind != TEXT && utf8.length == 0) {
-            throw new IllegalArgumentException("key exceeds tagged wire length budget");
-        }
-        ByteBuffer wire = ByteBuffer.allocate(HEADER_LENGTH + utf8.length);
+        ByteBuffer wire = ByteBuffer.allocate(wireLength);
         wire.put((byte) 'O').put((byte) 'K').put((byte) VERSION)
-                .put(kind).putShort((short) utf8.length).put(utf8);
+                .put(parts.kind()).putShort((short) utf8.length).put(utf8);
         return wire.array();
     }
 
@@ -301,6 +317,30 @@ public final class SymbolPropertyKeyCodec {
     /** Backward-compatible validation helper; prefer decodeDistinctKeys. */
     public static void requireDistinct(List<byte[]> encodedKeys) {
         decodeDistinctKeys(encodedKeys);
+    }
+
+    private static int strictUtf8Length(String text) {
+        int bytes = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (ch <= 0x7f) {
+                bytes += 1;
+            } else if (ch <= 0x7ff) {
+                bytes += 2;
+            } else if (Character.isHighSurrogate(ch)) {
+                if (i + 1 >= text.length()
+                        || !Character.isLowSurrogate(text.charAt(i + 1))) {
+                    throw new IllegalArgumentException("invalid Unicode key");
+                }
+                bytes += 4;
+                i++;
+            } else if (Character.isLowSurrogate(ch)) {
+                throw new IllegalArgumentException("invalid Unicode key");
+            } else {
+                bytes += 3;
+            }
+        }
+        return bytes;
     }
 
     private static byte[] strictEncode(String text) {
