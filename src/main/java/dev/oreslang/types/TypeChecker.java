@@ -4874,6 +4874,12 @@ public final class TypeChecker {
                     targetRecord.kind());
         }
         if (source instanceof ListType sourceList && target instanceof ListType targetList) {
+            // Casts and type-pattern bindings use this overlay directly. They
+            // must never erase or invent ordered repeating group metadata.
+            if (!sourceList.repeatUnit().equals(targetList.repeatUnit())) {
+                throw new IllegalArgumentException(
+                        "cannot erase or forge a repeating collection shape through type refinement");
+            }
             List<Type> slots = targetList.repeatUnit();
             if (sourceList.patterned() && targetList.patterned()
                     && sourceList.repeatUnit().size() == slots.size()) {
