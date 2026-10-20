@@ -22,7 +22,7 @@ final class FirstClassModelGraphTest {
     // Pinned to common-source contracts/v1/model-graph/executable-v1-conformance.json.
     // A common corpus revision bump requires an explicit backend review/update.
     private static final String SHARED_EXECUTABLE_CORPUS_REVISION =
-            "model-core-i64-v1.2026-10-20.4";
+            "model-core-i64-v1.2026-10-20.5";
 
     private static final String PRICE_MODEL = """
             fnc ValidatePrice(float input): float {
@@ -48,7 +48,7 @@ final class FirstClassModelGraphTest {
 
     @Test
     void sharedExecutableCorpusRevisionIsExplicitlyPinned() {
-        assertEquals("model-core-i64-v1.2026-10-20.4",
+        assertEquals("model-core-i64-v1.2026-10-20.5",
                 SHARED_EXECUTABLE_CORPUS_REVISION);
     }
 
@@ -149,11 +149,11 @@ final class FirstClassModelGraphTest {
                         .find("PriceAdjust");
         assertNotNull(model);
         assertEquals(
-                "dec8b5f587a47648fa8973f5901e9c25e049b08179a44dc682439ee0dab8f53e",
+                "f5b7956076ea5bc9696f4cd23d68c3e4c67d7ec90023a64c834d14d304249c1d",
                 model.graphDigest(),
                 "negative i64 defaults must share the native canonical graph formula");
         assertEquals(
-                "e52dd64a55cdf48bbe33c2d50a7c3beb9685c6ad0aeb030a44dbac4796bb7f56",
+                "15ca34acbdc5478bc2971ae7895d708aca2d324be418819a2e60b3c04bc20a5c",
                 model.configuredGraphDigest(model.bindConfiguration(java.util.List.of())),
                 "negative default configuration must share native configured identity");
 
@@ -195,10 +195,10 @@ final class FirstClassModelGraphTest {
         Map<String, Object> configuration = model.bindConfiguration(java.util.List.of());
         assertEquals(Long.MIN_VALUE, configuration.get("delta"));
         assertEquals(
-                "ff37639d560a799bc3a77d1b05789855a991b8d7e1fb6cac3e15d6d0331e707a",
+                "cb008cb043de50f1663ba8faa77de94c50d92514fa2b95cbd72de5225cf5cb80",
                 model.graphDigest());
         assertEquals(
-                "c71df957be7cee30a59acf586c719d36279a6ed027072cabcb58fa89527e7cf4",
+                "27ed4d26451fa960a8271495ee8ac96bbb67bc3369ca45cf2205222a962de5a3",
                 model.configuredGraphDigest(configuration));
 
         String output = run(source + """
@@ -315,19 +315,113 @@ final class FirstClassModelGraphTest {
                         .find("PriceAdjust");
         assertNotNull(model);
         assertEquals(
-                "a65fbdcab7c63eccdb5ec19409decb2da18ca9598d4c36a773f92e8b6521531d",
+                "6c5e66eb67149e59c7d4d2d962b5671850ee3298f729214127d1452cb8d5ca21",
                 model.graphDigest(),
                 "portable model graph identity must match the LLVM native golden");
         assertEquals(
-                "4531d20945630eed7bb451d63ae73ca5637559c438f6e89be18bbcd96abe9473",
+                "3975a5571cb2fddcc6206ee0b3f0f893dcb3fa9bfbe591b8c5b9f5ab8ff539e1",
                 model.configuredGraphDigest(model.bindConfiguration(java.util.List.of())),
                 "configured model identity must match the LLVM native golden");
         assertEquals(
-                "d1a687b328765fa99037eebc8cc08a3245b5b3e903f74535ffa0cad7da30cc32",
+                "962f6b4865f7d64c5dfea914b09abdac61af4f1a41679e8f6b3adaa2bfabc9fe",
                 model.nodes().get(0).implementationDigest());
         assertEquals(
-                "61ca0d20c6c6a1a6bc88efb761fd767510ac676fcaa59f0cea2617a1af17fb63",
+                "75370f10ccb547c3a559258c0ced1fa07cdf603b4e612702b8204250d3c4f71a",
                 model.nodes().get(1).implementationDigest());
+    }
+
+    @Test
+    void portableI64ProfileIsDerivedAndDoesNotFollowJavaCapabilityWidth() {
+        String portable = """
+                fnc Identity(int input): int { return input; }
+                fnc AddDelta(int delta, int input): int { return input + delta; }
+                define model PriceAdjust(delta: int = 2) as
+                  Identity()
+                  AddDelta(delta)
+                end
+                """;
+        ModelGraphCompiler.CompiledModel i64 =
+                ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(portable))
+                        .find("PriceAdjust");
+        assertTrue(i64.supportsPortableProfile(ModelGraphCompiler.PORTABLE_PROFILE_I64_V1));
+        assertEquals(java.util.Set.of(ModelGraphCompiler.PORTABLE_PROFILE_I64_V1),
+                i64.portableProfiles());
+
+        ModelGraphCompiler.CompiledModel wide =
+                ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(PRICE_MODEL))
+                        .find("PriceEstimate");
+        assertFalse(wide.supportsPortableProfile(ModelGraphCompiler.PORTABLE_PROFILE_I64_V1),
+                "Java float execution must not imply portable i64 conformance");
+
+        String division = """
+                fnc Half(int input): int { return input / 2; }
+                define model HalfModel as
+                  Half()
+                end
+                """;
+        ModelGraphCompiler.CompiledModel javaOnly =
+                ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(division))
+                        .find("HalfModel");
+        assertFalse(javaOnly.supportsPortableProfile(ModelGraphCompiler.PORTABLE_PROFILE_I64_V1),
+                "operators outside the shared expression grammar stay Java-only");
+    }
+
+    @Test
+    void operationIdentityIgnoresParameterSpellingButBindsOperandOrder() {
+        String baseline = """
+                fnc Identity(int input): int { return input; }
+                fnc AddDelta(int delta, int input): int { return input + delta; }
+                pub define model PriceAdjust(delta: int = 2) as
+                  Identity()
+                  AddDelta(delta)
+                end
+                """;
+        String renamed = """
+                // Parameter spelling and source formatting are not semantic identity.
+                fnc Identity(int x): int {
+                  return x;
+                }
+                fnc AddDelta(int amount, int value): int {
+                  return value + amount;
+                }
+                pub define model PriceAdjust(delta: int = 2) as
+                  Identity()
+                  AddDelta(delta)
+                end
+                """;
+        String reordered = """
+                fnc Identity(int input): int { return input; }
+                fnc AddDelta(int delta, int input): int { return delta + input; }
+                pub define model PriceAdjust(delta: int = 2) as
+                  Identity()
+                  AddDelta(delta)
+                end
+                """;
+
+        ModelGraphCompiler.CompiledModel a =
+                ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(baseline))
+                        .find("PriceAdjust");
+        ModelGraphCompiler.CompiledModel b =
+                ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(renamed))
+                        .find("PriceAdjust");
+        ModelGraphCompiler.CompiledModel c =
+                ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(reordered))
+                        .find("PriceAdjust");
+
+        assertEquals(a.nodes().get(0).implementationDigest(),
+                b.nodes().get(0).implementationDigest());
+        assertEquals(a.nodes().get(1).implementationDigest(),
+                b.nodes().get(1).implementationDigest());
+        assertEquals(a.graphDigest(), b.graphDigest(),
+                "alpha-renaming/formatting must not invalidate compiled model identity");
+
+        assertNotEquals(a.nodes().get(1).implementationDigest(),
+                c.nodes().get(1).implementationDigest());
+        assertNotEquals(a.graphDigest(), c.graphDigest());
+        assertEquals("739dfcf2d1f6ce9eed795e879f7ec72e70defb2efc4520ad056681042bd0c926",
+                c.nodes().get(1).implementationDigest());
+        assertEquals("f87d8d1742d0915134a88e54bb8fb66e6cd65f156a753c1c1f3570614ec0a6ba",
+                c.graphDigest());
     }
 
     @Test
