@@ -49,11 +49,15 @@ SOURCE_SNAPSHOT_ENTRY = re.compile(
 )
 CARRIER_APPROVAL_PATH = ".github/private-oreslang-approved-source-snapshots.txt"
 CARRIER_BUILD_IMAGES_PATH = ".github/oreslang-private-build-images.txt"
+CARRIER_WORKFLOW_MANIFEST_PATH = ".github/oreslang-private-workflows.txt"
 CARRIER_SOURCE_ENTRY = re.compile(
     r"^([a-f0-9]{40}) ([a-f0-9]{40}) ([1-9][0-9]{0,19}) ([1-9][0-9]{0,19})$"
 )
 CARRIER_BUILD_IMAGE_ENTRY = re.compile(
     r"^(java21|java25) (sha256:[a-f0-9]{64})$"
+)
+CARRIER_WORKFLOW_ENTRY = re.compile(
+    r"^(\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml) ([a-f0-9]{40})$"
 )
 PROTECTED_REVIEWS_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection/required_pull_request_reviews"
 CODEOWNERS_ROUTE = SOURCE_METADATA_ROUTE + "/contents/.github/CODEOWNERS"
@@ -497,6 +501,7 @@ def require_protected_carrier_codeowners(repository, carrier_main_sha):
                 "/scripts/verify-oreslang-private-ci-snapshot.sh " + REQUIRED_CODEOWNER,
                 "/scripts/launch-oreslang-private-ci-publisher.py " + REQUIRED_CODEOWNER,
                 "/.github/oreslang-private-build-images.txt " + REQUIRED_CODEOWNER,
+                "/.github/oreslang-private-workflows.txt " + REQUIRED_CODEOWNER,
                 "/scripts/run-oreslang-private-build-in-sandbox.py " + REQUIRED_CODEOWNER,
                 "/.github/workflows/ " + REQUIRED_CODEOWNER]
     if effective[-len(expected):] != expected:
@@ -599,6 +604,66 @@ def require_carrier_sealed_build_images(repository, carrier_main_sha,
     if set(images) != {"java21", "java25"}:
         raise Denied("private carrier sealed build images are not fully approved")
     return digest, images["java21"], images["java25"]
+
+
+def require_carrier_workflow_manifest(repository, carrier_main_sha, carrier_tree_sha,
+                                      reviewed_blob_sha=None):
+    """Bind the complete carrier Actions workflow surface to reviewed blob SHAs."""
+    valid_sha(carrier_main_sha)
+    valid_sha(carrier_tree_sha)
+    metadata = gh_api(at_ref(
+        f"repos/{repository}/contents/{CARRIER_WORKFLOW_MANIFEST_PATH}",
+        carrier_main_sha))
+    if (metadata.get("type") != "file" or metadata.get("encoding") != "base64"
+            or not isinstance(metadata.get("content"), str)
+            or len(metadata["content"]) > 48 * 1024
+            or type(metadata.get("size")) is not int
+            or not 0 <= metadata["size"] <= 32 * 1024):
+        raise Denied("private carrier workflow manifest is unavailable")
+    try:
+        raw = base64.b64decode("".join(metadata["content"].splitlines()), validate=True)
+        lines = raw.decode("utf-8").splitlines()
+    except (ValueError, UnicodeError) as exc:
+        raise Denied("private carrier workflow manifest is invalid") from exc
+    digest = hashlib.sha1(
+        b"blob " + str(len(raw)).encode("ascii") + bytes([0]) + raw
+    ).hexdigest()
+    if (len(raw) != metadata["size"] or bytes([0]) in raw
+            or valid_sha(metadata.get("sha")) != digest):
+        raise Denied("private carrier workflow manifest integrity failed")
+    if reviewed_blob_sha is not None and digest != reviewed_blob_sha:
+        raise Denied("private carrier workflow manifest changed during transfer")
+
+    approved = {}
+    for line in lines:
+        if not line or line.startswith("#"):
+            continue
+        match = CARRIER_WORKFLOW_ENTRY.fullmatch(line)
+        if match is None or match.group(1) in approved:
+            raise Denied("private carrier workflow manifest is malformed or ambiguous")
+        approved[match.group(1)] = match.group(2)
+    if not approved or len(approved) > 16:
+        raise Denied("private carrier workflow manifest must list 1..16 workflows")
+
+    tree = gh_api(f"repos/{repository}/git/trees/{carrier_tree_sha}?recursive=1")
+    if (tree.get("sha") != carrier_tree_sha or tree.get("truncated") is not False
+            or not isinstance(tree.get("tree"), list)):
+        raise Denied("private carrier recursive tree is unavailable or truncated")
+    actual = {}
+    for entry in tree["tree"]:
+        if not isinstance(entry, dict):
+            raise Denied("private carrier recursive tree contains malformed entries")
+        path = entry.get("path")
+        if (isinstance(path, str)
+                and path.startswith(".github/workflows/")
+                and (path.endswith(".yml") or path.endswith(".yaml"))):
+            if (entry.get("type") != "blob" or entry.get("mode") not in ("100644", "100755")
+                    or path in actual):
+                raise Denied("private carrier workflow tree entry is invalid")
+            actual[path] = valid_sha(entry.get("sha"))
+    if actual != approved:
+        raise Denied("private carrier workflow surface differs from reviewed manifest")
+    return digest, tuple(sorted(actual.items()))
 
 
 def require_carrier_source_ruleset(repository, ruleset_id):
@@ -1291,6 +1356,8 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     carrier_approval_sha, carrier_ruleset_id = require_carrier_source_approval(
         repository, expected_source_commit, expected_source_tree, base_sha)
     carrier_build_images = require_carrier_sealed_build_images(repository, base_sha)
+    carrier_workflows = require_carrier_workflow_manifest(
+        repository, base_sha, approved_carrier_tree)
     require_carrier_source_ruleset(repository, carrier_ruleset_id)
     require_effective_carrier_source_rules(
         repository, branch, carrier_ruleset_id)
@@ -1340,6 +1407,10 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
             repository, base_sha, carrier_build_images[0])
         if current_build_images[1:] != carrier_build_images[1:]:
             raise Denied("private carrier sealed build images changed during transfer")
+        current_workflows = require_carrier_workflow_manifest(
+            repository, base_sha, approved_carrier_tree, carrier_workflows[0])
+        if current_workflows[1:] != carrier_workflows[1:]:
+            raise Denied("private carrier workflow surface changed during transfer")
         require_carrier_source_ruleset(repository, carrier_ruleset_id)
         require_effective_carrier_source_rules(
             repository, branch, carrier_ruleset_id)
