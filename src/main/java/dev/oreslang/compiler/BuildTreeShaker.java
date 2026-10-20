@@ -107,8 +107,10 @@ public final class BuildTreeShaker {
                     unit.program(),
                     new BuildOptions(defines, roots, demand.preservePublicApi()));
 
-            LinkedHashSet<Ast.ImportDecl> imports =
+            LinkedHashSet<Ast.ImportDecl> usedImports =
                     new LinkedHashSet<>(result.program().imports());
+            LinkedHashSet<Ast.ImportDecl> imports =
+                    new LinkedHashSet<>(usedImports);
 
             // Preserve initialization semantics. If importing a unit can cause
             // a direct or transitive init hook to execute, the edge itself is
@@ -141,7 +143,9 @@ public final class BuildTreeShaker {
                     throw new IllegalArgumentException(
                             "resolved import target '" + targetId + "' is not in checked build");
                 }
-                ImportDemand importedDemand = demandForImport(imported, target.program());
+                ImportDemand importedDemand = usedImports.contains(imported)
+                        ? demandForImport(imported, target.program())
+                        : new ImportDemand(Set.of(), false);
                 mergeDemand(
                         demands,
                         work,
