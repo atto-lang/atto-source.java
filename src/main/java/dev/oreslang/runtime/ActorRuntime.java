@@ -1272,6 +1272,21 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        void copyInto(double[] destination, int offset) {
+            Objects.requireNonNull(destination, "destination");
+            synchronized (cell.lifecycleLock) {
+                checkCaller();
+                if (revoked || cell.finalized) {
+                    throw new IllegalStateException("shard snapshot revoked");
+                }
+                if (offset < 0 || offset > destination.length
+                        || values.length > destination.length - offset) {
+                    throw new IndexOutOfBoundsException("snapshot destination span");
+                }
+                System.arraycopy(values, 0, destination, offset, values.length);
+            }
+        }
+
         void writeFromOwner(int index, double value) {
             synchronized (cell.lifecycleLock) {
                 if (currentActor.get() != cell || revoked || cell.finalized) {
