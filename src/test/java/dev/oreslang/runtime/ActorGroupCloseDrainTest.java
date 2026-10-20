@@ -270,4 +270,107 @@ final class ActorGroupCloseDrainTest {
             assertSame(done, group.closeAsync());
         }
     }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void eventBusDequeuedDeliveryRetainsExactQuotaOwnerUntilRetry()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability join = group.joinCapability();
+            ActorEventBus bus = group.events();
+            bus.defineTopic(
+                    "retryable-close",
+                    ActorEventBus.DeliveryPolicy.LATEST,
+                    1);
+
+            var subscribed = new CountDownLatch(1);
+            var subscription =
+                    new java.util.concurrent.atomic.AtomicReference<
+                            ActorEventBus.Subscription<java.util.List<Integer>>>();
+            ActorRuntime.ActorRef<String> actor =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        if ("subscribe".equals(message)) {
+                            join.join();
+                            subscription.set(bus.subscribe("retryable-close"));
+                            subscribed.countDown();
+                        }
+                    });
+            actor.send("subscribe");
+            assertTrue(subscribed.await(5, TimeUnit.SECONDS));
+
+            bus.publishSystem(
+                    "retryable-close",
+                    new java.util.ArrayList<>(java.util.List.of(1, 2, 3)));
+            long reserved = runtime.sharedMemoryBytes();
+            assertTrue(reserved > 0L);
+
+            var accountingField =
+                    ActorRuntime.class.getDeclaredField("sharedMemoryBytes");
+            accountingField.setAccessible(true);
+            var accounting =
+                    (java.util.concurrent.atomic.AtomicLong)
+                            accountingField.get(runtime);
+
+            var busComplete =
+                    ActorEventBus.class.getDeclaredField("closeCleanupComplete");
+            var busAmbiguous =
+                    ActorEventBus.class.getDeclaredField("closeCleanupAmbiguous");
+            busComplete.setAccessible(true);
+            busAmbiguous.setAccessible(true);
+
+            Object sub = subscription.get();
+            assertNotNull(sub);
+            var pendingField =
+                    sub.getClass().getDeclaredField("closePendingDelivery");
+            var subCompleteField =
+                    sub.getClass().getDeclaredField("closeCleanupComplete");
+            pendingField.setAccessible(true);
+            subCompleteField.setAccessible(true);
+
+            var groupsField =
+                    ActorRuntime.class.getDeclaredField("actorGroups");
+            groupsField.setAccessible(true);
+            var groups =
+                    (java.util.Map<Object, Object>) groupsField.get(runtime);
+
+            // Corrupt only the aggregate witness. The queued Event still owns
+            // its exact reservation, so final delivery release must fail closed.
+            accounting.set(0L);
+            var failure =
+                    assertThrows(IllegalStateException.class, group::closeAsync);
+            assertTrue(failure.getMessage().contains(
+                    "shared actor memory accounting underflow"));
+            assertTrue(group.closed());
+            assertTrue(bus.closed());
+            assertTrue(subscription.get().closed());
+            assertFalse(busComplete.getBoolean(bus));
+            assertFalse(busAmbiguous.getBoolean(bus),
+                    "exact retained delivery makes this failure retryable");
+            assertFalse(subCompleteField.getBoolean(sub));
+            assertNotNull(pendingField.get(sub),
+                    "dequeued Event must remain the concrete retry owner");
+            assertSame(group, groups.get(group.id()),
+                    "closed group must retain nested cleanup authority");
+
+            // Repair the trusted aggregate witness. The same group close must
+            // resume the same Event/Reservation rather than infer completion
+            // from the now-empty channel.
+            accounting.set(reserved);
+            OresFuture<Void> done = group.closeAsync();
+
+            assertTrue(busComplete.getBoolean(bus));
+            assertFalse(busAmbiguous.getBoolean(bus));
+            assertTrue(subCompleteField.getBoolean(sub));
+            assertNull(pendingField.get(sub));
+            assertEquals(0L, runtime.sharedMemoryBytes(),
+                    "successful retry must refund the retained quota exactly once");
+            assertNull(groups.get(group.id()));
+            done.get(5, TimeUnit.SECONDS);
+
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
 }
