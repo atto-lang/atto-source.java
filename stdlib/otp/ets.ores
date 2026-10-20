@@ -66,8 +66,8 @@ define module OtpEts as
     if maximum < 1 || maximum > 1000000; do
       return Err("ETS query maximum must be 1..1000000");
     fi
-    if entries > maximum; do
-      return Err("ETS entry count exceeds query maximum");
+    if entries > 1000000; do
+      return Err("ETS entry count exceeds supported table bound");
     fi
     return Ok(requested <= entries && requested <= maximum);
   }
