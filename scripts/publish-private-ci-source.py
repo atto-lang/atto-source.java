@@ -35,6 +35,11 @@ class Denied(RuntimeError):
     pass
 
 
+class GitHubWriteRejected(Denied):
+    """GitHub definitively rejected a write; no remote object was created."""
+    pass
+
+
 def valid_sha(value):
     if not isinstance(value, str) or not SHA.fullmatch(value):
         raise Denied("GitHub returned an invalid object SHA")
@@ -136,6 +141,12 @@ def gh_api(route, method="GET", payload=None):
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("authenticated GitHub API request unavailable") from exc
     if p.returncode != 0:
+        # Ref-create 422 responses are definitive rejected writes. Expose this
+        # distinction so rollback code never deletes a pre-existing ref after
+        # an atomic create conflict.
+        if (method == "POST" and route.endswith("/git/refs")
+                and isinstance(p.stderr, str) and "HTTP 422" in p.stderr):
+            raise GitHubWriteRejected("authenticated GitHub ref creation was rejected")
         raise Denied("authenticated GitHub API request failed")
     if (not isinstance(p.stdout, str)
             or len(p.stdout) > MAX_GH_API_RESPONSE_CHARS):
