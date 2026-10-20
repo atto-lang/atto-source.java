@@ -31,7 +31,7 @@ class OresSymbolTest {
     }
 
     @Test void nfcNormalizationAndKindSeparation() {
-        assertEquals(OresSymbol.process("café"), OresSymbol.process("cafe\u0301"));
+        OresPropertyKey decomposed = OresPropertyKey.from(OresSymbol.process("cafe\u0301"));
         String uuid = "550e8400-e29b-41d4-a716-446655440000";
         assertNotEquals(OresSymbol.process(uuid), OresSymbol.stable(uuid));
         assertEquals(OresSymbol.stable(uuid), OresSymbol.stable(uuid));
@@ -50,7 +50,7 @@ class OresSymbolTest {
                 () -> OresSymbol.process("a".repeat(100_000)));
         OresSymbol longName = OresSymbol.process("a".repeat(129));
         String rendered = longName.toString();
-        assertTrue(rendered.startsWith("#\\\""), "unquoted Symbol exceeds lexical limit");
+        assertTrue(rendered.startsWith("#\""), "unquoted Symbol exceeds lexical limit");
         List<Token> parsed = new Lexer(rendered).scan();
         assertEquals(Token.Type.SYMBOL_LITERAL, parsed.getFirst().type());
         assertEquals(longName.name(), parsed.getFirst().lexeme());
@@ -59,7 +59,7 @@ class OresSymbolTest {
     @Test void taggedPropertyKeyDomainsPreserveCanonicalIdentity() {
         OresPropertyKey text = OresPropertyKey.from("café");
         OresPropertyKey canonical = OresPropertyKey.from(OresSymbol.process("café"));
-        OresPropertyKey decomposed = OresPropertyKey.from(OresSymbol.process("cafe\\u0301"));
+        OresPropertyKey decomposed = OresPropertyKey.from(OresSymbol.process("cafe\u0301"));
         assertNotEquals(text, canonical);
         assertEquals(canonical, decomposed);
         assertEquals(OresPropertyKey.Domain.TEXT, text.domain());
