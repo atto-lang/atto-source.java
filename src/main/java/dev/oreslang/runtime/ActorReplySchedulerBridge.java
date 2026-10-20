@@ -6,6 +6,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 
 /**
@@ -34,7 +35,9 @@ public final class ActorReplySchedulerBridge {
         Objects.requireNonNull(timer, "timer");
         Objects.requireNonNull(continuation, "continuation");
         if (timeout.isZero() || timeout.isNegative()) {
-            throw new IllegalArgumentException("request deadline must be finite and positive");
+            ticket.failAdmission(caller,
+                    new IllegalArgumentException("request deadline must be positive"));
+            return OresFuture.from(ticket.result());
         }
 
         final ActorRuntime.ContinuationTarget owner = runtime.captureCurrentContinuationTarget();
@@ -44,27 +47,12 @@ public final class ActorReplySchedulerBridge {
                 () -> ticket.claimCancel(caller), ticket::publishCancellation);
         runtime.enqueueOnCompletion(future, owner, continuation);
 
-        final long delay;
-        try {
-            delay = timeout.toNanos();
-        } catch (ArithmeticException overflow) {
-            ticket.failAdmission(caller, new IllegalArgumentException("deadline overflow", overflow));
-            return future;
-        }
-
-        final ScheduledFuture<?> deadline;
-        try {
-            deadline = timer.schedule(() -> ticket.timeout(caller), delay, TimeUnit.NANOSECONDS);
-        } catch (RuntimeException schedulingFailed) {
-            ticket.failAdmission(caller, schedulingFailed);
-            return future;
-        }
-
-        // This handler is *only* scheduler accounting and Future settlement.
-        // It never runs an Oreslang guest callback. enqueueOnCompletion routes
-        // all guest work onto the captured actor's continuation mailbox.
+        final AtomicReference<ScheduledFuture<?>> scheduled = new AtomicReference<>();
+        // Register settlement BEFORE deadline admission: even timer rejection
+        // and immediate cancellation must complete the outer Future.
         ticket.result().whenComplete((value, failure) -> {
-            deadline.cancel(false);
+            ScheduledFuture<?> deadline = scheduled.get();
+            if (deadline != null) deadline.cancel(false);
             if (failure == null) {
                 future.completeFromRuntime(value);
             } else {
@@ -72,6 +60,24 @@ public final class ActorReplySchedulerBridge {
                 future.failFromRuntime(cause == null ? new CompletionException(failure) : cause);
             }
         });
+
+        final long delay;
+        try {
+            delay = timeout.toNanos();
+        } catch (ArithmeticException overflow) {
+            ticket.failAdmission(caller, new IllegalArgumentException("deadline overflow", overflow));
+            return future;
+        }
+        try {
+            ScheduledFuture<?> deadline =
+                    timer.schedule(() -> ticket.timeout(caller), delay, TimeUnit.NANOSECONDS);
+            scheduled.set(deadline);
+            if (ticket.state() != GenerationalReplyRegistry.State.PENDING) {
+                deadline.cancel(false);
+            }
+        } catch (RuntimeException schedulingFailed) {
+            ticket.failAdmission(caller, schedulingFailed);
+        }
         return future;
     }
 }
