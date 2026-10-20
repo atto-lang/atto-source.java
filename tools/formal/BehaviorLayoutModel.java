@@ -19,7 +19,7 @@ public final class BehaviorLayoutModel {
     record Edge(OresSymbol from, OresSymbol event, OresSymbol to) { }
     record Key(int from, OresSymbol event) { }
     record Row(int entity, int state) { }
-    record View(int index, long epoch, Object owningStore) { }
+    private record View(int index, long epoch, Object owningStore) { }
 
     static final class Chart {
         final Map<OresSymbol, Integer> ids = new LinkedHashMap<>();
@@ -27,7 +27,10 @@ public final class BehaviorLayoutModel {
         final Map<Key, Integer> edges = new HashMap<>();
         Chart(List<OresSymbol> states, Map<OresSymbol, OresSymbol> parents, List<Edge> rules) {
             require(!states.isEmpty(), "empty states");
-            for (OresSymbol state : states) require(ids.putIfAbsent(state, ids.size()) == null, "duplicate state");
+            for (OresSymbol state : states) {
+                require(state != null, "null state Symbol");
+                require(ids.putIfAbsent(state, ids.size()) == null, "duplicate state");
+            }
             parent = new int[ids.size()];
             Arrays.fill(parent, -1);
             for (var entry : parents.entrySet()) {
@@ -39,6 +42,7 @@ public final class BehaviorLayoutModel {
                 for (int p = state; p != -1; p = parent[p]) require(seen.add(p), "parent cycle");
             }
             for (Edge rule : rules) {
+                require(rule.event() != null, "null event Symbol");
                 require(ids.containsKey(rule.from()) && ids.containsKey(rule.to()), "unknown transition state");
                 Key key = new Key(ids.get(rule.from()), rule.event());
                 require(edges.putIfAbsent(key, ids.get(rule.to())) == null, "duplicate transition key");
@@ -232,7 +236,7 @@ public final class BehaviorLayoutModel {
             this.invariants = Arrays.stream(invariants).map(int[]::clone).toArray(int[][]::new);
             Set<OresSymbol> names = new HashSet<>();
             for (Rule rule : rules) {
-                require(names.add(rule.name()), "duplicate net transition");
+                require(rule.name() != null && names.add(rule.name()), "duplicate/invalid net transition Symbol");
                 for (List<Arc> arcs : List.of(rule.pre(), rule.post())) {
                     Set<Integer> seen = new HashSet<>();
                     for (Arc arc : arcs) {
@@ -250,6 +254,11 @@ public final class BehaviorLayoutModel {
                     require(sum == 0, "P-invariant violated by transition");
                 }
             }
+        }
+        int placeId(OresSymbol symbol) {
+            Integer found = placeIds.get(symbol);
+            require(found != null, "unknown Petri place Symbol");
+            return found;
         }
         /** Returns null if disabled; computes a complete next marking before committing. */
         int[] fire(int[] current, Rule rule) {
@@ -274,7 +283,10 @@ public final class BehaviorLayoutModel {
     static final class AllocationIdentity { private AllocationIdentity() { } }
     private static AllocationIdentity issuedReferenceAllocation() { return new AllocationIdentity(); }
     record Access(Set<OresSymbol> reads, Set<OresSymbol> writes, AllocationIdentity owner) {
-        Access { reads = Set.copyOf(reads); writes = Set.copyOf(writes); }
+        Access {
+            reads = Set.copyOf(reads); writes = Set.copyOf(writes);
+            require(Collections.disjoint(reads, writes), "contradictory ECS read/write effects");
+        }
     }
     static boolean conflict(Access a, Access b) {
         require(a.owner() != null && b.owner() != null, "unknown ECS provenance");
@@ -326,6 +338,8 @@ public final class BehaviorLayoutModel {
         rejects(() -> new Chart(List.of(idle, busy), Map.of(), List.of(
                 new Edge(idle, begin, busy), new Edge(idle, begin, busy))), "duplicate accepted");
         ok(!s("private_state").publicToUntrustedCoreV1(), "private Symbol was auto-exported");
+        rejects(() -> new Chart(List.of(idle, busy), Map.of(), List.of(
+                new Edge(idle, null, busy))), "null event Symbol admitted");
         System.out.println("chart: " + operations + " identical cohort updates across layouts");
     }
 
@@ -336,6 +350,8 @@ public final class BehaviorLayoutModel {
         Rule releaseB = new Rule(s("release_b"), List.of(new Arc(3, 1)), List.of(new Arc(2, 1)));
         Net net = new Net(List.of(s("free_a"), s("held_a"), s("free_b"), s("held_b")), List.of(acquireA, releaseA, acquireB, releaseB),
                 new int[][]{{1, 1, 0, 0}, {0, 0, 1, 1}});
+        ok(net.placeId(s("held_b")) == 3, "logical place Symbol lookup failed");
+        rejects(() -> net.placeId(s("unknown")), "unknown place Symbol admitted");
         int[][] seed = new int[7][4];
         for (int[] marking : seed) { marking[0] = 1; marking[2] = 1; }
         Markings[] stores = Arrays.stream(Layout.values()).map(layout -> new Markings(seed, layout, 4)).toArray(Markings[]::new);
@@ -399,6 +415,7 @@ public final class BehaviorLayoutModel {
         ok(!conflict(step, new Access(Set.of(behavior), Set.of(), unrelated)), "disjoint allocations incorrectly serialized");
         ok(conflict(step, new Access(Set.of(), Set.of(s("behavior_state")), owned)),
                 "logical Symbol equality lost across descriptors");
+        rejects(() -> new Access(Set.of(motion), Set.of(motion), owned), "conflicting ECS effect declaration admitted");
         System.out.println("ECS: conservative access conflicts and unknown provenance checked");
     }
 
