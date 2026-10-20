@@ -5052,7 +5052,10 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.NewExpr created,
                 List<Object> args,
                 Env env) {
-            if (created.type().name().equals("Future") && findClass("Future") == null) {
+            if (created.type().name().equals("Future")) {
+                if (findClass("Future") != null) {
+                    throw new IllegalStateException("Future intrinsic constructor was shadowed by a linked class");
+                }
                 if (created.type().inferArguments() || created.type().arguments().size() != 1
                         || args.size() != 1 || !(args.getFirst() instanceof OresObject provider)
                         || provider.klass.actorKind() != Ast.ActorKind.NONE) {
@@ -6952,7 +6955,10 @@ public final class OresEvalRootNode extends RootNode {
                 // must recognize the identical builtin constructor; otherwise
                 // an ordinary synchronous entry point throws "unknown class
                 // Future" even for an already type-checked provider.
-                if (created.type().name().equals("Future") && findClass("Future") == null) {
+                if (created.type().name().equals("Future")) {
+                    if (findClass("Future") != null) {
+                        throw new IllegalStateException("Future intrinsic constructor was shadowed by a linked class");
+                    }
                     List<Object> args = new ArrayList<>(created.arguments().size());
                     for (Ast.Expr argument : created.arguments()) {
                         args.add(eval(argument, env));
