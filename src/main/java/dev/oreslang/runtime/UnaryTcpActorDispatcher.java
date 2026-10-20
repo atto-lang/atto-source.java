@@ -130,7 +130,7 @@ final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher
                                     (OresFuture<Object>) runtime.ownCurrentActorFuture(future);
                             ActorRuntime.ContinuationTarget target =
                                     runtime.captureCurrentContinuationTarget();
-                            runtime.enqueueOnCompletion(
+                            runtime.enqueueDataOnCompletion(
                                     owned,
                                     target,
                                     (value, failure) -> {
