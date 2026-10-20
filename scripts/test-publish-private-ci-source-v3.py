@@ -538,7 +538,10 @@ class PrivateCiV3Test(unittest.TestCase):
                     "trusted/ci", "ci/authorized-" + COMMIT, COMMIT,
                     carrier["repository_id"],
                 ),
-                ("trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT),
+                (
+                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT,
+                    carrier["repository_id"],
+                ),
             ],
         )
 
@@ -603,7 +606,10 @@ class PrivateCiV3Test(unittest.TestCase):
                     "trusted/ci", "ci/authorized-" + COMMIT, COMMIT,
                     carrier["repository_id"],
                 ),
-                ("trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT),
+                (
+                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT,
+                    carrier["repository_id"],
+                ),
             ],
         )
 
