@@ -459,6 +459,9 @@ public final class OwnershipChecker {
                 throw error("cannot yield while a borrow is live; suspended generator frames currently require owned locals");
             }
             ValueInfo value = checkExpr(yielded.value(), scope, true);
+            if (containsTypedMapType(value.type)) {
+                throw error("Map<K,V> cannot escape through yield in the closed v1 surface");
+            }
             Ast.TypeRef exposed = yielded.delegated()
                     ? iterableElementType(value.type, currentAsyncGenerator)
                     : value.type;
@@ -627,6 +630,9 @@ public final class OwnershipChecker {
                             arm.value(),
                             scope,
                             selected.mode() == Ast.WaitMode.NONBLOCKING);
+                    if (containsTypedMapType(payload.type)) {
+                        throw error("writech/select cannot transport Map<K,V> in the closed v1 surface");
+                    }
                     if (containsMutexGuardType(payload.type)) {
                         throw error("writech cannot transport MutexGuard");
                     }
@@ -660,6 +666,9 @@ public final class OwnershipChecker {
                     // Join possible exits so outer values become maybe-moved
                     // (represented conservatively as moved) after selection.
                     ValueInfo outgoing = checkExpr(arm.value(), armScope, true);
+                    if (containsTypedMapType(outgoing.type)) {
+                        throw error("writech/select cannot transport Map<K,V> in the closed v1 surface");
+                    }
                     if (containsMutexGuardType(outgoing.type)) {
                         throw error("writech cannot transport MutexGuard");
                     }
@@ -1023,6 +1032,10 @@ public final class OwnershipChecker {
                 }
                 boolean mutable = unary.operator().equals("&mut");
                 BorrowPlace place = borrowPlace(unary.operand(), scope);
+                if (containsTypedMapType(place.type())) {
+                    throw error(callable + " argument " + position
+                            + " cannot borrow Map<K,V> across a callable boundary");
+                }
                 if (mutable && !(unary.operand() instanceof Ast.NameExpr)) {
                     throw error("mutable projected borrows need path-exclusive loan tracking");
                 }
@@ -1142,6 +1155,9 @@ public final class OwnershipChecker {
                 checkAssignmentTarget(assignment.target(), scope);
             }
             ValueInfo assigned = checkExpr(assignment.value(), scope, true);
+            if (containsTypedMapType(assigned.type)) {
+                throw error("Map<K,V> cannot be assigned into another storage location in the closed v1 surface");
+            }
             if (containsMutexGuardType(assigned.type)) {
                 throw error("guard-bearing values cannot be assigned or overwritten; bind them once with val");
             }
@@ -1294,12 +1310,19 @@ public final class OwnershipChecker {
             List<Ast.TypeRef> argumentTypes = new ArrayList<>(created.arguments().size());
             for (Ast.Expr arg : created.arguments()) {
                 ValueInfo info = checkExpr(arg, scope, true);
+                if (containsTypedMapType(info.type)) {
+                    throw error("Map<K,V> cannot be stored in an ordinary constructed object in the closed v1 surface");
+                }
                 if (containsMutexGuardType(info.type)) {
                     throw error("MutexGuard cannot be stored in a constructed object");
                 }
                 argumentTypes.add(info.type);
             }
             Ast.TypeRef constructedType = inferConstructedType(created, argumentTypes);
+            if (!created.type().name().equals("Map")
+                    && containsTypedMapType(constructedType)) {
+                throw error("generic object construction cannot specialize storage with Map<K,V> in the closed v1 surface");
+            }
             return new ValueInfo(constructedType, ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
@@ -1326,6 +1349,9 @@ public final class OwnershipChecker {
                 // Waiting writers and failed immediate probes conservatively retain
                 // transferred ownership until the runtime supplies a recoverable send.
                 ValueInfo payload = checkExpr(channelOp.value(), scope, true);
+                if (containsTypedMapType(payload.type)) {
+                    throw error("writech cannot transport Map<K,V> in the closed v1 surface");
+                }
                 if (containsMutexGuardType(payload.type)) {
                     throw error("writech cannot transport MutexGuard");
                 }
@@ -1388,6 +1414,9 @@ public final class OwnershipChecker {
             Ast.TypeRef elementType = null;
             for (Ast.Expr item : list.elements()) {
                 ValueInfo info = checkExpr(item, scope, true);
+                if (containsTypedMapType(info.type)) {
+                    throw error("Map<K,V> cannot be stored in an array/list in the closed v1 surface");
+                }
                 if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in an array/list");
                 if (isBorrowValue(info)) throw error("borrowed references cannot be stored in an owned array/list until explicit container lifetimes are supported");
                 elementType = elementType == null
@@ -1405,6 +1434,9 @@ public final class OwnershipChecker {
             List<Ast.TypeRef> slots = new ArrayList<>(tuple.elements().size());
             for (Ast.Expr item : tuple.elements()) {
                 ValueInfo info = checkExpr(item, scope, true);
+                if (containsTypedMapType(info.type)) {
+                    throw error("Map<K,V> cannot be stored in a tuple in the closed v1 surface");
+                }
                 if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in a tuple");
                 if (isBorrowValue(info)) throw error("borrowed references cannot be stored in an owned tuple until explicit container lifetimes are supported");
                 copy &= info.kind == ValueKind.COPY;
@@ -1423,6 +1455,9 @@ public final class OwnershipChecker {
             }
             for (Ast.ObjectField field : object.fields()) {
                 ValueInfo info = checkExpr(field.value(), scope, true);
+                if (containsTypedMapType(info.type)) {
+                    throw error("Map<K,V> cannot be stored in a record/struct in the closed v1 surface");
+                }
                 if (containsMutexGuardType(info.type)) {
                     throw error("MutexGuard cannot be stored in a struct");
                 }
@@ -1514,6 +1549,9 @@ public final class OwnershipChecker {
                 return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
             }
             ValueInfo payload = checkExpr(call.arguments().getFirst(), scope, true);
+            if (containsTypedMapType(payload.type)) {
+                throw error(name.name() + " cannot store Map<K,V> in the closed v1 surface");
+            }
             if (payload.kind == ValueKind.IMM_BORROW || payload.kind == ValueKind.MUT_BORROW
                     || (payload.type != null && payload.type.isBorrow())) {
                 throw error(name.name()
@@ -1868,6 +1906,9 @@ public final class OwnershipChecker {
         // Unknown host/dynamic callables remain conservative and consuming.
         for (Ast.Expr arg : call.arguments()) {
             ValueInfo argument = checkExpr(arg, scope, true);
+            if (containsTypedMapType(argument.type)) {
+                throw error("Map<K,V> cannot cross an arbitrary call boundary in the closed v1 surface");
+            }
             if (containsMutexGuardType(argument.type)) {
                 throw error("guard-bearing values cannot cross an arbitrary call boundary");
             }
@@ -2250,6 +2291,10 @@ public final class OwnershipChecker {
         }
         if (param.structural() && !param.type().isBorrow()) {
             ValueInfo argument = checkExpr(arg, scope, false);
+            if (containsTypedMapType(argument.type)) {
+                throw error(callable + " argument " + position
+                        + " cannot carry Map<K,V> in the closed v1 surface");
+            }
             if (containsMutexGuardType(argument.type)
                     || (mutexCriticalSectionDepth > 0 && argument.type.isBorrow())) {
                 throw error(callable + " argument " + position
@@ -2276,6 +2321,10 @@ public final class OwnershipChecker {
             if (arg instanceof Ast.NameExpr name) {
                 VarState state = requireState(scope, name.name());
                 requireUsable(state, name.name(), false);
+                if (containsTypedMapType(state.type)) {
+                    throw error(callable + " argument " + position
+                            + " cannot carry a Map<K,V> borrow across a callable boundary");
+                }
                 if (isActorConfinedBorrow(state)) {
                     throw error("actor self borrow cannot cross an ordinary callable boundary");
                 }
@@ -2290,6 +2339,10 @@ public final class OwnershipChecker {
             throw error(callable + " argument " + position + " must be an explicit borrow");
         }
         ValueInfo argument = checkExpr(arg, scope, true);
+        if (containsTypedMapType(argument.type)) {
+            throw error(callable + " argument " + position
+                    + " cannot carry Map<K,V> across a callable boundary");
+        }
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
         }
