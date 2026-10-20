@@ -52,6 +52,12 @@ final class CpuTopologyTest {
                 new CpuTopology.Location(5, 77, 0));
         assertEquals(2, unqualified.localityRank(4, 5),
                 "unqualified numeric cache id must not prove shared LLC");
+        CpuTopology noNuma = CpuTopology.of(
+                new CpuTopology.Location(6, 77, CpuTopology.UNKNOWN));
+        assertFalse(noNuma.hasKnownLocality(6),
+                "unknown package/level cache IDs must not initiate peer scans");
+        assertTrue(topology.hasKnownLocality(0),
+                "qualified LLC should remain eligible for locality scans");
         assertThrows(IllegalArgumentException.class,
                 () -> new CpuTopology.Location(4, 7, 0, 3, -1));
         assertThrows(IllegalArgumentException.class,
