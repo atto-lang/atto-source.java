@@ -181,6 +181,27 @@ final class MinimalNominalEnumGuestTest {
                 () -> TypeChecker.check(Parser.parse(program)));
     }
 
+    @Test void actorCannotUseAmbientSameFileNominalEnum() {
+        String program = """
+                define enum TrainingError as
+                    STALE = 1
+                end
+
+                define actor Bad as
+                    state { version: int = 1; }
+
+                    private bad(): TrainingError {
+                        return TrainingError.STALE();
+                    }
+                end
+                """;
+
+        assertDoesNotThrow(() -> Parser.parse(program));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+    }
+
     @Test void recursiveNominalEnumPayloadCyclesAreRejected() {
         String direct = """
                 define enum Recursive as
