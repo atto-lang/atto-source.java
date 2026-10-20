@@ -214,6 +214,37 @@ final class InlineSelfReceiverArityTest {
     }
 
     @Test
+    void inlineReadOnlyReceiverCannotMutateInstanceFields() {
+        // This is the control case for the explicitly mutable receiver:
+        // a syntactic 'self' marker is read-only, not an authorization
+        // to mutate state just because the field is declared 'let'.
+        Ast.Program parsed = Parser.parse("""
+                define class Counter as
+                  pub let int count = 0;
+                  pub increment(self, int delta): void {
+                    self.count = self.count + delta;
+                    return;
+                  }
+                end
+                """);
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(parsed));
+        assertFalse(error.getMessage().isBlank(), "must reject read-only self mutation");
+    }
+
+    @Test
+    void inlineInstanceMethodAndStaticMethodHaveDistinctSlots() {
+        // Only instance declarations normalize the leading receiver marker;
+        // the independently named static f/1 must not collide with instance f/1.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Foo as
+                  pub f(self, int x): int { return x + 1; }
+                  pub static fnc f(int x): int { return x + 2; }
+                end
+                """)));
+    }
+
+    @Test
     void inlineMutableReceiverRetainsExclusiveArgumentLoanChecks() {
         // First prove that the inline syntax parses; a parser failure must
         // NOT accidentally count as evidence that ownership rejected a loan.
