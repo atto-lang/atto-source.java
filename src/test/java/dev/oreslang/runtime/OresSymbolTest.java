@@ -31,7 +31,7 @@ class OresSymbolTest {
     }
 
     @Test void nfcNormalizationAndKindSeparation() {
-        OresPropertyKey decomposed = OresPropertyKey.from(OresSymbol.process("cafe\u0301"));
+        assertEquals(OresSymbol.process("café"), OresSymbol.process("cafe\u0301"));
         String uuid = "550e8400-e29b-41d4-a716-446655440000";
         assertNotEquals(OresSymbol.process(uuid), OresSymbol.stable(uuid));
         assertEquals(OresSymbol.stable(uuid), OresSymbol.stable(uuid));
