@@ -48,6 +48,30 @@ class OresPropertyKeyLayoutTest {
         assertThrows(IllegalArgumentException.class, () -> OresPropertyKey.string("\ud800A"));
     }
 
+    @Test void boundedKeyMetadataRejectsOversizedStringAndTooManyFields() {
+        assertEquals(16384, OresPropertyKey.string("x".repeat(16384)).name().length());
+        assertThrows(IllegalArgumentException.class,
+                () -> OresPropertyKey.string("x".repeat(16385)));
+        var keys = new java.util.ArrayList<OresPropertyKey>();
+        for (int i = 0; i < OresPropertyLayout.MAX_FIELDS; i++) {
+            keys.add(OresPropertyKey.string("field_" + i));
+        }
+        assertEquals(4096, OresPropertyLayout.declared(keys).size());
+        keys.add(OresPropertyKey.string("overflow"));
+        assertThrows(IllegalArgumentException.class, () -> OresPropertyLayout.canonical(keys));
+    }
+
+    @Test void aggregateTaggedKeyByteBudgetChecksBeforeInsertion() {
+        var keys = new java.util.ArrayList<OresPropertyKey>();
+        for (int i = 0; i < 63; i++) {
+            String suffix = Integer.toString(i);
+            keys.add(OresPropertyKey.string("x".repeat(16384 - suffix.length()) + suffix));
+        }
+        assertEquals(63, OresPropertyLayout.canonical(keys).size());
+        keys.add(OresPropertyKey.string("z".repeat(16384)));
+        assertThrows(IllegalArgumentException.class, () -> OresPropertyLayout.declared(keys));
+    }
+
     @Test void canonicalLayoutIsDeterministicAcrossInputOrders() {
         var a = OresPropertyKey.string("z");
         var b = OresPropertyKey.string("a");
