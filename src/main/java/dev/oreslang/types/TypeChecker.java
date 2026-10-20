@@ -4549,6 +4549,11 @@ public final class TypeChecker {
                 for (int i = 0; i < list.elements().size(); i++) {
                     Type actual = typeOf(list.elements().get(i), env, generics, self);
                     Type slot = unit.get(i % unit.size());
+                    if (containsUnknown(actual)) {
+                        throw new IllegalArgumentException(
+                                "cannot prove repeating sequence element " + i
+                                        + " from an unresolved type");
+                    }
                     requireReadonlyCapabilityPreserved(actual, slot,
                             "repeating sequence element " + i);
                     requireAssignable(actual, slot, "repeating sequence element " + i);
@@ -8408,6 +8413,13 @@ public final class TypeChecker {
                 Ast.TypeRef expectedRef = unit.get(i % unit.size());
                 Type expected = resolve(expectedRef, generics, self);
                 Type actual = typeOf(literal.elements().get(i), env, generics, self);
+                if (containsUnknown(actual)) {
+                    throw new IllegalArgumentException(
+                            name + " repeating sequence element " + i
+                                    + " cannot be proved from an unresolved type");
+                }
+                requireReadonlyCapabilityPreserved(actual, expected,
+                        name + " repeating sequence element " + i);
                 requireAssignable(actual, expected, name + " repeating sequence element " + i);
             }
         } else if (!pattern.isRepeatExact()) {
