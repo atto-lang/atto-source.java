@@ -113,7 +113,13 @@ public final class OresFutureConstructors {
 
         @Override
         public void reject(Throwable failure) {
-            claim(new Outcome<>(null, Objects.requireNonNull(failure, "failure"), false));
+            // Foreign APIs can violate their contract and call reject(null)
+            // after returning from register(). Throwing here would strand the
+            // Future and its retained detach hook forever. Turn the malformed
+            // signal into a terminal failure so cleanup can still run.
+            Throwable terminalFailure = failure != null ? failure
+                    : new NullPointerException("callback rejection failure must not be null");
+            claim(new Outcome<>(null, terminalFailure, false));
         }
 
         @Override
