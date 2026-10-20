@@ -113,7 +113,7 @@ final class CpuTopology {
 
     boolean hasKnownLocality(int cpu) {
         Location location = locations.get(cpu);
-        return location != null && (location.llc() >= 0 || location.numa() >= 0);
+        return location != null && ((location.llc() >= 0 && location.llcLevel() >= 2 && location.packageId() >= 0) || location.numa() >= 0);
     }
 
     static CpuTopology discoverHost() {
