@@ -1083,6 +1083,9 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         check(abortTransport.snapshot().phase()
                 == IpcTransportSessionLease.Phase.QUARANTINED);
         check(abortTransport.snapshot().activeWrites() == 0);
+        check(abortSocket.closeCount() == 1);
+        check(abortTransport.keyCloneZeroized());
+        check(abortTransport.connectionBindingCloneZeroized());
         check(!abortSubmission.get().outcome().toCompletableFuture().isDone());
 
         abortTransport.retryQuarantinedClose();
@@ -1101,15 +1104,19 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         check(finalCloseFailure.get() == null);
         check(abortTransport.snapshot().phase()
                 == IpcTransportSessionLease.Phase.RETIRED);
-        check(abortSocket.closeCount() == 2);
+        // Abort already confirmed the exact physical descriptor close.
+        // Finalization retires receipts only and must not invoke Socket.close()
+        // a second time.
+        check(abortSocket.closeCount() == 1);
         check(abortTransport.keyCloneZeroized());
+        check(abortTransport.connectionBindingCloneZeroized());
         check(abortSubmission.get().outcome().toCompletableFuture().join()
                 == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
         check(abortBridge.invariant());
 
         // A delayed copy of attempt 1 stays inert even after retirement.
         staleAbort.get().run();
-        check(abortSocket.closeCount() == 2);
+        check(abortSocket.closeCount() == 1);
 
         // Full route/grant epoch must be validated before receipt admission or wire I/O.
         byte[] epochPayload = "epoch".getBytes(java.nio.charset.StandardCharsets.UTF_8);
