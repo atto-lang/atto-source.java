@@ -76,6 +76,30 @@ final class MlScalarPublicationGuestLoweringTest {
             define actor Bad as
                 state { version: int = 1; weight: int = 5; }
                 private bad(): int with state.read, alloc {
+                    val snapshot = self.handle_state(critical read |s| -> {
+                        return state_snapshot(s, "version");
+                    });
+                    return 1;
+                }
+            end
+            """);
+
+        assertRejected("""
+            define actor Bad as
+                state { version: int = 1; weight: int = 5; }
+                private bad(): int with state.read, alloc {
+                    val snapshot = self.handle_state(critical read |s| -> {
+                        return state_snapshot(s, "version", "version");
+                    });
+                    return 1;
+                }
+            end
+            """);
+
+        assertRejected("""
+            define actor Bad as
+                state { version: int = 1; weight: int = 5; }
+                private bad(): int with state.read, alloc {
                     return self.handle_state(critical read |s| -> {
                         val snapshot = state_snapshot(s, "version", "weight");
                         return snapshot_int(snapshot, "missing");
