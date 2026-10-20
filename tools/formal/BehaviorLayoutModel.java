@@ -419,8 +419,78 @@ public final class BehaviorLayoutModel {
         System.out.println("ECS: conservative access conflicts and unknown provenance checked");
     }
 
+    static void testRandomizedLayoutParity() {
+        Random random = new Random(0x5eed_1638L);
+        OresSymbol idle = s("idle"), busy = s("busy"), parked = s("parked");
+        Chart chart = new Chart(List.of(idle, busy, parked), Map.of(), List.of(
+                new Edge(idle, s("start"), busy),
+                new Edge(busy, s("pause"), parked),
+                new Edge(parked, s("resume"), busy),
+                new Edge(busy, s("stop"), idle)));
+        List<Row> rows = new ArrayList<>();
+        for (int i = 0; i < 23; i++) rows.add(new Row(i + 100, chart.id(idle)));
+        Row[] expectedRows = rows.toArray(Row[]::new);
+        Cohort[] cohorts = {
+            new Cohort(rows, Layout.AOS, 3),
+            new Cohort(rows, Layout.SOA, 7),
+            new Cohort(rows, Layout.AOSOA, 16)
+        };
+        List<OresSymbol> events = List.of(s("start"), s("pause"), s("resume"), s("stop"), s("unknown"));
+        Rule acquire = new Rule(s("take"), List.of(new Arc(0, 1)), List.of(new Arc(1, 1)));
+        Rule release = new Rule(s("give"), List.of(new Arc(1, 1)), List.of(new Arc(0, 1)));
+        Net net = new Net(List.of(s("free"), s("taken")), List.of(acquire, release),
+                new int[][]{{1, 1}});
+        int[][] seed = new int[19][2];
+        for (int[] m : seed) m[0] = 1;
+        int[][] expectedMarkings = Arrays.stream(seed).map(int[]::clone).toArray(int[][]::new);
+        Markings[] stores = {
+            new Markings(seed, Layout.AOS, 3),
+            new Markings(seed, Layout.SOA, 7),
+            new Markings(seed, Layout.AOSOA, 16)
+        };
+
+        for (int trial = 0; trial < 2000; trial++) {
+            int row = random.nextInt(rows.size());
+            OresSymbol event = events.get(random.nextInt(events.size()));
+            expectedRows[row] = new Row(expectedRows[row].entity(),
+                    chart.step(expectedRows[row].state(), event));
+            for (Cohort cohort : cohorts) cohort.setState(row, chart.step(cohort.get(row).state(), event));
+
+            int instance = random.nextInt(seed.length);
+            Rule rule = random.nextBoolean() ? acquire : release;
+            int[] after = net.fire(expectedMarkings[instance], rule);
+            if (after != null) expectedMarkings[instance] = after;
+            for (Markings store : stores) {
+                int[] actual = net.fire(store.get(instance), rule);
+                if (actual != null) store.set(instance, actual);
+            }
+
+            if (trial % 11 == 0) {
+                for (Cohort cohort : cohorts) {
+                    Layout destination = Layout.values()[random.nextInt(Layout.values().length)];
+                    View before = cohort.view(row);
+                    Layout from = cohort.layout;
+                    cohort.migrate(destination);
+                    if (from != destination) rejects(() -> cohort.read(before), "stale randomized view accepted");
+                }
+                for (Markings store : stores)
+                    store.migrate(Layout.values()[random.nextInt(Layout.values().length)]);
+            }
+            for (Cohort cohort : cohorts) {
+                for (int i = 0; i < rows.size(); i++)
+                    ok(cohort.get(i).equals(expectedRows[i]), "randomized chart data/layout mismatch");
+                cohort.checkPadding();
+            }
+            for (Markings store : stores) {
+                for (int i = 0; i < seed.length; i++)
+                    ok(Arrays.equals(store.get(i), expectedMarkings[i]), "randomized Petri layout mismatch");
+            }
+        }
+        System.out.println("randomized: 2000 deterministic chart/Petri operations x 3 layouts with migrations");
+    }
+
     public static void main(String[] args) {
-        testCharts(); testPetri(); testEcs();
+        testCharts(); testPetri(); testEcs(); testRandomizedLayoutParity();
         System.out.println("PASS: behavior layout host reference");
     }
 }
