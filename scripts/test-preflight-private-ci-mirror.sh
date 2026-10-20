@@ -4,6 +4,11 @@ set -euo pipefail
 # Synthetic Git/API fixtures only. No private Oreslang source is copied.
 root="$(cd "$(dirname "$0")/.." && pwd -P)"
 tmp="$(mktemp -d)"
+
+# Catch accidental concatenation/reconciliation corruption before exercising
+# the synthetic API cases.
+test "$(grep -Fc 'control_root="$(git rev-parse --show-toplevel' "$root/scripts/preflight-private-ci-mirror.sh")" -eq 1
+test "$(grep -Fc "printf 'PRIVATE_MIRROR_PREFLIGHT_PASS" "$root/scripts/preflight-private-ci-mirror.sh")" -eq 1
 trap 'rm -rf "$tmp"' EXIT
 
 control="$tmp/control"
@@ -199,6 +204,10 @@ assert_exit 1 run_preflight SYNTH_PROTECTED=false \
 # any authorization mode can pass. The hard-coded canonical API route plus
 # immutable repository ID prevents name-only destination/source substitution.
 assert_exit 1 run_preflight SYNTH_SOURCE_ID=999999 SYNTH_PROTECTED=true \
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch"
+assert_exit 1 run_preflight SYNTH_SOURCE_NAME=ores-truffle-oreslang/not-the-source SYNTH_PROTECTED=true \
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch"
+assert_exit 1 run_preflight SYNTH_SOURCE_PRIVATE=false SYNTH_PROTECTED=true \
   bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch"
 
 # Correct, distinct, unedited attestations pass only when GitHub explicitly
