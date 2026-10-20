@@ -72,7 +72,7 @@ public record ReachabilityManifest(
         appendStringField(json, "schema", schema);
         json.append(',');
         appendStringArrayField(json, "entryPoints", entryPoints);
-        json.append(',').append(""preservePublicApi":").append(preservePublicApi);
+        json.append(',').append("\"preservePublicApi\":").append(preservePublicApi);
         json.append(',');
         appendStringArrayField(json, "retainedSymbols", retainedSymbols);
         json.append(',');
