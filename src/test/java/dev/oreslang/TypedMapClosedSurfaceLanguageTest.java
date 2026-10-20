@@ -275,5 +275,20 @@ final class TypedMapClosedSurfaceLanguageTest {
                         type Map<T> = T;
                         pub fnc main(): void { return; }
                         """));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        fnc identity<Map>(Map value): Map {
+                          return value;
+                        }
+                        pub fnc main(): void { return; }
+                        """));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        define class Holder<Map> as
+                        end
+                        pub fnc main(): void { return; }
+                        """));
     }
 }
