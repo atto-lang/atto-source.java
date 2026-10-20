@@ -85,36 +85,6 @@ final class IpcReceiptCompletionBridge {
         }
     }
 
-    private void requireUnboundPhysicalBridge() {
-        if (physicalOwner != null) {
-            throw new IllegalStateException(
-                    "bound IPC bridge requires physical owner/generation");
-        }
-    }
-
-    public CompletionStage<IpcReceiptCorrelation.Stage> admit(
-            IpcReceiptCorrelation.Envelope envelope) {
-        RuntimeBlockingGuard.requireBlockingHostThread("IPC receipt bridge admission");
-        Objects.requireNonNull(envelope, "envelope");
-        // Prepare all callback bookkeeping before admitting the DATA receipt.
-        CompletableFuture<IpcReceiptCorrelation.Stage> future = new CompletableFuture<>();
-        CompletionStage<IpcReceiptCorrelation.Stage> publicView = future.minimalCompletionStage();
-        synchronized (gate) {
-            requireUnboundPhysicalBridge();
-            if (completions.containsKey(envelope.messageSequence())) {
-                throw new IllegalArgumentException("duplicate host correlation");
-            }
-            completions.put(envelope.messageSequence(), future);
-            try {
-                correlations.admit(envelope);
-            } catch (RuntimeException | Error e) {
-                completions.remove(envelope.messageSequence());
-                throw e;
-            }
-        }
-        return publicView;
-    }
-
     CompletionStage<IpcReceiptCorrelation.Stage> admitAndCommit(
             Object owner,
             IpcReceiptCorrelation.Envelope envelope,
@@ -152,44 +122,6 @@ final class IpcReceiptCompletionBridge {
         return publicView;
     }
 
-    /**
-     * Trusted transport publication fence. Caller MUST validate the same
-     * physical transport session and hold its generation/close ownership
-     * through actual send; the receipt ledger does not own socket I/O.
-     * If send can fail after this returns, retire on trusted session loss:
-     * never call rejectBeforeRemote after dispatch commitment.
-     */
-    void commitDispatch(IpcReceiptCorrelation.Envelope envelope) {
-        RuntimeBlockingGuard.requireBlockingHostThread("IPC receipt bridge dispatch");
-        Objects.requireNonNull(envelope, "envelope");
-        synchronized (gate) {
-            requireUnboundPhysicalBridge();
-            if (!completions.containsKey(envelope.messageSequence())) {
-                throw new IllegalArgumentException("missing IPC dispatch correlation");
-            }
-            correlations.commitDispatch(envelope);
-        }
-    }
-
-    /** Caller MUST verify the remote peer/frame/capability before this call. */
-    public void acceptVerified(IpcReceiptCorrelation.Envelope envelope,
-                               IpcReceiptCorrelation.Stage stage) {
-        RuntimeBlockingGuard.requireBlockingHostThread(
-                "IPC receipt bridge verified transition");
-        CompletableFuture<IpcReceiptCorrelation.Stage> done = null;
-        synchronized (gate) {
-            requireUnboundPhysicalBridge();
-            correlations.acceptVerified(envelope, stage);
-            if (stage != IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED) {
-                done = completions.remove(envelope.messageSequence());
-                if (done == null) throw new IllegalStateException("missing host completion");
-            }
-        }
-        // An arbitrary dependent callback may synchronously reenter the actor:
-        // never invoke it from within the admission/correlation monitor.
-        if (done != null) done.complete(stage);
-    }
-
     void acceptVerified(Object owner,
                         IpcReceiptCorrelation.Envelope envelope,
                         long generation,
@@ -211,44 +143,6 @@ final class IpcReceiptCompletionBridge {
             }
         }
         if (done != null) done.complete(stage);
-    }
-
-    /**
-     * Trusted LOCAL send-path rejection, prior to dispatch commitment.
-     * Do not route authenticated remote receipts or actor guest DATA here.
-     * User callbacks complete only after releasing the correlation monitor.
-     */
-    void rejectBeforeRemote(IpcReceiptCorrelation.Envelope envelope) {
-        RuntimeBlockingGuard.requireBlockingHostThread(
-                "IPC receipt bridge local rejection");
-        Objects.requireNonNull(envelope, "envelope");
-        CompletableFuture<IpcReceiptCorrelation.Stage> done;
-        synchronized (gate) {
-            requireUnboundPhysicalBridge();
-            correlations.rejectBeforeRemote(envelope);
-            done = completions.remove(envelope.messageSequence());
-            if (done == null) {
-                throw new IllegalStateException("missing host completion");
-            }
-        }
-        done.complete(IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
-    }
-
-    /**
-     * Only the local trusted adapter may report physical session loss.
-     * Use the complete authenticated transport epoch; never a reusable
-     * string session id or a peer-provided EOF claim.
-     */
-    int transportLost(IpcReceiptCorrelation.Envelope trustedEpoch) {
-        RuntimeBlockingGuard.requireBlockingHostThread(
-                "IPC receipt bridge transport loss");
-        synchronized (gate) {
-            if (physicalOwner != null) {
-                throw new IllegalStateException(
-                        "bound IPC bridge requires physical owner/generation");
-            }
-        }
-        return transportLostInternal(trustedEpoch);
     }
 
     int transportLost(Object owner,
