@@ -969,6 +969,7 @@ public final class OresEvalRootNode extends RootNode {
             private final OresObject receiver;
             private final List<Ast.Stmt> blockBody;
             private final List<?> arguments;
+            private TaskScope.Registration scopeRegistration;
             private Env initialBlockEnv;
 
             private SourceValueCont awaitingContinuation;
@@ -1009,6 +1010,11 @@ public final class OresEvalRootNode extends RootNode {
                     OresScheduler.Resume resume)
                     throws Exception {
                 try {
+                    if (resume.initial() && scopeRegistration != null) {
+                        // Only a physically dispatched child may admit
+                        // descendants into a scope that has started closing.
+                        scopeRegistration.beganExecution();
+                    }
                     return resumeSource(resume);
                 } catch (RuntimeException failure) {
                     awaitingContinuation = null;
@@ -1290,6 +1296,7 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 Runnable onQuiescent) {
             SourceTask task = new SourceTask(body);
+            task.scopeRegistration = env.taskScopeParent;
             // Lexically snapshot at spawn time. Captured owned values were
             // consumed by the compile-time ownership pass; no borrowed or
             // actor-private handles are admitted by Task capture checking.
