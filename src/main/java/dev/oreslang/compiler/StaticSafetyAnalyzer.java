@@ -28,7 +28,11 @@ public final class StaticSafetyAnalyzer {
     private static final int MAX_NODES = 250_000;
 
     public static List<Finding> analyze(Ast.Program program) {
-        return new Scanner(program).run();
+        ArrayList<Finding> all = new ArrayList<>(new Scanner(program).run());
+        all.addAll(CallbackOrderingAnalyzer.analyze(program));
+        all.sort(Comparator.comparing(Finding::rule)
+                .thenComparing(Finding::callable).thenComparing(Finding::message));
+        return List.copyOf(all);
     }
 
     private static final class Scanner {
