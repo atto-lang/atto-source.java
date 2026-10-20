@@ -130,10 +130,15 @@ final class IpcReceiptCompletionBridge {
         return publicView;
     }
 
-    void acceptVerified(Object owner,
-                        IpcReceiptCorrelation.Envelope envelope,
-                        long generation,
-                        IpcReceiptCorrelation.Stage stage) {
+    /**
+     * Apply one authenticated receipt while the caller holds its ordered
+     * receive gate, but do not run an arbitrary completion callback there.
+     * The caller completes the returned terminal future after releasing that
+     * gate. REMOTE_ACCEPTED returns null because it is not terminal.
+     */
+    CompletableFuture<IpcReceiptCorrelation.Stage> acceptVerifiedDeferred(
+            Object owner, IpcReceiptCorrelation.Envelope envelope,
+            long generation, IpcReceiptCorrelation.Stage stage) {
         RuntimeBlockingGuard.requireBlockingHostThread(
                 "IPC receipt bridge verified transition");
         Objects.requireNonNull(owner, "owner");
@@ -154,6 +159,16 @@ final class IpcReceiptCompletionBridge {
                 }
             }
         }
+        return done;
+    }
+
+    /** Host bridge use outside a transport receive gate. */
+    void acceptVerified(Object owner,
+                        IpcReceiptCorrelation.Envelope envelope,
+                        long generation,
+                        IpcReceiptCorrelation.Stage stage) {
+        CompletableFuture<IpcReceiptCorrelation.Stage> done =
+                acceptVerifiedDeferred(owner, envelope, generation, stage);
         if (done != null) done.complete(stage);
     }
 
