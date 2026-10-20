@@ -47,6 +47,24 @@ final class StaticSafetyAnalyzerTest {
     }
 
     @Test
+    void reportsThirtyActorSpawnSitesInRecursiveActorHandler() {
+        StringBuilder source = new StringBuilder("""
+                define actor Worker as
+                    pub receive(): void {
+                """);
+        for (int i = 0; i < 30; i++) source.append("spawn Worker();\\n".replace("\\n", "\n"));
+        source.append("""
+                        return;
+                    }
+                end
+                """);
+        var warnings = StaticSafetyAnalyzer.analyze(Parser.parse(source.toString()));
+        assertTrue(warnings.stream().anyMatch(f ->
+                        f.rule().equals("ORES-AMP-001") && f.message().contains("30 static actor-spawn site")),
+                warnings.toString());
+    }
+
+    @Test
     void flagsRepeatedActorSpawnInLoop() {
         var warnings = StaticSafetyAnalyzer.analyze(Parser.parse("""
                 define actor Worker as
