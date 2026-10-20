@@ -146,6 +146,13 @@ The Bash test uses a temporary policy checkout; Python tests mock all GitHub
 API operations. The real policy remains empty and **no destination is
 authorized** unless separately reviewed.
 
+Identity-pinned review candidates are not export approvals. The currently pinned
+candidates are `chapter-publishing-test/zed-pkg-integration-e2e` (`1344442382`),
+`ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra`
+(`1412142815`), and `sagitta-stack/sagitta-infra` (`1357615104`). A candidate
+must still appear as an uncommented entry in the protected-main allowlist after
+independent maintainer/security review before any source-bearing write is allowed.
+
 ## Active disclosure incident
 
 Private issue #832 tracks source-bearing commits in a public CI repository.
