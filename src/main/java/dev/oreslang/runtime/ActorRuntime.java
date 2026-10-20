@@ -6417,6 +6417,11 @@ public final class ActorRuntime implements AutoCloseable {
                         freeze(entry.key(), visiting, depth + 1),
                         freeze(entry.value(), visiting, depth + 1));
             }
+            if (value instanceof OresTuple tuple) {
+                List<Object> frozen = new ArrayList<>(tuple.size());
+                for (Object item : tuple) frozen.add(freeze(item, visiting, depth + 1));
+                return new OresTuple(frozen);
+            }
             if (value instanceof List<?> list) {
                 List<Object> frozen = new ArrayList<>(list.size());
                 for (Object item : list) frozen.add(freeze(item, visiting, depth + 1));
@@ -6484,6 +6489,11 @@ public final class ActorRuntime implements AutoCloseable {
                 return new OresEntry(
                         isolateCopy(entry.key(), visiting, depth + 1),
                         isolateCopy(entry.value(), visiting, depth + 1));
+            }
+            if (value instanceof OresTuple tuple) {
+                List<Object> copy = new ArrayList<>(tuple.size());
+                for (Object item : tuple) copy.add(isolateCopy(item, visiting, depth + 1));
+                return new OresTuple(copy);
             }
             if (value instanceof List<?> list) {
                 List<Object> copy = new ArrayList<>(list.size());
