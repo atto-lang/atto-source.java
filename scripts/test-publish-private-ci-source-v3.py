@@ -936,29 +936,25 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "identity/state"):
                 v3.verify_source_pr(1482, "8" * 40)
 
-    def test_authorize_write_rechecks_carrier_eligibility(self):
+    def test_authorize_write_rechecks_live_source_and_carrier_governance(self):
         carrier = contract()
-        ineligible = {
-            "id": carrier["repository_id"],
-            "full_name": "trusted/ci",
-            "private": True,
-            "visibility": "private",
-            "archived": True,
-            "disabled": False,
-            "fork": False,
-            "default_branch": "main",
-        }
         with (
             patch.object(
                 v3.legacy,
                 "checked_policy_approval",
                 return_value=(POLICY, carrier["repository_id"]),
             ),
-            patch.object(v3.legacy, "checked_repo", return_value=ineligible),
+            patch.object(v3, "require_source_authority_epoch") as source_epoch,
+            patch.object(
+                v3, "require_destination_main_governance",
+                side_effect=v3.Denied("carrier protection weakened"),
+            ) as carrier_epoch,
         ):
-            with self.assertRaisesRegex(v3.Denied, "identity/state"):
+            with self.assertRaisesRegex(v3.Denied, "protection weakened"):
                 v3.authorize_write(
-                    Path("."), "trusted/ci", POLICY, carrier)
+                    Path("."), "trusted/ci", POLICY, carrier, PROTECTED)
+        source_epoch.assert_called_once_with(PROTECTED)
+        carrier_epoch.assert_called_once_with("trusted/ci", BASE)
 
     def test_authorize_write_rejects_reviewed_repository_id_change(self):
         carrier = contract()
@@ -968,12 +964,23 @@ class PrivateCiV3Test(unittest.TestCase):
                 "checked_policy_approval",
                 return_value=(POLICY, carrier["repository_id"] + 1),
             ),
-            patch.object(v3.legacy, "checked_repo") as checked_repo,
+            patch.object(v3, "require_source_authority_epoch") as source_epoch,
+            patch.object(v3, "require_destination_main_governance") as carrier_epoch,
         ):
             with self.assertRaisesRegex(v3.Denied, "repository identity changed"):
                 v3.authorize_write(
-                    Path("."), "trusted/ci", POLICY, carrier)
-            checked_repo.assert_not_called()
+                    Path("."), "trusted/ci", POLICY, carrier, PROTECTED)
+            source_epoch.assert_not_called()
+            carrier_epoch.assert_not_called()
+
+    def test_source_authority_epoch_rejects_main_advance(self):
+        branch = {
+            "name": v3.legacy.SOURCE_PROTECTED_BRANCH,
+            "commit": {"sha": "9" * 40},
+        }
+        with patch.object(v3.legacy, "gh_api", return_value=branch):
+            with self.assertRaisesRegex(v3.Denied, "advanced during transfer"):
+                v3.require_source_authority_epoch(PROTECTED)
 
     def test_publish_rejects_contract_repository_id_not_in_reviewed_allowlist(self):
         carrier = contract()
