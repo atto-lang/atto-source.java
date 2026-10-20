@@ -268,9 +268,13 @@ public final class HotReloadManager implements AutoCloseable {
                                 + " while a logical actor route pins it");
             }
             if (generation != null) {
-                generations.remove(generationId, generation);
+                // Unpublish routing immediately, but retain the generation in
+                // the durable registry until physical Context teardown and
+                // manager deregistration both succeed. A failed close must be
+                // addressable by generationId for explicit retry.
                 boolean removed = active.compareAndSet(generation, null);
-                removed |= activeByCodeUnit.remove(generation.codeUnitId(), generation);
+                removed |= activeByCodeUnit.remove(
+                        generation.codeUnitId(), generation);
                 if (removed) advanceRoutingEpoch();
             }
         }
@@ -299,24 +303,28 @@ public final class HotReloadManager implements AutoCloseable {
     public void close() {
         final java.util.List<Generation> toClose;
         synchronized (this) {
-            if (closed) return;
-            for (Generation generation : generations.values()) {
-                if (generation.actorRoutePins() != 0) {
-                    throw new IllegalStateException(
-                            "cannot close HotReloadManager while generation "
-                                    + generation.id()
-                                    + " is pinned by a logical actor route");
+            if (!closed) {
+                for (Generation generation : generations.values()) {
+                    if (generation.actorRoutePins() != 0) {
+                        throw new IllegalStateException(
+                                "cannot close HotReloadManager while generation "
+                                        + generation.id()
+                                        + " is pinned by a logical actor route");
+                    }
                 }
+                // Seal all new load/pin admission and unpublish routing. Do not
+                // clear generations: that map is the durable retry registry.
+                closed = true;
+                activeByCodeUnit.clear();
+                active.set(null);
+            } else if (generations.isEmpty()) {
+                return;
             }
-            closed = true;
-            // Atomically seal the manager and detach all generations. Context
-            // cleanup is intentionally outside this monitor.
+            // Allocation failure here is safe: the sealed manager retains the
+            // exact generation registry and a later close() reconstructs it.
             toClose = java.util.List.copyOf(generations.values());
-            generations.clear();
-            activeByCodeUnit.clear();
-            active.set(null);
         }
-        // Closing is terminal; in-flight candidates cannot publish afterward.
+
         Throwable failure = null;
         for (Generation generation : toClose) {
             try {
@@ -324,14 +332,12 @@ public final class HotReloadManager implements AutoCloseable {
             } catch (RuntimeException | Error closingFailure) {
                 if (failure == null) {
                     failure = closingFailure;
-                } else {
+                } else if (failure != closingFailure) {
                     failure.addSuppressed(closingFailure);
                 }
             }
         }
-        if (failure instanceof Error error) {
-            throw error;
-        }
+        if (failure instanceof Error error) throw error;
         if (failure instanceof RuntimeException runtimeFailure) {
             throw runtimeFailure;
         }
@@ -379,7 +385,17 @@ public final class HotReloadManager implements AutoCloseable {
         private final Source source;
         private final ExecutionProfile executionProfile;
         private final AtomicBoolean started = new AtomicBoolean();
+        /** Admission/routing seal; not a physical Context-close witness. */
         private final AtomicBoolean closed = new AtomicBoolean();
+        /** Guarded by this Generation. */
+        private boolean contextCloseComplete;
+        /** Guarded by this Generation. */
+        private boolean closeComplete;
+        /** Guarded by this Generation. */
+        private boolean closeActive;
+        // Package/test fault boundaries around physical Context teardown.
+        private Runnable closeAfterSealFaultForTesting;
+        private Runnable closeAfterContextFaultForTesting;
         private int actorRoutePins;
         private boolean actorLinked;
         private OresContext linkedActorContext;
@@ -540,7 +556,13 @@ public final class HotReloadManager implements AutoCloseable {
             try {
                 return context.eval(source);
             } catch (RuntimeException | Error failure) {
-                close();
+                try {
+                    close();
+                } catch (RuntimeException | Error cleanupFailure) {
+                    if (cleanupFailure != failure) {
+                        failure.addSuppressed(cleanupFailure);
+                    }
+                }
                 throw failure;
             }
         }
@@ -555,21 +577,60 @@ public final class HotReloadManager implements AutoCloseable {
         }
 
         private void closeInternal(boolean force) {
+            final boolean closeContext;
             synchronized (this) {
-                if (closed.get()) return;
+                if (closeComplete) return;
+                if (closeActive) {
+                    throw new IllegalStateException(
+                            "generation close is already in progress");
+                }
                 if (!force && actorRoutePins != 0) {
                     throw new IllegalStateException(
                             "cannot close generation while "
                                     + actorRoutePins
                                     + " logical actor route(s) pin it");
                 }
+                // Revoke execution/pin admission before touching Context, but
+                // retain separate completion receipts for retry.
                 closed.set(true);
+                closeActive = true;
+                closeContext = !contextCloseComplete;
             }
+
+            boolean success = false;
             try {
-                context.close(true);
-            } finally {
+                Runnable afterSeal = closeAfterSealFaultForTesting;
+                if (afterSeal != null) afterSeal.run();
+
+                if (closeContext) {
+                    context.close(true);
+                    synchronized (this) {
+                        contextCloseComplete = true;
+                    }
+                }
+
+                Runnable afterContext = closeAfterContextFaultForTesting;
+                if (afterContext != null) afterContext.run();
+
+                // Registry eviction is part of physical retirement. If it ever
+                // fails, contextCloseComplete lets a later retry skip Context
+                // teardown while retaining this exact Generation owner.
                 HotReloadManager manager = owner.get();
                 if (manager != null) manager.onGenerationClosed(this);
+
+                synchronized (this) {
+                    closeComplete = true;
+                }
+                success = true;
+            } finally {
+                synchronized (this) {
+                    closeActive = false;
+                }
+                // success is intentionally not used to clear the admission seal:
+                // failed teardown remains closed but retryable.
+                if (!success) {
+                    // no-op marker for the fail-closed retry contract
+                }
             }
         }
     }
