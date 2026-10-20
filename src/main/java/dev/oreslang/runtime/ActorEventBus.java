@@ -90,26 +90,28 @@ public final class ActorEventBus implements AutoCloseable {
             return publisher == null;
         }
 
-        private void retainDelivery() {
-            while (true) {
-                int current = retentionRefs.get();
-                if (current <= 0) {
-                    throw new IllegalStateException("cannot retain a released ActorGroup event");
-                }
-                if (current == Integer.MAX_VALUE) {
-                    throw new IllegalStateException("ActorGroup event retention overflow");
-                }
-                if (retentionRefs.compareAndSet(current, current + 1)) return;
+        private synchronized void retainDelivery() {
+            int current = retentionRefs.get();
+            if (current <= 0) {
+                throw new IllegalStateException("cannot retain a released ActorGroup event");
             }
+            if (current == Integer.MAX_VALUE) {
+                throw new IllegalStateException("ActorGroup event retention overflow");
+            }
+            retentionRefs.set(current + 1);
         }
 
-        private void releaseDelivery() {
-            int remaining = retentionRefs.decrementAndGet();
-            if (remaining < 0) {
-                retentionRefs.incrementAndGet();
+        private synchronized void releaseDelivery() {
+            int current = retentionRefs.get();
+            if (current <= 0) {
                 throw new IllegalStateException("ActorGroup event retention underflow");
             }
-            if (remaining == 0) reservation.close();
+            if (current == 1) {
+                reservation.close();
+                retentionRefs.set(0);
+                return;
+            }
+            retentionRefs.set(current - 1);
         }
     }
 
