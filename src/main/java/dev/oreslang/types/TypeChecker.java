@@ -554,6 +554,88 @@ public final class TypeChecker {
                 mentionsEffectGeneric(argument, generics));
     }
 
+    /**
+     * Bounded structural admission, before expanding aliases or performing
+     * recursive resolution. A malicious nested/refined payload cannot consume
+     * unbounded verifier stack or claim a proof from truncated traversal.
+     */
+    private static void checkEffectTypeBudget(Ast.TypeRef root) {
+        record Pending(Ast.TypeRef type, int depth) { }
+        java.util.ArrayDeque<Pending> pending = new java.util.ArrayDeque<>();
+        pending.add(new Pending(root, 0));
+        int nodes = 0;
+        while (!pending.isEmpty()) {
+            Pending next = pending.removeLast();
+            if (++nodes > 128 || next.depth() > 16) {
+                throw new IllegalArgumentException(
+                        "checked effect payload exceeds structural verification budget");
+            }
+            Ast.TypeRef type = next.type();
+            for (Ast.TypeRef child : type.arguments()) {
+                pending.addLast(new Pending(child, next.depth() + 1));
+            }
+            if (type.isRecordType()) {
+                for (Ast.TypeRef child : type.recordMembers().values()) {
+                    pending.addLast(new Pending(child, next.depth() + 1));
+                }
+            }
+            if (type.isBorrow()) {
+                pending.addLast(new Pending(type.borrowedTarget(), next.depth() + 1));
+            }
+            if (type.isComplement()) {
+                pending.addLast(new Pending(type.complementedType(), next.depth() + 1));
+            }
+        }
+    }
+
+    /**
+     * Checked exceptions must be owned, closed, data-only payloads. An
+     * unresolved nominal name is not a proof of construction or ownership.
+     * Runtime-affine values (actors, tasks, channels, mutexes, function
+     * closures, iterators, borrows) cannot cross this signature boundary.
+     * Future versions can admit compiler-proven immutable nominal Error data.
+     */
+    private static void requireClosedEffectPayload(Type type, int depth, int[] nodes) {
+        if (++nodes[0] > 128 || depth > 16) {
+            throw new IllegalArgumentException(
+                    "checked effect payload exceeds resolved verification budget");
+        }
+        if (type instanceof Primitive primitive) {
+            if (primitive != Primitive.VOID && primitive != Primitive.NULL) return;
+        } else if (type instanceof Types.BoolLiteral || type instanceof StringLiteral) {
+            return;
+        } else if (type instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) {
+                requireClosedEffectPayload(element, depth + 1, nodes);
+            }
+            return;
+        } else if (type instanceof Union union) {
+            for (Type option : union.options()) {
+                requireClosedEffectPayload(option, depth + 1, nodes);
+            }
+            return;
+        } else if (type instanceof Record record) {
+            if (!record.readOnly()) {
+                throw new IllegalArgumentException(
+                        "checked effect record payload requires readonly ownership");
+            }
+            for (Type member : record.members().values()) {
+                requireClosedEffectPayload(member, depth + 1, nodes);
+            }
+            return;
+        } else if (type instanceof Named named
+                && (named.name().equals("Option") && named.arguments().size() == 1
+                    || named.name().equals("Result") && named.arguments().size() == 2)) {
+            for (Type argument : named.arguments()) {
+                requireClosedEffectPayload(argument, depth + 1, nodes);
+            }
+            return;
+        }
+        throw new IllegalArgumentException(
+                "checked effect payload is unresolved, borrowed, runtime-affine, "
+                        + "mutable, or not proven data-only: " + type);
+    }
+
     private void validateCheckedEffects(Ast.FunctionDecl fn, Set<String> generics) {
         Ast.EffectSpec effects = fn.effects();
         if (effects.isEmpty()) return;
@@ -574,15 +656,13 @@ public final class TypeChecker {
         effectTypes.addAll(effects.raisesTypes());
         effectTypes.addAll(effects.panicsTypes());
         for (Ast.TypeRef type : effectTypes) {
+            checkEffectTypeBudget(type);
             if (type.inferArguments() || mentionsEffectGeneric(type, generics)) {
                 throw new IllegalArgumentException(
                         "checked effect types must be concrete at declaration time: " + type);
             }
             Type resolved = resolve(type, generics, null);
-            if (resolved == Primitive.VOID || resolved instanceof Borrow) {
-                throw new IllegalArgumentException(
-                        "checked effect type must be an owned non-void value: " + type);
-            }
+            requireClosedEffectPayload(resolved, 0, new int[]{0});
         }
     }
 
