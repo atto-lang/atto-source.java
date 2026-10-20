@@ -81,6 +81,12 @@ the same positive and negative cases.
   A second explicit `await` is necessary to obtain `T`.
 - Module-qualified trait resolution, inherited class implementations, and
   inherited generic trait specializations have dedicated compile-time tests.
+- The ownership pass must project the awaited result to `T` with the correct
+  Copy/move classification; it must not inherit the wrapper's ownership kind.
+  A named `HasFuture<T>` receiver is borrowed immutably for the synchronous
+  projection, not moved by the await operator. A later await on the same
+  capability may call `get_future()` again; implementers decide whether this
+  returns the same future or a new operation.
 - Explicit cancellation ownership and zero-copy Task/ActorResponse integration
   remain follow-on implementation tasks.
 
