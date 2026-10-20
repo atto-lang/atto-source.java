@@ -458,8 +458,14 @@ public final class ActorRuntime implements AutoCloseable {
         private void closeFromRuntime() {
             synchronized (groupCloseLock) {
                 if (groupCloseComplete) return;
-
-                final List<ActorRef<?>> owned;
+                if (groupCloseActive) {
+                    throw new IllegalStateException(
+                            "ActorGroup close cannot re-enter its own cleanup; retry after the "
+                                    + "current close attempt releases ownership");
+                }
+                groupCloseActive = true;
+                try {
+                    final List<ActorRef<?>> owned;
                 synchronized (authorityLock) {
                     if (!groupClosed.get()) {
                         // Prepare every allocation-bearing ownership witness
@@ -582,9 +588,12 @@ public final class ActorRuntime implements AutoCloseable {
                 // No cleanup ownership is released before every close stage
                 // above has returned. A later retry can now observe completion
                 // without replaying worker observers or cancellation.
-                groupCloseComplete = true;
-                groupCloseOwnedWorkers = null;
-                if (cancellationFailure != null) throw cancellationFailure;
+                    groupCloseComplete = true;
+                    groupCloseOwnedWorkers = null;
+                    if (cancellationFailure != null) throw cancellationFailure;
+                } finally {
+                    groupCloseActive = false;
+                }
             }
         }
 
@@ -824,6 +833,7 @@ public final class ActorRuntime implements AutoCloseable {
          * completes.
          */
         private final Object groupCloseLock = new Object();
+        private boolean groupCloseActive;
         private boolean groupCloseComplete;
         private List<ActorRef<?>> groupCloseOwnedWorkers;
         private boolean groupCloseObserversInstalled;
