@@ -63,6 +63,55 @@ final class ActorDenseIndexColumnsTest {
     }
 
     @Test
+    void foreignCloseCannotRevokeSharedOrPrivateIndexBacking() throws Exception {
+        for (boolean privateActor : new boolean[] {false, true}) {
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                AtomicReference<ActorDenseIndexColumns> confined = new AtomicReference<>();
+                AtomicReference<Throwable> failure = new AtomicReference<>();
+                ActorRuntime.ActorRef<Integer> actor = privateActor
+                        ? runtime.spawnPrivate(context -> {
+                            ActorDenseIndexColumns shard = new ActorDenseIndexColumns(
+                                    ActorShardColumns.Layout.SOA, 8, 1, 1);
+                            confined.set(shard);
+                            return (message, turn) -> {
+                                try {
+                                    if (message == 1) shard.writeIndex(0, 0, 17);
+                                    else assertEquals(17, shard.readIndex(0, 0).orElseThrow());
+                                } catch (Throwable problem) {
+                                    failure.compareAndSet(null, problem);
+                                }
+                            };
+                        })
+                        : runtime.spawnSharedTrusted(factory -> {
+                            ActorDenseIndexColumns shard = new ActorDenseIndexColumns(
+                                    ActorShardColumns.Layout.SOA, 8, 1, 1);
+                            confined.set(shard);
+                            return (message, turn) -> {
+                                try {
+                                    if (message == 1) shard.writeIndex(0, 0, 17);
+                                    else assertEquals(17, shard.readIndex(0, 0).orElseThrow());
+                                } catch (Throwable problem) {
+                                    failure.compareAndSet(null, problem);
+                                }
+                            };
+                        });
+
+                actor.send(1);
+                actor.drain().get(5, TimeUnit.SECONDS);
+                assertNull(failure.get());
+                assertThrows(SecurityException.class, () -> confined.get().close());
+
+                actor.send(2);
+                actor.drain().get(5, TimeUnit.SECONDS);
+                assertNull(failure.get(),
+                        "foreign close must not revoke or mutate live shard backing");
+                actor.gracefulStop().get(5, TimeUnit.SECONDS);
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    @Test
     void sharedActorFinalizationDetachesIndexBacking() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             AtomicReference<ActorDenseIndexColumns> confined = new AtomicReference<>();
