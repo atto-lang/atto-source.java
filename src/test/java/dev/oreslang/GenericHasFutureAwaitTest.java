@@ -124,7 +124,7 @@ final class GenericHasFutureAwaitTest {
                             pub get_future(): Future<int> { return value(); }
                         end
                         define class Child extends Base as
-                            pub async get_future(): Future<int> { return value(); }
+                            pub suspends get_future(): Future<int> { return value(); }
                         end
                         fnc read(Child child): int { return await child; }
                         """));
