@@ -1774,6 +1774,10 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.TrapExpr trapped) {
                 return expressionContainsPotentialSuspension(trapped.expression(), seen);
             }
+            if (expr instanceof Ast.SpreadExpr spread) {
+                return expressionContainsPotentialSuspension(
+                        spread.expression(), seen);
+            }
             if (expr instanceof Ast.UnaryExpr unary) {
                 return expressionContainsPotentialSuspension(
                         unary.operand(), seen);
