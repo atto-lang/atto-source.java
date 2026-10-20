@@ -137,7 +137,40 @@ final class InlineSelfReceiverArityTest {
     }
 
     @Test
-    void distinctReceiverFreeAritiesDispatchWithNoMethodCopies() throws Exception {
+    void explicitReceiverMarkerAndNamedSelfTypedArgumentAreDistinct() {
+        Ast.Program program = Parser.parse("""
+                define class Foo as
+                  pub foo(self, self other, int x): int { return x; }
+                end
+                """);
+        Ast.ClassDecl foo = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+        Ast.MethodDecl method = foo.methods().getFirst();
+        assertEquals(2, method.arity());
+        assertEquals("self", method.parameters().getFirst().type().name());
+        assertEquals("other", method.parameters().getFirst().name());
+        assertEquals("x", method.parameters().get(1).name());
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+    }
+
+    @Test
+    void inlineReceiverUsesExistingOverrideSlot() throws Exception {
+        String output = run("""
+                define class Parent as
+                  pub f(int x): int { return x + 1; }
+                end
+                define class Child extends Parent as
+                  pub f(self, int x): int { return x + 2; }
+                end
+                pub routine main(): void {
+                  val child = new Child();
+                  stdio.stdout.write(child.f(4));
+                }
+                """);
+        assertEquals("6", output);
+    }
+
+    @Test
+    void distinctReceiverFreeAritiesDispatchAcrossInstances() throws Exception {
         String output = run("""
                 define class Foo as
                   pub f(self): int { return 7; }
