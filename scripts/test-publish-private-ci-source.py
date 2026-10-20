@@ -154,6 +154,58 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                             raised.exception, pub.GitHubWriteRejected
                         )
 
+    def test_bounded_gh_real_os_output_limit_for_both_streams(self):
+        """The OS must bound bytes before the parent receives a response."""
+        import sys
+        for fd in (1, 2):
+            with self.subTest(fd=fd), patch.object(
+                pub, "MAX_GH_API_RESPONSE_CHARS", 4096
+            ):
+                command = [
+                    sys.executable, "-I", "-B", "-c",
+                    f"import os; os.write({fd}, b'x'*16384)",
+                ]
+                with self.assertRaisesRegex(pub.Denied, "exceeds size limit"):
+                    pub.run_bounded_gh(
+                        command, env={"PATH": "/usr/bin:/bin"}, timeout=5
+                    )
+
+    def test_bounded_gh_real_process_reads_both_streams(self):
+        import sys
+        with patch.object(pub, "MAX_GH_API_RESPONSE_CHARS", 4096):
+            result = pub.run_bounded_gh(
+                [
+                    sys.executable, "-I", "-B", "-c",
+                    "import os; os.write(1,b'out'); os.write(2,b'err')",
+                ],
+                env={"PATH": "/usr/bin:/bin"}, timeout=5,
+            )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "out")
+        self.assertEqual(result.stderr, "err")
+
+    def test_bounded_gh_rejects_non_utf8_from_real_process(self):
+        import sys
+        with patch.object(pub, "MAX_GH_API_RESPONSE_CHARS", 4096):
+            with self.assertRaisesRegex(pub.Denied, "not UTF-8"):
+                pub.run_bounded_gh(
+                    [
+                        sys.executable, "-I", "-B", "-c",
+                        "import os; os.write(1, bytes([255]))",
+                    ],
+                    env={"PATH": "/usr/bin:/bin"}, timeout=5,
+                )
+
+    def test_bounded_gh_timeout_fails_closed(self):
+        import sys
+        with patch.object(pub, "MAX_GH_API_RESPONSE_CHARS", 4096):
+            with self.assertRaisesRegex(pub.Denied, "execution unavailable"):
+                pub.run_bounded_gh(
+                    [sys.executable, "-I", "-B", "-c",
+                     "import time; time.sleep(3)"],
+                    env={"PATH": "/usr/bin:/bin"}, timeout=0.2,
+                )
+
     def test_github_api_requires_exactly_one_explicit_token(self):
         with patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"):
             for env in ({}, {"GH_TOKEN": "a", "GITHUB_TOKEN": "b"}):
