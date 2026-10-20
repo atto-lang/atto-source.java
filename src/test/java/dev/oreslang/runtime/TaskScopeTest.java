@@ -25,6 +25,7 @@ final class TaskScopeTest {
     void pendingChildMaySpawnGrandchildAfterParentBeginsJoining() {
         TaskScope scope = new TaskScope();
         TaskScope.Registration parent = scope.reserve();
+        parent.beganExecution();
         OresFuture<Void> joined = scope.close();
         assertThrows(IllegalStateException.class, scope::reserve,
                 "an unrelated caller cannot reopen a closing scope");
