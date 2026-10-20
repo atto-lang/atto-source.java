@@ -49,13 +49,7 @@ public final class AsyncSemanticProvenance {
     public int callCount() { return byCall.size(); }
     public boolean sealed() { return sealed; }
 
-    java.util.Set<Ast.CallExpr> calls() {
-        return java.util.Collections.newSetFromMap(
-                new IdentityHashMap<>(byCall.keySet().stream()
-                        .collect(java.util.stream.Collectors.toMap(
-                                key -> key,
-                                ignored -> Boolean.TRUE,
-                                (a, b) -> a,
-                                IdentityHashMap::new))));
+    public java.util.List<Ast.CallExpr> calls() {
+        return java.util.List.copyOf(byCall.keySet());
     }
 }
