@@ -479,24 +479,36 @@ final class IpcTransportSessionLease {
         notifyAll();
     }
 
-    synchronized Snapshot snapshot() {
-        absorbDeferredSchedulerFailureLocked();
-        return new Snapshot(generation, phase, activeWrites,
-                physicalCloseConfirmed, receiptsRetired);
+    Snapshot snapshot() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport snapshot");
+        synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
+            return new Snapshot(generation, phase, activeWrites,
+                    physicalCloseConfirmed, receiptsRetired);
+        }
     }
 
-    synchronized Throwable closeFailure() {
-        absorbDeferredSchedulerFailureLocked();
-        return closeFailure;
+    Throwable closeFailure() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport close failure diagnostic");
+        synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
+            return closeFailure;
+        }
     }
 
-    synchronized boolean invariant() {
-        absorbDeferredSchedulerFailureLocked();
-        return activeWrites >= 0 && activeWrites <= limit
-                && (!physicalCloseConfirmed || activeWrites == 0)
-                && (phase != Phase.RETIRED || (physicalCloseConfirmed && receiptsRetired))
-                && (phase != Phase.OPEN || !physicalCloseConfirmed)
-                && (phase != Phase.FINALIZING || activeWrites == 0)
-                && (!cleanupExecuting || phase == Phase.FINALIZING);
+    boolean invariant() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport invariant diagnostic");
+        synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
+            return activeWrites >= 0 && activeWrites <= limit
+                    && (!physicalCloseConfirmed || activeWrites == 0)
+                    && (phase != Phase.RETIRED || (physicalCloseConfirmed && receiptsRetired))
+                    && (phase != Phase.OPEN || !physicalCloseConfirmed)
+                    && (phase != Phase.FINALIZING || activeWrites == 0)
+                    && (!cleanupExecuting || phase == Phase.FINALIZING);
+        }
     }
 }
