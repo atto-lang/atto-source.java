@@ -48,9 +48,9 @@ public final class ExecutionContext {
                     throw new IllegalArgumentException(
                             "unbound allocation domain must contain only zeros");
                 }
-            } else if (domain <= 0 || owner <= 0 || generation <= 0) {
+            } else if (domain <= 0 || owner < 0 || generation <= 0) {
                 throw new IllegalArgumentException(
-                        "bound allocation domain components must be positive");
+                        "bound allocation domain requires positive domain/generation and nonnegative owner");
             }
         }
 
