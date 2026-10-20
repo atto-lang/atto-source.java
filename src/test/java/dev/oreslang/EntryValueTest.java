@@ -524,4 +524,23 @@ final class EntryValueTest {
         assertTrue(indexed.getMessage().contains("Entry"), indexed.getMessage());
     }
 
+    @Test
+    void entryConstructionIsFactoryOnly() {
+        IllegalArgumentException typed = rejected("""
+                fnc bad(): Entry<int, int> {
+                  return new Entry<int, int>();
+                }
+                """);
+        assertTrue(typed.getMessage().contains("Entry.of"), typed.getMessage());
+
+        IllegalArgumentException ownership = ownershipRejectedDirect("""
+                fnc bad(): void {
+                  const entry = new Entry<int, int>();
+                  return;
+                }
+                """);
+        assertTrue(ownership.getMessage().contains("Entry.of"), ownership.getMessage());
+    }
+
+
 }
