@@ -9488,7 +9488,9 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException(callable + " returned " + items.size()
                             + " tuple element(s), expected " + declared.arguments().size());
                 }
-                Object[] fixed = items.toArray();
+                // OresTuple is deliberately not a Java Collection: use its
+                // read-only positional adapter to obtain a defensive snapshot.
+                Object[] fixed = items.elements().toArray();
                 for (int i = 0; i < fixed.length; i++) {
                     fixed[i] = shapeReturnedValue(declared.arguments().get(i), fixed[i], callable + " tuple[" + i + "]", resolving);
                 }
