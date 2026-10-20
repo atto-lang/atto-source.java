@@ -49,17 +49,45 @@ public final class OresTaskScope implements AutoCloseable {
      * by the exit fence or the admission exception rather than falsely
      * claiming the pin was retired.
      */
-    private static final class PhysicalExitOnce implements Runnable {
+    // Package-private for runtime-only failure-injection tests. This is NOT
+    // a guest Task permit, nor proof of an allocation's source provenance.
+    static final class PhysicalExitOnce implements Runnable {
+        private static final int FRESH = 0;
+        private static final int RETIRING = 1;
+        private static final int RETIRED = 2;
+        private static final int FAILED = 3;
+
         private final Runnable delegate;
-        private final java.util.concurrent.atomic.AtomicBoolean claimed =
-                new java.util.concurrent.atomic.AtomicBoolean();
+        private final java.util.concurrent.atomic.AtomicInteger state =
+                new java.util.concurrent.atomic.AtomicInteger(FRESH);
+        private volatile Throwable retirementFailure;
 
         PhysicalExitOnce(Runnable delegate) {
             this.delegate = Objects.requireNonNull(delegate, "delegate");
         }
 
         @Override public void run() {
-            if (claimed.compareAndSet(false, true)) delegate.run();
+            if (!state.compareAndSet(FRESH, RETIRING)) {
+                int prior = state.get();
+                if (prior == RETIRED) return;
+                if (prior == FAILED) {
+                    throw new IllegalStateException(
+                            "physical Task retirement previously failed", retirementFailure);
+                }
+                // An in-flight callback has NOT finished retiring its pin.
+                // Returning success here could complete the getDone() fence
+                // before the first callback actually releases the storage.
+                throw new IllegalStateException(
+                        "physical Task retirement has not yet completed");
+            }
+            try {
+                delegate.run();
+                state.set(RETIRED);
+            } catch (RuntimeException | Error failure) {
+                retirementFailure = failure;
+                state.set(FAILED);
+                throw failure;
+            }
         }
     }
 
@@ -175,8 +203,8 @@ public final class OresTaskScope implements AutoCloseable {
     <T> OresTask<T> startCompilerFrame(
             OresScheduler scheduler, OresScheduler.Task<T> frame,
             Runnable onPhysicalExit) {
-        Objects.requireNonNull(scheduler, "scheduler");
-        Objects.requireNonNull(frame, "frame");
+        // A caller may already hold a code-image or region pin. Never reject
+        // a malformed scheduler/frame before installing its release guard.
         Objects.requireNonNull(onPhysicalExit, "onPhysicalExit");
         // The same pin can be retired by rejection cleanup OR the scheduler
         // physical-exit observer. Those routes must never run the release
@@ -194,6 +222,18 @@ public final class OresTaskScope implements AutoCloseable {
                     guardFailure.addSuppressed(retireFailure);
             }
             throw guardFailure;
+        }
+        try {
+            Objects.requireNonNull(scheduler, "scheduler");
+            Objects.requireNonNull(frame, "frame");
+        } catch (RuntimeException | Error invalidFrame) {
+            try {
+                release.run();
+            } catch (RuntimeException | Error retireFailure) {
+                if (invalidFrame != retireFailure)
+                    invalidFrame.addSuppressed(retireFailure);
+            }
+            throw invalidFrame;
         }
         synchronized (treeAdmissionGate) {
             synchronized (gate) {
