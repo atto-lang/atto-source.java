@@ -65,6 +65,40 @@ public final class RegionLocalitySmoke {
         check(CpuTopology.empty().preferredSlotForNuma(0, 1, 4, lookup) == 0,
                 "unknown topology never invents a page-placement proof");
 
+        CpuTopology unqualified = CpuTopology.of(
+                new CpuTopology.Location(25, 5, CpuTopology.UNKNOWN),
+                new CpuTopology.Location(26, 5, CpuTopology.UNKNOWN, 3, 0));
+        check(!unqualified.hasKnownLocality(25),
+                "an unqualified cache ID cannot trigger locality scans");
+        check(unqualified.hasKnownLocality(26),
+                "a qualified LLC can trigger locality scans");
+
+        // A hostile/bad topology hint cannot turn admission into an O(N)
+        // walk of every carrier in a large pool.
+        int[] largeCpus = new int[8192];
+        java.util.Arrays.fill(largeCpus, 11);
+        largeCpus[63] = 10;
+        largeCpus[64] = 10;
+        java.util.concurrent.atomic.AtomicInteger scans =
+                new java.util.concurrent.atomic.AtomicInteger();
+        java.util.function.IntUnaryOperator counted = slot -> {
+            check(scans.incrementAndGet() <= 64,
+                    "NUMA hint scanned more than the fixed budget");
+            return largeCpus[slot];
+        };
+        check(map.preferredSlotForNuma(0, 0, 8192, counted) == 63,
+                "find NUMA-local carrier at final permitted probe");
+        check(scans.get() == 64, "locality probe budget");
+        scans.set(0);
+        largeCpus[63] = 11;
+        check(map.preferredSlotForNuma(0, 0, 8192, counted) == 0,
+                "fall back when the matching slot is past the probe budget");
+        check(scans.get() == 64, "fallback has fixed probe budget");
+        scans.set(0);
+        check(map.preferredSlotForNuma(0, 0, 8193, counted) == 0
+                && scans.get() == 0,
+                "a pool larger than the discovery cap must hash directly");
+
         Random rnd = new Random(0x21baff17);
         for (int trial = 0; trial < 10_000; trial++) {
             int enabled = 1 + rnd.nextInt(64);
