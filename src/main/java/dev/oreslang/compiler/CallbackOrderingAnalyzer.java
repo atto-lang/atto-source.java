@@ -185,9 +185,12 @@ public final class CallbackOrderingAnalyzer {
                 }
             }
             state.pending.entrySet().removeIf(entry -> matches(entry.getKey(), event));
+            // A durable on() listener dominates once() for the same
+            // syntactic event. Keep one-shot evidence only when there is
+            // no existing durable subscription at that event.
+            if (once && !state.registered.contains(event)) state.oneShot.add(event);
+            else if (!once) state.oneShot.remove(event);
             state.registered.add(event);
-            if (once) state.oneShot.add(event);
-            else state.oneShot.remove(event);
         }
 
         private void emissionExpressions(Ast.Expr expr, State state, List<Event> result) {
