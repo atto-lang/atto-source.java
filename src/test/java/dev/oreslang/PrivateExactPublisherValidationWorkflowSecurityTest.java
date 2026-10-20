@@ -68,6 +68,9 @@ final class PrivateExactPublisherValidationWorkflowSecurityTest {
         assertTrue(approval.contains("git rev-parse --verify HEAD^{tree}"));
         assertTrue(approval.contains("git status --porcelain --untracked-files=all"));
         assertTrue(approval.contains("bash scripts/test-private-ci-destination.sh"));
+        assertTrue(approval.contains("scripts/publish-private-ci-source-v3.py"));
+        assertTrue(approval.contains("scripts/test-publish-private-ci-source-v3.py"));
+        assertTrue(approval.contains("tools/test-verify-exact-source-tree.sh"));
         assertTrue(approval.contains("spec_from_file_location"));
         assertTrue(approval.contains("loadTestsFromModule(module)"));
         assertTrue(approval.contains("suite.countTestCases()"));
