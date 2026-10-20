@@ -349,7 +349,7 @@ public final class TreeShaker {
                         call.typeArguments(),
                         call.typeArgumentsPresent(),
                         arguments);
-                Ast.CheckedOptionDepth.copy(call, substituted);
+                Ast.copyCheckedMetadata(call, substituted);
                 return substituted;
             }
             if (expression instanceof Ast.MemberExpr member) {
@@ -360,9 +360,7 @@ public final class TreeShaker {
             if (expression instanceof Ast.IndexExpr indexed) {
                 Ast.Expr substitutedReceiver =
                         substitute(indexed.receiver(), substitutions, shadowed);
-                Ast.CheckedClassView.copy(indexed.receiver(), substitutedReceiver);
-                Ast.CheckedStructuralFieldDomain.copy(
-                        indexed.receiver(), substitutedReceiver);
+                Ast.copyCheckedMetadata(indexed.receiver(), substitutedReceiver);
                 return new Ast.IndexExpr(
                         substitutedReceiver,
                         substitute(indexed.index(), substitutions, shadowed));
@@ -945,7 +943,7 @@ public final class TreeShaker {
                         call.typeArguments(),
                         call.typeArgumentsPresent(),
                         arguments);
-                Ast.CheckedOptionDepth.copy(call, rewritten);
+                Ast.copyCheckedMetadata(call, rewritten);
 
                 InlineTarget target = resolveInlineTarget(callee, module, locals);
                 if (target != null && canInlineConstantCall(target, rewritten, arguments)) {
@@ -961,9 +959,7 @@ public final class TreeShaker {
             if (expression instanceof Ast.IndexExpr indexed) {
                 Ast.Expr rewrittenReceiver =
                         rewriteExpression(indexed.receiver(), module, locals);
-                Ast.CheckedClassView.copy(indexed.receiver(), rewrittenReceiver);
-                Ast.CheckedStructuralFieldDomain.copy(
-                        indexed.receiver(), rewrittenReceiver);
+                Ast.copyCheckedMetadata(indexed.receiver(), rewrittenReceiver);
                 return new Ast.IndexExpr(
                         rewrittenReceiver,
                         rewriteExpression(indexed.index(), module, locals));
