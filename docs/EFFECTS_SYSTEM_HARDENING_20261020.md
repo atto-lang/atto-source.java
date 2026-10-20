@@ -151,3 +151,48 @@ One repository-specific CI constraint: any external-org GitHub Actions carrier
 must mirror the **exact** private source Git tree, verify all blob/tree SHAs,
 and run compilation/tests on that immutable revision. A workflow that merely
 runs without checking out the matching source is not evidence of correctness.
+
+
+## Round 2: opt-in source-front-end fact extraction
+
+`SourceEffectAudit.inspect(source)` runs the normal
+`OresCompiler.parseAndTypeCheck` (including ownership admission) before
+classifying the checked AST. This is the first source-derived, **strict
+overapproximation**, rather than an externally supplied graph:
+
+- Literal-only bodies may produce an empty effect set.
+- All calls (even obvious same-file call spellings), operator expressions,
+  constructors, lambdas and unknown expression forms produce `UNKNOWN_CALL`.
+  No guessed name lookup is treated as a resolved target.
+- Names/member/index reads are conservatively ambient; assignments
+  conservatively external writes; waits, channels and selects carry scheduler/
+  synchronization/actor facts; unsupported declarations/imports invalidate
+  whole-program `conservativelyEffectFree()`.
+- Reflection over compiler-owned immutable AST records visits children, with
+  strict node/depth budgets; a failed reflective read adds `UNKNOWN_CALL`.
+  Deferred, handler and lambda bodies are included, never silently skipped.
+- Runtime calls carry `FFI_UNKNOWN` as well as `UNKNOWN_CALL`. Neither
+  category can be granted by a caller's `allowed` row: `Graph.validate()`
+  rejects attempted declarations containing either.
+- The legacy `new Call(label)` constructor is now conservative and unresolved;
+  only explicit `Call.direct(verifiedTarget)` expresses a resolved edge.
+
+This early scanner is **not** typed-HIR source-to-effect-IR refinement, effect
+polymorphism, authorization for production codegen, or optimized operator
+classification. In particular, `conservativelyEffectFree()` is only an
+advisory closed-subset fact; it is not attached to Oreslang's ordinary compiler
+admission, and it is not an artifact/signature that should be trusted by an
+isolate supervisor.
+
+## Verification progress / provenance
+
+The Java source audit and new JUnit regressions still require a full exact-head
+Maven/Graal run. A focused test-org mirror at
+`zed-pkg-test/java-app` draft PR #225 stores exact Git blobs with SHA checks,
+but **no workflow run had been recorded** at the time of this edit. The LLVM
+`FunctionEffects.hpp` header was independently reconstructed byte-for-byte
+and matched Git blob `c0f75dae6908ed1f844c780dcb7df2915149b249`
+locally; a separate representative C++ smoke test passed all 1,048,576
+declared/inferred valid-row pairs and all 1,024 unresolved-call denial cases
+under GCC and Clang, debug and NDEBUG/release. This is narrower than running
+the repository's actual `function_effects_test.cpp` or its complete native CI.
