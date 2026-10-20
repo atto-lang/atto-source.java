@@ -87,6 +87,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 id=self.repository_ids.pop(0),
                 visibility=self.visibility.pop(0),
                 private=True,
+                archived=False,
+                disabled=False,
+                fork=False,
                 default_branch="main")
         if route == (
                 "repos/trusted/ci/contents/"
@@ -123,7 +126,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         def fake(route, method="GET", payload=None):
             routes.append(route)
             if route == "repos/"+pub.SOURCE_REPO:
-                return {"full_name": pub.SOURCE_REPO, "private": True}
+                return {
+                    "full_name": pub.SOURCE_REPO,
+                    "id": pub.SOURCE_REPO_ID,
+                    "private": True,
+                    "visibility": "private",
+                    "archived": False,
+                    "disabled": False,
+                    "fork": False}
             if route == "repos/"+pub.SOURCE_REPO+"/branches/main":
                 return {"name": "main", "protected": protected,
                         "commit": {"sha": A}}
@@ -355,7 +365,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(
             writes[3][2]["message"],
             "ci: exact private Oreslang tree " + A + " tree " + D
-            + "\ncarrier-base " + BASE_COMMIT + " tree " + BASE_TREE)
+            + "\ncarrier-base " + BASE_COMMIT + " tree " + BASE_TREE
+            + "\nconnector-authorized source-repository "
+            + pub.SOURCE_REPO + " id " + str(pub.SOURCE_REPO_ID))
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
 
     def test_detached_authorization_ref_must_confirm_exact_commit(self):
@@ -395,6 +407,28 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(tree_writes[1]["tree"], [
             {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": D}])
         self.assertEqual(tree_writes[1]["base_tree"], B)
+
+    def test_ineligible_destination_aborts_before_source_read_or_write(self):
+        original = self.fake_api
+        for field in ("archived", "disabled", "fork"):
+            def ineligible(route, method="GET", payload=None, field=field):
+                result = original(route, method, payload)
+                if route == "repos/trusted/ci":
+                    result = dict(result)
+                    result[field] = True
+                return result
+            with self.subTest(field=field):
+                self.route_calls.clear()
+                self.repository_ids = [DESTINATION_ID] * 100
+                with patch.object(pub, "gh_api", side_effect=ineligible):
+                    with patch.object(pub, "collect_source") as collect:
+                        with self.assertRaisesRegex(pub.Denied, "eligibility"):
+                            pub.publish(
+                                "trusted/ci", self.source,
+                                "ci/oreslang-test", self.root, A)
+                        collect.assert_not_called()
+                self.assertFalse(any(
+                    m == "POST" for m, _, _ in self.route_calls))
 
     def test_repository_id_flip_aborts_before_source_read_or_write(self):
         self.repository_ids = [DESTINATION_ID + 1]
