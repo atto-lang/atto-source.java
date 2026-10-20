@@ -1472,10 +1472,29 @@ class PrivateCiV3Test(unittest.TestCase):
                                 1323598177,
                             )
 
+    def test_ref_404_does_not_trust_incidental_error_text(self):
+        for stderr in (
+            "HTTP 404: Not Found",
+            "gh: Something went wrong (HTTP 500)\nHTTP 404",
+            "gh: Not Found (HTTP 404) extra words",
+            "gh: Access Denied (HTTP 403)\nHTTP 404\n",
+            "",
+        ):
+            with self.subTest(stderr=stderr):
+                response = Mock(returncode=1, stdout="", stderr=stderr)
+                self.assertFalse(v3.is_github_ref_absent_response(response))
+        self.assertTrue(v3.is_github_ref_absent_response(
+            Mock(returncode=1, stdout="",
+                 stderr="gh: Not Found (HTTP 404)\n")
+        ))
+        self.assertFalse(v3.is_github_ref_absent_response(
+            Mock(returncode=0, stdout="", stderr="gh: Not Found (HTTP 404)\n")
+        ))
+
     def test_live_ref_404_requires_carrier_identity_to_remain_visible(self):
         response = type(
             "Result", (),
-            {"returncode": 1, "stderr": "HTTP 404: Not Found", "stdout": ""},
+            {"returncode": 1, "stderr": "gh: Not Found (HTTP 404)\n", "stdout": ""},
         )()
         with (
             patch.object(v3, "_gh_ref_request", return_value=response),
@@ -1516,7 +1535,7 @@ class PrivateCiV3Test(unittest.TestCase):
     def test_live_ref_404_is_absent_only_after_private_carrier_recheck(self):
         response = type(
             "Result", (),
-            {"returncode": 1, "stderr": "HTTP 404: Not Found", "stdout": ""},
+            {"returncode": 1, "stderr": "gh: Not Found (HTTP 404)\n", "stdout": ""},
         )()
         with (
             patch.object(v3, "_gh_ref_request", return_value=response),
