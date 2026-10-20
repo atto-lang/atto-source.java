@@ -148,6 +148,14 @@ public final class DeclaredEffectVerifier {
                     callableName + " binds reserved sealed ML intrinsic name '"
                             + bound + "'");
         }
+        NominalEnumRegistry.Registry registry = NOMINAL_ENUMS.get();
+        if (bound != null
+                && registry != null
+                && registry.enums().containsKey(bound)) {
+            throw new IllegalArgumentException(
+                    callableName + " shadows nominal enum namespace '"
+                            + bound + "'");
+        }
         if (node instanceof Iterable<?> items) {
             for (Object item : items) {
                 rejectReservedMlBindings(item, callableName);
