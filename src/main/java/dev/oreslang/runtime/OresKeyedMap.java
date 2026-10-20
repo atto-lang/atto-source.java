@@ -376,6 +376,10 @@ public final class OresKeyedMap<K, V> {
             throw new IllegalArgumentException("host Map size changed during batch snapshot");
         }
 
+        if (prepared.isEmpty()) {
+            return;
+        }
+
         // A caller may supply IdentityHashMap or a custom Map whose equality
         // differs from the guest Map's nominal String/Symbol equality. Reject
         // duplicate *logical* keys before any writes rather than letting
