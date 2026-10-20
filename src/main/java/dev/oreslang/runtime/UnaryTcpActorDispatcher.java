@@ -48,9 +48,9 @@ final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher
     }
 
     /**
-     * Strict Bytes-style result codec. Compact OresBytes is the canonical
-     * runtime representation; integer lists remain accepted for compatibility
-     * with the bootstrap interpreter until source-level Bytes lowering lands.
+     * Strict Bytes result codec. Source-level Bytes lowers to compact OresBytes,
+     * which is the canonical representation. Integer lists remain accepted only
+     * as a bounded bootstrap/backward-compatibility input.
      */
     static ResultCodec bytesCodec(int maxBytes) {
         if (maxBytes < 0 || maxBytes > UnaryTransportFrame.MAX_PAYLOAD_BYTES)
