@@ -26,6 +26,7 @@ MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
 SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
+SOURCE_REPO_ID = 1400792274
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
 CARRIER_WORKFLOW_PATH = ".github/workflows/private-oreslang-exact-tree.yml"
@@ -73,9 +74,13 @@ def checked_repo(repository, expected_id):
             or isinstance(actual_id, bool)
             or actual_id != expected_id
             or result.get("visibility") != "private"
-            or result.get("private") is not True):
+            or result.get("private") is not True
+            or result.get("archived") is not False
+            or result.get("disabled") is not False
+            or result.get("fork") is not False):
         raise Denied(
-            "destination identity, immutable repository ID, or private visibility changed")
+            "destination identity, immutable repository ID, privacy, "
+            "or carrier eligibility changed")
     return result
 
 
@@ -193,8 +198,13 @@ def verify_protected_origin(repository, expected_authorization):
     """
     origin = gh_api(f"repos/{SOURCE_REPO}")
     if (origin.get("full_name") != SOURCE_REPO
-            or origin.get("private") is not True):
-        raise Denied("cannot attest identity and privacy of source origin")
+            or origin.get("id") != SOURCE_REPO_ID
+            or origin.get("private") is not True
+            or origin.get("visibility") != "private"
+            or origin.get("archived") is not False
+            or origin.get("disabled") is not False
+            or origin.get("fork") is not False):
+        raise Denied("cannot attest identity, privacy or eligibility of source origin")
     branch = gh_api(f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}")
     if (branch.get("name") != SOURCE_PROTECTED_BRANCH
             or branch.get("protected") is not True):
@@ -506,7 +516,9 @@ def publish(repository, source, branch, trusted_root, source_commit):
             "ci: exact private Oreslang tree "
             + source_commit + " tree " + expected_source_tree + "\n"
             + "carrier-base " + approved_base_commit
-            + " tree " + approved_base_tree
+            + " tree " + approved_base_tree + "\n"
+            + "connector-authorized source-repository "
+            + SOURCE_REPO + " id " + str(SOURCE_REPO_ID)
         ),
         "tree": new_tree_sha, "parents": [base_sha]
     })
