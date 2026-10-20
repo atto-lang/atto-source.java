@@ -210,8 +210,9 @@ public final class IncrementalCompiler {
     }
 
     private static String abiDigest(Ast.Program program) {
-        StringBuilder abi = new StringBuilder("ores-abi-v2\n");
+        StringBuilder abi = new StringBuilder("ores-abi-v3\n");
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
+        ModelGraphCompiler.Catalog modelCatalog = ModelGraphCompiler.compile(program);
 
         for (Ast.ModuleDecl module : program.modules()) {
             abi.append("module ").append(module.name()).append('\n');
@@ -222,12 +223,18 @@ public final class IncrementalCompiler {
                     abi.append('\n');
                 }
             }
-            for (Ast.Decl decl : module.declarations()) appendAbi(abi, decl);
+            for (Ast.Decl decl : module.declarations()) {
+                appendAbi(abi, module.name(), decl, modelCatalog);
+            }
         }
         return digest(abi.toString());
     }
 
-    private static void appendAbi(StringBuilder abi, Ast.Decl decl) {
+    private static void appendAbi(
+            StringBuilder abi,
+            String module,
+            Ast.Decl decl,
+            ModelGraphCompiler.Catalog modelCatalog) {
         if (decl instanceof Ast.FunctionDecl fn) {
             if (fn.visibility() != Ast.Visibility.PUBLIC) return;
             abi.append(fn.actorKind()).append(' ');
@@ -327,6 +334,29 @@ public final class IncrementalCompiler {
             abi.append("binding ").append(field.bindingKind()).append(' ')
                     .append(field.type() == null ? "<inferred:" + field.initializer() + ">" : typeRef(field.type()))
                     .append(' ').append(field.name()).append('\n');
+            return;
+        }
+        if (decl instanceof Ast.ModelDecl model && model.visibility() == Ast.Visibility.PUBLIC) {
+            String qualified = module.equals(Parser.ROOT_MODULE)
+                    ? model.name()
+                    : module + "." + model.name();
+            ModelGraphCompiler.CompiledModel compiled = modelCatalog.find(qualified);
+            if (compiled == null) {
+                throw new IllegalStateException(
+                        "public model missing from canonical ModelGraph catalog: " + qualified);
+            }
+            abi.append("pub model ").append(model.name())
+                    .append(" graph=").append(compiled.graphDigest())
+                    .append(" input=").append(ModelGraphCompiler.canonicalType(compiled.inputType()))
+                    .append(" output=").append(ModelGraphCompiler.canonicalType(compiled.outputType()))
+                    .append(" params(");
+            for (ModelGraphCompiler.Parameter parameter : compiled.parameters()) {
+                abi.append(parameter.name()).append(':')
+                        .append(ModelGraphCompiler.canonicalType(parameter.type()))
+                        .append(parameter.hasDefault() ? "=default" : "=required")
+                        .append(',');
+            }
+            abi.append(")\n");
         }
     }
 
