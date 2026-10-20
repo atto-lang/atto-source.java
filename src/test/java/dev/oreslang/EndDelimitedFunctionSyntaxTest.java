@@ -26,20 +26,20 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
-    void optionalDoSeparatorNormalizesToSameAst() {
-        var withoutDo = Parser.parse("""
+    void optionalAsSeparatorNormalizesToSameAst() {
+        var withoutAs = Parser.parse("""
                 fnc identity(int x) -> int
                     return x
                 end
                 """);
-        var withDo = Parser.parse("""
-                fnc identity(int x) -> int do
+        var withAs = Parser.parse("""
+                fnc identity(int x) -> int as
                     return x
                 end
                 """);
 
-        assertEquals(withoutDo, withDo);
-        assertDoesNotThrow(() -> TypeChecker.check(withDo));
+        assertEquals(withoutAs, withAs);
+        assertDoesNotThrow(() -> TypeChecker.check(withAs));
     }
 
     @Test
@@ -67,7 +67,29 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
-    void standaloneNextLineDoIsNotAcceptedAsTheCallableSeparator() {
+    void asSeparatorCanPrecedeARealDoSelectBodyStatement() {
+        var compact = Parser.parse("""
+                fnc consume(Channel<int> incoming) -> void as do select {
+                    case readch incoming: val number {
+                        return;
+                    }
+                } end
+                """);
+        var braced = Parser.parse("""
+                fnc consume(Channel<int> incoming) -> void {
+                    do select {
+                        case readch incoming: val number {
+                            return;
+                        }
+                    }
+                }
+                """);
+
+        assertEquals(braced, compact);
+    }
+
+    @Test
+    void standaloneNextLineDoIsParsedAsBodySyntaxAndRejectedWhenIncomplete() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc identity(int x) -> int
                     do
@@ -77,8 +99,16 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
-    void doProvidesCompactSameLineBodyBoundary() {
-        var compact = Parser.parse("fnc identity(int x) -> int do return x; end");
+    void callableHeaderDoIsRejectedRatherThanAliasedToAs() {
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc identity(int x) -> int do return x; end"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("routine identity(int x) -> int do return x; end"));
+    }
+
+    @Test
+    void asProvidesCompactSameLineBodyBoundary() {
+        var compact = Parser.parse("fnc identity(int x) -> int as return x; end");
         var multiline = Parser.parse("""
                 fnc identity(int x) -> int
                     return x
@@ -90,9 +120,9 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
-    void doFollowsTheCompleteHigherOrderReturnType() {
+    void asFollowsTheCompleteHigherOrderReturnType() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc callback() -> () => void do
+                fnc callback() -> () => void as
                     return || -> { return; };
                 end
                 """)));
@@ -101,27 +131,27 @@ final class EndDelimitedFunctionSyntaxTest {
     @Test
     void higherOrderReturnChecksReturnedLambdaSignature() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc callback() -> () => void do
+                fnc callback() -> () => void as
                     return |int value| -> { return; };
                 end
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc callback() -> () => void do
+                fnc callback() -> () => void as
                     return || -> { return 1; };
                 end
                 """)));
     }
 
     @Test
-    void nestedFunctionReturnTypesAssociateRightWithOptionalDo() {
+    void nestedFunctionReturnTypesAssociateRightWithOptionalAs() {
         var inferredGrouping = Parser.parse("""
-                fnc higher_order() -> (int) => (string) => bool do
+                fnc higher_order() -> (int) => (string) => bool as
                     return missing_callback
                 end
                 """);
         var explicitGrouping = Parser.parse("""
-                fnc higher_order() -> (int) => ((string) => bool) do
+                fnc higher_order() -> (int) => ((string) => bool) as
                     return missing_callback
                 end
                 """);
@@ -129,25 +159,25 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
-    void misplacedDoOrMissingReturnTypeCannotStartAFunctionBody() {
+    void misplacedAsOrMissingReturnTypeCannotStartAFunctionBody() {
         assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("fnc malformed() -> do return 1; end"));
+                () -> Parser.parse("fnc malformed() -> as return 1; end"));
         assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("fnc malformed() do return 1; end"));
+                () -> Parser.parse("fnc malformed() as return 1; end"));
     }
 
     @Test
-    void optionalDoDoesNotPermitImplicitNonVoidReturnOrMissingFi() {
+    void optionalAsDoesNotPermitImplicitNonVoidReturnOrMissingFi() {
         assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("fnc f() -> int do 42; end")));
+                () -> TypeChecker.check(Parser.parse("fnc f() -> int as 42; end")));
         assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("fnc f(int x) -> int do if x > 0 then return 1; end"));
+                () -> Parser.parse("fnc f(int x) -> int as if x > 0 then return 1; end"));
     }
 
     @Test
-    void compactDoSupportsNestedKeywordControlFlowAndMatchesMultilineAst() {
+    void compactAsSupportsNestedKeywordControlFlowAndMatchesMultilineAst() {
         var compact = Parser.parse(
-                "fnc classify(int x) -> int do if x > 0 then return 1; else return 0; fi end");
+                "fnc classify(int x) -> int as if x > 0 then return 1; else return 0; fi end");
         var multiline = Parser.parse("""
                 fnc classify(int x) -> int
                     if x > 0 then
@@ -171,7 +201,7 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
-    void contractSignaturesMayReturnFunctionTypesButDoCannotStartAContractBody() {
+    void contractSignaturesMayReturnFunctionTypesButAsCannotStartAContractBody() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define contract CallbackFactory as
                     fnc make() -> () => void;
@@ -180,7 +210,7 @@ final class EndDelimitedFunctionSyntaxTest {
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define contract CallbackFactory as
-                    fnc make() -> () => void do
+                    fnc make() -> () => void as
                         return || -> { return; };
                     end
                 end
@@ -188,12 +218,12 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
-    void commentsCannotMasqueradeAsOptionalDoOrCallableEnd() {
+    void commentsCannotMasqueradeAsOptionalAsOrCallableEnd() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
-                "fnc value() -> int /* do end */ do /* end */ return 7; end // end do\n")));
+                "fnc value() -> int /* as do end */ as /* end */ return 7; end // as do end\n")));
 
         var compact = Parser.parse(
-                "fnc text() -> string do return \"do end fi\"; end // do end\n");
+                "fnc text() -> string as return \"do end fi\"; end // as do end\n");
         var multiline = Parser.parse("""
                 fnc text() -> string
                     return "do end fi"
@@ -203,28 +233,28 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
-    void optionalDoMayCrossCommentsOnTheHeaderLineButNeverAPhysicalNewline() {
+    void optionalAsMayCrossCommentsOnTheHeaderLineButNeverAPhysicalNewline() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
-                "fnc value() -> int /* boundary */ do return 7; end")));
+                "fnc value() -> int /* boundary */ as return 7; end")));
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc value() -> int /* boundary */
-                do
+                as
                     return 7
                 end
                 """));
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse(
-                "fnc value() -> int; /* not a body boundary */ do return 7; end"));
+                "fnc value() -> int; /* not a body boundary */ as return 7; end"));
     }
 
     @Test
-    void compactDoSupportsExpressionAndBlockLambdasWithoutStealingTheirDelimiters() {
+    void compactAsSupportsExpressionAndBlockLambdasWithoutStealingTheirDelimiters() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
-                "fnc make() -> () => int do return || -> 7; end")));
+                "fnc make() -> () => int as return || -> 7; end")));
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
-                "fnc make() -> () => string do return || -> { return \"do end\"; }; end")));
+                "fnc make() -> () => string as return || -> { return \"do end\"; }; end")));
     }
 
     @Test
@@ -234,7 +264,7 @@ final class EndDelimitedFunctionSyntaxTest {
                     return value + 1;
                 }
 
-                fnc callback() -> (int) => int do
+                fnc callback() -> (int) => int as
                     return increment;
                 end
                 """)));
@@ -246,7 +276,7 @@ final class EndDelimitedFunctionSyntaxTest {
                     return value + 1;
                 }
 
-                fnc callback() -> IntFn do
+                fnc callback() -> IntFn as
                     return increment;
                 end
                 """)));
@@ -258,7 +288,7 @@ final class EndDelimitedFunctionSyntaxTest {
                             return value + 1;
                         }
 
-                        fnc callback() -> (int) => int do
+                        fnc callback() -> (int) => int as
                             return direct_only;
                         end
                         """)));
@@ -266,7 +296,7 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
-    void routineUsesTheSameEndDelimitedAndCompactDoRules() {
+    void routineUsesTheSameEndDelimitedAndCompactAsRules() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 routine identity(int x) -> int
                     return x
@@ -274,7 +304,7 @@ final class EndDelimitedFunctionSyntaxTest {
                 """)));
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
-                "routine identity(int x) -> int do return x; end")));
+                "routine identity(int x) -> int as return x; end")));
     }
 
     @Test
@@ -322,7 +352,11 @@ final class EndDelimitedFunctionSyntaxTest {
                 () -> Parser.parse("fnc same_line() -> int return 1 end"));
 
         assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("fnc colon(): int do return 1; end"));
+                () -> Parser.parse("fnc casty() -> int return 1 as int; end"));
+
+
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc colon(): int as return 1; end"));
     }
 
     @Test
@@ -367,12 +401,25 @@ final class EndDelimitedFunctionSyntaxTest {
                 """));
 
         assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("actor fnc work(int x) -> int do return x; end"));
+                () -> Parser.parse("actor fnc work(int x) -> int as return x; end"));
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define class Example as
-                    static fnc run(int x) -> int do return x; end
+                    static fnc run(int x) -> int as return x; end
                 end
                 """));
+    }
+
+    @Test
+    void nestedMatchEndIsOwnedByMatchBeforeCallableEnd() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc inspect(int x) -> int
+                    match x
+                        1 -> { }
+                        else -> { }
+                    end
+                    return x
+                end
+                """)));
     }
 
     @Test
