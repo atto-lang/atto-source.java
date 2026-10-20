@@ -109,6 +109,6 @@ final class ModelDeclarationParserSliceTest {
                 """);
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(source));
-        assertTrue(error.getMessage().contains("MODEL_LOWERING_UNSUPPORTED"), error::getMessage);
+        assertTrue(error.getMessage().contains("MODEL_LOWERING_NOT_IMPLEMENTED"), error::getMessage);
     }
 }
