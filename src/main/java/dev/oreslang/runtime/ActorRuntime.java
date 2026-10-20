@@ -1953,6 +1953,31 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /**
+         * Explicit host/CONTROL bridge to start a worker owned by this
+         * supervisor's existing ActorGroup. The caller receives an ordinary
+         * ActorRef, not a supervisor capability. Source-level start_child,
+         * transactional readiness, panic dispatch and restart policy require
+         * separate compiler/runtime lowering; this method does not provide them.
+         */
+        public <M> ActorRef<M> startChildHost(
+                ActorGroup group,
+                ActorKind kind,
+                IsolatePolicy policy,
+                BehaviorFactory<M> behaviorFactory) {
+            requireSupervisorContext("start a supervised child");
+            requireCallerRuntimeAffinity("start a supervised child");
+            Objects.requireNonNull(group, "group");
+            if (supervisors.get(id) != this) {
+                throw new IllegalArgumentException("foreign supervisor runtime");
+            }
+            if (actorGroups.get(group.id()) != group || group.supervisor != this) {
+                throw new IllegalArgumentException(
+                        "ActorGroup is not directly bound to this supervisor");
+            }
+            return group.spawnWorker(kind, policy, behaviorFactory);
+        }
+
         public Optional<SupervisorCodeSlot.Descriptor> policyRevision() {
             requireSupervisorContext("inspect supervisor policy revision");
             requireCallerRuntimeAffinity("inspect supervisor policy revision");
