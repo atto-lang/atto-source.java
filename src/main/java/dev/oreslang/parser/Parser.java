@@ -491,8 +491,9 @@ public final class Parser {
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
+        boolean slimArrowReturn = check(ARROW);
         Ast.TypeRef returnType = parseReturnType(annotations);
-        List<Ast.Stmt> body = parseBlock();
+        List<Ast.Stmt> body = parseFunctionBody(slimArrowReturn, actorKind);
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs);
     }
@@ -859,7 +860,10 @@ public final class Parser {
                 consume(LPAREN, "expected '(' after interface function name");
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
                 consume(RPAREN, "expected ')' after interface parameters");
-                Ast.TypeRef returns = match(FAT_ARROW, COLON) ? parseTypeRef() : Ast.TypeRef.simple("void");
+                boolean hasReturnType = moduleContract
+                        ? match(FAT_ARROW, COLON, ARROW)
+                        : match(FAT_ARROW, COLON);
+                Ast.TypeRef returns = hasReturnType ? parseTypeRef() : Ast.TypeRef.simple("void");
                 consumeMemberTerminator(terminator, "interface function signature should end with ';'");
                 members.add(new Ast.InterfaceFunctionDecl(memberName, callableStructural.enabled(), memberGenerics, params, returns));
                 continue;
@@ -1533,6 +1537,15 @@ public final class Parser {
             return parseFunctionTypeSignature();
         }
 
+        // Contextual tuple spelling is a type-position alias for the existing
+        // finite tuple TypeRef.  "tuple" remains legal as an ordinary identifier
+        // outside this exact "tuple (" type shape.
+        if (isContextualIdentifier("tuple") && checkNext(LPAREN)) {
+            advance();
+            consume(LPAREN, "expected '(' after tuple in type position");
+            return parseExplicitTupleType();
+        }
+
         if (check(LPAREN) && looksLikeFunctionType()) return parseFunctionTypeSignature();
         if (match(LPAREN)) {
             Ast.TypeRef grouped = parseTypeRef();
@@ -1590,6 +1603,18 @@ public final class Parser {
             consume(RBRACKET, "expected ']' after sequence type shape");
         }
         return new Ast.TypeRef(name, args, infer);
+    }
+
+    private Ast.TypeRef parseExplicitTupleType() {
+        List<Ast.TypeRef> elements = new ArrayList<>();
+        if (!check(RPAREN)) {
+            do elements.add(parseTypeRef()); while (match(COMMA));
+        }
+        consume(RPAREN, "expected ')' after tuple type");
+        if (elements.size() > 64) {
+            throw error(previous(), "tuple type exceeds 64-slot static proof bound");
+        }
+        return Ast.TypeRef.tupleType(elements);
     }
 
     private Ast.TypeRef parseMetaValue() {
@@ -1682,6 +1707,44 @@ public final class Parser {
         StringBuilder name = new StringBuilder(consume(IDENT, "expected name").lexeme());
         while (match(DOT)) name.append('.').append(consume(IDENT, "expected name after '.'").lexeme());
         return name.toString();
+    }
+
+    /**
+     * Ordinary free/module callables may opt into a keyword-delimited body:
+     *
+     *   fnc name(...) -> Type
+     *       ...
+     *   end
+     *
+     * The slim-arrow return annotation is mandatory for this body form.  That
+     * keeps the header/body boundary explicit and prevents @Ret or implicit
+     * void from making the first body token part of a type/header ambiguity.
+     * Actor callables remain braced until their continuation/supervision source
+     * surface is deliberately admitted.  Class methods/static fnc never call
+     * this helper; parseMethod() keeps their bodies braced.
+     */
+    private List<Ast.Stmt> parseFunctionBody(
+            boolean slimArrowReturn,
+            Ast.ActorKind actorKind) {
+        if (check(LBRACE)) return parseBlock();
+        if (!slimArrowReturn) {
+            throw error(peek(),
+                    "end-delimited free/module callable bodies require an explicit '-> ReturnType'; "
+                            + "otherwise use a braced body");
+        }
+        if (actorKind != Ast.ActorKind.NONE) {
+            throw error(peek(),
+                    "end-delimited actor callable bodies are not enabled; use a braced actor body");
+        }
+        if (current == 0 || previous().line() >= peek().line()) {
+            throw error(peek(),
+                    "end-delimited callable body must begin on the line after its '-> ReturnType' header");
+        }
+
+        List<Ast.Stmt> body = new ArrayList<>();
+        while (!check(END) && !check(EOF)) body.add(parseStatement());
+        consume(END, "expected 'end' to close free/module callable");
+        return body;
     }
 
     private List<Ast.Stmt> parseBlock() {
