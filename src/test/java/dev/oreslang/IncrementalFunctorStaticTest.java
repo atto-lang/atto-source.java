@@ -439,4 +439,48 @@ final class IncrementalFunctorStaticTest {
                 "changing a JSON wire key is an ABI change for importers");
     }
 
+    @Test
+    void nominalEnumCaseTagsAndPayloadsParticipateInAbiInvalidation() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> initial = Map.of(
+                "errors.ores", """
+                        define enum TrainingError as
+                            INVALID_INPUT = 1
+                            STALE_GRAPH = 2
+                        end
+                        """,
+                "consumer.ores", """
+                        import * as errors from "./errors.ores";
+                        pub routine main(): void { return; }
+                        """);
+
+        compiler.compile(initial);
+
+        Map<String, String> tagChanged = Map.of(
+                "errors.ores", """
+                        define enum TrainingError as
+                            INVALID_INPUT = 1
+                            STALE_GRAPH = 3
+                        end
+                        """,
+                "consumer.ores", initial.get("consumer.ores"));
+        var afterTagChange = compiler.compile(tagChanged);
+        assertTrue(afterTagChange.rebuilt("errors.ores"));
+        assertTrue(afterTagChange.rebuilt("consumer.ores"),
+                "enum tag changes alter nominal/wire identity and must invalidate dependents");
+
+        Map<String, String> payloadChanged = Map.of(
+                "errors.ores", """
+                        define enum TrainingError as
+                            INVALID_INPUT = 1
+                            STALE_GRAPH: int = 3
+                        end
+                        """,
+                "consumer.ores", initial.get("consumer.ores"));
+        var afterPayloadChange = compiler.compile(payloadChanged);
+        assertTrue(afterPayloadChange.rebuilt("errors.ores"));
+        assertTrue(afterPayloadChange.rebuilt("consumer.ores"),
+                "enum payload contract changes must invalidate dependents");
+    }
+
 }
