@@ -5023,8 +5023,8 @@ public final class OresEvalRootNode extends RootNode {
             if (failure instanceof ProcessExitSignal || failure instanceof Error) {
                 return true;
             }
-            return failure instanceof RuntimeException runtime
-                    && !isTrappableFailure(runtime);
+            return !dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
+                    failure, OresPanic.class);
         }
 
         // Explicit guest catch is intentionally broader than trap: callers
