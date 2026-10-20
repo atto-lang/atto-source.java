@@ -37,11 +37,13 @@ public final class TreeShaker {
             Ast.Program program,
             Set<String> retainedSymbols,
             Set<String> removedSymbols,
-            Map<String, Object> compileTimeConstants) {
+            Map<String, Object> compileTimeConstants,
+            ReachabilityManifest manifest) {
         public Result {
             retainedSymbols = Set.copyOf(retainedSymbols);
             removedSymbols = Set.copyOf(removedSymbols);
             compileTimeConstants = Map.copyOf(compileTimeConstants);
+            Objects.requireNonNull(manifest, "manifest");
         }
 
         public boolean retained(String symbol) {
@@ -78,6 +80,8 @@ public final class TreeShaker {
 
         private final LinkedHashSet<String> retained = new LinkedHashSet<>();
         private final LinkedHashSet<String> externalBindings = new LinkedHashSet<>();
+        private final LinkedHashSet<String> languageFeatures = new LinkedHashSet<>();
+        private final LinkedHashSet<String> runtimeOperations = new LinkedHashSet<>();
         private final ArrayDeque<String> work = new ArrayDeque<>();
 
         private Ast.Program rewritten;
@@ -107,7 +111,14 @@ public final class TreeShaker {
             Ast.Program pruned = pruneProgram(rewritten);
             LinkedHashSet<String> removed = new LinkedHashSet<>(symbols.keySet());
             removed.removeAll(retained);
-            return new Result(pruned, retained, removed, constantValues);
+            ReachabilityManifest manifest = ReachabilityManifest.create(
+                    options,
+                    retained,
+                    removed,
+                    externalBindings,
+                    languageFeatures,
+                    runtimeOperations);
+            return new Result(pruned, retained, removed, constantValues, manifest);
         }
 
         private void collectConstants() {
@@ -1113,6 +1124,10 @@ public final class TreeShaker {
 
         private void scanDeclaration(String module, Ast.Decl declaration) {
             if (declaration instanceof Ast.FunctionDecl function) {
+                if (function.actorKind() != Ast.ActorKind.NONE) languageFeatures.add("actors");
+                if (function.async()) languageFeatures.add("async");
+                if (function.suspends()) languageFeatures.add("suspension");
+                if (function.generator()) languageFeatures.add("generators");
                 scanType(function.returnType());
                 for (Ast.Param parameter : function.parameters()) scanType(parameter.type());
                 // Type defaults participate in the public source ABI: a type
@@ -1132,6 +1147,8 @@ public final class TreeShaker {
                 return;
             }
             if (declaration instanceof Ast.ClassDecl klass) {
+                languageFeatures.add("classes");
+                if (klass.actorKind() != Ast.ActorKind.NONE) languageFeatures.add("actors");
                 for (Ast.TypeRef parent : klass.parents()) scanType(parent);
                 for (Ast.TypeRef iface : klass.interfaces()) scanType(iface);
                 for (Ast.FieldDecl field : klass.fields()) {
@@ -1160,6 +1177,7 @@ public final class TreeShaker {
                 return;
             }
             if (declaration instanceof Ast.InterfaceDecl iface) {
+                languageFeatures.add("interfaces");
                 for (Ast.TypeRef parent : iface.parents()) scanType(parent);
                 for (Ast.InterfaceMember member : iface.members()) {
                     if (member instanceof Ast.InterfaceFunctionDecl fn) {
@@ -1204,6 +1222,7 @@ public final class TreeShaker {
                 } else if (statement instanceof Ast.ReturnStmt returned) {
                     scanExpression(module, returned.value(), locals);
                 } else if (statement instanceof Ast.YieldStmt yielded) {
+                    languageFeatures.add("generators");
                     scanExpression(module, yielded.value(), locals);
                 } else if (statement instanceof Ast.ExprStmt expression) {
                     scanExpression(module, expression.expression(), locals);
@@ -1236,6 +1255,8 @@ public final class TreeShaker {
                     }
                     scanStatements(module, switched.defaultBody(), new LinkedHashSet<>(locals));
                 } else if (statement instanceof Ast.SelectStmt selected) {
+                    languageFeatures.add("select");
+                    languageFeatures.add("channels");
                     for (Ast.SelectArm arm : selected.arms()) {
                         scanExpression(module, arm.channel(), locals);
                         scanExpression(module, arm.value(), locals);
@@ -1247,12 +1268,14 @@ public final class TreeShaker {
                         scanStatements(module, arm.body(), armLocals);
                     }
                 } else if (statement instanceof Ast.TryStmt tried) {
+                    languageFeatures.add("exceptions");
                     scanStatements(module, tried.body(), new LinkedHashSet<>(locals));
                     LinkedHashSet<String> catchLocals = new LinkedHashSet<>(locals);
                     if (tried.errorName() != null) catchLocals.add(tried.errorName());
                     scanStatements(module, tried.catchBody(), catchLocals);
                     scanStatements(module, tried.finallyBody(), new LinkedHashSet<>(locals));
                 } else if (statement instanceof Ast.ForOfDestructureStmt loop) {
+                    if (loop.asyncIteration()) languageFeatures.add("async");
                     scanExpression(module, loop.iterable(), locals);
                     LinkedHashSet<String> bodyLocals = new LinkedHashSet<>(locals);
                     for (Ast.DestructureBinding binding : loop.bindings()) {
@@ -1260,6 +1283,7 @@ public final class TreeShaker {
                     }
                     scanStatements(module, loop.body(), bodyLocals);
                 } else if (statement instanceof Ast.ForOfStmt loop) {
+                    if (loop.asyncIteration()) languageFeatures.add("async");
                     scanExpression(module, loop.iterable(), locals);
                     LinkedHashSet<String> bodyLocals = new LinkedHashSet<>(locals);
                     bodyLocals.add(loop.bindingName());
@@ -1337,6 +1361,7 @@ public final class TreeShaker {
                 scanExpression(module, binary.left(), locals);
                 scanExpression(module, binary.right(), locals);
             } else if (expression instanceof Ast.TrapExpr trapped) {
+                languageFeatures.add("exceptions");
                 scanExpression(module, trapped.expression(), locals);
             } else if (expression instanceof Ast.UnaryExpr unary) {
                 scanExpression(module, unary.operand(), locals);
@@ -1348,6 +1373,8 @@ public final class TreeShaker {
                 scanExpression(module, conditional.whenTrue(), locals);
                 scanExpression(module, conditional.whenFalse(), locals);
             } else if (expression instanceof Ast.RuntimeCallExpr runtime) {
+                languageFeatures.add("runtime-intrinsics");
+                runtimeOperations.add(runtime.operation());
                 for (Ast.Expr argument : runtime.arguments()) scanExpression(module, argument, locals);
             } else if (expression instanceof Ast.CallExpr call) {
                 scanExpression(module, call.callee(), locals);
@@ -1357,15 +1384,21 @@ public final class TreeShaker {
                 scanExpression(module, indexed.receiver(), locals);
                 scanExpression(module, indexed.index(), locals);
             } else if (expression instanceof Ast.NewExpr created) {
+                languageFeatures.add("allocation");
                 scanType(created.type());
                 for (Ast.Expr argument : created.arguments()) scanExpression(module, argument, locals);
             } else if (expression instanceof Ast.AwaitExpr awaited) {
+                languageFeatures.add("async");
+                languageFeatures.add("suspension");
                 scanExpression(module, awaited.expression(), locals);
             }
             else if (expression instanceof Ast.ChannelOpExpr operation) {
+                languageFeatures.add("channels");
                 scanExpression(module, operation.channel(), locals);
                 scanExpression(module, operation.value(), locals);
             } else if (expression instanceof Ast.DynamicSelectExpr selected) {
+                languageFeatures.add("select");
+                languageFeatures.add("channels");
                 scanExpression(module, selected.cases(), locals);
             } else if (expression instanceof Ast.ListExpr list) {
                 for (Ast.Expr element : list.elements()) scanExpression(module, element, locals);
@@ -1379,6 +1412,7 @@ public final class TreeShaker {
                     scanExpression(module, field.value(), locals);
                 }
             } else if (expression instanceof Ast.LambdaExpr lambda) {
+                languageFeatures.add("closures");
                 LinkedHashSet<String> nested = new LinkedHashSet<>(locals);
                 for (Ast.Param parameter : lambda.parameters()) {
                     scanType(parameter.type());
