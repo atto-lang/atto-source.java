@@ -304,6 +304,8 @@ def require_carrier_actions_posture(repository, expected_id):
     permissions = gh_api(f"repos/{repository}/actions/permissions")
     if permissions.get("enabled") is not True:
         raise Denied("private carrier GitHub Actions is disabled or unavailable")
+    if permissions.get("sha_pinning_required") is not True:
+        raise Denied("private carrier must require immutable Action SHA pins")
     allowed = permissions.get("allowed_actions")
     if allowed == "selected":
         selected = gh_api(f"repos/{repository}/actions/permissions/selected-actions")
@@ -331,7 +333,7 @@ def require_carrier_actions_posture(repository, expected_id):
         raise Denied("private carrier artifact/log retention exceeds security limit")
 
     return (
-        destination["id"], action_policy,
+        destination["id"], permissions["sha_pinning_required"], action_policy,
         workflow["default_workflow_permissions"],
         workflow["can_approve_pull_request_reviews"], days,
     )
