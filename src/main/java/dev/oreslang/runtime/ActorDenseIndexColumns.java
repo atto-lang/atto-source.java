@@ -12,7 +12,7 @@ import java.util.OptionalLong;
  * allocated per relationship and no pointer decoding is required while a DOD
  * kernel can operate on indices directly.</p>
  */
-public final class ActorDenseIndexColumns implements AutoCloseable, ActorShardBacking {
+public final class ActorDenseIndexColumns extends ActorShardBacking implements AutoCloseable {
     private static final int MAX_BYTES = 16 * 1024 * 1024;
 
     private final ActorRuntime.ActorId owner;
@@ -74,12 +74,12 @@ public final class ActorDenseIndexColumns implements AutoCloseable, ActorShardBa
     }
 
     @Override
-    public boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor) {
+    boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor) {
         return reservation.ownedBy(runtime, actor);
     }
 
     @Override
-    public boolean isPrivateBacked() {
+    boolean isPrivateBacked() {
         return reservation.privateBacking();
     }
 
@@ -89,7 +89,7 @@ public final class ActorDenseIndexColumns implements AutoCloseable, ActorShardBa
     public int lanes() { return lanes; }
 
     @Override
-    public void revokeBackingFromLease() {
+    void revokeBackingFromLease() {
         int[] old = storage;
         if (old != null) {
             java.util.Arrays.fill(old, 0);
