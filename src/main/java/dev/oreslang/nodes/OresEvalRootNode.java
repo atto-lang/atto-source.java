@@ -4666,9 +4666,18 @@ public final class OresEvalRootNode extends RootNode {
                         }, args);
             }
 
-            if (receiver instanceof OresEntry) {
-                throw new IllegalArgumentException(
-                        "Entry fields are values and cannot be invoked as methods");
+            if (receiver instanceof OresEntry entry) {
+                Object field = switch (member.member()) {
+                    case "key" -> entry.key();
+                    case "value" -> entry.value();
+                    default -> throw new IllegalArgumentException(
+                            "unknown Entry member " + member.member());
+                };
+                if (!(field instanceof Invokable invokable)) {
+                    throw new IllegalArgumentException(
+                            "Entry field '" + member.member() + "' is not callable");
+                }
+                return invokableInvocation(invokable, args);
             }
             if (receiver instanceof OresObject object) {
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
