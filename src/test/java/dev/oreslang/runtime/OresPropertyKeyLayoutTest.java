@@ -61,6 +61,27 @@ class OresPropertyKeyLayoutTest {
         assertThrows(IllegalArgumentException.class, () -> OresPropertyLayout.canonical(keys));
     }
 
+    @Test void lengthIsMeasuredInUtf8BytesNotUtf16CodeUnits() {
+        String emoji = "\uD83D\uDE00";
+        assertEquals(4096 * 2, OresPropertyKey.string(emoji.repeat(4096)).name().length());
+        assertThrows(IllegalArgumentException.class,
+                () -> OresPropertyKey.string(emoji.repeat(4097)));
+    }
+
+    @Test void lyingCollectionSizeCannotBypassSnapshotQuota() {
+        java.util.Collection<OresPropertyKey> hostile = new java.util.AbstractCollection<>() {
+            @Override public int size() { return 0; }
+            @Override public java.util.Iterator<OresPropertyKey> iterator() {
+                return new java.util.Iterator<>() {
+                    private int next;
+                    @Override public boolean hasNext() { return next <= OresPropertyLayout.MAX_FIELDS; }
+                    @Override public OresPropertyKey next() { return OresPropertyKey.string("key_" + next++); }
+                };
+            }
+        };
+        assertThrows(IllegalArgumentException.class, () -> OresPropertyLayout.declared(hostile));
+    }
+
     @Test void aggregateTaggedKeyByteBudgetChecksBeforeInsertion() {
         var keys = new java.util.ArrayList<OresPropertyKey>();
         for (int i = 0; i < 63; i++) {
