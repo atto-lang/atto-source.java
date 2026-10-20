@@ -368,9 +368,15 @@ public final class SealedActorState {
             if (version < 0)
                 throw new IllegalStateException("ML_INVALID_VERSION_VALUE");
             Objects.requireNonNull(names, "snapshot scalar names");
+            if (names.length == 0)
+                throw new IllegalArgumentException(
+                        "ML_SNAPSHOT_REQUIRES_NON_VERSION_SCALAR");
             var copied = new LinkedHashMap<String, Object>();
             for (String name : names) {
                 Objects.requireNonNull(name, "snapshot scalar name");
+                if (name.equals(versionField))
+                    throw new IllegalArgumentException(
+                            "ML_SNAPSHOT_VERSION_FIELD_DUPLICATED");
                 if (copied.containsKey(name))
                     throw new IllegalArgumentException("duplicate snapshot scalar: " + name);
                 Object value = read(name);
