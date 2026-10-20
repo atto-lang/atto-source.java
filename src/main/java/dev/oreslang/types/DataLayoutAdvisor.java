@@ -108,7 +108,7 @@ public final class DataLayoutAdvisor {
         }
         if ((r.layout() == Layout.SPARSE_SET || r.layout() == Layout.ARCHETYPE) &&
                 r.hints().structuralChangesPerPass() != null &&
-                r.hints().structuralChangesPerPass() >= (r.rows() + 7) / 8) {
+                r.hints().structuralChangesPerPass() >= r.rows() / 8 + (r.rows() % 8 == 0 ? 0 : 1)) {
             findings.add(new Finding("ORES-LAYOUT135", "Benchmark deferred ECS structural-change batches and generation-safe handles."));
         }
         return List.copyOf(findings);
