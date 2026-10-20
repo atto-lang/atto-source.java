@@ -67,4 +67,22 @@ final class PortableModelGraphDigestV1Test {
                 assertThrows(IllegalArgumentException.class,
                         () -> PortableModelGraphDigestV1.digest(graph("9223372036854775808", "2".repeat(64)))).getMessage());
     }
+    @Test
+    void orderedV1AllowsOnlyUnaryExternalInputBoundary() {
+        Signature unary = sig("5".repeat(64), List.of(), List.of(PRICE));
+        Graph allowed = new Graph(1, "finance.PriceTransform@v1",
+                List.of(new Node("n0", "ValidatePrice", List.of(), List.of(), unary)),
+                List.of("n0"));
+        assertEquals(64, PortableModelGraphDigestV1.digest(allowed).length());
+
+        Signature binary = sig("6".repeat(64), List.of(), List.of(PRICE, PRICE));
+        Graph denied = new Graph(1, "finance.Bad@v1",
+                List.of(new Node("n0", "BinaryInput", List.of(), List.of(), binary)),
+                List.of("n0"));
+        assertEquals("MODEL_PORT_ARITY_MISMATCH",
+                assertThrows(IllegalArgumentException.class,
+                        () -> PortableModelGraphDigestV1.digest(denied)).getMessage());
+    }
+
+
 }
