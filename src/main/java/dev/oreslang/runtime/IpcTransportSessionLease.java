@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.io.IOException;
 import java.util.Objects;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Trusted host-side ownership of one IPC transport incarnation.
@@ -73,6 +74,11 @@ final class IpcTransportSessionLease {
     private boolean cleanupExecuting;
     private long enqueueAttempt;
     private Thread enqueueCaller;
+    // Misrouted cleanup callbacks must be able to report failure without
+    // acquiring this monitor. A trusted host observation folds the deferred
+    // violation into QUARANTINED under the normal session lock.
+    private final AtomicReference<Throwable> deferredSchedulerFailure =
+            new AtomicReference<>();
 
     IpcTransportSessionLease(IpcReceiptCorrelation.Envelope trustedEpoch,
                              long generation, int limit,
@@ -130,6 +136,7 @@ final class IpcTransportSessionLease {
         Objects.requireNonNull(preparedFrame, "preparedFrame");
         final CompletionStage<IpcReceiptCorrelation.Stage> outcome;
         synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
             if (phase != Phase.OPEN || expectedGeneration != generation
                     || !sameTrustedEpoch(message) || activeWrites >= limit) {
                 throw new PreDispatchRejectedException(
@@ -172,6 +179,7 @@ final class IpcTransportSessionLease {
         Objects.requireNonNull(message, "message");
         Objects.requireNonNull(preparedFrame, "preparedFrame");
         synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
             if (phase != Phase.OPEN || expectedGeneration != generation
                     || !sameTrustedEpoch(message) || activeWrites >= limit) {
                 throw new PreDispatchRejectedException(
@@ -220,6 +228,7 @@ final class IpcTransportSessionLease {
         RuntimeBlockingGuard.requireBlockingHostThread("IPC transport close request");
         boolean finalize;
         synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
             if (phase == Phase.OPEN) phase = Phase.CLOSING;
             finalize = beginFinalization();
         }
@@ -243,9 +252,16 @@ final class IpcTransportSessionLease {
             long remainingNanos = timeoutMillis * 1_000_000L;
             long deadline = System.nanoTime() + remainingNanos;
             while (phase != Phase.RETIRED && phase != Phase.QUARANTINED) {
+                absorbDeferredSchedulerFailureLocked();
+                if (phase == Phase.RETIRED || phase == Phase.QUARANTINED) break;
                 if (remainingNanos <= 0) return false;
-                long millis = remainingNanos / 1_000_000L;
-                int nanos = (int) (remainingNanos % 1_000_000L);
+                // A deferred actor-carrier scheduler violation is recorded
+                // lock-free and cannot notify this monitor without risking the
+                // actor park we are preventing. Bound host wait slices so the
+                // supervisor observes it promptly without busy polling.
+                long sliceNanos = Math.min(remainingNanos, 50_000_000L);
+                long millis = sliceNanos / 1_000_000L;
+                int nanos = (int) (sliceNanos % 1_000_000L);
                 wait(millis, nanos);
                 remainingNanos = deadline - System.nanoTime();
             }
@@ -260,6 +276,7 @@ final class IpcTransportSessionLease {
      */
     synchronized boolean quarantineIfUnsettled(Throwable failure) {
         Objects.requireNonNull(failure, "failure");
+        absorbDeferredSchedulerFailureLocked();
         if (phase == Phase.RETIRED || phase == Phase.QUARANTINED) return false;
         if (phase == Phase.FINALIZING && cleanupExecuting) {
             if (closeFailure == null) closeFailure = failure;
@@ -276,6 +293,7 @@ final class IpcTransportSessionLease {
         RuntimeBlockingGuard.requireBlockingHostThread(
                 "IPC transport quarantined close retry");
         synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
             if (phase != Phase.QUARANTINED || activeWrites != 0) {
                 throw new IllegalStateException("transport not quarantined");
             }
@@ -287,6 +305,7 @@ final class IpcTransportSessionLease {
     private void releaseWrite() {
         boolean finalize;
         synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
             if (activeWrites <= 0) throw new IllegalStateException("IPC write pin underflow");
             --activeWrites;
             finalize = beginFinalization();
@@ -306,6 +325,7 @@ final class IpcTransportSessionLease {
     private void scheduleFinalization() {
         final long attempt;
         synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
             if (phase != Phase.FINALIZING) return;
             if (cleanupAttempt == Long.MAX_VALUE) {
                 closeFailure = new IllegalStateException("cleanup attempt overflow");
@@ -341,20 +361,19 @@ final class IpcTransportSessionLease {
     }
 
     private void finalizePhysicalClose(long attempt) {
+        if (RuntimeBlockingGuard.actorCarrierMarked()) {
+            deferSchedulerFailure(new IllegalStateException(
+                    "cleanup scheduler executed on an actor carrier"));
+            return;
+        }
         synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
             if (phase != Phase.FINALIZING || cleanupAttempt != attempt
                     || cleanupExecuting) return;
             if (enqueueAttempt == attempt && enqueueCaller == Thread.currentThread()) {
                 closeFailure = new IllegalStateException(
                         "cleanup scheduler executed inline on requesting carrier");
                 enqueueCaller = null;
-                phase = Phase.QUARANTINED;
-                notifyAll();
-                return;
-            }
-            if (RuntimeBlockingGuard.actorCarrierMarked()) {
-                closeFailure = new IllegalStateException(
-                        "cleanup scheduler executed on an actor carrier");
                 phase = Phase.QUARANTINED;
                 notifyAll();
                 return;
@@ -398,14 +417,42 @@ final class IpcTransportSessionLease {
         }
     }
 
+    /**
+     * Misrouted actor-carrier callbacks report through this lock-free path so
+     * they can never park behind a host lifecycle monitor.
+     */
+    void deferSchedulerFailure(Throwable failure) {
+        Objects.requireNonNull(failure, "failure");
+        if (!RuntimeBlockingGuard.actorCarrierMarked()) {
+            throw new IllegalStateException(
+                    "deferred scheduler failure requires an actor carrier");
+        }
+        deferredSchedulerFailure.compareAndSet(null, failure);
+    }
+
+    /** Only called while holding this monitor on a trusted host thread. */
+    private void absorbDeferredSchedulerFailureLocked() {
+        Throwable failure = deferredSchedulerFailure.getAndSet(null);
+        if (failure == null || phase == Phase.RETIRED || phase == Phase.QUARANTINED) return;
+        if (closeFailure == null) closeFailure = failure;
+        cleanupExecuting = false;
+        phase = Phase.QUARANTINED;
+        notifyAll();
+    }
+
     synchronized Snapshot snapshot() {
+        absorbDeferredSchedulerFailureLocked();
         return new Snapshot(generation, phase, activeWrites,
                 physicalCloseConfirmed, receiptsRetired);
     }
 
-    synchronized Throwable closeFailure() { return closeFailure; }
+    synchronized Throwable closeFailure() {
+        absorbDeferredSchedulerFailureLocked();
+        return closeFailure;
+    }
 
     synchronized boolean invariant() {
+        absorbDeferredSchedulerFailureLocked();
         return activeWrites >= 0 && activeWrites <= limit
                 && (!physicalCloseConfirmed || activeWrites == 0)
                 && (phase != Phase.RETIRED || (physicalCloseConfirmed && receiptsRetired))
