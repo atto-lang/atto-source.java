@@ -5922,6 +5922,10 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (value == null || isScalar(value)) return;
+        if (value instanceof OresKeyedMap<?, ?>) {
+            throw new SecurityException(
+                    "Map values are mutable identity-bearing collections and cannot cross an untrusted actor boundary");
+        }
         if (value instanceof ActorRuntime.ActorRef<?> ref) {
             if (!ref.ownedBy(this)) {
                 throw new IllegalArgumentException(
@@ -6275,6 +6279,10 @@ public final class ActorRuntime implements AutoCloseable {
             throw new SecurityException(
                     "HTTP response drafts are single-use, request-scoped capabilities; "
                     + "they cannot cross actor mailboxes");
+        }
+        if (value instanceof OresKeyedMap<?, ?>) {
+            throw new IllegalArgumentException(
+                    "Map values cannot cross actor boundaries until explicit isolated Map transport is implemented");
         }
         if (value == null || isScalar(value)
                 || value instanceof ActorRuntime.ActorRef<?>
