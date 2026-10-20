@@ -151,11 +151,19 @@ final class IpcReceiptCompletionBridge {
                 throw new IllegalStateException(
                         "IPC physical transport already lost");
             }
-            correlations.acceptVerified(envelope, stage);
             if (stage != IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED) {
-                done = completions.remove(envelope.messageSequence());
+                done = completions.get(envelope.messageSequence());
                 if (done == null) {
                     throw new IllegalStateException("missing host completion");
+                }
+            }
+            correlations.acceptVerified(envelope, stage);
+            if (done != null) {
+                CompletableFuture<IpcReceiptCorrelation.Stage> removed =
+                        completions.remove(envelope.messageSequence());
+                if (removed != done) {
+                    throw new IllegalStateException(
+                            "host completion identity changed under receipt gate");
                 }
             }
         }
