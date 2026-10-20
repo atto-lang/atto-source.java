@@ -46,7 +46,14 @@ public final class TrapFailurePolicy {
 
     public static boolean isGuestCatchable(
             Throwable failure, Class<? extends Throwable> panicType) {
-        return permits(failure, panicType, null, true);
+        return isGuestCatchable(failure, panicType, null);
+    }
+
+    public static boolean isGuestCatchable(
+            Throwable failure,
+            Class<? extends Throwable> panicType,
+            Class<? extends Throwable> trustedGuestFailureType) {
+        return permits(failure, panicType, trustedGuestFailureType, true);
     }
 
     private static boolean permits(
