@@ -265,6 +265,32 @@ final class FirstClassModelGraphTest {
     }
 
     @Test
+    void graphAdmissionBudgetsConfigurationAndStaticArguments() {
+        StringBuilder parameters = new StringBuilder();
+        for (int i = 0; i < 65; i++) {
+            if (i != 0) parameters.append(", ");
+            parameters.append("p").append(i).append(": int = ").append(i);
+        }
+        assertThrowsMessage("MODEL_CONFIG_BUDGET", () ->
+                OresCompiler.parseAndTypeCheck(
+                        "fnc Identity(int input): int { return input; }\n"
+                                + "define model TooWide(" + parameters + ") as\n"
+                                + "  Identity()\n"
+                                + "end\n"));
+
+        StringBuilder arguments = new StringBuilder();
+        for (int i = 0; i < 33; i++) {
+            if (i != 0) arguments.append(", ");
+            arguments.append(i);
+        }
+        assertThrowsMessage("MODEL_STATIC_ARG_BUDGET", () ->
+                OresCompiler.parseAndTypeCheck(
+                        "define model TooManyArgs as\n"
+                                + "  Wide(" + arguments + ")\n"
+                                + "end\n"));
+    }
+
+    @Test
     void treeShakerRetainsModelAndItsVerifiedOperations() {
         TreeShaker.Result result = OresCompiler.compileForBuild(PRICE_MODEL + """
                 fnc dead(float input): float { return input + 99.0; }
