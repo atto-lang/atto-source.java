@@ -60,14 +60,8 @@ public final class IpcTransportSessionLeaseSelfTest {
 
             RuntimeBlockingGuard.enterActorCarrier();
             try {
-                deny(() -> {
-                    try {
-                        guardedLease.sendPreparedFrame(
-                                80, guardedMessage, new byte[] { 1 });
-                    } catch (IOException impossibleBeforeGuard) {
-                        throw new AssertionError(impossibleBeforeGuard);
-                    }
-                });
+                deny(() -> guardedLease.sendPreparedFrame(
+                        80, guardedMessage, new byte[] { 1 }));
                 deny(() -> {
                     try {
                         guardedLease.awaitTerminal(1);
