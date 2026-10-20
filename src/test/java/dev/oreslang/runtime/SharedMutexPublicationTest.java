@@ -41,6 +41,64 @@ final class SharedMutexPublicationTest {
     }
 
     @Test
+    void publicationReservationOverflowFailsBeforeCounterWrapOrNewBinding()
+            throws Exception {
+        try (ActorRuntime runtimeA = new ActorRuntime();
+             ActorRuntime runtimeB = new ActorRuntime()) {
+            var shared = OresMutex.shared(new int[]{0});
+
+            var pendingField = shared.getClass().getDeclaredField(
+                    "pendingPublications");
+            var ownerField = shared.getClass().getDeclaredField("owningRuntime");
+            pendingField.setAccessible(true);
+            ownerField.setAccessible(true);
+
+            assertTrue(shared.reserveRuntimePublication(runtimeA));
+            pendingField.setInt(shared, Integer.MAX_VALUE);
+
+            var overflow = assertThrows(
+                    IllegalStateException.class,
+                    () -> shared.reserveRuntimePublication(runtimeA));
+            assertTrue(overflow.getMessage().contains(
+                    "publication reservation capacity exhausted"));
+            assertEquals(Integer.MAX_VALUE, pendingField.getInt(shared),
+                    "overflow refusal must not wrap or consume a reservation");
+            assertSame(runtimeA, ownerField.get(shared));
+
+            assertFalse(shared.reserveRuntimePublication(runtimeB),
+                    "foreign-runtime refusal must remain side-effect free");
+            assertEquals(Integer.MAX_VALUE, pendingField.getInt(shared));
+            assertSame(runtimeA, ownerField.get(shared));
+        }
+    }
+
+    @Test
+    void impossiblePendingReservationWithoutOwnerFailsClosed()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var shared = OresMutex.shared(new int[]{0});
+
+            var pendingField = shared.getClass().getDeclaredField(
+                    "pendingPublications");
+            var ownerField = shared.getClass().getDeclaredField("owningRuntime");
+            pendingField.setAccessible(true);
+            ownerField.setAccessible(true);
+
+            pendingField.setInt(shared, 1);
+            ownerField.set(shared, null);
+
+            var corrupted = assertThrows(
+                    IllegalStateException.class,
+                    () -> shared.reserveRuntimePublication(runtime));
+            assertTrue(corrupted.getMessage().contains(
+                    "publication reservation state is corrupted"));
+            assertEquals(1, pendingField.getInt(shared));
+            assertNull(ownerField.get(shared),
+                    "fail-closed validation must not invent an owner");
+        }
+    }
+
+    @Test
     void foreignRuntimeCannotReserveWhilePublicationIsPending() {
         try (ActorRuntime runtimeA = new ActorRuntime();
              ActorRuntime runtimeB = new ActorRuntime()) {
