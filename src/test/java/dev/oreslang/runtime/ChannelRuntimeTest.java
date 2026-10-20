@@ -350,6 +350,41 @@ final class ChannelRuntimeTest {
     }
 
     @Test
+    void deferredCloseCommitsTerminalStateBeforePublishingWaiterCallbacks() throws Exception {
+        var channel = new ChannelRuntime.Channel<String>(1);
+        var callbackEntered = new java.util.concurrent.CountDownLatch(1);
+        var releaseCallback = new java.util.concurrent.CountDownLatch(1);
+        var read = channel.readAsync();
+        read.whenCompleteRuntime((value, failure) -> {
+            callbackEntered.countDown();
+            try {
+                releaseCallback.await(3, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        });
+
+        Runnable publish = channel.closeDeferred(new IllegalStateException("closed"));
+        assertTrue(channel.isClosed(),
+                "two-phase close must publish channel terminal state immediately");
+        assertFalse(read.isDone(),
+                "waiter Future stays unpublished until the returned callback phase runs");
+
+        Thread publisher = Thread.ofPlatform().start(publish);
+        try {
+            assertTrue(callbackEntered.await(2, java.util.concurrent.TimeUnit.SECONDS));
+            assertTrue(read.isDone(),
+                    "Future terminal state is claimed before its synchronous observer returns");
+            // Publication is idempotent: a duplicate caller cannot replay callbacks.
+            publish.run();
+        } finally {
+            releaseCallback.countDown();
+            publisher.join(3_000);
+        }
+        assertFalse(publisher.isAlive());
+    }
+
+    @Test
     void closeFailsPendingWaitersAndSelects() {
         ChannelRuntime.Channel<String> channel = new ChannelRuntime.Channel<>(0);
         OresFuture<String> read = channel.readAsync();

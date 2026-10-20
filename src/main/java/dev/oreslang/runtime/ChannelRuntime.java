@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -275,17 +276,34 @@ public final class ChannelRuntime {
          * re-arbitrate atomically across all of their cases.
          */
         public void close(Throwable cause) {
+            closeDeferred(cause).run();
+        }
+
+        /**
+         * Runtime-only two-phase close. The channel's terminal state and
+         * waiter arbitration are committed under the coordinator immediately,
+         * but Future/select callbacks are returned to the caller as one
+         * idempotent publication task. This lets lifecycle owners establish
+         * their authoritative state before arbitrary synchronous observers run.
+         *
+         * Ordinary source/host close() remains synchronous and unchanged.
+         */
+        Runnable closeDeferred(Throwable cause) {
             ArrayList<Runnable> completions = new ArrayList<>();
             COORDINATOR.lock();
             try {
-                if (closed) return;
+                if (closed) return () -> { };
                 closed = true;
                 closeCause = cause;
                 pumpLocked(completions);
             } finally {
                 COORDINATOR.unlock();
             }
-            runCompletions(completions);
+            AtomicBoolean published = new AtomicBoolean();
+            return () -> {
+                if (published.compareAndSet(false, true))
+                    runCompletions(completions);
+            };
         }
     }
 

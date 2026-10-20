@@ -22,6 +22,76 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ActorContinuationHeadroomTest {
 
     @Test
+    void selfReplenishingContinuationStreamCannotStarveWaitingUserMail()
+            throws Exception {
+        IsolatePolicy base = IsolatePolicy.developer();
+        var config = new ActorRuntime.DispatcherConfig(
+                1, 1, 1, 64);
+        var seedCanReturn = new CountDownLatch(1);
+        var firstContinuationQueued = new CountDownLatch(1);
+        var userHandled = new CountDownLatch(1);
+        var continuationsRan = new AtomicInteger();
+        var continuationsSeenByUser = new AtomicInteger(-1);
+
+        try (ActorRuntime runtime = new ActorRuntime(
+                base,
+                config,
+                ActorRuntime.TurnExecutor.direct(),
+                ActorRuntime.ControlDispatcher.unavailable())) {
+            var actor = runtime.<String>spawnShared(() -> {
+                AtomicReference<ActorRuntime.ContinuationTarget> target =
+                        new AtomicReference<>();
+                AtomicReference<java.util.function.BiConsumer<Integer, Throwable>> chain =
+                        new AtomicReference<>();
+                chain.set((value, failure) -> {
+                    int ran = continuationsRan.incrementAndGet();
+                    if (ran < 200) {
+                        runtime.enqueueOnCompletion(
+                                OresFuture.completed(ran),
+                                target.get(),
+                                chain.get());
+                    }
+                });
+
+                return (message, context) -> {
+                    if ("seed".equals(message)) {
+                        target.set(runtime.captureCurrentContinuationTarget());
+                        runtime.enqueueOnCompletion(
+                                OresFuture.completed(0),
+                                target.get(),
+                                chain.get());
+                        firstContinuationQueued.countDown();
+                        if (!seedCanReturn.await(5, TimeUnit.SECONDS))
+                            throw new AssertionError("seed gate timed out");
+                        return;
+                    }
+                    if ("user".equals(message)) {
+                        continuationsSeenByUser.set(continuationsRan.get());
+                        userHandled.countDown();
+                        context.self().stop();
+                    }
+                };
+            });
+
+            actor.send("seed");
+            assertTrue(firstContinuationQueued.await(3, TimeUnit.SECONDS));
+            actor.send("user");
+            seedCanReturn.countDown();
+
+            assertTrue(userHandled.await(5, TimeUnit.SECONDS),
+                    "bounded continuation priority must eventually service waiting user mail");
+            assertEquals(32, continuationsSeenByUser.get(),
+                    "user mail must run immediately after the fixed continuation burst");
+            assertTrue(continuationsRan.get() < 200,
+                    "user mail must preempt an otherwise self-replenishing continuation chain");
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty());
+        } finally {
+            seedCanReturn.countDown();
+        }
+    }
+
+    @Test
     void oneThousandTwentyFifthSourceContinuationIsRejectedWithIdleUserCapacity()
             throws Exception {
         IsolatePolicy base = IsolatePolicy.developer();
@@ -74,6 +144,8 @@ final class ActorContinuationHeadroomTest {
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
             assertTrue(actor.failure().isPresent(),
                     "control-plane capacity exhaustion must fail-stop the actor");
+            assertEquals(1L, runtime.runtimeStats().continuationAdmissionFailures(),
+                    "control-plane overload must be observable without reading actor internals");
             assertEquals(0, accounting(cell, "queuedContinuations"),
                     "teardown must drain all continuation slots exactly once");
             assertEquals(0, accounting(cell, "queuedUserMessages"));

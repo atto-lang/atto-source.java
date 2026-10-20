@@ -48,6 +48,9 @@ public final class AsyncNativeIo implements AutoCloseable {
 
     private <T> OresFuture<T> submit(String operation, Callable<T> work,
             Set<OresFuture<?>> admitted, int limit) {
+        // Strict NIO never hides a blocking host syscall in a virtual thread.
+        // Reject before admission, executor dispatch or user work invocation.
+        if (NioOnlyPolicy.enabled()) return OresFuture.failed(NioOnlyPolicy.denyLegacy(operation));
         // Cancellation cannot promise rollback of a filesystem mutation. The
         // operation remains owned by the context until completion or context close.
         OresFuture<T> result = new OresFuture<>(() -> false, () -> { });

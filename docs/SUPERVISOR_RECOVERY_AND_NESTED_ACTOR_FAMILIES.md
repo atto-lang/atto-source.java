@@ -59,6 +59,128 @@ end
 
 Both B and C inherit A's managed group G. No implicit new supervisor or group; source message sending remains the only cross-actor invocation.
 
+## Java runtime hardening checkpoint (2026-10-17)
+
+The Java runtime now has an additional **host/supervisor observability plane**
+that is deliberately separate from actor mail and from the future source-level
+`on_panic/on_raise/on_throw` CONTROL callback contract:
+
+- every physically finalized actor increments one of three aggregate counters:
+  NORMAL, CANCELLED, or FAILED;
+- a bounded immutable `ActorTerminationEvent` journal records actor id,
+  generation, kind, parent lineage, accepted/processed user-message counts,
+  queued user/control work abandoned at finalization, and the terminal
+  exception *type name*;
+- the journal is diagnostic only. Lifecycle correctness never waits for it.
+  Java uses a pre-sized bounded deque guarded by an explicit diagnostic lock;
+  finalization publishes only via `tryLock()`, so a full **or contended**
+  diagnostic path increments `supervisionEventsDropped` and actor teardown
+  continues without parking behind telemetry. Trusted consumers serialize
+  dequeue + sequence assignment so concurrent drains cannot invert the
+  externally visible FIFO sequence;
+- terminal publication intentionally does **not** call
+  `Throwable.getMessage()`, `Throwable.toString()`, guest formatting, or
+  arbitrary observer hooks while finalization owns actor state. Detailed
+  failure inspection stays on `ActorRef.failure()`;
+- host/supervisor-only `ActorSnapshot` exposes immutable scheduling/mailbox
+  counters without guest state: active turn/carrier flags, accepted/processed
+  sequences, queued user/continuation counts, child/pending-operation counts,
+  suspension/fence state, and bounded memory accounting;
+- `ActorRuntimeStats` adds accepted-message, mailbox-full,
+  continuation-admission, termination-classification, dropped-diagnostic and
+  watchdog counters. These are telemetry, never scheduling authority.
+
+The JVM runtime now also has the first **authoritative host/runtime supervisor
+CONTROL retention primitive**, separate from the diagnostic journal:
+
+- each FAILED actor incarnation publishes exactly one generation-bound
+  `SupervisorControlEvent` containing actor identity, parent lineage, the
+  stable `ActorFailure.Kind`, and failure type identity;
+- this event is retained in bounded runtime state rather than the droppable
+  terminal journal;
+- the failed actor's `maxActors` capacity reservation remains charged after
+  terminal observers retire until that CONTROL event is acknowledged;
+- therefore a crash storm cannot admit replacement actors faster than a
+  supervisor consumes failure decisions. Backpressure is applied at actor
+  admission instead of dropping correctness-critical failures;
+- normal/cancelled termination consumes no supervisor-failure capacity;
+- diagnostic-journal saturation or diagnostic producer contention is
+  independent and cannot erase the retained CONTROL event.
+
+This is deliberately one layer below source callbacks. It does **not** yet
+claim executable guest `on_panic/on_raise/on_throw` lowering or automatic
+restart policy. The next integration step is to route these retained events
+through the owning supervisor's reserved serialized CONTROL lane and only then
+acknowledge/release the reservation after that supervisor invocation has been
+admitted.
+
+### Continuation-vs-user-mail fairness
+
+Internal continuations retain priority, and a suspended source receive still
+owns actor state and therefore permits only its continuations. Outside a
+suspended receive, however, a self-replenishing continuation stream can no
+longer starve user mail forever: after at most **32 consecutive internal
+continuations**, a waiting user mailbox envelope is selected first. The burst
+counter survives carrier migration/batch boundaries and resets when user mail
+runs or actor teardown drains the lane.
+
+This complements the existing actor-level `throughput` quantum: the runtime
+now bounds both (a) how much one hot actor can execute before returning to the
+dispatcher and (b) how long internal control continuations can postpone an
+already-admitted ordinary message. Neither bound permits user mail to run while
+`sourceReceiveSuspended` is true.
+
+Checked-in adversarial tests cover mailbox-pressure snapshots, mailbox-full
+telemetry, normal/failed/cancelled terminal classification, parent/child
+terminal ordering, hostile Throwable formatting, a completely full diagnostic
+journal, exhausted diagnostic sequencing, child failure visibility while the
+parent user turn is blocked, active-failure vs queued-tail accounting, and a
+200-step self-replenishing continuation chain with dispatcher throughput=1.
+
+## Normative OTP restart policy requirements
+
+The source-level OTP supervisor remains an integration gate, but its restart
+semantics are constrained now so implementation cannot silently inherit common
+actor-system failure modes:
+
+- **No unbounded crash loops.** Every supervisor has an explicit
+  `maxRestarts` within a monotonic `restartWindow`. Exhaustion escalates one
+  typed CONTROL failure to the parent; it never keeps respawning indefinitely.
+- **Backoff is bounded and deterministic by default.** Repeated failures use an
+  explicit min/max exponential backoff (or an application-provided policy).
+  Random jitter is opt-in and must come from an injected/replayable source so
+  tests and deterministic replay are not hostage to ambient randomness.
+- **Restart means a new incarnation.** A replacement actor gets a new
+  generation/incarnation identity. The old `ActorRef` remains terminal
+  forever and cannot silently retarget to the replacement. Stale messages and
+  stale CONTROL events therefore fail closed instead of reaching a new child.
+- **No implicit failed-message replay.** A message that began execution before
+  a crash is not automatically re-enqueued. At-most-once volatile mailbox
+  semantics stay explicit; durable/replayable processing requires an explicit
+  persistence/idempotency protocol above core actors.
+- **Strategies are ordered.** `one_for_one`, `rest_for_one`, and
+  `one_for_all` operate over a stable declared child order. Teardown proceeds
+  in reverse dependency order; replacement startup proceeds in declaration
+  order and respects each child's readiness barrier before dependent children
+  are considered healthy.
+- **Resource failure escalates; it does not spin.** Mailbox, actor-slot,
+  carrier, memory, restart-timer, or CONTROL admission exhaustion during a
+  restart is a supervisor failure decision. Implementations must not busy-loop,
+  allocate an unbounded side queue, or retry synchronously on an actor carrier.
+- **Restart policy cannot weaken downward.** Nested supervisors may choose
+  stricter limits but cannot exceed parent/process ceilings for restart
+  intensity, backoff resources, mailbox/memory, or isolation capabilities.
+- **CONTROL is authoritative and non-droppable.** Restart/escalation decisions
+  are driven from the reserved typed CONTROL path plus retained per-ref terminal
+  state, never from the droppable diagnostic journal.
+- **Crash-loop state is observable.** Supervisors expose current restart-window
+  occupancy, last restart cause, current backoff, child generation and
+  escalation count without exposing mutable child state.
+
+These requirements deliberately separate **fault recovery** from **message
+delivery guarantees**. Supervision can recreate computation; it must not
+pretend that an in-memory mailbox became a durable transaction log.
+
 ## Required test matrix (both backends; fail closed until executable)
 
 1. A->B->C inherits exactly one managed lifecycle group, independently of group event-bus join membership.
@@ -69,7 +191,10 @@ Both B and C inherit A's managed group G. No implicit new supervisor or group; s
 6. S receives one immutable CONTROL failure for C panic; neither A nor B can intercept it using recover.
 7. S's on_panic owns an independent invocation context; its own recoverable failure may be handled locally; a true supervisor panic escalates to grandaddy.
 8. Cancellation and terminal panic run cleanup but never become recoverable; ensure duplicate notification and stale identity fences.
-9. Verify against the **exact source Git tree** in CI. When out of org Actions budget, mirror exact tree/blobs to a funded test org, using no private cross-org checkout secrets.
+9. Restart storms are bounded: hit the restart-intensity ceiling, verify deterministic backoff, one escalation, no busy-loop, and no replacement after escalation.
+10. Restart creates a new generation; stale refs/messages/CONTROL cannot target the replacement, and a crashing in-flight message is never implicitly replayed.
+11. `one_for_one`, `rest_for_one`, and `one_for_all` preserve deterministic dependency order and readiness barriers under concurrent child failure.
+12. Verify against the **exact source Git tree** in CI. When out of org Actions budget, mirror exact tree/blobs to a funded test org, using no private cross-org checkout secrets.
 
 ## Integration boundary
 
