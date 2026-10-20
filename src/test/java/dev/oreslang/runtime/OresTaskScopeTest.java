@@ -347,9 +347,9 @@ final class OresTaskScopeTest {
                     assertThrows(
                             java.util.concurrent.ExecutionException.class,
                             () -> drained.get(5, TimeUnit.SECONDS));
-            assertInstanceOf(
-                    StructuredTaskScopePoisonException.class,
-                    observed.getCause());
+            assertTrue(
+                    observed.getCause() instanceof StructuredTaskScopePoisonException,
+                    "owner finalization failure must become structured scope poison");
             assertSame(ownerFailure, observed.getCause().getCause());
             assertTrue(scope.isPoisoned());
             assertFalse(TrapFailurePolicy.isTrappable(
