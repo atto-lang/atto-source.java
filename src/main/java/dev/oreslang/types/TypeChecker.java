@@ -7625,11 +7625,22 @@ public final class TypeChecker {
             boolean generator,
             Set<String> generics,
             Type self) {
+        List<Type> parameterTypes =
+                params.stream().map(p -> resolveParam(p, generics, self)).toList();
+        Type result = callableResult(
+                async,
+                generator,
+                resolve(returns, generics, self));
+        if (parameterTypes.stream().anyMatch(this::containsTypedMapType)
+                || containsTypedMapType(result)) {
+            throw new IllegalArgumentException(
+                    "Map<K,V> is local-only in the closed v1 surface and cannot appear in callable parameter/return contracts");
+        }
         return new Function(
-                params.stream().map(p -> resolveParam(p, generics, self)).toList(),
+                parameterTypes,
                 params.stream().map(Ast.Param::mutable).toList(),
                 async,
-                callableResult(async, generator, resolve(returns, generics, self)));
+                result);
     }
 
     private Function callableContractType(
@@ -7660,7 +7671,14 @@ public final class TypeChecker {
     }
 
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {
-        if (!param.structural()) return resolve(param.type(), generics, self);
+        if (!param.structural()) {
+            Type resolved = resolve(param.type(), generics, self);
+            if (containsTypedMapType(resolved)) {
+                throw new IllegalArgumentException(
+                        "Map<K,V> parameters are not enabled in the closed v1 surface");
+            }
+            return resolved;
+        }
         if (param.mutable()) {
             throw new IllegalArgumentException(
                     "structural parameter '" + param.name()
