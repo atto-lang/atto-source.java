@@ -274,6 +274,18 @@ public final class IpcReceiptCorrelationSelfTest {
             check(gate.invariant());
         }
 
+        var preDispatchLossLedger = new IpcReceiptCorrelation(1);
+        var preDispatchLossMessage = env(1, "preDispatchLoss");
+        preDispatchLossLedger.admit(preDispatchLossMessage);
+        var preDispatchLosses =
+                preDispatchLossLedger.retireTransportLost(preDispatchLossMessage);
+        check(preDispatchLosses.size() == 1);
+        check(preDispatchLosses.get(0).lastObserved()
+                == IpcReceiptCorrelation.Stage.LOCAL_ADMITTED);
+        check(preDispatchLossLedger.counters().equals(
+                new IpcReceiptCorrelation.Counters(0, 0)));
+        check(preDispatchLossLedger.invariant());
+
         Random rng = new Random(20261018);
         for (int trial = 0; trial < 2048; trial++) {
             var ledger = new IpcReceiptCorrelation(3);
