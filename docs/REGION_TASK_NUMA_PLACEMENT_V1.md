@@ -13,9 +13,11 @@ placement or GPU execution.
   placement via the region factory.
 - `NativeCarrierExecutor.executePlacement` resolves the hint to one enabled
   carrier slot with a **known successful OS CPU affinity target** in that NUMA
-  node. Search begins at the stable hashed preference. If no known match
-  exists, it falls back to the ordinary affinity lane, never inventing a
-  NUMA-local proof.
+  node. Search begins at the stable hashed preference but probes **at most 64
+  slots**, even if the carrier pool has thousands of lanes. If no eligible
+  match is observed within that budget, it falls back to the ordinary
+  affinity lane; this can sacrifice affinity quality but bounds per-Task
+  scheduling overhead. Never infer page residency from the preference.
 - Existing bounded soft spill to same-cache/NUMA peers and then global
   queue, aging/steal fallback, cancellation, shutdown and actor execution
   ownership are unchanged.
@@ -61,7 +63,7 @@ Before wiring actual Oreslang source-region Tasks to this host path:
 
 Run from the PR branch checkout:
 
-    bash scripts/check-region-locality.sh
+    python3 scripts/check-region-locality.py
 
 This compiles the **actual** CpuTopology, ExecutionPlacement and standalone
 RegionLocalitySmoke Java sources at release 21 with all javac warnings as
