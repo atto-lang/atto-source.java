@@ -451,27 +451,38 @@ public final class OresScheduler implements AutoCloseable {
         Objects.requireNonNull(retireAfterPhysicalDone,
                 "physical Task retirement");
         AtomicBoolean retired = new AtomicBoolean();
+        AtomicReference<CompilerTaskHandle<?>> bound = new AtomicReference<>();
         return startCompilerAdmittedTask(task, new CompilerTaskRetirement() {
             @Override
             public void bind(CompilerTaskHandle<?> child) {
                 Objects.requireNonNull(child, "compiler Task child");
+                if (!bound.compareAndSet(null, child)) {
+                    throw new IllegalStateException(
+                            "compiler Task child bound more than once");
+                }
             }
 
             @Override
             public void retireNeverStarted(CompilerTaskHandle<?> child) {
-                Objects.requireNonNull(child, "compiler Task child");
-                if (retired.compareAndSet(false, true)) {
-                    retireAfterPhysicalDone.run();
-                }
+                retireExact(child);
             }
 
             @Override
             public void retireAfterPhysicalQuiescence(
                     CompilerTaskHandle<?> child) {
-                Objects.requireNonNull(child, "compiler Task child");
-                if (retired.compareAndSet(false, true)) {
-                    retireAfterPhysicalDone.run();
+                retireExact(child);
+            }
+
+            private void retireExact(CompilerTaskHandle<?> child) {
+                if (bound.get() != child) {
+                    throw new IllegalStateException(
+                            "compiler retirement belongs to a different exact Task child");
                 }
+                if (!retired.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "compiler Task child retired more than once");
+                }
+                retireAfterPhysicalDone.run();
             }
         });
     }
