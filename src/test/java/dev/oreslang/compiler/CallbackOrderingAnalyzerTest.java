@@ -151,4 +151,63 @@ final class CallbackOrderingAnalyzerTest {
                 """);
         assertTrue(containsRule(result, "ORES-CB-002"), result.toString());
     }
+
+    @Test
+    void removingListenerInvalidatesSyntacticRegistrationEvidence() {
+        var result = scan("""
+                pub fnc foo(Callback cb): void {
+                    let randie = bar();
+                    randie.on("done", cb);
+                    randie.off("done", cb);
+                    doMore(|| -> { randie.emit("done", true); });
+                    randie.on("done", cb);
+                }
+                """);
+        assertTrue(containsRule(result, "ORES-CB-002"),
+                "a removed listener cannot make later callback publication safe");
+    }
+
+    @Test
+    void removeAllListenersInvalidatesRegistrationEvidence() {
+        var result = scan("""
+                pub fnc foo(Callback cb): void {
+                    let randie = bar();
+                    randie.on("done", cb);
+                    randie.removeAllListeners();
+                    doMore(|| -> { randie.emit("done", true); });
+                    randie.on("done", cb);
+                }
+                """);
+        assertTrue(containsRule(result, "ORES-CB-002"), result.toString());
+    }
+
+    @Test
+    void dynamicRemovalInvalidatesPotentiallyMatchingRegistration() {
+        var result = scan("""
+                pub fnc foo(Callback cb, string dynamicEvent): void {
+                    let randie = bar();
+                    let alias = randie;
+                    randie.on("done", cb);
+                    alias.removeListener(dynamicEvent, cb);
+                    doMore(|| -> { randie.emit("done", true); });
+                    randie.on("done", cb);
+                }
+                """);
+        assertTrue(containsRule(result, "ORES-CB-002"), result.toString());
+    }
+
+    @Test
+    void removalOfOtherKnownEventRetainsDistinctSyntacticRegistration() {
+        var result = scan("""
+                pub fnc foo(Callback cb): void {
+                    let randie = bar();
+                    randie.on("done", cb);
+                    randie.off("other", cb);
+                    doMore(|| -> { randie.emit("done", true); });
+                }
+                """);
+        assertFalse(containsRule(result, "ORES-CB-002"), result.toString());
+        assertTrue(containsRule(result, "ORES-CB-006"),
+                "retained registration remains syntactic, not a proven lease");
+    }
 }
