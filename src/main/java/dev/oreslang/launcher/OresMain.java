@@ -70,6 +70,8 @@ public final class OresMain {
         if (args.length == 1 && args[0].equals("--build-info")) {
             System.out.println("{\"build_mode\":\"" + NativeBuildMode.kind().name().toLowerCase(Locale.ROOT)
                     + "\",\"default_execution_mode\":\"" + NativeBuildMode.defaultExecutionMode()
+                    + "\",\"managed_reference_mode\":\""
+                    + NativeBuildMode.managedReferenceMode().name().toLowerCase(Locale.ROOT)
                     + "\",\"guest_execution\":\"" + (NativeBuildMode.kind() == NativeBuildMode.Kind.AOT
                         ? "interpreter-no-jit" : "runtime-selected") + "\"}");
             return 0;
