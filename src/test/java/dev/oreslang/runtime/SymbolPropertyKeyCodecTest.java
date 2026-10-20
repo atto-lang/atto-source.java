@@ -356,4 +356,20 @@ final class SymbolPropertyKeyCodecTest {
                 .put((byte) kind).putShort((short) name.length)
                 .put(name).array();
     }
+    @Test
+    void stringKeysCanonicalizeToNfcBeforeFraming() {
+        byte[] composed = SymbolPropertyKeyCodec.encode("caf\u00e9");
+        byte[] decomposed = SymbolPropertyKeyCodec.encode("cafe\u0301");
+        assertArrayEquals(composed, decomposed);
+        assertEquals("caf\u00e9", SymbolPropertyKeyCodec.decode(decomposed));
+
+        byte[] nonCanonicalWire = wire(
+                0, "cafe\u0301".getBytes(StandardCharsets.UTF_8));
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class,
+                () -> SymbolPropertyKeyCodec.decode(nonCanonicalWire));
+        assertTrue(denied.getMessage().contains("NFC"), denied.getMessage());
+    }
+
+
 }
