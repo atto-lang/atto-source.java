@@ -124,3 +124,27 @@ Further optimizer work can build on the same symbolic reachability graph:
 - build reports with retained-byte attribution once the code-emission backend exposes sizes.
 
 Those additions should not change the build-switch contract introduced here.
+
+
+## Reachability manifest v1
+
+The tree shaker also emits a deterministic backend-neutral receipt using
+`oreslang.reachability/1`. It is intended to be consumed by JVM/GraalVM,
+LLVM/native, Wasm, embedded, mobile/desktop packaging and future hardware
+backends before their target-specific DCE/linker/synthesis passes.
+
+```bash
+oreslang-compiler --build-analysis-json app.ores
+```
+
+The manifest contains sorted, unique arrays for executable roots, retained and
+removed symbols, external bindings, retained language features and
+compiler-owned runtime operations. Retained and removed symbols are disjoint.
+Requirements are collected only while scanning retained declarations, so a dead
+actor, channel operation or runtime intrinsic cannot by itself keep its runtime
+subsystem alive.
+
+The receipt is semantic evidence, not final-size evidence. Release pipelines
+should retain both the manifest and backend-specific artifact evidence such as
+native symbol/section maps, jlink modules, Native Image reports, Wasm imports,
+firmware sections or synthesis utilization.
