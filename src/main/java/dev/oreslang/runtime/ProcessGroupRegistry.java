@@ -178,6 +178,7 @@ public final class ProcessGroupRegistry implements AutoCloseable {
      * authority, so ordinary members cannot delete a shared pg group.
      */
     public void delete(String scope, String name) {
+        requireHostManager("delete pg groups");
         Key key = key(scope, name);
         Entry entry;
         synchronized (lock) {
@@ -216,6 +217,7 @@ public final class ProcessGroupRegistry implements AutoCloseable {
 
     @Override
     public void close() {
+        requireHostManager("close pg registry");
         if (!closed.compareAndSet(false, true)) return;
         List<Entry> snapshot;
         synchronized (lock) {
@@ -340,6 +342,25 @@ public final class ProcessGroupRegistry implements AutoCloseable {
     }
 
     private void requireOpen() {
+        ActorRuntime current = ActorRuntime.currentActorRuntime();
+        if (current != null && current != runtime) {
+            throw new SecurityException(
+                    "pg registry cannot cross ActorRuntime boundaries");
+        }
         if (closed.get()) throw new IllegalStateException("pg registry is closed");
+    }
+
+    private void requireHostManager(String operation) {
+        ActorRuntime current = ActorRuntime.currentActorRuntime();
+        if (current != null) {
+            if (current != runtime) {
+                throw new SecurityException(
+                        operation + " cannot cross ActorRuntime boundaries");
+            }
+            throw new SecurityException(operation + " requires host/supervisor authority");
+        }
+        if (closed.get() && !"close pg registry".equals(operation)) {
+            throw new IllegalStateException("pg registry is closed");
+        }
     }
 }
