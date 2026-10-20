@@ -241,4 +241,33 @@ final class RefinementRulesTest {
     }
 
 
+    @Test void intervalRecordsRejectForgedMetricsAndNegativeLengths() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new RefinementRules.Interval("memory", 0, 4, java.util.Set.of()));
+        assertThrows(IllegalArgumentException.class, () ->
+                new RefinementRules.Interval("length", -1, 4, java.util.Set.of()));
+        var legitimate = new RefinementRules.Interval(
+                "length", 0, 4, java.util.Set.of(3L));
+        assertTrue(legitimate.contains(0));
+        assertFalse(legitimate.contains(3));
+    }
+
+    @Test void oversizedNominalIdentifiersCannotMintFingerprintsOrNewtypes() {
+        var nominal = alias("@MinLength(1) define newtype Name(string);");
+        var valid = RefinementRules.descriptor(
+                "app.Name", nominal.target(), nominal.refinement());
+        assertTrue(valid.accepts("x"));
+        String huge = "app." + "A".repeat(256);
+        String deep = "app." + "A.".repeat(17) + "Name";
+        assertThrows(IllegalArgumentException.class, () ->
+                RefinementRules.descriptor(huge, nominal.target(), nominal.refinement()));
+        assertThrows(IllegalArgumentException.class, () ->
+                RefinementRules.descriptor(deep, nominal.target(), nominal.refinement()));
+        assertThrows(IllegalArgumentException.class, () ->
+                RefinementRules.tryFrom(huge, nominal.target(), nominal.refinement(), "valid"));
+        assertThrows(IllegalArgumentException.class, () ->
+                new RefinementRules.Descriptor(1, "string", "length", 1, Long.MAX_VALUE,
+                        java.util.List.of(), huge, valid.fingerprint()));
+    }
+
 }
