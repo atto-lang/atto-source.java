@@ -1061,6 +1061,15 @@ public final class OwnershipChecker {
                         throw error("rt take cannot move an indexed projection until projection-level move tracking is available; move the containing owner or use a read/borrow");
                     }
                     if (argument instanceof Ast.MemberExpr member) {
+                        Ast.TypeRef memberReceiverType = receiverType(member.receiver(), scope);
+                        if (memberReceiverType != null
+                                && memberReceiverType.name().equals("Entry")
+                                && memberReceiverType.arguments().size() == 2) {
+                            throw error(
+                                    "rt take cannot move an Entry member projection until "
+                                            + "projection-level move tracking is available; "
+                                            + "move the containing Entry or use a read/borrow");
+                        }
                         Ast.ClassDecl ownerClass = classOfReceiver(member.receiver(), scope);
                         if (ownerClass != null) {
                             Ast.FieldDecl slot = findField(
@@ -1240,7 +1249,14 @@ public final class OwnershipChecker {
                     case "value" -> concreteReceiver.arguments().get(1);
                     default -> throw error("unknown Entry member '" + member.member() + "'");
                 };
-                return new ValueInfo(valueType, kindOfType(valueType), null);
+                ValueKind valueKind = kindOfType(valueType);
+                if (consuming && valueKind != ValueKind.COPY) {
+                    throw error(
+                            "cannot consume a move-only Entry member projection until "
+                                    + "projection-level move tracking is available; "
+                                    + "move the containing Entry or borrow the member");
+                }
+                return new ValueInfo(valueType, valueKind, null);
             }
             if (concreteReceiver != null && concreteReceiver.isClosedAggregateType()) {
                 Ast.TypeRef valueType = concreteReceiver.aggregateMembers().get(member.member());
@@ -1284,6 +1300,17 @@ public final class OwnershipChecker {
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = indexedElementType(indexed, receiver.type, scope);
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
+            Ast.TypeRef indexedReceiverType = receiver.type != null && receiver.type.isBorrow()
+                    ? receiver.type.borrowedTarget() : receiver.type;
+            if (consuming && elementKind != ValueKind.COPY
+                    && indexedReceiverType != null
+                    && indexedReceiverType.name().equals("Entry")
+                    && indexedReceiverType.arguments().size() == 2) {
+                throw error(
+                        "cannot consume a move-only Entry indexed projection until "
+                                + "projection-level move tracking is available; "
+                                + "move the containing Entry or borrow the member");
+            }
             if (consuming && elementKind != ValueKind.COPY
                     && isRootedAtActorSelf(indexed.receiver(), scope)) {
                 throw error("cannot move actor-owned indexed state out of its mailbox turn");
