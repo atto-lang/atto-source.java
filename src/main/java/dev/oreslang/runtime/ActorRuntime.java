@@ -7200,6 +7200,13 @@ public final class ActorRuntime implements AutoCloseable {
          * points can race to request finalization, but only the winning
          * finalizationClaimed transition can execute this body.
          */
+        private static Throwable appendCleanupFailure(
+                Throwable earlier, Throwable failure) {
+            if (earlier == null) return failure;
+            if (earlier != failure) earlier.addSuppressed(failure);
+            return earlier;
+        }
+
         private void completeFinalizationOutsideLock() {
             finalizerThread = Thread.currentThread();
             OresScheduler scheduler;
@@ -7208,40 +7215,57 @@ public final class ActorRuntime implements AutoCloseable {
                 sourceScheduler = null;
             }
 
+            // Every resource must receive its own teardown attempt. A failure
+            // while closing the actor's output stream must not skip actor
+            // memory reclamation, the exit hook or runtime deregistration.
+            // Preserve the first cleanup error and suppress later errors.
             Throwable cleanupFailure = null;
-            try {
-                if (scheduler != null) {
-                    try {
-                        scheduler.close();
-                    } catch (RuntimeException ignored) {
-                        // The physical carrier and owned-task quiescence gates
-                        // already passed. Preserve the existing best-effort
-                        // scheduler close policy without changing actor errors.
-                    }
+            if (scheduler != null) {
+                try {
+                    scheduler.close();
+                } catch (RuntimeException ignored) {
+                    // The scheduler is already quiescent; preserve the
+                    // historical best-effort close policy.
+                } catch (Error failure) {
+                    cleanupFailure = failure;
                 }
+            }
+
+            try {
                 drainMailboxReservations();
+            } catch (Throwable failure) {
+                cleanupFailure = appendCleanupFailure(cleanupFailure, failure);
+            }
+            try {
                 synchronized (lifecycleLock) {
                     staticSelectCursors.clear();
                     codeActorState = null;
                 }
-                outputStream.close(ref.terminationCause.get());
-                if (memorySlice != null) memorySlice.close();
-                try {
-                    actorExitHook.accept(executionDomain);
-                } catch (VirtualMachineError | ThreadDeath fatal) {
-                    throw fatal;
-                } catch (Throwable ignored) {
-                    // External exit hooks are best effort; the actor still
-                    // must release its owned runtime state.
-                }
             } catch (Throwable failure) {
-                if (cleanupFailure == null) cleanupFailure = failure;
+                cleanupFailure = appendCleanupFailure(cleanupFailure, failure);
             }
-
+            try {
+                outputStream.close(ref.terminationCause.get());
+            } catch (Throwable failure) {
+                cleanupFailure = appendCleanupFailure(cleanupFailure, failure);
+            }
+            try {
+                if (memorySlice != null) memorySlice.close();
+            } catch (Throwable failure) {
+                cleanupFailure = appendCleanupFailure(cleanupFailure, failure);
+            }
+            try {
+                actorExitHook.accept(executionDomain);
+            } catch (VirtualMachineError | ThreadDeath fatal) {
+                cleanupFailure = appendCleanupFailure(cleanupFailure, fatal);
+            } catch (Throwable ignored) {
+                // The exit hook is advisory. Unlike resource cleanup errors,
+                // ordinary hook exceptions do not fail actor termination.
+            }
             try {
                 unregisterActor(this);
             } catch (Throwable failure) {
-                if (cleanupFailure == null) cleanupFailure = failure;
+                cleanupFailure = appendCleanupFailure(cleanupFailure, failure);
             }
             if (cleanupFailure != null) {
                 ref.terminationCause.compareAndSet(null, cleanupFailure);
