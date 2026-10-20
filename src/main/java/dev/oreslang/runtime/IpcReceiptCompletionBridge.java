@@ -26,6 +26,10 @@ final class IpcReceiptCompletionBridge {
     private Object physicalOwner;
     private IpcReceiptCorrelation.Envelope physicalEpoch;
     private long physicalGeneration;
+    // Once local physical loss is claimed, this bridge can never publish new
+    // DATA. A retry may finish receipt retirement after an exceptional failure,
+    // but reconnect always requires a fresh bridge/owner.
+    private boolean transportLossClaimed;
 
     public IpcReceiptCompletionBridge(int capacity) {
         correlations = new IpcReceiptCorrelation(capacity);
@@ -98,6 +102,10 @@ final class IpcReceiptCompletionBridge {
                 future.minimalCompletionStage();
         synchronized (gate) {
             requirePhysicalTransport(owner, envelope, generation);
+            if (transportLossClaimed) {
+                throw new IllegalStateException(
+                        "IPC physical transport already lost");
+            }
             if (completions.containsKey(envelope.messageSequence())) {
                 throw new IllegalArgumentException("duplicate host correlation");
             }
@@ -134,6 +142,10 @@ final class IpcReceiptCompletionBridge {
         CompletableFuture<IpcReceiptCorrelation.Stage> done = null;
         synchronized (gate) {
             requirePhysicalTransport(owner, envelope, generation);
+            if (transportLossClaimed) {
+                throw new IllegalStateException(
+                        "IPC physical transport already lost");
+            }
             correlations.acceptVerified(envelope, stage);
             if (stage != IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED) {
                 done = completions.remove(envelope.messageSequence());
@@ -152,26 +164,26 @@ final class IpcReceiptCompletionBridge {
                 "IPC receipt bridge transport loss");
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(trustedEpoch, "trustedEpoch");
-        synchronized (gate) {
-            requirePhysicalTransport(owner, trustedEpoch, generation);
-        }
-        return transportLostInternal(trustedEpoch);
-    }
-
-    private int transportLostInternal(IpcReceiptCorrelation.Envelope trustedEpoch) {
-        ArrayList<CompletableFuture<IpcReceiptCorrelation.Stage>> done = new ArrayList<>();
+        ArrayList<CompletableFuture<IpcReceiptCorrelation.Stage>> done =
+                new ArrayList<>();
         List<IpcReceiptCorrelation.LostCorrelation> losses;
         synchronized (gate) {
-            // Reserve all notification capacity BEFORE the native-equivalent
-            // receipt table starts its no-throw retirement phase.
+            requirePhysicalTransport(owner, trustedEpoch, generation);
+            // Claim physical loss before any allocation/retirement work. If
+            // that work throws, admission remains fenced and a supervisor may
+            // retry this same owner/generation to finish retirement.
+            transportLossClaimed = true;
             done.ensureCapacity(completions.size());
             if (completions.size() != correlations.counters().pending()) {
                 throw new IllegalStateException("host correlation parity violated");
             }
             losses = correlations.retireTransportLost(trustedEpoch);
             for (var loss : losses) {
-                var completion = completions.remove(loss.envelope().messageSequence());
-                if (completion == null) throw new IllegalStateException("missing lost completion");
+                var completion = completions.remove(
+                        loss.envelope().messageSequence());
+                if (completion == null) {
+                    throw new IllegalStateException("missing lost completion");
+                }
                 done.add(completion);
             }
         }
