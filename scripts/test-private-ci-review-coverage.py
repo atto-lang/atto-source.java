@@ -113,7 +113,7 @@ def require_exact_publisher_execution(workflow):
         "bash -n tools/verify-exact-source-tree.sh tools/test-verify-exact-source-tree.sh",
         "bash tools/test-verify-exact-source-tree.sh",
         'echo "CI_PRIVATE_PUBLISHER_PROVENANCE|commit=$(git rev-parse HEAD)|tree=$(git rev-parse \'HEAD^{tree}\')|run=$GITHUB_RUN_ID|attempt=$GITHUB_RUN_ATTEMPT"',
-        "env -i PATH=/usr/bin:/bin HOME=/ PRIVATE_CI_TEST_REPEATS=3 /bin/bash scripts/run-private-ci-regressions-local.sh",
+        "/usr/bin/env -i PATH=/usr/bin:/bin HOME=/ PRIVATE_CI_TEST_REPEATS=3 /bin/bash scripts/run-private-ci-regressions-local.sh",
         'echo "CI_PRIVATE_PUBLISHER_SUITE_PASS|commit=$(git rev-parse HEAD)|tree=$(git rev-parse \'HEAD^{tree}\')"',
         "{",
         "echo '### Source-free private publisher regressions'",
@@ -410,15 +410,15 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
 
     def test_full_publisher_inherited_shell_env_is_denied(self):
         damaged = self.workflow.replace(
-            "env -i PATH=/usr/bin:/bin HOME=/ PRIVATE_CI_TEST_REPEATS=3 /bin/bash scripts/run-private-ci-regressions-local.sh",
+            "/usr/bin/env -i PATH=/usr/bin:/bin HOME=/ PRIVATE_CI_TEST_REPEATS=3 /bin/bash scripts/run-private-ci-regressions-local.sh",
             "PRIVATE_CI_TEST_REPEATS=3 bash scripts/run-private-ci-regressions-local.sh")
         with self.assertRaisesRegex(ValueError, "full publisher test step"):
             validate(self.owners, damaged)
 
     def test_full_publisher_result_masking_is_denied(self):
         damaged = self.workflow.replace(
-            "env -i PATH=/usr/bin:/bin HOME=/ PRIVATE_CI_TEST_REPEATS=3 /bin/bash scripts/run-private-ci-regressions-local.sh",
-            "env -i PATH=/usr/bin:/bin HOME=/ PRIVATE_CI_TEST_REPEATS=3 /bin/bash scripts/run-private-ci-regressions-local.sh || true")
+            "/usr/bin/env -i PATH=/usr/bin:/bin HOME=/ PRIVATE_CI_TEST_REPEATS=3 /bin/bash scripts/run-private-ci-regressions-local.sh",
+            "/usr/bin/env -i PATH=/usr/bin:/bin HOME=/ PRIVATE_CI_TEST_REPEATS=3 /bin/bash scripts/run-private-ci-regressions-local.sh || true")
         with self.assertRaisesRegex(ValueError, "full publisher test step"):
             validate(self.owners, damaged)
 
