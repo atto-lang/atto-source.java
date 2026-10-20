@@ -11,6 +11,9 @@ import java.util.Objects;
  */
 public final class TaskScope {
     private final OresFuture<Void> drained;
+    // Runtime-owned dispatch seam. Tests can simulate virtual-thread admission
+    // failures without exhausting OS threads or making callbacks run inline.
+    private final java.util.function.Consumer<Runnable> startPublisher;
     private int active;
     private boolean closing;
     private boolean published;
@@ -24,6 +27,12 @@ public final class TaskScope {
             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
 
     public TaskScope() {
+        this(task -> Thread.ofVirtual().name("ores-task-scope-cancel-publish").start(task));
+    }
+
+    // Package-private, used only to exercise publication admission failure.
+    TaskScope(java.util.function.Consumer<Runnable> startPublisher) {
+        this.startPublisher = Objects.requireNonNull(startPublisher, "publication dispatcher");
         // A join is an internal lifetime gate, never a cancellable user Future.
         // Cancelling the join itself could otherwise forge a reclamation witness.
         drained = new OresFuture<>(() -> false, () -> { });
@@ -91,32 +100,55 @@ public final class TaskScope {
         ArrayList<OresFuture.RuntimeCancellation<?>> claimed =
                 new ArrayList<>(admitted.length);
         for (Registration ticket : admitted) {
-            OresFuture.RuntimeCancellation<?> cancellation =
-                    ticket.claimAttachedCancellation();
-            if (cancellation != null) claimed.add(cancellation);
+            try {
+                OresFuture.RuntimeCancellation<?> cancellation =
+                        ticket.claimAttachedCancellation();
+                if (cancellation != null) claimed.add(cancellation);
+            } catch (RuntimeException rejected) {
+                // A malformed/host-owned cancellation admission predicate
+                // cannot prevent every other sibling from being revoked.
+                // This ticket remains live until its genuine terminal and
+                // physical-quiescence witnesses arrive: never forge DONE.
+                recordCancellationFailure(rejected);
+            }
         }
         for (OresFuture.RuntimeCancellation<?> cancellation : claimed) {
-            cancellation.revoke();
+            try {
+                cancellation.revoke();
+            } catch (RuntimeException rejected) {
+                recordCancellationFailure(rejected);
+            }
         }
 
         // All producer/task authority is already revoked. Publish ordinary
         // subscribers independently so a blocked callback cannot pin siblings.
-        List<OresFuture.RuntimeCancellation<?>> fallback = new ArrayList<>();
+        // Virtual-thread admission can itself fail. Never invoke a possibly
+        // blocking user notification inline on the actor/cancelling carrier.
         for (OresFuture.RuntimeCancellation<?> cancellation : claimed) {
             try {
-                Thread.ofVirtual()
-                        .name("ores-task-scope-cancel-publish")
-                        .start(cancellation::publish);
+                startPublisher.accept(cancellation::publish);
             } catch (RuntimeException | Error unavailable) {
-                fallback.add(cancellation);
+                try {
+                    // Exceptional fallback only. Its callback may block, but
+                    // never on the caller's cancellation/actor lane.
+                    Thread.ofPlatform().daemon(true)
+                            .name("ores-task-scope-cancel-emergency")
+                            .start(cancellation::publish);
+                } catch (RuntimeException | Error failedFallback) {
+                    // Resource exhaustion cannot authorize a false completion;
+                    // the child still needs a genuine physical DONE witness.
+                    recordCancellationFailure(failedFallback);
+                }
             }
-        }
-        for (OresFuture.RuntimeCancellation<?> cancellation : fallback) {
-            cancellation.publish();
         }
 
         publishIfReady();
         return drained;
+    }
+
+    private synchronized void recordCancellationFailure(Throwable failure) {
+        if (firstFailure == null) firstFailure = failure;
+        else if (firstFailure != failure) firstFailure.addSuppressed(failure);
     }
 
     private void childDone(Registration ticket, Throwable failure) {
