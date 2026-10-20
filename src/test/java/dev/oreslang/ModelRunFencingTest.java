@@ -22,7 +22,10 @@ final class ModelRunFencingTest {
         Ledger ledger = ModelRunFencing.validateAndCommit(owner(), good, Ledger.empty());
         assertTrue(ledger.committedRunIds().contains("run-1"));
         assertEquals(8, ModelRunFencing.nextGraphGeneration(7));
-        assertEquals(12, ModelRunFencing.nextParameterVersion(11));\n        assertNotEquals(ModelRunFencing.planCacheKey(G, P),\n                ModelRunFencing.planCacheKey(G, "c".repeat(64)));\n
+        assertEquals(12, ModelRunFencing.nextParameterVersion(11));
+        assertNotEquals(ModelRunFencing.planCacheKey(G, P),
+                ModelRunFencing.planCacheKey(G, "c".repeat(64)));
+
         assertEquals("MODEL_RUN_REPLAY",
                 assertThrows(IllegalStateException.class,
                         () -> ModelRunFencing.validateAndCommit(owner(), good, ledger)).getMessage());
