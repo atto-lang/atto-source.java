@@ -49,9 +49,11 @@ public final class StaticSafetyAnalyzer {
         }
 
         private void addBody(String qualifiedName, List<Ast.Stmt> body) {
-            if (bodies.putIfAbsent(qualifiedName, body) != null) {
-                throw new IllegalArgumentException("ambiguous analysis callable " + qualifiedName);
+            String actual = qualifiedName;
+            for (int overload = 1; bodies.containsKey(actual); overload++) {
+                actual = qualifiedName + "#overload" + overload;
             }
+            bodies.put(actual, body);
         }
 
         List<Finding> run() {
@@ -192,7 +194,13 @@ public final class StaticSafetyAnalyzer {
             if (expr instanceof Ast.CallExpr call) {
                 if (call.callee() instanceof Ast.NameExpr n) {
                     String target = key(module, n.name(), call.arguments().size());
-                    if (bodies.containsKey(target)) edge(target, "call");
+                    long candidates = bodies.keySet().stream()
+                            .filter(k -> k.equals(target) || k.startsWith(target + "#overload"))
+                            .count();
+                    if (candidates == 1) edge(target, "call");
+                    else if (candidates > 1) warn("ORES-ANALYSIS-001",
+                            "overloaded call requires resolved overload identity; recursion cannot be certified",
+                            List.of(current, target));
                 } else if (call.callee() instanceof Ast.MemberExpr m
                         && m.receiver() instanceof Ast.NameExpr n
                         && (n.name().equals("process") || n.name().equals("ffi"))
@@ -290,7 +298,10 @@ public final class StaticSafetyAnalyzer {
                 current = component.get(0);
                 boolean spawn = inside.stream().anyMatch(e -> e.kind().equals("actor_spawn"));
                 String rule = spawn ? "ORES-AMP-001" : "ORES-AMP-004";
-                String message = spawn ? "possible unbounded recursive actor creation"
+                long actorSpawnSites = inside.stream().filter(e -> e.kind().equals("actor_spawn")).count();
+                String message = spawn
+                        ? "possible unbounded recursive actor creation; " + actorSpawnSites
+                            + " static actor-spawn site(s) in this cycle"
                         : "possible infinite recursion / repeated callable cycle";
                 warn(rule, message + "; no decreasing rank or total-work bound established", component);
             }
