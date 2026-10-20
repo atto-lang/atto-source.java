@@ -101,6 +101,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return self.fake_api(route, method, payload)
         return fake, routes
 
+    def test_gh_api_accepts_successful_empty_delete(self):
+        response = type(
+            "Response", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        with patch.object(pub.subprocess, "run", return_value=response):
+            self.assertEqual(
+                pub.gh_api(
+                    "repos/trusted/ci/git/refs/heads/ci/cleanup",
+                    method="DELETE"),
+                {})
+
     def test_origin_main_must_be_protected_before_export(self):
         api, routes = self.verified_origin_api(protected=False)
         with patch.object(pub, "verify_protected_origin",
