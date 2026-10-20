@@ -3052,6 +3052,16 @@ public final class ActorRuntime implements AutoCloseable {
             return !groupClosed.get() && members.contains(actorId);
         }
 
+        /** Trusted runtime-facade observation without guest membership authority. */
+        int runtimeMemberCount() {
+            return groupClosed.get() ? 0 : members.size();
+        }
+
+        /** Trusted runtime-facade teardown for runtime-owned groups. */
+        void runtimeClose() {
+            closeFromRuntime();
+        }
+
         ActorId requireCurrentMember(String operation) {
             requireCallerRuntimeAffinity(operation);
             ActorId actorId = currentActorId().orElseThrow(() ->
