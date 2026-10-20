@@ -56,11 +56,26 @@ final class EndDelimitedFunctionSyntaxTest {
 
     @Test
     void doFollowsTheCompleteHigherOrderReturnType() {
-        assertDoesNotThrow(() -> Parser.parse("""
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc callback() -> () => void do
                     return || -> { return; };
                 end
-                """));
+                """)));
+    }
+
+    @Test
+    void higherOrderReturnChecksReturnedLambdaSignature() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc callback() -> () => void do
+                    return |int value| -> { return; };
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc callback() -> () => void do
+                    return || -> { return 1; };
+                end
+                """)));
     }
 
     @Test
