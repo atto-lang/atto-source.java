@@ -2038,6 +2038,11 @@ public final class TypeChecker {
                         throw new IllegalArgumentException(
                                 "enum constructors do not accept type arguments");
                     }
+                    if (call.arguments().stream()
+                            .anyMatch(argument -> argument instanceof Ast.SpreadExpr)) {
+                        throw new IllegalArgumentException(
+                                "enum constructors do not accept spread arguments");
+                    }
                     int expected = enumCase.payload() == null ? 0 : 1;
                     if (call.arguments().size() != expected) {
                         throw new IllegalArgumentException(
@@ -5029,6 +5034,28 @@ public final class TypeChecker {
             return true;
         }
         if (!(type instanceof Named named)) return false;
+
+        if (named.arguments().isEmpty() && nominalEnums != null) {
+            NominalEnumRegistry.EnumType enumeration =
+                    nominalEnums.enums().get(named.name());
+            if (enumeration != null) {
+                return enumeration.cases().stream().allMatch(
+                        variant -> variant.payload() == null
+                                || isSharedSafe(
+                                        resolve(variant.payload(), Set.of(), null),
+                                        seen,
+                                        genericBindings));
+            }
+            NominalEnumRegistry.Case enumCase =
+                    nominalEnums.caseOrNull(named.name());
+            if (enumCase != null) {
+                return enumCase.payload() == null
+                        || isSharedSafe(
+                                resolve(enumCase.payload(), Set.of(), null),
+                                seen,
+                                genericBindings);
+            }
+        }
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("Iterator")
