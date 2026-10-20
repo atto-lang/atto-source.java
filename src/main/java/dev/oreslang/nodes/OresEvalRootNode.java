@@ -4460,7 +4460,7 @@ public final class OresEvalRootNode extends RootNode {
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
-                if (direct != null) {
+                if (direct != null || hasFunctionFamily(name.name())) {
                     requireExplicitClassCallableImport(env, name.name());
                     evalSuspendableArguments(
                             task,
@@ -4473,7 +4473,7 @@ public final class OresEvalRootNode extends RootNode {
                                 }
                                 try {
                                     Invocation invocation =
-                                            functionInvocation(direct, values);
+                                            functionInvocation(findFunction(name.name(), values.size()), values);
                                     completeSourceInvocation(
                                             t,
                                             invocation,
