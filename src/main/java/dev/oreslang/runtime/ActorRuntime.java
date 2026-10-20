@@ -5229,6 +5229,12 @@ public final class ActorRuntime implements AutoCloseable {
         // may stop self/descendants but must never park a bounded carrier while
         // waiting for another actor to finalize.
         if (currentActor.get() != null) return;
+        if (!ref.physicallyFinalized.get()
+                && (ref.physicalFinalizationOwnerThread == Thread.currentThread()
+                        || ref.terminalSettlementOwnerThread == Thread.currentThread())) {
+            throw new IllegalStateException(
+                    "actor terminal callback cannot join its own physical finalization");
+        }
 
         try {
             cell.awaitFinalized(CLOSE_WAIT_NANOS);
