@@ -52,6 +52,22 @@ class OresSymbolTest {
         assertFalse(OresSymbol.stable("550e8400-e29b-41d4-a716-446655440000").publicToUntrustedCoreV1());
     }
 
+    @Test void dynamicallyCreatedSymbolNamesRenderAsParseableLiterals() {
+        String maxBareName = "a".repeat(128);
+        String longIdentifierName = "a".repeat(129);
+        assertEquals("#" + maxBareName, OresSymbol.process(maxBareName).toString());
+        assertEquals("#\\"" + longIdentifierName + "\\"", OresSymbol.process(longIdentifierName).toString());
+        assertNotSame(OresSymbol.process("ready"), OresSymbol.process("ready"));
+        assertEquals(OresSymbol.process("ready"), OresSymbol.process("ready"));
+        for (String name : List.of(longIdentifierName, "café", "hello world", "quote\\" and slash\\\\ x")) {
+            String rendered = OresSymbol.process(name).toString();
+            List<Token> tokens = new Lexer(rendered).scan();
+            assertEquals(Token.Type.SYMBOL_LITERAL, tokens.getFirst().type());
+            assertEquals(name, tokens.getFirst().lexeme());
+            assertEquals(Token.Type.EOF, tokens.get(1).type());
+        }
+    }
+
     @Test void hashLiteralScannerKeepsColonAndStringKeysSeparate() {
         List<Token> tokens = new Lexer("foo: #ready, [#\"ready foo\"], #'ready foo', #class, \"ready\"").scan();
         assertEquals(List.of(
