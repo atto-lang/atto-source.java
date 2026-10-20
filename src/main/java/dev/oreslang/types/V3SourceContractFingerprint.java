@@ -61,8 +61,19 @@ public final class V3SourceContractFingerprint {
                 throw new IllegalArgumentException(
                         "v3 source-contract type depth/node budget exceeded");
             }
-            for (Ast.TypeRef nested : item.value().arguments()) {
-                pending.addLast(new TypeVisit(nested, item.depth() + 1));
+            // Account for the complete frontier before enqueueing children.
+            // Otherwise one hostile wide TypeRef can create a huge queue
+            // before visited reaches MAX_TYPE_NODES. This is bounded work,
+            // not a nominal-type or source-authenticity proof.
+            List<Ast.TypeRef> children = item.value().arguments();
+            if ((long) visited + pending.size() + children.size() > MAX_TYPE_NODES) {
+                throw new IllegalArgumentException(
+                        "v3 source-contract type depth/node budget exceeded");
+            }
+            for (Ast.TypeRef nested : children) {
+                pending.addLast(new TypeVisit(
+                        Objects.requireNonNull(nested, "nested source-contract type"),
+                        item.depth() + 1));
             }
         }
     }
