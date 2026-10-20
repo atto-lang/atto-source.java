@@ -120,6 +120,24 @@ final class StaticFactsV0ExporterTest {
     }
 
     @Test
+    void callUnderLoopCannotLosePerIterationMultiplicity() {
+        String source = """
+                fnc leaf(): int { return 3; }
+                pub routine main(): void {
+                    while (true) {
+                        leaf();
+                        break;
+                    }
+                    return;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> StaticFactsV0Exporter.fromSource(source));
+        assertTrue(failure.getMessage().contains("loop-associated calls"),
+                failure.getMessage());
+    }
+
+    @Test
     void repeatedCallSiteCannotBeSilentlyDeduplicated() {
         String source = """
                 fnc leaf(): int { return 3; }
