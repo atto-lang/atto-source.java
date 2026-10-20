@@ -194,6 +194,41 @@ public final class RuntimePermissions {
         }
     }
 
+    void requireNetworkBind(String host, int port, String api) {
+        if (!allowsNetworkBind(host, port)) {
+            String resource = networkBindResource(host, port);
+            throw new SecurityException(
+                    "Oreslang permission denied: net bind to '"
+                            + resource + "' required by " + api);
+        }
+    }
+
+    boolean allowsNetworkBind(String host, int port) {
+        if (port != 0) return allows(Permission.NET, networkEndpoint(host, port));
+
+        Rule rule = rules.get(Permission.NET);
+        if (rule == null || rule.denyAll()) return false;
+        String normalizedHost = normalizeNetworkHost(host);
+
+        // The kernel chooses the actual port. Any deny that matches this host
+        // could be selected, so an ephemeral bind must fail closed.
+        for (String denied : rule.denied()) {
+            NetworkScope scope = parseNetworkScope(denied);
+            if (scope != null && networkHostMatches(normalizedHost, scope.host()))
+                return false;
+        }
+        if (rule.allowAll()) return true;
+        for (String allowed : rule.allowed()) {
+            NetworkScope scope = parseNetworkScope(allowed);
+            if (scope != null
+                    && scope.port() == null
+                    && networkHostMatches(normalizedHost, scope.host())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public boolean allows(Permission permission, String resource) {
         Rule rule = rules.get(permission);
         if (rule == null) return false;
@@ -324,18 +359,19 @@ public final class RuntimePermissions {
         NetworkScope rule = parseNetworkScope(scope);
         if (target == null || rule == null) return false;
 
-        boolean hostMatches;
-        if (rule.host().startsWith("*.")) {
-            String suffix = rule.host().substring(1);
-            hostMatches = target.host().endsWith(suffix)
-                    && target.host().length() > suffix.length();
-        } else {
-            hostMatches = target.host().equals(rule.host());
-        }
-        if (!hostMatches) return false;
+        if (!networkHostMatches(target.host(), rule.host())) return false;
 
         // Host-only grants apply to every port on exactly that host.
         return rule.port() == null || rule.port().equals(target.port());
+    }
+
+    private static boolean networkHostMatches(String targetHost, String ruleHost) {
+        if (ruleHost.startsWith("*.")) {
+            String suffix = ruleHost.substring(1);
+            return targetHost.endsWith(suffix)
+                    && targetHost.length() > suffix.length();
+        }
+        return targetHost.equals(ruleHost);
     }
 
     private static boolean tokenMatches(String resource, String scope) {
