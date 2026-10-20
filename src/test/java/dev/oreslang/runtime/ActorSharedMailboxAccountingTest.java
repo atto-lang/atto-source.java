@@ -23,9 +23,9 @@ final class ActorSharedMailboxAccountingTest {
     @SuppressWarnings("unchecked")
     void teardownDrainRetainsExactDequeuedEnvelopeAcrossRefundFailure()
             throws Exception {
+        var releaseTurn = new java.util.concurrent.CountDownLatch(1);
         try (ActorRuntime runtime = new ActorRuntime()) {
             var entered = new java.util.concurrent.CountDownLatch(1);
-            var releaseTurn = new java.util.concurrent.CountDownLatch(1);
             var turns = new java.util.concurrent.atomic.AtomicInteger();
 
             ActorRuntime.ActorRef<Object> actor = runtime.spawnShared(
@@ -100,7 +100,7 @@ final class ActorSharedMailboxAccountingTest {
             assertEquals(0L, runtime.sharedMemoryBytes());
             assertNull(currentEnvelopeField.get(cell));
         } finally {
-            // The actor body owns its latch only inside the test fixture.
+            releaseTurn.countDown();
         }
     }
 
