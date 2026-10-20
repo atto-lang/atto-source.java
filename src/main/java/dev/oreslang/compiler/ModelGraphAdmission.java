@@ -44,10 +44,17 @@ public final class ModelGraphAdmission {
         }
     }
 
-    public record Node(int id, String op, String abi, List<String> config, Port input, Port output, boolean vjp) {\n        public Node { config = List.copyOf(config); }\n    }
+    public record Node(int id, String op, String abi, List<String> config,
+                       Port input, Port output, boolean vjp) {
+        public Node { config = List.copyOf(config); }
+    }
     public record ModelGraph(String name, Port input, Port output,
-                             List<Node> nodes, long upperBoundBytes) {
-        public ModelGraph { nodes = List.copyOf(nodes); }
+                             List<String> formalConfig, List<Node> nodes,
+                             long upperBoundBytes) {
+        public ModelGraph {
+            formalConfig = List.copyOf(formalConfig);
+            nodes = List.copyOf(nodes);
+        }
     }
 
     private static long bytes(Port port) {
@@ -107,10 +114,15 @@ public final class ModelGraphAdmission {
         if (source.formals().size() > 16)
             throw new IllegalArgumentException("MODEL_FORMAL_BUDGET");
         Set<String> formals = new HashSet<>();
+        List<String> formalConfig = new ArrayList<>();
         for (Ast.ModelFormal formal : source.formals()) {
             if (!formals.add(formal.name()))
                 throw new IllegalArgumentException("MODEL_DUPLICATE_FORMAL");
             validDefault(formal);
+            String d = formal.defaultValue() == null ? "none"
+                    : formal.defaultValue().kind().name() + ":" + formal.defaultValue().source();
+            formalConfig.add(formal.name().length() + ":" + formal.name() + "|"
+                    + formal.type().name().length() + ":" + formal.type().name() + "|" + d);
         }
         List<Node> nodes = new ArrayList<>();
         Port input = null;
