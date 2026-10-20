@@ -115,6 +115,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.carrier_workflow_manifest_sha = None
         self.carrier_tree_truncated = False
         self.carrier_extra_workflow = None
+        self.real_bootstrap_attestation = pub.require_bootstrap_attestation
+        self.bootstrap_attestation = patch.object(
+            pub, "require_bootstrap_attestation", return_value=A)
+        self.bootstrap_attestation.start()
+        self.addCleanup(self.bootstrap_attestation.stop)
         self.preflight = patch.object(pub, "require_preflight", return_value=123)
         self.preflight_patch_entry = self.preflight.start()
         self.addCleanup(self.preflight.stop)
@@ -712,6 +717,71 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         pub.require_private_ci_api_budget(count)
                 self.assertEqual(self.route_calls, [])
 
+    def test_publish_requires_independent_bootstrap_before_policy_api_or_source(self):
+        with patch.object(
+                pub, "require_bootstrap_attestation",
+                side_effect=self.real_bootstrap_attestation):
+            with patch.object(
+                    pub, "_ORESLANG_VERIFIED_SOURCE_ROOT", None, create=True):
+                with patch.object(
+                        pub, "_ORESLANG_VERIFIED_PUBLISHER_BLOB_SHA",
+                        None, create=True):
+                    with patch.object(
+                            pub, "checked_policy_fingerprint",
+                            side_effect=AssertionError("policy read before bootstrap")):
+                        with patch.object(
+                                pub, "collect_source",
+                                side_effect=AssertionError("source read before bootstrap")):
+                            with patch.object(
+                                    pub, "gh_api",
+                                    side_effect=AssertionError("API call before bootstrap")):
+                                with self.assertRaisesRegex(
+                                        pub.Denied,
+                                        "independent publisher bootstrap"):
+                                    pub.publish(
+                                        "trusted/ci", self.source, TEST_BRANCH,
+                                        self.root, self.expected_tree, D)
+        self.assertFalse(self.preflight_patch_entry.called)
+        self.assertEqual(self.route_calls, [])
+
+    def test_bootstrap_attestation_binds_exact_absolute_source_root(self):
+        with patch.object(
+                pub, "require_bootstrap_attestation",
+                side_effect=self.real_bootstrap_attestation):
+            with patch.object(
+                    pub, "_ORESLANG_VERIFIED_SOURCE_ROOT",
+                    str(self.root.resolve()), create=True):
+                with patch.object(
+                        pub, "_ORESLANG_VERIFIED_PUBLISHER_BLOB_SHA",
+                        A, create=True):
+                    self.assertEqual(
+                        pub.require_bootstrap_attestation(self.root), A)
+            with patch.object(
+                    pub, "_ORESLANG_VERIFIED_SOURCE_ROOT",
+                    str(self.source.resolve()), create=True):
+                with patch.object(
+                        pub, "_ORESLANG_VERIFIED_PUBLISHER_BLOB_SHA",
+                        A, create=True):
+                    with self.assertRaisesRegex(
+                            pub.Denied, "trusted root differs"):
+                        pub.require_bootstrap_attestation(self.root)
+            with patch.object(
+                    pub, "_ORESLANG_VERIFIED_SOURCE_ROOT",
+                    "relative/source-root", create=True):
+                with patch.object(
+                        pub, "_ORESLANG_VERIFIED_PUBLISHER_BLOB_SHA",
+                        A, create=True):
+                    with self.assertRaisesRegex(pub.Denied, "must be absolute"):
+                        pub.require_bootstrap_attestation(self.root)
+            with patch.object(
+                    pub, "_ORESLANG_VERIFIED_SOURCE_ROOT",
+                    str(self.root.resolve()), create=True):
+                with patch.object(
+                        pub, "_ORESLANG_VERIFIED_PUBLISHER_BLOB_SHA",
+                        "not-a-sha", create=True):
+                    with self.assertRaises(pub.Denied):
+                        pub.require_bootstrap_attestation(self.root)
+
     def test_real_git_checkout_admission_denies_unreviewed_or_tampered_code(self):
         # No private repo files are needed: initialize a synthetic Git repository
         # and exercise the REAL checkout admission helper, not the mock.
@@ -738,8 +808,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             git("add", ".")
             git("commit", "-qm", "Source-free synthetic publisher fixture")
             commit = git("rev-parse", "HEAD")
+            publisher_blob = git("rev-parse", "HEAD:" + protected[0])
             self.assertEqual(
                 self.real_publisher_checkout(root, commit), commit)
+            self.assertEqual(
+                self.real_publisher_checkout(
+                    root, commit, publisher_blob), commit)
+            with self.assertRaisesRegex(
+                    pub.Denied, "bootstrap publisher blob differs"):
+                self.real_publisher_checkout(root, commit, "0" * 40)
             # A dirty file masked by either Git index flag must never pass
             # the byte-level protected-publisher attestation.
             for flag, undo in (("--skip-worktree", "--no-skip-worktree"),
