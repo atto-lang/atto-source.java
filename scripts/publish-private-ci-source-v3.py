@@ -512,7 +512,9 @@ def verified_recursive_leaves(repository, tree_sha):
         mode = entry.get("mode")
         if (not isinstance(rel, str) or not rel or rel.startswith("/")
                 or "\x00" in rel or rel in seen
-                or kind not in allowed or mode not in allowed[kind]):
+                or any(part in ("", ".", "..") for part in rel.split("/"))
+                or not isinstance(kind, str) or kind not in allowed
+                or not isinstance(mode, str) or mode not in allowed[kind]):
             raise Denied("carrier tree read-back contains ambiguous entry")
         seen.add(rel)
         sha = valid_sha(entry.get("sha"), "carrier tree entry SHA invalid")
