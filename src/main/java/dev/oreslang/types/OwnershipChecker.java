@@ -852,16 +852,21 @@ public final class OwnershipChecker {
             return;
         }
 
-        if (containsTypedMapType(value.type)) {
-            if (!isTypedMapType(value.type)) {
-                throw error("nested Map<K,V> values are not enabled in the closed v1 surface");
+        boolean declaredMap =
+                binding.declaredType() != null
+                        && containsTypedMapType(binding.declaredType());
+        if (containsTypedMapType(value.type) || declaredMap) {
+            if (!isTypedMapType(value.type)
+                    || binding.declaredType() != null
+                        && !isTypedMapType(binding.declaredType())) {
+                throw error("nested or dynamically disguised Map<K,V> values are not enabled in the closed v1 surface");
             }
             if (!(binding.initializer() instanceof Ast.NewExpr created)
                     || !created.type().name().equals("Map")
                     || created.type().inferArguments()
                     || created.type().arguments().size() != 2
                     || !created.arguments().isEmpty()) {
-                throw error("Map<K,V> bindings must own a fresh new Map<K,V>() value; aliases and transfers are not enabled yet");
+                throw error("Map<K,V> bindings must own a fresh new Map<K,V>() value; aliases, dynamic carriers and transfers are not enabled yet");
             }
         }
 
