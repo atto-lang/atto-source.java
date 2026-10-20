@@ -156,7 +156,18 @@ public final class ActorEventBus implements AutoCloseable {
     private final Map<String, TopicState> topics = new ConcurrentHashMap<>();
     private final Map<String, DoubleReductionState> doubleReductions = new ConcurrentHashMap<>();
     private final Object definitionLock = new Object();
+    /** Admission seal; never by itself proves teardown completion. */
     private final AtomicBoolean closed = new AtomicBoolean();
+    /** Guarded by definitionLock: all topic/subscription cleanup returned. */
+    private boolean closeCleanupComplete;
+    /**
+     * Guarded by definitionLock. A failure after teardown mutation begins can
+     * leave channel completion ownership ambiguous; fail closed rather than
+     * replaying destructive cleanup and forging a completed group close.
+     */
+    private boolean closeCleanupAmbiguous;
+    // Package-runtime fault injection after the admission seal, before cleanup.
+    private Runnable closeAfterSealFaultForTesting;
 
     ActorEventBus(ActorRuntime runtime, ActorRuntime.ActorGroup group) {
         this.runtime = Objects.requireNonNull(runtime, "runtime");
@@ -388,19 +399,46 @@ public final class ActorEventBus implements AutoCloseable {
     }
 
     void closeFromGroup() {
-        if (!closed.compareAndSet(false, true)) return;
         synchronized (definitionLock) {
-            for (TopicState topic : topics.values()) {
-                synchronized (topic.deliveryLock) {
-                    for (Subscription<?> subscription
-                            : List.copyOf(topic.subscriptions.values())) {
-                        subscription.closeChannelOnly();
-                    }
-                    topic.subscriptions.clear();
-                }
+            if (closeCleanupComplete) return;
+            if (closeCleanupAmbiguous) {
+                throw new IllegalStateException(
+                        "ActorGroup event-bus teardown is ambiguous; "
+                                + "independent reconciliation is required");
             }
-            topics.clear();
-            doubleReductions.clear();
+
+            // Seal admission first, but keep a separate cleanup witness. A
+            // previous implementation returned merely because closed=true,
+            // which could lose teardown ownership after an OOME.
+            closed.set(true);
+
+            Runnable injected = closeAfterSealFaultForTesting;
+            if (injected != null) injected.run();
+
+            try {
+                for (TopicState topic : topics.values()) {
+                    synchronized (topic.deliveryLock) {
+                        // No new subscription can pass requireOpen() after the
+                        // seal. Avoid List.copyOf() so memory-pressure cleanup
+                        // does not require an O(n) allocation just to progress.
+                        for (Subscription<?> subscription
+                                : topic.subscriptions.values()) {
+                            subscription.closeChannelOnly();
+                        }
+                        topic.subscriptions.clear();
+                    }
+                }
+                topics.clear();
+                doubleReductions.clear();
+                closeCleanupComplete = true;
+            } catch (RuntimeException | Error cleanupFailure) {
+                // Some subscription/channel teardown may already have mutated
+                // state. Without an authenticated per-subscription replay
+                // receipt it is unsafe to infer completion from closed/empty
+                // observations after the fact.
+                closeCleanupAmbiguous = true;
+                throw cleanupFailure;
+            }
         }
     }
 
