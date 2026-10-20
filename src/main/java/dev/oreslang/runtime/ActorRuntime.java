@@ -1266,8 +1266,12 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public final class SyncCell<T> implements AutoCloseable {
         private final ReentrantLock lock = new ReentrantLock(true);
+        /** Admission/observation seal; distinct from cleanup completion. */
         private final AtomicBoolean cellClosed = new AtomicBoolean();
+        /** Guarded by lock. */
+        private boolean cellCleanupComplete;
         private T value;
+        /** Exact shared-memory debit retained until live-runtime release succeeds. */
         private long reservedBytes;
 
         @SuppressWarnings("unchecked")
@@ -1360,20 +1364,42 @@ public final class ActorRuntime implements AutoCloseable {
         private void closeFromRuntime() {
             lock.lock();
             try {
-                if (!cellClosed.compareAndSet(false, true)) return;
-                long bytes = reservedBytes;
-                reservedBytes = 0L;
+                if (cellCleanupComplete) return;
+
+                // Revoke observation first. If aggregate accounting release
+                // fails, keep the exact debit and registry owner for a later
+                // trusted retry instead of treating cellClosed as completion.
+                cellClosed.set(true);
                 value = null;
-                releaseSharedRuntimeBytes(bytes);
+
+                long bytes = reservedBytes;
+                if (bytes != 0L) {
+                    releaseSharedRuntimeBytes(bytes);
+                    reservedBytes = 0L;
+                }
+
                 syncCells.remove(this);
+                cellCleanupComplete = true;
             } finally {
                 lock.unlock();
             }
         }
 
         private void invalidateFromRuntime() {
-            cellClosed.set(true);
-            syncCells.remove(this);
+            lock.lock();
+            try {
+                if (cellCleanupComplete) return;
+                // Global ActorRuntime close owns aggregate shared-accounting
+                // reset after every live resource has been invalidated, so no
+                // per-cell debit release occurs on this already-closed path.
+                cellClosed.set(true);
+                value = null;
+                reservedBytes = 0L;
+                syncCells.remove(this);
+                cellCleanupComplete = true;
+            } finally {
+                lock.unlock();
+            }
         }
     }
 
