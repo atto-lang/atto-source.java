@@ -58,6 +58,23 @@ def contract():
     }
 
 
+def governance_entries(policy_bytes, mode_overrides=None, type_overrides=None):
+    mode_overrides = mode_overrides or {}
+    type_overrides = type_overrides or {}
+    result = {}
+    for path in v3.REVIEWED_GOVERNANCE_PATHS:
+        raw = policy_bytes if path == v3.legacy.POLICY_PATH else (path + "\n").encode()
+        sha = hashlib.sha1(
+            b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
+        ).hexdigest()
+        result[path] = (
+            mode_overrides.get(path, "100644"),
+            type_overrides.get(path, "blob"),
+            sha,
+        )
+    return result
+
+
 class PrivateCiV3Test(unittest.TestCase):
     def test_parse_contract_requires_exact_pr_and_pinned_fields(self):
         raw = json.dumps(
@@ -164,9 +181,11 @@ class PrivateCiV3Test(unittest.TestCase):
                 "login": v3.REVIEW_AUTHORITY_LOGIN,
             },
         }]
+        reviewed_tree = governance_entries(policy_bytes)
         with (
             patch.object(v3.legacy, "gh_api", side_effect=api),
             patch.object(v3, "gh_api_list", return_value=reviews),
+            patch.object(v3, "governance_tree_entries", return_value=reviewed_tree),
             patch.object(v3, "remote_file_at_source_main", side_effect=remote),
         ):
             self.assertEqual(
@@ -332,13 +351,153 @@ class PrivateCiV3Test(unittest.TestCase):
                 "login": v3.REVIEW_AUTHORITY_LOGIN,
             },
         }]
+        stable_tree = governance_entries(policy_bytes)
         with (
             patch.object(v3.legacy, "gh_api", side_effect=api),
             patch.object(v3, "gh_api_list", return_value=reviews),
+            patch.object(v3, "governance_tree_entries", return_value=stable_tree),
             patch.object(v3, "remote_file_at_source_main", side_effect=remote),
         ):
             with self.assertRaisesRegex(v3.Denied, "governance drifted"):
                 v3.authorized_main_sha("trusted/ci", policy_digest)
+
+    def test_unprotected_main_rejects_governance_mode_or_type_drift(self):
+        main_sha = "2" * 40
+        authority_head = "3" * 40
+        policy_bytes = b"trusted/ci\n"
+        policy_digest = hashlib.sha256(policy_bytes).digest()
+
+        def api(route, method="GET", payload=None):
+            if "/branches/" in route:
+                return {
+                    "name": v3.legacy.SOURCE_PROTECTED_BRANCH,
+                    "protected": False,
+                    "commit": {"sha": main_sha},
+                }
+            if route.endswith("/pulls/" + str(v3.REVIEW_AUTHORITY_PR)):
+                return {
+                    "number": v3.REVIEW_AUTHORITY_PR,
+                    "state": "closed",
+                    "merged_at": "2026-10-20T00:02:00Z",
+                    "head": {
+                        "sha": authority_head,
+                        "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                    },
+                    "base": {"ref": v3.legacy.SOURCE_PROTECTED_BRANCH},
+                }
+            raise AssertionError(route)
+
+        def remote(path, _ref, _limit):
+            raw = policy_bytes if path == v3.legacy.POLICY_PATH else (path + "\n").encode()
+            blob = hashlib.sha1(
+                b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
+            ).hexdigest()
+            return raw, blob
+
+        reviews = [{
+            "id": 7,
+            "state": "APPROVED",
+            "commit_id": authority_head,
+            "submitted_at": "2026-10-20T00:01:00Z",
+            "user": {
+                "id": v3.REVIEW_AUTHORITY_USER_ID,
+                "login": v3.REVIEW_AUTHORITY_LOGIN,
+            },
+        }]
+        reviewed = governance_entries(policy_bytes)
+        changed = dict(reviewed)
+        target = "scripts/run-in-private-ci-destination.sh"
+        changed[target] = ("100755", "blob", changed[target][2])
+        with (
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(v3, "gh_api_list", return_value=reviews),
+            patch.object(v3, "governance_tree_entries", side_effect=[reviewed, changed]),
+            patch.object(v3, "remote_file_at_source_main", side_effect=remote),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "Git entry drifted"):
+                v3.authorized_main_sha("trusted/ci", policy_digest)
+
+        changed = dict(reviewed)
+        changed[target] = ("120000", "blob", changed[target][2])
+        with (
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(v3, "gh_api_list", return_value=reviews),
+            patch.object(v3, "governance_tree_entries", side_effect=[reviewed, changed]),
+            patch.object(v3, "remote_file_at_source_main", side_effect=remote),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "Git entry drifted"):
+                v3.authorized_main_sha("trusted/ci", policy_digest)
+
+    def test_review_history_rejects_duplicate_ids_and_invalid_timestamp(self):
+        base = {
+            "id": 7,
+            "state": "APPROVED",
+            "commit_id": "3" * 40,
+            "submitted_at": "2026-10-20T00:01:00Z",
+            "user": {
+                "id": v3.REVIEW_AUTHORITY_USER_ID,
+                "login": v3.REVIEW_AUTHORITY_LOGIN,
+            },
+        }
+        with patch.object(v3, "gh_api_list", return_value=[base, dict(base)]):
+            with self.assertRaisesRegex(v3.Denied, "invalid IDs"):
+                v3.latest_authority_review()
+
+        malformed = dict(base)
+        malformed["submitted_at"] = "not-a-github-time"
+        with patch.object(v3, "gh_api_list", return_value=[malformed]):
+            with self.assertRaisesRegex(v3.Denied, "timestamp invalid"):
+                v3.latest_authority_review()
+
+    def test_governance_tree_listing_rejects_unsafe_mode_and_truncation(self):
+        commit_sha = "4" * 40
+        tree_sha = "5" * 40
+        entries = []
+        for path in v3.REVIEWED_GOVERNANCE_PATHS:
+            entries.append({
+                "path": path,
+                "mode": "100644",
+                "type": "blob",
+                "sha": "6" * 40,
+            })
+
+        def api(route, method="GET", payload=None):
+            if route.endswith("/git/commits/" + commit_sha):
+                return {"sha": commit_sha, "tree": {"sha": tree_sha}}
+            if route.endswith("/git/trees/" + tree_sha + "?recursive=1"):
+                return {"sha": tree_sha, "truncated": False, "tree": entries}
+            raise AssertionError(route)
+
+        with patch.object(v3.legacy, "gh_api", side_effect=api):
+            self.assertEqual(
+                set(v3.governance_tree_entries(commit_sha)),
+                set(v3.REVIEWED_GOVERNANCE_PATHS),
+            )
+
+        unsafe = [dict(item) for item in entries]
+        unsafe[0]["mode"] = "120000"
+
+        def unsafe_api(route, method="GET", payload=None):
+            if route.endswith("/git/commits/" + commit_sha):
+                return {"sha": commit_sha, "tree": {"sha": tree_sha}}
+            if route.endswith("/git/trees/" + tree_sha + "?recursive=1"):
+                return {"sha": tree_sha, "truncated": False, "tree": unsafe}
+            raise AssertionError(route)
+
+        with patch.object(v3.legacy, "gh_api", side_effect=unsafe_api):
+            with self.assertRaisesRegex(v3.Denied, "unsafe Git type/mode"):
+                v3.governance_tree_entries(commit_sha)
+
+        def truncated_api(route, method="GET", payload=None):
+            if route.endswith("/git/commits/" + commit_sha):
+                return {"sha": commit_sha, "tree": {"sha": tree_sha}}
+            if route.endswith("/git/trees/" + tree_sha + "?recursive=1"):
+                return {"sha": tree_sha, "truncated": True, "tree": entries}
+            raise AssertionError(route)
+
+        with patch.object(v3.legacy, "gh_api", side_effect=truncated_api):
+            with self.assertRaisesRegex(v3.Denied, "listing is incomplete"):
+                v3.governance_tree_entries(commit_sha)
 
     def test_contract_rejects_duplicate_json_keys(self):
         raw = (
