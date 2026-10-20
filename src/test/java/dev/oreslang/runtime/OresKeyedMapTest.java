@@ -468,4 +468,60 @@ final class OresKeyedMapTest {
         assertNotEquals(strings, dynamic);
     }
 
+    @Test void invalidBatchDomainDoesNotInvokeEntryValidator() {
+        java.util.concurrent.atomic.AtomicInteger validations =
+                new java.util.concurrent.atomic.AtomicInteger();
+        OresKeyedMap<String, Object> map = OresKeyedMap.stringKeys(
+                OresKeyedMap.ValueDomain.INT,
+                (key, value) -> validations.incrementAndGet());
+
+        LinkedHashMap<String, Object> batch = new LinkedHashMap<>();
+        batch.put("good", 1L);
+        batch.put("bad", "not-an-int");
+
+        assertThrows(IllegalArgumentException.class, () -> map.putAll(batch));
+        assertEquals(0, validations.get(),
+                "a batch rejected by the pure value-domain pass must not invoke policy validators");
+        assertTrue(map.isEmpty());
+    }
+
+    @Test void capacityRejectedPutDoesNotInvokeEntryValidator() {
+        java.util.concurrent.atomic.AtomicInteger validations =
+                new java.util.concurrent.atomic.AtomicInteger();
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys(
+                OresKeyedMap.ValueDomain.INT,
+                (key, value) -> validations.incrementAndGet());
+
+        for (int i = 0; i < OresKeyedMap.MAX_ENTRIES; i++) {
+            map.put("k" + i, i);
+        }
+        validations.set(0);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> map.put("overflow", 1));
+        assertEquals(0, validations.get(),
+                "capacity rejection must happen before policy validation");
+        assertEquals(OresKeyedMap.MAX_ENTRIES, map.size());
+    }
+
+    @Test void aggregateKeyBudgetRejectedBatchDoesNotInvokeEntryValidator() {
+        java.util.concurrent.atomic.AtomicInteger validations =
+                new java.util.concurrent.atomic.AtomicInteger();
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys(
+                OresKeyedMap.ValueDomain.INT,
+                (key, value) -> validations.incrementAndGet());
+
+        String prefix = "q".repeat(OresKeyedMap.MAX_TEXT_KEY_BYTES - 2);
+        LinkedHashMap<String, Integer> batch = new LinkedHashMap<>();
+        for (int i = 0; i < 64; i++) {
+            batch.put(prefix + String.format("%02d", i), i);
+        }
+
+        assertThrows(IllegalArgumentException.class, () -> map.putAll(batch));
+        assertEquals(0, validations.get(),
+                "aggregate key quota rejection must happen before policy validation");
+        assertTrue(map.isEmpty());
+    }
+
+
 }
