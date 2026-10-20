@@ -101,17 +101,24 @@ final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher
         return bytesCodec(maxBytes);
     }
 
-    private Object stageResult(Object value) {
+    private OresBytes encodeResultForSupervisor(Object value) throws Exception {
+        OresBytes encoded = Objects.requireNonNull(
+                codec.encode(value),
+                "unary TCP result codec returned null");
+        if (encoded.size() > UnaryTransportFrame.MAX_PAYLOAD_BYTES) {
+            throw new IllegalArgumentException(
+                    "unary TCP result exceeds protocol byte limit");
+        }
         return kind == ActorRuntime.ActorKind.PRIVATE
-                ? ActorRuntime.copyPrivateResultForSupervisor(value)
-                : ActorRuntime.freeze(value);
+                ? encoded.isolatedCopy()
+                : encoded;
     }
 
     @Override
     public UnaryTcpSessionAdapter.DispatchHandle dispatch(
             UnaryTcpSessionAdapter.Request request) {
         Objects.requireNonNull(request, "request");
-        OresFuture<Object> staged = new OresFuture<>();
+        OresFuture<OresBytes> staged = new OresFuture<>();
 
         ActorRuntime.BehaviorFactory<Map<String, Object>> factory =
                 ignoredFactoryContext -> (delivered, turnContext) -> {
@@ -130,7 +137,7 @@ final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher
                                         try {
                                             if (failure == null) {
                                                 staged.completeFromRuntime(
-                                                        stageResult(value));
+                                                        encodeResultForSupervisor(value));
                                             } else {
                                                 staged.failFromRuntime(
                                                         OresFuture.unwrap(failure));
@@ -147,7 +154,8 @@ final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher
                             return;
                         }
 
-                        staged.completeFromRuntime(stageResult(result));
+                        staged.completeFromRuntime(
+                                encodeResultForSupervisor(result));
                         turnContext.self().stop();
                     } catch (Error fatal) {
                         staged.failFromRuntime(fatal);
@@ -183,13 +191,13 @@ final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher
 
     private final class Dispatch implements UnaryTcpSessionAdapter.DispatchHandle {
         private final ActorRuntime.ActorRef<Map<String, Object>> ref;
-        private final OresFuture<Object> staged;
+        private final OresFuture<OresBytes> staged;
         private final OresFuture<UnaryTcpSessionAdapter.Reply> completion =
                 new OresFuture<>();
 
         private Dispatch(
                 ActorRuntime.ActorRef<Map<String, Object>> ref,
-                OresFuture<Object> staged) {
+                OresFuture<OresBytes> staged) {
             this.ref = Objects.requireNonNull(ref, "ref");
             this.staged = Objects.requireNonNull(staged, "staged");
         }
@@ -217,20 +225,15 @@ final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher
                 return;
             }
 
-            try {
-                Object value = OresFuture.runtimeTerminalValue(terminal);
-                OresBytes bytes = Objects.requireNonNull(
-                        codec.encode(value),
-                        "unary TCP result codec returned null");
-                completion.completeFromRuntime(
-                        new UnaryTcpSessionAdapter.Reply(
-                                UnaryTransportFrame.Kind.REPLY, bytes));
-            } catch (Error fatal) {
-                completion.failFromRuntime(fatal);
-                throw fatal;
-            } catch (Throwable encodingFailure) {
-                completion.failFromRuntime(encodingFailure);
+            Object value = OresFuture.runtimeTerminalValue(terminal);
+            if (!(value instanceof OresBytes bytes)) {
+                completion.failFromRuntime(new IllegalStateException(
+                        "unary TCP staged result lost immutable Bytes representation"));
+                return;
             }
+            completion.completeFromRuntime(
+                    new UnaryTcpSessionAdapter.Reply(
+                            UnaryTransportFrame.Kind.REPLY, bytes));
         }
 
         @Override
