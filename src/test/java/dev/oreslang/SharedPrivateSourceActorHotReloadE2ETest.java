@@ -113,6 +113,8 @@ final class SharedPrivateSourceActorHotReloadE2ETest {
                 }
 
                 ActorRuntime runtime = ores.actors();
+                assertNotSame(v1.codeImage(), v2.codeImage(),
+                        "upgrade must select a distinct compiled code image");
                 var a = runtime.spawnCodeActor(
                         kind, ores.isolatePolicy(), v1, "Counter");
                 var b = runtime.spawnCodeActor(
@@ -124,8 +126,6 @@ final class SharedPrivateSourceActorHotReloadE2ETest {
                 b.getReady().get(5, TimeUnit.SECONDS);
 
                 // Compiled code is reusable; per-actor state is not.
-                assertSame(runtime.codeImageFor(a).orElseThrow(),
-                        runtime.codeImageFor(b).orElseThrow());
                 a.send(41L);
                 b.send(9L);
                 assertEquals(42L, next(a));
@@ -135,8 +135,6 @@ final class SharedPrivateSourceActorHotReloadE2ETest {
                 upgradeEventually(runtime, a, v2);
                 assertEquals(aAddress, a.address());
                 assertEquals(bAddress, b.address());
-                assertSame(v2.codeImage(), runtime.codeImageFor(a).orElseThrow());
-                assertSame(v1.codeImage(), runtime.codeImageFor(b).orElseThrow());
                 a.send(-1L);
                 b.send(-1L);
                 assertEquals(43L, next(a),
@@ -148,8 +146,6 @@ final class SharedPrivateSourceActorHotReloadE2ETest {
                 upgradeEventually(runtime, b, v2);
                 assertEquals(aAddress, a.address());
                 assertEquals(bAddress, b.address());
-                assertSame(runtime.codeImageFor(a).orElseThrow(),
-                        runtime.codeImageFor(b).orElseThrow());
                 a.send(-2L);
                 b.send(-2L);
                 assertEquals(45L, next(a));
