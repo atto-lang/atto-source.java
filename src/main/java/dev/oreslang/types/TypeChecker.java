@@ -572,6 +572,7 @@ public final class TypeChecker {
                 if (!memberKeys.add(key)) throw new IllegalArgumentException("duplicate interface method '" + iface.name() + "." + fn.name() + "' with arity " + fn.parameters().size());
                 Set<String> all = new HashSet<>(generics);
                 for (String generic : fn.genericParameters()) {
+                    rejectReservedGenericName(generic, "interface " + iface.name() + "." + fn.name());
                     if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
                 }
                 functionType(fn.parameters(), fn.returnType(), false, false, all, interfaceSelf);
@@ -1422,6 +1423,7 @@ public final class TypeChecker {
             Set<String> generics = new HashSet<>();
             if (!method.isStatic()) generics.addAll(classGenerics);
             for (String generic : method.genericParameters()) {
+                rejectReservedGenericName(generic, klass.name() + "." + method.name());
                 if (classGenerics.contains(generic) || !generics.add(generic)) {
                     throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in " + klass.name() + "." + method.name());
                 }
@@ -9271,9 +9273,23 @@ public final class TypeChecker {
         return typeAliases.get(name);
     }
 
+    private void rejectReservedGenericName(String name, String owner) {
+        if (name.equals("Map")) {
+            throw new IllegalArgumentException(
+                    "generic '" + name + "' in " + owner
+                            + " conflicts with the reserved built-in Map<K,V> type");
+        }
+    }
+
     private Set<String> uniqueGenerics(List<String> names, String owner) {
         Set<String> result = new HashSet<>();
-        for (String name : names) if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+        for (String name : names) {
+            rejectReservedGenericName(name, owner);
+            if (!result.add(name)) {
+                throw new IllegalArgumentException(
+                        "duplicate generic '" + name + "' in " + owner);
+            }
+        }
         return result;
     }
 
