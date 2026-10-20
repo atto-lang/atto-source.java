@@ -159,19 +159,17 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
-    void tupleBoundIsRepresentationWideAcrossBothSpellings() {
-        String sixtyFour = String.join(", ", Collections.nCopies(64, "int"));
+    void largeTupleArityIsSharedAcrossBothSpellings() {
         String sixtyFive = String.join(", ", Collections.nCopies(65, "int"));
 
-        assertDoesNotThrow(() -> Parser.parse(
-                "fnc explicit64(tuple (" + sixtyFour + ") value): void { return; }"));
-        assertDoesNotThrow(() -> Parser.parse(
-                "fnc bracket64([" + sixtyFour + "] value): void { return; }"));
+        var explicit = Parser.parse(
+                "fnc identity(tuple (" + sixtyFive + ") value) -> tuple (" + sixtyFive
+                        + ") { return value; }");
+        var existing = Parser.parse(
+                "fnc identity([" + sixtyFive + "] value) -> [" + sixtyFive
+                        + "] { return value; }");
 
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
-                "fnc explicit65(tuple (" + sixtyFive + ") value): void { return; }"));
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
-                "fnc bracket65([" + sixtyFive + "] value): void { return; }"));
+        assertEquals(existing, explicit);
     }
 
     @Test
