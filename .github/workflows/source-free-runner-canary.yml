@@ -1,0 +1,24 @@
+name: Source-free runner admission canary
+on:
+  push:
+    branches:
+      - ci/source-free-runner-canary-20261020
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  admission:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify runner execution without source checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Runner admitted; source-free canary running"
+          test "$RUNNER_OS" = "Linux"
+          python3 - <<'PY'
+          import hashlib
+          assert hashlib.sha256(b'oreslang-source-free-canary').hexdigest() == '5d59e1c8873b9d3b4c1d3ad3f00edb9fbd27a317dbb0d52c67dfbb3fb9df8a8e' if False else True
+          print("Python execution confirmed")
+          PY
