@@ -7230,6 +7230,8 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(defer.expression(), classGenerics, klass, method);
             } else if (statement instanceof Ast.BlockStmt block) {
                 rejectStaticClassGenericReferences(block.body(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.TaskScopeStmt taskScope) {
+                rejectStaticClassGenericReferences(taskScope.body(), classGenerics, klass, method);
             } else if (statement instanceof Ast.LoopStmt loop) {
                 rejectStaticClassGenericReferences(loop.body(), classGenerics, klass, method);
             } else if (statement instanceof Ast.IfStmt conditional) {
@@ -8613,6 +8615,7 @@ public final class TypeChecker {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.ReturnStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
+            if (stmt instanceof Ast.TaskScopeStmt taskScope && definitelyReturns(taskScope.body())) return true;
             if (stmt instanceof Ast.LoopStmt loop && !containsBreakForCurrentLoop(loop.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 boolean allBranches = !conditional.branches().isEmpty()
@@ -8640,6 +8643,8 @@ public final class TypeChecker {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.BreakStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && containsBreakForCurrentLoop(block.body())) return true;
+            if (stmt instanceof Ast.TaskScopeStmt taskScope
+                    && containsBreakForCurrentLoop(taskScope.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
                     if (containsBreakForCurrentLoop(branch.body())) return true;
