@@ -115,6 +115,57 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         byte[] key = key();
         byte[] connectionBinding = binding(1);
 
+        // Protocol-v3 cross-runtime golden vectors. These bytes deliberately
+        // pin Java DataOutputStream big-endian framing, token order, the
+        // 128-bit connection binding, receipt wire code and HMAC input.
+        byte[] goldenKey = new byte[32];
+        for (int i = 0; i < goldenKey.length; ++i) {
+            goldenKey[i] = (byte) (0x20 + i);
+        }
+        byte[] goldenBinding = new byte[16];
+        for (int i = 0; i < goldenBinding.length; ++i) {
+            goldenBinding[i] = (byte) (i + 1);
+        }
+        byte[] goldenPayload = "hello-v3".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var goldenEnvelope = new IpcReceiptCorrelation.Envelope(
+                "tenant", "sender", "worker", "v3golden",
+                digest(goldenPayload), 1, 2, 3, 4, 5, 6);
+        String goldenDataHex =
+                "4f524553030100000000000000070102030405060708090a0b0c0d0e0f10"
+                + "0674656e616e740673656e64657206776f726b6572087633676f6c64656e40"
+                + "3030303566313261366361383237376261363333363461643961386132316534"
+                + "3362656465613666323039333733653237623636326663623761393362313161"
+                + "0000000000000001000000000000000200000000000000030000000000000004"
+                + "000000000000000500000000000000060000000868656c6c6f2d7633"
+                + "f155c8abe25e56699de661eeb6df46bbc65e026f4a3d42cd449553adcac7ab60";
+        String goldenReceiptHex =
+                "4f524553030200000000000000070102030405060708090a0b0c0d0e0f10"
+                + "0674656e616e740673656e64657206776f726b6572087633676f6c64656e40"
+                + "3030303566313261366361383237376261363333363461643961386132316534"
+                + "3362656465613666323039333733653237623636326663623761393362313161"
+                + "0000000000000001000000000000000200000000000000030000000000000004"
+                + "0000000000000005000000000000000601"
+                + "c928561e7dd8ed11e10c09aaa07012ab052b1d88d5c5c6362bd8f3161553a840";
+        check(HexFormat.of().formatHex(
+                IpcAuthenticatedSocketTransport.encodeDataFrame(
+                        goldenEnvelope, goldenPayload, 7,
+                        goldenBinding, goldenKey)).equals(goldenDataHex));
+        check(HexFormat.of().formatHex(
+                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                        goldenEnvelope, 7,
+                        IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED,
+                        goldenBinding, goldenKey)).equals(goldenReceiptHex));
+        var goldenDecoded = IpcAuthenticatedSocketTransport.decodeDataFrame(
+                HexFormat.of().parseHex(goldenDataHex),
+                goldenEnvelope,
+                7,
+                new IpcAuthenticatedSocketTransport.InboundReplayGate(),
+                goldenBinding,
+                goldenKey);
+        check(goldenDecoded.envelope().equals(goldenEnvelope));
+        check(Arrays.equals(goldenDecoded.payload(), goldenPayload));
+
         // TCP stream publication is single-file. Physical write concurrency
         // greater than one is rejected; outstanding receipt lifetimes are a
         // separate bridge/correlation concern.
