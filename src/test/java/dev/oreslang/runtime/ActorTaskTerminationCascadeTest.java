@@ -375,6 +375,41 @@ final class ActorTaskTerminationCascadeTest {
     }
 
     @Test
+    void fatalCancellationHookCannotSkipIndependentSiblingRevocations() {
+        java.util.concurrent.atomic.AtomicInteger attempted =
+                new java.util.concurrent.atomic.AtomicInteger();
+        LinkageError first = new LinkageError("first revoker failed");
+        IllegalStateException second =
+                new IllegalStateException("second revoker failed");
+
+        Throwable aggregate = ActorRuntime.attemptTerminationAction(null, () -> {
+            attempted.incrementAndGet();
+            throw first;
+        });
+        aggregate = ActorRuntime.attemptTerminationAction(aggregate, () -> {
+            attempted.incrementAndGet();
+            throw second;
+        });
+        aggregate = ActorRuntime.attemptTerminationAction(aggregate, () -> {
+            attempted.incrementAndGet();
+        });
+        assertEquals(3, attempted.get(),
+                "fatal callback must not skip any independent sibling action");
+        assertSame(first, aggregate);
+        assertArrayEquals(new Throwable[] { second }, aggregate.getSuppressed());
+    }
+
+    @Test
+    void successfulTerminationActionDoesNotInventFailure() {
+        java.util.concurrent.atomic.AtomicInteger actions =
+                new java.util.concurrent.atomic.AtomicInteger();
+        assertNull(ActorRuntime.attemptTerminationAction(null, actions::incrementAndGet));
+        assertEquals(1, actions.get());
+        assertThrows(NullPointerException.class,
+                () -> ActorRuntime.attemptTerminationAction(null, null));
+    }
+
+    @Test
     void channelCloseSubscriberCannotPinActorLifecycleMonitor() throws Exception {
         // This regression exercises the actual actor mailbox Channel.close,
         // not a synthetic Future or an artificially injected exit hook.
