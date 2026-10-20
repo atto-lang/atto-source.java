@@ -3902,6 +3902,56 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, record/struct, or class instance field");
         }
         if (expr instanceof Ast.NewExpr created) {
+            // Stage one of source Future construction: a nominal owned class
+            // with a public, non-generic async run(): T is a one-shot producer.
+            // Do not admit untyped host callables or callback registrars here.
+            if (created.type().name().equals("Future") && findClass("Future") == null) {
+                Type constructed = resolve(created.type(), generics, self);
+                if (!(constructed instanceof Named futureType)
+                        || futureType.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "new Future<T> requires one explicit result type");
+                }
+                if (created.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "new Future<T> expects exactly one async run provider");
+                }
+                Type producerType = typeOf(created.arguments().getFirst(), env, generics, self);
+                if (!(producerType instanceof Named producer)
+                        || producer.arguments().stream().anyMatch(t -> t == Unknown.INSTANCE)) {
+                    throw new IllegalArgumentException(
+                            "Future<T> constructor requires an owned nominal async provider");
+                }
+                Ast.ClassDecl providerClass = findClass(producer.name());
+                if (providerClass == null || providerClass.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "Future<T> constructor requires a non-actor class with async run()");
+                }
+                rejectUnimportedClassNamespace(providerClass);
+                ResolvedMethod target = findMethodTarget(
+                        providerClass, producer, "run", 0, new LinkedHashSet<>());
+                if (target == null || !target.method().async()
+                        || target.method().suspends() || target.method().isAbstract()
+                        || target.method().isStatic()
+                        || target.method().visibility() != Ast.Visibility.PUBLIC
+                        || !target.method().genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "Future<T> provider must have public async run(): T with no parameters");
+                }
+                Ast.ClassDecl owner = target.owner();
+                Named ownerType = target.ownerType();
+                Type runResult = substituteGenerics(
+                        resolve(target.method().returnType(),
+                                Set.copyOf(owner.genericParameters()), nominalClassType(owner)),
+                        classGenericBindings(owner, ownerType));
+                if (runResult == Unknown.INSTANCE) {
+                    throw new IllegalArgumentException(
+                            "Future<T> provider return type must be concrete");
+                }
+                requireAssignable(runResult, futureType.arguments().getFirst(),
+                        "Future<T> async run() result");
+                return futureType;
+            }
             if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
                 if (created.type().inferArguments() || !created.type().arguments().isEmpty()
                         || created.arguments().size() > 1) {
