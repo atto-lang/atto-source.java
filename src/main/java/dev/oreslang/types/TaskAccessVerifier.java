@@ -4,7 +4,7 @@ import dev.oreslang.ast.Ast;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -316,7 +316,7 @@ final class TaskAccessVerifier {
 
     /** Identity-only epoch for this exact verifier lifetime. */
     private final Object scopeEpoch = new Object();
-    private final Map<Ticket, Child> live = new LinkedHashMap<>();
+    private final Map<Ticket, Child> live = new IdentityHashMap<>();
     private final Map<AllocationKey, Long> knownGenerations = new HashMap<>();
     /** Single trusted allocation/trust domain per scope, including READ-only claims. */
     private ScopeKey scopeDomain;
