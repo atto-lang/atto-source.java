@@ -32,6 +32,7 @@ TRUSTED_SOURCE_REPOSITORY_ID = 1400792274
 TRUSTED_SOURCE_REF = "main"
 TRUSTED_SOURCE_REVIEWER = "ORESoftware"
 MAX_PR_REVIEWS = 100
+MAX_GH_API_RESPONSE_CHARS = 24 * 1024 * 1024
 # Every executable/policy file that can approve or attest private-source export
 # must remain effectively owned by the independently reviewed source CODEOWNER.
 # These paths mirror the source-free review-coverage inventory.
@@ -136,6 +137,9 @@ def gh_api(route, method="GET", payload=None):
     if p.returncode != 0:
         # Never echo stderr: a client can include private file bytes in errors.
         raise Denied("authenticated GitHub API request failed")
+    if (not isinstance(p.stdout, str)
+            or len(p.stdout) > MAX_GH_API_RESPONSE_CHARS):
+        raise Denied("authenticated GitHub API response exceeds size limit")
     try:
         data = json.loads(p.stdout)
     except json.JSONDecodeError as exc:
