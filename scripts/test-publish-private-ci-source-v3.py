@@ -78,6 +78,17 @@ class PrivateCiV3Test(unittest.TestCase):
                     4096,
                 )
 
+    def test_local_control_plane_read_requires_descriptor_safety_flags(self):
+        with (
+            patch.object(v3.legacy, "safe_descriptor_flags_available", return_value=False),
+            patch.object(v3.os, "open") as opened,
+        ):
+            with self.assertRaisesRegex(v3.Denied, "cannot safely read"):
+                v3.read_local_protected_file(
+                    Path("."), "scripts/publish-private-ci-source-v3.py", 4096
+                )
+            opened.assert_not_called()
+
     def test_control_plane_rejects_local_runtime_divergence(self):
         with (
             patch.object(v3, "require_control_plane_location"),
