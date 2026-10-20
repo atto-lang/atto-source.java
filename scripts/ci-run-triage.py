@@ -29,6 +29,12 @@ BUILD_TEST = re.compile(
     r"\b(?:test|tests|testing|pytest|unittest|spec|build|compile|compiler|"
     r"gradle|maven|cargo|make|cmake|lint|check|validation|conformance)\b", re.I,
 )
+# Preparation can mention "test" or "build" without executing either.
+# Conservative precedence prevents dependency/bootstrap failures being called tests.
+PREPARATION = re.compile(
+    r"^(?:run\\s+)?(?:install|restore|download|fetch|prepare|bootstrap|"
+    r"configure|initialize|set\\s?up|provision|cache)\\b", re.I,
+)
 OTHER_CONCLUSIONS = {"cancelled", "skipped", "timed_out", "neutral", "action_required", "stale"}
 PENDING_STATES = {"queued", "in_progress", "waiting", "pending", "requested"}
 
@@ -64,7 +70,7 @@ def _positive_int(value):
 def _purpose(name):
     if not isinstance(name, str) or not name.strip():
         return "unknown"
-    if HOUSEKEEPING.fullmatch(name.strip()):
+    if HOUSEKEEPING.fullmatch(name.strip()) or PREPARATION.match(name.strip()):
         return "housekeeping"
     if BUILD_TEST.search(name):
         return "build_test"
