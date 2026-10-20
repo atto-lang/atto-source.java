@@ -120,6 +120,30 @@ class PrivateCiV3Test(unittest.TestCase):
                 with self.assertRaisesRegex(v3.Denied, "outside the trusted control plane"):
                     v3.require_control_plane_location(root)
 
+    def test_safe_policy_path_rejects_route_ambiguity(self):
+        bad = (
+            "ci/test-plans/./x.json",
+            "ci/test-plans//x.json",
+            "ci/test-plans/x.json?ref=evil.json",
+            "ci/test-plans/x.json#fragment.json",
+            "ci/test-plans/x%2Fy.json",
+            "ci/test-plans/../x.json",
+            "ci/test-plans/.GIT/x.json",
+            "ci/test-plans/x y.json",
+        )
+        for value in bad:
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(v3.Denied, "invalid protected carrier path"):
+                    v3.safe_policy_path(value, "ci/test-plans/", ".json")
+        self.assertEqual(
+            v3.safe_policy_path(
+                "ci/test-plans/java-pr1482.json",
+                "ci/test-plans/",
+                ".json",
+            ),
+            "ci/test-plans/java-pr1482.json",
+        )
+
     def test_parse_contract_requires_exact_pr_and_pinned_fields(self):
         raw = json.dumps(
             {
