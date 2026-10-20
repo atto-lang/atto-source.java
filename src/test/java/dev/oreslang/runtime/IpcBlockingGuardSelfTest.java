@@ -144,6 +144,7 @@ public final class IpcBlockingGuardSelfTest {
             try (ServerSocket server = new ServerSocket(0, 8, InetAddress.getLoopbackAddress());
                  Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort());
                  Socket peer = server.accept()) {
+                check(peer.isConnected());
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
                         client, bridge, message, 303, 1, key, binding, cleanup::execute);
