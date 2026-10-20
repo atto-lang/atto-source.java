@@ -1113,6 +1113,13 @@ public final class Ast {
             expunge();
             return VIEWS.get(new IdentityKey(receiver, null));
         }
+
+        public static void copy(Expr source, Expr target) {
+            java.util.Objects.requireNonNull(source, "source computed-index receiver");
+            java.util.Objects.requireNonNull(target, "target computed-index receiver");
+            String className = lookup(source);
+            if (className != null) record(target, className);
+        }
     }
 
     public record MemberExpr(Expr receiver, String member) implements Expr { }
