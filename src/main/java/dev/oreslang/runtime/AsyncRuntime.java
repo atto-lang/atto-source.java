@@ -153,21 +153,40 @@ public final class AsyncRuntime implements AutoCloseable {
      * close can join a producer even if executor admission blocks.
      */
     static final class TaskAdmission<T> {
+        private final AsyncRuntime runtime;
         private final TaskExit exit = new TaskExit();
         final OresTask<T> owner = OresTask.provisional(exit.quiesced);
-        private final java.util.concurrent.atomic.AtomicBoolean started =
-                new java.util.concurrent.atomic.AtomicBoolean();
+        private boolean started;
+        private boolean retirementInstalled;
 
-        void installRetirement(Runnable hook) {
+        private TaskAdmission(AsyncRuntime runtime) {
+            this.runtime = Objects.requireNonNull(runtime, "runtime");
+        }
+
+        // Installation and admission claim share one monitor. No caller may
+        // replace an owner-release hook after dispatch starts or install it
+        // twice. The executor and guest callbacks run outside this monitor.
+        synchronized void installRetirement(Runnable hook) {
             Objects.requireNonNull(hook, "hook");
-            if (started.get())
-                throw new IllegalStateException("Task retirement must precede dispatch");
+            if (started || retirementInstalled)
+                throw new IllegalStateException(
+                        "Task retirement must be installed once before dispatch");
             exit.retirement = hook;
+            retirementInstalled = true;
+        }
+
+        private synchronized boolean claimStart(AsyncRuntime requester) {
+            if (requester != runtime)
+                throw new IllegalArgumentException(
+                        "Task admission belongs to a different AsyncRuntime");
+            if (started) return false;
+            started = true;
+            return true;
         }
     }
 
     <T> TaskAdmission<T> prepareTaskAdmission() {
-        return new TaskAdmission<>();
+        return new TaskAdmission<>(this);
     }
 
     /**
@@ -177,7 +196,7 @@ public final class AsyncRuntime implements AutoCloseable {
      */
     void abandonPreparedTask(TaskAdmission<?> admission) {
         Objects.requireNonNull(admission, "admission");
-        if (!admission.started.compareAndSet(false, true))
+        if (!admission.claimStart(this))
             throw new IllegalStateException("Task admission already attempted");
         if (admission.exit.state.compareAndSet(0, 2))
             admission.exit.markExited();
@@ -186,7 +205,7 @@ public final class AsyncRuntime implements AutoCloseable {
     <T> void submitPreparedTask(TaskAdmission<T> admission, Task<T> task) {
         Objects.requireNonNull(admission, "admission");
         Objects.requireNonNull(task, "task");
-        if (!admission.started.compareAndSet(false, true))
+        if (!admission.claimStart(this))
             throw new IllegalStateException("Task admission already attempted");
         try {
             OresFuture<T> completion = submitInternal(task, admission.exit);
