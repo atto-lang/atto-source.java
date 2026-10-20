@@ -28,7 +28,7 @@ test("every actual invalid guest uses parser-positive then semantic rejection",(
   assert.match(body,/assertEquals\("", output\.toString/);
 });
 test("guest fixture SHA and separately pinned output prevent silent drift",()=>{
-  assert.match(java,/d9addeb0279b3c4023665b551c487adf7405903b/);
+  assert.match(java,/d5ce8ea58245751a5d814f3866a8d109ab80671d/);
   assert.match(java,/b602f9821817696f16499af1a74cb22d49a0ecab/);
   assert.match(java,/assertEquals\(expected, stdout\.toString/);
 });
@@ -50,11 +50,19 @@ function gitBlobSha(data) {
   const raw = Buffer.isBuffer(data) ? data : Buffer.from(data);
   return createHash("sha1").update("blob " + raw.length + "\0").update(raw).digest("hex");
 }
+test("optimizer commit uses detached snapshot + atomic publication lowering",()=>{
+  assert.match(java,/state_snapshot\(/);
+  assert.match(java,/prepare_scalar_publication\(/);
+  assert.match(java,/publish_scalar_publication\(/);
+  assert.match(java,/candidate_weight = weight - accumulated_gradient/);
+  assert.match(java,/commitSection\.contains\("s\.weight = candidate_weight"\)/);
+});
+
 test("guest CI source pins match actual fixture blobs and JUnit gate", () => {
   const workflow = readFileSync(new URL("../.github/workflows/ml-scalar-actor-guest.yml", import.meta.url), "utf8");
   const fixtureSha = gitBlobSha(readFileSync(new URL("./fixtures/ml-actor-state-scalar.ores", import.meta.url)));
   const goldenSha = gitBlobSha(readFileSync(new URL("./golden/ml-actor-state-scalar.stdout", import.meta.url)));
-  assert.equal(fixtureSha, "d9addeb0279b3c4023665b551c487adf7405903b");
+  assert.equal(fixtureSha, "d5ce8ea58245751a5d814f3866a8d109ab80671d");
   assert.equal(goldenSha, "b602f9821817696f16499af1a74cb22d49a0ecab");
   assert.match(java, new RegExp(fixtureSha));
   assert.match(java, new RegExp(goldenSha));
