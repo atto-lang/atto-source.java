@@ -81,6 +81,25 @@ final class CpuTopology {
         return 3;
     }
 
+    /** Select a carrier with an observed target in the requested NUMA node.
+     * A stable hash preserves same-region preference when all nodes are
+     * unknown. This is advisory only: CPU target != proof of page placement. */
+    int preferredSlotForNuma(int affinityKey, int preferredNuma, int enabled,
+                             java.util.function.IntUnaryOperator cpuForSlot) {
+        Objects.requireNonNull(cpuForSlot, "cpuForSlot");
+        if (enabled < 1 || enabled > 8192 || preferredNuma < UNKNOWN) {
+            throw new IllegalArgumentException("invalid carrier/NUMA bounds");
+        }
+        int fallback = Math.floorMod(affinityKey, enabled);
+        if (preferredNuma == UNKNOWN) return fallback;
+        for (int distance = 0; distance < enabled; distance++) {
+            int slot = (int) (((long) fallback + distance) % enabled);
+            Location location = locations.get(cpuForSlot.applyAsInt(slot));
+            if (location != null && location.numa() == preferredNuma) return slot;
+        }
+        return fallback;
+    }
+
     boolean hasKnownLocality(int cpu) {
         Location location = locations.get(cpu);
         return location != null && (location.llc() >= 0 || location.numa() >= 0);
