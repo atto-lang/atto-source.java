@@ -971,6 +971,14 @@ public final class TypeChecker {
         }
     }
     private void checkClass(String module, Ast.ClassDecl klass) {
+        // Never rely on parser-only admission. ASTs can also be constructed by
+        // tooling, deserialization or future compiler transforms.
+        if (klass.maxActorThreads() != Ast.MaxActorThreads.LOW) {
+            throw new IllegalArgumentException(
+                    "@ActorMaxThreads requires per-turn state isolation and"
+                    + " authenticated runtime leases before "
+                    + klass.maxActorThreads().value() + " physical actor turns can execute");
+        }
         Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
         lexicalClassOrigin = klass;
         try {
@@ -3571,6 +3579,8 @@ public final class TypeChecker {
                             "unknown Channel member '" + member.member() + "'");
                 };
             }
+            if (sumReceiver instanceof Named named && named.name().equals("NioTcpListener")
+                    && member.member().equals("port")) return Primitive.INT;
             Type ioMember = builtinIoMember(sumReceiver, member.member());
             if (ioMember != null) return ioMember;
             Type httpMember = builtinHttpMember(sumReceiver, member.member());
@@ -5129,8 +5139,34 @@ public final class TypeChecker {
                 }
             }
             case "network", "net" -> {
+                if (name.equals("listen_nonblocking")) {
+                    return new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT,
+                            Primitive.INT, Primitive.INT), new Named("NioTcpListener", List.of()));
+                }
                 if (!name.equals("connect_async")) return null;
                 result = new Named("TcpConnection", List.of()); parameters = List.of(Primitive.STRING, Primitive.INT);
+            }
+            case "NioTcpListener" -> {
+                switch (name) {
+                    case "accept_async" -> {
+                        result = new Named("NioTcpConnection", List.of());
+                        parameters = List.of();
+                    }
+                    case "close_async" -> { result = Primitive.VOID; parameters = List.of(); }
+                    default -> { return null; }
+                }
+            }
+            case "NioTcpConnection" -> {
+                switch (name) {
+                    case "read_bytes_async" -> {
+                        result = new ListType(Primitive.INT); parameters = List.of(Primitive.INT);
+                    }
+                    case "write_bytes_async" -> {
+                        result = Primitive.INT; parameters = List.of(new ListType(Primitive.INT));
+                    }
+                    case "close_async" -> { result = Primitive.VOID; parameters = List.of(); }
+                    default -> { return null; }
+                }
             }
             case "TcpConnection" -> {
                 switch (name) {
