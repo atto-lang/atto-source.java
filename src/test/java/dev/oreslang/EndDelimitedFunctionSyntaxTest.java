@@ -239,6 +239,18 @@ final class EndDelimitedFunctionSyntaxTest {
                 end
                 """)));
 
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                type IntFn = typeof fnc(int value) => int;
+
+                fnc increment(int value): int {
+                    return value + 1;
+                }
+
+                fnc callback() -> IntFn do
+                    return increment;
+                end
+                """)));
+
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
