@@ -452,10 +452,21 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                 "IPC transport quarantined abort retry");
         var snapshot = sessionLease.snapshot();
         if (snapshot.phase() != IpcTransportSessionLease.Phase.QUARANTINED
-                || snapshot.activeWrites() <= 0
-                || !sessionLease.externalPhysicalCloseRetryable()) {
+                || snapshot.activeWrites() <= 0) {
             throw new IllegalStateException(
-                    "transport has no retryable quarantined active write to abort");
+                    "transport has no quarantined active write to abort");
+        }
+
+        // Preserve the precise "already executing" verdict even though the
+        // lease also tracks close ownership. Recheck inside the CAS loop so a
+        // stale queued callback cannot claim the descriptor between checks.
+        if (abortState.get() < 0) {
+            throw new IllegalStateException(
+                    "IPC physical abort is already executing");
+        }
+        if (!sessionLease.externalPhysicalCloseRetryable()) {
+            throw new IllegalStateException(
+                    "transport physical close was already attempted or confirmed");
         }
 
         // Atomically invalidate a merely queued stale attempt. If an old
