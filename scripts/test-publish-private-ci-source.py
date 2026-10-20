@@ -97,6 +97,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.carrier_stale_review_dismissal = [True] * 100
         self.carrier_review_bypass = [False] * 100
         self.carrier_branch_commits = [A] * 100
+        self.carrier_build_images_text = (
+            "java21 sha256:" + "a" * 64 + "\n"
+            "java25 sha256:" + "b" * 64 + "\n"
+        )
+        self.carrier_build_images_sha = None
         self.preflight = patch.object(pub, "require_preflight", return_value=123)
         self.preflight_patch_entry = self.preflight.start()
         self.addCleanup(self.preflight.stop)
@@ -256,6 +261,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             raw = self.carrier_reviewed_snapshot.encode("utf-8")
             return {"type": "file", "encoding": "base64", "size": len(raw),
                     "sha": self.carrier_snapshot_sha,
+                    "content": base64.b64encode(raw).decode("ascii")}
+        if route == pub.at_ref(
+                "repos/trusted/ci/contents/" + pub.CARRIER_BUILD_IMAGES_PATH, A):
+            raw = self.carrier_build_images_text.encode("utf-8")
+            sha = hashlib.sha1(
+                b"blob " + str(len(raw)).encode("ascii")
+                + bytes([0]) + raw
+            ).hexdigest()
+            return {"type": "file", "encoding": "base64", "size": len(raw),
+                    "sha": self.carrier_build_images_sha or sha,
                     "content": base64.b64encode(raw).decode("ascii")}
         if route == "repos/trusted/ci/rulesets/777":
             return {
@@ -2745,6 +2760,58 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "CODEOWNER coverage"):
                 self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_sealed_build_images_required_before_source_read(self):
+        for policy in (
+                "",
+                "java21 sha256:" + "a" * 64 + "\n",
+                "java21 latest\njava25 sha256:" + "b" * 64 + "\n",
+                "java21 sha256:" + "a" * 64 + "\n"
+                "java21 sha256:" + "c" * 64 + "\n"
+                "java25 sha256:" + "b" * 64 + "\n"):
+            with self.subTest(policy=policy):
+                self.carrier_build_images_text = policy
+                with patch.object(pub, "collect_source",
+                                  side_effect=AssertionError("private source read too early")):
+                    with self.assertRaises(pub.Denied):
+                        self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+                self.route_calls.clear()
+        self.carrier_build_images_text = (
+            "java21 sha256:" + "a" * 64 + "\n"
+            "java25 sha256:" + "b" * 64 + "\n"
+        )
+
+    def test_carrier_sealed_build_image_blob_digest_must_match(self):
+        self.carrier_build_images_sha = "f" * 40
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read too early")):
+            with self.assertRaisesRegex(pub.Denied, "policy integrity failed"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_sealed_build_image_policy_revocation_stops_next_write(self):
+        original = self.fake_api
+        revoked = [False]
+        def revoke(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs" and method == "POST":
+                revoked[0] = True
+            if (revoked[0] and route == pub.at_ref(
+                    "repos/trusted/ci/contents/" + pub.CARRIER_BUILD_IMAGES_PATH, A)):
+                raw = b"# revoked\n"
+                sha = hashlib.sha1(
+                    b"blob " + str(len(raw)).encode("ascii") + bytes([0]) + raw
+                ).hexdigest()
+                return {"type": "file", "encoding": "base64", "size": len(raw),
+                        "sha": sha, "content": base64.b64encode(raw).decode("ascii")}
+            return result
+        with patch.object(pub, "gh_api", side_effect=revoke):
+            with self.assertRaises(pub.Denied):
+                pub.publish("trusted/ci", self.source, TEST_BRANCH,
+                            self.root, self.expected_tree, D)
+        writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
 
     def test_carrier_source_approval_revocation_stops_after_first_blob(self):
         original = self.fake_api
