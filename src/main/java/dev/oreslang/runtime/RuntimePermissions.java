@@ -204,11 +204,22 @@ public final class RuntimePermissions {
     }
 
     boolean allowsNetworkBind(String host, int port) {
-        if (port != 0) return allows(Permission.NET, networkEndpoint(host, port));
-
         Rule rule = rules.get(Permission.NET);
         if (rule == null || rule.denyAll()) return false;
         String normalizedHost = normalizeNetworkHost(host);
+
+        /*
+         * 0.0.0.0 and :: are not ordinary single-host resources: binding them
+         * exposes the listener on every matching local interface. A specific
+         * deny cannot be proven disjoint from that listener (and DNS denies may
+         * resolve locally), so preserve "deny always wins" by failing closed
+         * whenever an any-local bind is combined with any explicit NET deny.
+         */
+        if (isAnyLocalBindHost(normalizedHost) && !rule.denied().isEmpty())
+            return false;
+
+        if (port != 0) return allows(
+                Permission.NET, networkEndpoint(normalizedHost, port));
 
         // The kernel chooses the actual port. Any deny that matches this host
         // could be selected, so an ephemeral bind must fail closed.
@@ -382,6 +393,11 @@ public final class RuntimePermissions {
             throw new IllegalArgumentException("invalid DNS network endpoint host");
         }
         return normalizedHost;
+    }
+
+    private static boolean isAnyLocalBindHost(String normalizedHost) {
+        return "0.0.0.0".equals(normalizedHost)
+                || "0:0:0:0:0:0:0:0".equals(normalizedHost);
     }
 
     private static boolean isNumericIpv4Candidate(String host) {
