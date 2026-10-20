@@ -39,10 +39,7 @@ final class UnaryTcpTlsRuntime {
             throw new IllegalArgumentException("invalid unary TCP listener endpoint");
         }
 
-        context.requirePermission(
-                RuntimePermissions.Permission.NET,
-                RuntimePermissions.networkBindResource(host, port),
-                "unary.tcp.listen");
+        context.requireNetworkBind(host, port, "unary.tcp.listen");
 
         SSLServerSocket endpoint = (SSLServerSocket)
                 tlsContext.getServerSocketFactory().createServerSocket();
