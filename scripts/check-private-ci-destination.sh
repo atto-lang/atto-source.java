@@ -24,20 +24,27 @@ policy="$policy_dir/private-ci-approved-repositories.txt"
   fail 'reviewed policy file is missing, unreadable or symlinked'
 
 approved_id=''
+approved_base_commit=''
+approved_base_tree=''
 approved_workflow=''
 while IFS= read -r candidate || [[ -n "$candidate" ]]; do
   [[ -z "$candidate" || "$candidate" =~ ^# ]] && continue
-  IFS=' ' read -r slug repository_id workflow_sha extra <<< "$candidate"
-  [[ -z "${extra:-}" && -n "${slug:-}" && -n "${repository_id:-}" && -n "${workflow_sha:-}" ]] ||
+  IFS=' ' read -r slug repository_id base_commit base_tree workflow_sha extra <<< "$candidate"
+  [[ -z "${extra:-}" && -n "${slug:-}" && -n "${repository_id:-}" \
+      && -n "${base_commit:-}" && -n "${base_tree:-}" && -n "${workflow_sha:-}" ]] ||
     fail 'repository policy contains an invalid entry'
-  [[ "$candidate" == "$slug $repository_id $workflow_sha" ]] ||
+  [[ "$candidate" == "$slug $repository_id $base_commit $base_tree $workflow_sha" ]] ||
     fail 'repository policy entries require exactly one ASCII space'
-  [[ "$slug" =~ $slug_pattern && "$repository_id" =~ $id_pattern && "$workflow_sha" =~ $sha_pattern ]] ||
+  [[ "$slug" =~ $slug_pattern && "$repository_id" =~ $id_pattern \
+      && "$base_commit" =~ $sha_pattern && "$base_tree" =~ $sha_pattern \
+      && "$workflow_sha" =~ $sha_pattern ]] ||
     fail 'repository policy contains an invalid entry'
   if [[ "${slug,,}" == "${target,,}" ]]; then
     [[ -z "$approved_id" ]] ||
       fail 'repository policy contains duplicate destination entries'
     approved_id="$repository_id"
+    approved_base_commit="$base_commit"
+    approved_base_tree="$base_tree"
     approved_workflow="$workflow_sha"
   fi
 done < "$policy"
@@ -60,12 +67,25 @@ IFS=$'\t' read -r actual_name actual_id visibility private_flag default_branch <
 [[ "$default_branch" =~ ^[A-Za-z0-9_.-]{1,80}$ ]] ||
   fail 'destination default branch is invalid'
 
-workflow_metadata="$(GH_HOST=github.com gh api   "repos/$target/contents/.github/workflows/private-oreslang-exact-tree.yml?ref=$default_branch"   --jq '[.type, .sha] | @tsv' 2>/dev/null)" ||
+base_ref="$(GH_HOST=github.com gh api "repos/$target/git/ref/heads/$default_branch" --jq '.object.sha' 2>/dev/null)" ||
+  fail 'cannot verify reviewed destination base ref'
+[[ "$base_ref" == "$approved_base_commit" ]] ||
+  fail 'destination default branch differs from reviewed carrier base commit'
+
+actual_base_tree="$(GH_HOST=github.com gh api "repos/$target/git/commits/$approved_base_commit" --jq '.tree.sha' 2>/dev/null)" ||
+  fail 'cannot verify reviewed destination base tree'
+[[ "$actual_base_tree" == "$approved_base_tree" ]] ||
+  fail 'destination carrier base tree differs from reviewed policy'
+
+workflow_metadata="$(GH_HOST=github.com gh api \
+  "repos/$target/contents/.github/workflows/private-oreslang-exact-tree.yml?ref=$approved_base_commit" \
+  --jq '[.type, .sha] | @tsv' 2>/dev/null)" ||
   fail 'cannot verify reviewed destination workflow'
-[[ -n "$workflow_metadata" && "$workflow_metadata" != *$'\n'* ]] ||
+[[ -n "$workflow_metadata" && "$workflow_metadata" != *\n'* ]] ||
   fail 'API returned invalid destination workflow metadata'
-IFS=$'\t' read -r workflow_type actual_workflow_sha <<< "$workflow_metadata"
+IFS=\t' read -r workflow_type actual_workflow_sha <<< "$workflow_metadata"
 [[ "$workflow_type" == file && "$actual_workflow_sha" == "$approved_workflow" ]] ||
   fail 'destination exact-tree workflow differs from reviewed policy'
 
-printf 'PRIVATE_CI_DESTINATION_APPROVED: %s id=%s workflow=%s (private)\n'   "$target" "$approved_id" "$approved_workflow"
+printf 'PRIVATE_CI_DESTINATION_APPROVED: %s id=%s base=%s tree=%s workflow=%s (private)\n' \
+  "$target" "$approved_id" "$approved_base_commit" "$approved_base_tree" "$approved_workflow"
