@@ -6242,7 +6242,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
-                ModelGraphCompiler.CompiledModel model = modelCatalog.find(directName.name());
+                ModelGraphCompiler.CompiledModel model = findModel(directName.name(), env);
                 if (model != null) {
                     List<Object> constructorArguments = evaluateArguments(call.arguments(), env);
                     Map<String, Object> configuration =
@@ -6446,6 +6446,17 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("value is not callable: " + callee);
             }
             return invokableInvocation(invokable, args);
+        }
+
+        private ModelGraphCompiler.CompiledModel findModel(String name, Env env) {
+            if (name.indexOf('.') >= 0) return modelCatalog.find(name);
+            String lexicalModule = env.lexicalModule();
+            if (lexicalModule != null && !Parser.ROOT_MODULE.equals(lexicalModule)) {
+                ModelGraphCompiler.CompiledModel local =
+                        modelCatalog.find(lexicalModule + "." + name);
+                if (local != null) return local;
+            }
+            return modelCatalog.find(name);
         }
 
         private List<Object> evaluateArguments(List<Ast.Expr> arguments, Env env) {
