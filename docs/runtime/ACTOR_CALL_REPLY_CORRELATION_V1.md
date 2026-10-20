@@ -129,3 +129,94 @@ UUID generation may be inexpensive relative to queueing/copying/scheduling; make
 5. Prove exact-source Java runtime tests, hostile sender/remote tests and native backend parity independently before marking the proposed API implemented.
 
 Documentation here is an architecture proposal only: no compiler or runtime tests have been run by this change.
+
+
+## Security and concurrency audit — 2026-10-20
+
+This audit found that pre-existing GenServer ledger PR
+[#1210](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1210)
+and its separately copied integration in
+[#1216](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1216)
+were still minting `UUID.randomUUID()` **for each call** and hashing those
+random IDs, contradicting the goal of this RFC. Both draft branches were
+updated to the same exact Java production blob
+`261a853b344a40452c3750977cf8c2a455f6c73d`, using bounded lazily
+allocated generational slots. This is a **host-only correlation primitive**,
+not a merged or guest-visible implementation.
+
+### Mandatory clarified boundaries
+
+1. **Trusted shared-host fast path only.** A direct LocalReplyPort may
+   reference a private VM completion cell only if the caller and callee are in
+   an authorized *same address-space runtime trust domain*, and guest heaps
+   never see the reference. Actors sharing a VM process but separated by an
+   untrusted/isolated boundary cannot treat a Java object pointer as an
+   authorized transport handle. Use a mediated serialized envelope there, as
+   with IPC, even if physical address space is shared.
+2. **Identity is not authority.** Slot/generation and UUID actor identity are
+   addressing, not authentication. A wire reply must be bound to the exact
+   authenticated session/peer, origin endpoint incarnation and non-reused
+   session epoch, expected responder incarnation, request/response schema and
+   outstanding slot/generation. A per-session unpredictable nonce or key is
+   sufficient to avoid **per-call** randomness, but peer compromise cannot be
+   prevented by that same peer's own channel key. For hostile tenant boundaries,
+   protect session keys in trusted routing code; never delegate raw MAC secrets
+   to guest handlers. Use a secure keyed tag when the transport does not
+   already authenticate and integrity-protect the complete bound envelope.
+   Authenticate **before** indexing, materializing or allocating an untrusted
+   response payload; enforce explicit wire-length and parsing quotas.
+3. **No cross-epoch aliasing.** Origin incarnation + session epoch distinguish
+   process restarts even if endpoint/slot/generation counters reset. Actor
+   incarnation and code route epoch remain distinct. A hot-code upgrade may
+   drain/pin outstanding old ABI calls or reject them; it must not silently
+   reinterpret reply types. Generation overflow permanently retires the slot.
+4. **Publication linearization.** Reserve caller reply capacity and a
+   guaranteed terminal-notification path before publishing a request; reserve
+   destination mailbox credit before irrevocable ownership transfer. Failed
+   send or validation must roll back exactly once, restoring ownership of any
+   undelivered moved payload. A pending call may be `reserved`,
+   `published`, `dispatched`, or `terminal`; cancellation before
+   dispatch skips guest work. Cancellation after dispatch settles only the
+   caller wait, without releasing responder execution quota early.
+5. **Completion is a two-phase runtime obligation.** First atomically claim
+   exactly one terminal outcome (success, timeout, cancellation, failure,
+   close), then *guarantee* notification on the origin actor's continuation
+   lane. A failed scheduler enqueue cannot strand the completed Future:
+   reserve independent completion headroom or use a durable internal terminal
+   queue with deterministic fail-stop. Do not invoke guest continuations
+   inline to escape a full queue. On reply serialization/type/quota failure,
+   settle with a typed error, not a leaked reserved slot.
+6. **Cancel-vs-success ordering.** Exactly one terminal outcome wins the
+   serialized/atomic state transition. The winner must be observable even if
+   its notification is deferred. A duplicate or late reply is discarded and
+   fully releases response-memory credit; never let stale replies complete a
+   newly recycled slot.
+7. **Nested calls and supervisors.** Child-to-supervisor request traffic is
+   ordinary authorized DATA on a distinct endpoint, **not** reserved CONTROL.
+   Never let an untrusted child mint a supervisor capability. A serial actor
+   waiting on a logical request to itself or a wait-for cycle that requires its
+   own blocked turn cannot make progress merely because a native carrier was
+   released. Refuse static self-call; use a bounded wait-dependency detector
+   and timeouts for dynamic cycles. Do not promise perfect distributed
+   deadlock detection.
+8. **Response typing.** The compiler's nominal `Request -> Response`
+   mapping is immutable for each admitted call. Validate imported protocol
+   metadata and transport schema before admission and again on incoming wire
+   response. Never widen to `any` or accept guessed response variant tags.
+
+### Remaining proof obligations
+
+The current ledger tests cover stale slot reuse (10,000 cycles), foreign and
+restarted actor fencing, simulated u32-generation exhaustion, and existing
+750 reply/timeout/close/register races. Those tests executed locally on JDK21
+against exact verified production blob
+`261a853b344a40452c3750977cf8c2a455f6c73d` and new test blob
+`50cfea41c696b5368b52dc922cb324d2227da4ed`.
+
+This proof does **not** establish cancellation/publication atomicity with the
+real `ActorRuntime`, real `OresFuture` callbacks, supervisor DATA routing,
+wire authentication/MAC, request ABI compatibility, scheduling headroom,
+memory-isolation confinement, physical CPU execution serialization, native
+image/AOT, cross-backend compilation, or actual Oreslang guest source calls.
+Those remain blocking gates. Keep all related PRs **draft** until real
+end-to-end exact-head execution and security testing.
