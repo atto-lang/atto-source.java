@@ -701,6 +701,83 @@ final class ActorPhysicalFinalizationPublicationTest {
 
 
     @Test
+    @SuppressWarnings("unchecked")
+    void concurrentPostUnregisterRetriesPublishOnePhysicalWitness() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var exitHookCalls = new AtomicInteger();
+            runtime.setActorExitHook(ignored -> exitHookCalls.incrementAndGet());
+
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+
+            var registryField = ActorRuntime.class.getDeclaredField("actors");
+            registryField.setAccessible(true);
+            var registry = (java.util.Map<Object, Object>) registryField.get(runtime);
+            Object cell = registry.get(actor.id());
+            assertNotNull(cell);
+
+            var faultField = cell.getClass().getDeclaredField(
+                    "finalizationAfterUnregisterFaultForTesting");
+            faultField.setAccessible(true);
+            var attempts = new AtomicInteger();
+            faultField.set(cell, (Runnable) () -> {
+                if (attempts.incrementAndGet() == 1) {
+                    throw new OutOfMemoryError(
+                            "inject one post-unregister recovery race");
+                }
+            });
+
+            assertThrows(OutOfMemoryError.class, actor::stop);
+            assertNull(registry.get(actor.id()));
+            assertFalse(runtime.physicallyFinalizedForHotUpgrade(actor));
+            assertEquals(1, exitHookCalls.get());
+
+            int workerCount = 12;
+            var start = new CountDownLatch(1);
+            var failure = new AtomicReference<Throwable>();
+            Thread[] workers = new Thread[workerCount];
+            for (int i = 0; i < workerCount; i++) {
+                workers[i] = Thread.ofPlatform().unstarted(() -> {
+                    try {
+                        start.await();
+                        actor.stop();
+                    } catch (Throwable problem) {
+                        failure.compareAndSet(null, problem);
+                    }
+                });
+                workers[i].start();
+            }
+            start.countDown();
+            for (Thread worker : workers) {
+                worker.join(5000);
+                assertFalse(worker.isAlive(), "concurrent stop retry stalled");
+            }
+
+            assertNull(failure.get(),
+                    "competing supervisors must converge on one finalization witness");
+            assertEquals(2, attempts.get(),
+                    "only the failed attempt and one recovery finalizer may cross the boundary");
+            assertEquals(1, exitHookCalls.get(),
+                    "concurrent retry must preserve exactly-once exit-hook invocation");
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(runtime.physicallyFinalizedForHotUpgrade(actor));
+
+            var countField = ActorRuntime.class.getDeclaredField("actorCount");
+            countField.setAccessible(true);
+            var count = (AtomicInteger) countField.get(runtime);
+            assertEquals(0, count.get(),
+                    "concurrent retry cannot double-debit the physical actor slot");
+
+            var recoveryField = actor.getClass().getDeclaredField(
+                    "physicalFinalizationRecoveryCell");
+            recoveryField.setAccessible(true);
+            assertNull(recoveryField.get(actor),
+                    "the emergency retry owner must clear after the one physical witness");
+        }
+    }
+
+    @Test
     void terminalObserverStopCannotSelfJoinPhysicalFinalization() throws Exception {
         try (var runtime = new ActorRuntime()) {
             var actor = runtime.<Integer>spawnShared(
