@@ -1826,8 +1826,26 @@ public final class Parser {
             return new Ast.ForStmt(null, new Ast.LiteralExpr(true), null, turn);
         }
         if (match(IF)) return parseIf();
+        if (check(NB) && checkNextLexeme("scope")
+                && current + 2 < tokens.size()
+                && tokens.get(current + 2).type() == LBRACE) {
+            advance(); // nb
+            advance(); // contextual scope
+            Ast.Stmt scoped = new Ast.TaskScopeStmt(parseBlock());
+            match(SEMICOLON);
+            return scoped;
+        }
         // Procedural dispatch returns from its enclosing callable. Keep this
         // distinction in the AST instead of relying on source spelling later.
+        if (check(DO) && checkNext(NB)
+                && current + 2 < tokens.size()
+                && tokens.get(current + 2).type() == LBRACE) {
+            advance(); // do
+            advance(); // nb
+            Ast.Stmt started = new Ast.ExprStmt(new Ast.TaskExpr(parseBlock()));
+            match(SEMICOLON);
+            return started;
+        }
         if (match(DO)) {
             if (match(MATCH)) return parseMatch(true);
             if (match(SWITCH)) return parseSwitch();
@@ -3259,7 +3277,12 @@ public final class Parser {
         if (match(TRAP)) return new Ast.TrapExpr(parseUnary());
         if (match(RT)) return parseRuntimeExpression();
 
+        if (check(IDENT) && peek().lexeme().equals("task") && checkNext(LBRACE)) {
+            advance(); // contextual task keyword; ordinary 'task' identifiers still work
+            return new Ast.TaskExpr(parseBlock());
+        }
         if (match(NB)) {
+            if (check(LBRACE)) return new Ast.TaskExpr(parseBlock());
             if (match(CB)) {
                 if (!match(WRITECH)) {
                     throw error(previous(), "'nb cb' must prefix writech");
