@@ -247,7 +247,11 @@ public final class Types {
         }
         if (from instanceof Not) return to == Unknown.INSTANCE;
         if (from instanceof BoolLiteral && to == Primitive.BOOL) return true;
-        if (from == Unknown.INSTANCE && to instanceof ListType target && target.patterned()) return false;
+        // An unknown or unconstrained generic source is not evidence of an
+        // ordered, runtime-extent array contract. Generic slots INSIDE a
+        // declared pattern are still permitted and preserve their identity.
+        if ((from == Unknown.INSTANCE || from instanceof Generic)
+                && to instanceof ListType target && target.patterned()) return false;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
