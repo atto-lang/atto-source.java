@@ -94,6 +94,40 @@ final class BytesSourceRuntimeTest {
                 failure.getMessage());
     }
 
+    @Test
+    void sourceBytesRejectIndexedMutationStatically() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(
+                        """
+                        pub fnc main(): void {
+                          let Bytes bytes = [1, 2, 3] as Bytes;
+                          bytes[0] = 9;
+                          return;
+                        }
+                        """));
+        assertTrue(
+                failure.getMessage().contains("indexed assignment requires"),
+                failure.getMessage());
+    }
+
+    @Test
+    void optionalBytesCastIsPresentOnlyForValidOctets() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  val good = [0, 255] as? Bytes;
+                  val bad = [0, 256] as? Bytes;
+                  stdio.println(good.has_value);
+                  stdio.println(bad.has_value);
+                  return;
+                }
+                """;
+
+        assertEquals(
+                "true\nfalse\n",
+                run(program, "bytes-optional-cast.ores"));
+    }
+
     private static String run(String sourceText, String name) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, sourceText, name)
