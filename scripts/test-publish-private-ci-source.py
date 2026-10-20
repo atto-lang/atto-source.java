@@ -135,6 +135,42 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(writes[3][2]["parents"], [A])
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
 
+    def test_payload_ref_readback_mismatch_stops_before_authorization_ref(self):
+        original = self.fake_api
+        def moved(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/ref/heads/ci/oreslang-test":
+                return {
+                    "ref": "refs/heads/ci/oreslang-test",
+                    "object": {"type": "commit", "sha": C},
+                }
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=moved):
+            with self.assertRaisesRegex(pub.Denied, "payload ref readback"):
+                pub.publish(
+                    "trusted/ci", self.source, "ci/oreslang-test", self.root,
+                    source_selector="pr:1425", source_commit=C, source_tree=D)
+        ref_writes = [p for m, route, p in self.route_calls
+                      if m == "POST" and route.endswith("/git/refs")]
+        self.assertEqual(len(ref_writes), 1)
+
+    def test_authorization_ref_readback_must_bind_exact_payload(self):
+        original = self.fake_api
+        def moved(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/ref/heads/ci/authorized-" + A:
+                return {
+                    "ref": "refs/heads/ci/authorized-" + A,
+                    "object": {"type": "commit", "sha": C},
+                }
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=moved):
+            with self.assertRaisesRegex(pub.Denied, "authorization ref readback"):
+                pub.publish(
+                    "trusted/ci", self.source, "ci/oreslang-test", self.root,
+                    source_selector="pr:1425", source_commit=C, source_tree=D)
+        ref_writes = [p for m, route, p in self.route_calls
+                      if m == "POST" and route.endswith("/git/refs")]
+        self.assertEqual(len(ref_writes), 2)
+
     def test_exact_source_tree_mismatch_stops_before_any_upload(self):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             with self.assertRaisesRegex(
