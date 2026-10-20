@@ -50,6 +50,8 @@ public final class SymbolicBehaviorModelCheck {
                 }
             }
             for (StateRule rule : transitions) {
+                require(rule != null && rule.source() != null && rule.event() != null
+                        && rule.destination() != null, "null chart rule or Symbol");
                 require(states.contains(rule.source()) && states.contains(rule.destination()), "unknown transition state");
                 var perEvent = rules.computeIfAbsent(rule.source(), ignored -> new HashMap<>());
                 require(perEvent.putIfAbsent(rule.event(), rule.destination()) == null,
@@ -59,6 +61,7 @@ public final class SymbolicBehaviorModelCheck {
 
         OresSymbol step(OresSymbol state, OresSymbol event) {
             require(states.contains(state), "unknown current chart state");
+            require(event != null, "null chart event");
             // A leaf transition overrides an ancestor transition; event handling is one atomic step.
             for (OresSymbol cursor = state; cursor != null; cursor = parents.get(cursor)) {
                 OresSymbol target = rules.getOrDefault(cursor, Map.of()).get(event);
@@ -70,6 +73,8 @@ public final class SymbolicBehaviorModelCheck {
 
     record NetRule(OresSymbol name, int[] consume, int[] produce) {
         NetRule {
+            require(name != null && consume != null && produce != null,
+                    "null net rule or arc vector");
             consume = consume.clone();
             produce = produce.clone();
         }
@@ -86,7 +91,10 @@ public final class SymbolicBehaviorModelCheck {
             this.places = List.copyOf(places);
             this.transitions = List.copyOf(transitions);
             this.conservation = Arrays.stream(conservation).map(int[]::clone).toArray(int[][]::new);
-            require(!places.isEmpty() && new HashSet<>(places).size() == places.size(), "duplicate/empty places");
+            require(!places.isEmpty() && places.size() <= 64
+                    && transitions.size() <= 256 && conservation.length <= 64,
+                    "empty or excessive finite net definition");
+            require(new HashSet<>(places).size() == places.size(), "duplicate places");
             Set<OresSymbol> names = new HashSet<>();
             for (NetRule rule : transitions) {
                 require(names.add(rule.name()), "duplicate net transition symbol");
@@ -99,7 +107,13 @@ public final class SymbolicBehaviorModelCheck {
                     require(weights.length == places.size(), "invariant dimension mismatch");
                     long delta = 0;
                     for (int i = 0; i < weights.length; i++) {
-                        delta += (long) weights[i] * (rule.produce()[i] - rule.consume()[i]);
+                        try {
+                            delta = Math.addExact(delta, Math.multiplyExact(
+                                    (long) weights[i],
+                                    (long) rule.produce()[i] - rule.consume()[i]));
+                        } catch (ArithmeticException overflow) {
+                            throw new IllegalArgumentException("P-invariant arithmetic overflow", overflow);
+                        }
                     }
                     require(delta == 0, "transition violates claimed P-invariant");
                 }
@@ -111,8 +125,10 @@ public final class SymbolicBehaviorModelCheck {
             require(transitions.contains(transition), "unregistered net transition");
             int[] input = transition.consume();
             int[] output = transition.produce();
+            // Validate the complete marking before checking whether firing is disabled;
+            // otherwise a shortage in an earlier place masks malformed later tokens.
+            for (int tokens : marking) require(tokens >= 0, "negative marking");
             for (int i = 0; i < marking.length; i++) {
-                require(marking[i] >= 0, "negative marking");
                 if (marking[i] < input[i]) return null; // Disabled; consumes nothing.
             }
             int[] result = new int[marking.length];
@@ -125,10 +141,17 @@ public final class SymbolicBehaviorModelCheck {
         }
 
         long[] totals(int[] marking) {
+            require(marking != null && marking.length == places.size(), "marking dimension mismatch");
+            for (int tokens : marking) require(tokens >= 0, "negative marking");
             long[] totals = new long[conservation.length];
             for (int row = 0; row < conservation.length; row++) {
                 for (int i = 0; i < marking.length; i++) {
-                    totals[row] += (long) conservation[row][i] * marking[i];
+                    try {
+                        totals[row] = Math.addExact(totals[row], Math.multiplyExact(
+                                (long) conservation[row][i], (long) marking[i]));
+                    } catch (ArithmeticException overflow) {
+                        throw new IllegalArgumentException("marking invariant arithmetic overflow", overflow);
+                    }
                 }
             }
             return totals;
@@ -151,6 +174,9 @@ public final class SymbolicBehaviorModelCheck {
                 "ambiguous state/event pair accepted");
         rejects(() -> new Chart(states, Map.of(idle, busy, busy, idle), List.of()),
                 "cyclic state hierarchy accepted");
+        rejects(() -> chart.step(idle, null), "null chart event accepted");
+        rejects(() -> new Chart(states, Map.of(), List.of(
+                new StateRule(idle, null, busy))), "null chart rule Symbol accepted");
 
         List<OresSymbol> events = List.of(start, stop, reset, pause, sym("unknown"));
         int traces = 0;
@@ -196,6 +222,16 @@ public final class SymbolicBehaviorModelCheck {
                 new NetRule(sym("leak"), new int[]{1, 0}, new int[]{0, 0})),
                 new int[][]{{1, 1}}), "invalid P-invariant accepted");
         rejects(() -> new Net(List.of(fa, fa), List.of(), new int[0][]), "duplicate places accepted");
+        rejects(() -> net.fire(new int[]{0, -1, 1, 0}, acquireA),
+                "disabled transition masked malformed marking");
+        rejects(() -> net.totals(new int[]{1, -1, 1, 0}),
+                "negative marking accepted by invariant totals");
+        rejects(() -> new Net(List.of(fa, ha, fb),
+                List.of(new NetRule(sym("huge"), new int[]{
+                        Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE},
+                        new int[]{0, 0, 0})),
+                new int[][]{{Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE}}),
+                "overflowing invariant coefficients admitted");
 
         Map<String, int[]> visited = new HashMap<>();
         var queue = new ArrayDeque<int[]>();
