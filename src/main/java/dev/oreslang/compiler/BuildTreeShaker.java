@@ -24,20 +24,24 @@ public final class BuildTreeShaker {
     private BuildTreeShaker() { }
 
     public record Result(
+            String entryUnit,
             IncrementalCompiler.BuildResult build,
             Map<String, Map<String, String>> importResolutions,
             Map<String, ReachabilityManifest> manifests,
             Set<String> removedUnits) {
         public Result {
+            if (entryUnit == null || entryUnit.isBlank()) {
+                throw new IllegalArgumentException("entry unit cannot be blank");
+            }
             importResolutions = freezeNested(importResolutions);
             manifests = Map.copyOf(manifests);
             removedUnits = Set.copyOf(removedUnits);
         }
 
-        public BuildReachabilityManifest manifest(String entryUnitId) {
+        public BuildReachabilityManifest manifest() {
             return new BuildReachabilityManifest(
                     BuildReachabilityManifest.SCHEMA,
-                    entryUnitId,
+                    entryUnit,
                     new ArrayList<>(build.units().keySet()),
                     new ArrayList<>(removedUnits),
                     manifests);
@@ -223,7 +227,12 @@ public final class BuildTreeShaker {
                         rebuilt,
                         reused,
                         initializationGroups);
-        return new Result(prunedBuild, prunedResolutions, manifests, removedUnits);
+        return new Result(
+                entryUnitId,
+                prunedBuild,
+                prunedResolutions,
+                manifests,
+                removedUnits);
     }
 
     private static void mergeDemand(
