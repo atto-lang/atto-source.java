@@ -862,4 +862,84 @@ final class ActorPhysicalFinalizationPublicationTest {
             }
         }
     }
+
+    @Test
+    void sealedPrivateMemorySliceResumesCleanupBeforePhysicalFinalization()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var sliceRef = new AtomicReference<ActorRuntime.ActorMemorySlice>();
+            var blockRef = new AtomicReference<ActorRuntime.PrivateMemoryBlock>();
+
+            var actor = runtime.<Integer>spawnPrivateTrusted(context -> {
+                var slice = context.privateMemory().orElseThrow();
+                var block = slice.allocatePrivateBytes(64);
+                block.writeLong(0, 0x0102030405060708L);
+                sliceRef.set(slice);
+                blockRef.set(block);
+                return (message, actorContext) -> { };
+            });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+
+            var slice = sliceRef.get();
+            var block = blockRef.get();
+            assertNotNull(slice);
+            assertNotNull(block);
+            assertEquals(64L, slice.usedBytes());
+            long baselinePrivateBytes =
+                    runtime.privateMemoryBytes() - slice.usedBytes();
+            assertTrue(baselinePrivateBytes >= 0L);
+
+            var memoryField = block.getClass().getDeclaredField("memory");
+            memoryField.setAccessible(true);
+            var originalBacking =
+                    (java.nio.ByteBuffer) memoryField.get(block);
+            assertNotNull(originalBacking);
+
+            var faultField = slice.getClass().getDeclaredField(
+                    "closeAfterSealFaultForTesting");
+            faultField.setAccessible(true);
+            var attempts = new AtomicInteger();
+            faultField.set(slice, (Runnable) () -> {
+                if (attempts.incrementAndGet() == 1) {
+                    throw new OutOfMemoryError(
+                            "injected after private-memory slice seal");
+                }
+            });
+
+            var failure = assertThrows(OutOfMemoryError.class, actor::stop);
+            assertTrue(failure.getMessage().contains(
+                    "injected after private-memory slice seal"));
+            assertTrue(slice.closed(),
+                    "allocation must stay sealed after failed teardown");
+            assertEquals(64L, slice.usedBytes(),
+                    "failed cleanup must retain exact quota refund authority");
+            assertEquals(baselinePrivateBytes + 64L,
+                    runtime.privateMemoryBytes(),
+                    "runtime debit cannot publish before slice cleanup succeeds");
+            assertThrows(IllegalStateException.class, () -> block.readLong(0),
+                    "sealed slice must deny guest access while cleanup is pending");
+            assertFalse(runtime.physicallyFinalizedForHotUpgrade(actor),
+                    "sealed-but-unclean private memory cannot certify retirement");
+
+            actor.stop();
+
+            assertEquals(2, attempts.get(),
+                    "physical finalization must retry the same slice cleanup");
+            assertTrue(block.closed());
+            assertNull(memoryField.get(block),
+                    "successful retry must detach the direct backing memory");
+            var zeroed = originalBacking.duplicate();
+            zeroed.clear();
+            while (zeroed.hasRemaining()) {
+                assertEquals((byte) 0, zeroed.get(),
+                        "private direct memory must be zeroed before retirement");
+            }
+            assertEquals(0L, slice.usedBytes());
+            assertEquals(baselinePrivateBytes, runtime.privateMemoryBytes(),
+                    "successful retry must refund private runtime quota exactly once");
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(runtime.physicallyFinalizedForHotUpgrade(actor));
+        }
+    }
+
 }
