@@ -24,3 +24,39 @@ Full source semantics must be checked by the Java/Graal compiler, and real nativ
 Unit tests reside at src/test/java/dev/oreslang/compiler/StaticSafetyAnalyzerTest.java. Run in the real project Maven JUnit suite, record exact commit and executed CI steps. Zero-step GitHub Actions failures are not successful tests.
 
 Shared reference contract: https://github.com/ores-truffle-oreslang/oreslang-common-source/pull/106
+
+## Callback timing / Zalgo warnings
+
+The opt-in AST pass also runs `CallbackOrderingAnalyzer`:
+
+- `ORES-ZALGO-001`: a callback captured by an unknown-timing API may emit
+  an event **before** a matching `on` / `once` / `addListener` registration.
+- The analyzer handles direct lambdas, named local lambda bindings,
+  straightforward local emitter aliases, constant or dynamic event names,
+  and conservative branch/path merging.
+- It does **not** infer that an API is microtask-deferred simply from
+  an async function signature or a Future return type. Unknown callback
+  timing permits inline invocation and cross-worker concurrency.
+- Absence of this warning is NOT a proof that registration is synchronous,
+  listener lifetimes are safe, that the emitter cannot fire independently,
+  or that async code cannot race the registration.
+- A listener passed directly to an `on` registration is not treated
+  as immediately invoked by that act of subscription.
+- Complex aliasing, method callbacks, explicit listener detachment,
+  host FFI, multi-actor scheduling, hot reload, async registration,
+  and interprocedural effect summaries still require compiler integration.
+
+### Ownership / borrow checker plan
+
+Introduce compiler-verified callback timing effects on callable parameters
+(`inline_only`, `deferred_after_turn`, `concurrent`, `mixed`, `unknown`).
+A closure that captures an emitter and is passed to a potentially inline/
+concurrent API is an escape point. The ownership checker should verify
+exclusive/reentrant access and required **active registration leases**
+across that escape point, as well as release, cancellation, and hot-reload
+paths. Capture of a unique mutable emitter across a concurrent callback must
+respect actor ownership and `rt share` rules. This typestate/barrier check
+is a **future compiler feature**, not implemented by the current lexical pass.
+
+Canonical cross-backend design:
+https://github.com/ores-truffle-oreslang/oreslang-common-source/blob/feat/static-analysis-contract-v0/docs/CALLBACK_TIMING_ZALGO_ANALYSIS_V0.md
