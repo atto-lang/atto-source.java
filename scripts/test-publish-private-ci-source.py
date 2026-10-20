@@ -645,6 +645,26 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                             with self.assertRaisesRegex(pub.Denied, "nonfinite constant"):
                                 pub.gh_api("repos/trusted/ci")
 
+    def test_github_api_rejects_overflowing_finite_syntax_numbers(self):
+        from unittest.mock import Mock
+        with patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"):
+            with patch.dict(pub.os.environ, {"GH_TOKEN": "fixture"}, clear=True):
+                for value in ("1e999999", "-1e999999"):
+                    with self.subTest(value=value):
+                        payload = '{"score":' + value + '}'
+                        with patch.object(pub.subprocess, "run", return_value=Mock(
+                                returncode=0, stdout=payload)):
+                            with self.assertRaisesRegex(pub.Denied, "nonfinite number"):
+                                pub.gh_api("repos/trusted/ci")
+
+    def test_github_api_accepts_finite_json_float(self):
+        from unittest.mock import Mock
+        with patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"):
+            with patch.dict(pub.os.environ, {"GH_TOKEN": "fixture"}, clear=True):
+                with patch.object(pub.subprocess, "run", return_value=Mock(
+                        returncode=0, stdout='{"score":0.25}')):
+                    self.assertEqual(pub.gh_api("repos/trusted/ci")["score"], 0.25)
+
     def test_github_api_output_limit_allows_small_valid_json(self):
         from unittest.mock import Mock
         with patch.object(pub, "MAX_GH_API_RESPONSE_CHARS", 64):
