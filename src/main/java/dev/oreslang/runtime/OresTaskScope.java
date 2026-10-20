@@ -30,29 +30,41 @@ public final class OresTaskScope implements AutoCloseable {
     private final AsyncRuntime runtime;
     private final OresTaskScope parent;
     private final Object gate = new Object();
-    /** Identity-only epoch for compiler-minted scoped-loan admission. */
-    private final Object compilerScopeEpoch = new Object();
+
+    /**
+     * Runtime-minted identity witness for one exact compiler TaskScope epoch.
+     * Its constructor is private: compiler code may compare/retain the witness
+     * it receives from this runtime, but cannot manufacture an attestation.
+     */
+    public static final class CompilerScopeEpoch {
+        private CompilerScopeEpoch() { }
+    }
+
+    private final CompilerScopeEpoch compilerScopeEpoch =
+            new CompilerScopeEpoch();
 
     /**
      * Compiler-issued memory-loan lifecycle. Implementations are expected to
      * be opaque capabilities: ordinary guest/host code cannot manufacture the
-     * verifier ticket that they retire.
+     * verifier ticket they retire or the runtime epoch that attests lifecycle.
      */
     public interface CompilerLoanRetirement {
-        void bindScope(Object scopeEpoch);
-        void bindChild(Object scopeEpoch, OresTask<?> child);
-        void retireNeverStarted(Object scopeEpoch);
-        void retireAfterPhysicalQuiescence(Object scopeEpoch, OresTask<?> child);
+        void bindScope(CompilerScopeEpoch scopeEpoch);
+        void bindChild(CompilerScopeEpoch scopeEpoch, OresTask<?> child);
+        void retireNeverStarted(CompilerScopeEpoch scopeEpoch);
+        void retireAfterPhysicalQuiescence(
+                CompilerScopeEpoch scopeEpoch, OresTask<?> child);
     }
 
     private static final CompilerLoanRetirement NO_COMPILER_LOAN =
             new CompilerLoanRetirement() {
-                @Override public void bindScope(Object scopeEpoch) { }
+                @Override public void bindScope(CompilerScopeEpoch scopeEpoch) { }
                 @Override public void bindChild(
-                        Object scopeEpoch, OresTask<?> child) { }
-                @Override public void retireNeverStarted(Object scopeEpoch) { }
+                        CompilerScopeEpoch scopeEpoch, OresTask<?> child) { }
+                @Override public void retireNeverStarted(
+                        CompilerScopeEpoch scopeEpoch) { }
                 @Override public void retireAfterPhysicalQuiescence(
-                        Object scopeEpoch, OresTask<?> child) { }
+                        CompilerScopeEpoch scopeEpoch, OresTask<?> child) { }
             };
 
     // All members of one owned tree share a strict admission/plan monitor.
