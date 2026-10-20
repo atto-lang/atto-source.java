@@ -885,7 +885,11 @@ public final class Parser {
                 consume(LPAREN, "expected '(' after interface function name");
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
                 consume(RPAREN, "expected ')' after interface parameters");
-                Ast.TypeRef returns = match(FAT_ARROW, COLON) ? parseTypeRef() : Ast.TypeRef.simple("void");
+                boolean contractSignature = moduleContract || staticContract;
+                boolean hasReturnType = contractSignature
+                        ? match(FAT_ARROW, COLON, ARROW)
+                        : match(FAT_ARROW, COLON);
+                Ast.TypeRef returns = hasReturnType ? parseTypeRef() : Ast.TypeRef.simple("void");
                 consumeMemberTerminator(terminator, "interface function signature should end with ';'");
                 members.add(new Ast.InterfaceFunctionDecl(memberName, callableStructural.enabled(), memberGenerics, params, returns));
                 continue;
@@ -1588,6 +1592,12 @@ public final class Parser {
             return parseFunctionTypeSignature();
         }
 
+        if (isContextualIdentifier("tuple") && checkNext(LPAREN)) {
+            advance();
+            consume(LPAREN, "expected '(' after tuple in type position");
+            return parseExplicitTupleType();
+        }
+
         if (check(LPAREN) && looksLikeFunctionType()) return parseFunctionTypeSignature();
         if (match(LPAREN)) {
             Ast.TypeRef grouped = parseTypeRef();
@@ -1645,6 +1655,18 @@ public final class Parser {
             consume(RBRACKET, "expected ']' after sequence type shape");
         }
         return new Ast.TypeRef(name, args, infer);
+    }
+
+    private Ast.TypeRef parseExplicitTupleType() {
+        List<Ast.TypeRef> elements = new ArrayList<>();
+        if (!check(RPAREN)) {
+            do elements.add(parseTypeRef()); while (match(COMMA));
+        }
+        consume(RPAREN, "expected ')' after tuple type");
+        if (elements.size() > 64) {
+            throw error(previous(), "tuple type exceeds 64-slot static proof bound");
+        }
+        return Ast.TypeRef.tupleType(elements);
     }
 
     private Ast.TypeRef parseMetaValue() {
