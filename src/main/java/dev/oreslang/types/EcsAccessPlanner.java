@@ -29,7 +29,20 @@ public final class EcsAccessPlanner {
 
     public enum Mode { READ, WRITE }
 
-    public record Access(Object allocationIdentity, long start, long end, Mode mode) {
+    /**
+     * Opaque allocation-provenance token. Only compiler code in this package
+     * can mint one; host/embedding callers cannot substitute arbitrary value
+     * objects and accidentally manufacture a false disjointness proof.
+     */
+    public static final class AllocationIdentity {
+        private AllocationIdentity() { }
+    }
+
+    static AllocationIdentity newAllocationIdentity() {
+        return new AllocationIdentity();
+    }
+
+    public record Access(AllocationIdentity allocationIdentity, long start, long end, Mode mode) {
         public Access {
             Objects.requireNonNull(mode, "access mode");
             if (start < 0 || end <= start) {
