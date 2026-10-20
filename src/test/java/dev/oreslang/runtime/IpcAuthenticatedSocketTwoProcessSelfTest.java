@@ -84,14 +84,38 @@ public final class IpcAuthenticatedSocketTwoProcessSelfTest {
                 .start();
     }
 
+    private static void terminatePeer(Process peer) throws InterruptedException {
+        if (!peer.isAlive()) {
+            return;
+        }
+        peer.destroy();
+        if (!peer.waitFor(1, TimeUnit.SECONDS)) {
+            peer.destroyForcibly();
+            if (!peer.waitFor(2, TimeUnit.SECONDS)) {
+                throw new AssertionError("forked IPC peer could not be terminated");
+            }
+        }
+    }
+
     private static String finishPeer(Process peer) throws Exception {
-        check(peer.waitFor(5, TimeUnit.SECONDS));
+        if (!peer.waitFor(5, TimeUnit.SECONDS)) {
+            terminatePeer(peer);
+            throw new AssertionError("forked IPC peer did not exit before deadline");
+        }
+        ++checks;
         String output = new String(peer.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        check(peer.exitValue() == 0);
+        if (peer.exitValue() != 0) {
+            throw new AssertionError(
+                    "forked IPC peer failed with exit " + peer.exitValue() + ": " + output);
+        }
+        ++checks;
         return output;
     }
 
     private static void runPeer(int port, String mode) throws Exception {
+        if (!mode.equals("success") && !mode.equals("stale-generation")) {
+            throw new IllegalArgumentException("invalid forked IPC peer mode");
+        }
         byte[] key = key();
         byte[] binding = binding();
         long generation = mode.equals("success") ? 501 : 502;
@@ -149,28 +173,32 @@ public final class IpcAuthenticatedSocketTwoProcessSelfTest {
                     0, 8, InetAddress.getLoopbackAddress())) {
             server.setSoTimeout(5000);
             Process peer = launchPeer(server.getLocalPort(), "success");
-            try (Socket socket = server.accept()) {
-                socket.setSoTimeout(5000);
-                var bridge = new IpcReceiptCompletionBridge(1);
-                var transport = new IpcAuthenticatedSocketTransport(
-                        socket, bridge, message, 501, 1,
-                        key, binding, cleanup::execute);
+            try {
+                try (Socket socket = server.accept()) {
+                    socket.setSoTimeout(5000);
+                    var bridge = new IpcReceiptCompletionBridge(1);
+                    var transport = new IpcAuthenticatedSocketTransport(
+                            socket, bridge, message, 501, 1,
+                            key, binding, cleanup::execute);
 
-                var submission = transport.send(message, PAYLOAD);
-                check(!submission.writeAttemptFailed());
-                check(transport.readVerifiedReceipt()
-                        == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
-                check(transport.readVerifiedReceipt()
-                        == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
-                check(submission.outcome().toCompletableFuture().join()
-                        == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
-                check(bridge.invariant());
-                check(transport.requestCloseAndAwait(3000));
-                check(transport.keyCloneZeroized());
+                    var submission = transport.send(message, PAYLOAD);
+                    check(!submission.writeAttemptFailed());
+                    check(transport.readVerifiedReceipt()
+                            == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+                    check(transport.readVerifiedReceipt()
+                            == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+                    check(submission.outcome().toCompletableFuture().join()
+                            == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+                    check(bridge.invariant());
+                    check(transport.requestCloseAndAwait(3000));
+                    check(transport.keyCloneZeroized());
+                }
+
+                String output = finishPeer(peer);
+                check(output.contains("FORKED_IPC_PEER_PASS mode=success"));
+            } finally {
+                terminatePeer(peer);
             }
-
-            String output = finishPeer(peer);
-            check(output.contains("FORKED_IPC_PEER_PASS mode=success"));
         } finally {
             cleanup.shutdownNow();
             cleanup.awaitTermination(2, TimeUnit.SECONDS);
@@ -188,32 +216,36 @@ public final class IpcAuthenticatedSocketTwoProcessSelfTest {
                     0, 8, InetAddress.getLoopbackAddress())) {
             server.setSoTimeout(5000);
             Process peer = launchPeer(server.getLocalPort(), "stale-generation");
-            try (Socket socket = server.accept()) {
-                socket.setSoTimeout(5000);
-                var bridge = new IpcReceiptCompletionBridge(1);
-                var transport = new IpcAuthenticatedSocketTransport(
-                        socket, bridge, message, 502, 1,
-                        key, binding, cleanup::execute);
+            try {
+                try (Socket socket = server.accept()) {
+                    socket.setSoTimeout(5000);
+                    var bridge = new IpcReceiptCompletionBridge(1);
+                    var transport = new IpcAuthenticatedSocketTransport(
+                            socket, bridge, message, 502, 1,
+                            key, binding, cleanup::execute);
 
-                var submission = transport.send(message, PAYLOAD);
-                check(!submission.writeAttemptFailed());
-                try {
-                    transport.readVerifiedReceipt();
-                    throw new AssertionError("forked stale-generation receipt accepted");
-                } catch (IOException expected) {
-                    check(expected.getMessage().contains(
-                            "physical transport generation"));
+                    var submission = transport.send(message, PAYLOAD);
+                    check(!submission.writeAttemptFailed());
+                    try {
+                        transport.readVerifiedReceipt();
+                        throw new AssertionError("forked stale-generation receipt accepted");
+                    } catch (IOException expected) {
+                        check(expected.getMessage().contains(
+                                "physical transport generation"));
+                    }
+                    check(transport.requestCloseAndAwait(3000));
+                    check(submission.outcome().toCompletableFuture().join()
+                            == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+                    check(bridge.invariant());
+                    check(transport.keyCloneZeroized());
                 }
-                check(transport.requestCloseAndAwait(3000));
-                check(submission.outcome().toCompletableFuture().join()
-                        == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
-                check(bridge.invariant());
-                check(transport.keyCloneZeroized());
-            }
 
-            String output = finishPeer(peer);
-            check(output.contains(
-                    "FORKED_IPC_PEER_PASS mode=stale-generation"));
+                String output = finishPeer(peer);
+                check(output.contains(
+                        "FORKED_IPC_PEER_PASS mode=stale-generation"));
+            } finally {
+                terminatePeer(peer);
+            }
         } finally {
             cleanup.shutdownNow();
             cleanup.awaitTermination(2, TimeUnit.SECONDS);
