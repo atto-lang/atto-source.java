@@ -312,6 +312,143 @@ class PrivateCiV3Test(unittest.TestCase):
                 v3.authorize_write(
                     Path("."), "trusted/ci", POLICY, carrier)
 
+    def test_published_root_and_commit_readback_accepts_exact_leaves(self):
+        base_tree = "7" * 40
+        source_blob = "2" * 40
+        receipt_blob = "3" * 40
+        source_elements = [{
+            "path": "hello.ores",
+            "mode": "100644",
+            "type": "blob",
+            "sha": source_blob,
+        }]
+        base_entries = [
+            {
+                "path": ".github/workflows/oreslang-exact-tree-carrier.yml",
+                "type": "blob", "mode": "100644", "sha": WORKFLOW,
+            },
+            {
+                "path": "ci/test-plans/java-pr1482.json",
+                "type": "blob", "mode": "100644", "sha": PLAN_BLOB,
+            },
+        ]
+        published_entries = base_entries + [
+            {
+                "path": v3.legacy.PREFIX + "/hello.ores",
+                "type": "blob", "mode": "100644", "sha": source_blob,
+            },
+            {
+                "path": v3.RECEIPT_PATH,
+                "type": "blob", "mode": "100644", "sha": receipt_blob,
+            },
+        ]
+
+        def api(route, method="GET", payload=None):
+            if route == f"repos/trusted/ci/git/trees/{base_tree}?recursive=1":
+                return {"sha": base_tree, "truncated": False, "tree": base_entries}
+            if route == f"repos/trusted/ci/git/trees/{ROOT_TREE}?recursive=1":
+                return {"sha": ROOT_TREE, "truncated": False, "tree": published_entries}
+            if route == f"repos/trusted/ci/git/commits/{COMMIT}":
+                return {
+                    "sha": COMMIT,
+                    "tree": {"sha": ROOT_TREE},
+                    "parents": [{"sha": BASE}],
+                }
+            raise AssertionError(route)
+
+        with patch.object(v3.legacy, "gh_api", side_effect=api):
+            v3.verify_published_root_and_commit(
+                "trusted/ci", base_tree, BASE, SOURCE_TREE,
+                source_elements, receipt_blob, ROOT_TREE, COMMIT,
+            )
+
+    def test_published_root_readback_rejects_extra_or_changed_leaf(self):
+        base_tree = "7" * 40
+        source_blob = "2" * 40
+        receipt_blob = "3" * 40
+        source_elements = [{
+            "path": "hello.ores",
+            "mode": "100644",
+            "type": "blob",
+            "sha": source_blob,
+        }]
+        base_entries = [{
+            "path": ".github/workflows/oreslang-exact-tree-carrier.yml",
+            "type": "blob", "mode": "100644", "sha": WORKFLOW,
+        }]
+        published_entries = base_entries + [
+            {
+                "path": v3.legacy.PREFIX + "/hello.ores",
+                "type": "blob", "mode": "100644", "sha": source_blob,
+            },
+            {
+                "path": v3.RECEIPT_PATH,
+                "type": "blob", "mode": "100644", "sha": receipt_blob,
+            },
+            {
+                "path": "unexpected.txt",
+                "type": "blob", "mode": "100644", "sha": "8" * 40,
+            },
+        ]
+
+        def api(route, method="GET", payload=None):
+            if route == f"repos/trusted/ci/git/trees/{base_tree}?recursive=1":
+                return {"sha": base_tree, "truncated": False, "tree": base_entries}
+            if route == f"repos/trusted/ci/git/trees/{ROOT_TREE}?recursive=1":
+                return {"sha": ROOT_TREE, "truncated": False, "tree": published_entries}
+            raise AssertionError(route)
+
+        with patch.object(v3.legacy, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(v3.Denied, "root tree differs"):
+                v3.verify_published_root_and_commit(
+                    "trusted/ci", base_tree, BASE, SOURCE_TREE,
+                    source_elements, receipt_blob, ROOT_TREE, COMMIT,
+                )
+
+    def test_published_commit_readback_rejects_wrong_tree_or_parent(self):
+        base_tree = "7" * 40
+        source_blob = "2" * 40
+        receipt_blob = "3" * 40
+        source_elements = [{
+            "path": "hello.ores",
+            "mode": "100644",
+            "type": "blob",
+            "sha": source_blob,
+        }]
+        base_entries = []
+        published_entries = [
+            {
+                "path": v3.legacy.PREFIX + "/hello.ores",
+                "type": "blob", "mode": "100644", "sha": source_blob,
+            },
+            {
+                "path": v3.RECEIPT_PATH,
+                "type": "blob", "mode": "100644", "sha": receipt_blob,
+            },
+        ]
+        bad_commits = (
+            {"sha": COMMIT, "tree": {"sha": "9" * 40}, "parents": [{"sha": BASE}]},
+            {"sha": COMMIT, "tree": {"sha": ROOT_TREE}, "parents": [{"sha": "9" * 40}]},
+            {"sha": COMMIT, "tree": {"sha": ROOT_TREE}, "parents": []},
+        )
+        for bad in bad_commits:
+            with self.subTest(bad=bad):
+                def api(route, method="GET", payload=None):
+                    if route == f"repos/trusted/ci/git/trees/{base_tree}?recursive=1":
+                        return {"sha": base_tree, "truncated": False, "tree": base_entries}
+                    if route == f"repos/trusted/ci/git/trees/{ROOT_TREE}?recursive=1":
+                        return {"sha": ROOT_TREE, "truncated": False, "tree": published_entries}
+                    if route == f"repos/trusted/ci/git/commits/{COMMIT}":
+                        return bad
+                    raise AssertionError(route)
+
+                with patch.object(v3.legacy, "gh_api", side_effect=api):
+                    with self.assertRaisesRegex(v3.Denied, "commit tree or parent"):
+                        v3.verify_published_root_and_commit(
+                            "trusted/ci", base_tree, BASE, SOURCE_TREE,
+                            source_elements, receipt_blob, ROOT_TREE, COMMIT,
+                        )
+
     def test_publish_binds_receipt_branch_and_authorization_ref(self):
         carrier = contract()
         writes = []
@@ -377,6 +514,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     return_value=SOURCE_TREE,
                 ),
                 patch.object(v3, "authorize_write") as authorize_write,
+                patch.object(v3, "verify_published_root_and_commit"),
                 patch.object(v3, "require_exact_ref") as require_exact_ref,
                 patch.object(v3.legacy, "gh_api", side_effect=api),
             ):
@@ -514,6 +652,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(v3, "verify_published_root_and_commit"),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -574,6 +713,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(v3, "verify_published_root_and_commit"),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -639,6 +779,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(v3, "verify_published_root_and_commit"),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -707,6 +848,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(v3, "verify_published_root_and_commit"),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
