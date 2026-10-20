@@ -96,6 +96,7 @@ final class TaskScopeInvariantTest {
         TaskScope scope = new TaskScope();
         TaskScope other = new TaskScope();
         TaskScope.Registration owner = scope.reserve();
+        owner.beganExecution();
         TaskScope.Registration wrong = other.reserve();
         OresFuture<Void> joined = scope.close();
         assertThrows(IllegalStateException.class, scope::reserve);
@@ -131,6 +132,7 @@ final class TaskScopeInvariantTest {
         for (int i = 0; i < 128; i++) {
             TaskScope scope = new TaskScope();
             TaskScope.Registration parent = scope.reserve();
+            parent.beganExecution();
             parent.attach(OresFuture.completed(null));
             OresFuture<Void> joined = scope.close();
             java.util.concurrent.CountDownLatch gate = new java.util.concurrent.CountDownLatch(1);
