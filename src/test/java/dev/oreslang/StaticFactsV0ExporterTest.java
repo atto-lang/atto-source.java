@@ -86,10 +86,11 @@ final class StaticFactsV0ExporterTest {
     @Test
     void producerAndConsumerShareExactProcedureBudget() {
         StringBuilder source = new StringBuilder();
-        for (int i = 0; i < 513; i++) {
+        for (int i = 0; i < 512; i++) {
             source.append("fnc scalar_").append(i)
                     .append("(): int { return ").append(i).append("; }\n");
         }
+        source.append("pub routine main(): int { return 0; }");
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> StaticFactsV0Exporter.fromSource(source.toString()));
         assertTrue(failure.getMessage().contains("oversized procedure collection"),
@@ -124,8 +125,7 @@ final class StaticFactsV0ExporterTest {
         String source = """
                 fnc leaf(): int { return 3; }
                 pub routine main(): void {
-                    while (true) {
-                        leaf();
+                    while (leaf() > 2) {
                         break;
                     }
                     return;
@@ -142,8 +142,7 @@ final class StaticFactsV0ExporterTest {
         String source = """
                 fnc leaf(): int { return 3; }
                 pub routine main(): int {
-                    leaf();
-                    return leaf();
+                    return leaf() + leaf();
                 }
                 """;
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
