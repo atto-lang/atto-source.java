@@ -93,8 +93,16 @@ final class SharedPrivateSourceActorHotReloadE2ETest {
                 ActorRuntime.ActorKind.PRIVATE)) {
             try (Context guest = IsolatePolicy.developer()
                     .restrictedContextBuilder(ExecutionProfile.serverJit()).build()) {
-                guest.eval(guest("counter-v1.ores", V1));
-                guest.eval(guest("counter-v2.ores", V2));
+                // The source declaration and runtime actor kind must agree:
+                // actor=SHARED, isoactor=PRIVATE. Do not bypass kind admission.
+                String sourceV1 = kind == ActorRuntime.ActorKind.PRIVATE
+                        ? V1.replace("define actor Counter as",
+                                     "define isoactor Counter as") : V1;
+                String sourceV2 = kind == ActorRuntime.ActorKind.PRIVATE
+                        ? V2.replace("define actor Counter as",
+                                     "define isoactor Counter as") : V2;
+                guest.eval(guest("counter-v1.ores", sourceV1));
+                guest.eval(guest("counter-v2.ores", sourceV2));
 
                 OresContext ores;
                 ActorRuntime.ActorCodeExecutor v1;
