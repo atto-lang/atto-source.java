@@ -3958,8 +3958,19 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "Future<T> provider return type must be concrete");
                 }
-                requireAssignable(runResult, futureType.arguments().getFirst(),
-                        "Future<T> async run() result");
+                // The evaluator returns the provider method's OresFuture<T>
+                // directly. It does not construct a mapper or coerce payloads.
+                // Assignment compatibility is therefore too permissive here:
+                // a widening conversion or a structural subtype could expose
+                // a Future<T> whose actual completion payload has a different
+                // representation. Require the exact generic T until the
+                // compiler emits a checked result-adaptation continuation.
+                Type requestedResult = futureType.arguments().getFirst();
+                if (requestedResult == Unknown.INSTANCE || !runResult.equals(requestedResult)) {
+                    throw new IllegalArgumentException(
+                            "Future<T> constructor requires exact async run() result type "
+                                    + requestedResult + "; provider returns " + runResult);
+                }
                 return futureType;
             }
             if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
