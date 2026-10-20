@@ -1685,6 +1685,12 @@ public final class OresEvalRootNode extends RootNode {
                                         statementContainsPotentialSuspension(
                                                 nested, seen));
             }
+            if (stmt instanceof Ast.DoWhileStmt loop) {
+                return loop.body().stream().anyMatch(
+                                nested ->
+                                        statementContainsPotentialSuspension(nested, seen))
+                        || expressionContainsPotentialSuspension(loop.condition(), seen);
+            }
             if (stmt instanceof Ast.LoopStmt loop) {
                 return loop.body().stream().anyMatch(
                         nested ->
@@ -1863,6 +1869,7 @@ public final class OresEvalRootNode extends RootNode {
          */
         private boolean containsSourceLoop(Ast.Stmt stmt) {
             if (stmt instanceof Ast.ForStmt
+                    || stmt instanceof Ast.DoWhileStmt
                     || stmt instanceof Ast.LoopStmt
                     || stmt instanceof Ast.ForOfStmt
                     || stmt instanceof Ast.ForOfDestructureStmt) return true;
@@ -2367,6 +2374,15 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (stmt instanceof Ast.ForStmt loop) {
                     runForSuspendable(
+                            task,
+                            loop,
+                            env,
+                            continuation);
+                    return;
+                }
+
+                if (stmt instanceof Ast.DoWhileStmt loop) {
+                    runDoWhileSuspendable(
                             task,
                             loop,
                             env,
@@ -2882,6 +2898,63 @@ public final class OresEvalRootNode extends RootNode {
                                         });
                             }
                         }
+                    });
+        }
+
+        private void runDoWhileSuspendable(
+                SourceTask task,
+                Ast.DoWhileStmt loop,
+                Env env,
+                SourceFlowCont continuation) {
+            runBlock(
+                    task,
+                    loop.body(),
+                    env,
+                    (t, flow) -> {
+                        if (flow.kind() == SourceFlowKind.BREAK) {
+                            continuation.accept(
+                                    t,
+                                    SourceFlow.normal());
+                            return;
+                        }
+                        if (flow.kind() == SourceFlowKind.RETURN
+                                || flow.kind() == SourceFlowKind.THROW) {
+                            continuation.accept(t, flow);
+                            return;
+                        }
+
+                        // NORMAL and CONTINUE both reach the post-test.
+                        evalSuspendableExpr(
+                                t,
+                                loop.condition(),
+                                env,
+                                (t2, condition, failure) -> {
+                                    if (failure != null) {
+                                        continuation.accept(
+                                                t2,
+                                                SourceFlow.throwing(failure));
+                                    } else if (truth(condition)) {
+                                        t2.scheduleLoopContinuation(
+                                                env,
+                                                (resumed, ignored, resumeFailure) -> {
+                                                    if (resumeFailure != null) {
+                                                        continuation.accept(
+                                                                resumed,
+                                                                SourceFlow.throwing(resumeFailure));
+                                                    } else {
+                                                        runDoWhileSuspendable(
+                                                                resumed,
+                                                                loop,
+                                                                env,
+                                                                continuation);
+                                                    }
+                                                });
+                                    } else {
+                                        continuation.accept(
+                                                t2,
+                                                SourceFlow.normal());
+                                    }
+                                });
                     });
         }
 
@@ -5826,6 +5899,22 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     if (loop.update() != null) eval(loop.update(), loopEnv);
                 }
+                return;
+            }
+            if (stmt instanceof Ast.DoWhileStmt loop) {
+                do {
+                    context.schedulerSafepoint();
+                    try {
+                        executeBlock(
+                                loop.body(),
+                                env,
+                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                    } catch (ContinueSignal ignored) {
+                        // Continue in a post-test loop still evaluates the condition.
+                    } catch (BreakSignal ignored) {
+                        break;
+                    }
+                } while (truth(eval(loop.condition(), env)));
                 return;
             }
             if (stmt instanceof Ast.LoopStmt loop) {

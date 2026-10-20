@@ -37,11 +37,13 @@ public final class TreeShaker {
             Ast.Program program,
             Set<String> retainedSymbols,
             Set<String> removedSymbols,
-            Map<String, Object> compileTimeConstants) {
+            Map<String, Object> compileTimeConstants,
+            Set<String> rootSymbols) {
         public Result {
             retainedSymbols = Set.copyOf(retainedSymbols);
             removedSymbols = Set.copyOf(removedSymbols);
             compileTimeConstants = Map.copyOf(compileTimeConstants);
+            rootSymbols = Set.copyOf(rootSymbols);
         }
 
         public boolean retained(String symbol) {
@@ -77,6 +79,7 @@ public final class TreeShaker {
         private final Set<String> scannedModuleMetadata = new LinkedHashSet<>();
 
         private final LinkedHashSet<String> retained = new LinkedHashSet<>();
+        private final LinkedHashSet<String> roots = new LinkedHashSet<>();
         private final LinkedHashSet<String> externalBindings = new LinkedHashSet<>();
         private final ArrayDeque<String> work = new ArrayDeque<>();
 
@@ -107,7 +110,7 @@ public final class TreeShaker {
             Ast.Program pruned = pruneProgram(rewritten);
             LinkedHashSet<String> removed = new LinkedHashSet<>(symbols.keySet());
             removed.removeAll(retained);
-            return new Result(pruned, retained, removed, constantValues);
+            return new Result(pruned, retained, removed, constantValues, roots);
         }
 
         private void collectConstants() {
@@ -341,11 +344,13 @@ public final class TreeShaker {
                 for (Ast.Expr argument : call.arguments()) {
                     arguments.add(substitute(argument, substitutions, shadowed));
                 }
-                return new Ast.CallExpr(
+                Ast.CallExpr substituted = new Ast.CallExpr(
                         substitute(call.callee(), substitutions, shadowed),
                         call.typeArguments(),
                         call.typeArgumentsPresent(),
                         arguments);
+                Ast.copyCheckedMetadata(call, substituted);
+                return substituted;
             }
             if (expression instanceof Ast.MemberExpr member) {
                 return new Ast.MemberExpr(
@@ -353,8 +358,11 @@ public final class TreeShaker {
                         member.member());
             }
             if (expression instanceof Ast.IndexExpr indexed) {
+                Ast.Expr substitutedReceiver =
+                        substitute(indexed.receiver(), substitutions, shadowed);
+                Ast.copyCheckedMetadata(indexed.receiver(), substitutedReceiver);
                 return new Ast.IndexExpr(
-                        substitute(indexed.receiver(), substitutions, shadowed),
+                        substitutedReceiver,
                         substitute(indexed.index(), substitutions, shadowed));
             }
             if (expression instanceof Ast.NewExpr created) {
@@ -697,6 +705,11 @@ public final class TreeShaker {
                 return List.of(new Ast.LoopStmt(
                         rewriteStatements(loop.body(), module, new LinkedHashMap<>(locals))));
             }
+            if (statement instanceof Ast.DoWhileStmt loop) {
+                return List.of(new Ast.DoWhileStmt(
+                        rewriteStatements(loop.body(), module, new LinkedHashMap<>(locals)),
+                        rewriteExpression(loop.condition(), module, locals)));
+            }
             if (statement instanceof Ast.IfStmt conditional) {
                 List<Ast.IfBranch> branches = new ArrayList<>();
                 List<Ast.Stmt> elseBody = rewriteStatements(
@@ -930,6 +943,7 @@ public final class TreeShaker {
                         call.typeArguments(),
                         call.typeArgumentsPresent(),
                         arguments);
+                Ast.copyCheckedMetadata(call, rewritten);
 
                 InlineTarget target = resolveInlineTarget(callee, module, locals);
                 if (target != null && canInlineConstantCall(target, rewritten, arguments)) {
@@ -945,9 +959,7 @@ public final class TreeShaker {
             if (expression instanceof Ast.IndexExpr indexed) {
                 Ast.Expr rewrittenReceiver =
                         rewriteExpression(indexed.receiver(), module, locals);
-                Ast.CheckedClassView.copy(indexed.receiver(), rewrittenReceiver);
-                Ast.CheckedStructuralFieldDomain.copy(
-                        indexed.receiver(), rewrittenReceiver);
+                Ast.copyCheckedMetadata(indexed.receiver(), rewrittenReceiver);
                 return new Ast.IndexExpr(
                         rewrittenReceiver,
                         rewriteExpression(indexed.index(), module, locals));
@@ -1033,7 +1045,7 @@ public final class TreeShaker {
         private void seedRoots() {
             if (options.preservePublicApi()) {
                 for (Symbol symbol : symbols.values()) {
-                    if (isPublicApi(symbol.declaration())) mark(symbol.id());
+                    if (isPublicApi(symbol.declaration())) markRoot(symbol.id());
                 }
             }
 
@@ -1043,7 +1055,7 @@ public final class TreeShaker {
                     throw new IllegalArgumentException(
                             "build entry point '" + requested + "' was not found");
                 }
-                mark(root);
+                markRoot(root);
             }
         }
 
@@ -1061,6 +1073,11 @@ public final class TreeShaker {
                 return klass.visibility() == Ast.Visibility.PUBLIC;
             }
             return declaration instanceof Ast.TypeAliasDecl;
+        }
+
+        private void markRoot(String id) {
+            if (id != null) roots.add(id);
+            mark(id);
         }
 
         private void mark(String id) {
@@ -1218,6 +1235,9 @@ public final class TreeShaker {
                     scanStatements(module, block.body(), new LinkedHashSet<>(locals));
                 } else if (statement instanceof Ast.LoopStmt loop) {
                     scanStatements(module, loop.body(), new LinkedHashSet<>(locals));
+                } else if (statement instanceof Ast.DoWhileStmt loop) {
+                    scanStatements(module, loop.body(), new LinkedHashSet<>(locals));
+                    scanExpression(module, loop.condition(), locals);
                 } else if (statement instanceof Ast.IfStmt conditional) {
                     for (Ast.IfBranch branch : conditional.branches()) {
                         scanExpression(module, branch.condition(), locals);

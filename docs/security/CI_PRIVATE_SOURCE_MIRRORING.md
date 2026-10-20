@@ -11,6 +11,13 @@ default**. No cross-repository mirroring is authorized until maintainers and
 security reviewers explicitly add an exact `owner/repo` destination through a
 reviewed, protected-branch change.
 
+An allowlist line is necessary but no longer sufficient. The protected
+`.github/private-ci-carrier-contracts.json` must independently pin the live
+destination repository ID, an exact reviewed source-free carrier `main`
+commit, the carrier workflow blob, and the exact reviewed test-plan blob/PR
+set. A carrier `main` advance, repository delete/recreate, workflow change,
+or test-plan change fails closed until the source policy is reviewed again.
+
 **Origin protection is mandatory.** Before reading private source files, the
 publisher now checks the live GitHub identity of
 `ores-truffle-oreslang/oreslang-source.java`, verifies that its official
@@ -44,15 +51,22 @@ the result as untrusted.
 ## Destination-bound source snapshot publisher
 
 The only supported transfer entry point is **not an arbitrary command
-launcher**. It accepts an approved destination, a bounded local source
-directory, and a new isolated CI branch:
+launcher**. V3 accepts an approved destination, a bounded local source
+directory, the exact open source PR head, and one test plan already pinned by
+the protected carrier contract:
 
 ```bash
-scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
+scripts/run-in-private-ci-destination.sh opto-sync-test/go-java-validation \
   --source-dir ./verified-source-tree \
-  --branch ci/oreslang-verified-20261013 \
-  --source-commit FULL_40_CHARACTER_ORIGIN_COMMIT_SHA
+  --source-commit FULL_40_CHARACTER_OPEN_PR_HEAD_SHA \
+  --source-pr 1482 \
+  --test-plan ci/test-plans/java-pr1482.json
 ```
+
+The caller does not choose the executable carrier branch. After proving the
+complete source Git tree, the dispatcher derives exactly
+`ci/oreslang-<SOURCE_ROOT_TREE_SHA>`. The exact source commit must also be
+the current head of the named open PR against source `main`.
 
 The checked-in policy file must explicitly list the destination. The
 publisher checks the live GitHub identity and `visibility=private` /
@@ -64,8 +78,20 @@ then a **fresh standalone source tree with no `base_tree`**, followed by a
 root tree that replaces the **entire** `private-oreslang-source/` directory
 in the destination's default tree. This removes stale files from previous
 snapshots while preserving unrelated destination workflows and files.
-Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
-branches, including `main`, are never updated.
+The v3 dispatcher creates a canonical `ores-private-ci-receipt-v3` that
+binds source repository ID, PR number/head SHA/root-tree SHA, manifest SHA-256,
+destination repository ID and reviewed base commit, immutable carrier workflow
+blob, reviewed test-plan digest, and a 24-hour expiry. The receipt digest is
+bound into the carrier commit message. It then creates a **new**
+`ci/oreslang-<SOURCE_ROOT_TREE_SHA>` ref and the exact
+`ci/authorized-<CARRIER_COMMIT_SHA>` dispatcher authorization ref required
+by the carrier. Existing branches, including `main`, are never updated.
+
+The reviewed carrier base must itself be source-free: neither
+`private-oreslang-source/` nor `ci/oreslang-receipt.json` may already be
+present. The source-bearing commit may change only that source subtree plus
+the receipt; carrier workflow and test-plan bytes remain inherited from the
+pinned base.
 
 An explicitly supplied `--source-commit` now pins the **exact original
 private Git commit**. Before uploading, the publisher retrieves that commit's
@@ -103,11 +129,15 @@ Test without network access or sending any source:
 ```bash
 bash scripts/test-private-ci-destination.sh
 python3 scripts/test-publish-private-ci-source.py
+python3 scripts/test-publish-private-ci-source-v3.py
 ```
 
 The Bash test uses a temporary policy checkout; Python tests mock all GitHub
-API operations. The real policy remains empty and **no destination is
-authorized** unless separately reviewed.
+API operations. V3 tests additionally prove protected carrier-contract parsing,
+source-free base enforcement, exact open-PR binding, receipt construction,
+tree-derived branch naming, and dispatcher-authorization ref creation. The
+real allowlist remains empty and **no destination is authorized** unless
+separately reviewed and protected-main enforcement is active.
 
 ## Active disclosure incident
 

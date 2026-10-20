@@ -7,6 +7,7 @@ mkdir -p "$work/fixture/scripts" "$work/fixture/.github"
 cp "$original_script_dir/check-private-ci-destination.sh" "$work/fixture/scripts/"
 cp "$original_script_dir/run-in-private-ci-destination.sh" "$work/fixture/scripts/"
 cp "$original_script_dir/publish-private-ci-source.py" "$work/fixture/scripts/"
+cp "$original_script_dir/publish-private-ci-source-v3.py" "$work/fixture/scripts/"
 script_dir="$work/fixture/scripts"
 policy="$work/fixture/.github/private-ci-approved-repositories.txt"
 printf '# Approved for this isolated test only\ntrusted/ci\n' > "$policy"
@@ -36,7 +37,7 @@ expect_fail() {
 }
 expect_wrapper_reject() {
   rm -f "$MOCK_EXEC_LOG"
-  if "$script_dir/run-in-private-ci-destination.sh" "$1" --source-dir "$work/fixture/source" --branch ci/oreslang-test --source-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > "$work/out" 2>&1; then
+  if "$script_dir/run-in-private-ci-destination.sh" "$1" --source-dir "$work/fixture/source" --source-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --source-pr 7 --test-plan ci/test-plans/synthetic.json > "$work/out" 2>&1; then
     echo 'Unsafe destination executed publishing' >&2; exit 1;
   fi
   test ! -e "$MOCK_EXEC_LOG"
