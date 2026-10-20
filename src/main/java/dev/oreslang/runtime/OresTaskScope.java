@@ -332,12 +332,16 @@ public final class OresTaskScope implements AutoCloseable {
         }
         OresCancellationToken.Registration registration =
                 token.onCancellationRequested(this::cancel);
+        final boolean detach;
         synchronized (treeAdmissionGate) {
             synchronized (gate) {
-                if (cancelled) registration.close();
-                else externalCancellation.add(registration);
+                detach = cancelled;
+                if (!detach) externalCancellation.add(registration);
             }
         }
+        // Host unregister may block or invoke callbacks: never execute it
+        // under the tree admission monitor or this scope's ownership lock.
+        if (detach) registration.close();
     }
 
 
@@ -466,20 +470,23 @@ public final class OresTaskScope implements AutoCloseable {
             }
         }
 
-        // No arbitrary callbacks execute under the admission gate.
+        // Revoke every Task producer before executing any potentially
+        // blocking or throwing external token-unregister callback. The
+        // tree was already atomically sealed and all Future subscriber
+        // notifications remain deferred until the caller drains them.
         Throwable firstFailure = null;
-        for (OresCancellationToken.Registration link : allLinks) {
+        for (OresTask<?> task : allTasks) {
             try {
-                link.close();
+                Runnable notification = task.cancelDeferredNotification();
+                if (notification != null) notifications.add(notification);
             } catch (RuntimeException | Error failure) {
                 if (firstFailure == null) firstFailure = failure;
                 else if (firstFailure != failure) firstFailure.addSuppressed(failure);
             }
         }
-        for (OresTask<?> task : allTasks) {
+        for (OresCancellationToken.Registration link : allLinks) {
             try {
-                Runnable notification = task.cancelDeferredNotification();
-                if (notification != null) notifications.add(notification);
+                link.close();
             } catch (RuntimeException | Error failure) {
                 if (firstFailure == null) firstFailure = failure;
                 else if (firstFailure != failure) firstFailure.addSuppressed(failure);
