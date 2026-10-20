@@ -1132,12 +1132,31 @@ public final class Parser {
         consume(AS, "expected 'as' after model header");
         List<Ast.ModelOpCall> operations = new ArrayList<>();
         while (!check(END) && !check(EOF)) {
-            if (!check(IDENT) || !checkNext(LPAREN)) {
+            if (check(IF) || check(WHILE) || check(FOR) || check(LOOP)
+                    || check(SWITCH) || check(MATCH) || check(SELECT) || check(NB)
+                    || check(DO)) {
+                throw error(peek(),
+                        "MODEL_DYNAMIC_TOPOLOGY: model v1 topology must be statically ordered");
+            }
+            if (check(SPAWN) || check(STOP) || check(AWAIT) || check(READCH)
+                    || check(WRITECH) || check(RT) || check(THROW) || check(RAISE)
+                    || check(PANIC) || check(YIELD)) {
+                throw error(peek(),
+                        "MODEL_EFFECTFUL_BODY: model graph cannot directly perform effects or suspension");
+            }
+            if (!check(IDENT)) {
                 throw error(peek(),
                         "MODEL_NON_LAYER_EXPRESSION: model v1 body accepts only nominal operation calls");
             }
-            String operation = advance().lexeme();
-            consume(LPAREN, "expected '(' after model operation name");
+            StringBuilder operation = new StringBuilder(advance().lexeme());
+            while (match(DOT)) {
+                operation.append('.').append(consume(IDENT,
+                        "expected operation name segment after '.'").lexeme());
+            }
+            if (!match(LPAREN)) {
+                throw error(peek(),
+                        "MODEL_NON_LAYER_EXPRESSION: model operation name must be followed by '('");
+            }
 
             List<Ast.ModelArgument> arguments = new ArrayList<>();
             java.util.Set<String> named = new java.util.HashSet<>();
@@ -1163,7 +1182,7 @@ public final class Parser {
                 } while (match(COMMA));
             }
             consume(RPAREN, "expected ')' after model operation arguments");
-            operations.add(new Ast.ModelOpCall(operation, arguments));
+            operations.add(new Ast.ModelOpCall(operation.toString(), arguments));
             match(SEMICOLON);
         }
 
