@@ -9319,10 +9319,8 @@ public final class OresEvalRootNode extends RootNode {
                             || !a.equals(b)) return false;
                     continue;
                 }
-                if (a instanceof Number || b instanceof Number) {
-                    if (!(a instanceof Number leftNumber)
-                            || !(b instanceof Number rightNumber)
-                            || !isTrustedGuestNumber(leftNumber)
+                if (a instanceof Number leftNumber && b instanceof Number rightNumber) {
+                    if (!isTrustedGuestNumber(leftNumber)
                             || !isTrustedGuestNumber(rightNumber)
                             || !numericValueEquals(leftNumber, rightNumber)) {
                         return false;
