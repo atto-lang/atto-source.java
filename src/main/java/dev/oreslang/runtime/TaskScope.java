@@ -76,6 +76,7 @@ package dev.oreslang.runtime;
             private boolean terminal;
             private boolean notified;
             private boolean attached;
+            private boolean beganExecution;
             private Throwable failure;
 
             private Registration(TaskScope scope) { this.scope = scope; }
@@ -83,7 +84,22 @@ package dev.oreslang.runtime;
             private synchronized boolean maySpawnInto(TaskScope expected) {
                 // Terminal cancellation revokes admissions even if the
                 // cancelled child has not yet physically left its carrier.
-                return scope == expected && !terminal && !quiescent && !notified;
+                return scope == expected && beganExecution
+                        && !terminal && !quiescent && !notified;
+            }
+
+            /**
+             * Source continuation's first scheduler dispatch has begun.
+             * Reservation alone never grants authority to spawn after close().
+             * A cancellation that wins before the first dispatch revokes the
+             * ticket without granting a late-admission capability.
+             */
+            public synchronized void beganExecution() {
+                if (terminal || quiescent || notified) {
+                    throw new IllegalStateException(
+                            "retired scoped Task cannot begin execution");
+                }
+                beganExecution = true;
             }
 
             public void attach(OresFuture<?> future) {
