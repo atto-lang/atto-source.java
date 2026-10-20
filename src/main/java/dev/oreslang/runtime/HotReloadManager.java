@@ -597,7 +597,6 @@ public final class HotReloadManager implements AutoCloseable {
                 closeContext = !contextCloseComplete;
             }
 
-            boolean success = false;
             try {
                 Runnable afterSeal = closeAfterSealFaultForTesting;
                 if (afterSeal != null) afterSeal.run();
@@ -621,15 +620,10 @@ public final class HotReloadManager implements AutoCloseable {
                 synchronized (this) {
                     closeComplete = true;
                 }
-                success = true;
             } finally {
                 synchronized (this) {
+                    // Failed teardown remains sealed but explicitly retryable.
                     closeActive = false;
-                }
-                // success is intentionally not used to clear the admission seal:
-                // failed teardown remains closed but retryable.
-                if (!success) {
-                    // no-op marker for the fail-closed retry contract
                 }
             }
         }
