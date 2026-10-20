@@ -970,6 +970,8 @@ public final class OresEvalRootNode extends RootNode {
             private final List<Ast.Stmt> blockBody;
             private final List<?> arguments;
             private TaskScope.Registration scopeRegistration;
+            private final java.util.Set<TaskScope> liveTaskScopes =
+                    java.util.concurrent.ConcurrentHashMap.newKeySet();
             private Env initialBlockEnv;
 
             private SourceValueCont awaitingContinuation;
@@ -1003,6 +1005,31 @@ public final class OresEvalRootNode extends RootNode {
                 this.blockBody = List.copyOf(
                         Objects.requireNonNull(blockBody, "blockBody"));
                 this.arguments = List.of();
+            }
+
+            private void ownTaskScope(TaskScope scope) {
+                liveTaskScopes.add(scope);
+                scope.drained().whenCompleteRuntime((ignored, failure) ->
+                        liveTaskScopes.remove(scope));
+            }
+
+            @Override
+            public void afterCarrierQuiescent(Runnable retire) {
+                // This runs only after this SourceTask's physical turn has
+                // unwound. Future cancellation can already be observable, but
+                // descendants must not lose actor/arena ownership yet.
+                TaskScope[] pending = liveTaskScopes.toArray(new TaskScope[0]);
+                if (pending.length == 0) {
+                    retire.run();
+                    return;
+                }
+                java.util.concurrent.atomic.AtomicInteger remaining =
+                        new java.util.concurrent.atomic.AtomicInteger(pending.length);
+                for (TaskScope scope : pending) {
+                    scope.cancelAndDrain().whenCompleteRuntime((ignored, failure) -> {
+                        if (remaining.decrementAndGet() == 0) retire.run();
+                    });
+                }
             }
 
             @Override
@@ -2111,6 +2138,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (stmt instanceof Ast.BlockStmt block) {
                     if (block.taskScope()) {
                         TaskScope scope = new TaskScope();
+                        task.ownTaskScope(scope);
                         Env scopedEnv = new Env(env);
                         scopedEnv.taskScope = scope;
                         scopedEnv.taskScopeParent = null;
