@@ -347,7 +347,13 @@ final class OresTaskScopeTest {
                     assertThrows(
                             java.util.concurrent.ExecutionException.class,
                             () -> drained.get(5, TimeUnit.SECONDS));
-            assertSame(ownerFailure, observed.getCause());
+            assertInstanceOf(
+                    StructuredTaskScopePoisonException.class,
+                    observed.getCause());
+            assertSame(ownerFailure, observed.getCause().getCause());
+            assertTrue(scope.isPoisoned());
+            assertFalse(TrapFailurePolicy.isTrappable(
+                    observed.getCause(), RuntimeException.class));
             assertTrue(drained.isCompletedExceptionally());
             assertFalse(drained.isCancelled());
         }
