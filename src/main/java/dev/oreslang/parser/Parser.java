@@ -2677,7 +2677,9 @@ public final class Parser {
 
         if (check(IDENT)) {
             String name = advance().lexeme();
+            boolean qualifiedConstructor = false;
             if (match(DOT)) {
+                qualifiedConstructor = true;
                 name += "." + consume(
                         IDENT,
                         "expected enum case after '.' in match pattern").lexeme();
@@ -2690,8 +2692,11 @@ public final class Parser {
                 consume(RPAREN, "expected ')' after constructor pattern");
                 return new Ast.ConstructorPattern(name, args);
             }
-            // Upper-case bare names are zero-arity constructors; lower-case names bind.
-            if (!name.isEmpty() && Character.isUpperCase(name.charAt(0))) {
+            // A qualified Enum.Case spelling is always a constructor.
+            // For legacy unqualified patterns, retain the upper-case convention.
+            if (qualifiedConstructor
+                    || (!name.isEmpty()
+                            && Character.isUpperCase(name.charAt(0)))) {
                 return new Ast.ConstructorPattern(name, List.of());
             }
             return new Ast.BindingPattern(name);
