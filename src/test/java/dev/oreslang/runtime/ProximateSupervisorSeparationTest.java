@@ -54,7 +54,8 @@ final class ProximateSupervisorSeparationTest {
             // Today's executable host bridge: S's already-bound lifecycle group
             // launches B. A has no ownership/cancellation authority over B.
             // Future source lowering must route this through S's CONTROL lane.
-            ActorRuntime.ActorRef<String> b = sWorkers.spawnWorker(
+            ActorRuntime.ActorRef<String> b = s.startChildHost(
+                    sWorkers,
                     ActorRuntime.ActorKind.PRIVATE,
                     IsolatePolicy.developer(),
                     factory -> (message, context) -> { });
@@ -116,6 +117,13 @@ final class ProximateSupervisorSeparationTest {
                     () -> runtime.createActorGroup(foreign));
             assertEquals(Set.of(), s.childSupervisorIds());
             assertEquals(Set.of(), s.advisedGroupIds());
+            ActorRuntime.ActorGroup unrelated = runtime.createActorGroup();
+            assertThrows(IllegalArgumentException.class, () ->
+                    s.startChildHost(unrelated,
+                            ActorRuntime.ActorKind.PRIVATE,
+                            IsolatePolicy.developer(),
+                            factory -> (message, context) -> { }));
+            unrelated.close();
             a.stop();
             a.done().get(5, TimeUnit.SECONDS);
         }
