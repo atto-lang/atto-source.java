@@ -291,4 +291,69 @@ final class TypedMapClosedSurfaceLanguageTest {
                         pub fnc main(): void { return; }
                         """));
     }
+    @Test
+    void genericCallsAndTransientAggregatesCannotSmuggleMapOwnership() {
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        fnc sink<T>(T value): void {
+                          return;
+                        }
+                        pub fnc main(): void {
+                          val Map<string, int> values =
+                              new Map<string, int>();
+                          sink(values);
+                          return;
+                        }
+                        """));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          tuple(new Map<string, int>(), 1);
+                          return;
+                        }
+                        """));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          [new Map<string, int>()];
+                          return;
+                        }
+                        """));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          infer struct{values: new Map<string, int>()};
+                          return;
+                        }
+                        """));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          Some(new Map<string, int>());
+                          return;
+                        }
+                        """));
+    }
+
+    @Test
+    void genericObjectSpecializationCannotHideMapStorage() {
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        define class Box<T> as
+                          pub val T value;
+                        end
+
+                        pub fnc main(): void {
+                          new Box<Map<string, int>>(
+                              new Map<string, int>());
+                          return;
+                        }
+                        """));
+    }
+
+
 }
