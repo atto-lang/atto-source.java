@@ -46,6 +46,17 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.source_tree_mock = self.source_tree_guard.start()
         self.addCleanup(self.source_tree_guard.stop)
 
+    def test_legacy_cli_is_disabled_without_any_api_or_publish_attempt(self):
+        with (
+            patch.object(pub, "publish") as publish,
+            patch.object(pub, "gh_api") as api,
+            patch.object(pub.sys, "stderr") as stderr,
+        ):
+            self.assertEqual(pub.main(["trusted/ci"]), 1)
+        publish.assert_not_called()
+        api.assert_not_called()
+        self.assertTrue(stderr.write.called)
+
     def test_github_api_uses_absolute_cli_and_sanitized_environment(self):
         response = Mock(returncode=0, stdout='{"ok":true}', stderr="")
         hostile = {
