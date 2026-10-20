@@ -43,3 +43,29 @@ After this focused suite, run complete JDK25/GraalVM Maven tests, source positiv
 - Source-org exact-head Actions [concurrency #39348356706](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39348356706) failed without a runner name or recorded job steps. Do **not** claim Maven/JUnit passed or failed.
 - Source `main` private export allowlist has **zero approved entries**; security issue [#962](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/962) remains open. No private Git-object mirror was made. Spare Actions budget elsewhere does not authorize code export. Require independent immutable source SHA/tree and destination numeric-ID/private-visibility approval from trusted policy.
 - Review status, required checks and branch-protection enforcement must be independently verified prior to merge. **Keep the PR draft.**
+
+
+## October 20 follow-up: unregistered compiler slot and source-local retry
+
+- Compiler `startCompilerFrame` now sets `OwnershipSlot.registered` after
+  successful insertion. On admission failure, it only attempts rollback if
+  registration succeeded or the owner collection reports an insert-then-throw
+  slot. Sealed-scope rejection no longer triggers false slot-removal errors;
+  the acquired code-generation pin still retires exactly once outside locks.
+- `OresTaskScopeFrameTest` adds
+  `sealedScopeRejectsCompilerFrameWithoutUnregisteredOwnerRemoval` and
+  `postInsertCompilerSlotFailureStillRetiresPinAndOwner`; both use adversarial
+  owner-set behavior. These tests are **committed but have not executed**.
+- A targeted retry of source-org concurrency job `118397513826` was
+  accepted. GitHub [run #39351813629](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39351813629)
+  attempt 2 again failed with `jobs[].steps = null` and no runner. The
+  original job log download returned missing log blob. This is evidence
+  of pre-run failure, NOT a JUnit failure, and it does not identify a
+  particular billing or Actions policy cause.
+- GitHub check-run records did indicate annotations for failed jobs, but
+  the current GitHub connection cannot read the annotations URL.
+  Repository administrators should inspect these in the GitHub Actions UI.
+- Cross-org transfer remains blocked by #962; destination policy still has
+  zero independently approved source-export destinations. Do not mirror
+  any private source tree just because another organization has runners.
+
