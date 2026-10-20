@@ -1,7 +1,6 @@
 package dev.oreslang.runtime;
 
-import dev.oreslang.types.TaskAccessVerifier;
-import java.util.List;
+import dev.oreslang.types.TaskRegionTestLedger;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -17,16 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
 final class TaskRegionPhysicalExitBridgeTest {
     @Test
     void twoDisjointChildrenReleaseLoansOnlyFromPhysicalExitCallbacks() throws Exception {
-        var ledger = new TaskAccessVerifier();
-        var column = TaskAccessVerifier.Place.whole(
-                new TaskAccessVerifier.Root("PROCESS", 203, 1, true))
-                .field("position", true);
-        var leftClaim = new TaskAccessVerifier.Claim(
-                column.range(0, 128, true), TaskAccessVerifier.Mode.WRITE);
-        var rightClaim = new TaskAccessVerifier.Claim(
-                column.range(128, 256, true), TaskAccessVerifier.Mode.WRITE);
-        var leftTicket = ledger.admit(List.of(leftClaim));
-        var rightTicket = ledger.admit(List.of(rightClaim));
+        var ledger = new TaskRegionTestLedger();
         int[] data = new int[256];
         CountDownLatch bothRunning = new CountDownLatch(2);
         CountDownLatch mayExit = new CountDownLatch(1);
@@ -41,7 +31,7 @@ final class TaskRegionPhysicalExitBridgeTest {
                 assertTrue(mayExit.await(3, TimeUnit.SECONDS));
                 return new OresScheduler.Done<>(128);
             }, () -> {
-                ledger.quiescent(leftTicket);
+                ledger.physicalExitLeft();
                 released.incrementAndGet();
             });
             var right = scope.startCompilerFrame(scheduler, resume -> {
@@ -50,7 +40,7 @@ final class TaskRegionPhysicalExitBridgeTest {
                 assertTrue(mayExit.await(3, TimeUnit.SECONDS));
                 return new OresScheduler.Done<>(128);
             }, () -> {
-                ledger.quiescent(rightTicket);
+                ledger.physicalExitRight();
                 released.incrementAndGet();
             });
             try {
@@ -58,17 +48,14 @@ final class TaskRegionPhysicalExitBridgeTest {
                 assertEquals(2, ledger.activeChildren());
                 assertEquals(0, released.get());
                 assertTrue(left.cancel());
+                ledger.cancelLeft();
                 assertTrue(left.isCancelled());
                 assertFalse(left.isQuiescent());
                 assertEquals(0, released.get(),
                         "cancelled result is not a physical-exit proof");
-                assertFalse(ledger.parentMayAccess(new TaskAccessVerifier.Claim(
-                        column, TaskAccessVerifier.Mode.WRITE)));
-                assertThrows(IllegalArgumentException.class, () -> ledger.admit(
-                        List.of(new TaskAccessVerifier.Claim(
-                                column.range(127, 129, true),
-                                TaskAccessVerifier.Mode.WRITE))));
-                assertThrows(IllegalStateException.class, ledger::finishScope);
+                assertFalse(ledger.parentCanWrite());
+                ledger.verifyOverlapRejected();
+                ledger.verifyPrematureFinishRejected();
             } finally {
                 mayExit.countDown();
             }
@@ -77,11 +64,51 @@ final class TaskRegionPhysicalExitBridgeTest {
             assertNull(AsyncRuntime.await(right.getDone()));
             assertEquals(2, released.get());
             assertEquals(0, ledger.activeChildren());
-            assertTrue(ledger.parentMayAccess(new TaskAccessVerifier.Claim(
-                    column, TaskAccessVerifier.Mode.WRITE)));
+            assertTrue(ledger.parentCanWrite());
             ledger.finishScope();
             for (int i = 0; i < data.length; i++)
                 assertEquals(i < 128 ? 11 : 22, data[i]);
         }
     }
+    @Test
+    void failedChildStillReleasesRegionOnlyAfterPhysicalExit() throws Exception {
+        var ledger = new TaskRegionTestLedger();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch allowExit = new CountDownLatch(1);
+        AtomicInteger retired = new AtomicInteger();
+
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(2);
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            var failed = scope.startCompilerFrame(scheduler, resume -> {
+                entered.countDown();
+                assertTrue(allowExit.await(5, TimeUnit.SECONDS));
+                throw new IllegalStateException("intentional Task failure");
+            }, () -> {
+                ledger.physicalExitLeft();
+                retired.incrementAndGet();
+            });
+            var sibling = scope.startCompilerFrame(scheduler, resume ->
+                    new OresScheduler.Done<>(1), () -> {
+                ledger.physicalExitRight();
+                retired.incrementAndGet();
+            });
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertFalse(ledger.parentCanWrite());
+                ledger.verifyPrematureFinishRejected();
+            } finally {
+                allowExit.countDown();
+            }
+            assertThrows(IllegalStateException.class,
+                    () -> AsyncRuntime.await(failed.getAwaited()));
+            assertNull(AsyncRuntime.await(failed.getDone()));
+            assertNull(AsyncRuntime.await(sibling.getDone()));
+            assertEquals(2, retired.get());
+            assertEquals(0, ledger.activeChildren());
+            assertTrue(ledger.parentCanWrite());
+            ledger.finishScope();
+        }
+    }
+
 }

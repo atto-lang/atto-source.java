@@ -74,13 +74,15 @@ public final class SendSyncTraits {
     }
     public boolean isSend(Ast.TypeRef type) { return derive(type).send(); }
     public boolean isSync(Ast.TypeRef type) { return derive(type).sync(); }
+    // Never stringify rejected TypeRef graphs: record toString recursively
+    // traverses their arguments and can overflow after a safe depth rejection.
     public void requireSend(Ast.TypeRef type) {
         if (!isSend(type)) throw new IllegalArgumentException(
-                "type is not Send across Task execution contexts: " + type);
+                "type is not Send across Task execution contexts");
     }
     public void requireSync(Ast.TypeRef type) {
         if (!isSync(type)) throw new IllegalArgumentException(
-                "type is not Sync for shared Task borrows: " + type);
+                "type is not Sync for shared Task borrows");
     }
 
     private Traits derive(Ast.TypeRef type, Map<String, Ast.TypeRef> substitutions, Set<Key> active) {
@@ -147,7 +149,9 @@ public final class SendSyncTraits {
                 }
                 // Do not derive Task Send/Sync from an unverified runtime
                 // authority, including a user class spoofing its type name.
-                case "Rc", "MutexGuard", "RwLockGuard", "ActorState", "RawPointer",
+                case "Rc", "RcWeak", "MutexGuard", "RwLockGuard", "ReadGuard", "WriteGuard",
+                        "SharedMutex", "UnsafeCell", "AtomicRef", "TRef", "Ref",
+                        "ActorState", "RawPointer", "NativePointer",
                         "Pointer", "OresPointer", "ThreadLocal", "ThreadBound",
                         "NativeHandle", "FfiHandle", "ExecutionPermit",
                         "ActorRef", "ActorMail", "ActorOutput", "ActorOutputStream",
