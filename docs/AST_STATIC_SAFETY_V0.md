@@ -6,11 +6,14 @@ Call OresCompiler.analyzeStaticSafety(source) to type/ownership check Oreslang s
 
 ## Current rule IDs
 
-- ORES-TERM-002: unconditional source loops with no apparent exit; potential rather than proven nontermination.
+- ORES-TERM-002: syntactically unconditional loops without an apparent reachable exit; potential nontermination.
+- ORES-TERM-003: syntactically unconditional loops with only conditional or otherwise unverified exits; their termination is not proven. A first-statement trivial `break` or literal `return` is exempted as a narrow syntactic special case, not a general ranking proof.
 - ORES-AMP-001: possible recursive actor creation via spawn ActorType(...) and a statically recognized receive/on_message handler.
+- ORES-AMP-002: multiple syntactic actor-spawn sites occur in a recursive component; potential multiplication, **not** a feasible-path fanout count or proof that all branches execute.
 - ORES-AMP-004: callable SCCs under uniquely resolved same-module direct calls.
 - ORES-AMP-005: actor creation inside source loops without demonstrated total bound.
 - ORES-SEC-010: candidate host execution/FFI call requires independent authority and data-flow validation; not a proven vulnerability.
+- ORES-SEC-011: a non-literal expression is passed to a syntactically recognized privileged host call. This is a taint-analysis **review obligation**, not a claim that input is untrusted, exploitable, or unsanitized. Constant folding and true source-to-sink provenance are not implemented.
 - ORES-ANALYSIS-001: unresolved target, nominal overload, or handler. Never claim completeness.
 
 ## Limitations
@@ -47,6 +50,12 @@ The opt-in AST pass also runs `CallbackOrderingAnalyzer`:
   lifetime have not been proven. A source-level `on()` method name is not
   an effect certification.
 - A wildcard event name cannot establish a definite installed subscription.
+- `once` subscriptions are conservatively treated as potentially consumed
+  by an explicit matching `emit` or an unknown-timing callback containing a
+  matching emission. A durable `on` at the same syntactic event remains
+  independently registered, but is still merely lexical evidence (`CB-006`).
+  This is deliberately conservative: it does not count one-shot listener
+  multiplicities or verify a specific event library's delivery semantics.
 
 - The lexical pass now invalidates prior syntactic registration evidence for
   `off`, `removeListener` / `remove_listener`, and `removeAllListeners` /
