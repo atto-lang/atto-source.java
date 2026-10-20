@@ -515,20 +515,24 @@ public final class ModelGraphCompiler {
     }
 
     private static void validateModelIdentifier(String name, String label) {
-        if (name == null || name.isBlank()
+        if (name == null || name.isEmpty()
                 || name.length() > MAX_MODEL_IDENTIFIER_LENGTH
-                || !Character.isLetter(name.charAt(0))) {
+                || !asciiLetter(name.charAt(0))) {
             fail("MODEL_INVALID_IDENTIFIER",
                     label + " identifier is invalid or exceeds "
-                            + MAX_MODEL_IDENTIFIER_LENGTH + " UTF-16 code units");
+                            + MAX_MODEL_IDENTIFIER_LENGTH + " ASCII code units");
         }
         for (int i = 1; i < name.length(); i++) {
             char ch = name.charAt(i);
-            if (!(Character.isLetterOrDigit(ch) || ch == '_')) {
+            if (!(asciiLetter(ch) || ch >= '0' && ch <= '9' || ch == '_')) {
                 fail("MODEL_INVALID_IDENTIFIER",
-                        label + " identifier '" + name + "' is not canonical");
+                        label + " identifier '" + name + "' is not canonical ASCII");
             }
         }
+    }
+
+    private static boolean asciiLetter(char ch) {
+        return ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z';
     }
 
     private static Ast.FunctionDecl findFunction(
