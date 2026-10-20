@@ -20,3 +20,11 @@ The LLVM main frontend currently implements a narrower typed-i64 source subset; 
 - A typed repeating group cannot obtain its static slot proof from an expression containing `Unknown`; both the contextual and declared-literal validators reject unresolved slot types. `ListType` metadata also rejects `Unknown` joined elements or slots while preserving ordinary compile-time `Generic<T>` slot support.
 - The additional JUnit tests assert that the parser accepts alias-cast and constructor fixtures before requiring the type checker to reject them; merely failing to parse is not evidence of semantic safety.
 - Exact-source carrier review is tracked by [Java issue #1699](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1699) and [source-free carrier plan PR #17](https://github.com/opto-sync-test/go-java-validation/pull/17). Neither review artifact authorizes private source transfer.
+
+## Generic-inference hardening and execution boundary
+
+- Generic parameters within a repeated group infer from each corresponding **ordered slot**, not the joined union value type. For example `Array[...(T, string, bool)]` can infer `T=int` from a proved `Array[...(int, string, bool)]` argument. A nonmatching slot causes a type-check failure.
+- Runtime-extent shape proof metadata cannot substitute unrelated generic placeholders for the same slot or joined type. Exact generic identity is required in the join; an unconstrained generic value by itself does not prove a shaped array.
+- This patch now has **13 JUnit test methods**, but no test has been shown to execute: GitHub Actions failed before runner steps on the exact source branch. Source-level inspection is not compilation or execution.
+- A separate **public** GitHub organization (`flags-2-env/flags-2-env`) had successful Actions jobs on 2026-10-20, but it is not approved or private and must **never** receive Oreslang private source.
+- The candidate private carrier test-plan [PR #17](https://github.com/opto-sync-test/go-java-validation/pull/17) and source security [issue #1699](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1699) remain review-only; an actual code mirror must not be created before authorized protected merge, provenance checks and independently observed runner capacity.
