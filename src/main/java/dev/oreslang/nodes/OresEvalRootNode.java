@@ -4100,6 +4100,9 @@ public final class OresEvalRootNode extends RootNode {
             if (projection == null || projection.isStatic()
                     || projection.async() || projection.suspends()
                     || projection.isAbstract()
+                    || !projection.genericParameters().isEmpty()
+                    || (projection.explicitReceiverType() != null
+                        && projection.explicitReceiverType().mutableBorrow())
                     || projection.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalStateException(
                         "HasFuture.get_future() must be a public synchronous method");
