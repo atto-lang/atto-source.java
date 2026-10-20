@@ -1179,17 +1179,33 @@ public final class OresScheduler implements AutoCloseable {
             if (phase.get() == TERMINAL && !executing.get()
                     && !hasStructuredScopes()
                     && quiescenceNotified.compareAndSet(false, true)) {
-                // Keep the task observable in the scheduler's live set while a
-                // cancelled/failed guest turn is still physically executing.
-                // A terminal Future is not a carrier-exit witness.
-                tasks.remove(this);
+                // Physical execution is over, but lifecycle retirement is the
+                // stronger reclamation authority. Keep the runner in the live
+                // set and keep any timed-admission slot pinned until that
+                // trusted retirement hook succeeds.
                 cancelWallDeadline();
                 try {
                     onQuiescent.run();
-                } finally {
-                    deadlineQuiescenceRetired.set(true);
-                    releaseDeadlineSlotIfRetired();
+                } catch (RuntimeException | Error retirementFailure) {
+                    // A lifecycle failure supersedes an otherwise-successful
+                    // guest result. Do not manufacture a successful completion
+                    // or capacity-release witness after failed ownership
+                    // retirement.
+                    terminalOutcome.set(new TerminalFailure<>(retirementFailure));
+                    if (retirementFailure instanceof VirtualMachineError fatal) {
+                        throw fatal;
+                    }
+                    if (retirementFailure instanceof ThreadDeath fatal) {
+                        throw fatal;
+                    }
+                    if (retirementFailure instanceof LinkageError fatal) {
+                        throw fatal;
+                    }
+                    return;
                 }
+                tasks.remove(this);
+                deadlineQuiescenceRetired.set(true);
+                releaseDeadlineSlotIfRetired();
             }
         }
 
