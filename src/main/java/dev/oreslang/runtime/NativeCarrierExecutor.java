@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.IntUnaryOperator;
 
 /**
  * Bounded actor-carrier executor backed by native OS threads.
@@ -81,6 +82,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private final AtomicReferenceArray<Thread> carrierThreads;
     private final AtomicIntegerArray carrierAffinityTargets;
     private final CpuTopology topology;
+    private final IntUnaryOperator cpuAtSlot;
     private final AtomicBoolean shutdown = new AtomicBoolean();
     /** Serializes Java->native pool calls against asynchronous native retirement. */
     private final Object nativeLifecycleLock = new Object();
@@ -140,6 +142,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         this.nativeStackBytes = configuredCarrierStackBytes();
         this.carrierThreads = new AtomicReferenceArray<>(maximumPoolSize);
         this.carrierAffinityTargets = new AtomicIntegerArray(maximumPoolSize);
+        this.cpuAtSlot = carrierAffinityTargets::get;
         for (int slot = 0; slot < maximumPoolSize; slot++) {
             carrierAffinityTargets.set(slot, CpuTopology.UNKNOWN);
         }
@@ -428,6 +431,11 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     }
 
     private void enqueue(Runnable task, int affinityKey, boolean affinityAware) {
+        enqueue(task, affinityKey, affinityAware, CpuTopology.UNKNOWN);
+    }
+
+    private void enqueue(Runnable task, int affinityKey,
+                         boolean affinityAware, int preferredNuma) {
         Objects.requireNonNull(task, "task");
         if (shutdown.get() || !reserveReadySlot()) {
             throw new RejectedExecutionException(
@@ -444,7 +452,9 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
             }
 
             if (affinityAware) {
-                slot = preferredSlot(affinityKey);
+                slot = topology.preferredSlotForNuma(
+                        affinityKey, preferredNuma, Math.max(1, corePoolSize.get()),
+                        cpuAtSlot);
                 ArrayBlockingQueue<Runnable> lane = affinityQueues.get(slot);
                 if (lane.size() < localBacklogEscapeThreshold()) {
                     offered = lane.offer(task);
@@ -539,7 +549,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         }
         switch (hint.affinity()) {
             case NONE -> execute(task);
-            case SOFT -> executeAffinity(hint.affinityKey(), task);
+            case SOFT -> enqueue(task, hint.affinityKey(), true, hint.preferredNuma());
             case THREAD_BOUND -> throw new RejectedExecutionException(
                     "THREAD_BOUND work cannot use a stealable native carrier lane");
         }
