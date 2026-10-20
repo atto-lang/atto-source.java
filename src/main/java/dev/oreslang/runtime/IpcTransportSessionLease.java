@@ -314,9 +314,11 @@ final class IpcTransportSessionLease {
             return; // Never declare the descriptor reusable.
         }
         synchronized (this) { physicalCloseConfirmed = true; }
+        final IpcReceiptCompletionBridge.RetiredCompletions terminal;
         try {
-            // Arbitrary dependent user callbacks can run: no session lock held.
-            receipts.transportLost(
+            // Retire correlation authority without running arbitrary dependent
+            // callbacks: they may synchronously block this cleanup worker.
+            terminal = receipts.transportLostDeferred(
                     physicalOwner, trustedEpoch, generation);
         } catch (RuntimeException | Error failure) {
             synchronized (this) {
@@ -334,6 +336,10 @@ final class IpcTransportSessionLease {
             phase = Phase.RETIRED;
             notifyAll();
         }
+        // All physical/ledger state is now settled and published. Deliver
+        // terminal stages outside the lease lock so a stalled application
+        // callback cannot hold the descriptor in FINALIZING indefinitely.
+        terminal.complete();
     }
 
     Snapshot snapshot() {
