@@ -633,6 +633,7 @@ public final class TreeShaker {
                         klass.genericParameters(),
                         klass.parents(),
                         klass.interfaces(),
+                        klass.staticContracts(),
                         fields,
                         constructor,
                         methods);
