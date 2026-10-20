@@ -159,6 +159,89 @@ class NativeHttpTest {
         }
     }
 
+    @Test
+    void liveContextEnforcesScopedNetworkBindAuthority() throws Exception {
+        RuntimePermissions exactZero = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "127.0.0.1:0");
+        RuntimeException exactZeroDenied = assertThrows(
+                RuntimeException.class,
+                () -> evalWithNetworkPermissions(
+                        """
+                        pub async routine main(): void {
+                          val server = http.listen("127.0.0.1", 0, 1, 1024, 1000);
+                          await server.shutdown(0);
+                          return;
+                        }
+                        """,
+                        exactZero));
+        assertTrue(deepMessage(exactZeroDenied).contains("permission denied"),
+                deepMessage(exactZeroDenied));
+
+        RuntimePermissions hostWide = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "127.0.0.1");
+        String output = evalWithNetworkPermissions(
+                """
+                pub async routine main(): void {
+                  val server = http.listen("127.0.0.1", 0, 1, 1024, 1000);
+                  stdio.println(server.port);
+                  await server.shutdown(0);
+                  return;
+                }
+                """,
+                hostWide);
+        int boundPort = Integer.parseInt(output.trim());
+        assertTrue(boundPort > 0 && boundPort <= 65535,
+                "host-wide ephemeral bind must report the kernel-selected port");
+
+        RuntimePermissions deniedPortOnHost = hostWide.withDenied(
+                RuntimePermissions.Permission.NET, "127.0.0.1:22");
+        RuntimeException ambiguousEphemeralDenied = assertThrows(
+                RuntimeException.class,
+                () -> evalWithNetworkPermissions(
+                        """
+                        pub async routine main(): void {
+                          val server = http.listen("127.0.0.1", 0, 1, 1024, 1000);
+                          await server.shutdown(0);
+                          return;
+                        }
+                        """,
+                        deniedPortOnHost));
+        assertTrue(deepMessage(ambiguousEphemeralDenied).contains("permission denied"),
+                deepMessage(ambiguousEphemeralDenied));
+
+        RuntimePermissions exactFixed = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "127.0.0.1:44444");
+        RuntimeException wrongFixedPortDenied = assertThrows(
+                RuntimeException.class,
+                () -> evalWithNetworkPermissions(
+                        """
+                        pub async routine main(): void {
+                          val server = http.listen("127.0.0.1", 44445, 1, 1024, 1000);
+                          await server.shutdown(0);
+                          return;
+                        }
+                        """,
+                        exactFixed));
+        assertTrue(deepMessage(wrongFixedPortDenied).contains("permission denied"),
+                deepMessage(wrongFixedPortDenied));
+
+        RuntimePermissions ipv6Exact = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "[::1]:9443");
+        RuntimeException ipv6WrongPortDenied = assertThrows(
+                RuntimeException.class,
+                () -> evalWithNetworkPermissions(
+                        """
+                        pub async routine main(): void {
+                          val server = http.listen("::1", 9444, 1, 1024, 1000);
+                          await server.shutdown(0);
+                          return;
+                        }
+                        """,
+                        ipv6Exact));
+        assertTrue(deepMessage(ipv6WrongPortDenied).contains("permission denied"),
+                deepMessage(ipv6WrongPortDenied));
+    }
+
     @Test void pathDecodingPreservesSegmentBoundariesAndRejectsAmbiguousBytes() {
         assertEquals(List.of(), NativeHttp.segments("/"));
         assertEquals(List.of("😀"), NativeHttp.segments("/😀"));
@@ -370,6 +453,38 @@ class NativeHttpTest {
 
         }
         return output.toString(StandardCharsets.UTF_8);
+    }
+
+    private static String evalWithNetworkPermissions(
+            String program,
+            RuntimePermissions permissions) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.NETWORK);
+        try (Context context = policy.restrictedContextBuilder(
+                        ExecutionProfile.serverJit(),
+                        Set.of(),
+                        permissions,
+                        PermissionCheckMode.RUNTIME)
+                .out(output)
+                .build()) {
+            context.eval(Source.newBuilder(
+                    OresLanguage.ID, program, "native-http-permission-test.ores").build());
+        }
+        return output.toString(StandardCharsets.UTF_8);
+    }
+
+    private static String deepMessage(Throwable error) {
+        StringBuilder message = new StringBuilder();
+        Throwable current = error;
+        while (current != null) {
+            if (current.getMessage() != null) {
+                if (!message.isEmpty()) message.append(' ');
+                message.append(current.getMessage());
+            }
+            current = current.getCause();
+        }
+        return message.toString();
     }
 
     private static void closeWhenQuiescent(Context context) throws InterruptedException {
