@@ -32,7 +32,7 @@ final class CheckedProgramProofTest {
     @Test
     void checkedProofCannotBePairedWithDifferentProgramIdentity() {
         OresCompiler.CheckedProgram checked =
-                OresCompiler.parseAndTypeCheckChecked(SOURCE);
+                OresCompiler.parseAndTypeCheckChecked("/tmp/checked.ores", SOURCE);
         Ast.Program differentProgram = OresCompiler.parseAndTypeCheck(SOURCE);
 
         assertThrows(
@@ -46,6 +46,39 @@ final class CheckedProgramProofTest {
                         Set.of(),
                         SOURCE,
                         differentProgram,
+                        checked));
+    }
+
+    @Test
+    void checkedProofCannotBeReplayedUnderDifferentUnitOrSource() {
+        OresCompiler.CheckedProgram checked =
+                OresCompiler.parseAndTypeCheckChecked("/tmp/original.ores", SOURCE);
+        Ast.Program program = checked.program();
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new IncrementalCompiler.CompiledUnit(
+                        "/tmp/other.ores",
+                        "other",
+                        "__root__",
+                        "source",
+                        "abi",
+                        Set.of(),
+                        SOURCE,
+                        program,
+                        checked));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new IncrementalCompiler.CompiledUnit(
+                        "/tmp/original.ores",
+                        "original",
+                        "__root__",
+                        "source",
+                        "abi",
+                        Set.of(),
+                        SOURCE + "\n",
+                        program,
                         checked));
     }
 }
