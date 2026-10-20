@@ -350,6 +350,30 @@ final class SymbolPropertyKeyCodecTest {
         assertNotEquals("ready", decoded);
     }
 
+    @Test void encodedWireLengthMatchesActualEncodingAcrossKeyKinds() {
+        List<Object> keys = List.of(
+                "",
+                "plain",
+                "é",
+                "🚀",
+                OresSymbol.process("ready"),
+                OresSymbol.process("café"),
+                OresSymbol.stable("550e8400-e29b-41d4-a716-446655440000"));
+        for (Object key : keys) {
+            assertEquals(
+                    SymbolPropertyKeyCodec.encode(key).length,
+                    SymbolPropertyKeyCodec.encodedWireLength(key),
+                    key.toString());
+        }
+
+        assertThrows(IllegalArgumentException.class,
+                () -> SymbolPropertyKeyCodec.encodedWireLength("\ud800"));
+        assertThrows(IllegalArgumentException.class,
+                () -> SymbolPropertyKeyCodec.encodedWireLength(
+                        "x".repeat(SymbolPropertyKeyCodec.MAX_TEXT_KEY_BYTES + 1)));
+    }
+
+
     private static byte[] wire(int kind, byte[] name) {
         return ByteBuffer.allocate(6 + name.length)
                 .put((byte) 'O').put((byte) 'K').put((byte) 1)
