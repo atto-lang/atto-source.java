@@ -256,6 +256,56 @@ final class MlActorStateScalarGuestTest {
         assertGuestRejectedBeforeMain(wrongNominalIdentity);
     }
 
+    @Test void minimalTrainingErrorSliceFailsClosedOutsideNullaryLocalDomain() {
+        String payloadEnum = """
+                define enum TrainingError as
+                    BAD: int = 1
+                end
+                pub fnc bad(): TrainingError {
+                    return TrainingError.BAD(3);
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(payloadEnum),
+                "payload-bearing enum syntax is recognized by the extracted parser");
+        assertRejected(payloadEnum);
+
+        String genericEnumUse = """
+                define enum TrainingError as
+                    BAD = 1
+                end
+                pub fnc bad(TrainingError<int> reason): int {
+                    return 0;
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(genericEnumUse),
+                "generic misuse must reach semantic rejection");
+        assertRejected(genericEnumUse);
+
+        String valueShadow = """
+                define enum TrainingError as
+                    BAD = 1
+                end
+                pub fnc TrainingError(): int {
+                    return 7;
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(valueShadow),
+                "shadowing negative must be syntactically valid");
+        assertRejected(valueShadow);
+
+        String builtinShadow = """
+                define enum Result as
+                    BAD = 1
+                end
+                pub fnc bad(): int {
+                    return 0;
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(builtinShadow),
+                "builtin shadowing negative must be syntactically valid");
+        assertRejected(builtinShadow);
+    }
+
     @Test void readEffectsDoNotGrantStateWriteAndLoanCannotEscape() {
         assertRejected("""
                 define actor Stage as
