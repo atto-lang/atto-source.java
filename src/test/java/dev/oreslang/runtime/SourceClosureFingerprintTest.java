@@ -70,4 +70,29 @@ final class SourceClosureFingerprintTest {
         assertThrows(IllegalArgumentException.class, () -> digest(
                 Map.of(), Map.of(), "", List.of(".")));
     }
+    @Test
+    void transitiveImportsAffectReplayEvenWhenEntryAndDirectImportAreUnchanged() {
+        // The entry source and first-level dependency remain byte-identical.
+        // A change two import edges away MUST invalidate the replay digest.
+        var sources = new LinkedHashMap<String, String>();
+        sources.put("main", "import fnc a from './a';");
+        sources.put("a", "import fnc b from './b'; pub fnc a(): int { return b(); }");
+        sources.put("b", "pub fnc b(): int { return 1; }");
+        var edges = Map.of(
+                "main", Map.of("./a", "a"),
+                "a", Map.of("./b", "b"));
+        String first = digest(sources, edges, "manifest", List.of("/project"));
+        sources.put("b", "pub fnc b(): int { return 2; }");
+        assertNotEquals(first, digest(sources, edges, "manifest", List.of("/project")));
+
+        // A source with unchanged text but a rebound transitive import is
+        // also a different program. Never identify imports by basename only.
+        sources.put("b", "pub fnc b(): int { return 1; }");
+        sources.put("b2", "pub fnc b(): int { return 1; }");
+        String alternate = digest(sources, Map.of(
+                "main", Map.of("./a", "a"),
+                "a", Map.of("./b", "b2")), "manifest", List.of("/project"));
+        assertNotEquals(first, alternate);
+    }
+
 }
