@@ -155,6 +155,42 @@ final class DefineModelParserGateTest {
         assertTrue(async.getMessage().contains("model declarations"), async::toString);
     }
 
+
+    @Test
+    void preservesQualifiedOperationIdentityForLaterTrustedResolution() {
+        Ast.Program program = Parser.parse("""
+                define model Qualified as
+                    finance.PriceInput()
+                    finance.ApplyTaxBps(1500)
+                end
+                """);
+        Ast.ModelDecl model = assertInstanceOf(Ast.ModelDecl.class,
+                program.modules().getFirst().declarations().getFirst());
+        assertEquals("finance.PriceInput", model.operations().getFirst().name());
+        assertEquals("finance.ApplyTaxBps", model.operations().get(1).name());
+    }
+
+    @Test
+    void classifiesDynamicTopologyAndDirectEffectsBeforeGenericBodyErrors() {
+        IllegalArgumentException dynamic = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define model Dynamic as
+                            if condition then
+                                Dense(12, 12)
+                            fi
+                        end
+                        """));
+        assertTrue(dynamic.getMessage().contains("MODEL_DYNAMIC_TOPOLOGY"), dynamic::toString);
+
+        IllegalArgumentException effect = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define model Spawning as
+                            spawn Worker()
+                        end
+                        """));
+        assertTrue(effect.getMessage().contains("MODEL_EFFECTFUL_BODY"), effect::toString);
+    }
+
     @Test
     void semanticPipelineFailsClosedUntilTypedModelGraphLoweringExists() {
         Ast.Program program = Parser.parse("""
