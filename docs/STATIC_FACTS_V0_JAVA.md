@@ -23,6 +23,22 @@ The `unit` identifier is the SHA-256 of the exact UTF-8 source bytes. It is an *
 
 Unsupported or effectful constructs fail closed with `ORES-ANALYZE-UNSUPPORTED`: this includes foreign/native calls, host I/O, actor or Task spawning, async/await, callbacks, closures, dynamic dispatch, arbitrary guest objects, select, catch/throw and inter-module calls. A symbol cannot be misresolved as a direct function if a parameter or local binding shadows its name.
 
+## Hardened producer limits (aligned with Rust draft #16)
+
+The first scalar bridge enforces at most **512 procedures, 256 loops in one
+procedure, 4,096 loops across the document, 8,192 distinct direct-call edges,
+and 128 nested AST statement/expression traversal frames**. These are
+conservative importer budgets, not general Oreslang language limits. Oversized
+input fails closed with `ORES-ANALYZE-UNSUPPORTED`.
+
+This fact schema does not yet distinguish multiple source callsites with the
+same caller and callee. Instead of silently collapsing them into one edge,
+the producer rejects repeated same-pair calls until callsite identities,
+multiplicity and enclosing-loop semantics can be exported faithfully.
+
+The exporter is not a whole-program source parser with independently verified
+line mappings. Runtime budget claims and hot-reload effects remain unknown.
+
 ## Evidence limits
 
 - **Every loop is currently `exit=unknown` and `safepoint=false`**. This is intentionally conservative. No rank/termination or scheduler-cooperation proof is inferred from an exit edge or a name.
