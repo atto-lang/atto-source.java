@@ -14,6 +14,10 @@ compiler/evaluator branch #1104 is more than 800 commits behind modern
 - Atomic lookup/take distinction between missing and a stored Option-like
   value, transactional `putAll`, strict key/value domain admission and
   per-map key-byte/entry quotas.
+- Java host equality/hash are object-identity based and host `toString` is
+  opaque. Mutable runtime storage cannot use structural host hashing as a
+  surrogate for future Oreslang guest Map equality; independent tests reject
+  hostile nested `equals/hashCode/toString` callbacks.
 - Host/runtime foundation `fromNominalEntries(Iterable<?>, KeyDomain,
   ValueDomain)`, taking **actual** `OresEntry` carriers only.
   It bounds traversal to `MAX_ENTRIES`, rejects incompatible elements and
