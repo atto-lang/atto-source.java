@@ -6,6 +6,7 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
+import dev.oreslang.types.AsyncTransferProvenance;
 
 /** Trusted compiler front-end API for build systems and isolate admission. */
 public final class OresCompiler {
@@ -15,11 +16,41 @@ public final class OresCompiler {
         return analyze(Parser.parse(source));
     }
 
+    /**
+     * Combined semantic + ownership admission for current async call lowering.
+     *
+     * <p>The TypeChecker runs first and proves every declared async boundary is
+     * concrete owned task-safe data. OwnershipChecker then proves the exact
+     * argument transfers for each statically resolved async call. The returned
+     * provenance is still not a lifetime-release witness: runtime lowering must
+     * retain transferred ownership until TaskScope.getDone() physical
+     * quiescence.</p>
+     */
+    public record AsyncAdmissionResult(
+            Ast.Program program,
+            java.util.List<String> warnings,
+            AsyncTransferProvenance asyncTransfers) {
+        public AsyncAdmissionResult {
+            warnings = java.util.List.copyOf(warnings);
+        }
+    }
+
+    public static AsyncAdmissionResult analyzeForAsyncLowering(
+            Ast.Program program) {
+        TypeChecker.TypeCheckResult checked =
+                TypeChecker.checkTypesWithDiagnostics(program);
+        OwnershipChecker.CheckResult owned =
+                OwnershipChecker.checkWithAsyncTransferProvenance(
+                        checked.program(), checked.shortInferredAliases());
+        return new AsyncAdmissionResult(
+                checked.program(),
+                checked.warnings(),
+                owned.asyncTransfers());
+    }
+
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
-        TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
-        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
-        return checked.program();
+        return analyzeForAsyncLowering(program).program();
     }
 
     /** Compiler diagnostics are returned explicitly instead of written to shared stderr. */
@@ -32,8 +63,7 @@ public final class OresCompiler {
     }
 
     public static AnalysisResult analyzeWithDiagnostics(Ast.Program program) {
-        TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
-        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        AsyncAdmissionResult checked = analyzeForAsyncLowering(program);
         return new AnalysisResult(checked.program(), checked.warnings());
     }
 
