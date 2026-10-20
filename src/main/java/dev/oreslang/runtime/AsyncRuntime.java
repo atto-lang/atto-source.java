@@ -54,6 +54,10 @@ public final class AsyncRuntime implements AutoCloseable {
         // 0: not entered, 1: running, 2: guest turn exited/cancelled before entry.
         private final AtomicInteger state = new AtomicInteger();
         private final CountDownLatch exited = new CountDownLatch(1);
+        // Defensive guard: admission rejection, early cancellation and
+        // the carrier finally block must never execute trusted retirement
+        // more than once, even when their callbacks race.
+        private final AtomicBoolean retirementClaimed = new AtomicBoolean();
         private volatile Thread thread;
         private volatile OresFuture<?> completion;
         private final OresFuture<Void> quiesced = new OresFuture<>();
@@ -61,6 +65,7 @@ public final class AsyncRuntime implements AutoCloseable {
         private Runnable retirement = () -> { };
 
         private void markExited() {
+            if (!retirementClaimed.compareAndSet(false, true)) return;
             try {
                 // Physical retirement is part of the completion contract:
                 // failure here must never be masked by Future waiter isolation.
