@@ -225,6 +225,19 @@ def checked_destination(repository, contract):
         raise Denied("carrier base commit mismatch")
     base_tree = valid_sha(commit.get("tree", {}).get("sha"),
                           "carrier base tree invalid")
+    base_listing = legacy.gh_api(
+        f"repos/{repository}/git/trees/{base_tree}?recursive=1"
+    )
+    if (base_listing.get("sha") != base_tree
+            or base_listing.get("truncated") is not False
+            or not isinstance(base_listing.get("tree"), list)):
+        raise Denied("carrier base tree listing is incomplete")
+    for entry in base_listing["tree"]:
+        path = entry.get("path") if isinstance(entry, dict) else None
+        if (path == legacy.PREFIX
+                or isinstance(path, str) and path.startswith(legacy.PREFIX + "/")
+                or path == RECEIPT_PATH):
+            raise Denied("reviewed carrier base is not source-free")
 
     workflow = legacy.gh_api(
         f"repos/{repository}/contents/{contract['workflow_path']}?ref={base_sha}"
