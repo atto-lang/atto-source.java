@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Source-free unit tests for the protected v3 private-CI dispatcher."""
 import base64
+import contextlib
 import datetime as dt
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -56,6 +58,25 @@ def contract():
 
 
 class PrivateCiV3Test(unittest.TestCase):
+    def test_main_surfaces_retention_incident_with_distinct_exit_code(self):
+        incident = v3.Denied("synthetic post-upload failure")
+        incident._ores_private_ci_retention_incident = True
+        err = io.StringIO()
+        with (
+            patch.object(v3, "publish", side_effect=incident),
+            contextlib.redirect_stderr(err),
+        ):
+            code = v3.main([
+                "trusted/ci",
+                "--source-dir", ".",
+                "--source-commit", "a" * 40,
+                "--source-pr", "1482",
+                "--test-plan", "ci/test-plans/java-pr1482.json",
+            ])
+        self.assertEqual(code, 2)
+        self.assertIn("PRIVATE_CI_RETENTION_INCIDENT", err.getvalue())
+        self.assertNotIn("synthetic post-upload failure", err.getvalue())
+
     def test_remote_protected_file_rejects_blob_sha_mismatch(self):
         raw = b"reviewed-bytes\n"
         encoded = base64.b64encode(raw).decode("ascii")
@@ -964,13 +985,16 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
-                with self.assertRaisesRegex(v3.Denied, "protection revoked"):
+                with self.assertRaisesRegex(v3.Denied, "protection revoked") as caught:
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
 
+        self.assertTrue(
+            getattr(caught.exception, "_ores_private_ci_retention_incident", False)
+        )
         delete_ref.assert_called_once_with(
             "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT,
             carrier["repository_id"]
@@ -1303,6 +1327,13 @@ class PrivateCiV3Test(unittest.TestCase):
                     ))
                 self.assertEqual(
                     [call.args for call in cleanup.call_args_list], expected
+                )
+                self.assertTrue(
+                    getattr(
+                        caught.exception,
+                        "_ores_private_ci_retention_incident",
+                        False,
+                    )
                 )
                 if cleanup_fails:
                     self.assertIn("rollback was incomplete", str(caught.exception))
