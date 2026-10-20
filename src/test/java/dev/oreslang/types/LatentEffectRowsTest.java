@@ -69,4 +69,19 @@ final class LatentEffectRowsTest {
                         Set.of(SUSPEND), Capture.OWNED), Kind.CALLABLE)
                         .requireInvocationWithin(Set.of(STATE_WRITE, SUSPEND)));
     }
+
+    @Test void borrowedAndActorLoanDescriptorsCannotBeRepackagedOrDeferred() {
+        for (Capture capture : new Capture[]{Capture.BORROWED, Capture.ACTOR_STATE_LOAN}) {
+            var source = LatentEffectRows.compilerProven(Kind.CALLABLE, Set.of(), capture);
+            var owned = LatentEffectRows.compilerProven(Kind.CALLABLE, Set.of(), Capture.OWNED);
+            assertThrows(IllegalArgumentException.class, () -> source.as(Kind.CALLABLE));
+            assertThrows(IllegalArgumentException.class, () -> source.as(Kind.STREAM));
+            assertThrows(IllegalArgumentException.class, () -> source.compose(owned, Kind.CALLABLE));
+            assertThrows(IllegalArgumentException.class, () -> owned.compose(source, Kind.IO_ACTION));
+            assertThrows(IllegalArgumentException.class, () -> owned.compose(source, Kind.CALLABLE));
+            assertThrows(IllegalArgumentException.class, () ->
+                    LatentEffectRows.compilerProven(Kind.FUTURE, Set.of(), capture));
+        }
+    }
+
 }
