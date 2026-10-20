@@ -307,6 +307,8 @@ env -i PATH=/usr/bin:/bin HOME=/ PRIVATE_CI_TEST_REPEATS=1 \
   /bin/bash "$fixture/run-private-ci-regressions-local.sh" \
   > "$root/out" 2>&1 || { cat "$root/out" >&2; exit 1; }
 grep -q '^PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED=1
+echo 'PASS: clean env -i launch can earn regression receipt'
+echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=24'
  "$root/out"
 echo 'PASS: clean env -i launch can earn regression receipt'
 echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=24'
