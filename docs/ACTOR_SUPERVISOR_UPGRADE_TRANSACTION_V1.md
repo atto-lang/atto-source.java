@@ -368,6 +368,17 @@ using `javac --release 25 -Xlint:all -Werror` and exercise
 its atomic release/race and negative-control cases.
 The public workflow run is
 https://github.com/gha-indie-worker/gha-indie-worker-e2e/actions/runs/39345492773.
+**Executed JDK25 evidence:** run `39345492773`, job
+`118376956031` finished **SUCCESS** on Temurin 25.0.4+1.
+The full job log confirms `javac --release 25 -Xlint:all -Werror`,
+followed by:
+```
+PASS source-free admission lease oracle assertions=260001
+race_rounds=5000 workers=4
+unsafe_check_then_debit_negative_control=detected private_source_bytes=0
+```
+The existing hot-upgrade lifecycle oracle compiled and passed in the
+same job. This is **source-free protocol coverage only**.
 Only independently authored model source was sent to the test
 organization, with **no Oreslang private source bytes**.
 
