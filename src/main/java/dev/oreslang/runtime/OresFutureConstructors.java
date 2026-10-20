@@ -92,13 +92,18 @@ public final class OresFutureConstructors {
     private static final class StagedCallback<T> implements OresFuture.Callback<T> {
         private record Outcome<T>(T value, Throwable error, boolean cancelled) { }
 
-        private final OresFuture.Callback<T> target;
+        // The foreign subscriber may retain this StagedCallback indefinitely.
+        // Revoke and clear both the Future completion authority and any captured
+        // success payload once the Future reaches a terminal state.
+        private final AtomicReference<OresFuture.Callback<T>> target;
         private final AtomicReference<Outcome<T>> pending = new AtomicReference<>();
+        private final AtomicBoolean claimed = new AtomicBoolean();
         private final AtomicBoolean armed = new AtomicBoolean();
         private final AtomicBoolean delivered = new AtomicBoolean();
+        private final AtomicBoolean revoked = new AtomicBoolean();
 
         private StagedCallback(OresFuture.Callback<T> target) {
-            this.target = target;
+            this.target = new AtomicReference<>(Objects.requireNonNull(target, "target"));
         }
 
         @Override
@@ -118,13 +123,25 @@ public final class OresFutureConstructors {
 
         @Override
         public boolean isDone() {
-            return pending.get() != null || target.isDone();
+            OresFuture.Callback<T> callback = target.get();
+            return claimed.get() || revoked.get()
+                    || (callback != null && callback.isDone());
         }
 
         private void claim(Outcome<T> outcome) {
-            if (!pending.compareAndSet(null, outcome)) {
+            if (!claimed.compareAndSet(false, true)) {
                 throw new OresFuture.AlreadySettledException(
                         "callback Future already settled; duplicate completion");
+            }
+            // The first foreign callback after consumer cancellation or failed
+            // registration is harmless, but must not recover settlement rights.
+            if (revoked.get()) return;
+            pending.set(outcome);
+            // A terminal revocation may race between the check and store.
+            // Clear the captured value again if it has already won.
+            if (revoked.get()) {
+                pending.set(null);
+                return;
             }
             deliverIfReady();
         }
@@ -134,13 +151,23 @@ public final class OresFutureConstructors {
             deliverIfReady();
         }
 
+        private void revoke() {
+            revoked.set(true);
+            pending.set(null);
+            target.set(null);
+        }
+
         private void deliverIfReady() {
-            if (!armed.get()) return;
+            if (!armed.get() || revoked.get()) return;
             Outcome<T> outcome = pending.get();
             if (outcome == null || !delivered.compareAndSet(false, true)) return;
-            if (outcome.cancelled()) target.cancel();
-            else if (outcome.error() != null) target.reject(outcome.error());
-            else target.resolve(outcome.value());
+            OresFuture.Callback<T> callback = target.get();
+            // Consumer cancellation may have revoked completion authority
+            // before the delivering thread captured its callback.
+            if (callback == null) return;
+            if (outcome.cancelled()) callback.cancel();
+            else if (outcome.error() != null) callback.reject(outcome.error());
+            else callback.resolve(outcome.value());
         }
     }
 
@@ -161,10 +188,12 @@ public final class OresFutureConstructors {
         Objects.requireNonNull(operation, "operation");
 
         AtomicReference<Runnable> detachAction = new AtomicReference<>();
+        AtomicReference<StagedCallback<T>> registration = new AtomicReference<>();
         AtomicBoolean terminal = new AtomicBoolean();
 
         OresFuture<T> future = OresFuture.fromCallback(callback -> {
             StagedCallback<T> staged = new StagedCallback<>(callback);
+            registration.set(staged);
             Runnable action = Objects.requireNonNull(operation.register(staged),
                     "callback registrar must provide a detach action");
             detachAction.set(action);
@@ -179,6 +208,8 @@ public final class OresFutureConstructors {
 
         future.whenCompleteRuntime((value, failure) -> {
             terminal.set(true);
+            StagedCallback<T> staged = registration.getAndSet(null);
+            if (staged != null) staged.revoke();
             Runnable detach = detachAction.getAndSet(null);
             if (detach != null) detach.run();
         });
