@@ -1076,6 +1076,10 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "authorize_write") as authorize_write,
                 patch.object(v3, "verify_carrier_directories") as directory_proof,
                 patch.object(v3, "verify_published_root_and_commit") as commit_proof,
+                patch.object(
+                    v3.legacy, "checked_repo",
+                    return_value={"id": carrier["repository_id"]},
+                ),
                 patch.object(v3, "require_handoff_refs_absent") as absent_guard,
                 patch.object(v3, "require_exact_ref") as require_exact_ref,
                 patch.object(v3.legacy, "gh_api", side_effect=api),
@@ -1141,7 +1145,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 + v3.legacy.SOURCE_REPO
                 + " id "
                 + str(v3.SOURCE_REPOSITORY_ID)
-                + "\\nhandoff-nonce "
+                + "\nhandoff-nonce "
                 + "0" * 32
             ),
         )
@@ -1227,6 +1231,10 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "authorize_write"),
                 patch.object(v3, "verify_carrier_directories"),
                 patch.object(v3, "verify_published_root_and_commit"),
+                patch.object(
+                    v3.legacy, "checked_repo",
+                    return_value={"id": carrier["repository_id"]},
+                ),
                 patch.object(v3, "require_handoff_refs_absent") as absent_guard,
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
@@ -1294,6 +1302,10 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "authorize_write"),
                 patch.object(v3, "verify_carrier_directories"),
                 patch.object(v3, "verify_published_root_and_commit"),
+                patch.object(
+                    v3.legacy, "checked_repo",
+                    return_value={"id": carrier["repository_id"]},
+                ),
                 patch.object(v3, "require_handoff_refs_absent") as absent_guard,
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
@@ -1366,6 +1378,10 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "authorize_write"),
                 patch.object(v3, "verify_carrier_directories"),
                 patch.object(v3, "verify_published_root_and_commit"),
+                patch.object(
+                    v3.legacy, "checked_repo",
+                    return_value={"id": carrier["repository_id"]},
+                ),
                 patch.object(v3, "require_handoff_refs_absent") as absent_guard,
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
@@ -1441,6 +1457,10 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "authorize_write"),
                 patch.object(v3, "verify_carrier_directories"),
                 patch.object(v3, "verify_published_root_and_commit"),
+                patch.object(
+                    v3.legacy, "checked_repo",
+                    return_value={"id": carrier["repository_id"]},
+                ),
                 patch.object(v3, "require_handoff_refs_absent") as absent_guard,
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
@@ -1607,6 +1627,93 @@ class PrivateCiV3Test(unittest.TestCase):
                 )
             )
         checked_repo.assert_called_once_with("trusted/ci", 1323598177)
+
+    def test_existing_handoff_refs_are_never_adopted_or_deleted(self):
+        branches = ("ci/oreslang-" + SOURCE_TREE, "ci/authorized-" + COMMIT)
+        for result_sequence in ((COMMIT,), (None, COMMIT)):
+            with (
+                patch.object(v3, "live_ref_sha", side_effect=result_sequence) as read,
+                patch.object(v3, "create_handoff_ref") as create,
+                patch.object(v3, "delete_exact_ref") as delete,
+            ):
+                with self.assertRaisesRegex(v3.Denied, "already exists"):
+                    v3.require_handoff_refs_absent(
+                        "trusted/ci", branches[0], branches[1], 1323598177
+                    )
+                create.assert_not_called()
+                delete.assert_not_called()
+                self.assertEqual(read.call_count, len(result_sequence))
+        with patch.object(v3, "live_ref_sha", side_effect=[None, None]) as read:
+            v3.require_handoff_refs_absent(
+                "trusted/ci", branches[0], branches[1], 1323598177
+            )
+        self.assertEqual(
+            [call.args[1] for call in read.call_args_list], list(branches)
+        )
+
+    def test_create_handoff_ref_requires_live_numeric_identity(self):
+        ref = "ci/oreslang-" + SOURCE_TREE
+        with (
+            patch.object(
+                v3.legacy, "checked_repo",
+                side_effect=v3.Denied("replaced repository"),
+            ),
+            patch.object(v3.legacy, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(v3.Denied, "replaced repository"):
+                v3.create_handoff_ref(
+                    "trusted/ci", ref, COMMIT, 1323598177
+                )
+        api.assert_not_called()
+
+    def test_create_handoff_ref_requires_exact_post_response(self):
+        ref = "ci/oreslang-" + SOURCE_TREE
+        exact = {"ref": "refs/heads/" + ref, "object": {"sha": COMMIT}}
+        poisoned = (
+            {},
+            {"ref": "refs/heads/" + ref, "object": {"sha": "9" * 40}},
+            {"ref": "refs/heads/ci/oreslang-other",
+             "object": {"sha": COMMIT}},
+            {"ref": "refs/heads/" + ref},
+        )
+        with patch.object(
+            v3.legacy, "checked_repo", return_value={"id": 1323598177}
+        ):
+            with patch.object(v3.legacy, "gh_api", return_value=exact) as api:
+                self.assertEqual(v3.create_handoff_ref(
+                    "trusted/ci", ref, COMMIT, 1323598177
+                ), exact)
+            self.assertEqual(api.call_args.kwargs["method"], "POST")
+            self.assertEqual(api.call_args.kwargs["payload"], {
+                "ref": "refs/heads/" + ref, "sha": COMMIT,
+            })
+            for response in poisoned:
+                with self.subTest(response=response), patch.object(
+                    v3.legacy, "gh_api", return_value=response
+                ):
+                    with self.assertRaisesRegex(v3.Denied, "did not confirm"):
+                        v3.create_handoff_ref(
+                            "trusted/ci", ref, COMMIT, 1323598177
+                        )
+            with patch.object(
+                v3.legacy, "gh_api", side_effect=v3.Denied("remote reply lost")
+            ):
+                with self.assertRaisesRegex(v3.Denied, "remote reply lost"):
+                    v3.create_handoff_ref(
+                        "trusted/ci", ref, COMMIT, 1323598177
+                    )
+
+    def test_rollback_refuses_a_competing_writers_sha(self):
+        with (
+            patch.object(v3, "live_ref_sha", return_value="9" * 40),
+            patch.object(v3, "_gh_ref_request") as request,
+        ):
+            with self.assertRaisesRegex(v3.Denied, "moved"):
+                v3.delete_exact_ref(
+                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE,
+                    COMMIT, 1323598177
+                )
+        request.assert_not_called()
 
     def test_delete_exact_ref_missing_is_idempotent(self):
         with patch.object(v3, "live_ref_sha", return_value=None):
