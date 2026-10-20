@@ -94,6 +94,28 @@ final class CpuTopologyTest {
     }
 
     @Test
+    void oversizedAndMalformedSysfsMetadataCannotInventLlc(@TempDir Path root)
+            throws IOException {
+        cpuFixture(root, 0, "0", "Unified", "3", "7", "0");
+        cpuFixture(root, 1, "0", "Unified", "3", "7", "0");
+        Path cache = root.resolve("cpu1/cache/index0");
+        // A bogus sysfs file can be arbitrarily large; the reader must cap
+        // bytes *before* allocating a decoded String.
+        Files.writeString(cache.resolve("id"), "7".repeat(1024 * 1024));
+        CpuTopology topology = CpuTopology.discoverAt(root);
+        assertEquals(2, topology.localityRank(0, 1));
+
+        Files.writeString(cache.resolve("id"), "7");
+        Files.writeString(cache.resolve("type"), "Unified\u0000Spoofed");
+        topology = CpuTopology.discoverAt(root);
+        assertEquals(2, topology.localityRank(0, 1));
+
+        Files.writeString(cache.resolve("type"), "Unified");
+        topology = CpuTopology.discoverAt(root);
+        assertEquals(1, topology.localityRank(0, 1));
+    }
+
+    @Test
     void regionTaskPrefersKnownNumaAndFallsBackWithoutTopology() {
         CpuTopology topology = CpuTopology.of(
                 new CpuTopology.Location(10, 12, 0, 3, 0),
