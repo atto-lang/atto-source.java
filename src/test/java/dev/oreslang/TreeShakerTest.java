@@ -188,6 +188,8 @@ final class TreeShakerTest {
                 """, BuildOptions.library(Map.of()));
 
         assertTrue(result.retained(Parser.ROOT_MODULE + ".public_answer"));
+        assertTrue(result.rootSymbols().contains(Parser.ROOT_MODULE + ".public_answer"));
+        assertFalse(result.rootSymbols().contains(Parser.ROOT_MODULE + ".hidden_answer"));
         assertTrue(result.removed(Parser.ROOT_MODULE + ".hidden_answer"));
     }
 
