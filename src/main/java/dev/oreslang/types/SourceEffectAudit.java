@@ -26,6 +26,7 @@ public final class SourceEffectAudit {
 
     private static final int MAX_VISITS = 100_000;
     private static final int MAX_DEPTH = 128;
+    private static final int MAX_DECLARATIONS = 1024;
 
     public record Report(Map<String, Set<EffectContracts.Effect>> functions,
                          List<String> unsupportedDeclarations) {
@@ -60,7 +61,16 @@ public final class SourceEffectAudit {
         if (checked.modules().isEmpty()) {
             unsupported.add("empty source cannot establish a compilation unit effect proof");
         }
+        if (checked.modules().size() > MAX_DECLARATIONS) {
+            throw new IllegalArgumentException("effect module budget exceeded");
+        }
+        VisitBudget budget = new VisitBudget();
+        int declarations = 0;
         for (Ast.ModuleDecl module : checked.modules()) {
+            if (module.declarations().size() > MAX_DECLARATIONS - declarations) {
+                throw new IllegalArgumentException("effect declaration budget exceeded");
+            }
+            declarations += module.declarations().size();
             if (!module.annotations().isEmpty() || !module.contracts().isEmpty()) {
                 unsupported.add(module.name() + ": module annotations/contracts need effect elaboration");
             }
@@ -92,7 +102,7 @@ public final class SourceEffectAudit {
                 // Callable-level trap metadata is not a verified handler proof.
                 // Never use an annotation to subtract ordinary THROW here.
                 if (fn.trapped()) direct.add(EffectContracts.Effect.UNKNOWN_CALL);
-                Walker walker = new Walker(direct);
+                Walker walker = new Walker(direct, budget);
                 walker.walk(fn.body(), 0);
                 if (functions.putIfAbsent(symbol, Set.copyOf(direct)) != null) {
                     throw new IllegalArgumentException("effect symbol collision: " + symbol);
@@ -102,17 +112,22 @@ public final class SourceEffectAudit {
         return new Report(functions, unsupported);
     }
 
+    private static final class VisitBudget {
+        private int visits;
+    }
+
     private static final class Walker {
         private final EnumSet<EffectContracts.Effect> direct;
-        private int visits;
+        private final VisitBudget budget;
 
-        private Walker(EnumSet<EffectContracts.Effect> direct) {
+        private Walker(EnumSet<EffectContracts.Effect> direct, VisitBudget budget) {
             this.direct = direct;
+            this.budget = budget;
         }
 
         private void walk(Object node, int depth) {
             if (node == null) return;
-            if (++visits > MAX_VISITS || depth > MAX_DEPTH) {
+            if (++budget.visits > MAX_VISITS || depth > MAX_DEPTH) {
                 throw new IllegalArgumentException("effect AST traversal budget exceeded");
             }
             if (node instanceof List<?> nodes) {
