@@ -350,8 +350,17 @@ this security PR, run:
 
 ```bash
 bash scripts/test-run-private-ci-regressions-local.sh
-PRIVATE_CI_TEST_REPEATS=3 bash scripts/run-private-ci-regressions-local.sh
+env -i PATH=/usr/bin:/bin HOME=/ PRIVATE_CI_TEST_REPEATS=3 \\
+  /bin/bash scripts/run-private-ci-regressions-local.sh
 ```
+
+The publisher runner requires an **empty parent environment**, established
+**before Bash starts**, not merely `unset BASH_ENV` inside the script.
+Inherited `BASH_ENV` can execute during Bash startup and `LD_PRELOAD`
+can affect the loader before the first shell statement. The runner now
+rejects detectable hook-bearing direct launches, but that detection cannot
+undo any already executed startup code. Trustworthy receipts require the
+`env -i ... /bin/bash` form above (also pinned by the Actions workflow).
 
 The first command tests the runner against synthetic fixtures. The second
 compiles the actual publisher and its Python regressions, syntax-checks the
@@ -364,7 +373,7 @@ Python executable (including `PYTHON=/bin/true`), invokes the genuine
 tokens and Python startup hooks, and uses an empty temporary GitHub CLI
 configuration. Its SHA-256 manifest pins the nine script/test inputs plus
 the source CODEOWNERS file, protected destination allowlist, and private-CI
-workflow definition before and after execution. Twenty-two source-free
+workflow definition before and after execution. Twenty-four source-free
 adversarial runner self-tests check failure behavior, including interpreter
 substitution, Python startup injection, symlinks, mid-run policy edits,
 missing merged-main discovery, a truncated test suite, and a **full-size**
