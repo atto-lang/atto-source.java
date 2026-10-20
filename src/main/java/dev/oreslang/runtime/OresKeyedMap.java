@@ -29,13 +29,13 @@ import java.util.Set;
  * and recursively copy values before crossing isolation boundaries.
  */
 public final class OresKeyedMap<K, V> {
-    // First-stage per-object budget, identical to the opt-in tagged key codec.
-    // Existing String-keyed records and ordinary guest Strings are unaffected.
-    public static final int MAX_ENTRIES = 4_096;
-    public static final int MAX_TEXT_KEY_BYTES = 16_384;
-    // Include each key's six-byte tag/version/length envelope, matching v1
-    // SymbolPropertyKeyCodec. Entry count alone permits ~64 MiB of key text.
-    public static final long MAX_KEY_SET_WIRE_BYTES = 1_048_576L;
+    // One authoritative budget shared with the tagged key codec. Keeping the
+    // aliases public preserves the runtime/test contract without duplicating
+    // literals that can silently drift.
+    public static final int MAX_ENTRIES = SymbolPropertyKeyCodec.MAX_KEYS_PER_OBJECT;
+    public static final int MAX_TEXT_KEY_BYTES = SymbolPropertyKeyCodec.MAX_TEXT_KEY_BYTES;
+    public static final long MAX_KEY_SET_WIRE_BYTES =
+            SymbolPropertyKeyCodec.MAX_KEY_SET_WIRE_BYTES;
 
     public enum KeyDomain {
         STRING, SYMBOL, STRING_OR_SYMBOL
