@@ -492,4 +492,68 @@ final class OresKeyedMapTest {
     }
 
 
+    @Test
+    void canonicalCodecIdentityControlsStringCollisions() {
+        OresKeyedMap<String, Integer> map =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
+
+        assertNull(map.put("cafe\u0301", 1));
+        assertEquals(1, map.size());
+        assertEquals(1, map.getRequired("caf\u00e9"));
+
+        assertEquals(1, map.put("caf\u00e9", 2));
+        assertEquals(1, map.size());
+        assertEquals(2, map.getRequired("cafe\u0301"));
+        assertEquals(Map.of("caf\u00e9", 2), map.shallowSnapshot());
+    }
+
+    @Test
+    void entrySequenceRejectsCanonicalUnicodeCollisionAtomically() {
+        OresKeyedMap<String, Integer> map =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
+        map.put("existing", 9);
+
+        IllegalArgumentException duplicate = assertThrows(
+                IllegalArgumentException.class,
+                () -> map.putEntries(List.of(
+                        new OresEntry("caf\u00e9", 1),
+                        new OresEntry("cafe\u0301", 2))));
+        assertTrue(duplicate.getMessage().contains("duplicate logical key"),
+                duplicate.getMessage());
+        assertEquals(Map.of("existing", 9), map.shallowSnapshot());
+    }
+
+    @Test
+    void processAndStableSymbolsWithSameNameRemainDistinct() {
+        OresKeyedMap<OresSymbol, Integer> map =
+                OresKeyedMap.symbolKeys(OresKeyedMap.ValueDomain.INT);
+        OresSymbol process = OresSymbol.process("same");
+        OresSymbol stable = OresSymbol.stable("same");
+
+        map.putEntries(List.of(
+                new OresEntry(process, 1),
+                new OresEntry(stable, 2)));
+
+        assertEquals(2, map.size());
+        assertEquals(1, map.getRequired(process));
+        assertEquals(2, map.getRequired(stable));
+    }
+
+    @Test
+    void entrySequenceFinalValidationFailurePublishesNothing() {
+        OresKeyedMap<String, Integer> map =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
+        map.put("existing", 7);
+
+        IllegalArgumentException invalid = assertThrows(
+                IllegalArgumentException.class,
+                () -> map.putEntries(List.of(
+                        new OresEntry("first", 1),
+                        new OresEntry("second", "wrong-type"))));
+        assertTrue(invalid.getMessage().contains("value domain"),
+                invalid.getMessage());
+        assertEquals(Map.of("existing", 7), map.shallowSnapshot());
+    }
+
+
 }
