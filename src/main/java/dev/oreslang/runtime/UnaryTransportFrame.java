@@ -219,7 +219,8 @@ final class UnaryTransportFrame {
     /** Defensive envelope API layered on the owned-payload reader. */
     static Envelope readTcpPayload(InputStream input, TcpHead head) throws IOException {
         byte[] payload = readTcpPayloadBytes(input, head);
-        return new Envelope(head.kind(), head.sessionId(), head.generation(),
+        return Envelope.fromFreshPayload(
+                head.kind(), head.sessionId(), head.generation(),
                 head.correlationId(), payload);
     }
 
