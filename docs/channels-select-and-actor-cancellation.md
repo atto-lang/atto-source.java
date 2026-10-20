@@ -538,6 +538,16 @@ preserve the source-site FAIR ticket and fresh per-invocation cancellation/winne
 state. Native LLVM currently remains fail-closed pending explicit lowering and
 equivalent cancellation/sanitizer tests.
 
+## Data-oriented plan storage (design contract)
+
+Logical select semantics are independent of physical representation. Future
+internal plan/registration storage may use AoS, SoA, AoSoA, or SoAoS, with one
+authoritative layout per immutable snapshot and fresh per-selection waiter
+ownership. See [Data-oriented SelectPlan and DynamicSelectPlan storage](SELECT_PLAN_DATA_ORIENTED_LAYOUTS.md) for ECS-style chunk/slab options,
+logical-index preservation, generation fences, fairness, quotas and
+cross-backend admission gates. **These alternate layouts are not implemented
+by PRs #1747 or #1753.**
+
 ## Cancellation
 
 Oreslang does not require Go-style `context.Context` propagation through every
