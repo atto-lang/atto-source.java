@@ -93,6 +93,20 @@ final class DataOrientedBorrowCheckerTest {
                 new DataOrientedBorrowChecker.Range(16, 32), 6);
         assertThrows(IllegalArgumentException.class, () ->
                 DataOrientedBorrowChecker.requireCurrentEpoch(stale, 7));
-        assertTrue(DataOrientedBorrowChecker.overlaps(current, stale));
+        assertThrows(IllegalArgumentException.class, () ->
+                DataOrientedBorrowChecker.overlaps(current, stale));
+    }
+
+    @Test
+    void blankLogicalPlaceSegmentsAreRejected() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new DataOrientedBorrowChecker.Place(
+                        SOA, "world", " ", "Position", null, null, 7));
+        assertThrows(IllegalArgumentException.class, () ->
+                new DataOrientedBorrowChecker.Place(
+                        SOA, "world", "moving", " ", null, null, 7));
+        assertThrows(IllegalArgumentException.class, () ->
+                new DataOrientedBorrowChecker.Place(
+                        SOA, "world", "moving", "Position", " ", null, 7));
     }
 }
