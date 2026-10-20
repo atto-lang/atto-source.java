@@ -259,14 +259,29 @@ class PrivateCiV3Test(unittest.TestCase):
         with (
             patch.object(
                 v3.legacy,
-                "checked_policy_fingerprint",
-                return_value=POLICY,
+                "checked_policy_approval",
+                return_value=(POLICY, carrier["repository_id"]),
             ),
             patch.object(v3.legacy, "checked_repo", return_value=ineligible),
         ):
             with self.assertRaisesRegex(v3.Denied, "identity/state"):
                 v3.authorize_write(
                     Path("."), "trusted/ci", POLICY, carrier)
+
+    def test_authorize_write_rejects_reviewed_repository_id_change(self):
+        carrier = contract()
+        with (
+            patch.object(
+                v3.legacy,
+                "checked_policy_approval",
+                return_value=(POLICY, carrier["repository_id"] + 1),
+            ),
+            patch.object(v3.legacy, "checked_repo") as checked_repo,
+        ):
+            with self.assertRaisesRegex(v3.Denied, "repository identity changed"):
+                v3.authorize_write(
+                    Path("."), "trusted/ci", POLICY, carrier)
+            checked_repo.assert_not_called()
 
     def test_publish_rejects_contract_repository_id_not_in_reviewed_allowlist(self):
         carrier = contract()
