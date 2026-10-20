@@ -343,6 +343,8 @@ def verified_exact_source_tree(files, source_commit):
     symlinks even if a caller's local snapshot omits them.
     """
     source_commit = valid_sha(source_commit)
+    # Reject before destination probing, source traversal, or any GitHub API call.
+    require_independent_source_authorization()
     commit = gh_api(f"repos/{SOURCE_REPO}/git/commits/{source_commit}")
     if commit.get("sha") != source_commit:
         raise Denied("source commit SHA is not attested by origin")
@@ -378,6 +380,15 @@ def verified_exact_source_tree(files, source_commit):
     if not local or local != tracked:
         raise Denied("source directory differs from pinned Git tree")
     return tree_sha
+
+
+def require_independent_source_authorization():
+    """Temporary unconditional private-source export stop (security #962).
+
+    A local allowlist, destination privacy, or caller-supplied token is not
+    independent authorization. Never bypass this via environment or CLI flags.
+    """
+    raise Denied("private source export disabled pending independent protected-source and destination authorization (security #962)")
 
 
 def publish(repository, source, branch, trusted_root, source_commit):
