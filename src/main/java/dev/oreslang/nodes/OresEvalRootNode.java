@@ -4964,6 +4964,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return value;
             }
+            if (receiver instanceof OresTuple tuple) {
+                return tuple.get(checkedSequenceIndex(index, tuple.size()));
+            }
             if (receiver instanceof List<?> list) {
                 return list.get(checkedSequenceIndex(index, list.size()));
             }
@@ -6613,6 +6616,7 @@ public final class OresEvalRootNode extends RootNode {
 
             if (arguments.size() == 1) {
                 Object aggregate = eval(arguments.getFirst(), env);
+                if (aggregate instanceof OresTuple tuple) return foldBooleanValues(name, tuple.elements());
                 if (aggregate instanceof List<?> list) return foldBooleanValues(name, list);
                 if (aggregate instanceof Object[] array) {
                     return foldBooleanValues(name, java.util.Arrays.asList(array));
@@ -7799,6 +7803,16 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
             }
+            if (receiver instanceof OresTuple tuple) {
+                return switch (name) {
+                    case "length", "size" -> (long) tuple.size();
+                    case "get" -> (Invokable) args -> {
+                        requireOne(args, "Tuple.get");
+                        return tuple.get(checkedSequenceIndex(args.getFirst(), tuple.size()));
+                    };
+                    default -> throw new IllegalArgumentException("unknown Tuple member " + name);
+                };
+            }
             if (receiver instanceof List<?> rawList) {
                 return switch (name) {
                     case "size" -> (long) rawList.size();
@@ -8676,6 +8690,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Iterable<?> iterableValues(Object value, Env env) {
+            if (value instanceof OresTuple tuple) return tuple;
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
             if (value instanceof GeneratorRuntime.Generator<?> generator) return generator;
@@ -9357,12 +9372,14 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private int sequenceSize(Object value) {
+            if (value instanceof OresTuple tuple) return tuple.size();
             if (value instanceof List<?> list) return list.size();
             if (value instanceof Object[] array) return array.length;
             return -1;
         }
 
         private Object sequenceElement(Object value, int index) {
+            if (value instanceof OresTuple tuple) return tuple.get(index);
             if (value instanceof List<?> list) return list.get(index);
             return ((Object[]) value)[index];
         }
@@ -9561,7 +9578,12 @@ public final class OresEvalRootNode extends RootNode {
                     + " but declared " + declared);
         }
 
-        private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not sequence-destructurable"); }
+        private List<?> asSequence(Object value) {
+            if (value instanceof OresTuple tuple) return tuple.elements();
+            if (value instanceof List<?> list) return list;
+            if (value instanceof Object[] array) return List.of(array);
+            throw new IllegalArgumentException("value is not sequence-destructurable");
+        }
 
         private void bindSequenceDestructure(
                 Iterable<?> values,
@@ -9835,6 +9857,10 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return false;
             }
+            if (value instanceof OresTuple tuple) {
+                for (Object item : tuple) if (containsLiveMutexGuard(item, seen)) return true;
+                return false;
+            }
             if (value instanceof List<?> list) {
                 for (Object item : list) if (containsLiveMutexGuard(item, seen)) return true;
                 return false;
@@ -10063,6 +10089,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (!(value instanceof OresObject
                         || value instanceof OresEntry
+                        || value instanceof OresTuple
                         || value instanceof ReadonlyRecordValue
                         || value instanceof OptionValue
                         || value instanceof ResultValue
@@ -10122,6 +10149,16 @@ public final class OresEvalRootNode extends RootNode {
                             append(entry.getKey(), depth + 1);
                             write("=");
                             append(entry.getValue(), depth + 1);
+                            if (output.length() >= MAX_CHARS) break;
+                        }
+                        write("}");
+                    } else if (value instanceof OresTuple tuple) {
+                        write("tuple {");
+                        boolean first = true;
+                        for (Object element : tuple) {
+                            if (!first) write(", ");
+                            first = false;
+                            append(element, depth + 1);
                             if (output.length() >= MAX_CHARS) break;
                         }
                         write("}");
@@ -10301,6 +10338,10 @@ public final class OresEvalRootNode extends RootNode {
                 for (Object field : object.fields.values()) {
                     if (!runtimeSharedSafe(field, seen)) return false;
                 }
+                return true;
+            }
+            if (value instanceof OresTuple tuple) {
+                for (Object item : tuple) if (!runtimeSharedSafe(item, seen)) return false;
                 return true;
             }
             if (value instanceof List<?> list) {
@@ -10519,6 +10560,7 @@ public final class OresEvalRootNode extends RootNode {
         private Map<String,Object> gc(List<Object> args){requireZero(args,"actor.gc");return context.garbageCollector().collectCurrentActor().asMap();}
     }
     private static List<Object> expandArgumentSequence(Object value,String name){
+        if(value instanceof OresTuple tuple)return new ArrayList<>(tuple.elements());
         if(value instanceof List<?> list)return new ArrayList<>(list);
         if(value instanceof Object[] array)return new ArrayList<>(java.util.Arrays.asList(array));
         throw new IllegalArgumentException(name+" requires an array/list/tuple value");
