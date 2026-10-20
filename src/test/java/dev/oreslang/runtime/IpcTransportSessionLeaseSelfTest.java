@@ -285,18 +285,50 @@ public final class IpcTransportSessionLeaseSelfTest {
         carrierCleanup.requestClose();
         check(carrierCleanup.snapshot().phase()
                 == IpcTransportSessionLease.Phase.FINALIZING);
+        // Hold the lease monitor on a host thread while the misrouted
+        // cleanup callback runs on an actor carrier. The actor callback must
+        // still return promptly: reporting scheduler misuse cannot wait for
+        // the lifecycle monitor it is trying to protect.
+        CountDownLatch leaseMonitorHeld = new CountDownLatch(1);
+        CountDownLatch releaseLeaseMonitor = new CountDownLatch(1);
+        AtomicReference<Throwable> monitorHolderFailure = new AtomicReference<>();
+        Thread monitorHolder = new Thread(() -> {
+            synchronized (carrierCleanup) {
+                leaseMonitorHeld.countDown();
+                try {
+                    if (!releaseLeaseMonitor.await(3, TimeUnit.SECONDS)) {
+                        throw new AssertionError("lease monitor hold timed out");
+                    }
+                } catch (Throwable failure) {
+                    monitorHolderFailure.set(failure);
+                }
+            }
+        }, "ipc-test-lease-monitor-holder");
+        monitorHolder.start();
+        check(leaseMonitorHeld.await(3, TimeUnit.SECONDS));
+
+        AtomicReference<Throwable> actorCleanupFailure = new AtomicReference<>();
         Thread actorCleanupWorker = new Thread(() -> {
             RuntimeBlockingGuard.enterActorCarrier();
             try {
                 actorCarrierCleanup.get().run();
+            } catch (Throwable failure) {
+                actorCleanupFailure.set(failure);
             } finally {
                 RuntimeBlockingGuard.exitActorCarrier();
             }
         }, "ipc-test-illegal-actor-cleanup");
         actorCleanupWorker.start();
-        actorCleanupWorker.join(3000);
+        actorCleanupWorker.join(500);
         check(!actorCleanupWorker.isAlive());
+        check(actorCleanupFailure.get() == null);
         check(actorCarrierCloses.get() == 0);
+
+        releaseLeaseMonitor.countDown();
+        monitorHolder.join(3000);
+        check(!monitorHolder.isAlive());
+        check(monitorHolderFailure.get() == null);
+
         check(carrierCleanup.snapshot().phase()
                 == IpcTransportSessionLease.Phase.QUARANTINED);
         check(!carrierCleanupFuture.toCompletableFuture().isDone());
