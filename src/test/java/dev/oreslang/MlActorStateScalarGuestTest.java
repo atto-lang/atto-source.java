@@ -47,7 +47,7 @@ final class MlActorStateScalarGuestTest {
 
     @Test void compiledActorStageHasOneStateSchemaAndDeclaredEffects() throws Exception {
         String text = source();
-        assertEquals("d9addeb0279b3c4023665b551c487adf7405903b",
+        assertEquals("f4b77392173631475a0dda6a835aa69361a69557",
                 gitBlobSha(text), "ML fixture drifted from pinned source Git blob");
         assertDoesNotThrow(() -> verify(text));
         assertEquals(1, count(text, "    state {"));
@@ -71,6 +71,13 @@ final class MlActorStateScalarGuestTest {
         assertTrue(text.contains("input_second: int"));
         assertTrue(text.contains("if upstream < -10000 || upstream > 10000"));
         assertTrue(text.contains("if candidate_weight < -10000 || candidate_weight > 10000"));
+        assertTrue(text.contains("optimizer: int = 0"));
+        assertTrue(text.contains("with state.read, state.write, alloc"));
+        assertTrue(text.contains("state_snapshot("));
+        assertTrue(text.contains("snapshot_version(snapshot)"));
+        assertTrue(text.contains("prepare_scalar_publication("));
+        assertTrue(text.contains("publish_scalar_publication(s, publication)"));
+        assertFalse(text.contains("s.weight = candidate_weight;"));
         assertTrue(text.contains("if s.step >= 1000000 || s.version >= 1000000"));
         assertTrue(text.contains("private cancel_rejected("));
         assertTrue(text.contains("define enum TrainingError as"));

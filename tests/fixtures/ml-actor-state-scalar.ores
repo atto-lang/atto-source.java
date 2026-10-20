@@ -38,6 +38,7 @@ define actor VersionedScalarStage as
         incarnation: int = 1;
         weight: int = 10;
         version: int = 1;
+        optimizer: int = 0;
         accumulated_gradient: int = 0;
         pending_gradients: int = 0;
         step: int = 1;
@@ -156,55 +157,101 @@ define actor VersionedScalarStage as
         });
     }
 
-    // Single local state publication: compare expected version, require all
-    // two uniquely identified backward contributions, update weight and version together.
-    // Real tensor-backed ML must prepare independent frozen parameter buffers
-    // before entering this critical write scope.
-    private commit(int expected_step, int expected_version, int expected_run, int expected_incarnation, int expected_graph): Result<int, TrainingError> with state.read, state.write {
-        return self.handle_state(critical write |s| -> {
-            if s.run_id != expected_run; do
-                return Err(TrainingError.STALE_RUN());
-            fi
-            if s.graph_id != expected_graph; do
-                return Err(TrainingError.STALE_GRAPH());
-            fi
-            if s.incarnation != expected_incarnation; do
-                return Err(TrainingError.STALE_INCAR());
-            fi
-            if s.version != expected_version; do
-                return Err(TrainingError.STALE_VERSION());
-            fi
-            if s.step != expected_step; do
-                return Err(TrainingError.STALE_STEP());
-            fi
-            if s.pending_gradients != 2 || !s.issued_first || !s.issued_second || !s.seen_first || !s.seen_second; do
-                return Err(TrainingError.INCOMPLETE_FANIN());
-            fi
-            // Version/step cannot wrap and create a stale-message ABA.
-            // Bound them before the write. Both gradients sum to <= 2e8,
-            // making candidate arithmetic safe for signed 32-bit int.
-            if s.step >= 1000000 || s.version >= 1000000; do
-                return Err(TrainingError.COUNTER_EXHAUSTED());
-            fi
-            val int candidate_weight = s.weight - s.accumulated_gradient;
-            if candidate_weight < -10000 || candidate_weight > 10000; do
-                return Err(TrainingError.UNSAFE_CANDIDATE());
-            fi
-            // All checks complete: one exclusive state transaction publishes
-            // candidate weight, version, step, and cleared gradient receipts.
-            s.weight = candidate_weight;
-            s.accumulated_gradient = 0;
-            s.pending_gradients = 0;
-            s.issued_first = false;
-            s.issued_second = false;
-            s.input_first = 0;
-            s.input_second = 0;
-            s.seen_first = false;
-            s.seen_second = false;
-            s.step = s.step + 1;
-            s.version = s.version + 1;
-            return Ok(s.weight);
+    // Detached optimizer transaction:
+    //   short read loan -> immutable scalar snapshot -> release loan
+    //   -> validate/compute/prepare outside actor state
+    //   -> short critical write loan -> revision/version-checked atomic publish.
+    //
+    // The snapshot captures every field used to authorize or construct the
+    // publication. publish_scalar_publication() rejects a stale state revision
+    // before any replacement is visible, so a failed optimistic commit cannot
+    // partially clear receipts or advance the version.
+    private commit(int expected_step, int expected_version, int expected_run, int expected_incarnation, int expected_graph): Result<int, TrainingError>
+        with state.read, state.write, alloc
+    {
+        val snapshot = self.handle_state(critical read |s| -> {
+            return state_snapshot(
+                s,
+                "run_id", "graph_id", "incarnation",
+                "weight", "version", "optimizer",
+                "accumulated_gradient", "pending_gradients", "step",
+                "issued_first", "issued_second",
+                "input_first", "input_second",
+                "seen_first", "seen_second"
+            );
         });
+
+        // No actor-state loan is live below this point until the final publish.
+        val run_id = snapshot_int(snapshot, "run_id");
+        val graph_id = snapshot_int(snapshot, "graph_id");
+        val incarnation = snapshot_int(snapshot, "incarnation");
+        val weight = snapshot_int(snapshot, "weight");
+        val version = snapshot_version(snapshot);
+        val optimizer = snapshot_int(snapshot, "optimizer");
+        val accumulated_gradient = snapshot_int(snapshot, "accumulated_gradient");
+        val pending_gradients = snapshot_int(snapshot, "pending_gradients");
+        val step = snapshot_int(snapshot, "step");
+        val issued_first = snapshot_bool(snapshot, "issued_first");
+        val issued_second = snapshot_bool(snapshot, "issued_second");
+        val seen_first = snapshot_bool(snapshot, "seen_first");
+        val seen_second = snapshot_bool(snapshot, "seen_second");
+
+        if run_id != expected_run; do
+            return Err(TrainingError.STALE_RUN());
+        fi
+        if graph_id != expected_graph; do
+            return Err(TrainingError.STALE_GRAPH());
+        fi
+        if incarnation != expected_incarnation; do
+            return Err(TrainingError.STALE_INCAR());
+        fi
+        if version != expected_version; do
+            return Err(TrainingError.STALE_VERSION());
+        fi
+        if step != expected_step; do
+            return Err(TrainingError.STALE_STEP());
+        fi
+        if pending_gradients != 2 || !issued_first || !issued_second || !seen_first || !seen_second; do
+            return Err(TrainingError.INCOMPLETE_FANIN());
+        fi
+
+        // Version/step cannot wrap and create a stale-message ABA.
+        // Both gradients sum to <= 2e8, so candidate arithmetic remains
+        // inside signed 32-bit range before the bounded parameter-domain check.
+        if step >= 1000000 || version >= 1000000; do
+            return Err(TrainingError.COUNTER_EXHAUSTED());
+        fi
+        val int candidate_weight = weight - accumulated_gradient;
+        if candidate_weight < -10000 || candidate_weight > 10000; do
+            return Err(TrainingError.UNSAFE_CANDIDATE());
+        fi
+
+        val publication = prepare_scalar_publication(
+            snapshot,
+            "version", version + 1,
+            "weight", candidate_weight,
+            "optimizer", optimizer + 1,
+            "accumulated_gradient", 0,
+            "pending_gradients", 0,
+            "step", step + 1,
+            "issued_first", false,
+            "issued_second", false,
+            "input_first", 0,
+            "input_second", 0,
+            "seen_first", false,
+            "seen_second", false
+        );
+
+        val published = self.handle_state(critical write |s| -> {
+            return publish_scalar_publication(s, publication);
+        });
+        if !published; do
+            // The publication capability is single-use. A competing state
+            // change invalidated the detached snapshot; retry from a new step
+            // decision rather than replaying this candidate.
+            return Err(TrainingError.STALE_VERSION());
+        fi
+        return Ok(candidate_weight);
     }
 
     // A controlled recovery path (internal-only) for a step whose full gradient fan-in
