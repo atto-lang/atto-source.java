@@ -1092,8 +1092,32 @@ public final class UnaryTcpSessionAdapterCheck {
         }
     }
 
+    private static void fatalCancellationFailureClassification() {
+        UnaryTcpSessionAdapter.rethrowJvmFatal(
+                new IllegalStateException("ordinary callback failure"));
+        UnaryTcpSessionAdapter.rethrowJvmFatal(
+                new AssertionError("ordinary hostile callback error"));
+
+        for (Throwable fatal : new Throwable[] {
+                new OutOfMemoryError("synthetic"),
+                new LinkageError("synthetic"),
+                new ThreadDeath()
+        }) {
+            try {
+                UnaryTcpSessionAdapter.rethrowJvmFatal(fatal);
+                throw new AssertionError(
+                        "fatal JVM cancellation failure was swallowed: "
+                                + fatal.getClass().getSimpleName());
+            } catch (Throwable observed) {
+                check(observed == fatal,
+                        "fatal JVM cancellation classifier must rethrow identity");
+            }
+        }
+    }
+
     public static void main(String[] unused) throws Exception {
         compactActorPayloadProjection();
+        fatalCancellationFailureClassification();
         echoAndReplayFence();
         wrongBindingRejectedBeforePayloadRead();
         overloadCancelAndRecovery();
