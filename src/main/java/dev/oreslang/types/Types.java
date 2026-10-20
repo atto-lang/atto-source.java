@@ -110,8 +110,17 @@ public final class Types {
             // Proof metadata cannot claim an element type narrower than any
             // slot in the repeating sequence.
             for (Type slot : repeatUnit) {
+                // A generic is not a wildcard proof: an unbound T may not
+                // be substituted with an arbitrary concrete type. Its own
+                // identity must occur in the joined type.
+                boolean genericCovered = !(slot instanceof Generic)
+                        || slot.equals(element)
+                        || (element instanceof Union joined && joined.options().contains(slot));
+                boolean joinedGenericSafe = !(element instanceof Generic)
+                        || element.equals(slot);
                 if (element == Unknown.INSTANCE || slot == Unknown.INSTANCE
                         || slot == Primitive.VOID || slot == Primitive.NULL
+                        || !genericCovered || !joinedGenericSafe
                         || !Types.isAssignable(slot, element)) {
                     throw new IllegalArgumentException(
                             "repeating collection slot must be a value subtype of element join");
