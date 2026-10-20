@@ -7556,18 +7556,29 @@ public final class ActorRuntime implements AutoCloseable {
                 lifecycleLock.notifyAll();
             }
 
-            if (parent != null) parent.childFinalized(this);
+            // Structured parents must not observe a fully retired child
+            // until the child's own terminal witness is published. The old
+            // order released parent.children first; a concurrently running
+            // parent finalizer could publish parent.done before child.done.
+            // All Future listeners are outside lifecycleLock.
             Throwable terminal = ref.terminationCause.get();
-            if (!ref.readyFuture.isDone()) {
-                ref.readyFuture.failFromRuntime(
-                        terminal == null
-                                ? new ActorTerminatedException(ref.id(), kind, null)
-                                : terminal);
+            try {
+                if (!ref.readyFuture.isDone()) {
+                    ref.readyFuture.failFromRuntime(
+                            terminal == null
+                                    ? new ActorTerminatedException(ref.id(), kind, null)
+                                    : terminal);
+                }
+                if (terminal == null) ref.doneFuture.completeFromRuntime(null);
+                else ref.doneFuture.failFromRuntime(terminal);
+                finalizedFuture.completeFromRuntime(null);
+            } finally {
+                // An observer may throw; do not strand a parent forever if the
+                // child's finalizer exits abnormally. In all cases the child
+                // has crossed its physical cleanup gate before this point.
+                if (parent != null) parent.childFinalized(this);
+                finalizerThread = null;
             }
-            if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-            else ref.doneFuture.failFromRuntime(terminal);
-            finalizedFuture.completeFromRuntime(null);
-            finalizerThread = null;
 
             if (cleanupFailure instanceof VirtualMachineError fatal) throw fatal;
             if (cleanupFailure instanceof ThreadDeath fatal) throw fatal;
