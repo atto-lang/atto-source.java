@@ -108,12 +108,15 @@ public final class TypeChecker {
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
+    private final AsyncSemanticProvenance asyncSemanticProvenance =
+            new AsyncSemanticProvenance();
 
     /** Non-fatal compiler diagnostics, detached from mutable checker state. */
     public record TypeCheckResult(
             Ast.Program program,
             List<String> warnings,
-            Map<Ast.BindingStmt, String> shortInferredAliases) {
+            Map<Ast.BindingStmt, String> shortInferredAliases,
+            AsyncSemanticProvenance asyncSemantic) {
         public TypeCheckResult {
             warnings = List.copyOf(warnings);
             // BindingStmt is a value record. Two separately declared bindings
@@ -121,10 +124,12 @@ public final class TypeChecker {
             // Retain AST identity instead of collapsing them in Map.copyOf().
             shortInferredAliases = java.util.Collections.unmodifiableMap(
                     new IdentityHashMap<>(shortInferredAliases));
+            java.util.Objects.requireNonNull(
+                    asyncSemantic, "asyncSemantic");
         }
 
         public TypeCheckResult(Ast.Program program, List<String> warnings) {
-            this(program, warnings, Map.of());
+            this(program, warnings, Map.of(), AsyncSemanticProvenance.empty());
         }
     }
     /** The one explicit struct literal currently permitted to omit declared fields. */
@@ -148,7 +153,11 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
-        return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
+        return new TypeCheckResult(
+                program,
+                checker.warnings,
+                checker.shortInferredTypeNames,
+                checker.asyncSemanticProvenance.seal());
     }
 
     /**
@@ -206,7 +215,11 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
-        return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
+        return new TypeCheckResult(
+                program,
+                checker.warnings,
+                checker.shortInferredTypeNames,
+                checker.asyncSemanticProvenance.seal());
     }
 
     private void validateImports(Ast.Program program) {
@@ -2671,6 +2684,10 @@ public final class TypeChecker {
                             GenericCallArguments.bind(
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
+                    if (target.async()) {
+                        asyncSemanticProvenance.record(
+                                call, label, result);
+                    }
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
@@ -2711,6 +2728,10 @@ public final class TypeChecker {
                             GenericCallArguments.bind(
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
+                    if (target.async()) {
+                        asyncSemanticProvenance.record(
+                                call, label, result);
+                    }
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
@@ -3292,6 +3313,10 @@ public final class TypeChecker {
                             explicitGenericBindings(fn.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
                     requireSuspendableCall(fn.suspends(), "static function '" + fn.name() + "'");
+                    if (fn.async()) {
+                        asyncSemanticProvenance.record(
+                                call, label, result);
+                    }
                     return callableResult(fn.async(), false, result);
                 }
                 if (receiver instanceof Named named) {
@@ -3472,6 +3497,10 @@ public final class TypeChecker {
                         fn.mutableParameters().get(i),
                         "argument " + (i + 1) + " to mutable function parameter");
                 requireAssignable(actualArgument, fn.parameters().get(i), "argument " + (i + 1));
+            }
+            if (fn.async()) {
+                asyncSemanticProvenance.record(
+                        call, "first-class async function", fn.result());
             }
             return fn.result();
         }
