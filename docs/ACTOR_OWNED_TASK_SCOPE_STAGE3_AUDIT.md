@@ -315,3 +315,39 @@ not executed against the complete GraalVM runtime while Actions jobs continue
 to fail without executing steps. Local simulation evidence is not a substitute
 for real source CI. No cross-organization private source mirror has been made:
 security issue #962 remains the blocker.
+
+
+## Finalizer multi-resource teardown hardening (2026-10-19)
+
+The previous `ActorCell.completeFinalizationOutsideLock()` used a **single**
+outer `try` around scheduler shutdown, mailbox reservation draining,
+select-cursor clearing, output stream close, memory-slice close and
+actor exit hook. If an early resource action threw, later resources were
+skipped, although actor deregistration and its done-Future publication
+would still proceed. That is unsafe for Task cancellation and actor
+lifetime reclamation.
+
+The updated finalizer attempts **every** release independently, outside
+`lifecycleLock`. `ActorRuntime.appendCleanupFailure` retains the first
+resource error and suppresses subsequent independent errors; a duplicate
+Throwable is not self-suppressed. Scheduler `RuntimeException` close
+handling and nonfatal external exit-hook exceptions remain best-effort
+by policy. Fatal exit-hook errors are captured until release and
+deregistration have also been attempted. The actor's primary termination
+cause still has precedence over incidental shutdown errors.
+
+Two production-source JUnit methods in
+`ActorTaskTerminationCascadeTest` validate first-error identity,
+suppressed-order preservation, duplicate-error handling and null
+validation. This class now has **12** JUnit methods, together with
+**10** in `ActorOwnedTaskScopeTest`, for **22** Stage-3 methods.
+They are **committed, not executed in Maven/GraalVM CI**.
+
+Stage 3 was also merged from current Stage-2 head
+`6a872ab614deeb203fa5c2b6950a0a1c788d638d`, preserving the four
+actor-specific files. Stage-1 and Stage-2 heads have independently moved
+and are both currently reported non-mergeable, so they were not
+force-rewritten. Real release acceptance still requires reconciling
+those upstream histories and obtaining exact-source JDK25/GraalVM tests.
+The proposed private cross-org Git-tree mirror remains unauthorized
+while security gate #962 is OPEN.
