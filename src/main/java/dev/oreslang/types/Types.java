@@ -234,6 +234,23 @@ public final class Types {
     }
 
     /** Unknown is not a proof, even when nested; generic names remain valid. */
+    /** Deeply detect ordered sequence proofs inside any type wrapper. */
+    public static boolean containsPatternedList(Type type) {
+        if (type instanceof ListType list) return list.patterned()
+                || containsPatternedList(list.element())
+                || list.repeatUnit().stream().anyMatch(Types::containsPatternedList);
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsPatternedList);
+        if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsPatternedList);
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsPatternedList);
+        if (type instanceof Record rec) return rec.members().values().stream().anyMatch(Types::containsPatternedList);
+        if (type instanceof Function fn) return fn.parameters().stream().anyMatch(Types::containsPatternedList)
+                || containsPatternedList(fn.result());
+        if (type instanceof Borrow loan) return containsPatternedList(loan.target());
+        if (type instanceof SelfType self) return containsPatternedList(self.bound());
+        if (type instanceof Not not) return containsPatternedList(not.excluded());
+        return false;
+    }
+
     private static boolean containsUnknownRecursively(Type type) {
         if (type == Unknown.INSTANCE) return true;
         if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUnknownRecursively);
@@ -281,7 +298,7 @@ public final class Types {
         // ordered, runtime-extent array contract. Generic slots INSIDE a
         // declared pattern are still permitted and preserve their identity.
         if ((from == Unknown.INSTANCE || from instanceof Generic)
-                && to instanceof ListType target && target.patterned()) return false;
+                && containsPatternedList(to)) return false;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
