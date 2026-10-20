@@ -99,6 +99,16 @@ public final class IpcReceiptCompletionBridgeSelfTest {
         check(gate.invariant());
         denied(() -> gate.acceptVerified(one, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED));
 
+        // Transport loss before dispatch commitment is definitive: the
+        // publication fence never opened, so this message was never sent.
+        var preDispatchLoss = new IpcReceiptCompletionBridge(1);
+        var preDispatchEnvelope = env(1, "pre-dispatch-loss");
+        var preDispatchFuture = preDispatchLoss.admit(preDispatchEnvelope);
+        check(preDispatchLoss.transportLost(preDispatchEnvelope) == 1);
+        check(result(preDispatchFuture)
+                == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
+        check(preDispatchLoss.invariant());
+
         // A production-bound bridge is irreversibly scoped to one opaque
         // physical owner + full logical epoch + physical generation. Legacy
         // unbound entrypoints and foreign/stale authorities fail closed.
@@ -147,6 +157,19 @@ public final class IpcReceiptCompletionBridgeSelfTest {
         check(boundLost.transportLost(lostOwner, lostEpoch, 44) == 1);
         check(result(lostFuture) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
         check(boundLost.invariant());
+
+        var boundPreDispatch = new IpcReceiptCompletionBridge(1);
+        var boundPreEnvelope = env(1, "bound-pre-loss");
+        Object boundPreOwner = new Object();
+        boundPreDispatch.claimPhysicalTransport(
+                boundPreOwner, boundPreEnvelope, 45);
+        var boundPreFuture = boundPreDispatch.admit(
+                boundPreOwner, boundPreEnvelope, 45);
+        check(boundPreDispatch.transportLost(
+                boundPreOwner, boundPreEnvelope, 45) == 1);
+        check(result(boundPreFuture)
+                == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
+        check(boundPreDispatch.invariant());
 
         var boundReject = new IpcReceiptCompletionBridge(1);
         var rejectEpoch = env(1, "bound-reject");
@@ -314,7 +337,9 @@ public final class IpcReceiptCompletionBridgeSelfTest {
             check(problem.get() == null);
             check(commits.get() == 0 || commits.get() == 1);
             check(losses.get() == 1);
-            check(result(future) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(result(future) == (commits.get() == 1
+                    ? IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN
+                    : IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE));
             check(closing.counters().pending() == 0);
             check(closing.counters().transportCredits() == 0);
             check(closing.invariant());
