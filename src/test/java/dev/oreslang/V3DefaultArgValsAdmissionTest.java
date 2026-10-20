@@ -8,6 +8,7 @@ import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.V3DefaultArgValsPolicy;
 import dev.oreslang.types.V3CallLoweringPreview;
+import dev.oreslang.types.V3SourceContractFingerprint;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -699,6 +700,71 @@ final class V3DefaultArgValsAdmissionTest {
         assertEquals(2, new V3CallLoweringPreview.Preview(
                 expressions, List.of(first, distinctName))
                 .formalOrderSlots().size());
+    }
+
+    @Test
+    void v3SourceContractFingerprintNormalizesEquivalentDefaultAuthoring() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.Param annotated = new Ast.Param(integer, "port", false, false,
+                List.of(new Ast.Annotation("Default",
+                        List.of(Ast.TypeRef.intLiteral("5432")))));
+        Ast.Param named = new Ast.Param(integer, "port");
+        Ast.Annotation namedDefaults = new Ast.Annotation(
+                "DefaultArgVals", List.of(),
+                List.of(new Ast.NamedDefault("port", Ast.TypeRef.intLiteral("5432"))));
+        String inlineHash = V3SourceContractFingerprint.sha256Hex(
+                List.of(annotated), List.of());
+        String declarationHash = V3SourceContractFingerprint.sha256Hex(
+                List.of(named), List.of(namedDefaults));
+        assertEquals(inlineHash, declarationHash);
+        assertEquals(64, inlineHash.length());
+        assertEquals(inlineHash, V3SourceContractFingerprint.sha256Hex(
+                List.of(annotated), List.of()));
+
+        Ast.Param explicitlyOmittable = new Ast.Param(integer, "port",
+                false, false, List.of(), true);
+        assertNotEquals(inlineHash, V3SourceContractFingerprint.sha256Hex(
+                List.of(explicitlyOmittable), List.of(namedDefaults)));
+    }
+
+    @Test
+    void v3SourceContractFingerprintChangesOnLabelsTypesPresenceAndLiterals() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.Param port = new Ast.Param(integer, "port");
+        Ast.Param renamed = new Ast.Param(integer, "other");
+        String requiredHash = V3SourceContractFingerprint.sha256Hex(List.of(port), List.of());
+        assertNotEquals(requiredHash, V3SourceContractFingerprint.sha256Hex(
+                List.of(renamed), List.of()));
+        assertNotEquals(requiredHash, V3SourceContractFingerprint.sha256Hex(
+                List.of(new Ast.Param(Ast.TypeRef.stagedV3Option(integer), "port")), List.of()));
+        assertNotEquals(requiredHash, V3SourceContractFingerprint.sha256Hex(
+                List.of(port, new Ast.Param(Ast.TypeRef.simple("string"), "host")), List.of()));
+        assertNotEquals(requiredHash, V3SourceContractFingerprint.sha256Hex(
+                List.of(new Ast.Param(Ast.TypeRef.simple("string"), "host"), port), List.of()));
+
+        Ast.Param message = new Ast.Param(Ast.TypeRef.simple("string"), "message");
+        var one = new Ast.Annotation("DefaultArgVals", List.of(),
+                List.of(new Ast.NamedDefault("message", Ast.TypeRef.stringLiteral("a:b"))));
+        var two = new Ast.Annotation("DefaultArgVals", List.of(),
+                List.of(new Ast.NamedDefault("message", Ast.TypeRef.stringLiteral("a|b"))));
+        var unicode = new Ast.Annotation("DefaultArgVals", List.of(),
+                List.of(new Ast.NamedDefault("message", Ast.TypeRef.stringLiteral("a😀b"))));
+        String h1 = V3SourceContractFingerprint.sha256Hex(List.of(message), List.of(one));
+        assertNotEquals(h1, V3SourceContractFingerprint.sha256Hex(List.of(message), List.of(two)));
+        assertNotEquals(h1, V3SourceContractFingerprint.sha256Hex(List.of(message), List.of(unicode)));
+    }
+
+    @Test
+    void v3SourceContractFingerprintRefusesInvalidOmissionAndDefaults() {
+        Ast.Param invalid = new Ast.Param(Ast.TypeRef.simple("int"), "port",
+                false, false, List.of(), true);
+        assertThrows(IllegalArgumentException.class,
+                () -> V3SourceContractFingerprint.sha256Hex(List.of(invalid), List.of()));
+        Ast.Param required = new Ast.Param(Ast.TypeRef.simple("int"), "port");
+        var unknown = new Ast.Annotation("DefaultArgVals", List.of(),
+                List.of(new Ast.NamedDefault("missing", Ast.TypeRef.intLiteral("2"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> V3SourceContractFingerprint.sha256Hex(List.of(required), List.of(unknown)));
     }
 
 }
