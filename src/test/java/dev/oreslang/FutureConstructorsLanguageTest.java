@@ -137,6 +137,32 @@ final class FutureConstructorsLanguageTest {
     }
 
     @Test
+    void futureConstructorCannotScheduleTaskInsideMutexCriticalSection() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                define module app
+                  define class Box as
+                    pub let int value = 0;
+                  end
+                  define class Producer as
+                    pub async run(): int { return 42; }
+                  end
+                  fnc bad(): void {
+                    val mutex = Mutex.new(new Box());
+                    mutex.with_lock(|box| -> {
+                      val Future<int> started = new Future<int>(new Producer());
+                      return;
+                    });
+                    return;
+                  }
+                end
+                """));
+        assertTrue(failure.getMessage().contains("cannot start new Future<T> while holding a MutexGuard"),
+                () -> "expected Future creation to be rejected by the MutexGuard ownership gate: "
+                        + failure.getMessage());
+    }
+
+    @Test
     void constructorRejectsSynchronousRun() {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
