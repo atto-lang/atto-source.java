@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Gate private-source transfers using a reviewed, checked-in repository policy.
+# Diagnostic-only destination check. This script is NOT export authorization.
+# The publisher uses data-only policy + protected-main/carrier-contract checks.
 set -euo pipefail
 fail() {
   printf 'PRIVATE_CI_DESTINATION_REJECTED: %s\n' "$1" >&2
