@@ -34,11 +34,14 @@ fi
 base_commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 case "$route" in
   repos/trusted/ci)
-    printf '%s\t%s\t%s\t%s\t%s%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s%s\n' \
       "${MOCK_NAME:-trusted/ci}" \
       "${MOCK_ID:-1412142815}" \
       "${MOCK_VISIBILITY:-private}" \
       "${MOCK_PRIVATE_FLAG:-true}" \
+      "${MOCK_ARCHIVED_FLAG:-false}" \
+      "${MOCK_DISABLED_FLAG:-false}" \
+      "${MOCK_FORK_FLAG:-false}" \
       "${MOCK_DEFAULT_BRANCH:-main}" \
       "${MOCK_EXTRA_LINE:-}"
     ;;
@@ -110,6 +113,13 @@ expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 unset MOCK_PRIVATE_FLAG
 
+for variable in MOCK_ARCHIVED_FLAG MOCK_DISABLED_FLAG MOCK_FORK_FLAG; do
+  export "$variable=true"
+  expect_fail trusted/ci
+  expect_wrapper_reject trusted/ci
+  unset "$variable"
+done
+
 export MOCK_NAME=other/repo
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
@@ -145,7 +155,67 @@ expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 unset MOCK_API_FAILURE
 
-export MOCK_EXTRA_LINE=$'\nspoofed/repo\t1412142815\tprivate\ttrue\tmain'
+export MOCK_EXTRA_LINE=
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+unset MOCK_EXTRA_LINE
+
+export MOCK_BASE_REF_EXTRA_LINE=$'\ncccccccccccccccccccccccccccccccccccccccc'
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+unset MOCK_BASE_REF_EXTRA_LINE
+
+export MOCK_BASE_TREE_EXTRA_LINE=$'\ncccccccccccccccccccccccccccccccccccccccc'
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+unset MOCK_BASE_TREE_EXTRA_LINE
+
+export MOCK_WORKFLOW_EXTRA_LINE=$'\nfile\tffffffffffffffffffffffffffffffffffffffff'
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+unset MOCK_WORKFLOW_EXTRA_LINE
+
+expect_fail trusted/ci-extra
+expect_fail other/repo
+expect_fail trusted
+expect_fail 'trusted/ci;echo unsafe'
+expect_fail
+expect_wrapper_reject other/repo
+
+printf 'other/repo 9 %s %s %s\n' \
+  "$approved_base_commit" "$approved_base_tree" "$approved_workflow" > "$policy"
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+
+for malformed in \
+  "trusted/ci" \
+  "trusted/ci 1412142815" \
+  "trusted/ci 1412142815 $approved_base_commit" \
+  "trusted/ci 1412142815 $approved_base_commit $approved_base_tree" \
+  "trusted/ci 1412142815 $approved_base_commit $approved_base_tree $approved_workflow extra" \
+  "trusted/ci 1412142815  $approved_base_commit $approved_base_tree $approved_workflow"; do
+  printf '%s\n' "$malformed" > "$policy"
+  expect_fail trusted/ci
+done
+
+printf '# intentionally empty\n' > "$policy"
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+
+rm "$policy"
+expect_fail trusted/ci
+ln -s "$work/fixture/scripts/check-private-ci-destination.sh" "$policy"
+expect_fail trusted/ci
+
+rm "$policy"
+reset_policy
+mv "$work/fixture/.github" "$work/approved-policy-directory"
+ln -s "$work/approved-policy-directory" "$work/fixture/.github"
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+
+printf 'PASS: private slug/id + reviewed carrier base/tree/workflow pinning, symlink and multiline rejection\n'
+\nspoofed/repo\t1412142815\tprivate\ttrue\tfalse\tfalse\tfalse\tmain'
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 unset MOCK_EXTRA_LINE
