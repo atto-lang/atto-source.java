@@ -239,3 +239,45 @@ attestation. The LLVM origin needs its own separate authorization.
   default collisions, receiver/self, nested Option, methods,
   lambdas, error unwinding, cancellation, borrowing and
   Java/LLVM runtime parity.
+
+
+## 2026-10-19 scalar default-argument compiler boundary (additional milestone)
+
+Java now stages `V3ScalarDefaultLiteralLowering` for **direct non-generic
+synchronous functions receiving only primitive scalar literals**. It rebinds
+the actual parser-owned named/omitted call items, selects immutable closed
+`@Default` or `@DefaultArgVals` primitive literal values, preserves original
+source-order call-item indices, and emits a full declared-arity positional
+`Ast.CallExpr`. This is a **non-executable** compiler intermediate until
+owner/visibility, type, effect, ownership and runtime authorization are
+completed. It rejects Option/default-None construction, user expressions,
+methods, constructors, generics, unrelated annotations, and unresolved types.
+The immutable preview is factory-only and includes a versioned *source*
+fingerprint, which is not a nominal or executable ABI proof.
+
+Tests were authored to feed the generated full-arity scalar call into the
+real Java TypeChecker and OwnershipChecker in an otherwise normalized ordinary
+AST, without granting execution rights to the original staged source.
+Additional tests cover reordered names, explicit `omit`, overrides,
+bad supplied literal types, and deliberately unacceptable Option cases.
+
+`V3DefaultArgValsPolicy.validateDeclaration` now performs an **iterative
+bounded preflight before recursive type conversion**, limiting formals,
+annotations, named defaults, type depth and total nodes. It also checks the
+work-queue growth before pushing nested types, avoiding a fabricated
+very-wide `TypeRef` allocating an unbounded pending queue. Hostile deep/wide
+and nested-borrow AST tests have been added.
+
+A dedicated JDK25/Maven targeted-test Actions workflow was committed.
+**Source GitHub Actions still report failed jobs without recorded steps.**
+Neither the new JUnit methods nor JDK25 build, guest execution, Graal AOT or
+LLVM parity is thereby verified. The external test-org private-source
+allowlist and security review remain a separate prerequisite for any
+exact-tree mirror; no private source transfer was performed.
+
+**Important semantic distinction:** This v3 mode remains a PROPOSED
+orthogonal-presence alternative: in v3, `Option<T> name` is required unless
+`name?` or a default makes it omittable. The previously staged v2 contract
+instead proposes implicitly omittable intrinsic `Option<T>`. Do not merge
+these two policies or change imported callable behavior without choosing an
+explicit versioned language mode. The current default language remains legacy.
