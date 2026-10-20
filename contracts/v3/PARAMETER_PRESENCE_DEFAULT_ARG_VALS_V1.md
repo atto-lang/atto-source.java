@@ -281,3 +281,50 @@ orthogonal-presence alternative: in v3, `Option<T> name` is required unless
 instead proposes implicitly omittable intrinsic `Option<T>`. Do not merge
 these two policies or change imported callable behavior without choosing an
 explicit versioned language mode. The current default language remains legacy.
+
+
+## 2026-10-19 experimental executable scalar-default integration
+
+`V3ScalarDefaultProgramNormalizer.parseNormalizeAndAnalyze(source)` is now
+an **explicit opt-in compiler entry point**. It parses v3 syntax into a
+restricted source AST, lowers closed scalar literal default/omitted/named calls
+to ordinary full-arity positional AST calls, strips the staged callable
+annotations/presence flags only after normalization and invokes the
+authoritative `OresCompiler.analyze` (TypeChecker + OwnershipChecker).
+The resulting checked ordinary program can be executed by a trusted host via
+the existing one-shot `OresLanguage.openPrecheckedProgram` lease, which
+requires the exact original source text and code-unit identity.
+
+The intentionally narrow admissible source profile is **one unimported
+unnamespaced module**, at most 128 ordinary synchronous, non-generic `fnc`
+declarations with distinct names, nonmutable primitive
+`int`/`bool`/`string` formals, no Option/borrow/actor/class/constructor
+or extra callable annotations, and exactly one pure `return` statement
+per function. Return expressions are limited to immutable scalar literals,
+parameter reads, pure binary expressions that must separately typecheck,
+and direct named scalar-literal calls resolved within that one module.
+No global reads, local declarations, imported effects, indirect targets,
+unverified annotation handling, or nonliteral argument evaluations occur
+under this opt-in. This is not a general v3 runtime flag or a migration
+of the default language mode.
+
+A new `V3ScalarDefaultProgramNormalizerTest` includes a real Java
+GraalVM Polyglot execution test using the one-shot prechecked-program
+lease: for a defaulted `calculate(int a, int b?, int c)` and
+`calculate(c: 3, a: 5)`, expected result is `18`.
+It also checks the concrete normalized AST, per-formal/declaration
+annotation normalization, explicit omission and rejected unsupported
+effects. **These tests are authored, not proven to pass** until JDK25
+Maven executes with recorded runner steps.
+
+Crucially, the normal `OresCompiler.parseAndTypeCheck` and ordinary
+Polyglot `Context.eval` pathways still reject v3 syntax: the opt-in
+requires an explicit trusted compile step plus a one-shot checked-AST
+host lease. The original TypeChecker and OwnershipChecker gates still
+reject unlowered v3 ASTs. Further rollout must NOT expose unchecked v3
+input to guest-controlled host functions or bypass version/import ABI checks.
+
+Next blockers: actual targeted JDK25 test execution; typechecked
+independent Option identity and Some/None adaptation; nonliteral
+source-order/ownership/effect verification; method/constructor and import
+parity; LLVM native lowering and exact-tree conformance.
