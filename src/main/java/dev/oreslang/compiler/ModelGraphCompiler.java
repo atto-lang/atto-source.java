@@ -329,9 +329,6 @@ public final class ModelGraphCompiler {
         String module = modules.get(model);
         for (Ast.ModelOp operation : model.operations()) {
             Ast.ModelDecl target = models.get(qualify(module, operation.name()));
-            if (target == null && !ambiguous.contains(operation.name())) {
-                target = unqualified.get(operation.name());
-            }
             if (target != null) {
                 if (active.contains(target)) {
                     fail("MODEL_RECURSIVE_COMPOSITION",
@@ -421,9 +418,6 @@ public final class ModelGraphCompiler {
             }
 
             Ast.ModelDecl nested = models.get(qualify(module, sourceOperation.name()));
-            if (nested == null && !ambiguousModels.contains(sourceOperation.name())) {
-                nested = unqualifiedModels.get(sourceOperation.name());
-            }
             if (nested != null) {
                 fail("MODEL_COMPOSITION_NOT_ENABLED",
                         "non-recursive model composition is not enabled in executable v1; '"
@@ -546,13 +540,12 @@ public final class ModelGraphCompiler {
             String module,
             String name,
             int arity) {
+        // Executable v1 intentionally resolves model operations only in the
+        // declaration's lexical module. A uniquely named function elsewhere
+        // is not ambient authority. Cross-module ops need an explicit
+        // import/provenance-aware contract in a later version.
         Map<Integer, Ast.FunctionDecl> local = functions.get(qualify(module, name));
-        if (local != null && local.get(arity) != null) return local.get(arity);
-        if (ambiguousNames.contains(name)) return null;
-        String owner = uniqueOwners.get(name);
-        if (owner == null) return null;
-        Map<Integer, Ast.FunctionDecl> family = functions.get(qualify(owner, name));
-        return family == null ? null : family.get(arity);
+        return local == null ? null : local.get(arity);
     }
 
     private static void verifyOperation(Ast.FunctionDecl operation, String sourceName) {
@@ -603,7 +596,8 @@ public final class ModelGraphCompiler {
         if (expression instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
             return value instanceof Long || value instanceof Double
-                    || value instanceof Boolean || value instanceof String;
+                    || value instanceof Boolean || value instanceof String
+                    || value instanceof dev.oreslang.runtime.OresSymbol;
         }
         if (expression instanceof Ast.NameExpr name) {
             return parameters.contains(name.name());
