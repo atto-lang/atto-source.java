@@ -32,4 +32,4 @@ metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.full_name, .visibi
 IFS=$'\t' read -r actual_name visibility private_flag <<< "$metadata"
 [[ "${actual_name,,}" == "${target,,}" ]] || fail 'API identity differs from requested destination'
 [[ "$visibility" == private && "$private_flag" == true ]] || fail 'destination is not private'
-printf 'PRIVATE_CI_DESTINATION_APPROVED: %s (private)\n' "$target"
+printf 'PRIVATE_CI_DESTINATION_VERIFIED_DIAGNOSTIC_ONLY: %s (private)\n' "$target"
