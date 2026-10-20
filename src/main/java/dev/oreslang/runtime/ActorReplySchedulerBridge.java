@@ -89,6 +89,50 @@ public final class ActorReplySchedulerBridge {
         return future;
     }
 
+    /**
+     * Supervisor APPLICATION service -> ordinary actor, using the same
+     * data-plane call/reply protocol. It does NOT have supervisor CONTROL
+     * authority. The supplied app actor handle is checked against the actor
+     * currently holding the physical logical execution lease.
+     */
+    static <M, R> OresFuture<R> requestCurrentSupervisorApplication(
+            ActorRuntime runtime,
+            GenerationalReplyRegistry registry,
+            GenerationalReplyRegistry.Endpoint supervisorApplication,
+            ActorRuntime.ActorRef<?> supervisorServiceActor,
+            GenerationalReplyRegistry.Endpoint callee,
+            ActorRuntime.ActorRef<M> destination,
+            M message,
+            Class<R> responseType,
+            Duration timeout,
+            ScheduledExecutorService timer) {
+        Objects.requireNonNull(runtime, "runtime");
+        Objects.requireNonNull(supervisorApplication, "supervisor application endpoint");
+        Objects.requireNonNull(supervisorServiceActor, "supervisor application service");
+        if (supervisorApplication.role() !=
+                GenerationalReplyRegistry.Role.SUPERVISOR_APPLICATION) {
+            throw new SecurityException("supervisor application role required");
+        }
+        ActorRuntime.ContinuationTarget active = runtime.captureCurrentContinuationTarget();
+        if (!supervisorServiceActor.id().equals(active.actorId())) {
+            throw new SecurityException("supervisor app call attempted outside owning service actor");
+        }
+        if (destination.id().equals(supervisorServiceActor.id())) {
+            throw new IllegalArgumentException("supervisor application cannot call itself");
+        }
+        GenerationalReplyRegistry.Ticket<R> ticket =
+                registry.reserve(supervisorApplication, callee, responseType);
+        OresFuture<R> future = bindCurrentActor(
+                runtime, ticket, supervisorApplication, timeout, timer, (value, failure) -> { });
+        if (ticket.state() != GenerationalReplyRegistry.State.PENDING) return future;
+        try {
+            runtime.sendCall(destination, message, ticket, callee);
+        } catch (RuntimeException | Error admissionFailure) {
+            ticket.failAdmission(supervisorApplication, admissionFailure);
+        }
+        return future;
+    }
+
     static <R> OresFuture<R> bindCurrentActor(
             ActorRuntime runtime,
             GenerationalReplyRegistry.Ticket<R> ticket,
