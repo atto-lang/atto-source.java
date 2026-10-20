@@ -136,6 +136,15 @@ final class CpuTopologyTest {
                 () -> topology.preferredSlotForNuma(1, -2, 4, cpuAt));
         assertThrows(IllegalArgumentException.class,
                 () -> topology.preferredSlotForNuma(1, 0, 0, cpuAt));
+        // Optional NUMA must not reject ordinary existing soft affinity
+        // pools just because the topology discovery cap is smaller.
+        assertEquals(Math.floorMod(Integer.MIN_VALUE, 8193),
+                topology.preferredSlotForNuma(
+                        Integer.MIN_VALUE, CpuTopology.UNKNOWN, 8193, cpuAt));
+        assertEquals(Math.floorMod(-55, 8193),
+                topology.preferredSlotForNuma(-55, 1, 8193, cpuAt));
+        assertThrows(IllegalArgumentException.class,
+                () -> topology.preferredSlotForNuma(1, 65536, 4, cpuAt));
     }
 
     @Test
