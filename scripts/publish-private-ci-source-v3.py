@@ -878,14 +878,13 @@ def authorize_write(root, repository, approved_policy, contract):
 
 def _gh_ref_request(repository, ref_name, method):
     if not isinstance(ref_name, str) or not HANDOFF_REF.fullmatch(ref_name):
-        raise Denied("ref cleanup target is invalid")
-    if method not in ("GET", "DELETE"):
-        raise Denied("ref cleanup method is invalid")
+        raise Denied("ref lookup target is invalid")
+    if method != "GET":
+        raise Denied("ref lookup method is invalid")
     encoded = ref_name.replace("/", "%2F")
-    family = "ref" if method == "GET" else "refs"
     argv = [
-        legacy.trusted_github_cli(), "api", "--method", method,
-        f"repos/{repository}/git/{family}/heads/{encoded}",
+        legacy.trusted_github_cli(), "api", "--method", "GET",
+        f"repos/{repository}/git/ref/heads/{encoded}",
         "--header", "Accept: application/vnd.github+json",
     ]
     env = legacy.github_api_environment()
@@ -895,7 +894,7 @@ def _gh_ref_request(repository, ref_name, method):
             timeout=30, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise Denied("carrier ref rollback is unavailable") from exc
+        raise Denied("carrier ref lookup is unavailable") from exc
     # Keep direct ref verification subject to the same bounded-response trust
     # boundary as legacy.gh_api().  Both stdout and stderr are attacker-useful
     # memory amplification surfaces before JSON parsing or HTTP-status checks.
@@ -956,29 +955,13 @@ def require_handoff_refs_absent(
         repository, branch, authorization, expected_repository_id):
     """Reject pre-existing refs before any create attempt.
 
-    GitHub does not provide an atomic compare-and-delete operation, so this
-    is an ownership admission check rather than a complete concurrency lock.
-    Each publisher also creates a different nonce-bound commit SHA.
+    Each invocation uses an unguessable nonce-scoped namespace, so a
+    pre-existing ref is evidence of collision or interference. The publisher
+    has no DELETE capability and will never adopt or destructively clean it.
     """
     for ref_name in (branch, authorization):
         if live_ref_sha(repository, ref_name, expected_repository_id) is not None:
             raise Denied("carrier handoff ref already exists before publication")
-
-
-def delete_exact_ref(repository, ref_name, expected_sha, expected_repository_id):
-    expected_sha = valid_sha(expected_sha, "invalid rollback commit SHA")
-    actual = live_ref_sha(repository, ref_name, expected_repository_id)
-    if actual is None:
-        return False
-    if actual != expected_sha:
-        raise Denied("carrier ref moved; refusing rollback")
-
-    result = _gh_ref_request(repository, ref_name, "DELETE")
-    if result.returncode != 0 and not is_github_ref_absent_response(result):
-        raise Denied("carrier ref rollback failed")
-    if live_ref_sha(repository, ref_name, expected_repository_id) is not None:
-        raise Denied("carrier ref still exists after rollback")
-    return True
 
 
 def fresh_handoff_nonce():
@@ -995,8 +978,9 @@ def fresh_handoff_nonce():
 def create_handoff_ref(repository, ref_name, commit_sha, expected_repository_id):
     """POST one ref, accepting only an exact create response.
 
-    Callers mark a create as attempted before this function: if the server
-    created the ref but the response was lost, cleanup still checks its SHA.
+    A lost response is treated as ambiguous remote state. The publisher never
+    issues DELETE; a separate, independently controlled hygiene path may later
+    inspect nonce-scoped refs without affecting publication authorization.
     """
     commit_sha = valid_sha(commit_sha, "invalid handoff commit SHA")
     if not isinstance(ref_name, str) or not HANDOFF_REF.fullmatch(ref_name):
