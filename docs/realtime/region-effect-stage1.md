@@ -32,3 +32,11 @@ Portable regression entry:
 javac --release 21 -d /tmp/rt-region-tests src/main/java/dev/oreslang/compiler/RealtimeRegionEffectModel.java src/test/java/dev/oreslang/compiler/RealtimeRegionEffectModelSelfTest.java
 java -ea -cp /tmp/rt-region-tests dev.oreslang.compiler.RealtimeRegionEffectModelSelfTest
 ```
+
+## Retained reference/Drop and scope-closure hardening
+
+The model now records both the *source region* and source *binding name* for each pointer stored in another region. A binding `Drop` may trigger a destructor, so dropping or moving a binding whose address is still stored fails closed even while the originating arena remains allocated. Retained pointers stored inside an expiring scope are discarded when that scope ends. A source scope cannot close if any other still-live region retains an address originating from it. Every declared scoped region must close before the entry point completes, including scopes whose bindings have been dropped.
+
+The model does not implement field overwrite, reference removal, refcounts, nested dynamic lifetime proofs, or relocation of stored addresses. Therefore a legitimate program needing those operations must wait for typed-IR proofs rather than bypass these restrictions. Lifetime ranks are symbolic declarations—not independently verified facts—and a caller-created plan remains **untrusted for hard-RT admission**.
+
+The follow-up audit adds negative cases for forgotten scope closure, equal-rank independent scopes, retained pointers surviving a dropped source binding, stale destination regions, and forbidden destruction/moves of region-retained objects. The test suite currently contains 31 negative policy checks. CI status must be tracked separately: zero-step GitHub Actions failures do not constitute an executed test run.
