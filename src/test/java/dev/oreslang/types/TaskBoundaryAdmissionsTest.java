@@ -107,14 +107,25 @@ final class TaskBoundaryAdmissionsTest {
 
         TaskBoundaryAdmissions admissions =
                 new TaskBoundaryAdmissions(program);
-        admissions.recordScopedLoan(
-                first,
-                List.of(new TaskAccessVerifier.CoherentTypedClaim(
+        TaskAccessVerifier.CoherentTypedClaim firstClaim =
+                new TaskAccessVerifier.CoherentTypedClaim(
                         new TaskAccessVerifier.Claim(
                                 TaskAccessVerifier.Place.whole(generationOne),
                                 TaskAccessVerifier.Mode.READ),
                         Ast.TypeRef.simple("int"),
-                        Types.Primitive.INT)),
+                        Types.Primitive.INT);
+        assertThrows(IllegalArgumentException.class,
+                () -> admissions.recordScopedLoan(
+                        new Ast.TaskExpr(first.body()),
+                        List.of(firstClaim),
+                        new SendSyncTraits(new Ast.Program(List.of()), Set.of()),
+                        resolved),
+                "source type authority from another program must fail closed");
+        assertEquals(0, admissions.boundaryCount());
+
+        admissions.recordScopedLoan(
+                first,
+                List.of(firstClaim),
                 sourceProof,
                 resolved);
         admissions.recordScopedLoan(
