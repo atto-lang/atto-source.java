@@ -9480,8 +9480,8 @@ public final class ActorRuntime implements AutoCloseable {
 
                     synchronized (lifecycleLock) {
                         claimCurrentEnvelope(envelope);
+                        releaseCurrentEnvelopeSlot();
                     }
-                    releaseCurrentEnvelopeSlot();
 
                     boolean guestCompleted = false;
                     try {
