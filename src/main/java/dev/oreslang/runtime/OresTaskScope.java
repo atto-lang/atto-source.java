@@ -31,6 +31,7 @@ public final class OresTaskScope {
         OPEN,
         QUIESCING,
         CANCELLING,
+        POISONED,
         CLOSED
     }
 
@@ -107,6 +108,7 @@ public final class OresTaskScope {
         // Guarded by the enclosing scope lock.
         private boolean quiescent;
         private boolean terminal;
+        private boolean retirementClaimed;
         private List<ScopedReadClaim> readClaims = List.of();
         private boolean readClaimsReleased;
     }
@@ -136,6 +138,7 @@ public final class OresTaskScope {
     private final OresFuture<Void> drained =
             new OresFuture<>(() -> false, () -> { });
     private State state = State.OPEN;
+    private Throwable poisonFailure;
 
     public OresTaskScope(OresScheduler scheduler) {
         this(scheduler, ignored -> { }, ignored -> { });
@@ -223,7 +226,10 @@ public final class OresTaskScope {
             if (state == State.OPEN) {
                 state = State.QUIESCING;
             }
-            if (state != State.OPEN && children.isEmpty() && state != State.CLOSED) {
+            if (state != State.OPEN
+                    && state != State.POISONED
+                    && children.isEmpty()
+                    && state != State.CLOSED) {
                 state = State.CLOSED;
                 complete = true;
             }
@@ -245,7 +251,7 @@ public final class OresTaskScope {
         List<OresFuture<?>> cancel = List.of();
         boolean complete = false;
         synchronized (lock) {
-            if (state == State.CLOSED) return drained;
+            if (state == State.CLOSED || state == State.POISONED) return drained;
             if (state != State.CANCELLING) {
                 state = State.CANCELLING;
                 ArrayList<OresFuture<?>> snapshot = new ArrayList<>(children.size());
@@ -356,21 +362,33 @@ public final class OresTaskScope {
     }
 
     private void childQuiescent(Child child) {
-        boolean complete;
-        synchronized (lock) {
-            child.quiescent = true;
-            complete = retireChildIfReadyLocked(child);
-        }
-        if (complete) completeDrain();
+        childLifecycleChanged(child, false);
     }
 
     private void childTerminal(Child child) {
-        boolean complete;
+        childLifecycleChanged(child, true);
+    }
+
+    private void childLifecycleChanged(Child child, boolean terminalEvent) {
+        boolean complete = false;
+        Throwable poison = null;
         synchronized (lock) {
-            child.terminal = true;
-            complete = retireChildIfReadyLocked(child);
+            if (terminalEvent) child.terminal = true;
+            else child.quiescent = true;
+
+            if (state == State.POISONED) return;
+            try {
+                complete = retireChildIfReadyLocked(child);
+            } catch (RuntimeException | Error failure) {
+                poisonScopeLocked(failure);
+                poison = failure;
+            }
         }
-        if (complete) completeDrain();
+        if (poison != null) {
+            failPoisonedDrain(poison);
+        } else if (complete) {
+            completeDrain();
+        }
     }
 
     /**
@@ -378,15 +396,59 @@ public final class OresTaskScope {
      *         must be completed after releasing the lock.
      */
     private boolean retireChildIfReadyLocked(Child child) {
-        if (!child.quiescent || !child.terminal || !children.remove(child)) {
+        if (!child.quiescent
+                || !child.terminal
+                || child.retirementClaimed
+                || !children.contains(child)) {
             return false;
         }
+        child.retirementClaimed = true;
+
+        // Memory authority retires before the child can leave the physical
+        // join set. If accounting is corrupted, the exception poisons the
+        // scope and this child remains pinned in children: no success witness
+        // can be manufactured from a partially retired lifetime.
         releaseScopedReadsLocked(child);
-        if (state != State.OPEN && children.isEmpty() && state != State.CLOSED) {
+
+        if (!children.remove(child)) {
+            throw new IllegalStateException(
+                    "structured Task child disappeared during retirement");
+        }
+        if (state != State.OPEN
+                && state != State.POISONED
+                && children.isEmpty()
+                && state != State.CLOSED) {
             state = State.CLOSED;
             return true;
         }
         return false;
+    }
+
+    private void poisonScopeLocked(Throwable failure) {
+        if (poisonFailure == null) {
+            poisonFailure = Objects.requireNonNull(failure, "failure");
+        }
+        state = State.POISONED;
+    }
+
+    private void failPoisonedDrain(Throwable failure) {
+        if (!drained.failFromRuntime(failure)) {
+            throw new IllegalStateException(
+                    "Task scope drain settled before scoped-read retirement poison",
+                    failure);
+        }
+    }
+
+    boolean isPoisoned() {
+        synchronized (lock) {
+            return state == State.POISONED;
+        }
+    }
+
+    void corruptScopedReadRegionForTest(long regionId) {
+        synchronized (lock) {
+            scopedReadRegions.remove(regionId);
+        }
     }
 
     private void reserveScopedReadsLocked(
