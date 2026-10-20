@@ -176,6 +176,14 @@ public final class DeclaredEffectVerifier {
             bound = binding.name();
         } else if (node instanceof Ast.ForOfStmt loop) {
             bound = loop.bindingName();
+        } else if (node instanceof Ast.SelectArm arm) {
+            bound = arm.bindingName();
+        } else if (node instanceof Ast.BindingPattern pattern) {
+            bound = pattern.name();
+        } else if (node instanceof Ast.TypePattern pattern) {
+            bound = pattern.binding();
+        } else if (node instanceof Ast.StructuralPattern pattern) {
+            bound = pattern.binding();
         }
         if (bound != null && ML_SCALAR_INTRINSICS.contains(bound)) {
             throw new IllegalArgumentException(
@@ -228,6 +236,14 @@ public final class DeclaredEffectVerifier {
             names.add(binding.name());
         } else if (node instanceof Ast.ForOfStmt loop) {
             names.add(loop.bindingName());
+        } else if (node instanceof Ast.SelectArm arm) {
+            if (arm.bindingName() != null) names.add(arm.bindingName());
+        } else if (node instanceof Ast.BindingPattern pattern) {
+            names.add(pattern.name());
+        } else if (node instanceof Ast.TypePattern pattern) {
+            if (pattern.binding() != null) names.add(pattern.binding());
+        } else if (node instanceof Ast.StructuralPattern pattern) {
+            if (pattern.binding() != null) names.add(pattern.binding());
         } else if (node instanceof Ast.TryStmt attempted) {
             if (attempted.errorName() != null) names.add(attempted.errorName());
         }
