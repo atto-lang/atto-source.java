@@ -689,4 +689,68 @@ final class OresTaskScopeTest {
         }
     }
 
+
+    @Test
+    void sameClaimIdentityCannotRaceIntoTwoDifferentScopes()
+            throws Exception {
+        try (OresScheduler leftScheduler = new OresScheduler(1);
+             OresScheduler rightScheduler = new OresScheduler(1)) {
+            OresTaskScope leftScope = new OresTaskScope(leftScheduler);
+            OresTaskScope rightScope = new OresTaskScope(rightScheduler);
+            OresTaskScope.ScopedReadClaim claim =
+                    new OresTaskScope.ScopedReadClaim("view", 79L, 1L, "$");
+
+            CountDownLatch ready = new CountDownLatch(2);
+            CountDownLatch start = new CountDownLatch(1);
+            AtomicInteger admitted = new AtomicInteger();
+            AtomicInteger rejected = new AtomicInteger();
+            AtomicReference<Throwable> unexpected = new AtomicReference<>();
+
+            Runnable leftAttempt = () -> {
+                ready.countDown();
+                try {
+                    assertTrue(start.await(5, TimeUnit.SECONDS));
+                    leftScope.fork(
+                            resume -> OresScheduler.done(1),
+                            java.util.List.of(claim));
+                    admitted.incrementAndGet();
+                } catch (IllegalStateException expected) {
+                    rejected.incrementAndGet();
+                } catch (Throwable failure) {
+                    unexpected.compareAndSet(null, failure);
+                }
+            };
+            Runnable rightAttempt = () -> {
+                ready.countDown();
+                try {
+                    assertTrue(start.await(5, TimeUnit.SECONDS));
+                    rightScope.fork(
+                            resume -> OresScheduler.done(2),
+                            java.util.List.of(claim));
+                    admitted.incrementAndGet();
+                } catch (IllegalStateException expected) {
+                    rejected.incrementAndGet();
+                } catch (Throwable failure) {
+                    unexpected.compareAndSet(null, failure);
+                }
+            };
+
+            Thread left = Thread.ofVirtual().start(leftAttempt);
+            Thread right = Thread.ofVirtual().start(rightAttempt);
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            start.countDown();
+            left.join();
+            right.join();
+
+            assertNull(unexpected.get());
+            assertEquals(1, admitted.get(),
+                    "exactly one scope may issue one claim identity");
+            assertEquals(1, rejected.get());
+            assertTrue(claim.issued());
+
+            assertNull(leftScope.quiesce().get(5, TimeUnit.SECONDS));
+            assertNull(rightScope.quiesce().get(5, TimeUnit.SECONDS));
+        }
+    }
+
 }
