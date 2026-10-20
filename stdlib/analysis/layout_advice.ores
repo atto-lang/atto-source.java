@@ -41,11 +41,12 @@ define module LayoutAdvice as
     bool hot, int rows, int current_tile, int candidate_tile
   ): String {
     if !hot || rows < 128; do return ""; fi
-    if current_tile < 2 || candidate_tile < 2; do return ""; fi
+    if current_tile < 2 || candidate_tile < 2 || candidate_tile > 64; do return ""; fi
     if current_tile < candidate_tile / 2; do
       return "ORES-LAYOUT133";
     fi
-    if current_tile / 4 > candidate_tile; do
+    // candidate_tile is bounded to 64, so multiplying by 4 is safe.
+    if current_tile > candidate_tile * 4; do
       return "ORES-LAYOUT133";
     fi
     return "";
@@ -64,14 +65,18 @@ define module LayoutAdvice as
     return "";
   }
 
-  // Conservative floor+1 comparison deliberately avoids overflow; this
-  // may miss an exact 1/8 threshold, never invents a higher churn rate.
+  // Compare using division and a bounded product to avoid overflow.
   pub fnc structural_churn_candidate(
     bool hot, bool ecs_layout, int rows, int changes
   ): String {
     if !hot || !ecs_layout || rows < 128 || changes < 0; do return ""; fi
     if changes > rows / 8; do
       return "ORES-LAYOUT135";
+    fi
+    if changes == rows / 8; do
+      if rows / 8 * 8 == rows; do
+        return "ORES-LAYOUT135";
+      fi
     fi
     return "";
   }
