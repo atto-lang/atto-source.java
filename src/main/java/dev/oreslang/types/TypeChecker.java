@@ -5741,8 +5741,8 @@ public final class TypeChecker {
                 // A structural match proves shape, never nominal identity or
                 // write authority. Keep a readonly CONTRACT view even for named
                 // class/interface/trait/Entry targets.
-                Type bindingType = new Record(
-                        targetShape.members(), true, AggregateKind.CONTRACT);
+                Type bindingType = readonlyStructuralProjection(new Record(
+                        targetShape.members(), true, AggregateKind.CONTRACT));
                 bindingType = overlayReadonlyCapabilities(subject, bindingType);
                 bindings.define(structural.binding(), bindingType, Ast.BindingKind.VAL);
             }
@@ -7618,7 +7618,8 @@ public final class TypeChecker {
             // The explicit structural modifier converts either record{...} or
             // struct{...} syntax into a readonly, non-storable shape contract.
             // The underlying value keeps its concrete RECORD/STRUCT identity.
-            return new Record(record.members(), true, AggregateKind.CONTRACT);
+            return readonlyStructuralProjection(
+                    new Record(record.members(), true, AggregateKind.CONTRACT));
         }
         if (concrete instanceof Tuple tuple) {
             if (tuple.kind() != TupleKind.TUPLE) {
@@ -7629,11 +7630,11 @@ public final class TypeChecker {
             // A two-slot Tuple is the language's positional pair. Tuples are
             // immutable products already, so structural preserves exact arity
             // and element positions rather than inventing named row fields.
-            return tuple;
+            return readonlyStructuralProjection(tuple);
         }
         if (concrete instanceof Named named) {
             Record builtinProduct = structuralBuiltinProductShape(named);
-            if (builtinProduct != null) return builtinProduct;
+            if (builtinProduct != null) return readonlyStructuralProjection(builtinProduct);
         }
         Ast.InterfaceDecl iface = findInterface(param.type().name());
         if (iface != null) {
@@ -7647,7 +7648,8 @@ public final class TypeChecker {
             if (!(specialized instanceof Record record)) {
                 throw new IllegalStateException("structural interface shape must remain a record");
             }
-            return new Record(record.members(), true, AggregateKind.CONTRACT);
+            return readonlyStructuralProjection(
+                    new Record(record.members(), true, AggregateKind.CONTRACT));
         }
 
         Ast.ClassDecl klass = findClass(param.type().name());
@@ -7665,7 +7667,8 @@ public final class TypeChecker {
             if (!(specialized instanceof Record record)) {
                 throw new IllegalStateException("structural class shape must remain a record");
             }
-            return new Record(record.members(), true, AggregateKind.CONTRACT);
+            return readonlyStructuralProjection(
+                    new Record(record.members(), true, AggregateKind.CONTRACT));
         }
 
         throw new IllegalArgumentException(
@@ -8986,6 +8989,28 @@ public final class TypeChecker {
      * could convert int to float. Preserve safe nominal subtype and callable
      * variance proofs using this checker's declaration metadata.
      */
+    /**
+     * A borrowed structural contract does not grant writes to nested records.
+     * It projects nested structs into readonly CONTRACT types without changing
+     * the original aggregate's storage representation.
+     */
+    private Type readonlyStructuralProjection(Type value) {
+        if (value instanceof Record record) {
+            LinkedHashMap<String, Type> members = new LinkedHashMap<>();
+            record.members().forEach((name, field) ->
+                    members.put(name, readonlyStructuralProjection(field)));
+            return new Record(members, true,
+                    record.kind() == AggregateKind.STRUCT
+                            ? AggregateKind.CONTRACT : record.kind());
+        }
+        if (value instanceof Tuple tuple) {
+            return new Tuple(
+                    tuple.elements().stream().map(this::readonlyStructuralProjection).toList(),
+                    tuple.kind());
+        }
+        return value;
+    }
+
     private boolean readonlyStructuralMemberAssignable(Type source, Type target) {
         if (source.equals(target)) return true;
         if (Types.containsUncertainType(source) || Types.containsUncertainType(target)) return false;
