@@ -1073,6 +1073,8 @@ class PrivateCiV3Test(unittest.TestCase):
                     return_value=SOURCE_TREE,
                 ),
                 patch.object(v3, "authorize_write") as authorize_write,
+                patch.object(v3, "verify_carrier_directories") as directory_proof,
+                patch.object(v3, "verify_published_root_and_commit") as commit_proof,
                 patch.object(v3, "require_exact_ref") as require_exact_ref,
                 patch.object(v3.legacy, "gh_api", side_effect=api),
             ):
@@ -1092,6 +1094,8 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(checked_destination.call_count, 3)
         self.assertEqual(verify_source_pr.call_count, 3)
         self.assertEqual(authorize_write.call_count, 7)
+        directory_proof.assert_called_once()
+        commit_proof.assert_called_once()
 
         self.assertEqual(result["branch"], "ci/oreslang-" + SOURCE_TREE)
         self.assertEqual(
