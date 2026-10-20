@@ -10,6 +10,8 @@ package dev.oreslang.runtime;
  * itself was corrupted.</p>
  */
 final class StructuredTaskScopePoisonException extends RuntimeException {
+    private static final long serialVersionUID = 1L;
+
     StructuredTaskScopePoisonException(String message, Throwable cause) {
         super(message, cause);
     }
