@@ -61,6 +61,7 @@ public final class StaticFactsV0Exporter {
             if (!module.annotations().isEmpty() || !module.contracts().isEmpty()) {
                 throw unsupported("module annotations and contracts");
             }
+            if (module.declarations().size() > 10_000) throw unsupported("too many procedures");
             for (Ast.Decl decl : module.declarations()) {
                 if (!(decl instanceof Ast.FunctionDecl fn)) {
                     throw unsupported("non-function declaration " + decl.getClass().getSimpleName());
@@ -181,7 +182,11 @@ public final class StaticFactsV0Exporter {
 
         private void visitExpr(Ast.Expr expr, String caller) {
             if (expr == null) return;
-            if (expr instanceof Ast.NameExpr || expr instanceof Ast.LiteralExpr) {
+            if (expr instanceof Ast.NameExpr) return;
+            if (expr instanceof Ast.LiteralExpr literal) {
+                if (!(literal.value() instanceof Long || literal.value() instanceof Boolean)) {
+                    throw unsupported("non-scalar literal");
+                }
                 return;
             }
             if (expr instanceof Ast.BinaryExpr binary) {
@@ -206,6 +211,7 @@ public final class StaticFactsV0Exporter {
                 if (callee == null) throw unsupported("unresolved or external call " + target.name());
                 for (Ast.Expr arg : call.arguments()) visitExpr(arg, caller);
                 edges.add(new Edge(caller, callee));
+                if (edges.size() > 50_000) throw unsupported("too many call edges");
             } else {
                 throw unsupported("expression " + expr.getClass().getSimpleName());
             }
