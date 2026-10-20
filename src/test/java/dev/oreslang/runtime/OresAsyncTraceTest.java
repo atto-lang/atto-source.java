@@ -161,6 +161,33 @@ final class OresAsyncTraceTest {
         assertTrue(trace.render().contains("Worker.receive_message"));
     }
     @Test
+    void unenteredActorBoundaryIsNeverCountedAsAVisitedActor() {
+        OresAsyncTrace.Trace waiting = OresAsyncTrace.root(
+                new OresAsyncTrace.Frame("ActorPending", site(2)));
+        waiting.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, site(3));
+        assertTrue(waiting.actorVisits().isEmpty(),
+                "a queued or rejected message is not an actor visit");
+
+        OresAsyncTrace.Trace sibling = waiting.fork();
+        try (OresAsyncTrace.Scope entered = OresAsyncTrace.install(sibling)) {
+            assertTrue(sibling.actorVisits().isEmpty(),
+                    "forking an unentered actor must not inherit pending admission");
+        }
+        OresAsyncTrace.Trace descendant = waiting.child(
+                new OresAsyncTrace.Frame("ChildNotAdmitted", site(4)), site(4));
+        assertTrue(descendant.actorVisits().isEmpty(),
+                "a pending child does not become a completed parent visit");
+
+        try (OresAsyncTrace.Scope entered = OresAsyncTrace.install(waiting)) {
+            assertEquals(1, waiting.actorVisits().size());
+        }
+        try (OresAsyncTrace.Scope resumed = OresAsyncTrace.install(waiting)) {
+            assertEquals(1, waiting.actorVisits().size(),
+                    "resume must not add a duplicate visit");
+        }
+    }
+
+    @Test
     void tenHopActorChainSurvivesUnrelatedAwaitEventElision() {
         OresAsyncTrace.Trace trace = OresAsyncTrace.root(
                 new OresAsyncTrace.Frame("entry", site(1)));
@@ -168,8 +195,10 @@ final class OresAsyncTraceTest {
             OresAsyncTrace.SourceSite handoff = site(20 + actor);
             trace = trace.child(new OresAsyncTrace.Frame("Actor" + actor, handoff), handoff);
             trace.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, handoff);
-            for (int await = 0; await < 150; await++) {
-                trace.awaitAt(site(1000 + actor * 150 + await));
+            try (OresAsyncTrace.Scope entered = OresAsyncTrace.install(trace)) {
+                for (int await = 0; await < 150; await++) {
+                    trace.awaitAt(site(1000 + actor * 150 + await));
+                }
             }
         }
         assertEquals(10, trace.actorVisits().size());
@@ -199,7 +228,9 @@ final class OresAsyncTraceTest {
         OresAsyncTrace.Trace parent = OresAsyncTrace.root(
                 new OresAsyncTrace.Frame("actor-A", site(1)));
         parent.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, site(1));
-        parent.awaitAt(site(2));
+        try (OresAsyncTrace.Scope entered = OresAsyncTrace.install(parent)) {
+            parent.awaitAt(site(2));
+        }
 
         OresAsyncTrace.Trace sibling = parent.fork();
         assertEquals(parent.events(), sibling.events());
@@ -208,6 +239,9 @@ final class OresAsyncTraceTest {
 
         parent.awaitAt(site(3));
         sibling.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, site(4));
+        // The newly created sibling actor visit is not confirmed until entry.
+        assertEquals(1, sibling.actorVisits().size());
+        try (OresAsyncTrace.Scope entered = OresAsyncTrace.install(sibling)) { }
 
         assertEquals(1, parent.actorVisits().size());
         assertEquals(2, sibling.actorVisits().size());
@@ -224,6 +258,7 @@ final class OresAsyncTraceTest {
             OresAsyncTrace.SourceSite handoff = site(10 + actor);
             trace = trace.child(new OresAsyncTrace.Frame("Actor" + actor, handoff), handoff);
             trace.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, handoff);
+            try (OresAsyncTrace.Scope entered = OresAsyncTrace.install(trace)) { }
         }
         assertEquals(16, trace.actorVisits().size());
         assertEquals(184, trace.elidedActorVisits());
