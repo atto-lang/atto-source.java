@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Entry, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
+    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
 
     /** Distinguishes runtime records, internal structural contracts, and concrete structs. */
     public enum AggregateKind { RECORD, CONTRACT, STRUCT }
@@ -71,18 +71,6 @@ public final class Types {
         }
         public static Record contract(Map<String, Type> members) {
             return new Record(members, false, AggregateKind.CONTRACT);
-        }
-    }
-
-    /**
-     * Nominal built-in key/value product. Entry deliberately does not extend
-     * structural Record semantics: a record with fields named key/value must
-     * never impersonate an Entry<K,V> merely by shape.
-     */
-    public record Entry(Type key, Type value) implements Type {
-        public Entry {
-            Objects.requireNonNull(key, "entry key type");
-            Objects.requireNonNull(value, "entry value type");
         }
     }
 
@@ -189,22 +177,7 @@ public final class Types {
         if (first instanceof Primitive a && second instanceof Primitive b) {
             // Numeric widening makes primitive numeric domains potentially overlap.
             return a != b && !(isNumeric(a) && isNumeric(b));
-        }
-        if (first instanceof Entry a && second instanceof Entry b) {
-            return areProvablyDisjoint(a.key(), b.key())
-                    || areProvablyDisjoint(a.value(), b.value());
-        }
-        if (first instanceof Entry || second instanceof Entry) {
-            Type other = first instanceof Entry ? second : first;
-            if (other instanceof Primitive || other instanceof StringLiteral
-                    || other instanceof BoolLiteral || other instanceof Named
-                    || other instanceof Record || other instanceof ListType
-                    || other instanceof Tuple || other instanceof Function
-                    || other instanceof ClassNamespace) {
-                return true;
-            }
-        }
-        if (first instanceof Record a && second instanceof Record b) {
+        }        if (first instanceof Record a && second instanceof Record b) {
             if (!compatibleAggregateKinds(a.kind(), b.kind())) return true;
             // Only conflicting *known* fields prove disjointness. Missing keys do not.
             for (var entry : a.members().entrySet()) {
@@ -230,7 +203,6 @@ public final class Types {
         if (type instanceof Not not) return containsUncertainType(not.excluded());
         if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Record record) return record.members().values().stream().anyMatch(Types::containsUncertainType);
-        if (type instanceof Entry entry) return containsUncertainType(entry.key()) || containsUncertainType(entry.value());
         if (type instanceof ListType list) return containsUncertainType(list.element());
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Function function) return function.parameters().stream().anyMatch(Types::containsUncertainType)
@@ -285,12 +257,6 @@ public final class Types {
             }
             return true;
         }
-
-        if (from instanceof Entry source && to instanceof Entry target) {
-            return isAssignable(source.key(), target.key())
-                    && isAssignable(source.value(), target.value());
-        }
-
         if (from instanceof Record source && to instanceof Record target) {
             if (!compatibleAggregateKinds(source.kind(), target.kind())) return false;
             // Structs are closed concrete shapes: unlike records/contracts, they do not
