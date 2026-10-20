@@ -262,23 +262,32 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     IpcReceiptCorrelation.Stage readVerifiedReceipt() throws IOException {
         RuntimeBlockingGuard.requireBlockingHostThread("IPC receipt read");
         try {
+            final DecodedReceipt receipt;
+            final IpcReceiptCompletionBridge.VerifiedCompletion publication;
             // TCP receipt order is protocol order. Keep frame consumption,
             // authentication, epoch validation and ledger transition under
             // one receive gate so concurrent host readers cannot read ACK then
             // COMMIT in order but apply those state transitions out of order.
             synchronized (readGate) {
                 byte[] frame = readReceiptWireFrame(input);
-                DecodedReceipt receipt = decodeReceiptFrame(
+                receipt = decodeReceiptFrame(
                         frame, connectionBinding, macKey);
                 if (receipt.physicalGeneration() != physicalGeneration) {
                     throw new IOException("stale IPC physical transport generation");
                 }
                 requireTrustedEpoch(receipt.envelope());
-                receipts.acceptVerified(
+                publication = receipts.applyVerified(
                         physicalOwner, receipt.envelope(),
                         physicalGeneration, receipt.stage());
-                return receipt.stage();
             }
+
+            // CompletableFuture.complete() may synchronously run arbitrary
+            // dependent callbacks. Publish only after releasing readGate so a
+            // callback cannot stall ordered receipt consumption, block close's
+            // authentication-material drain, or recursively deadlock on this
+            // transport's receive gate.
+            publication.publish();
+            return receipt.stage();
         } catch (IOException | RuntimeException | Error failure) {
             // Authentication, framing, EOF and state-machine violations are
             // fatal to this physical session. Never continue parsing a
