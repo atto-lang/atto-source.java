@@ -557,6 +557,7 @@ public final class ModelGraphCompiler {
                 || operation.structural()
                 || operation.nonLexical()
                 || operation.trapped()
+                || !operation.annotations().isEmpty()
                 || !operation.genericParameters().isEmpty()
                 || operation.parameters().isEmpty()
                 || operation.body().size() != 1
@@ -690,9 +691,6 @@ public final class ModelGraphCompiler {
         String name = switch (type.name()) {
             case "boolean", "Bool" -> "bool";
             case "String" -> "string";
-            case "f64", "f32" -> "float";
-            case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
-                    "uint", "bigint" -> "int";
             default -> type.name();
         };
         StringBuilder result = new StringBuilder(name);
