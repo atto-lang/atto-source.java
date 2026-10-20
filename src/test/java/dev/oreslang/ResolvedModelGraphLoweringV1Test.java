@@ -117,6 +117,42 @@ final class ResolvedModelGraphLoweringV1Test {
     }
 
     @Test
+    void directAstLoweringRejectsUnusedInvalidFormalsAndExcessNodes() {
+        Ast.ModelDecl valid = source(
+                "define model PriceEstimate(unused: int = 1) as PriceInput() ApplyTaxBps(1500) RoundCents() end");
+        Ast.ModelFormal original = valid.formals().getFirst();
+        Ast.ModelDecl malformed = new Ast.ModelDecl(valid.name(), valid.visibility(),
+                List.of(new Ast.ModelFormal(original.name(), original.type(),
+                        new Ast.ModelValue(Ast.ModelValueKind.INTEGER, "1garbage"))),
+                valid.operations());
+        assertEquals("MODEL_INVALID_CONST",
+                assertThrows(IllegalArgumentException.class,
+                        () -> ResolvedModelGraphLoweringV1.lower(
+                                malformed, "finance.PriceEstimate@v1", registry(), Map.of())).getMessage());
+
+        assertEquals("MODEL_INVALID_CONST",
+                assertThrows(IllegalArgumentException.class,
+                        () -> ResolvedModelGraphLoweringV1.lower(
+                                valid, "finance.PriceEstimate@v1", registry(),
+                                Map.of("unused", new Ast.ModelValue(
+                                        Ast.ModelValueKind.INTEGER, "2garbage")))).getMessage());
+
+        Ast.ModelDecl tooManyOps = new Ast.ModelDecl(valid.name(), valid.visibility(),
+                valid.formals(), java.util.Collections.nCopies(65, valid.operations().getFirst()));
+        assertEquals("MODEL_NODE_BUDGET",
+                assertThrows(IllegalArgumentException.class,
+                        () -> ResolvedModelGraphLoweringV1.lower(
+                                tooManyOps, "finance.PriceEstimate@v1", registry(), Map.of())).getMessage());
+
+        Ast.ModelDecl tooManyFormals = new Ast.ModelDecl(valid.name(), valid.visibility(),
+                java.util.Collections.nCopies(17, original), valid.operations());
+        assertEquals("MODEL_FORMAL_BUDGET",
+                assertThrows(IllegalArgumentException.class,
+                        () -> ResolvedModelGraphLoweringV1.lower(
+                                tooManyFormals, "finance.PriceEstimate@v1", registry(), Map.of())).getMessage());
+    }
+
+    @Test
     void unaryExternalRunInputMatchesSharedDigestVector() {
         Map<String, Signature> external = Map.of(
                 "ValidatePrice", sig("1".repeat(64), List.of(), List.of(PRICE)),
