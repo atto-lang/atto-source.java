@@ -214,6 +214,12 @@ public final class CapabilityChecker {
                     if (field.initializer() != null) checkExpr(field.initializer(), policy);
                 } else if (declaration instanceof Ast.TypeAliasDecl alias) {
                     checkType(alias.target(), policy);
+                } else if (declaration instanceof Ast.EnumDecl enumeration) {
+                    for (Ast.EnumCase enumCase : enumeration.cases()) {
+                        if (enumCase.payload() != null) {
+                            checkType(enumCase.payload(), policy);
+                        }
+                    }
                 }
             }
         }
