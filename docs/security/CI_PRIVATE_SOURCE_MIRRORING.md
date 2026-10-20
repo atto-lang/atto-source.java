@@ -803,3 +803,10 @@ carrier even if the action is GitHub-owned. The security boundary requires
 full-length immutable action commit SHAs in addition to the selected-actions
 allowlist, read-only default token permissions, disabled PR-review approval,
 disabled private forking, and bounded retention.
+
+
+#### Standalone carrier repository requirement
+
+The destination must report `fork=false`. Private fork networks introduce a
+separate access and retention boundary, so a fork is rejected before source
+collection even when it is private and otherwise satisfies the Actions policy.
