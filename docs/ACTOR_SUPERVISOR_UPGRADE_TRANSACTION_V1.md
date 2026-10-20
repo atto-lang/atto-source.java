@@ -396,3 +396,56 @@ old route's authority after candidate failure, and successful retry.
 **These JUnit tests have not executed.** Neither the passing source-free
 model nor public CI execution authorizes private-tree copying, satisfies
 source security #962/#904, or certifies code/Task/checkpoint publication.
+
+## Registered child survives failed cleanup before registry mutation
+
+The next rollback audit found that `ActorRuntime.spawnInternal` already
+kept `actorCount` reserved if the exact ActorCell remained in its runtime
+registry, but *unconditionally* removed that child's parent and managed
+ActorGroup lineage. A registry-removal error **before mutation** therefore
+left a still-registered physical child with no parent lifecycle link;
+the parent might certify physical exit and release its old code generation
+while the child still existed.
+
+Production commit `9ea8b9f34f8f813f9f427f618835c9b7bfb3c2de`
+makes parent child-unlink and inherited managed worker-unlink contingent
+on proving the exact ActorCell is **absent** from `actors`. If registry
+removal was not proven, the runtime retains actor slot, parent lineage
+and group membership until that child physically finalizes.
+An ordinary successful rollback still removes both links, disposes
+the never-published cell, and refunds the actor slot.
+
+Real-product JUnit regression in
+`ActorRuntimeSpawnLineageRollbackTest`, commit
+`e8c991f3d3fa377f072c29c96773e171e00ef9e1`, injects
+child registry insertion followed by a throw and cleanup registry
+removal throwing *before* mutation; it checks that the child remains
+registered, has a parent lifecycle link and retained actor slot, then
+stops the exact surviving child and verifies a single terminal slot
+debit and parent unlink. This JUnit is **committed but not executed**.
+
+An **independently authored, source-free** JVM lifecycle model was run
+on funded Temurin 25.0.4+1 at
+https://github.com/gha-indie-worker/gha-indie-worker-e2e/actions/runs/39348429779
+(job `118386578808`, source-free branch commit
+`bc0f1b283a0eebeebecb36c1353bc58534d4735c`).
+The successful log reports:
+```
+PASS source-free ghost child oracle checks=126001
+four_worker_races=2000 pre_mutation_failure=verified
+old_unlink_negative_control=detected private_source_bytes=0
+```
+The independent admission-lease and existing hot-upgrade lifecycle
+oracles also passed in that public job. Those tests are **not** a
+private Oreslang source/JUnit/Graal/Native Image execution receipt.
+
+This guard prevents premature *parent* completion when an already-linked
+child remains registered. Remaining unverified failure modes include
+registry admission that occurs even though a prior parent-link insertion
+itself threw before mutation, external native/FFI lease ownership,
+unrecoverable host policy refusal, and global CONTROL transaction
+publication across scheduler checkpoints. Exact-head source CI still
+reports failures with no executed steps; the private-source mirror
+destination in protected main remains a comment-only proposal, **not**
+an authorization. Source security #962 and merge protection #904
+remain open. Keep PR #1367 draft and production hot reload disabled.
