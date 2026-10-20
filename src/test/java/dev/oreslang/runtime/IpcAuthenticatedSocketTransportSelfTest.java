@@ -1029,6 +1029,18 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             check(transport.requestCloseAndAwait(3000));
             check(transport.keyCloneZeroized());
             check(transport.connectionBindingCloneZeroized());
+
+            int bytesAfterRetirement = readFenceInput.bytesRead();
+            try {
+                transport.readVerifiedReceipt();
+                throw new AssertionError(
+                        "receipt read after close consumed buffered terminal frame");
+            } catch (IOException expected) {
+                check(expected.getMessage().contains(
+                        "receipt read after close request"));
+            }
+            check(readFenceInput.bytesRead() == bytesAfterRetirement);
+
             check(submission.outcome().toCompletableFuture().join()
                     == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
             check(bridge.counters().equals(
