@@ -184,6 +184,30 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "not source-free"):
                 v3.checked_destination("trusted/ci", carrier)
 
+    def test_checked_destination_connector_pins_exact_base_tree(self):
+        carrier = connector_contract()
+        def api(route, method="GET", payload=None):
+            if route == "repos/trusted/connector/git/ref/heads/main":
+                return {"object": {"sha": BASE}}
+            if route == "repos/trusted/connector/git/commits/" + BASE:
+                return {"sha": BASE, "tree": {"sha": "9" * 40}}
+            raise AssertionError(route)
+        with patch.object(
+            v3.legacy,
+            "checked_repo",
+            return_value={
+                "id": carrier["repository_id"],
+                "private": True,
+                "visibility": "private",
+                "archived": False,
+                "disabled": False,
+                "fork": False,
+                "default_branch": "main",
+            },
+        ), patch.object(v3.legacy, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(v3.Denied, "base tree differs"):
+                v3.checked_destination("trusted/connector", carrier)
+
     def test_verify_source_pr_requires_exact_open_head(self):
         def api(route, method="GET", payload=None):
             if route == "repos/" + v3.legacy.SOURCE_REPO:
@@ -265,7 +289,7 @@ class PrivateCiV3Test(unittest.TestCase):
             raise AssertionError(route)
         with patch.object(v3.legacy, "gh_api", side_effect=api):
             with self.assertRaisesRegex(v3.Denied, "identity/state"):
-                v3.verify_source_pr(1482, "8" * 40)
+                v3.verify_source_pr(1482, "8" * 40, contract())
 
     def test_authorize_write_rechecks_carrier_eligibility(self):
         carrier = contract()
