@@ -104,6 +104,8 @@ public final class ModelGraphAdmission {
             throw new IllegalArgumentException("MODEL_NODE_BUDGET");
         if (source.operations().size() > limits.maxDepth())
             throw new IllegalArgumentException("MODEL_DEPTH_BUDGET");
+        if (source.formals().size() > 16)
+            throw new IllegalArgumentException("MODEL_FORMAL_BUDGET");
         Set<String> formals = new HashSet<>();
         for (Ast.ModelFormal formal : source.formals()) {
             if (!formals.add(formal.name()))
@@ -136,6 +138,17 @@ public final class ModelGraphAdmission {
             if (signature.input() != null) bytes(signature.input());
             if (nodes.isEmpty()) {
                 input = signature.input();
+                // Conservatively reserve the incoming buffer too, even when
+                // it is owned by the caller, to prevent a budget bypass.
+                if (input != null) {
+                    try {
+                        used = Math.addExact(used, bytes(input));
+                    } catch (ArithmeticException overflow) {
+                        throw new IllegalArgumentException("MODEL_SIZE_OVERFLOW", overflow);
+                    }
+                    if (used > limits.maxBytes())
+                        throw new IllegalArgumentException("MODEL_MEMORY_BUDGET");
+                }
             } else if (!Objects.equals(prior, signature.input())) {
                 throw new IllegalArgumentException("MODEL_PORT_TYPE_MISMATCH");
             }
