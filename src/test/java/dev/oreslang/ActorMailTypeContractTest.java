@@ -130,22 +130,15 @@ final class ActorMailTypeContractTest {
     @Test
     void actorRefsCrossMailboxesAsCapabilitiesButSmartPointersDoNotYet() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define actor Worker as
-                  receive(ActorMail<int> mail): void {
-                    return;
-                  }
-                end
-
                 define actor Registry as
-                  receive(ActorMail<ActorRef<Worker>> mail): void {
+                  receive(ActorMail<ActorRef<Registry>> mail): void {
                     return;
                   }
                 end
 
                 pub routine main(): void {
-                  val worker = spawn Worker();
                   val registry = spawn Registry();
-                  registry.send(worker);
+                  registry.send(registry);
                   return;
                 }
                 """)));
