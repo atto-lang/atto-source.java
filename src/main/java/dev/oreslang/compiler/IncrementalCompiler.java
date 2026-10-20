@@ -120,8 +120,14 @@ public final class IncrementalCompiler {
                                     Parser.parse(normalized.get(id)),
                                     linked.classes(), linked.aliases());
                     checked = analysis.program();
-                    OwnershipChecker.checkWithImportedClasses(
-                            checked, linked.classes(), analysis.shortInferredAliases());
+                    OwnershipChecker.CheckResult ownership =
+                            OwnershipChecker.checkWithImportedClassesAndAsyncTransferProvenance(
+                                    checked,
+                                    linked.classes(),
+                                    analysis.shortInferredAliases());
+                    OresCompiler.requireAsyncProofJoin(
+                            analysis.asyncSemantic(),
+                            ownership.asyncTransfers());
                 } catch (IllegalArgumentException invalid) {
                     throw new IllegalArgumentException(
                             "Oreslang source unit '" + id + "': " + invalid.getMessage(), invalid);
