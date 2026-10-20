@@ -46,7 +46,7 @@ public final class TypeChecker {
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Box", "Arc", "Weak",
-            "Rc", "RefCell", "Mutex", "RwLock", "SharedMutex",
+            "Rc", "RcWeak", "RefCell", "Mutex", "RwLock", "SharedMutex",
             "Channel", "Future", "Fnc", "Function");
 
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
@@ -215,7 +215,7 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
-                "Box", "Arc", "Weak", "Rc", "RefCell", "Mutex", "RwLock",
+                "Box", "Arc", "Weak", "Rc", "RcWeak", "RefCell", "Mutex", "RwLock",
                 "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult",
                 "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
@@ -5347,7 +5347,8 @@ public final class TypeChecker {
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
                 || named.name().equals("Box") || named.name().equals("Arc")
                 || named.name().equals("Weak") || named.name().equals("Rc")
-                || named.name().equals("RefCell") || named.name().equals("RwLock")
+                || named.name().equals("RcWeak") || named.name().equals("RefCell")
+                || named.name().equals("RwLock")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
@@ -5468,7 +5469,7 @@ public final class TypeChecker {
         // runtime-domain capabilities out of SharedMutex payloads even when
         // some of them are independently Send.
         if (Set.of(
-                "Box", "Arc", "Weak", "Rc", "RefCell", "RwLock",
+                "Box", "Arc", "Weak", "Rc", "RcWeak", "RefCell", "RwLock",
                 "Mutex", "MutexGuard", "SharedMutex",
                 "Future", "Iterator", "AsyncIterator",
                 "Channel", "SelectCase", "SelectSet", "SelectResult")
@@ -8680,7 +8681,7 @@ public final class TypeChecker {
                 }
                 yield new Named("Mutex", List.of(element));
             }
-            case "Box", "Arc", "Weak", "Rc", "RefCell", "RwLock" -> {
+            case "Box", "Arc", "Weak", "Rc", "RcWeak", "RefCell", "RwLock" -> {
                 Ast.ClassDecl declared = findClass(ref.name());
                 if (declared != null) {
                     validateGenericArity(
