@@ -5040,10 +5040,37 @@ public final class ActorRuntime implements AutoCloseable {
             ActorGroup group = actorGroups.get(groupId);
             if (group != null) group.actorTerminated(cell.ref.id());
         }
-        if (actors.remove(cell.ref.id(), cell)) {
+        boolean removed;
+        try {
+            removed = actors.remove(cell.ref.id(), cell);
+        } catch (RuntimeException | Error removalFailure) {
+            // A registry may remove this exact cell and then throw. Its
+            // physical teardown is otherwise complete here. Re-check the
+            // registry before either releasing its reserved slot or failing
+            // closed. A failed read or a still-present entry retains the
+            // original removal error and must NOT certify finalization.
+            try {
+                if (actors.get(cell.ref.id()) != null)
+                    throw removalFailure;
+            } catch (RuntimeException | Error observationFailure) {
+                if (observationFailure != removalFailure)
+                    removalFailure.addSuppressed(observationFailure);
+                throw removalFailure;
+            }
+            removed = true;
+        }
+        if (!removed && actors.get(cell.ref.id()) != null) {
+            throw new IllegalStateException(
+                    "physical actor unregister lost exact registry ownership");
+        }
+        // The cell itself owns exactly one counted slot. Another cleanup
+        // attempt can observe an already-absent registry entry; it must
+        // never debit the same slot twice.
+        if (cell.physicalActorSlotDebited.compareAndSet(false, true)) {
             int remaining = actorCount.decrementAndGet();
             if (remaining < 0) {
                 actorCount.incrementAndGet();
+                cell.physicalActorSlotDebited.set(false);
                 throw new IllegalStateException("actor count accounting underflow");
             }
         }
@@ -8157,6 +8184,12 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final class ActorCell<M> {
         private final ActorRef<M> ref;
+        /**
+         * Unregistration can remove an actor and then throw (injected OOME).
+         * Its actor slot must be refunded only once even when finalization
+         * retries after a partially completed unregister operation.
+         */
+        private final AtomicBoolean physicalActorSlotDebited = new AtomicBoolean();
         private final ActorKind kind;
         private final int dispatchLane;
         private final IsolatePolicy policy;
