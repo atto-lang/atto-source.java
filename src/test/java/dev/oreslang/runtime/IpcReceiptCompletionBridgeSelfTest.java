@@ -218,6 +218,7 @@ public final class IpcReceiptCompletionBridgeSelfTest {
             var future = transport.admit(message);
             AtomicInteger observed = new AtomicInteger();
             AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+            CountDownLatch callbackDone = new CountDownLatch(1);
             future.thenAccept(stage -> {
                 CountDownLatch probeDone = new CountDownLatch(1);
                 Thread probe = new Thread(() -> {
@@ -243,6 +244,8 @@ public final class IpcReceiptCompletionBridgeSelfTest {
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                     callbackFailure.compareAndSet(null, interrupted);
+                } finally {
+                    callbackDone.countDown();
                 }
             });
 
@@ -252,6 +255,7 @@ public final class IpcReceiptCompletionBridgeSelfTest {
                     message, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
             check(result(future)
                     == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(callbackDone.await(3, TimeUnit.SECONDS));
             check(callbackFailure.get() == null);
             check(observed.get() == 1);
             check(transport.bridge().invariant());
