@@ -28,7 +28,7 @@ test("every actual invalid guest uses parser-positive then semantic rejection",(
   assert.match(body,/assertEquals\("", output\.toString/);
 });
 test("guest fixture SHA and separately pinned output prevent silent drift",()=>{
-  assert.match(java,/d9addeb0279b3c4023665b551c487adf7405903b/);
+  assert.match(java,/f4b77392173631475a0dda6a835aa69361a69557/);
   assert.match(java,/b602f9821817696f16499af1a74cb22d49a0ecab/);
   assert.match(java,/assertEquals\(expected, stdout\.toString/);
 });
@@ -54,7 +54,7 @@ test("guest CI source pins match actual fixture blobs and JUnit gate", () => {
   const workflow = readFileSync(new URL("../.github/workflows/ml-scalar-actor-guest.yml", import.meta.url), "utf8");
   const fixtureSha = gitBlobSha(readFileSync(new URL("./fixtures/ml-actor-state-scalar.ores", import.meta.url)));
   const goldenSha = gitBlobSha(readFileSync(new URL("./golden/ml-actor-state-scalar.stdout", import.meta.url)));
-  assert.equal(fixtureSha, "d9addeb0279b3c4023665b551c487adf7405903b");
+  assert.equal(fixtureSha, "f4b77392173631475a0dda6a835aa69361a69557");
   assert.equal(goldenSha, "b602f9821817696f16499af1a74cb22d49a0ecab");
   assert.match(java, new RegExp(fixtureSha));
   assert.match(java, new RegExp(goldenSha));
@@ -126,9 +126,8 @@ test("nominal guest positive-control and equal-tag foreign enum denial are manda
   assert.match(negative,/assertRejected\(omittedCase\)/);
 });
 
-// INTENTIONAL RED ADMISSION GATE until the enum parser/typechecker from
-// PR #623 is integrated into this with/using compiler branch. Source-only
-// fixture spelling is insufficient: this parser currently lacks enums.
+// Source-only prerequisite guard. The minimal local nominal enum compiler
+// slice is now integrated; this does not certify runtime execution or actor-wire enums.
 const parser=readFileSync(new URL("../src/main/java/dev/oreslang/parser/Parser.java",import.meta.url),"utf8");
 test("ML guest branch integrates a real nominal enum parser prerequisite",()=>{
   assert.match(parser,/private Ast\.EnumDecl parseTaggedEnum\(\)/,
