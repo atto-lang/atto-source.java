@@ -1,10 +1,50 @@
 # User-created Future<T> constructors — v1 source contract
 
-Status: **staged proposal plus host-side reference adapters**. The adapters
-`OresFutureConstructors.fromAsyncRun` and `fromRunCallback` exist in this
-branch, but **the Oreslang compiler does not yet admit or lower the source
-`new Future<T>(...)` syntax shown below**. The Java adapters are neither an
-LLVM implementation nor evidence of guest-level conformance.
+Status: **partially implemented source-language compiler slice, not yet verified
+by real CI**. This branch implements `new Future<T>(provider)` where the
+provider is a named non-actor class with `pub async run(): T`, and adds guest
+acceptance/rejection test cases. This uses the existing scheduler-owned async
+class method completion instead of inventing another Future runtime or nested
+Future. The second `RunCallback<T>` source constructor is still **only
+host-runtime staging**. Neither LLVM parity nor actual guest CI execution is
+established. The `OresFutureConstructors.fromAsyncRun` host bridge remains
+an independent reference adapter rather than the new source lowering target.
+
+### Current source constructor admission (Java/Graal first slice)
+
+The compiler statically requires exactly one explicit `T` and one nominal
+class instance argument. That class must be non-actor and expose a public
+non-abstract non-generic `async run(): T` method taking zero arguments.
+Return type compatibility is checked with concrete generic substitutions.
+Private, sync, suspends-only, actor, dynamic/unknown and incompatible run
+providers are rejected. The evaluator invokes `run()` through its existing
+async source Task path and returns the resulting `OresFuture` **without
+starting a second Task or blocking a guest continuation**.
+
+Example newly admitted by the compiler (still awaiting real CI proof):
+
+```ores
+define module app
+  define pub class Calculate as
+    pub async run(): int { return 5; }
+  end
+  pub async fnc main(): void {
+    let Future<int> f = new Future<int>(new Calculate());
+    let int answer = await f;
+    stdio.println(answer);
+    return;
+  }
+end
+```
+
+**Limits:** the generic `AsyncRun<T>` trait declaration/implementation contract
+and `RunCallback<T>` guest resolver lowering are not yet admitted. Provider
+shape is checked on a nominal class rather than blindly admitting arbitrary
+structural callbacks; a future stage will bind the constructor strictly to
+the generic trait and check that trait's declared conformance. Do not use a
+host `Callback` or foreign thread as an unverified shortcut to guest
+registration. In particular, `do task` lifetime ownership is not yet
+integrated for this constructor family.
 
 ## Three source-level creation paths
 
@@ -194,11 +234,13 @@ A `do task` spawned by the registrar must have a scope/quiescence owner.
 
 ### Still required before marking Oreslang syntax implemented
 
-1. Introduce generic `AsyncRun<T>`, `RunCallback<T>`, `Callback<T>`
-   definitions and constructor overloads in the actual type checker. Keep
-   overload resolution nominal and reject ambiguous adapters.
-2. Add parser/HIR support for `new Future<T>(run)` using named class
-   implementations first; type-check async effects, ownership and cancellation.
+1. Finish generic `AsyncRun<T>`, `RunCallback<T>`, `Callback<T>`
+   trait declarations and strict conformance in the actual type checker.
+   The first source slice admits only a nominal public async `run()` provider.
+   Keep future overload resolution nominal and reject ambiguous adapters.
+2. Verify the new parser AST/checked evaluator path for `new Future<T>(run)`
+   using named class implementations first. Finish compiler-enforced
+   ownership, task-scope accounting, and cancellation propagation.
 3. Lower the `AsyncRun<T>` path through runtime scheduler-owned continuation
    dispatch. For callback runs, ensure registrar execution on an authorized
    turn and explicitly associate spawned `do task` children with a lifetime
