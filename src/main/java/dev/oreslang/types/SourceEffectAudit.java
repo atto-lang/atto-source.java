@@ -176,12 +176,12 @@ public final class SourceEffectAudit {
                     || node instanceof Ast.SelectStmt) {
                 direct.add(EffectContracts.Effect.ACTOR);
             }
-            if ((node instanceof Ast.ChannelOpExpr op
-                        && op.mode() == Ast.WaitMode.BLOCKING)
-                    || (node instanceof Ast.DynamicSelectExpr op
-                        && op.mode() == Ast.WaitMode.BLOCKING)
-                    || (node instanceof Ast.SelectStmt op
-                        && op.mode() == Ast.WaitMode.BLOCKING)) {
+            if ((node instanceof Ast.ChannelOpExpr channel
+                        && channel.mode() == Ast.WaitMode.BLOCKING)
+                    || (node instanceof Ast.DynamicSelectExpr dynamic
+                        && dynamic.mode() == Ast.WaitMode.BLOCKING)
+                    || (node instanceof Ast.SelectStmt staticSelect
+                        && staticSelect.mode() == Ast.WaitMode.BLOCKING)) {
                 direct.add(EffectContracts.Effect.BLOCK);
             }
             if (node instanceof Ast.DynamicSelectExpr) {
