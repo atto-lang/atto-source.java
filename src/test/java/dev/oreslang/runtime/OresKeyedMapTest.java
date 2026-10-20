@@ -524,4 +524,23 @@ final class OresKeyedMapTest {
     }
 
 
+    @Test void takeFailsBeforeMutationIfInternalKeyBudgetAccountingIsCorrupt() throws Exception {
+        OresKeyedMap<String, Integer> map =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
+        map.put("kept", 7);
+
+        java.lang.reflect.Field bytes =
+                OresKeyedMap.class.getDeclaredField("storedKeyWireBytes");
+        bytes.setAccessible(true);
+        bytes.setLong(map, 0L);
+
+        IllegalStateException denied =
+                assertThrows(IllegalStateException.class, () -> map.take("kept"));
+        assertTrue(denied.getMessage().contains("underflow"), denied.getMessage());
+        assertEquals(7, map.getRequired("kept"),
+                "accounting corruption must fail before removing the live entry");
+        assertEquals(1, map.size());
+    }
+
+
 }
