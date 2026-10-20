@@ -2,6 +2,16 @@
 # Execute actual private-CI offline regression suites. Never publishes source.
 set -euo pipefail
 umask 077
+# Detection only: Bash may already have sourced BASH_ENV before reaching
+# this line. A trustworthy CI receipt requires the caller to launch this
+# script via /usr/bin/env -i (enforced by the reviewed Actions workflow).
+# Direct invocations with loader/shell hooks cannot certify test results.
+if [[ ${BASH_ENV+x} || ${ENV+x} || ${LD_PRELOAD+x} ||
+      ${LD_LIBRARY_PATH+x} || ${LD_AUDIT+x} ||
+      ${DYLD_INSERT_LIBRARIES+x} || ${DYLD_LIBRARY_PATH+x} ]]; then
+  echo 'PRIVATE_CI_UNTRUSTED_LAUNCH_ENV: use env -i /bin/bash for testing' >&2
+  exit 2
+fi
 # Sanitize executable lookup BEFORE even dirname is invoked.
 # /usr/bin and /bin are system-managed on supported Linux/macOS hosts.
 export PATH=/usr/bin:/bin
