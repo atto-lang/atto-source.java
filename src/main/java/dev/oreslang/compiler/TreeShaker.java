@@ -1071,7 +1071,10 @@ public final class TreeShaker {
             if (declaration instanceof Ast.ClassDecl klass) {
                 return klass.visibility() == Ast.Visibility.PUBLIC;
             }
-            return declaration instanceof Ast.TypeAliasDecl;
+            if (declaration instanceof Ast.TypeAliasDecl alias) {
+                return alias.visibility() == Ast.Visibility.PUBLIC;
+            }
+            return false;
         }
 
         private void mark(String id) {
@@ -1113,6 +1116,20 @@ public final class TreeShaker {
         }
 
         /**
+         * Unqualified references inside a module resolve against that lexical
+         * module before falling back to a globally unique declaration. This is
+         * essential when sibling modules intentionally reuse the same name.
+         */
+        private String resolveSymbolReference(String name, String module) {
+            if (symbols.containsKey(name)) return name;
+            if (!name.contains(".")) {
+                String local = qualify(module, name);
+                if (symbols.containsKey(local)) return local;
+            }
+            return resolveSymbol(name, false);
+        }
+
+        /**
          * A retained declaration also retains its enclosing module's public
          * contract and annotation dependencies. These are module metadata,
          * not dependencies of any individual function signature.
@@ -1121,8 +1138,8 @@ public final class TreeShaker {
             if (!scannedModuleMetadata.add(moduleName)) return;
             for (Ast.ModuleDecl module : rewritten.modules()) {
                 if (!module.name().equals(moduleName)) continue;
-                for (Ast.TypeRef contract : module.contracts()) scanType(contract);
-                for (Ast.Annotation annotation : module.annotations()) scanAnnotation(annotation);
+                for (Ast.TypeRef contract : module.contracts()) scanType(moduleName, contract);
+                for (Ast.Annotation annotation : module.annotations()) scanAnnotation(moduleName, annotation);
                 return;
             }
         }
@@ -1133,47 +1150,61 @@ public final class TreeShaker {
                 if (function.async()) languageFeatures.add("async");
                 if (function.suspends()) languageFeatures.add("suspension");
                 if (function.generator()) languageFeatures.add("generators");
-                scanType(function.returnType());
-                for (Ast.Param parameter : function.parameters()) scanType(parameter.type());
+                scanType(module, function.returnType());
+                for (Ast.Param parameter : function.parameters()) scanType(module, parameter.type());
                 // Type defaults participate in the public source ABI: a type
                 // referenced only from a default still has to survive pruning.
                 for (Ast.GenericParameter spec : function.genericSpecs()) {
-                    scanType(spec.defaultType());
+                    scanType(module, spec.defaultType());
                 }
-                for (Ast.Annotation annotation : function.annotations()) scanAnnotation(annotation);
+                for (Ast.Annotation annotation : function.annotations()) {
+                    scanAnnotation(module, annotation);
+                }
                 LinkedHashSet<String> locals = new LinkedHashSet<>();
                 for (Ast.Param parameter : function.parameters()) locals.add(parameter.name());
                 scanStatements(module, function.body(), locals);
                 return;
             }
             if (declaration instanceof Ast.FieldDecl field) {
-                scanType(field.type());
+                scanType(module, field.type());
+                for (Ast.Annotation annotation : field.annotations()) {
+                    scanAnnotation(module, annotation);
+                }
                 scanExpression(module, field.initializer(), Set.of());
                 return;
             }
             if (declaration instanceof Ast.ClassDecl klass) {
                 languageFeatures.add("classes");
                 if (klass.actorKind() != Ast.ActorKind.NONE) languageFeatures.add("actors");
-                for (Ast.TypeRef parent : klass.parents()) scanType(parent);
-                for (Ast.TypeRef iface : klass.interfaces()) scanType(iface);
+                for (Ast.TypeRef parent : klass.parents()) scanType(module, parent);
+                for (Ast.TypeRef iface : klass.interfaces()) scanType(module, iface);
                 for (Ast.FieldDecl field : klass.fields()) {
-                    scanType(field.type());
+                    scanType(module, field.type());
+                    for (Ast.Annotation annotation : field.annotations()) {
+                        scanAnnotation(module, annotation);
+                    }
                     scanExpression(module, field.initializer(), Set.of("self"));
                 }
                 if (klass.constructor() != null) {
                     Ast.ConstructorDecl constructor = klass.constructor();
-                    for (Ast.Param parameter : constructor.parameters()) scanType(parameter.type());
-                    for (Ast.Annotation annotation : constructor.annotations()) scanAnnotation(annotation);
+                    for (Ast.Param parameter : constructor.parameters()) {
+                        scanType(module, parameter.type());
+                    }
+                    for (Ast.Annotation annotation : constructor.annotations()) {
+                        scanAnnotation(module, annotation);
+                    }
                     LinkedHashSet<String> locals = new LinkedHashSet<>();
                     locals.add("self");
                     for (Ast.Param parameter : constructor.parameters()) locals.add(parameter.name());
                     scanStatements(module, constructor.body(), locals);
                 }
                 for (Ast.MethodDecl method : klass.methods()) {
-                    scanType(method.explicitReceiverType());
-                    scanType(method.returnType());
-                    for (Ast.Param parameter : method.parameters()) scanType(parameter.type());
-                    for (Ast.Annotation annotation : method.annotations()) scanAnnotation(annotation);
+                    scanType(module, method.explicitReceiverType());
+                    scanType(module, method.returnType());
+                    for (Ast.Param parameter : method.parameters()) scanType(module, parameter.type());
+                    for (Ast.Annotation annotation : method.annotations()) {
+                        scanAnnotation(module, annotation);
+                    }
                     LinkedHashSet<String> locals = new LinkedHashSet<>();
                     locals.add("self");
                     for (Ast.Param parameter : method.parameters()) locals.add(parameter.name());
@@ -1183,40 +1214,42 @@ public final class TreeShaker {
             }
             if (declaration instanceof Ast.InterfaceDecl iface) {
                 languageFeatures.add("interfaces");
-                for (Ast.TypeRef parent : iface.parents()) scanType(parent);
+                for (Ast.TypeRef parent : iface.parents()) scanType(module, parent);
                 for (Ast.InterfaceMember member : iface.members()) {
                     if (member instanceof Ast.InterfaceFunctionDecl fn) {
-                        scanType(fn.returnType());
-                        for (Ast.Param parameter : fn.parameters()) scanType(parameter.type());
+                        scanType(module, fn.returnType());
+                        for (Ast.Param parameter : fn.parameters()) {
+                            scanType(module, parameter.type());
+                        }
                     } else if (member instanceof Ast.InterfaceFieldDecl field) {
-                        scanType(field.type());
+                        scanType(module, field.type());
                     }
                 }
                 return;
             }
             if (declaration instanceof Ast.TypeAliasDecl alias) {
-                scanType(alias.target());
+                scanType(module, alias.target());
             }
         }
 
-        private void scanAnnotation(Ast.Annotation annotation) {
-            for (Ast.TypeRef argument : annotation.arguments()) scanType(argument);
+        private void scanAnnotation(String module, Ast.Annotation annotation) {
+            for (Ast.TypeRef argument : annotation.arguments()) scanType(module, argument);
         }
 
-        private void scanType(Ast.TypeRef type) {
+        private void scanType(String module, Ast.TypeRef type) {
             if (type == null) return;
             if (!type.name().startsWith("$")) {
-                String internal = resolveSymbol(type.name(), false);
+                String internal = resolveSymbolReference(type.name(), module);
                 if (internal != null) mark(internal);
                 else externalBindings.add(firstSegment(type.name()));
             }
-            for (Ast.TypeRef argument : type.arguments()) scanType(argument);
+            for (Ast.TypeRef argument : type.arguments()) scanType(module, argument);
         }
 
         private void scanStatements(String module, List<Ast.Stmt> statements, LinkedHashSet<String> locals) {
             for (Ast.Stmt statement : statements) {
                 if (statement instanceof Ast.BindingStmt binding) {
-                    scanType(binding.declaredType());
+                    scanType(module, binding.declaredType());
                     scanExpression(module, binding.initializer(), locals);
                     locals.add(binding.name());
                 } else if (statement instanceof Ast.DestructureStmt destructure) {
@@ -1248,7 +1281,7 @@ public final class TreeShaker {
                     for (Ast.MatchArm arm : matched.arms()) {
                         LinkedHashSet<String> armLocals = new LinkedHashSet<>(locals);
                         addPatternLocalNames(arm.pattern(), armLocals);
-                        scanPatternTypes(arm.pattern());
+                        scanPatternTypes(module, arm.pattern());
                         scanExpression(module, arm.guard(), armLocals);
                         scanStatements(module, arm.body(), armLocals);
                     }
@@ -1319,7 +1352,7 @@ public final class TreeShaker {
                     return;
                 }
 
-                String internal = resolveSymbol(name.name(), false);
+                String internal = resolveSymbolReference(name.name(), module);
                 if (internal != null) mark(internal);
                 else externalBindings.add(name.name());
                 return;
@@ -1341,11 +1374,11 @@ public final class TreeShaker {
             }
             if (expression instanceof Ast.MatchExpr matched) {
                 scanExpression(module, matched.subject(), locals);
-                if (matched.resultType() != null) scanType(matched.resultType());
+                if (matched.resultType() != null) scanType(module, matched.resultType());
                 for (Ast.MatchValueArm arm : matched.arms()) {
                     LinkedHashSet<String> armLocals = new LinkedHashSet<>(locals);
                     addPatternLocalNames(arm.pattern(), armLocals);
-                    scanPatternTypes(arm.pattern());
+                    scanPatternTypes(module, arm.pattern());
                     scanExpression(module, arm.guard(), armLocals);
                     scanExpression(module, arm.value(), armLocals);
                 }
@@ -1353,13 +1386,13 @@ public final class TreeShaker {
             }
             if (expression instanceof Ast.TypeTestExpr test) {
                 scanExpression(module, test.value(), locals);
-                scanType(test.targetType());
+                scanType(module, test.targetType());
             } else if (expression instanceof Ast.PatternTestExpr test) {
                 scanExpression(module, test.value(), locals);
-                scanPatternTypes(test.pattern());
+                scanPatternTypes(module, test.pattern());
             } else if (expression instanceof Ast.CastExpr cast) {
                 scanExpression(module, cast.value(), locals);
-                scanType(cast.targetType());
+                scanType(module, cast.targetType());
             } else if (expression instanceof Ast.SpreadExpr spread) {
                 scanExpression(module, spread.expression(), locals);
             } else if (expression instanceof Ast.BinaryExpr binary) {
@@ -1383,14 +1416,14 @@ public final class TreeShaker {
                 for (Ast.Expr argument : runtime.arguments()) scanExpression(module, argument, locals);
             } else if (expression instanceof Ast.CallExpr call) {
                 scanExpression(module, call.callee(), locals);
-                for (Ast.TypeRef type : call.typeArguments()) scanType(type);
+                for (Ast.TypeRef type : call.typeArguments()) scanType(module, type);
                 for (Ast.Expr argument : call.arguments()) scanExpression(module, argument, locals);
             } else if (expression instanceof Ast.IndexExpr indexed) {
                 scanExpression(module, indexed.receiver(), locals);
                 scanExpression(module, indexed.index(), locals);
             } else if (expression instanceof Ast.NewExpr created) {
                 languageFeatures.add("allocation");
-                scanType(created.type());
+                scanType(module, created.type());
                 for (Ast.Expr argument : created.arguments()) scanExpression(module, argument, locals);
             } else if (expression instanceof Ast.AwaitExpr awaited) {
                 languageFeatures.add("async");
@@ -1411,7 +1444,7 @@ public final class TreeShaker {
                 for (Ast.Expr element : tuple.elements()) scanExpression(module, element, locals);
             } else if (expression instanceof Ast.ObjectExpr object) {
                 for (Ast.StructFieldSpec field : object.declaredFields()) {
-                    scanType(field.type());
+                    scanType(module, field.type());
                 }
                 for (Ast.ObjectField field : object.fields()) {
                     scanExpression(module, field.value(), locals);
@@ -1420,7 +1453,7 @@ public final class TreeShaker {
                 languageFeatures.add("closures");
                 LinkedHashSet<String> nested = new LinkedHashSet<>(locals);
                 for (Ast.Param parameter : lambda.parameters()) {
-                    scanType(parameter.type());
+                    scanType(module, parameter.type());
                     nested.add(parameter.name());
                 }
                 scanExpression(module, lambda.expressionBody(), nested);
@@ -1456,15 +1489,15 @@ public final class TreeShaker {
             }
         }
 
-        private void scanPatternTypes(Ast.Pattern pattern) {
+        private void scanPatternTypes(String module, Ast.Pattern pattern) {
             if (pattern instanceof Ast.TypePattern typed) {
-                scanType(typed.type());
+                scanType(module, typed.type());
             } else if (pattern instanceof Ast.StructuralPattern structural) {
-                scanType(structural.target());
+                scanType(module, structural.target());
             } else if (pattern instanceof Ast.TuplePattern tuple) {
-                for (Ast.Pattern nested : tuple.elements()) scanPatternTypes(nested);
+                for (Ast.Pattern nested : tuple.elements()) scanPatternTypes(module, nested);
             } else if (pattern instanceof Ast.ConstructorPattern constructor) {
-                for (Ast.Pattern nested : constructor.arguments()) scanPatternTypes(nested);
+                for (Ast.Pattern nested : constructor.arguments()) scanPatternTypes(module, nested);
             }
         }
 
@@ -1497,7 +1530,11 @@ public final class TreeShaker {
             for (String name : imported.names()) {
                 if (externalBindings.contains(name)) return true;
             }
-            return false;
+            // An unnamed wildcard import can satisfy any still-unresolved
+            // binding. Without cross-file symbol ownership metadata, dropping
+            // it would be unsound; retain it conservatively until the linker
+            // can prove which wildcard supplied which binding.
+            return imported.wildcard() && !externalBindings.isEmpty();
         }
 
         private String resolveConstantReference(String name, String module) {
