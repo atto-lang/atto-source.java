@@ -306,7 +306,8 @@ public final class Parser {
                 name = consume(IDENT, "expected model parameter name after type").lexeme();
             }
             if (!names.add(name)) {
-                throw error(previous(), "duplicate model parameter '" + name + "'");
+                throw error(previous(),
+                        "MODEL_DUPLICATE_PARAMETER: duplicate model parameter '" + name + "'");
             }
             Ast.Expr defaultValue = null;
             if (match(EQUAL)) {
