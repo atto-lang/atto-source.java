@@ -1,11 +1,13 @@
 package dev.oreslang.types;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresTask;
 import dev.oreslang.runtime.OresTaskScope;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -13,11 +15,20 @@ final class TaskLoanAdmissionTest {
     private static final TaskAccessVerifier.Root ROOT =
             new TaskAccessVerifier.Root("PROCESS", 901, 1, true);
 
+    private static final SendSyncTraits SOURCE_PROOF =
+            new SendSyncTraits(new Ast.Program(List.of()), Set.of());
+    private static final ThreadSafetyTraits.NominalProof RESOLVED_PROOF =
+            (type, trait) -> false;
+
     private static TaskLoanAdmission admission(TaskAccessVerifier verifier) {
-        return verifier.admitRuntimeBound(List.of(
-                new TaskAccessVerifier.Claim(
-                        TaskAccessVerifier.Place.whole(ROOT),
-                        TaskAccessVerifier.Mode.WRITE)));
+        var claim = new TaskAccessVerifier.Claim(
+                TaskAccessVerifier.Place.whole(ROOT),
+                TaskAccessVerifier.Mode.WRITE);
+        var typed = new TaskAccessVerifier.CoherentTypedClaim(
+                claim, new Ast.TypeRef("int", List.of(), false),
+                Types.Primitive.INT);
+        return verifier.admitCoherentTypedRuntimeBound(
+                List.of(typed), SOURCE_PROOF, RESOLVED_PROOF);
     }
 
     private static OresTaskScope.CompilerScopeEpoch epochForTest() {
