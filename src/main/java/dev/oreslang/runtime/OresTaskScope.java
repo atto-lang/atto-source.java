@@ -43,6 +43,54 @@ public final class OresTaskScope implements AutoCloseable {
         private OresTask<?> task;
     }
 
+    /**
+     * One physical-exit/rejection retirement claim for an owned code/region
+     * pin. A throwing release is NOT retried: its failure remains observable
+     * by the exit fence or the admission exception rather than falsely
+     * claiming the pin was retired.
+     */
+    // Package-private for runtime-only failure-injection tests. This is NOT
+    // a guest Task permit, nor proof of an allocation's source provenance.
+    static final class PhysicalExitOnce implements Runnable {
+        private static final int FRESH = 0;
+        private static final int RETIRING = 1;
+        private static final int RETIRED = 2;
+        private static final int FAILED = 3;
+
+        private final Runnable delegate;
+        private final java.util.concurrent.atomic.AtomicInteger state =
+                new java.util.concurrent.atomic.AtomicInteger(FRESH);
+        private volatile Throwable retirementFailure;
+
+        PhysicalExitOnce(Runnable delegate) {
+            this.delegate = Objects.requireNonNull(delegate, "delegate");
+        }
+
+        @Override public void run() {
+            if (!state.compareAndSet(FRESH, RETIRING)) {
+                int prior = state.get();
+                if (prior == RETIRED) return;
+                if (prior == FAILED) {
+                    throw new IllegalStateException(
+                            "physical Task retirement previously failed", retirementFailure);
+                }
+                // An in-flight callback has NOT finished retiring its pin.
+                // Returning success here could complete the getDone() fence
+                // before the first callback actually releases the storage.
+                throw new IllegalStateException(
+                        "physical Task retirement has not yet completed");
+            }
+            try {
+                delegate.run();
+                state.set(RETIRED);
+            } catch (RuntimeException | Error failure) {
+                retirementFailure = failure;
+                state.set(FAILED);
+                throw failure;
+            }
+        }
+    }
+
     // Deliberately non-final only for package/reflection fault-injection tests.
     // Production never replaces this set.
     private Set<OwnershipSlot> tasks = new HashSet<>();
@@ -155,16 +203,45 @@ public final class OresTaskScope implements AutoCloseable {
     <T> OresTask<T> startCompilerFrame(
             OresScheduler scheduler, OresScheduler.Task<T> frame,
             Runnable onPhysicalExit) {
-        Objects.requireNonNull(scheduler, "scheduler");
-        Objects.requireNonNull(frame, "frame");
+        // A caller may already hold a code-image or region pin. Never reject
+        // a malformed scheduler/frame before installing its release guard.
         Objects.requireNonNull(onPhysicalExit, "onPhysicalExit");
+        // The same pin can be retired by rejection cleanup OR the scheduler
+        // physical-exit observer. Those routes must never run the release
+        // callback twice, including if an admission failure races with exit.
+        // Allocate the guard before scheduler admission; on allocation failure
+        // return the caller's pre-acquired pin exactly once.
+        final PhysicalExitOnce release;
+        try {
+            release = new PhysicalExitOnce(onPhysicalExit);
+        } catch (RuntimeException | Error guardFailure) {
+            try {
+                onPhysicalExit.run();
+            } catch (RuntimeException | Error retireFailure) {
+                if (retireFailure != guardFailure)
+                    guardFailure.addSuppressed(retireFailure);
+            }
+            throw guardFailure;
+        }
+        try {
+            Objects.requireNonNull(scheduler, "scheduler");
+            Objects.requireNonNull(frame, "frame");
+        } catch (RuntimeException | Error invalidFrame) {
+            try {
+                release.run();
+            } catch (RuntimeException | Error retireFailure) {
+                if (invalidFrame != retireFailure)
+                    invalidFrame.addSuppressed(retireFailure);
+            }
+            throw invalidFrame;
+        }
         synchronized (treeAdmissionGate) {
             synchronized (gate) {
             try {
                 ensureAdmitting();
             } catch (RuntimeException | Error rejectedByScope) {
                 try {
-                    onPhysicalExit.run();
+                    release.run();
                 } catch (RuntimeException | Error releaseFailure) {
                     if (releaseFailure != rejectedByScope)
                         rejectedByScope.addSuppressed(releaseFailure);
@@ -198,7 +275,7 @@ public final class OresTaskScope implements AutoCloseable {
             } catch (RuntimeException | Error preparationFailure) {
                 discardUnadmittedSlot(slot, preparationFailure);
                 try {
-                    onPhysicalExit.run();
+                    release.run();
                 } catch (RuntimeException | Error releaseFailure) {
                     if (releaseFailure != preparationFailure)
                         preparationFailure.addSuppressed(releaseFailure);
@@ -215,7 +292,7 @@ public final class OresTaskScope implements AutoCloseable {
                     // The scheduler invokes this only after the final guest
                     // carrier turn has physically unwound.
                     try {
-                        onPhysicalExit.run();
+                        release.run();
                         exitFence.completeFromRuntime(null);
                     } catch (RuntimeException | Error failure) {
                         exitFence.failFromRuntime(failure);
@@ -224,7 +301,7 @@ public final class OresTaskScope implements AutoCloseable {
             } catch (RuntimeException | Error rejectedBeforeAdmission) {
                 discardUnadmittedSlot(admittedSlot, rejectedBeforeAdmission);
                 try {
-                    onPhysicalExit.run();
+                    release.run();
                 } catch (RuntimeException | Error releaseFailure) {
                     if (releaseFailure != rejectedBeforeAdmission)
                         rejectedBeforeAdmission.addSuppressed(releaseFailure);
