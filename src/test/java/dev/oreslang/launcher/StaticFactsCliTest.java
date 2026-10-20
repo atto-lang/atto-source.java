@@ -35,6 +35,16 @@ final class StaticFactsCliTest {
     }
 
     @Test
+    void advisoryFactsCannotPretendToEnforceIsolatePolicy() throws Exception {
+        Path source = temp.resolve("program.ores");
+        Files.writeString(source, "pub routine main(): int { return 42; }");
+        assertEquals(2, OresMain.exitStatusForArgs(new String[] {
+                "--static-facts", "--strict-isolate", source.toString() }));
+        assertEquals(2, OresMain.exitStatusForArgs(new String[] {
+                "--static-facts", "--allow-ffi", source.toString() }));
+    }
+
+    @Test
     void sourceExecutionAndAnalysisModesCannotBeMixed() throws Exception {
         Path source = temp.resolve("program.ores");
         Files.writeString(source, "pub routine main(): int { return 42; }");
