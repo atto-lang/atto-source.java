@@ -287,3 +287,29 @@ let int result = await f;
 
 The resolver must not be extractable from `Future<T>` itself; completing
 a Future is an authority separate from merely awaiting it.
+
+### Callback cleanup linearization audit — 2026-10-20
+
+The host-only `fromCancellableRunCallback` now uses **one** terminal
+`whenCompleteRuntime` subscriber for revocation and detach. The intermediate
+`terminal` flag and a second cleanup branch were removed: the new Future
+cannot be observed or consumer-cancelled until the factory returns;
+registrar callbacks remain staged while `register` runs; the detach action
+is installed *before* `staged.arm()`. Runtime waiter registration after a
+synchronous terminal state immediately processes that state, so there is no
+missing cleanup window.
+
+Additional staged JUnit cases cover synchronous and asynchronous
+**producer-side cancellation**, duplicate settlement after producer cancel,
+and a registrar that returns without settling. The host constructor suite now
+contains **21** JUnit cases; these have **not executed** against this private
+repository's Maven/JDK25 build.
+
+A source-free isolated Java 21 surrogate Future model ran six behavioral
+checks and **5,000** cancellation-versus-resolution races successfully.
+The copied callback state machine and wrapper wiring were exercised but the
+surrogate is **not** the actual `OresFuture`, source compiler, GraalVM or
+LLVM. In particular, this local result cannot qualify the PR for merge.
+The focused exact-head source Actions run #39473077546 still failed with
+**zero executed steps**. Cross-org mirroring remains deny-by-default until
+main protection and a reviewed destination/pinned contract are confirmed.
