@@ -16,14 +16,14 @@ public final class ModelRunFencing {
             String graphDigest,
             long graphGeneration,
             String instanceId,
-            long parameterVersion,
+            Long parameterVersion,
             String executionProfileDigest) {
         public Owner {
             requireId(modelTypeId, "MODEL_INVALID_MODEL_TYPE_ID");
             requireDigest(graphDigest, "MODEL_INVALID_GRAPH_DIGEST");
             if (graphGeneration < 0) throw new IllegalArgumentException("MODEL_INVALID_GRAPH_GENERATION");
             requireId(instanceId, "MODEL_INVALID_INSTANCE_ID");
-            if (parameterVersion < 0) throw new IllegalArgumentException("MODEL_INVALID_PARAMETER_VERSION");
+            if (parameterVersion != null && parameterVersion < 0) throw new IllegalArgumentException("MODEL_INVALID_PARAMETER_VERSION");
             requireDigest(executionProfileDigest, "MODEL_INVALID_EXECUTION_PROFILE");
         }
     }
@@ -55,7 +55,7 @@ public final class ModelRunFencing {
     }
 
     private static void requireId(String value, String code) {
-        if (value == null || value.isBlank() || value.length() > 256)
+        if (value == null || !value.matches("[A-Za-z][A-Za-z0-9_.:@-]{0,127}"))
             throw new IllegalArgumentException(code);
     }
 
@@ -100,7 +100,7 @@ public final class ModelRunFencing {
             throw new IllegalStateException("MODEL_GRAPH_GENERATION_MISMATCH");
         if (!owner.instanceId().equals(stamp.instanceId()))
             throw new IllegalStateException("MODEL_INSTANCE_ID_MISMATCH");
-        if (owner.parameterVersion() != stamp.parameterVersion())
+        if (!Objects.equals(owner.parameterVersion(), stamp.parameterVersion()))
             throw new IllegalStateException("MODEL_PARAMETER_VERSION_MISMATCH");
         if (!owner.executionProfileDigest().equals(stamp.executionProfileDigest()))
             throw new IllegalStateException("MODEL_EXECUTION_PROFILE_MISMATCH");
