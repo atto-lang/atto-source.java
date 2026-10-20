@@ -412,7 +412,20 @@ public class TaskScopeTest {
                 RejectedExecutionException.class,
                 () -> scope.startTask(
                         r -> OresScheduler.done(4),
-                        () -> { throw retirementFailure; }));
+                        new TaskScope.RetirementHook<Integer>() {
+                            @Override
+                            public void retireNeverStarted(TaskScope actualScope) {
+                                assertSame(scope, actualScope);
+                                throw retirementFailure;
+                            }
+
+                            @Override
+                            public void retireAfterPhysicalQuiescence(
+                                    TaskScope actualScope,
+                                    TaskHandle<Integer> actualChild) {
+                                fail("rejected Task must never reach physical retirement");
+                            }
+                        }));
 
         assertSame(retirementFailure, scope.retirementFailure());
         assertTrue(java.util.Arrays.asList(admission.getSuppressed())
