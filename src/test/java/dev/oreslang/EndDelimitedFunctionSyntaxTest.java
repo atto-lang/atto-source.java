@@ -67,6 +67,28 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
+    void sameLineSeparatorCanPrecedeARealDoSelectBodyStatement() {
+        var compact = Parser.parse("""
+                fnc consume(Channel<int> incoming) -> void do do select {
+                    case readch incoming: val number {
+                        return;
+                    }
+                } end
+                """);
+        var braced = Parser.parse("""
+                fnc consume(Channel<int> incoming) -> void {
+                    do select {
+                        case readch incoming: val number {
+                            return;
+                        }
+                    }
+                }
+                """);
+
+        assertEquals(braced, compact);
+    }
+
+    @Test
     void standaloneNextLineDoIsNotAcceptedAsTheCallableSeparator() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc identity(int x) -> int
@@ -373,6 +395,19 @@ final class EndDelimitedFunctionSyntaxTest {
                     static fnc run(int x) -> int do return x; end
                 end
                 """));
+    }
+
+    @Test
+    void nestedMatchEndIsOwnedByMatchBeforeCallableEnd() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc inspect(int x) -> int
+                    match x
+                        1 -> { }
+                        else -> { }
+                    end
+                    return x
+                end
+                """)));
     }
 
     @Test
