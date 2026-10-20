@@ -44,6 +44,8 @@ public final class OwnershipChecker {
     private final Set<String> ambiguousClasses = new HashSet<>();
     /** Only bindings admitted as new short aliases by the type checker. */
     private final Map<Ast.BindingStmt, String> validatedShortAliases;
+    private final AsyncTransferProvenance asyncTransferProvenance =
+            new AsyncTransferProvenance();
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -62,6 +64,10 @@ public final class OwnershipChecker {
         index(program);
     }
 
+    public record CheckResult(
+            Ast.Program program,
+            AsyncTransferProvenance asyncTransfers) { }
+
     public static Ast.Program check(Ast.Program program) {
         return check(program, Map.of());
     }
@@ -69,9 +75,19 @@ public final class OwnershipChecker {
     /** Called only after TypeChecker has proved which short forms create aliases. */
     public static Ast.Program check(
             Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
-        OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
+        return checkWithAsyncTransferProvenance(
+                program, validatedShortAliases).program();
+    }
+
+    public static CheckResult checkWithAsyncTransferProvenance(
+            Ast.Program program,
+            Map<Ast.BindingStmt, String> validatedShortAliases) {
+        OwnershipChecker checker =
+                new OwnershipChecker(program, validatedShortAliases);
         checker.validate(program);
-        return program;
+        return new CheckResult(
+                program,
+                checker.asyncTransferProvenance.seal());
     }
 
     /** Reuse only public, explicitly linked class layouts for cross-file loans. */
@@ -1509,6 +1525,13 @@ public final class OwnershipChecker {
                         fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
                 if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
+                if (fn.async()) {
+                    recordAsyncCall(
+                            call,
+                            call.arguments(),
+                            scope,
+                            "function " + fn.name());
+                }
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
@@ -1529,6 +1552,13 @@ public final class OwnershipChecker {
                         signature.parameters(),
                         scope,
                         "function " + namespace.name() + "." + qualified.member());
+                if (fn.async()) {
+                    recordAsyncCall(
+                            call,
+                            call.arguments(),
+                            scope,
+                            "function " + namespace.name() + "." + qualified.member());
+                }
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
@@ -1604,6 +1634,13 @@ public final class OwnershipChecker {
                             signature.parameters(),
                             scope,
                             "static function " + staticClass.name() + "." + staticFunction.name());
+                    if (staticFunction.async()) {
+                        recordAsyncCall(
+                                call,
+                                call.arguments(),
+                                scope,
+                                "static function " + staticClass.name() + "." + staticFunction.name());
+                    }
                     Ast.TypeRef callResult = callableResultType(signature.result(), staticFunction.async(), false);
                     return new ValueInfo(callResult, kindOfType(callResult), null);
                 }
@@ -2094,6 +2131,169 @@ public final class OwnershipChecker {
     // and remains live until the complete invocation has been validated.
     // Argument-root comparison alone does not protect f(&mut q, q.method()).
     private record CallArgumentLoan(VarState root, boolean mutable) { }
+
+    private void recordAsyncCall(
+            Ast.CallExpr call,
+            List<Ast.Expr> arguments,
+            Scope scope,
+            String callable) {
+        ArrayList<AsyncTransferProvenance.Transfer> transfers =
+                new ArrayList<>(arguments.size());
+        for (int i = 0; i < arguments.size(); i++) {
+            Ast.Expr source = arguments.get(i);
+            Ast.Expr value = source instanceof Ast.SpreadExpr spread
+                    ? spread.expression() : source;
+            Ast.TypeRef type = syntacticType(value, scope);
+            ValueKind kind = kindOfType(type);
+            AsyncTransferProvenance.TransferKind transferKind;
+            if (kind == ValueKind.COPY) {
+                transferKind = AsyncTransferProvenance.TransferKind.COPY;
+            } else if (value instanceof Ast.NameExpr name) {
+                VarState state = requireState(scope, name.name());
+                VarState root = ownershipRoot(state);
+                if (!root.moved
+                        || root.immutableBorrows > 0
+                        || root.mutableBorrowed) {
+                    throw new IllegalStateException(
+                            "Oreslang compiler invariant violated: async "
+                                    + "transfer proof minted without completed "
+                                    + "exclusive move for '" + name.name() + "'");
+                }
+                transferKind =
+                        AsyncTransferProvenance.TransferKind.UNIQUE_MOVE;
+            } else {
+                if (!isProvenAsyncOwnedRvalue(value, scope)) {
+                    throw error(callable + " argument " + (i + 1)
+                            + " has move-only rvalue provenance that cannot be "
+                            + "proven exclusive; bind a compiler-proven fresh "
+                            + "value or move a named owner before the async call");
+                }
+                transferKind =
+                        AsyncTransferProvenance.TransferKind.OWNED_RVALUE;
+            }
+            transfers.add(new AsyncTransferProvenance.Transfer(
+                    i, type, transferKind));
+        }
+        asyncTransferProvenance.record(call, transfers);
+    }
+
+    private boolean isProvenAsyncOwnedRvalue(
+            Ast.Expr expression, Scope scope) {
+        if (expression == null) return false;
+        if (expression instanceof Ast.LiteralExpr) return true;
+        if (expression instanceof Ast.NameExpr name) {
+            VarState state = scope.lookup(name.name());
+            if (state == null) return false;
+            VarState root = ownershipRoot(state);
+            return state.kind == ValueKind.COPY
+                    || (root.moved
+                        && root.immutableBorrows == 0
+                        && !root.mutableBorrowed);
+        }
+        if (expression instanceof Ast.CastExpr cast) {
+            return isProvenAsyncOwnedRvalue(cast.value(), scope);
+        }
+        if (expression instanceof Ast.SpreadExpr spread) {
+            return isProvenAsyncOwnedRvalue(spread.expression(), scope);
+        }
+        if (expression instanceof Ast.TrapExpr trapped) {
+            return isProvenAsyncOwnedRvalue(trapped.expression(), scope);
+        }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            return isProvenAsyncOwnedRvalue(
+                            conditional.whenTrue(), scope)
+                    && isProvenAsyncOwnedRvalue(
+                            conditional.whenFalse(), scope);
+        }
+        if (expression instanceof Ast.MatchExpr match) {
+            for (Ast.MatchValueArm arm : match.arms()) {
+                if (!isProvenAsyncOwnedRvalue(arm.value(), scope)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (expression instanceof Ast.RuntimeCallExpr runtime) {
+            if (!runtime.operation().equals("take")
+                    || runtime.arguments().size() != 1
+                    || !(runtime.arguments().getFirst()
+                            instanceof Ast.NameExpr name)) {
+                return false;
+            }
+            VarState state = scope.lookup(name.name());
+            if (state == null) return false;
+            VarState root = ownershipRoot(state);
+            return root.moved
+                    && root.immutableBorrows == 0
+                    && !root.mutableBorrowed;
+        }
+        if (expression instanceof Ast.NewExpr created) {
+            for (Ast.Expr argument : created.arguments()) {
+                if (!isProvenAsyncOwnedRvalue(argument, scope)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (expression instanceof Ast.ListExpr list) {
+            for (Ast.Expr element : list.elements()) {
+                if (!isProvenAsyncOwnedRvalue(element, scope)) return false;
+            }
+            return true;
+        }
+        if (expression instanceof Ast.TupleExpr tuple) {
+            for (Ast.Expr element : tuple.elements()) {
+                if (!isProvenAsyncOwnedRvalue(element, scope)) return false;
+            }
+            return true;
+        }
+        if (expression instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) {
+                if (!isProvenAsyncOwnedRvalue(field.value(), scope)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (expression instanceof Ast.CallExpr nested) {
+            if (nested.callee() instanceof Ast.NameExpr constructor
+                    && (constructor.name().equals("Some")
+                        || constructor.name().equals("Ok")
+                        || constructor.name().equals("Err"))) {
+                for (Ast.Expr argument : nested.arguments()) {
+                    if (!isProvenAsyncOwnedRvalue(argument, scope)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            if (nested.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr receiver
+                    && Set.of(
+                            "unwrap", "unwrap_safe", "unwrap_all",
+                            "flatten", "expect", "unwrap_or")
+                            .contains(member.member())) {
+                VarState state = scope.lookup(receiver.name());
+                if (state == null) return false;
+                VarState root = ownershipRoot(state);
+                if (state.kind != ValueKind.COPY
+                        && (!root.moved
+                            || root.immutableBorrows > 0
+                            || root.mutableBorrowed)) {
+                    return false;
+                }
+                for (Ast.Expr argument : nested.arguments()) {
+                    if (!isProvenAsyncOwnedRvalue(argument, scope)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            // No callable return-provenance/effect summary exists yet.
+            return false;
+        }
+        return false;
+    }
 
     private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
         int parameterIndex = 0;
