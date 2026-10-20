@@ -543,4 +543,39 @@ final class EntryValueTest {
     }
 
 
+    @Test
+    void entryCallableReturnRetainsNominalRuntimeTag() throws Exception {
+        String code = """
+                fnc make(): Entry<int, int> {
+                  return Entry.of(20, 22);
+                }
+
+                pub fnc main(): void {
+                  const entry = make();
+                  stdio.println(entry.key + entry.value);
+                  return;
+                }
+                """;
+
+        Ast.Program typed = TypeChecker.check(Parser.parse(code));
+        OwnershipChecker.check(typed);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                        OresLanguage.ID, code, "entry-return-shape.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        assertEquals(
+                "42",
+                output.toString(StandardCharsets.UTF_8)
+                        .replace("\r\n", "\n")
+                        .strip());
+    }
+
+
 }
