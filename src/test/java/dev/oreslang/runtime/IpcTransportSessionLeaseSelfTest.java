@@ -312,7 +312,10 @@ public final class IpcTransportSessionLeaseSelfTest {
             check(bound.lease().invariant());
         }
 
-        // Explicit retry never reopens send admission.
+        // Once physical close has actually been invoked, an exception is
+        // ambiguous: the descriptor may already be closed. Never invoke the
+        // closer a second time or rely on idempotence of an arbitrary/native
+        // descriptor wrapper.
         {
             var recoveryMessage = message(1, "recovery");
             AtomicInteger closeAttempts = new AtomicInteger();
@@ -320,9 +323,8 @@ public final class IpcTransportSessionLeaseSelfTest {
                     recoveryMessage, 57, 1,
                     (value, preparedFrame) -> { },
                     () -> {
-                        if (closeAttempts.incrementAndGet() == 1) {
-                            throw new IOException("first close was unconfirmed");
-                        }
+                        closeAttempts.incrementAndGet();
+                        throw new IOException("close outcome unconfirmed");
                     },
                     IpcTransportSessionLeaseSelfTest::offCallerCleanup);
             var attempt = send(bound, recoveryMessage);
@@ -331,14 +333,13 @@ public final class IpcTransportSessionLeaseSelfTest {
                     == IpcTransportSessionLease.Phase.QUARANTINED);
             check(!attempt.outcome().toCompletableFuture().isDone());
             deny(() -> send(bound, recoveryMessage));
-            bound.lease().retryQuarantinedClose();
-            check(closeAttempts.get() == 2);
-            check(bound.lease().snapshot().phase()
-                    == IpcTransportSessionLease.Phase.RETIRED);
-            check(attempt.outcome().toCompletableFuture().join()
-                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
-            check(bound.lease().invariant());
             deny(bound.lease()::retryQuarantinedClose);
+            check(closeAttempts.get() == 1);
+            check(bound.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.QUARANTINED);
+            check(!bound.lease().snapshot().physicalCloseConfirmed());
+            check(!attempt.outcome().toCompletableFuture().isDone());
+            check(bound.lease().invariant());
         }
 
         // Misconfigured caller-runs cleanup is detected before physical close.
