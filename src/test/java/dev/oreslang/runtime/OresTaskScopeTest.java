@@ -508,4 +508,100 @@ final class OresTaskScopeTest {
         }
     }
 
+
+    @Test
+    void retiredSiblingClaimCannotRideAnotherReadersRegionLease()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresTaskScope scope = new OresTaskScope(scheduler);
+            CountDownLatch entered = new CountDownLatch(2);
+            CountDownLatch releaseLeft = new CountDownLatch(1);
+            CountDownLatch releaseRight = new CountDownLatch(1);
+
+            OresTaskScope.ScopedReadClaim leftClaim =
+                    new OresTaskScope.ScopedReadClaim("view", 53L, 7L, "$");
+            OresTaskScope.ScopedReadClaim rightClaim =
+                    new OresTaskScope.ScopedReadClaim("view", 53L, 7L, "$");
+
+            // Records are structurally equal by design, but lifetime authority
+            // is claim-object identity, not structural equality.
+            assertEquals(leftClaim, rightClaim);
+            assertNotSame(leftClaim, rightClaim);
+
+            OresFuture<Integer> left = scope.fork(resume -> {
+                entered.countDown();
+                assertTrue(releaseLeft.await(5, TimeUnit.SECONDS));
+                return OresScheduler.done(1);
+            }, java.util.List.of(leftClaim));
+            OresFuture<Integer> right = scope.fork(resume -> {
+                entered.countDown();
+                assertTrue(releaseRight.await(5, TimeUnit.SECONDS));
+                return OresScheduler.done(2);
+            }, java.util.List.of(rightClaim));
+
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertTrue(scope.hasScopedReadLease(leftClaim));
+            assertTrue(scope.hasScopedReadLease(rightClaim));
+            assertTrue(scope.hasScopedReadLease(53L, 7L));
+
+            OresFuture<Void> drained = scope.quiesce();
+            releaseLeft.countDown();
+            assertEquals(1, left.get(5, TimeUnit.SECONDS));
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (scope.hasScopedReadLease(leftClaim)
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(1L);
+            }
+
+            assertFalse(scope.hasScopedReadLease(leftClaim),
+                    "retired child claim must become invalid by identity");
+            assertTrue(scope.hasScopedReadLease(rightClaim),
+                    "sibling's exact claim remains live");
+            assertTrue(scope.hasScopedReadLease(53L, 7L),
+                    "aggregate region remains live because sibling still reads");
+            assertFalse(drained.isDone());
+
+            releaseRight.countDown();
+            assertEquals(2, right.get(5, TimeUnit.SECONDS));
+            assertNull(drained.get(5, TimeUnit.SECONDS));
+            assertFalse(scope.hasScopedReadLease(rightClaim));
+            assertFalse(scope.hasScopedReadLease(53L, 7L));
+        }
+    }
+
+    @Test
+    void oneClaimIdentityCannotBeOwnedByTwoLiveChildren() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresTaskScope scope = new OresTaskScope(scheduler);
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            OresTaskScope.ScopedReadClaim claim =
+                    new OresTaskScope.ScopedReadClaim("view", 61L, 0L, "$");
+
+            OresFuture<Integer> first = scope.fork(resume -> {
+                entered.countDown();
+                assertTrue(release.await(5, TimeUnit.SECONDS));
+                return OresScheduler.done(1);
+            }, java.util.List.of(claim));
+
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            IllegalStateException duplicate = assertThrows(
+                    IllegalStateException.class,
+                    () -> scope.fork(
+                            resume -> OresScheduler.done(2),
+                            java.util.List.of(claim)));
+            assertTrue(duplicate.getMessage().contains("live child"));
+            assertEquals(1, scope.activeChildren());
+            assertEquals(1, scope.activeScopedReadClaims());
+            assertTrue(scope.hasScopedReadLease(claim));
+
+            OresFuture<Void> drained = scope.quiesce();
+            release.countDown();
+            assertEquals(1, first.get(5, TimeUnit.SECONDS));
+            assertNull(drained.get(5, TimeUnit.SECONDS));
+            assertFalse(scope.hasScopedReadLease(claim));
+        }
+    }
+
 }
