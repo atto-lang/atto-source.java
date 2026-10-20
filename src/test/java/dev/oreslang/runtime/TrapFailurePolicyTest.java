@@ -105,4 +105,20 @@ final class TrapFailurePolicyTest {
         }
         assertFalse(TrapFailurePolicy.isTrappable(failure, GuestPanic.class));
     }
+
+    @Test void sourceTraceMarkersCannotAlterTrapOrCatchAdmission() {
+        IllegalStateException ordinary = new IllegalStateException("ordinary");
+        for (int index = 0; index < 1000; index++) {
+            SourceBoundaryTrace.record(ordinary, "orders.ores", "load", "await");
+        }
+        assertEquals(64, ordinary.getSuppressed().length);
+        assertTrue(TrapFailurePolicy.isTrappable(ordinary, GuestPanic.class));
+        assertTrue(TrapFailurePolicy.isGuestCatchable(ordinary, GuestPanic.class));
+
+        // Trace metadata must not hide a genuine suppressed terminal failure.
+        ordinary.addSuppressed(new CancellationException("cleanup cancellation"));
+        assertFalse(TrapFailurePolicy.isTrappable(ordinary, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(ordinary, GuestPanic.class));
+    }
+
 }

@@ -86,4 +86,43 @@ final class FileRootPublicClassImportTest {
 
         assertTrue(failure.getMessage().contains("does not match an exported declaration"));
     }
+
+    @Test
+    void importedPublicClassComputedIndexUsesDeclaringCodeUnit() throws Exception {
+        Path lib = temp.resolve("indexed-box.ores");
+        Path main = temp.resolve("indexed-main.ores");
+
+        Files.writeString(lib, """
+                pub define class Box as
+                  pub let int value = 7;
+                end
+                """);
+
+        Files.writeString(main, """
+                import class Box from "./indexed-box.ores";
+
+                fnc key(): string {
+                  return "value";
+                }
+
+                pub fnc main(): void {
+                  val Box box = new Box();
+                  box[key()] = 9;
+                  stdio.stdout.write(box[key()]);
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                main,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                Set.of(),
+                Map.of(),
+                out,
+                new ByteArrayOutputStream());
+
+        assertEquals("9", out.toString(StandardCharsets.UTF_8));
+    }
 }

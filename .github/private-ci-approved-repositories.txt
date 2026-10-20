@@ -1,6 +1,6 @@
 # Private CI destinations explicitly approved for source transfers.
 # No repositories are approved by default.
 # Changes must be reviewed by maintainers and security owners on a protected branch.
-# Format: one exact owner/repo@numeric-github-repository-id per active line.
-# Example (commented/inert): example-org/private-ci@1412142815
-# Reject name-only approvals, whitespace, wildcards, duplicate owners and ID drift.
+# Format: one exact owner/repo per uncommented line, no whitespace or wildcards.
+# Proposed narrow private carrier for v3 exact-tree tests; requires CODEOWNER review and protected merge.
+# Review-only candidate (NOT an approved destination): ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra

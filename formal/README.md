@@ -81,3 +81,7 @@ The next models should cover:
 - Structured actor failure propagation/restart policy beyond the already-modeled cancellation tree.
 
 For unbounded properties we should add a second tier using an external prover/model checker once its toolchain is pinned reproducibly; this bounded executable layer remains useful as the fast CI gate.
+
+## InvertedArray handle and field-sensitive loan safety
+
+See [INVERTED_ARRAY_MODEL.md](INVERTED_ARRAY_MODEL.md) for a bounded explicit-state checker with four negative mutation oracles. It does not certify executable guest lowering; tracked by issue #1424.
