@@ -60,6 +60,32 @@ class SymbolCopyIntegrityTest {
         assertEquals(2L, frozen.get(OresSymbol.process("ready")));
     }
 
+    @Test void lateExpandingListIsBoundedDuringActualDetachment() {
+        // freeze() walks the input once for graph admission and once for
+        // data-only admission. The hostile third iteration expands while
+        // detachment executes, past the value checked by both preflights.
+        List<Object> hostile = new java.util.AbstractList<>() {
+            int walks;
+            @Override public Object get(int index) { return 1L; }
+            @Override public int size() { return 1; }
+            @Override public java.util.Iterator<Object> iterator() {
+                final int actual = ++walks <= 2 ? 1 : 100_001;
+                return new java.util.Iterator<>() {
+                    int emitted;
+                    @Override public boolean hasNext() { return emitted < actual; }
+                    @Override public Object next() {
+                        if (!hasNext()) throw new java.util.NoSuchElementException();
+                        emitted++;
+                        return 1L;
+                    }
+                };
+            }
+        };
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(hostile));
+        assertTrue(failure.getMessage().contains("maximum node count"));
+    }
+
     @Test void copiedGraphCannotExceedWholeGraphNodeBudget() {
         List<Object> oversized = List.of(
                 Collections.nCopies(60_000, 1L),
