@@ -501,6 +501,12 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     )
     checked_destination(repository, contract)
 
+    # Re-run the cheap per-write guard immediately before each ref write.
+    # The full protected-origin/carrier checks above can be followed by a live
+    # destination visibility/identity or local-policy change before the actual
+    # publication call; never make that race window authoritative.
+    auth()
+
     # Create the source-bearing branch first. The carrier workflow fails closed
     # while it waits for the exact authorization ref below.
     created = legacy.gh_api(
@@ -511,6 +517,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         raise Denied("carrier did not confirm exact-tree CI branch creation")
 
     authorization = "ci/authorized-" + commit_sha
+    auth()
     approved = legacy.gh_api(
         f"repos/{repository}/git/refs", method="POST",
         payload={"ref": "refs/heads/" + authorization, "sha": commit_sha},
