@@ -290,6 +290,15 @@ public final class DeclaredEffectVerifier {
                     return;
                 }
             }
+            if (call.callee() instanceof Ast.NameExpr sumConstructor
+                    && (sumConstructor.name().equals("Some")
+                            || sumConstructor.name().equals("Ok")
+                            || sumConstructor.name().equals("Err"))) {
+                // Built-in owned sum construction is pure. Payload
+                // expressions still contribute their own effects.
+                collect(call.arguments(), effects, stateAccess, callableName, serial);
+                return;
+            }
             if (call.callee() instanceof Ast.MemberExpr enumMember
                     && enumMember.receiver() instanceof Ast.NameExpr enumName
                     && ACTIVE_ENUMS.get().contains(enumName.name())) {
