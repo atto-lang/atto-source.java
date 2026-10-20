@@ -341,11 +341,13 @@ public final class TreeShaker {
                 for (Ast.Expr argument : call.arguments()) {
                     arguments.add(substitute(argument, substitutions, shadowed));
                 }
-                return new Ast.CallExpr(
+                Ast.CallExpr substituted = new Ast.CallExpr(
                         substitute(call.callee(), substitutions, shadowed),
                         call.typeArguments(),
                         call.typeArgumentsPresent(),
                         arguments);
+                Ast.CheckedOptionDepth.copy(call, substituted);
+                return substituted;
             }
             if (expression instanceof Ast.MemberExpr member) {
                 return new Ast.MemberExpr(
@@ -935,6 +937,7 @@ public final class TreeShaker {
                         call.typeArguments(),
                         call.typeArgumentsPresent(),
                         arguments);
+                Ast.CheckedOptionDepth.copy(call, rewritten);
 
                 InlineTarget target = resolveInlineTarget(callee, module, locals);
                 if (target != null && canInlineConstantCall(target, rewritten, arguments)) {
