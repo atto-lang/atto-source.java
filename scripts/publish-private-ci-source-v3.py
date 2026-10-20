@@ -368,14 +368,16 @@ def _gh_ref_request(repository, ref_name, method):
         raise Denied("carrier ref rollback is unavailable") from exc
 
 
-def live_ref_sha(repository, ref_name):
+def live_ref_sha(repository, ref_name, expected_repository_id):
+    repo = legacy.checked_repo(repository)
+    if repo.get("id") != expected_repository_id:
+        raise Denied("carrier repository identity changed during ref verification")
     result = _gh_ref_request(repository, ref_name, "GET")
     if result.returncode != 0:
         if "HTTP 404" in result.stderr:
             # GitHub can mask private-resource authorization failures as 404.
-            # Prove the carrier is still visible and private before treating
-            # this response as evidence that the ref itself is absent.
-            legacy.checked_repo(repository)
+            # The numeric carrier identity was just revalidated above, so this
+            # 404 can be treated as evidence that this exact ref is absent.
             return None
         raise Denied("carrier ref lookup failed")
     try:
@@ -392,15 +394,15 @@ def live_ref_sha(repository, ref_name):
     )
 
 
-def require_exact_ref(repository, ref_name, expected_sha):
-    actual = live_ref_sha(repository, ref_name)
+def require_exact_ref(repository, ref_name, expected_sha, expected_repository_id):
+    actual = live_ref_sha(repository, ref_name, expected_repository_id)
     if actual != expected_sha:
         raise Denied("carrier ref does not point to exact handoff commit")
 
 
-def delete_exact_ref(repository, ref_name, expected_sha):
+def delete_exact_ref(repository, ref_name, expected_sha, expected_repository_id):
     expected_sha = valid_sha(expected_sha, "invalid rollback commit SHA")
-    actual = live_ref_sha(repository, ref_name)
+    actual = live_ref_sha(repository, ref_name, expected_repository_id)
     if actual is None:
         return False
     if actual != expected_sha:
@@ -409,7 +411,7 @@ def delete_exact_ref(repository, ref_name, expected_sha):
     result = _gh_ref_request(repository, ref_name, "DELETE")
     if result.returncode != 0 and "HTTP 404" not in result.stderr:
         raise Denied("carrier ref rollback failed")
-    if live_ref_sha(repository, ref_name) is not None:
+    if live_ref_sha(repository, ref_name, expected_repository_id) is not None:
         raise Denied("carrier ref still exists after rollback")
     return True
 
@@ -592,7 +594,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         if (created.get("ref") != "refs/heads/" + branch
                 or created.get("object", {}).get("sha") not in (None, commit_sha)):
             raise Denied("carrier did not confirm exact-tree CI branch creation")
-        require_exact_ref(repository, branch, commit_sha)
+        require_exact_ref(
+            repository, branch, commit_sha, contract["repository_id"]
+        )
 
         # The payload ref is inert without the authorization ref. Re-run every
         # mutable governance check in that safe window so protection, policy,
@@ -622,18 +626,28 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
 
         # Do not trust create responses alone. Re-read both live refs before
         # reporting a successful handoff.
-        require_exact_ref(repository, branch, commit_sha)
-        require_exact_ref(repository, authorization, commit_sha)
+        require_exact_ref(
+            repository, branch, commit_sha, contract["repository_id"]
+        )
+        require_exact_ref(
+            repository, authorization, commit_sha, contract["repository_id"]
+        )
     except Denied as exc:
         rollback_error = None
         if authorization_attempted:
             try:
-                delete_exact_ref(repository, authorization, commit_sha)
+                delete_exact_ref(
+                    repository, authorization, commit_sha,
+                    contract["repository_id"],
+                )
             except Denied as rollback_exc:
                 rollback_error = rollback_exc
         if payload_attempted:
             try:
-                delete_exact_ref(repository, branch, commit_sha)
+                delete_exact_ref(
+                    repository, branch, commit_sha,
+                    contract["repository_id"],
+                )
             except Denied as rollback_exc:
                 rollback_error = rollback_error or rollback_exc
         if rollback_error is not None:
