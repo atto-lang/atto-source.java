@@ -598,6 +598,12 @@ final class IpcTransportSessionLease {
                             && !physicalCloseExecuting
                             && !physicalCloseConfirmed))
                     && (phase != Phase.FINALIZING || activeWrites == 0)
+                    && (!physicalCloseFailureRecorded
+                        || (phase == Phase.QUARANTINED
+                            && physicalCloseAttempted
+                            && !physicalCloseExecuting
+                            && !physicalCloseConfirmed
+                            && closeFailure != null))
                     && (!cleanupExecuting || phase == Phase.FINALIZING);
         }
     }
