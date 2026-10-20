@@ -506,13 +506,13 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 } catch (IllegalStateException expected) {
                     check(expected.getMessage().contains("cannot block an actor carrier"));
                 }
-                check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.OPEN);
                 check(!client.isClosed());
                 check(!transport.keyCloneZeroized());
             } finally {
                 RuntimeBlockingGuard.exitActorCarrier();
             }
             check(!RuntimeBlockingGuard.actorCarrierMarked());
+            check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.OPEN);
             check(transport.requestCloseAndAwait(3000));
             check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
         }
