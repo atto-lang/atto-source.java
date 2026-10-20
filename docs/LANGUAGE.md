@@ -169,6 +169,11 @@ Because the return type is parsed completely before the optional separator,
 higher-order returns remain unambiguous: `fnc callback() -> () => void do ... end`
 means a named function whose return type is `() => void`.
 
+A semicolon after the return type is **not** a body separator. In declaration
+contexts such as module contracts, `fnc classify(int x) -> int;` is a bodyless
+signature. At file/module executable scope, the same spelling is rejected
+rather than being reinterpreted as an empty or following-line definition.
+
 This v1 form is intentionally limited to ordinary file/module callables. Class
 instance methods, class `static fnc` implementations, and actor callables
 remain brace-bodied.
