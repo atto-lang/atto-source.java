@@ -906,13 +906,17 @@ def _gh_ref_request(repository, ref_name, method):
 
 
 def is_github_ref_absent_response(result):
-    """Accept only gh's exact leading HTTP 404 diagnostic, not embedded text."""
+    """Accept only gh's leading HTTP 404 status, not embedded error text."""
     if result.returncode == 0 or not isinstance(result.stderr, str):
         return False
-    first_line = result.stderr.split("\n", 1)[0]
-    return re.fullmatch(
-        r"gh: [^\\r\\n]{1,4096} \\(HTTP 404\\)", first_line
-    ) is not None
+    first_line = result.stderr.split(chr(10), 1)[0]
+    return (
+        first_line.startswith("gh: ")
+        and first_line.endswith(" (HTTP 404)")
+        and 17 <= len(first_line) <= 4120
+        and chr(13) not in first_line
+        and chr(0) not in first_line
+    )
 
 
 def live_ref_sha(repository, ref_name, expected_repository_id):
