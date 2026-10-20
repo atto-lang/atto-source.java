@@ -28,7 +28,13 @@ final class IpcActorRuntimeIntegrationTest {
     void actorHandsBlockingIpcToHostWorkerAndReceivesTerminalOutcome() throws Exception {
         String previousCarriers = System.getProperty("ores.runtime.carriers");
         String previousAffinity = System.getProperty("ores.actor.affinity");
-        System.setProperty("ores.runtime.carriers", "java");
+        // Respect an explicitly requested CI/production carrier backend.
+        // Use the portable Java carrier only when the caller did not select
+        // one, while disabling affinity so this test does not require CPU
+        // pinning configuration.
+        if (previousCarriers == null) {
+            System.setProperty("ores.runtime.carriers", "java");
+        }
         System.setProperty("ores.actor.affinity", "none");
 
         ExecutorService hostIo = Executors.newSingleThreadExecutor(r -> {
@@ -67,6 +73,13 @@ final class IpcActorRuntimeIntegrationTest {
              ActorRuntime runtime = new ActorRuntime(
                      IsolatePolicy.developer(),
                      new ActorRuntime.DispatcherConfig(1, 1, 8, 64))) {
+
+            if ("native".equals(previousCarriers)) {
+                assertEquals(
+                        ActorRuntime.CarrierBackend.NATIVE_PTHREAD,
+                        runtime.carrierBackend(),
+                        "native-carrier verification must exercise pthread actor carriers");
+            }
 
             var bridge = new IpcReceiptCompletionBridge(4);
             var transport = new IpcAuthenticatedSocketTransport(
