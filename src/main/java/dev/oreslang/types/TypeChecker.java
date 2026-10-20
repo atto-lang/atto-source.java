@@ -7808,23 +7808,25 @@ public final class TypeChecker {
             return structuralRecordAssignable(sourceShape, targetShape);
         }
 
-        if (actual instanceof Named caseType && expected instanceof Named enumType
-                && caseType.arguments().isEmpty() && enumType.arguments().isEmpty()) {
-            TaggedMessageContracts.Case enumCase = taggedCaseOrNull(caseType.name());
-            if (enumCase != null && enumCase.owner().equals(enumType.name())) return true;
-        }
+        if (isNominalEnumCaseWidening(actual, expected)) return true;
 
-        if (actual instanceof Named actualNamed && expected instanceof Named expectedNamed
-                && actualNamed.name().equals(expectedNamed.name())
-                && actualNamed.arguments().size() == expectedNamed.arguments().size()) {
-            boolean compatible = true;
-            for (int i = 0; i < actualNamed.arguments().size(); i++) {
-                Type a = actualNamed.arguments().get(i);
-                Type e = expectedNamed.arguments().get(i);
-                if (a == Unknown.INSTANCE || e == Unknown.INSTANCE) continue;
-                if (!assignable(a, e)) { compatible = false; break; }
-            }
-            if (compatible) return true;
+        // Ok(value) and Err(error) synthesize Result with Unknown in the
+        // constructor's opposite slot. Permit that local constructor hole,
+        // plus the exact case->owner nominal enum widening above, without
+        // weakening the language-wide invariant generic relation.
+        if (actual instanceof Named actualResult
+                && expected instanceof Named expectedResult
+                && actualResult.name().equals("Result")
+                && expectedResult.name().equals("Result")
+                && actualResult.arguments().size() == 2
+                && expectedResult.arguments().size() == 2
+                && resultConstructorSlotAssignable(
+                        actualResult.arguments().get(0),
+                        expectedResult.arguments().get(0))
+                && resultConstructorSlotAssignable(
+                        actualResult.arguments().get(1),
+                        expectedResult.arguments().get(1))) {
+            return true;
         }
 
         if (Types.isAssignable(actual, expected)) return true;
@@ -7882,6 +7884,28 @@ public final class TypeChecker {
             }
         }
         return false;
+    }
+
+    private boolean isNominalEnumCaseWidening(Type actual, Type expected) {
+        if (!(actual instanceof Named caseType)
+                || !(expected instanceof Named enumType)
+                || !caseType.arguments().isEmpty()
+                || !enumType.arguments().isEmpty()) {
+            return false;
+        }
+        TaggedMessageContracts.Case enumCase = taggedCaseOrNull(caseType.name());
+        return enumCase != null && enumCase.owner().equals(enumType.name());
+    }
+
+    private boolean resultConstructorSlotAssignable(Type actual, Type expected) {
+        if (actual == Unknown.INSTANCE || expected == Unknown.INSTANCE) return true;
+        if (isNominalEnumCaseWidening(actual, expected)) return true;
+
+        // Preserve the existing invariant generic/value relation in every
+        // non-hole, non-enum slot. This deliberately does not recurse through
+        // arbitrary same-name generics using this checker's subtype relation.
+        return Types.isAssignable(actual, expected)
+                && Types.isAssignable(expected, actual);
     }
 
     private boolean structuralRecordAssignable(Record actual, Record expected) {
