@@ -115,32 +115,6 @@ public final class IpcReceiptCompletionBridge {
         return publicView;
     }
 
-    CompletionStage<IpcReceiptCorrelation.Stage> admit(
-            Object owner,
-            IpcReceiptCorrelation.Envelope envelope,
-            long generation) {
-        RuntimeBlockingGuard.requireBlockingHostThread("IPC receipt bridge admission");
-        Objects.requireNonNull(owner, "owner");
-        Objects.requireNonNull(envelope, "envelope");
-        CompletableFuture<IpcReceiptCorrelation.Stage> future = new CompletableFuture<>();
-        CompletionStage<IpcReceiptCorrelation.Stage> publicView =
-                future.minimalCompletionStage();
-        synchronized (gate) {
-            requirePhysicalTransport(owner, envelope, generation);
-            if (completions.containsKey(envelope.messageSequence())) {
-                throw new IllegalArgumentException("duplicate host correlation");
-            }
-            completions.put(envelope.messageSequence(), future);
-            try {
-                correlations.admit(envelope);
-            } catch (RuntimeException | Error e) {
-                completions.remove(envelope.messageSequence());
-                throw e;
-            }
-        }
-        return publicView;
-    }
-
     CompletionStage<IpcReceiptCorrelation.Stage> admitAndCommit(
             Object owner,
             IpcReceiptCorrelation.Envelope envelope,
@@ -190,21 +164,6 @@ public final class IpcReceiptCompletionBridge {
         Objects.requireNonNull(envelope, "envelope");
         synchronized (gate) {
             requireUnboundPhysicalBridge();
-            if (!completions.containsKey(envelope.messageSequence())) {
-                throw new IllegalArgumentException("missing IPC dispatch correlation");
-            }
-            correlations.commitDispatch(envelope);
-        }
-    }
-
-    void commitDispatch(Object owner,
-                        IpcReceiptCorrelation.Envelope envelope,
-                        long generation) {
-        RuntimeBlockingGuard.requireBlockingHostThread("IPC receipt bridge dispatch");
-        Objects.requireNonNull(owner, "owner");
-        Objects.requireNonNull(envelope, "envelope");
-        synchronized (gate) {
-            requirePhysicalTransport(owner, envelope, generation);
             if (!completions.containsKey(envelope.messageSequence())) {
                 throw new IllegalArgumentException("missing IPC dispatch correlation");
             }
@@ -266,25 +225,6 @@ public final class IpcReceiptCompletionBridge {
         CompletableFuture<IpcReceiptCorrelation.Stage> done;
         synchronized (gate) {
             requireUnboundPhysicalBridge();
-            correlations.rejectBeforeRemote(envelope);
-            done = completions.remove(envelope.messageSequence());
-            if (done == null) {
-                throw new IllegalStateException("missing host completion");
-            }
-        }
-        done.complete(IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
-    }
-
-    void rejectBeforeRemote(Object owner,
-                            IpcReceiptCorrelation.Envelope envelope,
-                            long generation) {
-        RuntimeBlockingGuard.requireBlockingHostThread(
-                "IPC receipt bridge local rejection");
-        Objects.requireNonNull(owner, "owner");
-        Objects.requireNonNull(envelope, "envelope");
-        CompletableFuture<IpcReceiptCorrelation.Stage> done;
-        synchronized (gate) {
-            requirePhysicalTransport(owner, envelope, generation);
             correlations.rejectBeforeRemote(envelope);
             done = completions.remove(envelope.messageSequence());
             if (done == null) {
