@@ -1,0 +1,13 @@
+Reviewed Orestra test fixtures. Source blobs copied through the GitHub connection; no Action token crosses organizations.
+orestra/orestra/src/scheduler/placement.ores 8c28677cc474fadbe96f932b6dd5097880fb785d src/test/resources/orestra-mirror/orestra/src/scheduler/placement.ores
+orestra/orestra/src/controllers/deployment.ores d7bf2463c448969608168646c3763c3e308ac3fc src/test/resources/orestra-mirror/orestra/src/controllers/deployment.ores
+orestra/orestra/src/controllers/node.ores b7b4c4e34aa2ccd13086c1989a4c33753672dabd src/test/resources/orestra-mirror/orestra/src/controllers/node.ores
+orestra/orestra/src/controllers/leases.ores 1cf5941c7dfdc2c6bc67b1d49ba6208726403ee2 src/test/resources/orestra-mirror/orestra/src/controllers/leases.ores
+orestra/orestra/src/controllers/workload_state.ores 28ae161f3344f35f51a19691a128e8d97fdc8fb5 src/test/resources/orestra-mirror/orestra/src/controllers/workload_state.ores
+orestra/orestra/examples/placement-smoke.ores d331668bc51eea075b1b90a6557417093f5e6bd3 src/test/resources/orestra-mirror/orestra/examples/placement-smoke.ores
+orestra/orestra/examples/edge-guards.ores 6dfcd98476bacb090d87dc686f33b380acc0bb5f src/test/resources/orestra-mirror/orestra/examples/edge-guards.ores
+orestra/orestra/examples/workload-state-smoke.ores a991a4a3cfc52a064dec3ed6dda668701cab3b73 src/test/resources/orestra-mirror/orestra/examples/workload-state-smoke.ores
+orestra/orestra-sdk/src/retry.ores 16eaae94f697675018c9915d9aef5e4e8c5d490e src/test/resources/orestra-mirror/sdk/src/retry.ores
+orestra/orestra-sdk/src/quantity.ores 934d855eedd750e9bf4f1e773f024aa032da4b9c src/test/resources/orestra-mirror/sdk/src/quantity.ores
+orestra/orestra-sdk/src/resource.ores e4de929332b08bd48badd03e742fb1b579f7f0ec src/test/resources/orestra-mirror/sdk/src/resource.ores
+orestra/orestra-sdk/examples/sdk-smoke.ores 97316a01c06cb74944eda03e92ac2fec6c67e6f7 src/test/resources/orestra-mirror/sdk/examples/sdk-smoke.ores
