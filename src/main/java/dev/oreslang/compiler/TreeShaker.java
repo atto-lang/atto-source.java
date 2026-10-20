@@ -946,6 +946,8 @@ public final class TreeShaker {
                 Ast.Expr rewrittenReceiver =
                         rewriteExpression(indexed.receiver(), module, locals);
                 Ast.CheckedClassView.copy(indexed.receiver(), rewrittenReceiver);
+                Ast.CheckedStructuralFieldDomain.copy(
+                        indexed.receiver(), rewrittenReceiver);
                 return new Ast.IndexExpr(
                         rewrittenReceiver,
                         rewriteExpression(indexed.index(), module, locals));
