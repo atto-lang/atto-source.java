@@ -209,9 +209,12 @@ class PrivateCiV3Test(unittest.TestCase):
         writes = []
         blob_payloads = []
         commit_payload = {}
+        publication_events = []
 
         def api(route, method="GET", payload=None):
             writes.append((method, route, payload))
+            if method == "POST" and route.endswith("/git/refs"):
+                publication_events.append(("write", payload["ref"]))
             if method == "POST" and route.endswith("/git/blobs"):
                 data = base64.b64decode(payload["content"], validate=True)
                 blob_payloads.append(data)
@@ -266,7 +269,11 @@ class PrivateCiV3Test(unittest.TestCase):
                     "verified_exact_source_tree",
                     return_value=SOURCE_TREE,
                 ),
-                patch.object(v3, "authorize_write") as authorize,
+                patch.object(
+                    v3,
+                    "authorize_write",
+                    side_effect=lambda *args: publication_events.append(("auth", None)),
+                ) as authorize,
                 patch.object(v3.legacy, "gh_api", side_effect=api),
             ):
                 result = v3.publish(
@@ -282,6 +289,15 @@ class PrivateCiV3Test(unittest.TestCase):
         # One-file publication has five object writes plus two ref
         # writes. Each must be preceded by the fail-closed per-write guard.
         self.assertEqual(authorize.call_count, 7)
+        self.assertEqual(
+            publication_events[-4:],
+            [
+                ("auth", None),
+                ("write", "refs/heads/ci/oreslang-" + SOURCE_TREE),
+                ("auth", None),
+                ("write", "refs/heads/ci/authorized-" + COMMIT),
+            ],
+        )
         self.assertEqual(result["branch"], "ci/oreslang-" + SOURCE_TREE)
         self.assertEqual(
             result["authorization_ref"], "ci/authorized-" + COMMIT
