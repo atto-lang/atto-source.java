@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
@@ -21,6 +22,18 @@ final class EntryValueTest {
         return assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    private static void ownershipAccepted(String source) {
+        Ast.Program program = TypeChecker.check(Parser.parse(source));
+        assertDoesNotThrow(() -> OwnershipChecker.check(program));
+    }
+
+    private static IllegalArgumentException ownershipRejected(String source) {
+        Ast.Program program = TypeChecker.check(Parser.parse(source));
+        return assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(program));
     }
 
     @Test
@@ -193,6 +206,81 @@ final class EntryValueTest {
                 }
                 """);
         assertTrue(generic.getMessage().contains("cannot shadow"), generic.getMessage());
+    }
+
+    @Test
+    void ownershipPreservesEntryShapeAndTupleCompatibilityType() {
+        ownershipAccepted("""
+                fnc consume(Entry<int, int> entry): int {
+                  return entry.key + entry.value;
+                }
+
+                fnc main(): int {
+                  const pair = tuple(10, 11);
+                  const entry = Entry.of(...pair);
+                  return consume(entry);
+                }
+                """);
+    }
+
+    @Test
+    void entryOfRejectsBorrowedPayloadsInOwnershipPass() {
+        IllegalArgumentException failure = ownershipRejected("""
+                fnc bad(&int key): void {
+                  const entry = Entry.of(key, 1);
+                  return;
+                }
+                """);
+        assertTrue(failure.getMessage().contains("borrowed"), failure.getMessage());
+    }
+
+    @Test
+    void entryFactoryFailsClosedOutsideDirectOfCalls() {
+        IllegalArgumentException unknown = rejected("""
+                fnc bad(): void {
+                  Entry.nope(1, 2);
+                  return;
+                }
+                """);
+        assertTrue(unknown.getMessage().contains("unknown Entry member"), unknown.getMessage());
+
+        IllegalArgumentException extracted = rejected("""
+                fnc bad(): void {
+                  const factory = Entry.of;
+                  return;
+                }
+                """);
+        assertTrue(extracted.getMessage().contains("direct-call-only"), extracted.getMessage());
+    }
+
+    @Test
+    void entryOfTupleSpreadExecutes() throws Exception {
+        String code = """
+                pub fnc main(): void {
+                  const pair = tuple {7, 9};
+                  const entry = Entry.of(...pair);
+                  stdio.println(entry.key + entry.value);
+                  return;
+                }
+                """;
+
+        Ast.Program program = TypeChecker.check(Parser.parse(code));
+        OwnershipChecker.check(program);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, code, "entry-spread.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        assertEquals(
+                "16",
+                output.toString(StandardCharsets.UTF_8)
+                        .replace("\r\n", "\n")
+                        .strip());
     }
 
 }
