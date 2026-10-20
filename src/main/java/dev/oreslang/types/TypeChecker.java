@@ -1251,6 +1251,10 @@ public final class TypeChecker {
                         + "' cannot be public; expose state through mailbox-dispatched methods");
             }
             Type fieldType = classFieldType(klass, field);
+            if (containsTypedMapType(fieldType)) {
+                throw new IllegalArgumentException(
+                        "typed Map cannot be stored in class/actor fields until container move tracking is implemented");
+            }
             if (field.initializer() != null && field.type() != null) {
                 Ast.ClassDecl previousClassOwner = currentClassOwner;
                 Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
@@ -1651,6 +1655,10 @@ public final class TypeChecker {
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
+        if (containsTypedMapType(actual)) {
+            throw new IllegalArgumentException(
+                    "typed Map cannot be stored in module/global state until ownership domains are explicit");
+        }
         requireMutableReferentCompatible(
                 actual,
                 field.mutableReferent(),
@@ -4224,14 +4232,31 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.ListExpr list) {
             if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
-            Type element = widenCollectionElement(typeOf(list.elements().getFirst(), env, generics, self));
+            Type firstElement = typeOf(list.elements().getFirst(), env, generics, self);
+            if (containsTypedMapType(firstElement)) {
+                throw new IllegalArgumentException(
+                        "typed Map cannot be stored in an array/list until element-level move tracking is implemented");
+            }
+            Type element = widenCollectionElement(firstElement);
             for (int i = 1; i < list.elements().size(); i++) {
-                element = collectionElementJoin(element, widenCollectionElement(typeOf(list.elements().get(i), env, generics, self)));
+                Type item = typeOf(list.elements().get(i), env, generics, self);
+                if (containsTypedMapType(item)) {
+                    throw new IllegalArgumentException(
+                            "typed Map cannot be stored in an array/list until element-level move tracking is implemented");
+                }
+                element = collectionElementJoin(element, widenCollectionElement(item));
             }
             return new ListType(element);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
-            return new Tuple(tuple.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
+            List<Type> items = tuple.elements().stream()
+                    .map(item -> typeOf(item, env, generics, self))
+                    .toList();
+            if (items.stream().anyMatch(this::containsTypedMapType)) {
+                throw new IllegalArgumentException(
+                        "typed Map cannot be stored in a tuple until element-level move tracking is implemented");
+            }
+            return new Tuple(items);
         }
         if (expr instanceof Ast.ObjectExpr object) {
             if (object.explicitStruct()) {
@@ -4261,6 +4286,10 @@ public final class TypeChecker {
                     }
                     Type actualField =
                             typeOf(field.value(), env, generics, self);
+                    if (containsTypedMapType(actualField)) {
+                        throw new IllegalArgumentException(
+                                "typed Map cannot be stored in an explicit struct until field-level move tracking is implemented");
+                    }
                     requireReadonlyCapabilityPreserved(
                             actualField,
                             expected,
@@ -4285,6 +4314,10 @@ public final class TypeChecker {
             Map<String, Type> members = new LinkedHashMap<>();
             for (Ast.ObjectField field : object.fields()) {
                 Type exactValueType = typeOf(field.value(), env, generics, self);
+                if (containsTypedMapType(exactValueType)) {
+                    throw new IllegalArgumentException(
+                            "typed Map cannot be stored in a struct/record until field-level move tracking is implemented");
+                }
                 if (members.putIfAbsent(
                         field.name(),
                         object.inferredFieldTypes()
