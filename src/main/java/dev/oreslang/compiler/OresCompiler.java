@@ -33,9 +33,10 @@ public final class OresCompiler {
         public TaskBoundaryAnalysis {
             java.util.Objects.requireNonNull(program, "program");
             java.util.Objects.requireNonNull(taskAdmissions, "taskAdmissions");
-            if (!taskAdmissions.sealed()) {
+            if (!taskAdmissions.sealed()
+                    || !taskAdmissions.executable()) {
                 throw new IllegalArgumentException(
-                        "Task boundary analysis requires sealed admissions");
+                        "Task boundary analysis requires ownership-authorized executable admissions");
             }
         }
     }
@@ -49,7 +50,10 @@ public final class OresCompiler {
             Ast.Program program) {
         TypeChecker.TaskTypeCheckResult checked =
                 TypeChecker.checkTypesWithTaskAdmissions(program);
-        OwnershipChecker.check(checked.program());
+        OwnershipChecker.TaskAdmissionSeal ownershipSeal =
+                OwnershipChecker.checkForTaskAdmission(checked.program());
+        checked.taskAdmissions().authorizeExecution(
+                checked.program(), ownershipSeal);
         return new TaskBoundaryAnalysis(
                 checked.program(), checked.taskAdmissions());
     }
