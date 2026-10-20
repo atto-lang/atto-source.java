@@ -348,22 +348,45 @@ final class OresKeyedMapTest {
         assertEquals(2, map.size());
     }
 
-    @Test void equalTypedMapsUseValueEqualityAndMatchingHash() {
+    @Test void mutableTypedMapHostIdentityIsStableAcrossMutations() {
         OresKeyedMap<String, Integer> a =
                 OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
         OresKeyedMap<String, Integer> b =
                 OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
         a.put("x", 1);
-        a.put("y", 2);
         b.put("x", 1);
-        b.put("y", 2);
 
         assertNotSame(a, b);
-        assertEquals(a, b);
-        assertEquals(a.hashCode(), b.hashCode());
-
-        b.put("y", 3);
         assertNotEquals(a, b);
+        assertEquals(System.identityHashCode(a), a.hashCode());
+        int before = a.hashCode();
+        a.put("x", 2);
+        a.put("y", 3);
+        assertEquals(before, a.hashCode(),
+                "a mutable guest storage wrapper must retain its host hash identity");
+        assertEquals("OresKeyedMap<opaque>", a.toString());
+    }
+
+    @Test void mutableTypedMapHostEqualityNeverInvokesGuestPayloadCallbacks() {
+        Object hostile = new Object() {
+            @Override public boolean equals(Object other) {
+                throw new AssertionError("host equals callback");
+            }
+            @Override public int hashCode() {
+                throw new AssertionError("host hashCode callback");
+            }
+            @Override public String toString() {
+                throw new AssertionError("host toString callback");
+            }
+        };
+        OresKeyedMap<String, Object> a = OresKeyedMap.stringKeys();
+        OresKeyedMap<String, Object> b = OresKeyedMap.stringKeys();
+        a.put("x", hostile);
+        b.put("x", hostile);
+
+        assertNotEquals(a, b);
+        assertEquals(System.identityHashCode(a), a.hashCode());
+        assertEquals("OresKeyedMap<opaque>", a.toString());
     }
 
     @Test void hostileHostBatchCannotMutateDestinationDuringSizeOrIteration() {
