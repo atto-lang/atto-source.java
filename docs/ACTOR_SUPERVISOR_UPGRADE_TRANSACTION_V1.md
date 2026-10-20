@@ -568,3 +568,63 @@ contains no **approved** cross-org private mirror destinations;
 security issue #962 and independent merge controls #904 remain
 open. Continue holding PR #1367 DRAFT, private source in its
 authorized repository, and production hot reload disabled.
+
+## Setup-phase proxy freeze rollback retry ownership — 2026-10-19
+
+A supervisor audit found that the later `SupervisorUpgradeTxn` finalizer
+retained an exact `pendingProxyRollbackTicket` when mailbox rollback
+failed, but the **earlier setup catch** did not. After the proxy freeze
+was acquired, `FreezeTicket.drained()` could fail (e.g. injected
+post-freeze mailbox invariant corruption). The setup catch tried
+`ticket.rollback()`, suppressed its failure, abandoned the transaction
+and forgot its freeze retry authority. The mailbox stayed frozen but
+no supervisor reconciliation could thaw it.
+
+Production change `3958af29c3fe14053ee5fd001f9f14d5403c948e`
+records the exact `pendingProxyRollbackTicket` and sets
+`retirementQuarantined` **before** abandoning a transaction whose
+setup-phase proxy ticket rollback failed. The existing finalizer's
+second failed rollback remains owner-consistent, and the same
+`reconcileFailedProxyRollback()` route can safely retry only after
+candidate retirement ownership is discharged and the mailbox's
+structural invariant is repaired. Ordinary successful setup rollback
+continues releasing the ticket normally. A foreign pending ticket is
+rejected rather than overwritten.
+
+Production JUnit in
+`LogicalSourceActorSupervisorUpgradeTxnTest.setupFreezeRollbackFailurePreservesExactTicketForSupervisorRepair`,
+commits `11c5cc1437f4cb4106284d85da4f369c9ecec9e0`
+and `02773e38e04ed57dff1e362fac4fd122ba3e6701`,
+injects a test-only outstanding map that changes mailbox retained
+message accounting **after** the freeze and throws from its first
+watermark-drain observation. It checks that both rollback attempts
+leave the *same active freeze ticket* owned, quarantine stays set,
+close and reconciliation fail closed while accounting is invalid,
+and explicit reconciliation succeeds without route epoch change once
+the test restores structural validity.
+
+**Source-owned test status:** JUnit is committed but has NOT executed.
+Source fast/full CI on the current head continue to fail with
+`steps:null`; neither Maven compilation nor GraalVM/Native Image
+assertions were observed. The problem cannot yet be ascribed to
+Actions minutes rather than policy/runner admission.
+
+**Independent JDK25 model evidence:** a separately authored,
+source-free `SetupProxyRollbackOracle.java` runs on the funded
+`gha-indie-worker/gha-indie-worker-e2e` test repository without
+copying Oreslang source. Commit
+`3d366e24a591e0d80f80d9824a02ffab529d0f8c`,
+[workflow 39352492057](https://github.com/gha-indie-worker/gha-indie-worker-e2e/actions/runs/39352492057),
+job `118399655709`, completed SUCCESS with Temurin JDK25,
+`javac --release 25 -Xlint:all -Werror`, and exact log output:
+```
+PASS source-free setup proxy rollback checks=130001
+four_worker_races=5000 lost_ticket_negative_control=detected
+private_source_bytes=0
+```
+This proves only the independent protocol model, not the production
+router/Java tests. The private CI destination allowlist under
+protected source main remains comment-only; security #962 and
+independent protected review #904 remain open. No private source
+was transferred to another organization. Keep PR #1367 DRAFT and
+production hot reload disabled pending full exact-head certification.
