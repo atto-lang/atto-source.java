@@ -537,6 +537,73 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             drainCleanup.awaitTermination(2, TimeUnit.SECONDS);
         }
 
+        // Terminal receipt publication must not execute dependent callbacks
+        // while readGate is held. A completion callback may synchronously ask
+        // the host supervisor to close and await the transport; cleanup needs
+        // readGate to finish key destruction after Socket.close().
+        byte[] reentrantPayload = "receipt completion reentry".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var reentrantMessage = envelope(1, "receiptReentry", 3, 4, reentrantPayload);
+        ByteArrayOutputStream reentrantWire = new ByteArrayOutputStream();
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                reentrantWire,
+                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                        reentrantMessage, 14,
+                        IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED,
+                        connectionBinding, key));
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                reentrantWire,
+                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                        reentrantMessage, 14,
+                        IpcReceiptCorrelation.Stage.HANDLER_COMMITTED,
+                        connectionBinding, key));
+        CountDownLatch reentrantCloseCalled = new CountDownLatch(1);
+        var reentrantSocket = new ControlledSocket(
+                new java.io.ByteArrayInputStream(reentrantWire.toByteArray()),
+                reentrantCloseCalled);
+        ExecutorService reentrantCleanup = Executors.newSingleThreadExecutor(
+                r -> new Thread(r, "ipc-test-cleanup-reentrant-receipt"));
+        try {
+            var bridge = new IpcReceiptCompletionBridge(1);
+            var transport = new IpcAuthenticatedSocketTransport(
+                    reentrantSocket, bridge, reentrantMessage, 14, 1,
+                    key, connectionBinding, reentrantCleanup::execute);
+            var submission = transport.send(reentrantMessage, reentrantPayload);
+            check(!submission.writeAttemptFailed());
+            check(transport.readVerifiedReceipt()
+                    == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+
+            CountDownLatch completionReturned = new CountDownLatch(1);
+            AtomicReference<Boolean> closeResult = new AtomicReference<>();
+            AtomicReference<Throwable> completionFailure = new AtomicReference<>();
+            submission.outcome().whenComplete((result, failure) -> {
+                try {
+                    if (failure != null) throw new AssertionError(failure);
+                    if (result != IpcReceiptCorrelation.Stage.HANDLER_COMMITTED) {
+                        throw new AssertionError("unexpected terminal receipt " + result);
+                    }
+                    closeResult.set(transport.requestCloseAndAwait(2000));
+                } catch (Throwable callbackFailure) {
+                    completionFailure.set(callbackFailure);
+                } finally {
+                    completionReturned.countDown();
+                }
+            });
+
+            check(transport.readVerifiedReceipt()
+                    == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(completionReturned.await(3, TimeUnit.SECONDS));
+            check(completionFailure.get() == null);
+            check(Boolean.TRUE.equals(closeResult.get()));
+            check(reentrantCloseCalled.await(2, TimeUnit.SECONDS));
+            check(transport.keyCloneZeroized());
+            check(bridge.invariant());
+        } finally {
+            reentrantSocket.close();
+            reentrantCleanup.shutdownNow();
+            reentrantCleanup.awaitTermination(2, TimeUnit.SECONDS);
+        }
+
         // Full route/grant epoch must be validated before receipt admission or wire I/O.
         byte[] epochPayload = "epoch".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         var oldEpoch = envelope(1, "reused", 3, 4, epochPayload);

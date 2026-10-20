@@ -231,10 +231,34 @@ public final class IpcReceiptCompletionBridge {
         if (done != null) done.complete(stage);
     }
 
-    void acceptVerified(Object owner,
-                        IpcReceiptCorrelation.Envelope envelope,
-                        long generation,
-                        IpcReceiptCorrelation.Stage stage) {
+    /**
+     * Deferred publication token for a verified terminal receipt.
+     *
+     * The receipt state transition is already committed when this object is
+     * returned. publish() may run arbitrary dependent callbacks, so callers
+     * must invoke it only after releasing any outer transport/order lock.
+     */
+    static final class DeferredVerifiedCompletion {
+        private final CompletableFuture<IpcReceiptCorrelation.Stage> done;
+        private final IpcReceiptCorrelation.Stage stage;
+
+        private DeferredVerifiedCompletion(
+                CompletableFuture<IpcReceiptCorrelation.Stage> done,
+                IpcReceiptCorrelation.Stage stage) {
+            this.done = Objects.requireNonNull(done, "done");
+            this.stage = Objects.requireNonNull(stage, "stage");
+        }
+
+        void publish() {
+            done.complete(stage);
+        }
+    }
+
+    DeferredVerifiedCompletion acceptVerifiedDeferred(
+            Object owner,
+            IpcReceiptCorrelation.Envelope envelope,
+            long generation,
+            IpcReceiptCorrelation.Stage stage) {
         RuntimeBlockingGuard.requireBlockingHostThread(
                 "IPC receipt bridge verified transition");
         Objects.requireNonNull(owner, "owner");
@@ -251,7 +275,16 @@ public final class IpcReceiptCompletionBridge {
                 }
             }
         }
-        if (done != null) done.complete(stage);
+        return done == null ? null : new DeferredVerifiedCompletion(done, stage);
+    }
+
+    void acceptVerified(Object owner,
+                        IpcReceiptCorrelation.Envelope envelope,
+                        long generation,
+                        IpcReceiptCorrelation.Stage stage) {
+        DeferredVerifiedCompletion completion =
+                acceptVerifiedDeferred(owner, envelope, generation, stage);
+        if (completion != null) completion.publish();
     }
 
     /**
