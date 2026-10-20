@@ -43,8 +43,12 @@ public final class SymbolPropertyKeyCodec {
         final int limit;
         if (key instanceof String text) {
             kind = TEXT;
-            value = text;
             limit = MAX_TEXT_KEY_BYTES;
+            // Bound hostile UTF-16 input before normalization can allocate.
+            if (text.length() > limit) {
+                throw new IllegalArgumentException("key exceeds tagged wire length budget");
+            }
+            value = Normalizer.normalize(text, Normalizer.Form.NFC);
         } else if (key instanceof OresSymbol symbol) {
             kind = symbol.kind() == OresSymbol.Kind.PROCESS
                     ? PROCESS_SYMBOL : STABLE_SYMBOL;
@@ -99,13 +103,13 @@ public final class SymbolPropertyKeyCodec {
         }
 
         String text = strictDecode(wire);
-        if (kind == TEXT) return text;
 
-        // Source constructors may NFC-normalize; wire inputs must already
-        // be canonical so that keys cannot bypass duplicate detection.
+        // Every wire key is canonical NFC. This gives String and Symbol keys
+        // one deterministic duplicate domain before any host equality/hashing.
         if (!Normalizer.isNormalized(text, Normalizer.Form.NFC)) {
-            throw new IllegalArgumentException("noncanonical NFC Symbol wire key");
+            throw new IllegalArgumentException("noncanonical NFC key wire value");
         }
+        if (kind == TEXT) return text;
         return kind == PROCESS_SYMBOL
                 ? OresSymbol.process(text)
                 : OresSymbol.stable(text);
