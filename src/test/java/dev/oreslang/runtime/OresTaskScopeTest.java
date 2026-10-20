@@ -413,4 +413,94 @@ final class OresTaskScopeTest {
         }
     }
 
+
+    @Test
+    void structuredCompilerRetirementCarriesExactBoundChild() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresTaskScope scope = new OresTaskScope(scheduler);
+            AtomicReference<OresScheduler.CompilerTaskHandle<?>> bound =
+                    new AtomicReference<>();
+            AtomicReference<OresScheduler.CompilerTaskHandle<?>> physical =
+                    new AtomicReference<>();
+            AtomicReference<OresScheduler.CompilerTaskHandle<?>> never =
+                    new AtomicReference<>();
+
+            OresFuture<Integer> child = scope.forkCompilerAdmitted(
+                    resume -> OresScheduler.done(42),
+                    new OresScheduler.CompilerTaskRetirement() {
+                        @Override
+                        public void bind(
+                                OresScheduler.CompilerTaskHandle<?> handle) {
+                            assertTrue(bound.compareAndSet(null, handle));
+                        }
+
+                        @Override
+                        public void retireNeverStarted(
+                                OresScheduler.CompilerTaskHandle<?> handle) {
+                            never.set(handle);
+                        }
+
+                        @Override
+                        public void retireAfterPhysicalQuiescence(
+                                OresScheduler.CompilerTaskHandle<?> handle) {
+                            physical.set(handle);
+                        }
+                    });
+
+            OresFuture<Void> drained = scope.quiesce();
+            assertEquals(42, child.get(5, TimeUnit.SECONDS));
+            assertNull(drained.get(5, TimeUnit.SECONDS));
+
+            assertNotNull(bound.get());
+            assertSame(bound.get(), physical.get(),
+                    "structured retirement must use the exact bound scheduler child");
+            assertNull(never.get());
+            assertEquals(0, scope.activeChildren());
+        }
+    }
+
+    @Test
+    void structuredClosedSchedulerUsesExactNeverStartedPath() {
+        OresScheduler scheduler = new OresScheduler(1);
+        scheduler.close();
+        OresTaskScope scope = new OresTaskScope(scheduler);
+        AtomicReference<OresScheduler.CompilerTaskHandle<?>> bound =
+                new AtomicReference<>();
+        AtomicReference<OresScheduler.CompilerTaskHandle<?>> never =
+                new AtomicReference<>();
+        AtomicReference<OresScheduler.CompilerTaskHandle<?>> physical =
+                new AtomicReference<>();
+
+        assertThrows(
+                java.util.concurrent.RejectedExecutionException.class,
+                () -> scope.forkCompilerAdmitted(
+                        resume -> OresScheduler.done(1),
+                        new OresScheduler.CompilerTaskRetirement() {
+                            @Override
+                            public void bind(
+                                    OresScheduler.CompilerTaskHandle<?> handle) {
+                                assertTrue(bound.compareAndSet(null, handle));
+                            }
+
+                            @Override
+                            public void retireNeverStarted(
+                                    OresScheduler.CompilerTaskHandle<?> handle) {
+                                never.set(handle);
+                            }
+
+                            @Override
+                            public void retireAfterPhysicalQuiescence(
+                                    OresScheduler.CompilerTaskHandle<?> handle) {
+                                physical.set(handle);
+                            }
+                        }));
+
+        assertNotNull(bound.get());
+        assertSame(bound.get(), never.get(),
+                "never-started structured retirement must carry the exact child");
+        assertNull(physical.get());
+        assertEquals(0, scope.activeChildren(),
+                "successful never-started retirement must not strand a child");
+    }
+
 }
