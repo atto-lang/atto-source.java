@@ -3,6 +3,7 @@ package dev.oreslang.compiler;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.V3DefaultArgValsPolicy;
+import dev.oreslang.types.V3ClosedOptionCallLowering;
 import dev.oreslang.types.V3ScalarDefaultLiteralLowering;
 
 import java.util.ArrayList;
@@ -22,10 +23,11 @@ import java.util.Set;
  * @DefaultArgVals are compiled into full-arity positional literals before
  * the real TypeChecker, OwnershipChecker and interpreter see the AST.
  *
- * No Option<T>, user effects, constructors, methods, actors, closures,
- * imports, overloads, calls inside argument expressions or variable scopes
- * can be silently smuggled across the transformation. This is NOT permission
- * to enable the general v3 syntax or to reinterpret legacy modules.
+ * A closed-world Option<primitive> subset is admitted using checked
+ * synthesized Some/None intrinsics. No user effects, constructors, user
+ * methods, actors, closures, imports, overloads, calls inside supplied
+ * argument expressions or variable scopes can cross this boundary.
+ * This does NOT enable the general v3 syntax or reinterpret legacy modules.
  */
 public final class V3ScalarDefaultProgramNormalizer {
     private V3ScalarDefaultProgramNormalizer() { }
@@ -65,6 +67,11 @@ public final class V3ScalarDefaultProgramNormalizer {
                 throw new IllegalArgumentException(
                         "scalar-default mode allows only plain synchronous non-generic functions");
             }
+            if (fn.name().equals("Some") || fn.name().equals("None")
+                    || fn.name().equals("Option")) {
+                throw new IllegalArgumentException(
+                        "closed Option runtime intrinsics cannot be shadowed");
+            }
             if (byName.putIfAbsent(fn.name(), fn) != null) {
                 throw new IllegalArgumentException(
                         "scalar-default mode cannot resolve overloaded function '" + fn.name() + "'");
@@ -85,23 +92,27 @@ public final class V3ScalarDefaultProgramNormalizer {
                 throw new IllegalArgumentException("scalar-default mode does not support complex return types");
             }
             for (Ast.Param param : fn.parameters()) {
-                if (!scalar(param.type()) || param.mutable() || param.structural()
-                        || param.optional()) {
+                if (!scalarOrSingleOption(param.type()) || param.mutable()
+                        || param.structural() || param.optional()
+                        || param.name().equals("Some") || param.name().equals("None")
+                        || param.name().equals("Option")) {
                     throw new IllegalArgumentException(
-                            "scalar-default mode requires immutable non-Option scalar formals");
+                            "closed-default mode requires immutable scalar/Option<scalar> formals");
                 }
             }
         }
         List<Ast.Decl> normalized = new ArrayList<>(module.declarations().size());
         for (Ast.Decl declaration : module.declarations()) {
             Ast.FunctionDecl fn = (Ast.FunctionDecl) declaration;
-            Set<String> parameters = new HashSet<>();
+            Map<String, Ast.TypeRef> parameters = new HashMap<>();
             List<Ast.Param> fullArity = new ArrayList<>(fn.parameters().size());
             for (Ast.Param parameter : fn.parameters()) {
-                if (!parameters.add(parameter.name())) {
+                if (parameters.putIfAbsent(
+                        parameter.name(), parameter.type().stagedV3PreviewType()) != null) {
                     throw new IllegalArgumentException("duplicate scalar-default formal name");
                 }
-                fullArity.add(new Ast.Param(parameter.type(), parameter.name()));
+                fullArity.add(new Ast.Param(
+                        parameter.type().stagedV3PreviewType(), parameter.name()));
             }
             Ast.ReturnStmt stmt = (Ast.ReturnStmt) fn.body().getFirst();
             Ast.Expr rewritten = rewrite(stmt.value(), byName, parameters, 0);
@@ -122,6 +133,18 @@ public final class V3ScalarDefaultProgramNormalizer {
                     || type.name().equals("string"));
     }
 
+    private static boolean scalarOrSingleOption(Ast.TypeRef type) {
+        if (scalar(type)) return true;
+        // Staged T? sugar is converted to an explicit Option<T> type
+        // ONLY inside this local, closed, independently re-checked scope.
+        Ast.TypeRef checked = type.stagedV3PreviewType();
+        return checked.name().equals("Option")
+                && checked.arguments().size() == 1
+                && !checked.inferArguments()
+                && !checked.isBorrow()
+                && scalar(checked.arguments().getFirst());
+    }
+
     private static boolean scalarOrVoid(Ast.TypeRef type) {
         return scalar(type) || (type != null && type.name().equals("void")
                 && type.arguments().isEmpty() && !type.inferArguments());
@@ -129,7 +152,7 @@ public final class V3ScalarDefaultProgramNormalizer {
 
     private static Ast.Expr rewrite(
             Ast.Expr expr, Map<String, Ast.FunctionDecl> functions,
-            Set<String> localParameters, int depth) {
+            Map<String, Ast.TypeRef> localParameters, int depth) {
         if (depth > 64) {
             throw new IllegalArgumentException("scalar-default body expression depth budget exceeded");
         }
@@ -143,7 +166,7 @@ public final class V3ScalarDefaultProgramNormalizer {
             return literal;
         }
         if (expr instanceof Ast.NameExpr name) {
-            if (!localParameters.contains(name.name())) {
+            if (!localParameters.containsKey(name.name())) {
                 throw new IllegalArgumentException(
                         "scalar-default mode cannot read globals or capture '" + name.name() + "'");
             }
@@ -155,19 +178,68 @@ public final class V3ScalarDefaultProgramNormalizer {
                     rewrite(binary.left(), functions, localParameters, depth + 1),
                     rewrite(binary.right(), functions, localParameters, depth + 1));
         }
+        if (expr instanceof Ast.CallExpr intrinsics
+                && !intrinsics.typeArgumentsPresent()
+                && intrinsics.arguments().isEmpty()
+                && intrinsics.callee() instanceof Ast.MemberExpr method
+                && method.receiver() instanceof Ast.NameExpr receiver
+                && localParameters.containsKey(receiver.name())
+                && scalarOrSingleOption(localParameters.get(receiver.name()))
+                && localParameters.get(receiver.name())
+                        .stagedV3PreviewType().name().equals("Option")
+                && (method.member().equals("unwrap")
+                    || method.member().equals("is_some")
+                    || method.member().equals("is_none"))) {
+            // The only admitted method call is a zero-arg intrinsic on
+            // an immutable, locally declared Option<primitive> formal.
+            return intrinsics;
+        }
+        if (expr instanceof Ast.CallExpr ordinary
+                && ordinary.callee() instanceof Ast.NameExpr direct
+                && !ordinary.typeArgumentsPresent()
+                && !localParameters.containsKey(direct.name())
+                && functions.containsKey(direct.name())) {
+            // Ordinary positional calls with zero or more closed literals
+            // also need omission lowering, especially f() for optional
+            // Option<T> formals. Never convert custom callees or effects.
+            List<Ast.CallArgument> items = new ArrayList<>();
+            for (Ast.Expr arg : ordinary.arguments()) {
+                if (!(arg instanceof Ast.LiteralExpr)) {
+                    throw new IllegalArgumentException(
+                            "closed-default positional calls require literal supplied arguments");
+                }
+                items.add(Ast.CallArgument.value(arg));
+            }
+            return lowerClosedCall(
+                    new Ast.StagedCallExpr(ordinary.callee(), List.of(), false, items),
+                    functions.get(direct.name()));
+        }
         if (expr instanceof Ast.StagedCallExpr call) {
             if (!(call.callee() instanceof Ast.NameExpr callee)
-                    || localParameters.contains(callee.name())) {
-                throw new IllegalArgumentException("scalar-default call cannot use a shadowed or indirect callee");
+                    || localParameters.containsKey(callee.name())) {
+                throw new IllegalArgumentException(
+                        "closed-default call cannot use a shadowed or indirect callee");
             }
             Ast.FunctionDecl selected = functions.get(callee.name());
             if (selected == null) {
-                throw new IllegalArgumentException("scalar-default call target is not a local declaration");
+                throw new IllegalArgumentException(
+                        "closed-default call target is not a local declaration");
             }
-            return V3ScalarDefaultLiteralLowering.lower(selected, call).fullArityCall();
+            return lowerClosedCall(call, selected);
         }
         throw new IllegalArgumentException(
                 "scalar-default mode has no effect/ownership proof for expression kind "
                         + expr.getClass().getSimpleName());
+    }
+    private static Ast.CallExpr lowerClosedCall(
+            Ast.StagedCallExpr call, Ast.FunctionDecl selected) {
+        List<V3DefaultArgValsPolicy.FormalPreview> formals =
+                V3DefaultArgValsPolicy.validateDeclaration(
+                        selected.parameters(), selected.annotations());
+        boolean usesOption = formals.stream().anyMatch(
+                V3DefaultArgValsPolicy.FormalPreview::optionTyped);
+        return usesOption
+                ? V3ClosedOptionCallLowering.lower(selected, call)
+                : V3ScalarDefaultLiteralLowering.lower(selected, call).fullArityCall();
     }
 }
