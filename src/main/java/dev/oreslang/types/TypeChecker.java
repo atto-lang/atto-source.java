@@ -8869,36 +8869,52 @@ public final class TypeChecker {
      * guessing a result from a method name, and reject ambiguous paths.
      */
     private Type hasFutureResult(Type candidate, Set<Named> seen) {
-        if (!(candidate instanceof Named named) || !seen.add(named)) return null;
-        Ast.InterfaceDecl iface = findInterface(named.name());
-        if (iface != null && iface.name().equals("HasFuture")) {
-            if (iface.moduleContract() || named.arguments().size() != 1) return null;
-            return named.arguments().getFirst();
-        }
-        Type result = null;
-        Ast.ClassDecl klass = findClass(named.name());
-        if (klass != null) {
-            for (Ast.TypeRef ref : klass.interfaces()) {
-                Type discovered = hasFutureResult(
-                        concreteClassReference(ref, klass, named), seen);
-                result = mergeAwaitResult(result, discovered);
-            }
-            for (Ast.TypeRef ref : klass.parents()) {
-                Ast.ClassDecl parent = resolveClassParent(ref, klass);
-                if (parent == null) continue;
-                Type discovered = hasFutureResult(
-                        concreteClassReference(ref, klass, named), seen);
-                result = mergeAwaitResult(result, discovered);
+        if (!(candidate instanceof Named named)) return null;
+        // Type arguments can change along a recursive nominal edge:
+        // Loop<T> -> Loop<Array<T>> -> Loop<Array<Array<T>>> ...
+        // Checking equality of the complete Named<T> is not a cycle guard.
+        // Use a path-local nominal identity guard and release it on return,
+        // so both sides of a legal diamond still contribute to ambiguity checks.
+        for (Named ancestor : seen) {
+            if (ancestor.name().equals(named.name())) {
+                throw new IllegalArgumentException(
+                        "cyclic HasFuture<T> class/trait inheritance involving " + named.name());
             }
         }
-        if (iface != null && !iface.moduleContract()) {
-            for (Ast.TypeRef ref : iface.parents()) {
-                Type discovered = hasFutureResult(
-                        concreteInterfaceParentType(ref, iface, named), seen);
-                result = mergeAwaitResult(result, discovered);
+        seen.add(named);
+        try {
+            Ast.InterfaceDecl iface = findInterface(named.name());
+            if (iface != null && iface.name().equals("HasFuture")) {
+                if (iface.moduleContract() || named.arguments().size() != 1) return null;
+                return named.arguments().getFirst();
             }
+            Type result = null;
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass != null) {
+                for (Ast.TypeRef ref : klass.interfaces()) {
+                    Type discovered = hasFutureResult(
+                            concreteClassReference(ref, klass, named), seen);
+                    result = mergeAwaitResult(result, discovered);
+                }
+                for (Ast.TypeRef ref : klass.parents()) {
+                    Ast.ClassDecl parent = resolveClassParent(ref, klass);
+                    if (parent == null) continue;
+                    Type discovered = hasFutureResult(
+                            concreteClassReference(ref, klass, named), seen);
+                    result = mergeAwaitResult(result, discovered);
+                }
+            }
+            if (iface != null && !iface.moduleContract()) {
+                for (Ast.TypeRef ref : iface.parents()) {
+                    Type discovered = hasFutureResult(
+                            concreteInterfaceParentType(ref, iface, named), seen);
+                    result = mergeAwaitResult(result, discovered);
+                }
+            }
+            return result;
+        } finally {
+            seen.remove(named);
         }
-        return result;
     }
 
     private Type mergeAwaitResult(Type prior, Type next) {
