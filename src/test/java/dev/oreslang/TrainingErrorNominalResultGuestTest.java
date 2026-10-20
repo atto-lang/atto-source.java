@@ -107,6 +107,53 @@ final class TrainingErrorNominalResultGuestTest {
                 failure.toString());
     }
 
+    @Test void maximumTagAllowsFinalTrailingSeparatorButNotAnotherCase() {
+        for (String separator : new String[] {"", ",", ";"}) {
+            String source = "define enum Terminal as\n"
+                    + "    Last = 2147483647" + separator + "\n"
+                    + "end\n";
+            assertDoesNotThrow(() -> Parser.parse(source));
+        }
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define enum Terminal as
+                    Last = 2147483647;
+                    TooLate
+                end
+                """));
+    }
+
+    @Test void enumNamesCannotShadowExistingRuntimeOrTypeDeclarations() {
+        String functionCollision = """
+                fnc TrainingError(): int { return 1; }
+                define enum TrainingError as
+                    INVALID_INPUT = 1
+                end
+                """;
+        assertDoesNotThrow(() -> Parser.parse(functionCollision));
+        assertThrows(IllegalArgumentException.class,
+                () -> verify(functionCollision));
+
+        String typeCollision = """
+                define class TrainingError as
+                end
+                define enum TrainingError as
+                    INVALID_INPUT = 1
+                end
+                """;
+        assertDoesNotThrow(() -> Parser.parse(typeCollision));
+        assertThrows(IllegalArgumentException.class,
+                () -> verify(typeCollision));
+
+        String builtinCollision = """
+                define enum Result as
+                    OK = 1
+                end
+                """;
+        assertDoesNotThrow(() -> Parser.parse(builtinCollision));
+        assertThrows(IllegalArgumentException.class,
+                () -> verify(builtinCollision));
+    }
+
     @Test void constructorArityAndForeignMatchDomainFailClosed() {
         String arity = ERRORS + """
                 fnc bad(): TrainingError {
