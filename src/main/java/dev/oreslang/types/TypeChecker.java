@@ -3928,7 +3928,20 @@ public final class TypeChecker {
                                 + "struct{field: Type,...}{...}, or an explicit Map<K,V> collection");
             }
             Ast.ClassDecl klass = findClass(created.type().name());
-            if (klass == null) return resolve(created.type(), generics, self);
+            if (klass == null) {
+                Type constructed = resolve(created.type(), generics, self);
+                if (constructed instanceof ListType list && list.patterned()
+                        && !created.arguments().isEmpty()) {
+                    // A runtime-extent repeating sequence can be constructed
+                    // empty; arbitrary length/fill constructors do not prove
+                    // the complete unit or per-slot types. Do not grant a
+                    // typed repeating shape merely from a generic new target.
+                    throw new IllegalArgumentException(
+                            "patterned collection constructor requires empty initialization; "
+                                    + "initialize a checked complete-group literal instead");
+                }
+                return constructed;
+            }
             rejectUnimportedClassNamespace(klass);
             if (klass.isAbstract()) {
                 throw new IllegalArgumentException("cannot instantiate abstract class '" + klass.name() + "'");
@@ -6320,13 +6333,23 @@ public final class TypeChecker {
     }
 
     private void requireRuntimeReifiableType(Ast.TypeRef ref, String operator) {
+        requireRuntimeReifiableType(ref, operator, new LinkedHashSet<>());
+    }
+
+    /** Runtime predicates check their EXPANDED aliases, not just the alias name.
+     * Otherwise an 'as Alias' could forge a non-reifiable repeating-array shape.
+     */
+    private void requireRuntimeReifiableType(
+            Ast.TypeRef ref, String operator, Set<String> aliasPath) {
         if (ref == null) throw new IllegalArgumentException(operator + " requires a runtime-reifiable type");
         if (ref.isComplement()) {
-            requireRuntimeReifiableType(ref.complementedType(), operator);
+            requireRuntimeReifiableType(ref.complementedType(), operator, aliasPath);
             return;
         }
         if (ref.isUnion()) {
-            for (Ast.TypeRef option : ref.arguments()) requireRuntimeReifiableType(option, operator);
+            for (Ast.TypeRef option : ref.arguments()) {
+                requireRuntimeReifiableType(option, operator, aliasPath);
+            }
             return;
         }
         if (ref.isBorrow() || ref.isTupleType() || ref.isRecordType() || ref.isStringLiteral()
@@ -6339,6 +6362,22 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     operator + " cannot test parameterized type '" + ref
                             + "' until generic runtime type arguments are reified; match constructors/structure instead");
+        }
+        Ast.TypeAliasDecl alias = findTypeAlias(ref.name());
+        if (alias != null) {
+            if (!alias.genericParameters().isEmpty()) {
+                throw new IllegalArgumentException(
+                        operator + " cannot reify generic type alias '" + ref.name() + "'");
+            }
+            if (!aliasPath.add(alias.name())) {
+                throw new IllegalArgumentException(
+                        "cyclic runtime-reifiable type alias '" + alias.name() + "'");
+            }
+            try {
+                requireRuntimeReifiableType(alias.target(), operator, aliasPath);
+            } finally {
+                aliasPath.remove(alias.name());
+            }
         }
     }
 
