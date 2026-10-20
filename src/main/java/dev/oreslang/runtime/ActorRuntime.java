@@ -1468,6 +1468,21 @@ public final class ActorRuntime implements AutoCloseable {
     public final class ActorOutputStream<M> {
         private final ActorId actorId;
         private final ChannelRuntime.Channel<ActorOutputEnvelope> channel;
+        /**
+         * Output consumption and runtime draining can dequeue an envelope
+         * before its shared-accounting release returns. Keep an exact owner
+         * here across a failed release rather than inferring cleanup from the
+         * channel being empty/closed.
+         */
+        private final Object outputCleanupLock = new Object();
+        private final ArrayList<ActorOutputReadReleaseOwner> readReleaseOwners =
+                new ArrayList<>();
+        private ActorOutputEnvelope closePendingEnvelope;
+        private boolean closeCleanupComplete;
+
+        private final class ActorOutputReadReleaseOwner {
+            private ActorOutputEnvelope envelope;
+        }
 
         private ActorOutputStream(
                 ActorId actorId,
@@ -1485,11 +1500,34 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> next() {
-            OresFuture<ActorOutputEnvelope> read = channel.readAsync();
+            // Allocate and publish a durable release owner BEFORE channel
+            // consumption can make an envelope unreachable from the buffer.
+            ActorOutputReadReleaseOwner releaseOwner =
+                    new ActorOutputReadReleaseOwner();
+            synchronized (outputCleanupLock) {
+                if (closeCleanupComplete) {
+                    return OresFuture.completed(GeneratorRuntime.Step.doneStep());
+                }
+                readReleaseOwners.add(releaseOwner);
+            }
+
+            final OresFuture<ActorOutputEnvelope> read;
+            try {
+                read = channel.readAsync();
+            } catch (RuntimeException | Error admissionFailure) {
+                synchronized (outputCleanupLock) {
+                    readReleaseOwners.remove(releaseOwner);
+                }
+                throw admissionFailure;
+            }
+
             OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> result =
                     new OresFuture<>(() -> read.cancel(false));
             read.whenCompleteRuntime((envelope, failure) -> {
                 if (failure != null) {
+                    synchronized (outputCleanupLock) {
+                        readReleaseOwners.remove(releaseOwner);
+                    }
                     Throwable terminal = OresFuture.unwrap(failure);
                     if (terminal instanceof ChannelRuntime.ChannelClosedException
                             && terminal.getCause() == null) {
@@ -1508,9 +1546,23 @@ public final class ActorRuntime implements AutoCloseable {
                     return;
                 }
 
+                synchronized (outputCleanupLock) {
+                    releaseOwner.envelope = envelope;
+                }
                 @SuppressWarnings("unchecked")
                 ActorOutput<M> output = (ActorOutput<M>) envelope.output();
-                envelope.close();
+                try {
+                    envelope.close();
+                } catch (RuntimeException | Error releaseFailure) {
+                    // The stream retains releaseOwner -> exact envelope. Expose
+                    // the failed consumption rather than leaving result pending.
+                    result.failFromRuntime(releaseFailure);
+                    return;
+                }
+                synchronized (outputCleanupLock) {
+                    releaseOwner.envelope = null;
+                    readReleaseOwners.remove(releaseOwner);
+                }
                 result.completeFromRuntime(
                         GeneratorRuntime.Step.yielded(output));
                 if (isDone()) actorOutputStreams.remove(this);
@@ -1523,11 +1575,42 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void closeAndDrainFromRuntime() {
-            channel.close();
-            while (channel.drainOne(ActorOutputEnvelope::close)) {
-                // release all queued transport reservations on runtime teardown
+            synchronized (outputCleanupLock) {
+                if (closeCleanupComplete) return;
+
+                channel.close();
+
+                // A read may already have dequeued an envelope before its
+                // accounting release failed. Retry those exact owners first.
+                for (int i = readReleaseOwners.size() - 1; i >= 0; i--) {
+                    ActorOutputReadReleaseOwner owner = readReleaseOwners.get(i);
+                    if (owner.envelope == null) {
+                        // Terminal/cancelled reads own no transport envelope.
+                        readReleaseOwners.remove(i);
+                        continue;
+                    }
+                    owner.envelope.close();
+                    owner.envelope = null;
+                    readReleaseOwners.remove(i);
+                }
+
+                if (closePendingEnvelope != null) {
+                    closePendingEnvelope.close();
+                    closePendingEnvelope = null;
+                }
+                while (channel.drainOne(envelope -> {
+                    // drainOne removes from the channel before invoking us.
+                    // Publish the exact retry owner before the fallible release.
+                    closePendingEnvelope = envelope;
+                    envelope.close();
+                    closePendingEnvelope = null;
+                })) {
+                    // Drain every committed transport reservation.
+                }
+
+                actorOutputStreams.remove(this);
+                closeCleanupComplete = true;
             }
-            actorOutputStreams.remove(this);
         }
     }
 
@@ -1548,8 +1631,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         @Override
-        public void close() {
-            if (closed.compareAndSet(false, true)) release.run();
+        public synchronized void close() {
+            if (closed.get()) return;
+            // The release is the fallible boundary. Do not consume this exact
+            // envelope owner until accounting cleanup returns normally.
+            release.run();
+            closed.set(true);
         }
     }
 
