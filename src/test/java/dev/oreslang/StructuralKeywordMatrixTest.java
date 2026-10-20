@@ -160,6 +160,40 @@ final class StructuralKeywordMatrixTest {
     }
 
     @Test
+    void nestedStructuralLoansNeverExposeWritableRecords() {
+        var parameterProgram = Parser.parse("""
+                fnc forbidden(structural { inner: { value: int } } loan): void {
+                  loan.inner.value = 7;
+                  return;
+                }
+                """);
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(parameterProgram),
+                "a nested record must stay readonly through a structural argument");
+
+        var patternProgram = Parser.parse("""
+                fnc forbidden({ inner: { value: int } } row): void {
+                  match row over
+                    on structural { inner: { value: int } } loan -> {
+                      loan.inner.value = 8;
+                      return;
+                    }
+                    on _ -> { return; }
+                  end
+                }
+                """);
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(patternProgram),
+                "structural match refinement must not restore nested write authority");
+
+        var readOnlyProgram = Parser.parse("""
+                fnc read(structural { inner: { value: int } } loan): int {
+                  return loan.inner.value;
+                }
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(readOnlyProgram),
+                "readonly nested projections remain readable");
+    }
+
+    @Test
     void runtimeMatchesClassStructEntryTraitAndTupleComposition() throws Exception {
         String program = """
                 define module app
