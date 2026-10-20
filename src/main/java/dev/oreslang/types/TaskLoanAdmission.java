@@ -1,5 +1,6 @@
 package dev.oreslang.types;
 
+import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.OresTask;
 import dev.oreslang.runtime.OresTaskScope;
 
@@ -18,7 +19,8 @@ public final class TaskLoanAdmission
     private enum State {
         MINTED,
         SCOPE_BOUND,
-        CHILD_BOUND,
+        OWNER_BOUND,
+        SCHEDULER_BOUND,
         RETIRED
     }
 
@@ -26,7 +28,8 @@ public final class TaskLoanAdmission
     private final TaskAccessVerifier.Ticket ticket;
     private State state = State.MINTED;
     private OresTaskScope.CompilerScopeEpoch runtimeScopeEpoch;
-    private OresTask<?> runtimeChild;
+    private OresTask<?> runtimeOwner;
+    private OresScheduler.CompilerTaskHandle<?> schedulerChild;
 
     TaskLoanAdmission(
             TaskAccessVerifier verifier,
@@ -56,15 +59,34 @@ public final class TaskLoanAdmission
             throw new IllegalStateException(
                     "Task loan child may be bound only after exact scope binding");
         }
-        runtimeChild = child;
-        state = State.CHILD_BOUND;
+        runtimeOwner = child;
+        state = State.OWNER_BOUND;
+    }
+
+    @Override
+    public synchronized void bindSchedulerChild(
+            OresTaskScope.CompilerScopeEpoch scopeEpoch,
+            OresTask<?> child,
+            OresScheduler.CompilerTaskHandle<?> exactSchedulerChild) {
+        requireScope(scopeEpoch);
+        Objects.requireNonNull(child, "runtime owner");
+        Objects.requireNonNull(
+                exactSchedulerChild, "compiler scheduler child");
+        if (state != State.OWNER_BOUND || runtimeOwner != child
+                || schedulerChild != null) {
+            throw new IllegalArgumentException(
+                    "scheduler-child binding requires the exact scope-owned Task owner");
+        }
+        schedulerChild = exactSchedulerChild;
+        state = State.SCHEDULER_BOUND;
     }
 
     @Override
     public synchronized void retireBeforeChildBound(
             OresTaskScope.CompilerScopeEpoch scopeEpoch) {
         requireScope(scopeEpoch);
-        if (state != State.SCOPE_BOUND || runtimeChild != null) {
+        if (state != State.SCOPE_BOUND
+                || runtimeOwner != null || schedulerChild != null) {
             throw new IllegalStateException(
                     "pre-child Task loan retirement requires scope-only binding");
         }
@@ -73,36 +95,66 @@ public final class TaskLoanAdmission
     }
 
     @Override
-    public synchronized void retireNeverStarted(
+    public synchronized void retireBeforeSchedulerChildBound(
             OresTaskScope.CompilerScopeEpoch scopeEpoch,
             OresTask<?> child) {
         requireScope(scopeEpoch);
-        Objects.requireNonNull(child, "runtime child");
-        if (state != State.CHILD_BOUND || runtimeChild != child) {
+        Objects.requireNonNull(child, "runtime owner");
+        if (state != State.OWNER_BOUND
+                || runtimeOwner != child || schedulerChild != null) {
             throw new IllegalArgumentException(
-                    "never-started Task loan retirement requires the exact bound child");
+                    "pre-scheduler Task loan retirement requires the exact owner and no scheduler child");
         }
         verifier.retireNeverStarted(ticket);
         state = State.RETIRED;
-        runtimeChild = null;
+        runtimeOwner = null;
+    }
+
+    @Override
+    public synchronized void retireNeverStarted(
+            OresTaskScope.CompilerScopeEpoch scopeEpoch,
+            OresTask<?> child,
+            OresScheduler.CompilerTaskHandle<?> exactSchedulerChild) {
+        requireExactSchedulerChild(
+                scopeEpoch, child, exactSchedulerChild, "never-started");
+        verifier.retireNeverStarted(ticket);
+        state = State.RETIRED;
+        runtimeOwner = null;
+        schedulerChild = null;
     }
 
     @Override
     public synchronized void retireAfterPhysicalQuiescence(
-            OresTaskScope.CompilerScopeEpoch scopeEpoch, OresTask<?> child) {
-        requireScope(scopeEpoch);
-        Objects.requireNonNull(child, "runtime child");
-        if (state != State.CHILD_BOUND || runtimeChild != child) {
-            throw new IllegalArgumentException(
-                    "physical Task loan retirement requires the exact bound child");
-        }
+            OresTaskScope.CompilerScopeEpoch scopeEpoch,
+            OresTask<?> child,
+            OresScheduler.CompilerTaskHandle<?> exactSchedulerChild) {
+        requireExactSchedulerChild(
+                scopeEpoch, child, exactSchedulerChild, "physical");
         verifier.retireAfterPhysicalQuiescence(ticket);
         state = State.RETIRED;
-        runtimeChild = null;
+        runtimeOwner = null;
+        schedulerChild = null;
     }
 
     synchronized boolean retiredForTesting() {
         return state == State.RETIRED;
+    }
+
+    private void requireExactSchedulerChild(
+            OresTaskScope.CompilerScopeEpoch scopeEpoch,
+            OresTask<?> child,
+            OresScheduler.CompilerTaskHandle<?> exactSchedulerChild,
+            String edge) {
+        requireScope(scopeEpoch);
+        Objects.requireNonNull(child, "runtime owner");
+        Objects.requireNonNull(
+                exactSchedulerChild, "compiler scheduler child");
+        if (state != State.SCHEDULER_BOUND
+                || runtimeOwner != child
+                || schedulerChild != exactSchedulerChild) {
+            throw new IllegalArgumentException(
+                    edge + " Task loan retirement requires the exact owner and scheduler child");
+        }
     }
 
     private void requireScope(
