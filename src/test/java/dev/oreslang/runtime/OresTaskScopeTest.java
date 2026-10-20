@@ -753,4 +753,44 @@ final class OresTaskScopeTest {
         }
     }
 
+
+    @Test
+    void scopedReadRetirementCorruptionPoisonsDrainAndPinsChild()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresTaskScope scope = new OresTaskScope(scheduler);
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            OresTaskScope.ScopedReadClaim claim =
+                    new OresTaskScope.ScopedReadClaim("view", 83L, 0L, "$");
+
+            OresFuture<Integer> child = scope.fork(resume -> {
+                entered.countDown();
+                assertTrue(release.await(5, TimeUnit.SECONDS));
+                return OresScheduler.done(1);
+            }, java.util.List.of(claim));
+
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertTrue(scope.hasScopedReadLease(claim));
+            scope.corruptScopedReadRegionForTest(83L);
+
+            OresFuture<Void> drained = scope.quiesce();
+            release.countDown();
+            assertEquals(1, child.get(5, TimeUnit.SECONDS));
+
+            java.util.concurrent.ExecutionException poisoned = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> drained.get(5, TimeUnit.SECONDS));
+            assertNotNull(poisoned.getCause());
+            assertTrue(poisoned.getCause().getMessage().contains("accounting"));
+            assertTrue(scope.isPoisoned());
+            assertEquals(1, scope.activeChildren(),
+                    "corrupt retirement must pin the child in the join set");
+            assertEquals(1, scope.activeScopedReadClaims(),
+                    "corrupt retirement must not claim authority was released");
+            assertFalse(scope.hasScopedReadLease(claim),
+                    "corrupted region table cannot validate the ticket");
+        }
+    }
+
 }
