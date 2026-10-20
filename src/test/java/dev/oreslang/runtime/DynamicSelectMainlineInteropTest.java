@@ -88,6 +88,78 @@ final class DynamicSelectMainlineInteropTest {
     }
 
     @Test
+    void multipleAliasesOfOneSettledFuturePreservePriorityAfterOrderOptimization() {
+        var producer = OresFuture.completed(81);
+        var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+        plan.put("first", ChannelRuntime.await(producer));
+        plan.put("second", ChannelRuntime.await(producer));
+        for (int i = 0; i < 512; i++) {
+            var selected = plan.trySelectKeyed(ChannelRuntime.SelectPolicy.PRIORITY)
+                    .orElseThrow();
+            assertEquals("first", selected.key());
+            assertEquals(0, selected.selection().index());
+            assertEquals(81, selected.selection().value());
+        }
+    }
+
+    @Test
+    void mixedFutureChannelFairRotationUsesAdmissionOrder() {
+        var ready = OresFuture.completed(19);
+        var inbox = new ChannelRuntime.Channel<Integer>(8);
+        var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+        plan.put("ready", ChannelRuntime.await(ready));
+        plan.put("inbox", ChannelRuntime.read(inbox));
+        for (int i = 0; i < 4; i++) assertTrue(inbox.tryWrite(i));
+
+        var first = plan.trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR).orElseThrow();
+        var second = plan.trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR).orElseThrow();
+        var third = plan.trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR).orElseThrow();
+        assertEquals("ready", first.key());
+        assertEquals("inbox", second.key());
+        assertEquals("ready", third.key());
+        assertEquals(19, first.selection().value());
+        assertEquals(0, second.selection().value());
+    }
+
+    @Test
+    void failedFutureIsAnAtomicTerminalSelectionNotAStaleReader() {
+        var failure = new IllegalStateException("producer failed");
+        var failed = OresFuture.<Integer>failed(failure);
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        var set = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.await(failed), ChannelRuntime.read(channel));
+        assertThrows(java.util.concurrent.CompletionException.class,
+                () -> set.selectAsync(ChannelRuntime.SelectPolicy.PRIORITY).join());
+
+        assertTrue(channel.tryWrite(7));
+        assertEquals(1, set.trySelect(ChannelRuntime.SelectPolicy.PRIORITY)
+                .orElseThrow().index(),
+                "no stale loser may consume a channel item after a failed Future");
+    }
+
+    @Test
+    void randomOrderingStillProducesValidArmsWithoutRetainingWaiters() {
+        var a = new ChannelRuntime.Channel<Integer>(1);
+        var b = new ChannelRuntime.Channel<Integer>(1);
+        var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+        plan.put("a", ChannelRuntime.read(a));
+        plan.put("b", ChannelRuntime.read(b));
+        for (int i = 0; i < 512; i++) {
+            assertTrue(a.tryWrite(i));
+            assertTrue(b.tryWrite(i));
+            var chosen = plan.trySelectKeyed(ChannelRuntime.SelectPolicy.RANDOM)
+                    .orElseThrow();
+            assertTrue(chosen.selection().index() >= 0
+                    && chosen.selection().index() < 2);
+            assertEquals(chosen.key(),
+                    chosen.selection().index() == 0 ? "a" : "b");
+            var other = chosen.selection().index() == 0 ? b : a;
+            assertTrue(other.tryRead().isPresent(),
+                    "nonwinning arm must remain ready and retain its value");
+        }
+    }
+
+    @Test
     void dynamicPlanRejectsExcessArmsWithoutChangingItsVersion() {
         var channel = new ChannelRuntime.Channel<Integer>(1);
         var plan = new ChannelRuntime.DynamicSelectPlan<Integer>();
