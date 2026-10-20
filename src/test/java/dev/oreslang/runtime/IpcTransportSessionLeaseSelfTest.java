@@ -78,6 +78,75 @@ public final class IpcTransportSessionLeaseSelfTest {
             check(guardedBridge.counters().equals(
                     new IpcReceiptCorrelation.Counters(0, 0)));
             check(guardedLease.snapshot().phase() == IpcTransportSessionLease.Phase.OPEN);
+
+            // Diagnostics are host-blocking operations too: their guard must
+            // run before Java monitor entry. Hold the lease monitor on a host
+            // thread and prove a marked actor carrier can probe all three
+            // diagnostics without parking behind that monitor.
+            CountDownLatch diagnosticMonitorHeld = new CountDownLatch(1);
+            CountDownLatch releaseDiagnosticMonitor = new CountDownLatch(1);
+            AtomicReference<Throwable> diagnosticHolderFailure =
+                    new AtomicReference<>();
+            Thread diagnosticHolder = new Thread(() -> {
+                synchronized (guardedLease) {
+                    diagnosticMonitorHeld.countDown();
+                    try {
+                        if (!releaseDiagnosticMonitor.await(3, TimeUnit.SECONDS)) {
+                            throw new AssertionError(
+                                    "diagnostic monitor hold timed out");
+                        }
+                    } catch (Throwable failure) {
+                        diagnosticHolderFailure.set(failure);
+                    }
+                }
+            }, "ipc-test-diagnostic-monitor-holder");
+            diagnosticHolder.start();
+            check(diagnosticMonitorHeld.await(3, TimeUnit.SECONDS));
+
+            AtomicInteger diagnosticDenials = new AtomicInteger();
+            AtomicReference<Throwable> diagnosticCarrierFailure =
+                    new AtomicReference<>();
+            Thread diagnosticCarrier = new Thread(() -> {
+                RuntimeBlockingGuard.enterActorCarrier();
+                try {
+                    try {
+                        guardedLease.snapshot();
+                        throw new AssertionError(
+                                "actor carrier entered snapshot monitor");
+                    } catch (IllegalStateException expected) {
+                        diagnosticDenials.incrementAndGet();
+                    }
+                    try {
+                        guardedLease.closeFailure();
+                        throw new AssertionError(
+                                "actor carrier entered closeFailure monitor");
+                    } catch (IllegalStateException expected) {
+                        diagnosticDenials.incrementAndGet();
+                    }
+                    try {
+                        guardedLease.invariant();
+                        throw new AssertionError(
+                                "actor carrier entered invariant monitor");
+                    } catch (IllegalStateException expected) {
+                        diagnosticDenials.incrementAndGet();
+                    }
+                } catch (Throwable failure) {
+                    diagnosticCarrierFailure.set(failure);
+                } finally {
+                    RuntimeBlockingGuard.exitActorCarrier();
+                }
+            }, "ipc-test-diagnostic-actor-carrier");
+            diagnosticCarrier.start();
+            diagnosticCarrier.join(500);
+            check(!diagnosticCarrier.isAlive());
+            check(diagnosticCarrierFailure.get() == null);
+            check(diagnosticDenials.get() == 3);
+
+            releaseDiagnosticMonitor.countDown();
+            diagnosticHolder.join(3000);
+            check(!diagnosticHolder.isAlive());
+            check(diagnosticHolderFailure.get() == null);
+
             guardedLease.requestClose();
             check(guardedLease.awaitTerminal(3000));
             check(guardedBridge.invariant());
