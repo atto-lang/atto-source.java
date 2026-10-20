@@ -37,7 +37,7 @@ final class TypedLayoutAccessEvidenceTest {
     @Test void aliasingAndComputedIterationNeverBecomeLayoutProofs() {
         var alias = inspect(loop(new Ast.NameExpr("row"))).loops().getFirst();
         assertFalse(alias.supportedDirectBody());
-        assertTrue(alias.wholeBindingEscapes());
+        assertTrue(alias.wholeBindingObserved());
 
         var computedLoop = new Ast.ForOfStmt(Ast.BindingKind.CONST, "row",
                 new Ast.CallExpr(new Ast.NameExpr("load"), List.of(), false, List.of()),
