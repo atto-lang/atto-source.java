@@ -61,26 +61,26 @@ public final class RealtimePrimitiveSmoke {
         rejects("budget", () -> RealtimePrimitiveCompiler.analyze(
                 simple, "tick", 1, new RealtimePrimitiveCompiler.Budget(2, 1)));
         rejects("unknown function", () -> RealtimePrimitiveCompiler.analyze(
-                program(fn("tick", List.of(), List.of(ret(new Ast.CallExpr(name("external"), List.of())))),
+                program(fn("tick", List.of(), List.of(ret(new Ast.CallExpr(name("external"), List.of())))),)
                 "tick", 0, budget));
         rejects("recursive function", () -> RealtimePrimitiveCompiler.analyze(
-                program(fn("tick", List.of(), List.of(ret(new Ast.CallExpr(name("tick"), List.of())))),
+                program(fn("tick", List.of(), List.of(ret(new Ast.CallExpr(name("tick"), List.of())))),)
                 "tick", 0, budget));
         rejects("possible zero division exception", () -> RealtimePrimitiveCompiler.analyze(
-                program(fn("tick", List.of(), List.of(ret(new Ast.BinaryExpr("/", num(8), num(2))))),
+                program(fn("tick", List.of(), List.of(ret(new Ast.BinaryExpr("/", num(8), num(2))))),)
                 "tick", 0, budget));
         rejects("unbounded loop", () -> RealtimePrimitiveCompiler.analyze(
-                program(fn("tick", List.of(), List.of(new Ast.LoopStmt(List.of(ret(num(1)))))),
+                program(fn("tick", List.of(), List.of(new Ast.LoopStmt(List.of(ret(num(1)))))),)
                 "tick", 0, budget));
         rejects("heap/runtime primitive", () -> RealtimePrimitiveCompiler.analyze(
-                program(fn("tick", List.of(), List.of(ret(new Ast.RuntimeCallExpr("copy", List.of(num(2)))))),
+                program(fn("tick", List.of(), List.of(ret(new Ast.RuntimeCallExpr("copy", List.of(num(2)))))),)
                 "tick", 0, budget));
         rejects("unknown local", () -> RealtimePrimitiveCompiler.analyze(
-                program(fn("tick", List.of(), List.of(ret(name("unbound")))),
+                program(fn("tick", List.of(), List.of(ret(name("unbound")))),)
                 "tick", 0, budget));
         rejects("heap parameter", () -> RealtimePrimitiveCompiler.analyze(
                 program(fn("tick", List.of(new Ast.Param(Ast.TypeRef.simple("String"), "s")),
-                        List.of(ret(num(1)))),
+                        List.of(ret(num(1)))),)
                 "tick", 1, budget));
         rejects("class or global mutable state", () -> RealtimePrimitiveCompiler.analyze(
                 new Ast.Program(List.of(new Ast.ModuleDecl("test",
