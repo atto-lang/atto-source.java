@@ -33,6 +33,22 @@ final class BytesSourceRuntimeTest {
     }
 
     @Test
+    void sourceBytesSupportExplicitEmptyPayload() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  val Bytes empty = [] as Bytes;
+                  stdio.println(empty.length);
+                  stdio.println(empty == ([] as Bytes));
+                  return;
+                }
+                """;
+
+        assertEquals(
+                "0\ntrue\n",
+                run(program, "bytes-empty.ores"));
+    }
+
+    @Test
     void privateActorMailboxCarriesSourceBytesWithoutListExpansion() throws Exception {
         String program = """
                 define isoactor Worker as
