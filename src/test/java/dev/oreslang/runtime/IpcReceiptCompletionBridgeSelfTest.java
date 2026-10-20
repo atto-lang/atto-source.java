@@ -245,6 +245,109 @@ public final class IpcReceiptCompletionBridgeSelfTest {
             check(transport.bridge().invariant());
         }
 
+        // Terminal callbacks are isolated from receipt processing and remain
+        // charged against bridge capacity until synchronous dependents return.
+        // A blocking callback therefore applies bounded backpressure instead
+        // of pinning the receipt thread or allowing an unbounded delivery pileup.
+        {
+            var firstMessage = env(1, "terminal-delivery-bound");
+            var secondMessage = env(2, "terminal-delivery-bound");
+            var transport = bound(1, firstMessage, 52);
+            var first = transport.admit(firstMessage);
+            CountDownLatch callbackEntered = new CountDownLatch(1);
+            CountDownLatch releaseCallback = new CountDownLatch(1);
+            CountDownLatch callbackReturned = new CountDownLatch(1);
+            first.thenRun(() -> {
+                callbackEntered.countDown();
+                try {
+                    releaseCallback.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                } finally {
+                    callbackReturned.countDown();
+                }
+            });
+
+            transport.accept(
+                    firstMessage, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+            transport.accept(
+                    firstMessage, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(callbackEntered.await(2, TimeUnit.SECONDS));
+            check(result(first)
+                    == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            denied(() -> transport.admit(secondMessage));
+            check(transport.bridge().invariant());
+
+            releaseCallback.countDown();
+            check(callbackReturned.await(2, TimeUnit.SECONDS));
+            var second = transport.admit(secondMessage);
+            transport.accept(
+                    secondMessage, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+            transport.accept(
+                    secondMessage, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(result(second)
+                    == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(transport.bridge().invariant());
+        }
+
+        // Physical-loss delivery is independently live per receipt and per
+        // transport. One blocked dependent callback cannot postpone another
+        // terminal notification or monopolize the physical cleanup worker.
+        {
+            var firstMessage = env(1, "loss-delivery-isolation");
+            var secondMessage = env(2, "loss-delivery-isolation");
+            var transport = bound(2, firstMessage, 53);
+            var first = transport.admit(firstMessage);
+            var second = transport.admit(secondMessage);
+            CountDownLatch firstEntered = new CountDownLatch(1);
+            CountDownLatch releaseFirst = new CountDownLatch(1);
+            CountDownLatch firstReturned = new CountDownLatch(1);
+            CountDownLatch secondObserved = new CountDownLatch(1);
+            first.thenRun(() -> {
+                firstEntered.countDown();
+                try {
+                    releaseFirst.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                } finally {
+                    firstReturned.countDown();
+                }
+            });
+            second.thenAccept(stage -> {
+                if (stage == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN) {
+                    secondObserved.countDown();
+                }
+            });
+
+            check(transport.lost() == 2);
+            check(firstEntered.await(2, TimeUnit.SECONDS));
+            check(secondObserved.await(2, TimeUnit.SECONDS));
+            check(result(second) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(transport.bridge().invariant());
+
+            var otherMessage = env(1, "loss-delivery-other-transport");
+            var other = bound(1, otherMessage, 54);
+            var otherFuture = other.admit(otherMessage);
+            CountDownLatch otherObserved = new CountDownLatch(1);
+            otherFuture.thenAccept(stage -> {
+                if (stage == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN) {
+                    otherObserved.countDown();
+                }
+            });
+            check(other.lost() == 1);
+            check(otherObserved.await(2, TimeUnit.SECONDS));
+            check(result(otherFuture)
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(other.bridge().invariant());
+
+            releaseFirst.countDown();
+            check(firstReturned.await(2, TimeUnit.SECONDS));
+            check(result(first) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(transport.bridge().invariant());
+        }
+
         // Terminal receipt application must preflight completion-table parity
         // before mutating the receipt ledger. Simulate internal completion-map
         // corruption after ACK, verify terminal transition is rejected without
