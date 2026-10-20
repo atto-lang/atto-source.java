@@ -5121,6 +5121,12 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
+        if (modelCatalog != null && modelCatalog.findByTypeName(named.name()) != null) {
+            throw new IllegalArgumentException(
+                    "MODEL_ACTOR_TRANSFER_UNSUPPORTED: model instances cannot cross actor boundaries "
+                            + "until an explicit frozen/serialization/copy contract is implemented");
+        }
+
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
