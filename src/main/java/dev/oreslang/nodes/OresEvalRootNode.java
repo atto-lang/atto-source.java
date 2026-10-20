@@ -9028,6 +9028,9 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.InterfaceDecl iface,
                 Map<String, Ast.TypeRef> bindings,
                 Set<Ast.InterfaceDecl> seen) {
+            // Even a zero-member interface remains an object-shape predicate.
+            // Otherwise scalars and actor identities could satisfy it vacuously.
+            if (!isStructuralValueCarrier(value)) return false;
             if (!seen.add(iface)) return true;
 
             for (Ast.TypeRef parentRef : iface.parents()) {
