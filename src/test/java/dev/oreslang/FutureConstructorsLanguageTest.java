@@ -84,6 +84,19 @@ final class FutureConstructorsLanguageTest {
     }
 
     @Test
+    void sealedFutureTypeCannotBeShadowedByAlias() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                define module app
+                  type Future = int;
+                  pub fnc main(): void { return; }
+                end
+                """));
+        assertTrue(error.getMessage().contains("Future is a sealed intrinsic type"),
+                () -> "type-alias shadowing escaped Future name protection: " + error.getMessage());
+    }
+
+    @Test
     void sealedFutureTypeCannotBeShadowedByInterface() {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
