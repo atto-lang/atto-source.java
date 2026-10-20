@@ -62,6 +62,8 @@ final class StaticSafetyAnalyzerTest {
         assertTrue(warnings.stream().anyMatch(f ->
                         f.rule().equals("ORES-AMP-001") && f.message().contains("30 static actor-spawn site")),
                 warnings.toString());
+        assertTrue(hasRule(warnings, "ORES-AMP-002"),
+                "multiple syntactic spawn sites inside a cycle require a fanout-bound proof");
     }
 
     @Test
@@ -102,5 +104,86 @@ final class StaticSafetyAnalyzerTest {
                 """));
         assertTrue(hasRule(warnings, "ORES-SEC-010"), warnings.toString());
         assertTrue(warnings.stream().allMatch(f -> f.confidence().equals("potential")));
+    }
+
+    @Test
+    void conditionalExitInUnconditionalLoopDoesNotProveTermination() {
+        var warnings = StaticSafetyAnalyzer.analyze(Parser.parse("""
+                pub routine main(bool stop): void {
+                    loop {
+                        if stop {
+                            break;
+                        } fi
+                    }
+                }
+                """));
+        assertTrue(hasRule(warnings, "ORES-TERM-003"), warnings.toString());
+    }
+
+    @Test
+    void literalFalseExitIsNotCountedAsReachable() {
+        var warnings = StaticSafetyAnalyzer.analyze(Parser.parse("""
+                pub routine main(): void {
+                    loop {
+                        if false {
+                            break;
+                        } fi
+                    }
+                }
+                """));
+        assertTrue(hasRule(warnings, "ORES-TERM-002"), warnings.toString());
+    }
+
+    @Test
+    void firstStatementUnconditionalBreakDoesNotWarnOnInfiniteLoop() {
+        var warnings = StaticSafetyAnalyzer.analyze(Parser.parse("""
+                pub routine main(): void {
+                    loop {
+                        break;
+                    }
+                    return;
+                }
+                """));
+        assertFalse(hasRule(warnings, "ORES-TERM-002"), warnings.toString());
+        assertFalse(hasRule(warnings, "ORES-TERM-003"), warnings.toString());
+    }
+
+    @Test
+    void dynamicHostInputIsAReviewObligationNotProvenInjection() {
+        var warnings = StaticSafetyAnalyzer.analyze(Parser.parse("""
+                pub routine main(string command): void {
+                    process.run(command);
+                    return;
+                }
+                """));
+        assertTrue(hasRule(warnings, "ORES-SEC-010"), warnings.toString());
+        assertTrue(hasRule(warnings, "ORES-SEC-011"), warnings.toString());
+        assertTrue(warnings.stream().allMatch(f -> f.confidence().equals("potential")));
+    }
+
+    @Test
+    void LiteralHostArgumentDoesNotTriggerDynamicInputDiagnostic() {
+        var warnings = StaticSafetyAnalyzer.analyze(Parser.parse("""
+                pub routine main(): void {
+                    process.run("static-command");
+                    return;
+                }
+                """));
+        assertTrue(hasRule(warnings, "ORES-SEC-010"), warnings.toString());
+        assertFalse(hasRule(warnings, "ORES-SEC-011"), warnings.toString());
+    }
+
+    @Test
+    void SingleStaticActorSpawnSiteIsNotCalledMultiplicative() {
+        var warnings = StaticSafetyAnalyzer.analyze(Parser.parse("""
+                define actor Worker as
+                    pub receive(): void {
+                        spawn Worker();
+                        return;
+                    }
+                end
+                """));
+        assertTrue(hasRule(warnings, "ORES-AMP-001"), warnings.toString());
+        assertFalse(hasRule(warnings, "ORES-AMP-002"), warnings.toString());
     }
 }
