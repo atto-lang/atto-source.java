@@ -17,3 +17,15 @@
 /.github/workflows/ @ORESoftware
 /scripts/ @ORESoftware
 /pom.xml @ORESoftware
+# Standalone authenticated source/destination admission and its regression contract.
+/scripts/ci_private_mirror_preflight.py @ORESoftware
+/tests/test_ci_private_mirror_preflight.py @ORESoftware
+/docs/PRIVATE_CI_MIRRORS.md @ORESoftware
+# Exact-main private runner code, authorization checks, and administrator guidance.
+/.github/workflows/private-exact-main-validation.yml @ORESoftware
+/src/test/java/dev/oreslang/PrivateExactMainValidationWorkflowSecurityTest.java @ORESoftware
+/docs/security/PRIVATE_EXACT_MAIN_VALIDATION.md @ORESoftware
+/.github/workflows/private-exact-candidate-validation.yml @ORESoftware
+/.github/workflows/private-exact-publisher-validation.yml @ORESoftware
+/src/test/java/dev/oreslang/PrivateExactPublisherValidationWorkflowSecurityTest.java @ORESoftware
+/src/test/java/dev/oreslang/PrivateExactPublisherAdmissionMutationTest.java @ORESoftware
