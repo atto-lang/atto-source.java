@@ -22,7 +22,7 @@ final class FirstClassModelGraphTest {
     // Pinned to common-source contracts/v1/model-graph/executable-v1-conformance.json.
     // A common corpus revision bump requires an explicit backend review/update.
     private static final String SHARED_EXECUTABLE_CORPUS_REVISION =
-            "model-core-i64-v1.2026-10-20.9";
+            "model-core-i64-v1.2026-10-20.10";
 
     private static final String PRICE_MODEL = """
             fnc ValidatePrice(float input): float {
@@ -48,7 +48,7 @@ final class FirstClassModelGraphTest {
 
     @Test
     void sharedExecutableCorpusRevisionIsExplicitlyPinned() {
-        assertEquals("model-core-i64-v1.2026-10-20.9",
+        assertEquals("model-core-i64-v1.2026-10-20.10",
                 SHARED_EXECUTABLE_CORPUS_REVISION);
     }
 
@@ -86,6 +86,10 @@ final class FirstClassModelGraphTest {
                                 model.bindConfiguration(java.util.List.of(configured))),
                         item.id());
             }
+            if (item.javaMode().equals("execute") && item.semanticResult() != null) {
+                assertEquals(Long.parseLong(item.semanticResult()),
+                        evalLong(item.source()), item.id());
+            }
         }
     }
 
@@ -110,6 +114,11 @@ final class FirstClassModelGraphTest {
                 assertNotEquals(baseline.graphDigest(), variant.graphDigest(), item.id());
                 if (item.variantGraphDigest() != null) {
                     assertEquals(item.variantGraphDigest(), variant.graphDigest(), item.id());
+                }
+                if (item.variantOperationDigest() != null) {
+                    assertFalse(variant.nodes().isEmpty(), item.id());
+                    assertEquals(item.variantOperationDigest(),
+                            variant.nodes().getLast().implementationDigest(), item.id());
                 }
             }
         }
@@ -895,6 +904,19 @@ final class FirstClassModelGraphTest {
         assertNotNull(failure.getMessage());
         assertTrue(failure.getMessage().contains(expected),
                 () -> "expected diagnostic " + expected + " but got: " + failure.getMessage());
+    }
+
+    private static long evalLong(String program) throws Exception {
+        Source source = Source.newBuilder(OresLanguage.ID, program, "shared-model-corpus.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .build()) {
+            var value = context.eval(source);
+            assertTrue(value.fitsInLong(), "shared corpus main result must be i64");
+            return value.asLong();
+        }
     }
 
     private static String run(String program) throws Exception {
