@@ -6394,13 +6394,25 @@ public final class ActorRuntime implements AutoCloseable {
             }
             if (value instanceof Set<?> set) {
                 LinkedHashSet<Object> frozen = new LinkedHashSet<>();
-                for (Object item : set) frozen.add(freeze(item, visiting, depth + 1));
+                for (Object item : set) {
+                    Object detached = freeze(item, visiting, depth + 1);
+                    if (!frozen.add(detached)) {
+                        throw new IllegalArgumentException(
+                                "duplicate logical Set element during actor freeze");
+                    }
+                }
                 return Collections.unmodifiableSet(frozen);
             }
             if (value instanceof Map<?, ?> map) {
                 Map<Object, Object> frozen = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    frozen.put(freeze(entry.getKey(), visiting, depth + 1), freeze(entry.getValue(), visiting, depth + 1));
+                    Object detachedKey = freeze(entry.getKey(), visiting, depth + 1);
+                    Object detachedValue = freeze(entry.getValue(), visiting, depth + 1);
+                    if (frozen.containsKey(detachedKey)) {
+                        throw new IllegalArgumentException(
+                                "duplicate logical Map key during actor freeze");
+                    }
+                    frozen.put(detachedKey, detachedValue);
                 }
                 return Collections.unmodifiableMap(frozen);
             }
@@ -6457,13 +6469,25 @@ public final class ActorRuntime implements AutoCloseable {
             }
             if (value instanceof Set<?> set) {
                 LinkedHashSet<Object> copy = new LinkedHashSet<>();
-                for (Object item : set) copy.add(isolateCopy(item, visiting, depth + 1));
+                for (Object item : set) {
+                    Object detached = isolateCopy(item, visiting, depth + 1);
+                    if (!copy.add(detached)) {
+                        throw new IllegalArgumentException(
+                                "duplicate logical Set element during private actor copy");
+                    }
+                }
                 return Collections.unmodifiableSet(copy);
             }
             if (value instanceof Map<?, ?> map) {
                 Map<Object, Object> copy = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    copy.put(isolateCopy(entry.getKey(), visiting, depth + 1), isolateCopy(entry.getValue(), visiting, depth + 1));
+                    Object detachedKey = isolateCopy(entry.getKey(), visiting, depth + 1);
+                    Object detachedValue = isolateCopy(entry.getValue(), visiting, depth + 1);
+                    if (copy.containsKey(detachedKey)) {
+                        throw new IllegalArgumentException(
+                                "duplicate logical Map key during private actor copy");
+                    }
+                    copy.put(detachedKey, detachedValue);
                 }
                 return Collections.unmodifiableMap(copy);
             }
