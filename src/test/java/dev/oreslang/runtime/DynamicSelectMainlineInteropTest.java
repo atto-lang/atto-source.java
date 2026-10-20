@@ -132,9 +132,9 @@ final class DynamicSelectMainlineInteropTest {
                 () -> set.selectAsync(ChannelRuntime.SelectPolicy.PRIORITY).join());
 
         assertTrue(channel.tryWrite(7));
-        assertEquals(1, set.trySelect(ChannelRuntime.SelectPolicy.PRIORITY)
-                .orElseThrow().index(),
-                "no stale loser may consume a channel item after a failed Future");
+        assertEquals(7, channel.tryRead().orElseThrow(),
+                "failed selection must detach its loser and leave future writes readable");
+        assertTrue(channel.tryRead().isEmpty());
     }
 
     @Test
