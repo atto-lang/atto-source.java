@@ -217,4 +217,72 @@ final class TaskScopeInvariantTest {
         assertNull(joined.get(2, TimeUnit.SECONDS));
     }
 
+
+    @Test
+    void cancellationRevokesEveryChildBeforeBlockingSubscriberPublication()
+            throws Exception {
+        TaskScope scope = new TaskScope();
+        TaskScope.Registration first = scope.reserve();
+        TaskScope.Registration second = scope.reserve();
+        java.util.concurrent.atomic.AtomicBoolean firstRevoked =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        java.util.concurrent.atomic.AtomicBoolean secondRevoked =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        OresFuture<Void> firstFuture = new OresFuture<>(
+                () -> firstRevoked.set(true));
+        OresFuture<Void> secondFuture = new OresFuture<>(
+                () -> secondRevoked.set(true));
+        first.attach(firstFuture);
+        second.attach(secondFuture);
+
+        java.util.concurrent.CountDownLatch subscriberEntered =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch releaseSubscriber =
+                new java.util.concurrent.CountDownLatch(1);
+        firstFuture.whenCompleteRuntime((value, failure) -> {
+            subscriberEntered.countDown();
+            awaitGate(releaseSubscriber);
+        });
+
+        OresFuture<Void> joined = scope.cancelAndDrain();
+        assertTrue(firstRevoked.get(), "first child must be revoked before publication");
+        assertTrue(secondRevoked.get(), "sibling revocation cannot wait for first subscriber");
+        assertTrue(subscriberEntered.await(2, TimeUnit.SECONDS));
+
+        first.quiesced();
+        second.quiesced();
+        assertTrue(joined.isDone(),
+                "scope lifetime must not wait for ordinary Future subscribers");
+        assertTrue(joined.isCompletedExceptionally());
+        releaseSubscriber.countDown();
+    }
+
+    @Test
+    void terminalAccountingPrecedesLaterBlockingSubscriber() throws Exception {
+        TaskScope scope = new TaskScope();
+        TaskScope.Registration child = scope.reserve();
+        OresFuture<Void> future = new OresFuture<>();
+        child.attach(future);
+        OresFuture<Void> joined = scope.close();
+
+        java.util.concurrent.CountDownLatch subscriberEntered =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch releaseSubscriber =
+                new java.util.concurrent.CountDownLatch(1);
+        future.whenCompleteRuntime((value, failure) -> {
+            subscriberEntered.countDown();
+            awaitGate(releaseSubscriber);
+        });
+
+        Thread completion = Thread.ofVirtual().start(
+                () -> future.completeFromRuntime(null));
+        assertTrue(subscriberEntered.await(2, TimeUnit.SECONDS));
+        child.quiesced();
+        assertNull(joined.get(2, TimeUnit.SECONDS),
+                "structured lifetime accounting must precede later subscribers");
+        releaseSubscriber.countDown();
+        completion.join();
+    }
+
+
 }
