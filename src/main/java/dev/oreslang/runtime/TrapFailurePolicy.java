@@ -4,7 +4,6 @@ import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
-import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.RejectedExecutionException;
@@ -85,24 +84,19 @@ public final class TrapFailurePolicy {
     }
 
     private static boolean isMappedGuestFailure(Throwable failure) {
-        if (failure instanceof IllegalArgumentException
-                || failure instanceof IllegalStateException
-                || failure instanceof ArithmeticException
-                || failure instanceof IndexOutOfBoundsException
-                || failure instanceof ClassCastException
-                || failure instanceof UnsupportedOperationException
-                || failure instanceof NoSuchElementException
-                || failure instanceof NegativeArraySizeException
-                || failure instanceof ArrayStoreException) {
-            // These JDK exception types are guest errors only when they were
-            // raised by the Oreslang runtime itself. A host/FFI exception with
-            // the same Java class must be explicitly mapped by its adapter.
-            StackTraceElement[] trace = failure.getStackTrace();
-            return trace.length > 0
-                    && trace[0].getClassName().startsWith("dev.oreslang.");
-        }
-        // The interpreter's cast failure is a dedicated guest runtime type.
+        // Throwable.setStackTrace() is public. A host/FFI exception can forge
+        // dev.oreslang.* frame names, and cannot become a guest throw merely
+        // because a Java exception's mutable diagnostic text says so.
+        // Ordinary JDK exceptions must be explicitly wrapped by a future
+        // trusted interpreter-origin mapper with real sealed provenance.
+        //
+        // Keep only the interpreter's dedicated cast-error type, and verify
+        // its actual runtime ClassLoader rather than trusting its string
+        // name alone. This intentional fail-closed restriction temporarily
+        // excludes unclassified host-JDK-like failures from trap/catch.
         return failure.getClass().getName()
-                .equals("dev.oreslang.nodes.OresEvalRootNode$OresCastError");
+                    .equals("dev.oreslang.nodes.OresEvalRootNode$OresCastError")
+                && failure.getClass().getClassLoader()
+                    == TrapFailurePolicy.class.getClassLoader();
     }
 }
