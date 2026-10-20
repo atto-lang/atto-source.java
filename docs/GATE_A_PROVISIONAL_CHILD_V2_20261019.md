@@ -150,10 +150,9 @@ produce real steps/logs. Zero-step Actions failures are not test runs.
   escape while retirement is in progress.
 - New `OresTaskScopeAdmissionStressTest` runs 600 source-runtime concurrent
   admission/cancellation/close rounds, checking no ownership escape and
-  `getDone` success after shutdown. This class was committed but is NOT
-  currently included in the explicitly enumerated `concurrency-contract`
-  selector because the workflow edit was blocked; full Maven discovery
-  should pick it up when a source-authorized runner is available.
+  `getDone` success after shutdown. This class is now explicitly
+  included in the `concurrency-contract` workflow's JUnit selection, but
+  no source-org runner has executed it yet.
 - Source-free alternate carrier run
   https://github.com/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/actions/runs/39344662318
   PASSED actual JDK21 `-Xlint:all -Werror` compilation, 10,000
@@ -163,3 +162,31 @@ produce real steps/logs. Zero-step Actions failures are not test runs.
 - Review remains blocked by source-org zero-step Actions runs and security
   issue #962's still-empty approved destination allowlist. No private
   source mirror was created.
+
+## Exact-source admission fault coverage and runner diagnosis (October 19)
+
+- `concurrency-contract.yml` now explicitly includes
+  `OresTaskScopeAdmissionStressTest` (600 scope admission/cancel races) and
+  `AsyncRuntimeAdversarialAdmissionTest` (three deterministic host-executor
+  admission faults), in addition to the Task retirement and TypeChecker tests.
+- `AsyncRuntime.submitInternal` now makes the pre-dispatch retirement claim
+  using a CAS rather than an unconditional state store; this prevents a
+  concurrent runtime close and a rejected submission from both releasing the
+  same Task. It also handles non-rejection `RuntimeException` and `Error`
+  during executor admission, preserving the original failure.
+- `AsyncRuntime(TurnExecutor, ExecutorService)` is package-private and
+  exists only for deterministic tests. The public virtual-thread executor
+  configuration is unchanged.
+- `OresTaskOrdinaryRetirementTest` additionally exercises 200 close versus
+  prepared executor-admission interleavings. The adversarial executor test
+  holds `execute` during a concurrent `close` to force the rejection race.
+- Current exact-head source `concurrency-contract` and `fast-ci` runs
+  still show `jobs[].steps == null` and failure within seconds of queueing.
+  They did NOT execute the Java compiler or JUnit. Do not claim an Actions
+  billing issue without independently observing the repository/org
+  allocation policy. Do not copy private source to another organization
+  while security issue #962 is open and the source-approved allowlist is empty.
+- Independent alternate carrier model run
+  https://github.com/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/actions/runs/39344662318
+  passed JDK21 strict compilation, 10,000 races and 725,760 bounded schedules.
+  This is useful adversarial design evidence but NOT exact-source execution.
