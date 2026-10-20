@@ -3085,12 +3085,29 @@ public final class Parser {
     private Ast.Expr parseAssignment() {
         Ast.Expr expr = parseConditional();
         if (match(EQUAL)) {
-            if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
-                throw error(previous(), "assignment target must be a local, field, or index");
-            }
+            requireAssignablePlace(expr, "assignment");
             return new Ast.AssignExpr(expr, parseAssignment());
         }
+
+        String compound = null;
+        if (match(PLUS_EQUAL)) compound = "+";
+        else if (match(MINUS_EQUAL)) compound = "-";
+        else if (match(STAR_EQUAL)) compound = "*";
+        else if (match(SLASH_EQUAL)) compound = "/";
+        else if (match(PERCENT_EQUAL)) compound = "%";
+        if (compound != null) {
+            requireAssignablePlace(expr, "compound assignment");
+            return new Ast.CompoundAssignExpr(expr, compound, parseAssignment());
+        }
         return expr;
+    }
+
+    private void requireAssignablePlace(Ast.Expr expr, String operation) {
+        if (!(expr instanceof Ast.NameExpr)
+                && !(expr instanceof Ast.MemberExpr)
+                && !(expr instanceof Ast.IndexExpr)) {
+            throw error(previous(), operation + " target must be a local, field, or index");
+        }
     }
 
     private Ast.Expr parseConditional() {
@@ -3433,6 +3450,39 @@ public final class Parser {
         return List.copyOf(arguments);
     }
 
+    /**
+     * Distinguish a generic type namespace receiver such as
+     * Region<Motion>.new from comparison operators and foo<T>(...) generic
+     * callable instantiation. Requiring lexical adjacency at both outer
+     * boundaries keeps `a < b > .member` out of this syntax.
+     */
+    private boolean looksLikeGenericTypeQualifiedMember() {
+        if (!check(IDENT) || current + 1 >= tokens.size()
+                || tokens.get(current + 1).type() != LT
+                || !adjacent(tokens.get(current), tokens.get(current + 1))) {
+            return false;
+        }
+        int depth = 0;
+        for (int i = current + 1; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LT) {
+                depth++;
+            } else if (type == GT) {
+                depth--;
+                if (depth == 0) {
+                    if (i + 1 >= tokens.size()) return false;
+                    Token.Type next = tokens.get(i + 1).type();
+                    return (next == DOT || next == DOUBLE_COLON)
+                            && adjacent(tokens.get(i), tokens.get(i + 1));
+                }
+                if (depth < 0) return false;
+            } else if (type == SEMICOLON || type == EOF) {
+                return false;
+            }
+        }
+        return false;
+    }
+
     private boolean looksLikeTypeArgumentCall() {
         return looksLikeTypeArgumentCallAt(current);
     }
@@ -3584,6 +3634,9 @@ public final class Parser {
             List<Ast.Expr> items = parseArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after explicit tuple");
             return new Ast.TupleExpr(items);
+        }
+        if (looksLikeGenericTypeQualifiedMember()) {
+            return new Ast.TypeExpr(parseTypeRef());
         }
         if (match(IDENT, SHARED, UNTRUSTED)) {
             return new Ast.NameExpr(previous().lexeme());

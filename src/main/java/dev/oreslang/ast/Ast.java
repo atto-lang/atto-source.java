@@ -865,7 +865,7 @@ public final class Ast {
         }
     }
 
-    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
+    public sealed interface Expr permits LiteralExpr, NameExpr, TypeExpr, BinaryExpr, UnaryExpr, AssignExpr, CompoundAssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, StagedCallExpr, StagedNewExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
@@ -873,9 +873,34 @@ public final class Ast {
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
     public record NameExpr(String name) implements Expr { }
+
+    /**
+     * A statically written generic type qualifier in expression position, e.g.
+     * Region<Motion>.new(...). It is not a runtime class object and must be
+     * consumed by a statically resolved type-member operation before lowering.
+     */
+    public record TypeExpr(TypeRef type) implements Expr {
+        public TypeExpr { java.util.Objects.requireNonNull(type, "type qualifier"); }
+    }
+
     public record BinaryExpr(String operator, Expr left, Expr right) implements Expr { }
     public record UnaryExpr(String operator, Expr operand) implements Expr { }
     public record AssignExpr(Expr target, Expr value) implements Expr { }
+
+    /**
+     * Preserve compound-place syntax until ownership/type lowering can prove
+     * single evaluation of the target and one scoped mutable loan.
+     */
+    public record CompoundAssignExpr(Expr target, String operator, Expr value) implements Expr {
+        public CompoundAssignExpr {
+            java.util.Objects.requireNonNull(target, "compound assignment target");
+            java.util.Objects.requireNonNull(value, "compound assignment value");
+            if (!java.util.Set.of("+", "-", "*", "/", "%").contains(operator)) {
+                throw new IllegalArgumentException("unsupported compound assignment operator");
+            }
+        }
+    }
+
     public record ConditionalExpr(Expr condition, Expr whenTrue, Expr whenFalse) implements Expr { }
 
     /**
@@ -1039,6 +1064,80 @@ public final class Ast {
             if (!typeArgumentsPresent && !typeArguments.isEmpty()) {
                 throw new IllegalArgumentException("call-site type arguments require explicit marker");
             }
+        }
+    }
+
+    /**
+     * Compiler-verified source-to-formal permutation for a staged named call.
+     * Runtime lowering must evaluate the callee first, then argument expressions
+     * in lexical source order, and only then reorder the resulting values by
+     * this permutation. Identity keys prevent structurally-equal ASTs from
+     * sharing authority accidentally.
+     */
+    public static final class CheckedNamedCallPlan {
+        private CheckedNamedCallPlan() { }
+
+        private static final java.lang.ref.ReferenceQueue<StagedCallExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, java.util.List<Integer>> PLANS =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey extends java.lang.ref.WeakReference<StagedCallExpr> {
+            private final int hash;
+            private IdentityKey(
+                    StagedCallExpr call,
+                    java.lang.ref.ReferenceQueue<StagedCallExpr> queue) {
+                super(call, queue);
+                hash = System.identityHashCode(call);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                StagedCallExpr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends StagedCallExpr> collected;
+            while ((collected = CLEARED.poll()) != null) PLANS.remove(collected);
+        }
+
+        public static synchronized void record(
+                StagedCallExpr call,
+                java.util.List<Integer> sourceItemIndexByFormal) {
+            java.util.Objects.requireNonNull(call, "call");
+            java.util.Objects.requireNonNull(sourceItemIndexByFormal, "sourceItemIndexByFormal");
+            java.util.List<Integer> plan = java.util.List.copyOf(sourceItemIndexByFormal);
+            if (plan.size() != call.arguments().size()) {
+                throw new IllegalArgumentException("named-call plan arity mismatch");
+            }
+            boolean[] seen = new boolean[plan.size()];
+            for (int sourceIndex : plan) {
+                if (sourceIndex < 0 || sourceIndex >= seen.length || seen[sourceIndex]) {
+                    throw new IllegalArgumentException("named-call plan must be a complete permutation");
+                }
+                seen[sourceIndex] = true;
+            }
+            expunge();
+            IdentityKey key = new IdentityKey(call, CLEARED);
+            java.util.List<Integer> old = PLANS.putIfAbsent(key, plan);
+            if (old != null && !old.equals(plan)) {
+                throw new IllegalStateException(
+                        "same named call site received inconsistent checked permutations");
+            }
+        }
+
+        public static synchronized java.util.List<Integer> require(StagedCallExpr call) {
+            java.util.Objects.requireNonNull(call, "call");
+            expunge();
+            java.util.List<Integer> plan = PLANS.get(new IdentityKey(call, null));
+            if (plan == null) {
+                throw new IllegalStateException(
+                        "named call requires a statically checked source-to-formal plan");
+            }
+            return plan;
         }
     }
 
