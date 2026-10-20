@@ -122,6 +122,30 @@ final class FirstClassModelGraphTest {
     }
 
     @Test
+    void moduleQualifiedModelConstructionUsesTheSameNominalRuntimePath() throws Exception {
+        String output = run("""
+                define module pricing
+                  fnc Validate(float input): float { return input; }
+                  fnc Scale(float factor, float input): float {
+                    return input * factor;
+                  }
+                  pub define model Scaler(factor: float = 2.0) as
+                    Validate()
+                    Scale(factor)
+                  end
+                end
+
+                pub routine main(): void {
+                  val scaler = pricing.Scaler(3.0);
+                  stdio.stdout.write(scaler.run(7.0));
+                  return;
+                }
+                """);
+
+        assertEquals("21.0", output);
+    }
+
+    @Test
     void modelConstructionAndRunAreStrictlyTyped() {
         assertThrowsMessage("MODEL_NONCONSTANT_CONFIG", () ->
                 OresCompiler.parseAndTypeCheck(PRICE_MODEL + """
