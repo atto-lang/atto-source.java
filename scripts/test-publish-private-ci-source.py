@@ -47,6 +47,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.codeowner_login = "ORESoftware"
         self.codeowner_type = "User"
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
+        self.pom_bytes = b"<project><modelVersion>4.0.0</modelVersion></project>\n"
+        (self.source / "pom.xml").write_bytes(self.pom_bytes)
+        self.trusted_pom_sha = hashlib.sha1(
+            b"blob " + str(len(self.pom_bytes)).encode("ascii")
+            + bytes([0]) + self.pom_bytes
+        ).hexdigest()
         self.expected_tree = pub.source_tree_sha(pub.collect_source(self.source, self.root))
         # Synthetic, local-only approvals. Production ledgers remain empty.
         self.set_reviewed_snapshot()
@@ -89,11 +95,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.carrier_codeowners_text = (
             "/.github/private-oreslang-approved-source-snapshots.txt @ORESoftware\n"
             "/.github/CODEOWNERS @ORESoftware\n"
-            "/scripts/verify-oreslang-private-ci-snapshot.sh @ORESoftware\n"
-            "/scripts/launch-oreslang-private-ci-publisher.py @ORESoftware\n"
-            "/.github/oreslang-private-build-images.txt @ORESoftware\n"
+            "/.github/oreslang-private-execution-profile.txt @ORESoftware\n"
             "/.github/oreslang-private-workflows.txt @ORESoftware\n"
-            "/scripts/run-oreslang-private-build-in-sandbox.py @ORESoftware\n"
+            "/scripts/verify-private-ci-authorization.py @ORESoftware\n"
+            "/scripts/verify-private-ci-commit-authorization.py @ORESoftware\n"
+            "/scripts/publish-authorized-private-tree.py @ORESoftware\n"
             "/.github/workflows/ @ORESoftware\n"
         )
         self.carrier_codeowners_sha = None
@@ -108,12 +114,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         )
         self.carrier_build_images_sha = None
         self.carrier_workflows = {
+            ".github/workflows/contracts.yml": W2,
             ".github/workflows/private-oreslang-exact-tree.yml": W1,
-            ".github/workflows/private-oreslang-source-gate.yaml": W2,
         }
         self.carrier_workflow_manifest_text = "".join(
             f"{path} {sha}\n" for path, sha in sorted(self.carrier_workflows.items()))
         self.carrier_workflow_manifest_sha = None
+        self.carrier_execution_profile_text = (
+            "profile bwrap-offline-maven-v1\n"
+            f"trusted-pom-blob {self.trusted_pom_sha}\n"
+            f"workflow .github/workflows/private-oreslang-exact-tree.yml {W1}\n"
+        )
+        self.carrier_execution_profile_sha = None
         self.carrier_tree_truncated = False
         self.carrier_extra_workflow = None
         self.real_bootstrap_attestation = pub.require_bootstrap_attestation
@@ -212,6 +224,20 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return {"sha": self.remote_source_commit,
                     "tree": {"sha": self.expected_tree if self.remote_source_tree is None
                              else self.remote_source_tree}}
+        if route == f"repos/{pub.SOURCE_REPOSITORY}/git/trees/{self.expected_tree}":
+            return {
+                "sha": self.expected_tree,
+                "truncated": False,
+                "tree": [
+                    {"path": "hello.ores", "mode": "100644", "type": "blob",
+                     "sha": hashlib.sha1(
+                         b"blob " + str(len((self.source / "hello.ores").read_bytes())).encode("ascii")
+                         + bytes([0]) + (self.source / "hello.ores").read_bytes()
+                     ).hexdigest()},
+                    {"path": "pom.xml", "mode": "100644", "type": "blob",
+                     "sha": self.trusted_pom_sha},
+                ],
+            }
         if route == "repos/trusted/ci":
             return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
                         private=True, default_branch=self.carrier_default_branches.pop(0),
@@ -284,6 +310,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                 + bytes([0]) + raw).hexdigest()
             return {"type": "file", "encoding": "base64", "size": len(raw),
                     "sha": self.carrier_workflow_manifest_sha or sha,
+                    "content": base64.b64encode(raw).decode("ascii")}
+        if route == pub.at_ref(
+                "repos/trusted/ci/contents/" + pub.CARRIER_EXECUTION_PROFILE_PATH, A):
+            raw = self.carrier_execution_profile_text.encode("utf-8")
+            sha = hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
+                                + bytes([0]) + raw).hexdigest()
+            return {"type": "file", "encoding": "base64", "size": len(raw),
+                    "sha": self.carrier_execution_profile_sha or sha,
                     "content": base64.b64encode(raw).decode("ascii")}
         if route == pub.at_ref(
                 "repos/trusted/ci/contents/" + pub.CARRIER_APPROVAL_PATH, A):
@@ -2907,51 +2941,79 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
-    def test_carrier_sealed_build_images_required_before_source_read(self):
+    def test_carrier_execution_profile_required_before_source_read(self):
+        valid = self.carrier_execution_profile_text
         for policy in (
                 "",
-                "java21 sha256:" + "a" * 64 + "\n",
-                "java21 latest\njava25 sha256:" + "b" * 64 + "\n",
-                "java21 sha256:" + "a" * 64 + "\n"
-                "java21 sha256:" + "c" * 64 + "\n"
-                "java25 sha256:" + "b" * 64 + "\n"):
+                "profile unknown\n"
+                f"trusted-pom-blob {self.trusted_pom_sha}\n"
+                f"workflow .github/workflows/private-oreslang-exact-tree.yml {W1}\n",
+                "profile bwrap-offline-maven-v1\n"
+                "trusted-pom-blob not-a-sha\n"
+                f"workflow .github/workflows/private-oreslang-exact-tree.yml {W1}\n",
+                "profile bwrap-offline-maven-v1\n"
+                f"trusted-pom-blob {self.trusted_pom_sha}\n"
+                f"workflow .github/workflows/private-oreslang-exact-tree.yml {W2}\n"):
             with self.subTest(policy=policy):
-                self.carrier_build_images_text = policy
+                self.carrier_execution_profile_text = policy
                 with patch.object(pub, "collect_source",
                                   side_effect=AssertionError("private source read too early")):
                     with self.assertRaises(pub.Denied):
                         self.publish()
                 self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
                 self.route_calls.clear()
-        self.carrier_build_images_text = (
-            "java21 sha256:" + "a" * 64 + "\n"
-            "java25 sha256:" + "b" * 64 + "\n"
-        )
+        self.carrier_execution_profile_text = valid
 
-    def test_carrier_sealed_build_image_blob_digest_must_match(self):
-        self.carrier_build_images_sha = "f" * 40
+    def test_carrier_execution_profile_blob_digest_must_match(self):
+        self.carrier_execution_profile_sha = "f" * 40
         with patch.object(pub, "collect_source",
                           side_effect=AssertionError("private source read too early")):
-            with self.assertRaisesRegex(pub.Denied, "policy integrity failed"):
+            with self.assertRaisesRegex(pub.Denied, "profile integrity failed"):
                 self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
-    def test_carrier_sealed_build_image_policy_revocation_stops_next_write(self):
+    def test_source_pom_must_match_execution_profile_before_source_read(self):
+        original = self.fake_api
+
+        def wrong_pom(route, method="GET", payload=None):
+            if route == f"repos/{pub.SOURCE_REPOSITORY}/git/trees/{self.expected_tree}":
+                response = original(route, method, payload)
+                response["tree"] = [dict(item) for item in response["tree"]]
+                for item in response["tree"]:
+                    if item.get("path") == "pom.xml":
+                        item["sha"] = E
+                return response
+            return original(route, method, payload)
+
+        with patch.object(pub, "gh_api", side_effect=wrong_pom):
+            with patch.object(pub, "collect_source",
+                              side_effect=AssertionError("private source read too early")):
+                with self.assertRaisesRegex(pub.Denied, "pom.xml differs"):
+                    pub.publish("trusted/ci", self.source, TEST_BRANCH,
+                                self.root, self.expected_tree, D)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_execution_profile_revocation_stops_next_write(self):
         original = self.fake_api
         revoked = [False]
+
         def revoke(route, method="GET", payload=None):
             result = original(route, method, payload)
             if route == "repos/trusted/ci/git/blobs" and method == "POST":
                 revoked[0] = True
             if (revoked[0] and route == pub.at_ref(
-                    "repos/trusted/ci/contents/" + pub.CARRIER_BUILD_IMAGES_PATH, A)):
+                    "repos/trusted/ci/contents/"
+                    + pub.CARRIER_EXECUTION_PROFILE_PATH, A)):
                 raw = b"# revoked\n"
                 sha = hashlib.sha1(
-                    b"blob " + str(len(raw)).encode("ascii") + bytes([0]) + raw
+                    b"blob " + str(len(raw)).encode("ascii")
+                    + bytes([0]) + raw
                 ).hexdigest()
                 return {"type": "file", "encoding": "base64", "size": len(raw),
-                        "sha": sha, "content": base64.b64encode(raw).decode("ascii")}
+                        "sha": sha,
+                        "content": base64.b64encode(raw).decode("ascii")}
             return result
+
         with patch.object(pub, "gh_api", side_effect=revoke):
             with self.assertRaises(pub.Denied):
                 pub.publish("trusted/ci", self.source, TEST_BRANCH,
