@@ -69,38 +69,51 @@ final class IpcPhysicalConnectionBroker {
             this.connectionBinding = connectionBinding;
         }
 
-        synchronized Transfer consume() {
-            if (terminal) {
-                throw new IllegalStateException(
-                        "IPC physical connection authority already consumed or destroyed");
-            }
+        Transfer consume() {
+            RuntimeBlockingGuard.requireBlockingHostThread(
+                    "IPC physical connection authority consume");
+            synchronized (this) {
+                if (terminal) {
+                    throw new IllegalStateException(
+                            "IPC physical connection authority already consumed or destroyed");
+                }
 
-            // Allocate before changing authority state. If allocation fails,
-            // no ownership transfer occurred and the authority remains intact.
-            Transfer transfer = new Transfer(
-                    generation, physicalOwner, macKey, connectionBinding);
-            terminal = true;
-            physicalOwner = null;
-            macKey = null;
-            connectionBinding = null;
-            return transfer;
+                // Allocate before changing authority state. If allocation
+                // fails, no ownership transfer occurred and the authority
+                // remains intact.
+                Transfer transfer = new Transfer(
+                        generation, physicalOwner, macKey, connectionBinding);
+                terminal = true;
+                physicalOwner = null;
+                macKey = null;
+                connectionBinding = null;
+                return transfer;
+            }
         }
 
-        synchronized boolean consumedOrDestroyed() {
-            return terminal;
+        boolean consumedOrDestroyed() {
+            RuntimeBlockingGuard.requireBlockingHostThread(
+                    "IPC physical connection authority diagnostic");
+            synchronized (this) {
+                return terminal;
+            }
         }
 
         @Override
-        public synchronized void close() {
-            if (terminal) return;
-            terminal = true;
-            physicalOwner = null;
-            if (macKey != null) Arrays.fill(macKey, (byte) 0);
-            if (connectionBinding != null) {
-                Arrays.fill(connectionBinding, (byte) 0);
+        public void close() {
+            RuntimeBlockingGuard.requireBlockingHostThread(
+                    "IPC physical connection authority destroy");
+            synchronized (this) {
+                if (terminal) return;
+                terminal = true;
+                physicalOwner = null;
+                if (macKey != null) Arrays.fill(macKey, (byte) 0);
+                if (connectionBinding != null) {
+                    Arrays.fill(connectionBinding, (byte) 0);
+                }
+                macKey = null;
+                connectionBinding = null;
             }
-            macKey = null;
-            connectionBinding = null;
         }
     }
 
@@ -108,6 +121,8 @@ final class IpcPhysicalConnectionBroker {
     private long lastGeneration;
 
     IpcPhysicalConnectionBroker() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC physical connection broker construction");
         SecureRandom random = new SecureRandom();
         this.bindingSource = random::nextBytes;
     }
@@ -117,50 +132,57 @@ final class IpcPhysicalConnectionBroker {
      * Production callers use the SecureRandom-backed constructor.
      */
     IpcPhysicalConnectionBroker(BindingSource bindingSource) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC physical connection broker construction");
         this.bindingSource = Objects.requireNonNull(bindingSource, "bindingSource");
     }
 
-    synchronized Authority mint(long generation, byte[] negotiatedMacKey) {
-        if (generation <= 0) {
-            throw new IllegalArgumentException(
-                    "physical generation must be positive");
-        }
-        if (generation <= lastGeneration) {
-            throw new IllegalArgumentException(
-                    "physical generation must increase monotonically");
-        }
-        if (negotiatedMacKey == null
-                || negotiatedMacKey.length < 32
-                || negotiatedMacKey.length > 128) {
-            throw new IllegalArgumentException(
-                    "IPC MAC key must be 32..128 bytes");
-        }
+    Authority mint(long generation, byte[] negotiatedMacKey) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC physical connection authority mint");
+        synchronized (this) {
+            if (generation <= 0) {
+                throw new IllegalArgumentException(
+                        "physical generation must be positive");
+            }
+            if (generation <= lastGeneration) {
+                throw new IllegalArgumentException(
+                        "physical generation must increase monotonically");
+            }
+            if (negotiatedMacKey == null
+                    || negotiatedMacKey.length < 32
+                    || negotiatedMacKey.length > 128) {
+                throw new IllegalArgumentException(
+                        "IPC MAC key must be 32..128 bytes");
+            }
 
-        byte[] privateMacKey = negotiatedMacKey.clone();
-        byte[] binding = new byte[CONNECTION_BINDING_BYTES];
-        try {
-            boolean nonzero = false;
-            // A trustworthy random source will succeed on the first attempt;
-            // bounded retry makes a broken deterministic source fail closed.
-            for (int attempt = 0; attempt < 4 && !nonzero; ++attempt) {
+            byte[] privateMacKey = negotiatedMacKey.clone();
+            byte[] binding = new byte[CONNECTION_BINDING_BYTES];
+            try {
+                boolean nonzero = false;
+                // A trustworthy random source will succeed on the first
+                // attempt; bounded retry makes a broken deterministic source
+                // fail closed.
+                for (int attempt = 0; attempt < 4 && !nonzero; ++attempt) {
+                    Arrays.fill(binding, (byte) 0);
+                    bindingSource.fill(binding);
+                    for (byte value : binding) nonzero |= value != 0;
+                }
+                if (!nonzero) {
+                    throw new IllegalStateException(
+                            "IPC connection binding source produced all-zero binding");
+                }
+
+                Authority authority = new Authority(
+                        generation, new Object(), privateMacKey, binding);
+                // Advance only after the complete authority has been allocated.
+                lastGeneration = generation;
+                return authority;
+            } catch (RuntimeException | Error mintFailure) {
+                Arrays.fill(privateMacKey, (byte) 0);
                 Arrays.fill(binding, (byte) 0);
-                bindingSource.fill(binding);
-                for (byte value : binding) nonzero |= value != 0;
+                throw mintFailure;
             }
-            if (!nonzero) {
-                throw new IllegalStateException(
-                        "IPC connection binding source produced all-zero binding");
-            }
-
-            Authority authority = new Authority(
-                    generation, new Object(), privateMacKey, binding);
-            // Advance only after the complete authority has been allocated.
-            lastGeneration = generation;
-            return authority;
-        } catch (RuntimeException | Error mintFailure) {
-            Arrays.fill(privateMacKey, (byte) 0);
-            Arrays.fill(binding, (byte) 0);
-            throw mintFailure;
         }
     }
 }
