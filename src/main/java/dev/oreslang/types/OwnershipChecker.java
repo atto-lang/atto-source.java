@@ -1529,6 +1529,7 @@ public final class OwnershipChecker {
                     recordAsyncCall(
                             call,
                             call.arguments(),
+                            signature.parameters(),
                             scope,
                             "function " + fn.name());
                 }
@@ -1556,6 +1557,7 @@ public final class OwnershipChecker {
                     recordAsyncCall(
                             call,
                             call.arguments(),
+                            signature.parameters(),
                             scope,
                             "function " + namespace.name() + "." + qualified.member());
                 }
@@ -1638,6 +1640,7 @@ public final class OwnershipChecker {
                         recordAsyncCall(
                                 call,
                                 call.arguments(),
+                                signature.parameters(),
                                 scope,
                                 "static function " + staticClass.name() + "." + staticFunction.name());
                     }
@@ -2135,15 +2138,34 @@ public final class OwnershipChecker {
     private void recordAsyncCall(
             Ast.CallExpr call,
             List<Ast.Expr> arguments,
+            List<Ast.Param> parameters,
             Scope scope,
             String callable) {
         ArrayList<AsyncTransferProvenance.Transfer> transfers =
                 new ArrayList<>(arguments.size());
+        int parameterIndex = 0;
         for (int i = 0; i < arguments.size(); i++) {
             Ast.Expr source = arguments.get(i);
-            Ast.Expr value = source instanceof Ast.SpreadExpr spread
-                    ? spread.expression() : source;
-            Ast.TypeRef type = syntacticType(value, scope);
+            boolean spreadArgument = source instanceof Ast.SpreadExpr;
+            Ast.Expr value = spreadArgument
+                    ? ((Ast.SpreadExpr) source).expression()
+                    : source;
+            Ast.TypeRef type;
+            if (spreadArgument) {
+                type = syntacticType(value, scope);
+                Ast.TypeRef concrete = type.isBorrow()
+                        ? type.borrowedTarget() : type;
+                parameterIndex += concrete.isTupleType()
+                        ? concrete.arguments().size() : 1;
+            } else {
+                if (parameterIndex >= parameters.size()) {
+                    throw new IllegalStateException(
+                            "Oreslang compiler invariant violated: async "
+                                    + "provenance parameter index exceeds "
+                                    + "the type-checked call signature");
+                }
+                type = parameters.get(parameterIndex++).type();
+            }
             ValueKind kind = kindOfType(type);
             AsyncTransferProvenance.TransferKind transferKind;
             if (kind == ValueKind.COPY) {
