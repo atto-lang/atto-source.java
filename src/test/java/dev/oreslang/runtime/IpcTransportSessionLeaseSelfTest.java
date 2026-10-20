@@ -69,6 +69,8 @@ public final class IpcTransportSessionLeaseSelfTest {
                         throw new AssertionError(impossibleBeforeGuard);
                     }
                 });
+                deny(() -> guardedLease.quarantineIfUnsettled(
+                        new IllegalStateException("actor carrier quarantine")));
             } finally {
                 RuntimeBlockingGuard.exitActorCarrier();
             }
@@ -394,9 +396,30 @@ public final class IpcTransportSessionLeaseSelfTest {
         staleGate.requestClose();
         check(staleGate.snapshot().phase() == IpcTransportSessionLease.Phase.QUARANTINED);
         staleGate.retryQuarantinedClose();
-        priorTask.get().run(); // stale attempt cannot execute physical close
+
+        // Even when the stale callback is itself misrouted onto an actor
+        // carrier, its deferred failure is bound to attempt 1 and must not
+        // poison the newer explicit recovery attempt 2.
+        AtomicReference<Throwable> staleActorFailure = new AtomicReference<>();
+        Thread staleActor = new Thread(() -> {
+            RuntimeBlockingGuard.enterActorCarrier();
+            try {
+                priorTask.get().run();
+            } catch (Throwable failure) {
+                staleActorFailure.set(failure);
+            } finally {
+                RuntimeBlockingGuard.exitActorCarrier();
+            }
+        }, "ipc-test-stale-actor-cleanup");
+        staleActor.start();
+        staleActor.join(1000);
+        check(!staleActor.isAlive());
+        check(staleActorFailure.get() == null);
         check(actualCloses.get() == 0);
+        check(staleGate.snapshot().phase()
+                == IpcTransportSessionLease.Phase.FINALIZING);
         check(!staleOutcome.toCompletableFuture().isDone());
+
         resumedTask.get().run();
         check(actualCloses.get() == 1);
         check(staleGate.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
