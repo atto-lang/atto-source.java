@@ -1567,6 +1567,41 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
             }
         }
+        // An inherited HasFuture<T> witness constrains the effective
+        // implementation slot even when the child never says 'implements'.
+        // In particular, a child override cannot substitute Future<U>
+        // for the parent's specialized Future<T> (Future is invariant).
+        Type projected = hasFutureResult(nominalClassType(klass), new LinkedHashSet<>());
+        if (projected != null) {
+            if (klass.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "actor classes cannot implement inherited HasFuture<T>");
+            }
+            ResolvedMethod method = findMethodTarget(
+                    klass, nominalClassType(klass), "get_future", 0, new LinkedHashSet<>());
+            if (method == null || method.method().isStatic()
+                    || method.method().async() || method.method().suspends()
+                    || method.method().isAbstract()
+                    || !method.method().genericParameters().isEmpty()
+                    || method.method().visibility() != Ast.Visibility.PUBLIC
+                    || (method.method().explicitReceiverType() != null
+                        && method.method().explicitReceiverType().mutableBorrow())) {
+                throw new IllegalArgumentException(
+                        "effective HasFuture.get_future() must be a public non-mutating synchronous method");
+            }
+            Type pattern = resolve(
+                    method.method().returnType(),
+                    Set.copyOf(method.owner().genericParameters()),
+                    new SelfType(method.ownerType()));
+            Type concrete = substituteGenerics(
+                    pattern, classGenericBindings(method.owner(), method.ownerType()));
+            Type required = new Named("Future", List.of(projected));
+            if (!concrete.equals(required)) {
+                throw new IllegalArgumentException(
+                        "effective HasFuture.get_future() returns " + concrete
+                        + " but inherited capability requires " + required);
+            }
+        }
     }
 
     /**
