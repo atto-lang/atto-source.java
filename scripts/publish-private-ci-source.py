@@ -26,8 +26,20 @@ MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
 SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
+SOURCE_REPOSITORY_ID = 1400792274
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
+CODEOWNERS_PATH = ".github/CODEOWNERS"
+SECURITY_CODEOWNER_PATHS = (
+    "/.github/CODEOWNERS",
+    "/.github/private-ci-approved-repositories.txt",
+    "/.github/private-ci-carrier-contracts.json",
+    "/scripts/check-private-ci-destination.sh",
+    "/scripts/run-in-private-ci-destination.sh",
+    "/scripts/publish-private-ci-source.py",
+    "/scripts/publish-private-ci-source-v3.py",
+)
+SECURITY_TEAM = re.compile(r"^@ores-truffle-oreslang/[A-Za-z0-9_.-]+$")
 
 
 class Denied(RuntimeError):
@@ -47,6 +59,28 @@ def safe_descriptor_flags_available():
         for index, left in enumerate(flags)
         for right in flags[index + 1:]
     )
+
+
+def require_security_codeowners(contents):
+    """Require terminal exact rules owned by an explicit Oreslang team."""
+    if not isinstance(contents, bytes) or not contents or len(contents) > 16 * 1024:
+        raise Denied("protected CODEOWNERS is missing or oversized")
+    try:
+        lines = contents.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise Denied("protected CODEOWNERS is not UTF-8") from exc
+    rules = [line.strip() for line in lines
+             if line.strip() and not line.lstrip().startswith("#")]
+    if len(rules) < len(SECURITY_CODEOWNER_PATHS):
+        raise Denied("protected CODEOWNERS lacks terminal export rules")
+    tail = rules[-len(SECURITY_CODEOWNER_PATHS):]
+    for expected_path, rule in zip(SECURITY_CODEOWNER_PATHS, tail):
+        fields = rule.split()
+        if (len(fields) < 2 or fields[0] != expected_path
+                or not any(SECURITY_TEAM.fullmatch(owner) for owner in fields[1:])):
+            raise Denied(
+                "protected CODEOWNERS must end with exact export rules owned by an Oreslang team"
+            )
 
 
 def valid_sha(value):
@@ -188,6 +222,7 @@ def verify_protected_origin(repository, expected_policy_digest, expected_reposit
     """
     origin = gh_api(f"repos/{SOURCE_REPO}")
     if (origin.get("full_name") != SOURCE_REPO
+            or origin.get("id") != SOURCE_REPOSITORY_ID
             or origin.get("private") is not True):
         raise Denied("cannot attest identity and privacy of source origin")
     branch = gh_api(f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}")
@@ -201,15 +236,27 @@ def verify_protected_origin(repository, expected_policy_digest, expected_reposit
     protection = gh_api(
         f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}/protection")
     reviews = protection.get("required_pull_request_reviews")
+    checks = protection.get("required_status_checks")
     administrators = protection.get("enforce_admins")
     force_pushes = protection.get("allow_force_pushes")
     deletions = protection.get("allow_deletions")
+    contexts = checks.get("contexts") if isinstance(checks, dict) else None
+    named_checks = checks.get("checks") if isinstance(checks, dict) else None
     if (not isinstance(reviews, dict)
             or reviews.get("require_code_owner_reviews") is not True
             or reviews.get("dismiss_stale_reviews") is not True
             or not isinstance(reviews.get("required_approving_review_count"), int)
             or isinstance(reviews["required_approving_review_count"], bool)
             or reviews["required_approving_review_count"] < 1
+            or not isinstance(checks, dict)
+            or checks.get("strict") is not True
+            or not isinstance(contexts, list)
+            or not isinstance(named_checks, list)
+            or not (contexts or named_checks)
+            or any(not isinstance(name, str) or not name.strip() for name in contexts)
+            or any(not isinstance(item, dict)
+                   or not isinstance(item.get("context"), str)
+                   or not item["context"].strip() for item in named_checks)
             or not isinstance(administrators, dict)
             or administrators.get("enabled") is not True
             or not isinstance(force_pushes, dict)
@@ -218,7 +265,7 @@ def verify_protected_origin(repository, expected_policy_digest, expected_reposit
             or deletions.get("enabled") is not False):
         raise Denied(
             "origin main must enforce CODEOWNER approvals, stale-review dismissal, "
-            "administrator protection and deny forced pushes/deletions")
+            "strict required CI, administrator protection and deny forced pushes/deletions")
     bypasses = reviews.get("bypass_pull_request_allowances")
     if bypasses is not None:
         if (not isinstance(bypasses, dict)
@@ -251,6 +298,24 @@ def verify_protected_origin(repository, expected_policy_digest, expected_reposit
     if (expected_repository_id is not None
             and remote_repository_id != expected_repository_id):
         raise Denied("protected origin repository ID differs from local reviewed approval")
+
+    codeowners = gh_api(
+        f"repos/{SOURCE_REPO}/contents/{CODEOWNERS_PATH}?ref={commit_sha}"
+    )
+    if (codeowners.get("path") != CODEOWNERS_PATH
+            or codeowners.get("type") != "file"
+            or codeowners.get("encoding") != "base64"):
+        raise Denied("protected CODEOWNERS has invalid metadata")
+    codeowners_encoded = codeowners.get("content")
+    if not isinstance(codeowners_encoded, str):
+        raise Denied("protected CODEOWNERS has no content")
+    try:
+        codeowners_contents = base64.b64decode(
+            "".join(codeowners_encoded.split()), validate=True
+        )
+    except (ValueError, base64.binascii.Error) as exc:
+        raise Denied("protected CODEOWNERS has invalid base64") from exc
+    require_security_codeowners(codeowners_contents)
     return commit_sha
 
 
