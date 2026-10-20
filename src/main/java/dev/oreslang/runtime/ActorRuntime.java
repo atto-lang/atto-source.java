@@ -1696,7 +1696,9 @@ public final class ActorRuntime implements AutoCloseable {
         Runnable actorRetirement = cell.sourceTaskLifetime(onQuiescent);
         if (cell.kind != ActorKind.UNTRUSTED) {
             try {
-                return cell.sourceScheduler().start(task, actorRetirement);
+                OresFuture<T> future = cell.sourceScheduler().start(task, actorRetirement);
+                ownFuture(cell, future);
+                return future;
             } catch (RuntimeException | Error admissionFailure) {
                 actorRetirement.run();
                 throw admissionFailure;
@@ -1847,6 +1849,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
             throw failure;
         }
+        // All actor-scoped Tasks are automatically cancelled on actor stop.
+        // Requiring each caller to remember ownCurrentActorFuture() can leave
+        // an abandoned suspended child holding an actor memory lifetime lease.
+        ownFuture(cell, future);
         // A caller may cancel the Future while the source turn is still
         // executing. The scheduler invokes retireOnce ONLY after guest
         // carrier quiescence, not merely when the Future settles.
@@ -1875,7 +1881,11 @@ public final class ActorRuntime implements AutoCloseable {
             return false;
         }
 
-        cell.pendingOperations.add(future);
+        if (!cell.pendingOperations.add(future)) {
+            // Idempotent for existing callers that additionally invoke
+            // ownCurrentActorFuture() on an already actor-owned source Task.
+            return true;
+        }
         if (cell.stopped.get() || cell.finalized || closed.get()) {
             cell.pendingOperations.remove(future);
             future.cancel(false);
