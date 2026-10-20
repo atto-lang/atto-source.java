@@ -169,3 +169,14 @@ Do **not** mark either backend feature complete merely because a parser
 accepts a spelling or a host helper class exists. Positive Java/LLVM runtime
 conformance and negative rejection tests must both be green on their exact PR
 heads.
+
+### Checked host Throwable at guest unwind (batch 12)
+
+`OresExceptionPolicy.rethrow` now fails as an uncaught host
+`AssertionError` (preserving the checked `Throwable` as cause) for an
+unexpected checked JVM failure. It cannot become an ordinary catchable
+`IllegalStateException` under guest `catch` or `trap`.
+Guest-originated `RuntimeException`, `OresPanic`, `OresRaised` and
+terminal process-exit signals keep their original type and precedence.
+This is a host boundary hardening change, **not** source typed-effect lowering.
+Exact-head JDK25/GraalVM regression remains required.
