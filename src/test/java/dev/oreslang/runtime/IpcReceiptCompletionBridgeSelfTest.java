@@ -457,6 +457,6 @@ public final class IpcReceiptCompletionBridgeSelfTest {
             }
         }
         System.out.println("JAVA_IPC_HOST_COMPLETIONS_PASS assertions=" + checks
-                + " races=512");
+                + " ackLossRaces=512 terminalLossRaces=2048");
     }
 }
