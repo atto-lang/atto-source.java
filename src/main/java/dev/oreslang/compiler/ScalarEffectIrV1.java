@@ -1,6 +1,7 @@
 package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -42,7 +43,8 @@ public final class ScalarEffectIrV1 {
             throw new IllegalArgumentException("scalar effect IR requires one import-free module");
         }
         Ast.ModuleDecl module = checked.modules().getFirst();
-        if (!module.annotations().isEmpty() || !module.contracts().isEmpty() ||
+        if (!Parser.ROOT_MODULE.equals(module.name()) ||
+                !module.annotations().isEmpty() || !module.contracts().isEmpty() ||
                 module.declarations().isEmpty() || module.declarations().size() > MAX_FUNCTIONS) {
             throw new IllegalArgumentException("scalar effect IR requires bounded scalar module");
         }
@@ -51,12 +53,13 @@ public final class ScalarEffectIrV1 {
         int totalNodes = 0;
         for (Ast.Decl decl : module.declarations()) {
             if (!(decl instanceof Ast.FunctionDecl fn) ||
-                    fn.actorKind() != Ast.ActorKind.NONE ||
+                    fn.kind() != Ast.CallableKind.FNC || fn.actorKind() != Ast.ActorKind.NONE ||
                     fn.async() || fn.suspends() || fn.generator() || fn.trapped() ||
                     fn.structural() || fn.nonLexical() ||
                     !fn.genericParameters().isEmpty() || !fn.parameters().isEmpty() ||
                     !fn.annotations().isEmpty() ||
                     fn.returnType() == null || !"int".equals(fn.returnType().name()) ||
+                    !fn.returnType().arguments().isEmpty() || fn.returnType().inferArguments() ||
                     fn.body().size() != 1 ||
                     !(fn.body().getFirst() instanceof Ast.ReturnStmt)) {
                 throw new IllegalArgumentException("scalar effect IR rejects unmodeled declarations");
