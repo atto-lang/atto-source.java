@@ -4214,12 +4214,18 @@ public final class TypeChecker {
         Ast.ClassDecl previousClass = currentClassOwner;
         Ast.ClassDecl previousConstructor = currentConstructorOwner;
         List<Type> previousInference = inferredTaskReturnTypes;
+        boolean previousMaySuspend = currentMaySuspend;
         List<Type> discovered = expected == Unknown.INSTANCE ? new ArrayList<>() : null;
         currentConstructorOwner = null;
         inferredTaskReturnTypes = discovered;
+        // Task bodies are scheduler continuations by definition. They may await
+        // and may invoke declared suspends callables even when their lexical
+        // parent is an ordinary synchronous function.
+        currentMaySuspend = true;
         try {
             checkCallableBlock(task.body(), child, generics, expected, self);
         } finally {
+            currentMaySuspend = previousMaySuspend;
             inferredTaskReturnTypes = previousInference;
             env.restoreInitialization(initializedBefore);
             currentClassOwner = previousClass;
