@@ -61,6 +61,62 @@ final class ActorGroupCloseDrainTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void eventBusSealFailureRetainsGroupRegistryOwnerUntilNestedRetry()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorEventBus bus = group.events();
+
+            var busFault = ActorEventBus.class.getDeclaredField(
+                    "closeAfterSealFaultForTesting");
+            var busComplete = ActorEventBus.class.getDeclaredField(
+                    "closeCleanupComplete");
+            var busAmbiguous = ActorEventBus.class.getDeclaredField(
+                    "closeCleanupAmbiguous");
+            busFault.setAccessible(true);
+            busComplete.setAccessible(true);
+            busAmbiguous.setAccessible(true);
+
+            var attempts = new java.util.concurrent.atomic.AtomicInteger();
+            busFault.set(bus, (Runnable) () -> {
+                if (attempts.incrementAndGet() == 1) {
+                    throw new OutOfMemoryError(
+                            "injected after event-bus admission seal");
+                }
+            });
+
+            var groupsField = ActorRuntime.class.getDeclaredField("actorGroups");
+            groupsField.setAccessible(true);
+            var groups = (java.util.Map<Object, Object>) groupsField.get(runtime);
+            var groupComplete = group.getClass().getDeclaredField(
+                    "groupCloseComplete");
+            groupComplete.setAccessible(true);
+
+            var failure = assertThrows(OutOfMemoryError.class, group::closeAsync);
+            assertTrue(failure.getMessage().contains("event-bus admission seal"));
+            assertTrue(group.closed());
+            assertTrue(bus.closed(),
+                    "event-bus admission remains sealed after cleanup failure");
+            assertFalse(busComplete.getBoolean(bus));
+            assertFalse(busAmbiguous.getBoolean(bus),
+                    "a pre-cleanup injected failure is safely retryable");
+            assertFalse(groupComplete.getBoolean(group));
+            assertSame(group, groups.get(group.id()),
+                    "runtime must retain the exact closed-group recovery owner");
+
+            OresFuture<Void> done = group.closeAsync();
+            assertEquals(2, attempts.get());
+            assertTrue(busComplete.getBoolean(bus));
+            assertFalse(busAmbiguous.getBoolean(bus));
+            assertTrue(groupComplete.getBoolean(group));
+            assertNull(groups.get(group.id()),
+                    "registry owner clears only after nested cleanup succeeds");
+            done.get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void liveWorkerCancellationFailureRetainsCloseOwnerUntilRetry() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
