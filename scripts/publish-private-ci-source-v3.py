@@ -559,9 +559,8 @@ def _gh_ref_request(repository, ref_name, method):
     ]
     env = legacy.github_api_environment()
     try:
-        result = subprocess.run(
-            argv, capture_output=True, text=True, env=env,
-            timeout=30, check=False,
+        result = legacy.run_bounded_gh(
+            argv, env=env, timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("carrier ref rollback is unavailable") from exc
