@@ -530,6 +530,87 @@ def checked_contract(root, repository, source_pr, test_plan, main_sha):
     return parse_contract(remote, repository, source_pr, test_plan)
 
 
+def require_destination_main_governance(repository, expected_base_sha):
+    """Refuse source export unless the carrier has enforced security-owner reviews.
+
+    A protected source main alone is insufficient: an unprotected destination
+    main can rewrite the workflow that subsequently executes confidential code.
+    Pin every read to the exact independently reviewed carrier base.
+    """
+    expected_base_sha = valid_sha(expected_base_sha, "carrier base SHA invalid")
+    prefix = f"repos/{repository}"
+    branch = legacy.gh_api(prefix + "/branches/main")
+    if (branch.get("name") != "main"
+            or branch.get("protected") is not True
+            or not isinstance(branch.get("commit"), dict)
+            or branch["commit"].get("sha") != expected_base_sha):
+        raise Denied("carrier main is unprotected or differs from reviewed base")
+
+    protection = legacy.gh_api(prefix + "/branches/main/protection")
+    reviews = protection.get("required_pull_request_reviews")
+    checks = protection.get("required_status_checks")
+    contexts = checks.get("contexts") if isinstance(checks, dict) else None
+    named_checks = checks.get("checks") if isinstance(checks, dict) else None
+    admins = protection.get("enforce_admins")
+    force_pushes = protection.get("allow_force_pushes")
+    deletions = protection.get("allow_deletions")
+    if (not isinstance(reviews, dict)
+            or reviews.get("require_code_owner_reviews") is not True
+            or reviews.get("dismiss_stale_reviews") is not True
+            or type(reviews.get("required_approving_review_count")) is not int
+            or reviews["required_approving_review_count"] < 1
+            or not isinstance(checks, dict) or checks.get("strict") is not True
+            or not isinstance(contexts, list) or not isinstance(named_checks, list)
+            or not (contexts or named_checks)
+            or any(not isinstance(ctx, str) or not ctx.strip() for ctx in contexts)
+            or any(not isinstance(entry, dict)
+                   or not isinstance(entry.get("context"), str)
+                   or not entry["context"].strip() for entry in named_checks)
+            or not isinstance(admins, dict) or admins.get("enabled") is not True
+            or not isinstance(force_pushes, dict)
+            or force_pushes.get("enabled") is not False
+            or not isinstance(deletions, dict)
+            or deletions.get("enabled") is not False):
+        raise Denied("carrier main lacks enforced CODEOWNER/admin protection")
+    bypasses = reviews.get("bypass_pull_request_allowances")
+    if bypasses is not None:
+        if (not isinstance(bypasses, dict)
+                or any(not isinstance(bypasses.get(group, []), list)
+                       or bypasses.get(group)
+                       for group in ("users", "teams", "apps"))):
+            raise Denied("carrier main allows pull request review bypass")
+
+    # Enabling the GitHub CODEOWNER toggle is useless if the file is absent,
+    # invalid or gives another actor last-match ownership of executable CI.
+    path = ".github/CODEOWNERS"
+    item = legacy.gh_api(prefix + f"/contents/{path}?ref={expected_base_sha}")
+    if (item.get("path") != path or item.get("type") != "file"
+            or item.get("encoding") != "base64"
+            or not isinstance(item.get("content"), str)):
+        raise Denied("carrier protected CODEOWNERS file is missing")
+    try:
+        raw = base64.b64decode(
+            "".join(item["content"].split()), validate=True
+        )
+    except (ValueError, base64.binascii.Error) as exc:
+        raise Denied("carrier CODEOWNERS content is invalid base64") from exc
+    if (not raw or len(raw) > MAX_PLAN
+            or git_blob_sha(raw) != valid_sha(
+                item.get("sha"), "carrier CODEOWNERS SHA invalid"
+            )):
+        raise Denied("carrier CODEOWNERS digest is not authenticated")
+    rules = [
+        line for line in legacy.canonical_security_lines(
+            raw, "carrier CODEOWNERS"
+        ) if line and not line.startswith("#")
+    ]
+    if rules != [
+        "* @ORESoftware",
+        "/.github/ @ORESoftware",
+        "/.github/CODEOWNERS @ORESoftware",
+    ]:
+        raise Denied("carrier CODEOWNERS must be fully security-owned")
+
 def checked_destination(repository, contract):
     repo = legacy.checked_repo(repository, contract["repository_id"])
     if (repo.get("id") != contract["repository_id"]
@@ -561,6 +642,11 @@ def checked_destination(repository, contract):
                 or isinstance(path, str) and path.startswith(legacy.PREFIX + "/")
                 or path == RECEIPT_PATH):
             raise Denied("reviewed carrier base is not source-free")
+
+    # The pinned workflow remains mutable on an unprotected carrier main.
+    # Enforce independent CODEOWNER/admin/required-check governance before
+    # trusting or executing any carrier control-plane bytes.
+    require_destination_main_governance(repository, base_sha)
 
     workflow = legacy.gh_api(
         f"repos/{repository}/contents/{contract['workflow_path']}?ref={base_sha}"
