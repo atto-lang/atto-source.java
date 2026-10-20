@@ -87,4 +87,44 @@ final class CheckedEffectsTest {
               + "fnc capture(): void throws string { val f = risky; return; }"));
         assertTrue(error.getMessage().contains("direct-call-only"));
     }
+    @Test
+    void rejectsUnresolvedAndRuntimeAffinePayloadsInAllCategories() {
+        for (String category : new String[]{"throws", "raises", "panics"}) {
+            for (String payload : new String[]{
+                    "NotDeclared", "Future<int>", "Channel<int>", "Mutex<int>",
+                    "Option<Future<int>>", "Result<int, Channel<int>>",
+                    "Fnc<int>", "ActorMail<int>"
+            }) {
+                String source = "fnc risky(): int " + category + " " + payload
+                        + " { return 1; }";
+                assertThrows(IllegalArgumentException.class, () -> checked(source),
+                        category + " " + payload);
+            }
+        }
+    }
+
+    @Test
+    void rejectsAliasIndirectionToRuntimeAffineTypes() {
+        assertThrows(IllegalArgumentException.class, () -> checked(
+                "define type Alias as Future<int> end "
+                + "fnc risky(): int throws Alias { return 1; }"));
+    }
+
+    @Test
+    void acceptsClosedSumPayloadsWithoutSilentlyAllowingDynamicTypes() {
+        assertDoesNotThrow(() -> checked(
+                "fnc risky(): int throws Option<int> raises Result<string,int> "
+                + "{ return 1; }"));
+    }
+
+    @Test
+    void boundedNestedPayloadRefinementRejectsBeforeUnboundedResolution() {
+        String payload = "int";
+        for (int i = 0; i < 19; ++i) payload = "Option<" + payload + ">";
+        String source = "fnc risky(): int throws " + payload + " { return 1; }";
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> checked(source));
+        assertTrue(error.getMessage().contains("budget"));
+    }
+
 }
