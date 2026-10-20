@@ -1,0 +1,52 @@
+name: Parameter presence v3 reference
+on:
+  pull_request:
+    paths:
+      - 'contracts/v3/**'
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/V3*.java'
+      - 'src/main/java/dev/oreslang/types/OptionalCallShapeBinder.java'
+      - 'src/test/java/dev/oreslang/V3DefaultArgValsAdmissionTest.java'
+      - '.github/workflows/parameter-presence-v3-contract.yml'
+  push:
+    paths:
+      - 'contracts/v3/**'
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/V3*.java'
+      - 'src/main/java/dev/oreslang/types/OptionalCallShapeBinder.java'
+      - 'src/test/java/dev/oreslang/V3DefaultArgValsAdmissionTest.java'
+      - '.github/workflows/parameter-presence-v3-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run pure v3 named/default/presence semantics
+        run: |
+          node --version
+          node contracts/v3/check_parameter_presence_v3.mjs
+
+  staged-v3-junit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Setup GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Run Java v3 parser/presence/default/fingerprint JUnit tests
+        run: mvn -B -ntp -Dtest=V3DefaultArgValsAdmissionTest test

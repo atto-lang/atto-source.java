@@ -183,6 +183,10 @@ public final class OptionalCallAbiPreview {
         List<Slot> slots = new ArrayList<>(selectedFormals.size());
         for (int i = 0; i < selectedFormals.size(); i++) {
             Ast.Param formal = Objects.requireNonNull(selectedFormals.get(i), "formal");
+            if (formal.argumentOmittable() || formal.type().containsStagedV3Option()) {
+                throw new IllegalArgumentException(
+                        "staged v3 type/presence cannot use legacy Option-only ABI preview");
+            }
             int sourceIndex = selectedPlan.sourceIndex(i);
             Ast.TypeRef abiType = formal.calleeType();
             requireExactConcreteType(abiType);
