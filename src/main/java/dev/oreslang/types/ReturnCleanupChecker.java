@@ -162,6 +162,8 @@ public final class ReturnCleanupChecker {
                 }
             } else if (stmt instanceof Ast.BlockStmt block) {
                 statements(block.body(), scope, inFinally, inDefer, trackReturns, state);
+            } else if (stmt instanceof Ast.TaskScopeStmt taskScope) {
+                statements(taskScope.body(), scope, inFinally, inDefer, trackReturns, state);
             } else if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
                     expression(branch.condition(), scope, inDefer, state);
@@ -284,6 +286,10 @@ public final class ReturnCleanupChecker {
             }
             expression(assignment.target(), scope, inDefer, state);
             expression(assignment.value(), scope, inDefer, state);
+        } else if (expr instanceof Ast.TaskExpr task) {
+            // nb Task is an independent return/cleanup control scope. Never
+            // treat Task returns or defers as operating on the caller frame.
+            callable(task.body(), List.of(), scope);
         } else if (expr instanceof Ast.LambdaExpr lambda) {
             // A return inside a nested lambda returns from that lambda, not
             // from the enclosing finally or function.
