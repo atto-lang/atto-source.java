@@ -46,12 +46,26 @@ PLAN = (
 
 def contract():
     return {
+        "mode": "receipt",
         "repository_id": 1323598177,
         "base_sha": BASE,
         "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
         "workflow_blob_sha": WORKFLOW,
         "test_plan_path": "ci/test-plans/java-pr1482.json",
         "test_plan_blob_sha": PLAN_BLOB,
+    }
+
+
+def connector_contract():
+    return {
+        "mode": "connector",
+        "repository_id": 1412142815,
+        "base_sha": BASE,
+        "base_tree_sha": ROOT_TREE,
+        "workflow_path": ".github/workflows/private-oreslang-exact-tree.yml",
+        "workflow_blob_sha": WORKFLOW,
+        "source_base_ref": "hardening/gate-b",
+        "source_base_sha": "7" * 40,
     }
 
 
@@ -87,6 +101,40 @@ class PrivateCiV3Test(unittest.TestCase):
             v3.parse_contract(
                 raw, "trusted/ci", 1483, "ci/test-plans/java-pr1482.json"
             )
+
+    def test_parse_connector_contract_pins_stacked_base_and_rejects_plan(self):
+        raw = json.dumps(
+            {
+                "schema": 1,
+                "carriers": {
+                    "trusted/connector": {
+                        "mode": "connector",
+                        "repository_id": 1412142815,
+                        "base_sha": BASE,
+                        "base_tree_sha": ROOT_TREE,
+                        "workflow_path": ".github/workflows/private-oreslang-exact-tree.yml",
+                        "workflow_blob_sha": WORKFLOW,
+                        "source_prs": {
+                            "1616": {
+                                "base_ref": "hardening/gate-b",
+                                "base_sha": "7" * 40,
+                            }
+                        },
+                    }
+                },
+            }
+        ).encode()
+        got = v3.parse_contract(raw, "trusted/connector", 1616, None)
+        self.assertEqual(got["mode"], "connector")
+        self.assertEqual(got["base_tree_sha"], ROOT_TREE)
+        self.assertEqual(got["source_base_ref"], "hardening/gate-b")
+        self.assertEqual(got["source_base_sha"], "7" * 40)
+        with self.assertRaisesRegex(v3.Denied, "does not accept"):
+            v3.parse_contract(
+                raw, "trusted/connector", 1616, "ci/test-plans/injected.json"
+            )
+        with self.assertRaisesRegex(v3.Denied, "not authorized"):
+            v3.parse_contract(raw, "trusted/connector", 1617, None)
 
     def test_contract_rejects_duplicate_json_keys(self):
         raw = (
@@ -161,7 +209,46 @@ class PrivateCiV3Test(unittest.TestCase):
             raise AssertionError(route)
         with patch.object(v3.legacy, "gh_api", side_effect=api):
             with self.assertRaisesRegex(v3.Denied, "exact open PR head"):
-                v3.verify_source_pr(1482, "8" * 40)
+                v3.verify_source_pr(1482, "8" * 40, contract())
+
+    def test_verify_source_pr_connector_requires_exact_stacked_base(self):
+        carrier = connector_contract()
+        def api(route, method="GET", payload=None):
+            if route == "repos/" + v3.legacy.SOURCE_REPO:
+                return {
+                    "id": v3.SOURCE_REPOSITORY_ID,
+                    "full_name": v3.legacy.SOURCE_REPO,
+                    "private": True,
+                    "visibility": "private",
+                    "archived": False,
+                    "disabled": False,
+                    "fork": False,
+                }
+            if route == "repos/" + v3.legacy.SOURCE_REPO + "/pulls/1616":
+                return {
+                    "number": 1616,
+                    "state": "open",
+                    "head": {
+                        "sha": "8" * 40,
+                        "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                    },
+                    "base": {
+                        "ref": carrier["source_base_ref"],
+                        "sha": carrier["source_base_sha"],
+                        "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                    },
+                }
+            raise AssertionError(route)
+        with patch.object(v3.legacy, "gh_api", side_effect=api):
+            self.assertEqual(
+                v3.verify_source_pr(1616, "8" * 40, carrier),
+                v3.SOURCE_REPOSITORY_ID,
+            )
+        bad = dict(carrier)
+        bad["source_base_sha"] = "6" * 40
+        with patch.object(v3.legacy, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(v3.Denied, "protected connector contract"):
+                v3.verify_source_pr(1616, "8" * 40, bad)
 
     def test_verify_source_pr_rejects_source_repository_id_replacement(self):
         def api(route, method="GET", payload=None):
@@ -303,6 +390,109 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertIn(
             "Oreslang-CI-Receipt-SHA256: " + digest,
             commit_payload["message"].splitlines(),
+        )
+        refs = [
+            payload["ref"]
+            for method, route, payload in writes
+            if method == "POST" and route.endswith("/git/refs")
+        ]
+        self.assertEqual(
+            refs,
+            [
+                "refs/heads/ci/oreslang-" + SOURCE_TREE,
+                "refs/heads/ci/authorized-" + COMMIT,
+            ],
+        )
+
+    def test_publish_connector_emits_exact_carrier_envelope_without_receipt(self):
+        carrier = connector_contract()
+        writes = []
+        commit_payload = {}
+
+        def api(route, method="GET", payload=None):
+            writes.append((method, route, payload))
+            if method == "POST" and route.endswith("/git/blobs"):
+                data = base64.b64decode(payload["content"], validate=True)
+                return {"sha": v3.git_blob_sha(data)}
+            if method == "POST" and route.endswith("/git/trees"):
+                if payload.get("base_tree") is None:
+                    return {"sha": SOURCE_TREE}
+                self.assertEqual(
+                    payload["tree"],
+                    [{
+                        "path": v3.legacy.PREFIX,
+                        "mode": "040000",
+                        "type": "tree",
+                        "sha": SOURCE_TREE,
+                    }],
+                )
+                return {"sha": ROOT_TREE}
+            if method == "POST" and route.endswith("/git/commits"):
+                commit_payload.update(payload)
+                return {"sha": COMMIT}
+            if method == "POST" and route.endswith("/git/refs"):
+                return {"ref": payload["ref"], "object": {"sha": payload["sha"]}}
+            raise AssertionError((method, route))
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "snapshot"
+            source.mkdir()
+            (source / "hello.ores").write_text("synthetic\n")
+            with (
+                patch.object(v3.legacy, "require_preflight"),
+                patch.object(
+                    v3.legacy, "checked_policy_fingerprint", return_value=POLICY
+                ),
+                patch.object(v3.legacy, "verify_protected_origin"),
+                patch.object(v3, "protected_main_sha", return_value=PROTECTED),
+                patch.object(v3, "checked_contract", return_value=carrier),
+                patch.object(
+                    v3, "verify_source_pr",
+                    return_value=v3.SOURCE_REPOSITORY_ID,
+                ),
+                patch.object(
+                    v3, "checked_destination",
+                    return_value=(
+                        {
+                            "id": carrier["repository_id"],
+                            "private": True,
+                            "visibility": "private",
+                        },
+                        ROOT_TREE,
+                        None,
+                    ),
+                ),
+                patch.object(
+                    v3.legacy,
+                    "collect_source",
+                    return_value=[("hello.ores", b"synthetic\n", "100644")],
+                ),
+                patch.object(
+                    v3.legacy,
+                    "verified_exact_source_tree",
+                    return_value=SOURCE_TREE,
+                ),
+                patch.object(v3, "authorize_write"),
+                patch.object(v3.legacy, "gh_api", side_effect=api),
+            ):
+                result = v3.publish(
+                    "trusted/connector",
+                    source,
+                    "4" * 40,
+                    1616,
+                    None,
+                    root,
+                )
+
+        self.assertNotIn("receipt_sha256", result)
+        self.assertEqual(
+            commit_payload["message"],
+            "ci: exact private Oreslang tree " + "4" * 40
+            + " tree " + SOURCE_TREE + "\n"
+            + "carrier-base " + BASE + " tree " + ROOT_TREE + "\n"
+            + "connector-authorized source-repository "
+            + v3.legacy.SOURCE_REPO + " id " + str(v3.SOURCE_REPOSITORY_ID),
         )
         refs = [
             payload["ref"]
