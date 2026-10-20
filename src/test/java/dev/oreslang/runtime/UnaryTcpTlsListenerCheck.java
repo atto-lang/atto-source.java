@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLServerSocket;
@@ -47,14 +48,18 @@ public final class UnaryTcpTlsListenerCheck {
         try (SSLServerSocket endpoint = (SSLServerSocket)
                 server.getServerSocketFactory().createServerSocket(
                         0, 4, InetAddress.getLoopbackAddress());
-             var adapterListener = new UnaryTcpTlsListener(
-                     endpoint, limits, certificate -> {
-                         if (!certificate.getSubjectX500Principal().getName()
-                                 .contains("oreslang-test-client"))
-                             throw new SecurityException("unauthorized test principal");
-                         return "test:approved";
-                     }, echo);
              var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            AtomicInteger authorizations = new AtomicInteger();
+            try (var adapterListener = new UnaryTcpTlsListener(
+                    endpoint, limits, certificate -> {
+                        int attempt = authorizations.incrementAndGet();
+                        if (attempt == 1)
+                            throw new SecurityException("intentional first-client rejection");
+                        if (!certificate.getSubjectX500Principal().getName()
+                                .contains("oreslang-test-client"))
+                            throw new SecurityException("unauthorized test principal");
+                        return "test:approved";
+                    }, echo)) {
             var accepting = pool.submit(() -> {
                 try {
                     adapterListener.serve();
@@ -62,6 +67,20 @@ public final class UnaryTcpTlsListenerCheck {
                     throw new AssertionError(failure);
                 }
             });
+            try (SSLSocket rejected = (SSLSocket)
+                    client.getSocketFactory().createSocket(
+                            InetAddress.getLoopbackAddress(), endpoint.getLocalPort())) {
+                rejected.setSoTimeout(3000);
+                try {
+                    int value = rejected.getInputStream().read();
+                    require(value == -1,
+                            "application-rejected mTLS client received session binding");
+                } catch (javax.net.ssl.SSLException expected) {
+                    // TLS is valid; application certificate authorization may
+                    // surface closure as an SSL alert on the client.
+                }
+            }
+
             try (SSLSocket socket = (SSLSocket)
                     client.getSocketFactory().createSocket(
                             InetAddress.getLoopbackAddress(), endpoint.getLocalPort())) {
@@ -81,15 +100,16 @@ public final class UnaryTcpTlsListenerCheck {
                 require(result.kind() == UnaryTransportFrame.Kind.REPLY
                                 && result.correlationId() == 1
                                 && Arrays.equals(result.payload(), body),
-                        "mTLS unary listener must dispatch and return one correlated reply");
-                require(adapterListener.availableConnectionSlots() == 0,
-                        "one connection must consume the only admission slot");
+                        "listener must recover its sole slot after authorization rejection");
+                require(authorizations.get() >= 2,
+                        "listener did not re-enter certificate authorization after rejection");
             } finally {
                 adapterListener.close();
             }
             accepting.get(3, TimeUnit.SECONDS);
             require(adapterListener.activeConnections() == 0,
                     "listener shutdown must retire adapter connection credits");
+            }
         }
         System.out.println("PASS: TLS 1.3 supervisor listener admission, unary reply and shutdown");
     }
