@@ -1,4 +1,4 @@
-name: Oreslang OTP six-module source foundation
+name: Oreslang OTP eight-module source foundation
 
 on:
   pull_request:
@@ -36,8 +36,8 @@ jobs:
           java-version: '25'
           distribution: 'graalvm'
           cache: maven
-      - name: Execute six OTP source slices
+      - name: Execute eight OTP source slices
         run: >
           mvn -B -ntp
-          -Dtest=NativeOtpBehaviorSlicesTest,NativeOtpGenServerProtocolTest,NativeOtpSupervisorPolicyTest,NativeOtpAdmissionBoundariesTest,NativeOtpPolicyHardeningTest,NativeOtpCanonicalImportTest,GenServerCallPortTest
+          -Dtest=NativeOtpBehaviorSlicesTest,NativeOtpGenServerProtocolTest,NativeOtpSupervisorPolicyTest,NativeOtpAdmissionBoundariesTest,NativeOtpPolicyHardeningTest,NativeOtpCanonicalImportTest,NativeOtpPgEtsSourceTest,GenServerCallPortTest
           test
