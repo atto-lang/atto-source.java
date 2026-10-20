@@ -174,6 +174,16 @@ public final class RealtimeRegionFlowSelfTest {
                 plan(List.of(new Suspend(), new Suspend())),
                 new Budget(1000, 1000, 1));
 
+        deny("deeply immutable holder may not reference mutable object", List.of(
+                alloc("holder", "A", 8, true, false),
+                alloc("mutable", "A", 8, false, false),
+                new StoreReference("holder", "mutable")));
+        deny("copy cannot invent a destination actor", List.of(
+                alloc("number", "A", 4, true, true),
+                new CopyToActor("number", "nonexistent")));
+        deny("shared region cannot invent a participant", List.of(
+                alloc("snapshot", "G", 8, true, false),
+                new ShareToActor("snapshot", "actorA", "nonexistent")));
         if (checked < 30) throw new AssertionError("insufficient audit coverage");
         System.out.println("PASS: " + checked + " actor-region provenance and resource cases");
     }
