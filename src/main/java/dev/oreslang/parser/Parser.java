@@ -968,14 +968,16 @@ public final class Parser {
                 throw error(start, "enum tags must be unique and monotonically increasing");
             }
             cases.add(new Ast.EnumCase(start.lexeme(), payload, tag));
+            boolean separator = match(COMMA, SEMICOLON);
             if (tag == Integer.MAX_VALUE) {
+                // A trailing separator is legal. Reject only when another
+                // variant follows the maximum explicit tag.
                 if (!check(END)) {
                     throw error(start, "cannot implicitly increment enum tag after INT32_MAX");
                 }
             } else {
                 nextTag = tag + 1;
             }
-            boolean separator = match(COMMA, SEMICOLON);
             if (!separator && !check(END) && peek().line() <= previous().line()) {
                 throw error(peek(), "enum cases require separate lines, commas, or semicolons");
             }
