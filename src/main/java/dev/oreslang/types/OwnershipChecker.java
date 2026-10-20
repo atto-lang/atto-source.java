@@ -1677,7 +1677,8 @@ public final class OwnershipChecker {
                                 "Array", List.of(entry), false);
                         yield new ValueInfo(result, kindOfType(result), null);
                     }
-                    default -> null;
+                    default -> throw error(
+                            "unknown Map member '" + mapMember.member() + "'");
                 };
             }
         }
