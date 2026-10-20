@@ -84,6 +84,31 @@ final class FutureConstructorsLanguageTest {
     }
 
     @Test
+    void voidAsyncProviderUsesFutureVoidCompletion() throws Exception {
+        String sourceText = """
+                define module app
+                  define class NoValueProducer as
+                    pub async run(): void { return; }
+                  end
+                  pub fnc main(): void {
+                    let Future<void> future = new Future<void>(new NoValueProducer());
+                    await future;
+                    stdio.stdout.write("completed");
+                    return;
+                  }
+                end
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, sourceText, "future-void.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("completed"));
+    }
+
+    @Test
     void constructorRejectsSynchronousRun() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 define module app
