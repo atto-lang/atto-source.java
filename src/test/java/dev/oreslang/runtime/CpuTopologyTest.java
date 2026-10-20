@@ -89,6 +89,29 @@ final class CpuTopologyTest {
     }
 
     @Test
+    void regionTaskPrefersKnownNumaAndFallsBackWithoutTopology() {
+        CpuTopology topology = CpuTopology.of(
+                new CpuTopology.Location(10, 12, 0, 3, 0),
+                new CpuTopology.Location(11, 13, 1, 3, 0),
+                new CpuTopology.Location(12, 13, 1, 3, 0),
+                new CpuTopology.Location(13, -1, -1));
+        int[] targetCpus = {10, 11, 12, 13};
+        java.util.function.IntUnaryOperator cpuAt = lane -> targetCpus[lane];
+
+        assertEquals(0, topology.preferredSlotForNuma(0, 0, 4, cpuAt));
+        assertEquals(1, topology.preferredSlotForNuma(0, 1, 4, cpuAt));
+        assertEquals(2, topology.preferredSlotForNuma(2, 1, 4, cpuAt));
+        assertEquals(0, topology.preferredSlotForNuma(0, 55, 4, cpuAt));
+        assertEquals(3, topology.preferredSlotForNuma(-1, -1, 4, cpuAt));
+        assertEquals(3, CpuTopology.empty().preferredSlotForNuma(
+                Integer.MIN_VALUE + 3, 1, 4, cpuAt));
+        assertThrows(IllegalArgumentException.class,
+                () -> topology.preferredSlotForNuma(1, -2, 4, cpuAt));
+        assertThrows(IllegalArgumentException.class,
+                () -> topology.preferredSlotForNuma(1, 0, 0, cpuAt));
+    }
+
+    @Test
     void duplicateLogicalCpuIsRejected() {
         assertThrows(IllegalArgumentException.class, () -> CpuTopology.of(
                 new CpuTopology.Location(0, 1, 0),
