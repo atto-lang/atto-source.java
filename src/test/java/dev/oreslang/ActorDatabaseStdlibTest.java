@@ -1,0 +1,156 @@
+package dev.oreslang;
+
+import dev.oreslang.runtime.ExecutionProfile;
+import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.LinkedProgramRunner;
+import org.graalvm.polyglot.PolyglotException;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Map;
+import java.util.Set;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+final class ActorDatabaseStdlibTest {
+    @TempDir Path temp;
+
+    private String run(String content) throws Exception {
+        Path entry = temp.resolve("app.ores");
+        Files.writeString(entry, content);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(), out,
+                new ByteArrayOutputStream());
+        return out.toString(StandardCharsets.UTF_8);
+    }
+
+    @Test
+    void poolAdmissionIsBoundedAndReleaseUnderflowCannotMutateCounters() throws Exception {
+        assertEquals("""
+                true
+                false
+                true
+                false
+                false
+                2
+                6
+                true
+                true
+                1
+                2
+                """, run("""
+                import * as pool from "std/db_pool";
+                pub routine main(): void {
+                  let budget = pool.admission_budget(2, 6, 4);
+                  stdio.println(budget.try_acquire(4));
+                  stdio.println(budget.try_acquire(3));
+                  stdio.println(budget.try_acquire(2));
+                  stdio.println(budget.try_acquire(1));
+                  stdio.println(budget.release(7));
+                  stdio.println(budget.active());
+                  stdio.println(budget.bytes_in_flight());
+                  stdio.println(budget.release(4));
+                  stdio.println(budget.try_acquire(4));
+                  stdio.println(budget.active() - 1);
+                  stdio.println(budget.bytes_in_flight() - 4);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void protocolGateDoesNotOverlapTransactionsAndQuarantinedConnections() throws Exception {
+        assertEquals("""
+                true
+                true
+                false
+                false
+                true
+                true
+                true
+                false
+                true
+                true
+                false
+                """, run("""
+                import * as pool from "std/db_pool";
+                pub routine main(): void {
+                  let gate = pool.session_gate(2);
+                  stdio.println(gate.begin_query());
+                  stdio.println(gate.begin_query());
+                  stdio.println(gate.begin_query());
+                  stdio.println(gate.begin_transaction());
+                  stdio.println(gate.complete_query(true));
+                  stdio.println(gate.complete_query(true));
+                  stdio.println(gate.begin_transaction());
+                  stdio.println(gate.begin_query());
+                  stdio.println(gate.end_transaction(false));
+                  stdio.println(gate.is_quarantined());
+                  stdio.println(gate.begin_query());
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void staleGenerationAcknowledgementsAndObsoleteFlushesAreRejected() throws Exception {
+        assertEquals("""
+                false
+                6
+                6
+                7
+                false
+                true
+                6
+                7
+                false
+                true
+                7
+                true
+                false
+                """, run("""
+                import * as persistence from "std/actor_persistence";
+                pub routine main(): void {
+                  let cursor = persistence.cursor(11, 5);
+                  stdio.println(cursor.dirty());
+                  stdio.println(cursor.mark_changed());
+                  stdio.println(cursor.begin_flush());
+                  stdio.println(cursor.mark_changed());
+                  stdio.println(cursor.ack(12, 6));
+                  stdio.println(cursor.ack(11, 6));
+                  stdio.println(cursor.durable());
+                  stdio.println(cursor.begin_flush());
+                  stdio.println(cursor.retry(11, 6));
+                  stdio.println(cursor.retry(11, 7));
+                  stdio.println(cursor.begin_flush());
+                  stdio.println(cursor.ack(11, 7));
+                  stdio.println(cursor.dirty());
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void invalidLimitsAndWritePlansFailClosed() {
+        assertThrows(PolyglotException.class, () -> run("""
+                import * as pool from "std/db_pool";
+                pub routine main(): void {
+                  val bad = pool.limits(0, 4, 1024, 64, 1);
+                  return;
+                }
+                """));
+        assertThrows(PolyglotException.class, () -> run("""
+                import * as persistence from "std/actor_persistence";
+                pub routine main(): void {
+                  val bad = persistence.plan("a", 1, 5, 5, 1, "op");
+                  return;
+                }
+                """));
+    }
+}
