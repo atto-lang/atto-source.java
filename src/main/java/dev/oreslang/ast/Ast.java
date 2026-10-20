@@ -1067,6 +1067,96 @@ public final class Ast {
         }
     }
 
+    public enum MapKeyDomainProof {
+        STRING,
+        SYMBOL,
+        STRING_OR_SYMBOL
+    }
+
+    public enum MapValueDomainProof {
+        INT,
+        BOOL,
+        STRING,
+        SYMBOL
+    }
+
+    public record MapShapeProof(
+            MapKeyDomainProof keyDomain,
+            MapValueDomainProof valueDomain) {
+        public MapShapeProof {
+            java.util.Objects.requireNonNull(keyDomain, "Map key-domain proof");
+            java.util.Objects.requireNonNull(valueDomain, "Map value-domain proof");
+        }
+    }
+
+    /**
+     * Compiler-owned exact runtime shape for a Map factory call. The evaluator
+     * must require this identity-bound proof instead of inferring a narrower
+     * runtime key/value domain from the values that happened to be present.
+     */
+    public static final class CheckedMapFactoryShape {
+        private CheckedMapFactoryShape() { }
+
+        private static final java.lang.ref.ReferenceQueue<CallExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, MapShapeProof> SHAPES =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey extends java.lang.ref.WeakReference<CallExpr> {
+            private final int hash;
+            private IdentityKey(
+                    CallExpr call, java.lang.ref.ReferenceQueue<CallExpr> queue) {
+                super(call, queue);
+                hash = System.identityHashCode(call);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                CallExpr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends CallExpr> collected;
+            while ((collected = CLEARED.poll()) != null) {
+                SHAPES.remove(collected);
+            }
+        }
+
+        public static synchronized void record(CallExpr call, MapShapeProof shape) {
+            java.util.Objects.requireNonNull(call, "Map factory call");
+            java.util.Objects.requireNonNull(shape, "Map factory shape");
+            expunge();
+            IdentityKey key = new IdentityKey(call, CLEARED);
+            MapShapeProof old = SHAPES.putIfAbsent(key, shape);
+            if (old != null && !old.equals(shape)) {
+                throw new IllegalStateException(
+                        "same Map factory call received inconsistent checked shape");
+            }
+        }
+
+        public static synchronized MapShapeProof require(CallExpr call) {
+            java.util.Objects.requireNonNull(call, "Map factory call");
+            expunge();
+            MapShapeProof shape = SHAPES.get(new IdentityKey(call, null));
+            if (shape == null) {
+                throw new IllegalStateException(
+                        "Map.from_entries requires a statically checked factory call");
+            }
+            return shape;
+        }
+
+        public static synchronized void copy(CallExpr source, CallExpr target) {
+            java.util.Objects.requireNonNull(source, "source checked Map call");
+            java.util.Objects.requireNonNull(target, "target checked Map call");
+            expunge();
+            MapShapeProof shape = SHAPES.get(new IdentityKey(source, null));
+            if (shape != null) record(target, shape);
+        }
+    }
+
     /**
      * Compiler-verified static ordinary-class domain for a computed-index
      * receiver. The key is the exact receiver AST node admitted by the type
@@ -1227,6 +1317,14 @@ public final class Ast {
                 if (source instanceof CallExpr sourceCall
                         && target instanceof CallExpr targetCall) {
                     CheckedOptionDepth.copy(sourceCall, targetCall);
+                }
+            }
+        },
+        MAP_FACTORY_SHAPE("CheckedMapFactoryShape") {
+            @Override void copy(Expr source, Expr target) {
+                if (source instanceof CallExpr sourceCall
+                        && target instanceof CallExpr targetCall) {
+                    CheckedMapFactoryShape.copy(sourceCall, targetCall);
                 }
             }
         },
