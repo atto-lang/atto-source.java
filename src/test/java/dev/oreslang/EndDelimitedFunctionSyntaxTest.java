@@ -228,6 +228,18 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
+    void routineUsesTheSameEndDelimitedAndCompactDoRules() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                routine identity(int x) -> int
+                    return x
+                end
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "routine identity(int x) -> int do return x; end")));
+    }
+
+    @Test
     void explicitVoidMayFallThrough() {
         String source = """
                 fnc noop() -> void
