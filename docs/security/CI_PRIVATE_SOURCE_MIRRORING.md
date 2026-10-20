@@ -766,3 +766,29 @@ Exact source PR #954 head after the code/test hardening still receives source-or
 workflow startup failures. Run `39343397605` concluded failure with the
 individually queried `preflight-regressions` job returning `steps=[]`. That is
 an observed no-step failure, not execution of the new Python regressions.
+
+
+### 2026-10-19 complete carrier workflow-surface binding
+
+The publisher now requires a protected carrier-main policy file,
+`.github/oreslang-private-workflows.txt`, that lists every Actions workflow as
+`<.github/workflows/path.yml> <exact-Git-blob-SHA>`.
+
+Before private source is read, the publisher fetches the pinned carrier main
+recursive Git tree and requires the manifest to match the **complete** set of
+`.github/workflows/*.yml` and `.yaml` blobs exactly. It rejects missing,
+extra, duplicate, malformed, executable-type-invalid, or blob-drifted workflow
+entries and rejects truncated recursive-tree evidence. The manifest itself is
+terminally CODEOWNED and its blob digest is pinned/rechecked during every
+per-write authorization pass.
+
+This closes the gap where a separately reviewed source-testing workflow could
+be safe while another unreviewed carrier workflow or trigger still existed in
+the same repository. Carrier-main review remains responsible for the semantics
+of the manifest-listed exact workflow blobs; the publisher now proves there are
+no unlisted workflow files hiding outside that reviewed surface.
+
+Added source-free mocked regressions cover an unlisted workflow, truncated tree,
+and mid-transfer workflow-manifest drift. Exact source GitHub Actions execution
+remains a separate evidence requirement; a workflow conclusion without executed
+steps is not treated as test execution.
