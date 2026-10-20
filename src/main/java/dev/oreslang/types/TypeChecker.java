@@ -8738,7 +8738,7 @@ public final class TypeChecker {
         for (int i = 0; i < call.arguments().size(); i++) {
             Ast.Expr argument = call.arguments().get(i);
             if (argument instanceof Ast.SpreadExpr
-                    || !(argument instanceof Ast.LiteralExpr)) {
+                    || !isModelConstructorConstant(argument)) {
                 throw new IllegalArgumentException(
                         "MODEL_NONCONSTANT_CONFIG: model constructor arguments must be bounded literals in executable v1");
             }
@@ -8748,6 +8748,16 @@ public final class TypeChecker {
                     "model configuration parameter '" + model.parameters().get(i).name() + "'");
         }
         return modelType(model);
+    }
+
+    private static boolean isModelConstructorConstant(Ast.Expr expression) {
+        if (expression instanceof Ast.LiteralExpr) return true;
+        if (expression instanceof Ast.UnaryExpr unary
+                && unary.operator().equals("-")
+                && unary.operand() instanceof Ast.LiteralExpr literal) {
+            return literal.value() instanceof Long || literal.value() instanceof Double;
+        }
+        return false;
     }
 
     private Ast.TypeRef substituteAliasType(Ast.TypeRef ref, Map<String, Ast.TypeRef> substitutions) {
