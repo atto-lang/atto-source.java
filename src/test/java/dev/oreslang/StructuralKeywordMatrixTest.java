@@ -221,6 +221,9 @@ final class StructuralKeywordMatrixTest {
                     value: string;
                   end
 
+                  define interface Empty
+                  end
+
                   define class FieldOnly as
                     pub val int id = 0;
                   end
@@ -288,6 +291,13 @@ final class StructuralKeywordMatrixTest {
                     end
                   }
 
+                  fnc empty_interface_case<T>(T value): bool {
+                    match value over
+                      on structural Empty shaped -> { return true; }
+                      on _ -> { return false; }
+                    end
+                  }
+
                   fnc entry_target_case(): string {
                     const row = record{key: 3, value: "shape", extra: true};
                     match row over
@@ -320,6 +330,8 @@ final class StructuralKeywordMatrixTest {
                     stdio.println(field_only_class_case());
                     stdio.println(empty_shape_case(99));
                     stdio.println(empty_shape_case(record{id: 1}));
+                    stdio.println(empty_interface_case(99));
+                    stdio.println(empty_interface_case(record{id: 1}));
                     stdio.println(interface_arg(new Candidate()));
                     stdio.println(record_arg(record{id: 21, extra: true}));
                     stdio.println(struct_arg(record{id: 22, extra: true}));
@@ -350,7 +362,7 @@ final class StructuralKeywordMatrixTest {
         }
 
         assertEquals(
-                "7\n8\n13\nfalse\ntrue\n7\n21\n22\n23\ntrait\nentry-arg\nshape\nentry\npair",
+                "7\n8\n13\nfalse\ntrue\nfalse\ntrue\n7\n21\n22\n23\ntrait\nentry-arg\nshape\nentry\npair",
                 output.toString(StandardCharsets.UTF_8)
                         .replace("\r\n", "\n")
                         .strip());
