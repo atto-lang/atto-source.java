@@ -1,0 +1,27 @@
+name: Source-free private CI gate regression
+on:
+  pull_request:
+    paths:
+      - 'scripts/check-private-ci-destination.sh'
+      - 'scripts/test-private-ci-destination.sh'
+      - 'scripts/run-in-private-ci-destination.sh'
+      - 'scripts/publish-private-ci-source*.py'
+      - '.github/private-ci-approved-repositories.txt'
+      - '.github/workflows/source-free-private-ci-gates.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  policy-negative-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Reject unauthorized destinations without publishing
+        run: bash scripts/test-private-ci-destination.sh
+      - name: Verify source-free publisher regression fixtures
+        run: |
+          python3 scripts/test-publish-private-ci-source.py
+          python3 scripts/test-publish-private-ci-source-v3.py
