@@ -88,3 +88,15 @@ helpers, or native C++ tests. Actual guest code must be executed on both
 production backends and checked against the same source Git blob.
 
 Tracks LLVM issue #143 and Java/LLVM existing supervision draft work.
+
+## Signature annotation admission (batch 12)
+
+Proposed callable postfix `throws(...)`, `raises(...)`, and
+`panics(...)` are recognized only as **unsupported signature boundaries** in
+the Java parser for ordinary/piped fnc/routine, methods and interface slots.
+They now produce explicit `not yet enabled` diagnostics rather than an
+incidental block/semicolon parse failure. Both parameterized and bare
+postfix forms remain rejected. The same words remain ordinary identifiers
+outside the signature-effect position. No typed function-effect row is
+represented in the executable AST, and no user code acquires effect authority.
+Exact-head Java parser/JUnit tests are outstanding.
