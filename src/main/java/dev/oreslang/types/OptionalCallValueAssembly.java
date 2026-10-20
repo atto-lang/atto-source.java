@@ -57,6 +57,13 @@ public final class OptionalCallValueAssembly {
         // This is a shallow snapshot of already-evaluated guest values; the
         // owning compiler/runtime must separately enforce deep immutability
         // and borrowed-lifetime rules for mutable payloads.
+        // Cheap preflight before making any O(n) snapshot of a caller-owned
+        // vector. Check the immutable snapshot again afterward to detect a
+        // size-changing caller or concurrent mutation before adapter effects.
+        int expected = checkedPreview.sourceExpressions().size();
+        if (evaluatedSourceValues.size() != expected)
+            throw new IllegalArgumentException(
+                    "source values do not match the verified evaluated-source count");
         List<?> sourceValues;
         try {
             sourceValues = List.copyOf(evaluatedSourceValues);
