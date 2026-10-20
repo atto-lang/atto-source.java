@@ -190,7 +190,7 @@ final class OresTaskScopeTest {
             OresTaskScope scope = new OresTaskScope(scheduler);
             CountDownLatch childEntered = new CountDownLatch(1);
             CountDownLatch releaseChild = new CountDownLatch(1);
-            CountDownLatch subscriberEntered = new CountDownLatch(1);
+            CountDownLatch subscriberEntered = new CountDownLatch(3);
             CountDownLatch releaseSubscriber = new CountDownLatch(1);
 
             OresFuture<Integer> child = scope.fork(resume -> {
@@ -255,7 +255,7 @@ final class OresTaskScopeTest {
                     () -> drainedRef.set(scope.cancelAndQuiesce()));
 
             assertTrue(subscriberEntered.await(5, TimeUnit.SECONDS),
-                    "at least one ordinary subscriber should be blocking publication");
+                    "all ordinary subscribers should publish independently after revocation");
             for (OresFuture<Integer> child : children) {
                 assertTrue(child.isCancelled(),
                         "all child cancellation claims must win before subscriber publication");
