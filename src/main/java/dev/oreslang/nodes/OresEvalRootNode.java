@@ -1929,6 +1929,12 @@ public final class OresEvalRootNode extends RootNode {
         private SourceFlow mergeCleanupFailure(SourceFlow currentFlow, Throwable cleanupFailure) {
             Throwable earlier = currentFlow.failure();
             if (earlier == cleanupFailure) return currentFlow; // no self-suppression
+            if (earlier != null
+                    && isHostFatalFailure(cleanupFailure)
+                    && !isHostFatalFailure(earlier)) {
+                cleanupFailure.addSuppressed(earlier);
+                return SourceFlow.throwing(cleanupFailure);
+            }
             if (earlier != null && (isUnmaskableFailure(earlier)
                     || cleanupFailure instanceof ProcessExitSignal)) {
                 earlier.addSuppressed(cleanupFailure);
@@ -1947,15 +1953,11 @@ public final class OresEvalRootNode extends RootNode {
             if (finallyFlow.kind() == SourceFlowKind.NORMAL) return pending;
             if (pending.kind() == SourceFlowKind.THROW) {
                 Throwable earlier = pending.failure();
-                if (isUnmaskableFailure(earlier)) {
-                    if (finallyFlow.kind() == SourceFlowKind.THROW
-                            && earlier != finallyFlow.failure()) {
-                        earlier.addSuppressed(finallyFlow.failure());
-                    }
-                    return pending;
-                }
                 if (finallyFlow.kind() == SourceFlowKind.THROW) {
                     return mergeCleanupFailure(pending, finallyFlow.failure());
+                }
+                if (isUnmaskableFailure(earlier)) {
+                    return pending;
                 }
             }
             return finallyFlow;
@@ -5027,6 +5029,11 @@ public final class OresEvalRootNode extends RootNode {
                     failure, OresPanic.class);
         }
 
+        private boolean isHostFatalFailure(Throwable failure) {
+            return failure instanceof Error
+                    && !(failure instanceof ProcessExitSignal);
+        }
+
         // Explicit guest catch is intentionally broader than trap: callers
         // may handle a denied operation without weakening its authority.
         // Fatal panic and scheduler cancellation remain uncatchable.
@@ -5448,6 +5455,14 @@ public final class OresEvalRootNode extends RootNode {
                     try {
                         executeBlock(tried.finallyBody(), env, true);
                     } catch (RuntimeException | Error cleanupFailure) {
+                        if (pendingTryFailure != null
+                                && isHostFatalFailure(cleanupFailure)
+                                && !isHostFatalFailure(pendingTryFailure)) {
+                            if (pendingTryFailure != cleanupFailure) {
+                                cleanupFailure.addSuppressed(pendingTryFailure);
+                            }
+                            throw cleanupFailure;
+                        }
                         if (pendingTryFailure != null
                                 && (isUnmaskableFailure(pendingTryFailure)
                                         || cleanupFailure instanceof ProcessExitSignal)) {
