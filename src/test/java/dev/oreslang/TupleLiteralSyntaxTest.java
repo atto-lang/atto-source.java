@@ -4,7 +4,12 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -264,5 +269,44 @@ final class TupleLiteralSyntaxTest {
                 unsafeNarrowing.getMessage());
     }
 
+
+    @Test
+    void tupleLiteralFormsExecuteAlongsideOrdinaryUserTupleFunction() throws Exception {
+        String code = """
+                fnc tuple(int a, int b): int {
+                  return a + b;
+                }
+
+                pub fnc main(): void {
+                  const explicit = tuple {10, 11,};
+                  const compact = (10, 11,);
+                  const explicitSingleton = tuple {42,};
+                  const compactSingleton = (42,);
+                  stdio.println(explicit[0] + compact[1]);
+                  stdio.println(explicitSingleton[0] + compactSingleton[0]);
+                  stdio.println(tuple(20, 22));
+                  return;
+                }
+                """;
+
+        Ast.Program typed = TypeChecker.check(Parser.parse(code));
+        OwnershipChecker.check(typed);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                        OresLanguage.ID, code, "tuple-literal-runtime.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        assertEquals(
+                "21\\n84\\n42",
+                output.toString(StandardCharsets.UTF_8)
+                        .replace("\r\n", "\n")
+                        .strip());
+    }
 
 }
