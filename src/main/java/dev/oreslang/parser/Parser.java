@@ -115,6 +115,13 @@ public final class Parser {
                     rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations));
                     continue;
                 }
+                if (matchContextualKeyword("model")) {
+                    validateOnlyVisibilityModifiers(modifiers, "models");
+                    rejectCallableStructuralAnnotation(annotations, "model declarations");
+                    rejectDiscardedDeclarationAnnotations(annotations, "model declarations");
+                    rootDeclarations.add(parseModel(modifiers.visibility));
+                    continue;
+                }
                 if (modifiers.shared) {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
                 }
@@ -162,7 +169,7 @@ public final class Parser {
                     rootDeclarations.add(parseTypeAlias(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
+                throw error(previous(), "expected module, model, class, interface, trait, or type after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -252,6 +259,68 @@ public final class Parser {
         return consume(IDENT, "expected imported name").lexeme();
     }
 
+    private Ast.ModelDecl parseModel(Ast.Visibility visibility) {
+        String name = consume(IDENT, "expected model name").lexeme();
+        List<Ast.ModelParam> parameters = List.of();
+        if (match(LPAREN)) {
+            parameters = parseModelParametersUntil(RPAREN);
+            consume(RPAREN, "expected ')' after model parameters");
+        }
+        consume(AS, "expected 'as' before model operation body");
+
+        List<Ast.ModelOp> operations = new ArrayList<>();
+        while (!check(END) && !check(EOF)) {
+            if (!check(IDENT)) {
+                throw error(peek(),
+                        "MODEL_EFFECTFUL_BODY: model bodies admit only statically named operation calls");
+            }
+            String operation = advance().lexeme();
+            consume(LPAREN,
+                    "MODEL_NON_LAYER_EXPRESSION: expected '(' after model operation '" + operation + "'");
+            List<Ast.Expr> arguments = parseArgumentsUntil(RPAREN);
+            consume(RPAREN, "expected ')' after model operation arguments");
+            match(SEMICOLON);
+            operations.add(new Ast.ModelOp(operation, arguments));
+        }
+        consume(END, "expected 'end' to close model " + name);
+        if (operations.isEmpty()) {
+            throw error(previous(), "MODEL_EMPTY_BODY: model '" + name + "' requires at least one operation");
+        }
+        return new Ast.ModelDecl(name, visibility, parameters, operations);
+    }
+
+    private List<Ast.ModelParam> parseModelParametersUntil(Token.Type terminator) {
+        if (check(terminator)) return List.of();
+        List<Ast.ModelParam> parameters = new ArrayList<>();
+        java.util.Set<String> names = new java.util.LinkedHashSet<>();
+        boolean seenDefault = false;
+        do {
+            String name;
+            Ast.TypeRef type;
+            if (check(IDENT) && checkNext(COLON)) {
+                name = advance().lexeme();
+                consume(COLON, "expected ':' after model parameter name");
+                type = parseTypeRef();
+            } else {
+                type = parseTypeRef();
+                name = consume(IDENT, "expected model parameter name after type").lexeme();
+            }
+            if (!names.add(name)) {
+                throw error(previous(), "duplicate model parameter '" + name + "'");
+            }
+            Ast.Expr defaultValue = null;
+            if (match(EQUAL)) {
+                defaultValue = parseExpression();
+                seenDefault = true;
+            } else if (seenDefault) {
+                throw error(previous(),
+                        "MODEL_CONFIG_DEFAULT_ORDER: required model parameters cannot follow defaulted parameters");
+            }
+            parameters.add(new Ast.ModelParam(type, name, defaultValue));
+        } while (match(COMMA));
+        return List.copyOf(parameters);
+    }
+
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
@@ -307,6 +376,12 @@ public final class Parser {
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations);
             }
+            if (matchContextualKeyword("model")) {
+                validateOnlyVisibilityModifiers(modifiers, "models");
+                rejectCallableStructuralAnnotation(annotations, "model declarations");
+                rejectDiscardedDeclarationAnnotations(annotations, "model declarations");
+                return parseModel(modifiers.visibility);
+            }
             if (modifiers.shared || modifiers.untrusted) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
@@ -339,12 +414,12 @@ public final class Parser {
                 rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
                 return parseTypeAlias(modifiers.visibility);
             }
-            throw error(previous(), "expected class, interface, trait, or type after 'define'");
+            throw error(previous(), "expected model, class, interface, trait, or type after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
         if (declaration != null) return declaration;
-        throw error(peek(), "expected function, routine, class, interface, trait, type, or binding declaration");
+        throw error(peek(), "expected function, routine, model, class, interface, trait, type, or binding declaration");
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
