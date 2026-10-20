@@ -141,6 +141,14 @@ def gh_api(route, method="GET", payload=None):
             or len(p.stdout) > MAX_GH_API_RESPONSE_CHARS):
         raise Denied("authenticated GitHub API response exceeds size limit")
     data = strict_json_loads(p.stdout)
+    reviews_route = re.fullmatch(
+        rf"repos/{re.escape(SOURCE_REPO)}/pulls/[1-9][0-9]{{0,9}}/reviews\\?per_page=100",
+        route,
+    )
+    if reviews_route is not None:
+        if not isinstance(data, list):
+            raise Denied("invalid source PR review response shape")
+        return {"reviews": data}
     if not isinstance(data, dict):
         raise Denied("unexpected GitHub response shape")
     return data
