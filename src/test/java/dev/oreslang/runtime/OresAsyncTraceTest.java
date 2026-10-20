@@ -226,6 +226,53 @@ final class OresAsyncTraceTest {
     }
 
     @Test
+    void polyglotInteropKeepsLastSixteenActorsAfterEventElision() throws Exception {
+        OresAsyncTrace.Trace trace = OresAsyncTrace.root(
+                new OresAsyncTrace.Frame("entry", site(1)));
+        for (int actor = 1; actor <= 20; actor++) {
+            OresAsyncTrace.SourceSite handoff = site(100 + actor);
+            trace = trace.child(new OresAsyncTrace.Frame("Actor" + actor, handoff),
+                    handoff);
+            trace.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, handoff);
+            try (OresAsyncTrace.Scope entered = OresAsyncTrace.install(trace)) {
+                for (int await = 0; await < 30; await++) {
+                    trace.awaitAt(site(1000 + actor * 30 + await));
+                }
+            }
+        }
+
+        IllegalStateException failure = new IllegalStateException("actor failure");
+        OresAsyncTrace.attach(failure, trace);
+        OresGuestException guest = OresGuestException.from(failure);
+        com.oracle.truffle.api.interop.InteropLibrary interop =
+                com.oracle.truffle.api.interop.InteropLibrary.getUncached();
+        Object traces = interop.readMember(guest, "async_traces");
+        assertEquals(1, interop.getArraySize(traces));
+
+        Object logical = interop.readArrayElement(traces, 0);
+        assertEquals("oldest_to_newest",
+                interop.readMember(logical, "actor_history_order"));
+        assertEquals(4L,
+                ((Number) interop.readMember(logical, "elided_actor_visits")).longValue());
+        Object actors = interop.readMember(logical, "actor_history");
+        assertEquals(16, interop.getArraySize(actors));
+        assertEquals("Actor5", interop.readMember(
+                interop.readArrayElement(actors, 0), "symbol"));
+        assertEquals("Actor20", interop.readMember(
+                interop.readArrayElement(actors, 15), "symbol"));
+
+        Object frames = interop.readMember(logical, "frames");
+        Object last = interop.readArrayElement(frames, 1);
+        assertEquals("actor", interop.readMember(last, "kind"));
+        assertEquals("Actor20", interop.readMember(last, "symbol"));
+        // Unrelated awaits may elide, but every retained actor hop survives.
+        for (int actor = 16; actor <= 20; actor++) {
+            Object visit = interop.readArrayElement(actors, actor - 5);
+            assertEquals("Actor" + actor, interop.readMember(visit, "symbol"));
+        }
+    }
+
+    @Test
     void deepestSynchronousGuestStackIsAttachedExactlyOnce() {
         OresAsyncTrace.Trace caller = OresAsyncTrace.root(
                 new OresAsyncTrace.Frame("caller", site(75)));
