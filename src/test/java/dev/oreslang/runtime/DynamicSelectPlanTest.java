@@ -362,6 +362,33 @@ final class DynamicSelectPlanTest {
     }
 
     @Test
+    void staticFairTicketsCannotPoisonWinnerAdvancedPlanFairness() {
+        var a = new ChannelRuntime.Channel<Integer>(4);
+        var b = new ChannelRuntime.Channel<Integer>(4);
+        var set = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.read(a), ChannelRuntime.read(b));
+        for (int i = 0; i < 3; i++) {
+            assertTrue(a.tryWrite(i));
+            assertTrue(b.tryWrite(i));
+        }
+
+        // A source select starts at index zero, but this must not advance
+        // the independent reusable-plan cursor. Previously both cursor
+        // families were accidentally updated by every completed operation.
+        assertEquals(0, set.tryStaticSelect(ChannelRuntime.SelectPolicy.FAIR, 0)
+                .orElseThrow().index());
+        assertEquals(0, set.trySelect(ChannelRuntime.SelectPolicy.FAIR)
+                .orElseThrow().index());
+        assertEquals(1, set.trySelect(ChannelRuntime.SelectPolicy.FAIR)
+                .orElseThrow().index());
+        assertEquals(1, set.tryStaticSelect(ChannelRuntime.SelectPolicy.FAIR, 1)
+                .orElseThrow().index());
+        assertEquals(0, set.trySelect(ChannelRuntime.SelectPolicy.FAIR)
+                .orElseThrow().index(),
+                "source-site FAIR tickets must not mutate reusable-plan fairness");
+    }
+
+    @Test
     void cachedStaticPlanCancellationDoesNotCarryWaitersToNextTicket() {
         var channel = new ChannelRuntime.Channel<Integer>(0);
         var cached = ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel));
