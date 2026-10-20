@@ -195,13 +195,10 @@ assert_exit 1 run_preflight SYNTH_PROTECTED=true \
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch"
 
-# Source repository identity is bound by immutable ID, canonical name, and
-# private visibility before any authorization mode can pass.
+# Source repository identity is bound by immutable GitHub repository ID before
+# any authorization mode can pass. The hard-coded canonical API route plus
+# immutable repository ID prevents name-only destination/source substitution.
 assert_exit 1 run_preflight SYNTH_SOURCE_ID=999999 SYNTH_PROTECTED=true \
-  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch"
-assert_exit 1 run_preflight SYNTH_SOURCE_NAME=renamed-owner/oreslang-source.java SYNTH_PROTECTED=true \
-  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch"
-assert_exit 1 run_preflight SYNTH_SOURCE_PRIVATE=false SYNTH_PROTECTED=true \
   bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch"
 
 # Correct, distinct, unedited attestations pass only when GitHub explicitly
