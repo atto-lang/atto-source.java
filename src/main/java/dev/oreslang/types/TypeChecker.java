@@ -2311,7 +2311,8 @@ public final class TypeChecker {
                 return new Named(factory.name(), List.of(element));
             }
             if (call.callee() instanceof Ast.MemberExpr enumMember
-                    && enumMember.receiver() instanceof Ast.NameExpr enumName) {
+                    && enumMember.receiver() instanceof Ast.NameExpr enumName
+                    && env.lookup(enumName.name()) == null) {
                 Ast.EnumDecl enumeration = findEnum(enumName.name());
                 if (enumeration != null) {
                     Ast.EnumCase enumCase = findEnumCase(enumeration, enumMember.member());
