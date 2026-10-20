@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class EcsAccessPlannerAdversarialTest {
     private static Access read() {
-        return new Access(new Object(), 0, 1, Mode.READ);
+        return new Access(EcsAccessPlanner.newCompilerAllocationIdentity(), 0, 1, Mode.READ);
     }
 
     private static SystemAccess system() {
