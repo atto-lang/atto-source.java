@@ -87,4 +87,26 @@ final class CheckedEffectsTest {
               + "fnc capture(): void throws string { val f = risky; return; }"));
         assertTrue(error.getMessage().contains("direct-call-only"));
     }
+    @Test
+    void checkedTerminalPayloadCannotCarryUnresolvedOrAffineAuthority() {
+        for (String type : new String[]{
+                "Future<int>", "ActorRef<int>", "Channel<int>",
+                "Generator<int>", "Pointer<int>", "Mutex<int>",
+                "List<int>", "Ref<int>", "unknown", "any"}) {
+            String source = "fnc unsafe(): int throws " + type + " { return 1; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> checked(source), source);
+        }
+    }
+
+    @Test
+    void ordinaryStableScalarCheckedEffectsRemainEligibleForSignatureChecking() {
+        assertDoesNotThrow(() -> checked(
+                "fnc f(): int throws int raises string panics bool { return 1; }"
+              + "fnc g(): int throws int raises string panics bool { return f(); }"));
+        assertThrows(IllegalArgumentException.class, () -> checked(
+                "fnc f(): int throws string { return 1; }"
+              + "fnc g(): int throws bool { return f(); }"));
+    }
+
 }
