@@ -343,8 +343,6 @@ def verified_exact_source_tree(files, source_commit):
     symlinks even if a caller's local snapshot omits them.
     """
     source_commit = valid_sha(source_commit)
-    # Reject before destination probing, source traversal, or any GitHub API call.
-    require_independent_source_authorization()
     commit = gh_api(f"repos/{SOURCE_REPO}/git/commits/{source_commit}")
     if commit.get("sha") != source_commit:
         raise Denied("source commit SHA is not attested by origin")
@@ -395,6 +393,8 @@ def publish(repository, source, branch, trusted_root, source_commit):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
     source_commit = valid_sha(source_commit)
+    # Reject before destination probing, source traversal, or any GitHub API call.
+    require_independent_source_authorization()
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
