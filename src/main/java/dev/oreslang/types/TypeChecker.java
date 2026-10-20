@@ -2646,6 +2646,12 @@ public final class TypeChecker {
                 requireAssignable(operand, Primitive.STRING, "rt fail message");
                 return Primitive.VOID;
             }
+            if (containsTypedMapType(operand)
+                    && Set.of("copy", "take", "share").contains(runtime.operation())) {
+                throw new IllegalArgumentException(
+                        "rt " + runtime.operation()
+                                + " is not enabled for typed Map until explicit Map move/copy/share semantics are implemented");
+            }
             return switch (runtime.operation()) {
                 case "borrow" -> new Borrow(operand, false);
                 case "copy", "take", "share" -> operand;
@@ -4390,6 +4396,10 @@ public final class TypeChecker {
     }
 
     private void validateChannelPayloadType(Type element, String where) {
+        if (containsTypedMapType(element)) {
+            throw new IllegalArgumentException(
+                    where + " cannot transport typed Map values until channel-bound move semantics are implemented");
+        }
         if (element == Primitive.VOID) {
             throw new IllegalArgumentException(
                     "Channel<void> cannot carry a value; use an explicit signal/unit type");
@@ -5397,6 +5407,10 @@ public final class TypeChecker {
             boolean returnPosition,
             String where) {
         if (returnPosition && type == Primitive.VOID) return;
+        if (containsTypedMapType(type)) {
+            throw new IllegalArgumentException(
+                    where + " cannot use typed Map across an async task boundary until ownership transfer is implemented");
+        }
         // A typed channel handle is an Ores-owned synchronized transport, not
         // an actor/mailbox capability. Async tasks may receive the handle when
         // its payload is concrete, owned and task-safe. Actor boundaries retain
@@ -5419,6 +5433,10 @@ public final class TypeChecker {
             boolean returnPosition,
             String where) {
         if (returnPosition && type == Primitive.VOID) return;
+        if (containsTypedMapType(type)) {
+            throw new IllegalArgumentException(
+                    where + " cannot use typed Map across an actor boundary until isolated transport is implemented");
+        }
         if (type == Primitive.VOID) {
             throw new IllegalArgumentException(where + " cannot be void");
         }
@@ -8777,6 +8795,10 @@ public final class TypeChecker {
                         ref.arguments().getFirst(),
                         generics,
                         self);
+                if (containsTypedMapType(payload)) {
+                    throw new IllegalArgumentException(
+                            ref.name() + "<T> cannot contain typed Map values in this ownership slice");
+                }
                 if (payload == Primitive.VOID) {
                     throw new IllegalArgumentException(
                             ref.name() + "<void> is invalid");
