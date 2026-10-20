@@ -1521,6 +1521,45 @@ public final class OwnershipChecker {
             }
         }
 
+        if (call.callee() instanceof Ast.NameExpr tupleName
+                && tupleName.name().equals("tuple")
+                && scope.lookup("tuple") == null
+                && !functions.containsKey("tuple")
+                && !ambiguousFunctions.contains("tuple")) {
+            if (call.typeArgumentsPresent()) {
+                throw error("builtin tuple(...) does not accept call-site type arguments");
+            }
+            List<ValueInfo> slots = checkOwnedProductArguments(
+                    call.arguments(), scope, "tuple");
+            return new ValueInfo(
+                    Ast.TypeRef.tupleType(slots.stream().map(info -> info.type).toList()),
+                    slots.stream().allMatch(info -> info.kind == ValueKind.COPY)
+                            ? ValueKind.COPY : ValueKind.MOVE_ONLY,
+                    null);
+        }
+
+        if (call.callee() instanceof Ast.MemberExpr entryCall
+                && entryCall.receiver() instanceof Ast.NameExpr entryFactory
+                && entryFactory.name().equals("Entry")
+                && scope.lookup("Entry") == null
+                && entryCall.member().equals("of")) {
+            if (call.typeArgumentsPresent()) {
+                throw error("Entry.of infers K and V and does not accept call-site type arguments");
+            }
+            List<ValueInfo> fields = checkOwnedProductArguments(
+                    call.arguments(), scope, "Entry.of");
+            if (fields.size() != 2) {
+                throw error("Entry.of expects exactly two arguments: key, value");
+            }
+            LinkedHashMap<String, Ast.TypeRef> members = new LinkedHashMap<>();
+            members.put("key", fields.get(0).type);
+            members.put("value", fields.get(1).type);
+            return new ValueInfo(
+                    Ast.TypeRef.readonlyRecordType(members),
+                    ValueKind.MOVE_ONLY,
+                    null);
+        }
+
         if (call.callee() instanceof Ast.MemberExpr qualified
                 && qualified.receiver() instanceof Ast.NameExpr namespace) {
             Ast.FunctionDecl fn = findFunction(
@@ -1849,6 +1888,55 @@ public final class OwnershipChecker {
             }
         }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    private List<ValueInfo> checkOwnedProductArguments(
+            List<Ast.Expr> arguments,
+            Scope scope,
+            String label) {
+        ArrayList<ValueInfo> values = new ArrayList<>();
+        for (Ast.Expr argument : arguments) {
+            if (argument instanceof Ast.SpreadExpr spread) {
+                ValueInfo aggregate = checkExpr(spread.expression(), scope, true);
+                if (isBorrowValue(aggregate)) {
+                    throw error(label
+                            + " cannot spread a borrowed tuple into an owned product");
+                }
+                if (containsMutexGuardType(aggregate.type)) {
+                    throw error(label + " cannot store or spread a MutexGuard");
+                }
+                Ast.TypeRef aggregateType = aggregate.type;
+                if (aggregateType == null || !aggregateType.isTupleType()) {
+                    throw error(label
+                            + " spread requires a statically known tuple");
+                }
+                for (Ast.TypeRef slot : aggregateType.arguments()) {
+                    if (slot.isBorrow()) {
+                        throw error(label
+                                + " cannot store borrowed tuple elements");
+                    }
+                    if (containsMutexGuardType(slot)) {
+                        throw error(label + " cannot store a MutexGuard");
+                    }
+                    values.add(new ValueInfo(
+                            slot,
+                            kindOfType(slot),
+                            null));
+                }
+                continue;
+            }
+
+            ValueInfo value = checkExpr(argument, scope, true);
+            if (isBorrowValue(value)) {
+                throw error(label
+                        + " cannot store a borrowed value without an explicit lifetime");
+            }
+            if (containsMutexGuardType(value.type)) {
+                throw error(label + " cannot store a MutexGuard");
+            }
+            values.add(value);
+        }
+        return List.copyOf(values);
     }
 
     private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Scope scope) {
@@ -3034,7 +3122,7 @@ public final class OwnershipChecker {
         if (type == null) return null;
         if (type.isBorrow()) type = type.borrowedTarget();
         if (isMutexGuardType(type)) type = type.arguments().getFirst();
-        return type;
+        return ownershipAggregateType(type);
     }
 
     private Ast.ClassDecl classOfReceiver(Ast.Expr receiver, Scope scope) {
@@ -3629,6 +3717,7 @@ public final class OwnershipChecker {
         if (receiverType == null) return Ast.TypeRef.inferred();
         Ast.TypeRef concrete = receiverType.isBorrow()
                 ? receiverType.borrowedTarget() : receiverType;
+        concrete = ownershipAggregateType(concrete);
 
         Object constantIndex = computedIndexConstant(indexed.index(), scope);
 
@@ -3789,6 +3878,7 @@ public final class OwnershipChecker {
 
     private Ast.TypeRef objectRestBindingType(Ast.TypeRef source, List<Ast.DestructureBinding> bindings) {
         Ast.TypeRef concrete = source.isBorrow() ? source.borrowedTarget() : source;
+        concrete = ownershipAggregateType(concrete);
         if (!concrete.isClosedAggregateType()) return Ast.TypeRef.inferred();
 
         Map<String, Ast.TypeRef> remainder = new LinkedHashMap<>(concrete.aggregateMembers());
@@ -3804,6 +3894,7 @@ public final class OwnershipChecker {
 
     private Ast.TypeRef objectMemberBindingType(Ast.TypeRef concrete, String name) {
         if (concrete.isBorrow()) concrete = concrete.borrowedTarget();
+        concrete = ownershipAggregateType(concrete);
         if (concrete.isClosedAggregateType()) {
             Ast.TypeRef member = concrete.aggregateMembers().get(name);
             if (member != null) return member;
@@ -3869,6 +3960,17 @@ public final class OwnershipChecker {
         Ast.TypeRef sequence = sequenceDestructureSourceType(concrete);
         if (!sequence.equals(concrete)) return iterableElementType(sequence, asyncIteration);
         return Ast.TypeRef.inferred();
+    }
+
+    private Ast.TypeRef ownershipAggregateType(Ast.TypeRef type) {
+        if (type == null || type.isBorrow()) return type;
+        if (!type.name().equals("Entry") || type.arguments().size() != 2) {
+            return type;
+        }
+        LinkedHashMap<String, Ast.TypeRef> members = new LinkedHashMap<>();
+        members.put("key", type.arguments().get(0));
+        members.put("value", type.arguments().get(1));
+        return Ast.TypeRef.readonlyRecordType(members);
     }
 
     private Ast.TypeRef joinConditionalType(Ast.TypeRef left, Ast.TypeRef right) {
