@@ -236,7 +236,13 @@ public final class TypeChecker {
                     }
                     localNames.add(klass.name());
                 }
-                else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
+                else if (declaration instanceof Ast.InterfaceDecl iface) {
+                    if (iface.name().equals("Future")) {
+                        throw new IllegalArgumentException(
+                                "Future is a sealed intrinsic type; interfaces and traits cannot shadow its constructor checks");
+                    }
+                    localNames.add(iface.name());
+                }
                 else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
                 else if (declaration instanceof Ast.TypeAliasDecl alias) {
                     if (alias.name().equals("HttpResponse")) {
