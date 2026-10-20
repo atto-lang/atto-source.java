@@ -41,7 +41,7 @@ final class UnaryTcpTlsRuntime {
 
         context.requirePermission(
                 RuntimePermissions.Permission.NET,
-                RuntimePermissions.networkEndpoint(host, port),
+                RuntimePermissions.networkBindResource(host, port),
                 "unary.tcp.listen");
 
         SSLServerSocket endpoint = (SSLServerSocket)
