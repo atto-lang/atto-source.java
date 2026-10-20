@@ -4710,6 +4710,16 @@ public final class OresEvalRootNode extends RootNode {
                 Object index,
                 Env env,
                 Ast.Expr receiverExpression) {
+            java.util.Set<String> checkedStructuralDomain =
+                    Ast.CheckedStructuralFieldDomain.lookup(receiverExpression);
+            if (checkedStructuralDomain != null) {
+                if (!(index instanceof String structuralKey)
+                        || !checkedStructuralDomain.contains(structuralKey)) {
+                    throw new IllegalArgumentException(
+                            "structural computed field key outside checked domain: " + index);
+                }
+            }
+
             if (receiver instanceof OresObject object) {
                 if (!object.klass.actorKind().equals(Ast.ActorKind.NONE)) {
                     throw new IllegalArgumentException(
@@ -4757,15 +4767,9 @@ public final class OresEvalRootNode extends RootNode {
                     return value;
                 }
 
-                java.util.Set<String> structuralDomain =
-                        Ast.CheckedStructuralFieldDomain.lookup(receiverExpression);
-                if (structuralDomain == null) {
+                if (checkedStructuralDomain == null) {
                     throw new IllegalStateException(
                             "computed class indexing requires a type-checked nominal or structural receiver proof");
-                }
-                if (!structuralDomain.contains(key)) {
-                    throw new IllegalArgumentException(
-                            "structural computed field key outside checked domain: " + key);
                 }
                 if (!object.fields.containsKey(key)) {
                     throw new IllegalStateException(
@@ -4785,12 +4789,6 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException(
                             "record field index must be a String");
                 }
-                java.util.Set<String> structuralDomain =
-                        Ast.CheckedStructuralFieldDomain.lookup(receiverExpression);
-                if (structuralDomain != null && !structuralDomain.contains(key)) {
-                    throw new IllegalArgumentException(
-                            "structural computed field key outside checked domain: " + key);
-                }
                 if (!record.containsKey(key)) {
                     throw new IllegalArgumentException(
                             "unknown record field key " + key);
@@ -4806,12 +4804,6 @@ public final class OresEvalRootNode extends RootNode {
                 if (!(index instanceof String key)) {
                     throw new IllegalArgumentException(
                             "struct field index must be a String");
-                }
-                java.util.Set<String> structuralDomain =
-                        Ast.CheckedStructuralFieldDomain.lookup(receiverExpression);
-                if (structuralDomain != null && !structuralDomain.contains(key)) {
-                    throw new IllegalArgumentException(
-                            "structural computed field key outside checked domain: " + key);
                 }
                 if (!struct.containsKey(key)) {
                     throw new IllegalArgumentException(
@@ -4830,14 +4822,6 @@ public final class OresEvalRootNode extends RootNode {
                             "indexed map key must be a String or Symbol");
                 }
                 Object key = index;
-                java.util.Set<String> structuralDomain =
-                        Ast.CheckedStructuralFieldDomain.lookup(receiverExpression);
-                if (structuralDomain != null
-                        && (!(key instanceof String stringKey)
-                                || !structuralDomain.contains(stringKey))) {
-                    throw new IllegalArgumentException(
-                            "structural computed field key outside checked domain: " + key);
-                }
                 if (!map.containsKey(key)) {
                     throw new IllegalArgumentException(
                             "unknown struct/map key " + key);
