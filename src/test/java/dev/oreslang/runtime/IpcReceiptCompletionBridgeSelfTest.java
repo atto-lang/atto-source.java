@@ -222,6 +222,7 @@ public final class IpcReceiptCompletionBridgeSelfTest {
                     transport.owner(), message, 61));
             check(transport.lost() == 1);
             check(result(future) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            denied(() -> transport.admit(env(2, "loss")));
             check(transport.lost() == 0);
             check(transport.bridge().invariant());
         }
