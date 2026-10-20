@@ -124,7 +124,7 @@ final class IpcTransportSessionLease {
     WriteAttempt sendPreparedFrame(
             long expectedGeneration,
             IpcReceiptCorrelation.Envelope message,
-            byte[] preparedFrame) throws IOException {
+            byte[] preparedFrame) {
         RuntimeBlockingGuard.requireBlockingHostThread("IPC transport send");
         Objects.requireNonNull(message, "message");
         Objects.requireNonNull(preparedFrame, "preparedFrame");
