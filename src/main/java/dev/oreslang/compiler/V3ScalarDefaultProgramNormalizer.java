@@ -210,6 +210,11 @@ public final class V3ScalarDefaultProgramNormalizer {
                 }
                 items.add(Ast.CallArgument.value(arg));
             }
+            if (items.isEmpty()) {
+                Ast.FunctionDecl selected = functions.get(direct.name());
+                if (selected.parameters().isEmpty()) return ordinary;
+                for (Ast.Param p : selected.parameters()) items.add(Ast.CallArgument.omit(p.name()));
+            }
             return lowerClosedCall(
                     new Ast.StagedCallExpr(ordinary.callee(), List.of(), false, items),
                     functions.get(direct.name()));
