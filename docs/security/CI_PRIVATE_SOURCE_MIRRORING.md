@@ -6,11 +6,13 @@ cache entries, and logs.
 
 ## Temporary unconditional publisher stop (security #962)
 
-The current draft publisher calls `require_independent_source_authorization()`
-inside `publish()` after validating arguments and before destination preflight,
-local policy access, source traversal, or GitHub API calls. The function always
-raises `Denied`. No environment variable, local allowlist edit, successful
-source-free canary, or available Actions budget authorizes an exception.
+Both private-source publisher entry points now call
+`require_independent_source_authorization()` before destination preflight,
+protected-policy reads, source traversal, or GitHub API calls: the legacy
+publisher and the v3 protected-carrier dispatcher. The function always raises
+`Denied`. No environment variable, local allowlist edit, pinned carrier
+contract, successful source-free canary, or available Actions budget authorizes
+an exception.
 
 Synthetic object-writer unit tests explicitly mock this gate to exercise
 transport behavior; they do **not** establish production authorization.
