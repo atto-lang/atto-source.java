@@ -153,6 +153,10 @@ final class StructuralKeywordMatrixTest {
                     value: string;
                   end
 
+                  define class FieldOnly as
+                    pub val int id = 0;
+                  end
+
                   fnc class_case(Root value, DerivedArg arg): int {
                     match value over
                       on structural Contract shaped -> {
@@ -170,6 +174,21 @@ final class StructuralKeywordMatrixTest {
                         return shaped.id;
                       }
                       on _ -> { return 0; }
+                    end
+                  }
+
+                  fnc field_only_class_case(): int {
+                    const row = record{id: 13, extra: true};
+                    match row over
+                      on structural FieldOnly shaped -> { return shaped.id; }
+                      on _ -> { return 0; }
+                    end
+                  }
+
+                  fnc empty_shape_case<T>(T value): bool {
+                    match value over
+                      on structural {} shaped -> { return true; }
+                      on _ -> { return false; }
                     end
                   }
 
@@ -202,6 +221,9 @@ final class StructuralKeywordMatrixTest {
                   pub fnc main(): void {
                     stdio.println(class_case(new Candidate(), new DerivedArg()));
                     stdio.println(struct_case());
+                    stdio.println(field_only_class_case());
+                    stdio.println(empty_shape_case(99));
+                    stdio.println(empty_shape_case(record{id: 1}));
                     stdio.println(entry_target_case());
                     stdio.println(entry_actual_case());
                     stdio.println(pair_case(tuple {5, "pair"}));
@@ -226,7 +248,7 @@ final class StructuralKeywordMatrixTest {
         }
 
         assertEquals(
-                "7\n8\nshape\nentry\npair",
+                "7\n8\n13\nfalse\ntrue\nshape\nentry\npair",
                 output.toString(StandardCharsets.UTF_8)
                         .replace("\r\n", "\n")
                         .strip());
