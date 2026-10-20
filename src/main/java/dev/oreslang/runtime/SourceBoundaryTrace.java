@@ -9,6 +9,13 @@ public final class SourceBoundaryTrace extends RuntimeException {
     private static final int MAX_CALLABLE_LENGTH = 96;
     private static final int MAX_BOUNDARY_LENGTH = 64;
 
+    private static final String TRUNCATED =
+            "ores source trace truncated: one or more source boundaries omitted";
+
+    private SourceBoundaryTrace() {
+        super(TRUNCATED, null, false, false);
+    }
+
     private SourceBoundaryTrace(String codeUnit, String callable, String boundary) {
         super("ores " + sanitized(boundary, MAX_BOUNDARY_LENGTH) + " "
                 + sanitized(callable, MAX_CALLABLE_LENGTH) + " ["
@@ -48,8 +55,13 @@ public final class SourceBoundaryTrace extends RuntimeException {
             T failure, String codeUnit, String callable, String boundary) {
         Objects.requireNonNull(failure, "failure");
         synchronized (failure) {
-            if (failure.getSuppressed().length < MAX_BOUNDARIES) {
+            int existing = failure.getSuppressed().length;
+            if (existing < MAX_BOUNDARIES - 1) {
                 failure.addSuppressed(new SourceBoundaryTrace(codeUnit, callable, boundary));
+            } else if (existing == MAX_BOUNDARIES - 1) {
+                // Reserve one slot so a capped source trace explicitly reports
+                // that the current source boundary could not be retained.
+                failure.addSuppressed(new SourceBoundaryTrace());
             }
         }
         return failure;
