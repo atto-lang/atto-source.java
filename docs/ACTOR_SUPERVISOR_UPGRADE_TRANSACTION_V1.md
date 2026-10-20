@@ -341,3 +341,49 @@ Until the router handoff is completed, verified, and authorized
 exact-head JDK25/Maven/Graal CI executes, keep PR #1367 draft and
 production hot reload disabled. Do not substitute the source-free
 model for a production execution receipt.
+
+## Admission lease race regression and revised model evidence
+
+The earlier isolated `AdmissionProtocolOracle.java` was rerun eight times
+under OpenJDK 21 with `javac --release 21 -Xlint:all -Werror`.
+It succeeded four times and failed on its **fifth run** due to a
+non-atomic `pins.get() > 0` followed by `pins.decrementAndGet()`
+under concurrent retirement. The earlier one-run "323,000 PASS" must
+therefore **not** be considered a stable race proof.
+
+The corrected source-free `AdmissionProtocolOracleHardened.java`
+uses a per-reference atomic compare-and-set `leaseReleased` owner
+before decrementing the code-generation pin. It passed **five
+consecutive** Java 21 runs, with 420,001 assertions and 5,000
+four-worker races per run. Its synchronized negative control forces
+four workers to observe one unsafe pin before decrement and proves
+that the previous check-then-decrement protocol can underflow to -3.
+
+A *separately authored public oracle*, `AdmissionLeaseOracle.java`,
+was committed to `gha-indie-worker/gha-indie-worker-e2e`
+at `tmp/oreslang-hot-upgrade-oracle/AdmissionLeaseOracle.java`.
+The branch commit `7c298172a687ba6e6651c7433912f9a498e92f7d`
+extends the existing public JDK25 workflow to compile the oracle
+using `javac --release 25 -Xlint:all -Werror` and exercise
+its atomic release/race and negative-control cases.
+The public workflow run is
+https://github.com/gha-indie-worker/gha-indie-worker-e2e/actions/runs/39345492773.
+Only independently authored model source was sent to the test
+organization, with **no Oreslang private source bytes**.
+
+The real `ActorRuntimePreReturnAdmissionQuarantineTest` has also been
+extended (commit `367d699cafa1a9d2450c3cf2c3a60075e1c1e40a`)
+with eight concurrent physical stop attempts of the *same*
+pre-registration ActorRef. The test requires a single physical-finalization
+marker, one actor-slot refund, and no ghost registry entry.
+That production JUnit is still unexecuted by the private repo's
+JDK25/Graal CI.
+
+The router's `onAllocated` callback integration remains blocked by
+the GitHub write safety check and **has not landed**. Consequently the
+source supervisor cannot yet certify that an unreturned registered
+physical actor keeps its generation lease pinned across a failed
+initial or staged spawn. This is a merge-blocking gap. Neither passing
+source-free model nor successful public CI execution authorizes private
+tree copying, unblocks source policy #962/#904, or certifies
+production code/Task/checkpoint publication.
