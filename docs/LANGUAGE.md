@@ -150,12 +150,24 @@ end
 fnc log_once() -> void
   const int marker = 1
 end
+
+// Optional explicit body boundary; same AST/semantics as the form above.
+fnc log_once_explicit() -> void do
+  const int marker = 1
+end
 ```
 
 The end-delimited form never infers its return type: `-> ReturnType` is
-mandatory and the first body token begins on a later source line. Non-`void`
+mandatory. Without `do`, the first body token must begin on a later source
+line. An optional `do` may follow the complete return type as a semantics-free
+body separator; when present it also permits compact/minified same-line bodies,
+for example `fnc identity(int x) -> int do return x; end`. Non-`void`
 callables still require an explicit return on every reachable normal completion
 path; `void` may fall through the closing `end`.
+
+Because the return type is parsed completely before the optional separator,
+higher-order returns remain unambiguous: `fnc callback() -> () => void do ... end`
+means a named function whose return type is `() => void`.
 
 This v1 form is intentionally limited to ordinary file/module callables. Class
 instance methods, class `static fnc` implementations, and actor callables
