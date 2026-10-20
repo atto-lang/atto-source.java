@@ -339,4 +339,73 @@ final class EntryValueTest {
                         .strip());
     }
 
+
+    @Test
+    void structuralKeyValueShapesCannotImpersonateNominalEntry() {
+        IllegalArgumentException structFailure = rejected("""
+                fnc consume(Entry<int, int> entry): int {
+                  return entry.key + entry.value;
+                }
+
+                fnc bad(): int {
+                  const Fake fake = infer<Fake> struct {
+                    key: 1,
+                    value: 2
+                  };
+                  return consume(fake);
+                }
+                """);
+        assertTrue(structFailure.getMessage().contains("argument"), structFailure.getMessage());
+
+        IllegalArgumentException recordFailure = rejected("""
+                fnc consume(Entry<int, int> entry): int {
+                  return entry.key + entry.value;
+                }
+
+                fnc bad(): int {
+                  const Fake fake = infer<Fake> record {
+                    key: 1,
+                    value: 2
+                  };
+                  return consume(fake);
+                }
+                """);
+        assertTrue(recordFailure.getMessage().contains("argument"), recordFailure.getMessage());
+    }
+
+    @Test
+    void entryComputedReadsRemainNominalAndReadonly() {
+        accepted("""
+                fnc main(): int {
+                  const entry = Entry.of(20, 22);
+                  const field = "key";
+                  return entry[field] + entry["value"];
+                }
+                """);
+
+        IllegalArgumentException failure = rejected("""
+                fnc bad(): void {
+                  let entry = Entry.of(1, 2);
+                  entry["key"] = 9;
+                  return;
+                }
+                """);
+        assertTrue(failure.getMessage().contains("immutable"), failure.getMessage());
+    }
+
+    @Test
+    void entryNestedInOptionAndResultRetainsNominalType() {
+        accepted("""
+                fnc use(Entry<int, int> entry): int {
+                  return entry.key + entry.value;
+                }
+
+                fnc main(): int {
+                  const Option<Entry<int, int>> maybe = Some(Entry.of(1, 2));
+                  const Result<Entry<int, int>, string> result = Ok(Entry.of(3, 4));
+                  return use(maybe.unwrap()) + use(result.unwrap());
+                }
+                """);
+    }
+
 }
