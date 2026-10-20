@@ -46,7 +46,8 @@ class TriageError(Exception):
 
 def get_json(path):
     try:
-        p = subprocess.run(["gh", "api", "--method", "GET", path],
+        p = subprocess.run(["gh", "api", "--hostname", "github.com",
+                            "--method", "GET", path],
                            text=True, capture_output=True, timeout=20, check=False)
     except (OSError, subprocess.TimeoutExpired):
         raise TriageError("GitHub API unavailable") from None
