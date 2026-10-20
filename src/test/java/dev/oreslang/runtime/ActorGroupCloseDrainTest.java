@@ -151,6 +151,9 @@ final class ActorGroupCloseDrainTest {
             completeField.setAccessible(true);
             ownedField.setAccessible(true);
             activeField.setAccessible(true);
+            var groupsField = ActorRuntime.class.getDeclaredField("actorGroups");
+            groupsField.setAccessible(true);
+            var groups = (java.util.Map<Object, Object>) groupsField.get(runtime);
 
             try {
                 var failure = assertThrows(
@@ -169,11 +172,15 @@ final class ActorGroupCloseDrainTest {
                         "closed group must retain the exact worker authority for retry");
                 assertFalse(group.closedDone().isDone(),
                         "live worker remains part of the close drain barrier");
+                assertSame(group, groups.get(group.id()),
+                        "live cancellation failure must retain runtime recovery ownership");
 
                 OresFuture<Void> done = group.closeAsync();
                 assertTrue(completeField.getBoolean(group));
                 assertNull(ownedField.get(group),
                         "successful cancellation retry releases close ownership");
+                assertNull(groups.get(group.id()),
+                        "runtime recovery owner clears after cancellation retry succeeds");
                 assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS));
                 try {
                     done.get(5, TimeUnit.SECONDS);
