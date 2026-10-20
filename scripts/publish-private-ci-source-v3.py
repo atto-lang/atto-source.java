@@ -34,6 +34,20 @@ HANDOFF_REF = re.compile(
     r"^ci/(?:oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}|authorized-[0-9a-f]{40})$"
 )
 CONTRACT_PATH = ".github/private-ci-carrier-contracts.json"
+REVIEW_AUTHORITY_PR = 1724
+REVIEW_AUTHORITY_LOGIN = "ORESoftware"
+REVIEW_AUTHORITY_USER_ID = 11139560
+MAX_GOVERNANCE_FILE = 1024 * 1024
+REVIEWED_GOVERNANCE_PATHS = (
+    ".github/CODEOWNERS",
+    ".github/private-ci-approved-repositories.txt",
+    ".github/private-ci-carrier-contracts.json",
+    ".github/workflows/private-ci-mirror-preflight.yml",
+    "scripts/check-private-ci-destination.sh",
+    "scripts/run-in-private-ci-destination.sh",
+    "scripts/publish-private-ci-source.py",
+    "scripts/publish-private-ci-source-v3.py",
+)
 RECEIPT_PATH = "ci/oreslang-receipt.json"
 RECEIPT_SCHEMA = "ores-private-ci-receipt-v3"
 CONTRACT_SCHEMA = 1
@@ -137,6 +151,249 @@ def read_local_protected_file(root, path, max_bytes):
 def read_local_contract(root):
     """Read the local protected contract through no-follow descriptors."""
     return read_local_protected_file(root, CONTRACT_PATH, MAX_CONTRACT)
+
+
+def gh_api_list(route):
+    """Bounded authenticated GET for GitHub list endpoints."""
+    argv = [
+        "gh", "api", "--method", "GET", route,
+        "--header", "Accept: application/vnd.github+json",
+    ]
+    env = dict(os.environ, GH_HOST="github.com", GH_PROMPT_DISABLED="1")
+    try:
+        completed = subprocess.run(
+            argv, capture_output=True, text=True, env=env,
+            timeout=45, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Denied("authenticated GitHub list request unavailable") from exc
+    if completed.returncode != 0:
+        raise Denied("authenticated GitHub list request failed")
+    try:
+        data = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise Denied("invalid GitHub list JSON response") from exc
+    if not isinstance(data, list):
+        raise Denied("unexpected GitHub list response shape")
+    return data
+
+
+def github_timestamp(value, label):
+    if not isinstance(value, str):
+        raise Denied(label)
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise Denied(label) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise Denied(label)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def latest_authority_review():
+    reviews = gh_api_list(
+        f"repos/{legacy.SOURCE_REPO}/pulls/{REVIEW_AUTHORITY_PR}/reviews?per_page=100"
+    )
+    if len(reviews) >= 100:
+        raise Denied("private-CI authority review history exceeds bounded page")
+    matching = []
+    seen_ids = set()
+    for review in reviews:
+        if not isinstance(review, dict):
+            raise Denied("private-CI authority review history is malformed")
+        review_id = review.get("id")
+        if (not isinstance(review_id, int) or isinstance(review_id, bool)
+                or review_id <= 0 or review_id in seen_ids):
+            raise Denied("private-CI authority review history has invalid IDs")
+        seen_ids.add(review_id)
+        user = review.get("user")
+        if (isinstance(user, dict)
+                and user.get("id") == REVIEW_AUTHORITY_USER_ID
+                and isinstance(user.get("login"), str)
+                and user["login"].casefold() == REVIEW_AUTHORITY_LOGIN.casefold()):
+            valid_sha(
+                review.get("commit_id"),
+                "private-CI authority review commit SHA invalid",
+            )
+            submitted = github_timestamp(
+                review.get("submitted_at"),
+                "private-CI authority review timestamp invalid",
+            )
+            if not isinstance(review.get("state"), str):
+                raise Denied("private-CI authority review state invalid")
+            matching.append((submitted, review_id, review))
+    if not matching:
+        raise Denied("independent private-CI authority review is missing")
+    matching.sort(key=lambda item: (item[0], item[1]))
+    return matching[-1][2]
+
+
+def governance_tree_entries(commit_sha):
+    commit_sha = valid_sha(commit_sha, "source governance commit SHA invalid")
+    commit = legacy.gh_api(
+        f"repos/{legacy.SOURCE_REPO}/git/commits/{commit_sha}"
+    )
+    if commit.get("sha") != commit_sha:
+        raise Denied("source governance commit identity mismatch")
+    tree_sha = valid_sha(
+        commit.get("tree", {}).get("sha"),
+        "source governance root tree SHA invalid",
+    )
+    listing = legacy.gh_api(
+        f"repos/{legacy.SOURCE_REPO}/git/trees/{tree_sha}?recursive=1"
+    )
+    if (listing.get("sha") != tree_sha
+            or listing.get("truncated") is not False
+            or not isinstance(listing.get("tree"), list)):
+        raise Denied("source governance tree listing is incomplete")
+
+    wanted = set(REVIEWED_GOVERNANCE_PATHS)
+    found = {}
+    for entry in listing["tree"]:
+        if not isinstance(entry, dict):
+            raise Denied("source governance tree entry is malformed")
+        governance_path = entry.get("path")
+        if governance_path not in wanted:
+            continue
+        if governance_path in found:
+            raise Denied("source governance tree contains duplicate reviewed path")
+        mode = entry.get("mode")
+        kind = entry.get("type")
+        if kind != "blob" or mode not in ("100644", "100755"):
+            raise Denied(
+                "source governance path has unsafe Git type/mode: " + governance_path
+            )
+        found[governance_path] = (
+            mode,
+            kind,
+            valid_sha(entry.get("sha"), "source governance blob SHA invalid"),
+        )
+    if set(found) != wanted:
+        raise Denied("source governance tree is missing reviewed paths")
+    return found
+
+
+def review_attested_main_sha(
+        repository, expected_policy_digest, expected_repository_id):
+    """Authorize only governance blobs exactly reviewed on merged authority PR."""
+    origin = legacy.gh_api(f"repos/{legacy.SOURCE_REPO}")
+    if (origin.get("id") != SOURCE_REPOSITORY_ID
+            or origin.get("full_name") != legacy.SOURCE_REPO
+            or origin.get("private") is not True
+            or origin.get("visibility") != "private"):
+        raise Denied("source origin identity/privacy invalid")
+
+    branch = legacy.gh_api(
+        f"repos/{legacy.SOURCE_REPO}/branches/{legacy.SOURCE_PROTECTED_BRANCH}"
+    )
+    if branch.get("name") != legacy.SOURCE_PROTECTED_BRANCH:
+        raise Denied("source main branch identity changed")
+    main_sha = valid_sha(
+        branch.get("commit", {}).get("sha"), "source main SHA invalid"
+    )
+
+    authority = legacy.gh_api(
+        f"repos/{legacy.SOURCE_REPO}/pulls/{REVIEW_AUTHORITY_PR}"
+    )
+    head = authority.get("head")
+    base = authority.get("base")
+    author = authority.get("user")
+    if (authority.get("number") != REVIEW_AUTHORITY_PR
+            or authority.get("state") != "closed"
+            or authority.get("merged_at") is None
+            or not isinstance(author, dict)
+            or author.get("id") == REVIEW_AUTHORITY_USER_ID
+            or not isinstance(head, dict)
+            or not isinstance(head.get("repo"), dict)
+            or head["repo"].get("full_name") != legacy.SOURCE_REPO
+            or head["repo"].get("id") != SOURCE_REPOSITORY_ID
+            or not isinstance(base, dict)
+            or not isinstance(base.get("repo"), dict)
+            or base["repo"].get("full_name") != legacy.SOURCE_REPO
+            or base["repo"].get("id") != SOURCE_REPOSITORY_ID
+            or base.get("ref") != legacy.SOURCE_PROTECTED_BRANCH):
+        raise Denied(
+            "private-CI authority PR is not an independent merged source-main review"
+        )
+    reviewed_head = valid_sha(
+        head.get("sha"), "private-CI authority PR head SHA invalid"
+    )
+
+    review = latest_authority_review()
+    submitted_at = github_timestamp(
+        review.get("submitted_at"),
+        "private-CI authority review timestamp invalid",
+    )
+    merged_at = github_timestamp(
+        authority.get("merged_at"),
+        "private-CI authority merge timestamp invalid",
+    )
+    if (review.get("state") != "APPROVED"
+            or review.get("commit_id") != reviewed_head
+            or submitted_at > merged_at):
+        raise Denied(
+            "independent private-CI review is stale, late, or not approved"
+        )
+
+    reviewed_tree = governance_tree_entries(reviewed_head)
+    main_tree = governance_tree_entries(main_sha)
+    policy_raw = None
+    codeowners_raw = None
+    for governance_path in REVIEWED_GOVERNANCE_PATHS:
+        if main_tree[governance_path] != reviewed_tree[governance_path]:
+            raise Denied(
+                "source governance Git entry drifted after independent review: "
+                + governance_path
+            )
+        reviewed_raw, reviewed_blob = remote_file_at_source_main(
+            governance_path, reviewed_head, MAX_GOVERNANCE_FILE
+        )
+        main_raw, main_blob = remote_file_at_source_main(
+            governance_path, main_sha, MAX_GOVERNANCE_FILE
+        )
+        if (main_blob != reviewed_blob
+                or reviewed_blob != reviewed_tree[governance_path][2]
+                or main_blob != main_tree[governance_path][2]
+                or main_raw != reviewed_raw):
+            raise Denied(
+                "source governance bytes drifted after independent review: "
+                + governance_path
+            )
+        if governance_path == legacy.POLICY_PATH:
+            policy_raw = main_raw
+        elif governance_path == legacy.CODEOWNERS_PATH:
+            codeowners_raw = main_raw
+
+    if policy_raw is None or codeowners_raw is None:
+        raise Denied("review-attested governance is incomplete")
+    if hashlib.sha256(policy_raw).digest() != expected_policy_digest:
+        raise Denied("source approval policy diverges from reviewed authority")
+    reviewed_repository_id = legacy._parse_policy_approval(
+        policy_raw, repository, "review-attested source approval policy"
+    )
+    if reviewed_repository_id != expected_repository_id:
+        raise Denied(
+            "review-attested destination repository ID differs from local approval"
+        )
+    legacy.require_security_codeowners(codeowners_raw)
+    return main_sha
+
+
+def authorized_main_sha(
+        repository, expected_policy_digest, expected_repository_id):
+    """Prefer enforced protected-main governance; otherwise exact review attestation."""
+    branch = legacy.gh_api(
+        f"repos/{legacy.SOURCE_REPO}/branches/{legacy.SOURCE_PROTECTED_BRANCH}"
+    )
+    if branch.get("name") != legacy.SOURCE_PROTECTED_BRANCH:
+        raise Denied("source main branch identity changed")
+    if branch.get("protected") is True:
+        return legacy.verify_protected_origin(
+            repository, expected_policy_digest, expected_repository_id
+        )
+    return review_attested_main_sha(
+        repository, expected_policy_digest, expected_repository_id
+    )
 
 
 def remote_file_at_source_main(path, main_sha, max_bytes):
@@ -465,12 +722,12 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     approved_policy, approved_repository_id = legacy.checked_policy_approval(
         trusted_root, repository
     )
-    protected_sha = legacy.verify_protected_origin(
+    authority_sha = authorized_main_sha(
         repository, approved_policy, approved_repository_id
     )
-    checked_control_plane(trusted_root, protected_sha)
+    checked_control_plane(trusted_root, authority_sha)
     contract = checked_contract(
-        trusted_root, repository, source_pr, test_plan, protected_sha
+        trusted_root, repository, source_pr, test_plan, authority_sha
     )
     if contract["repository_id"] != approved_repository_id:
         raise Denied(
@@ -614,13 +871,13 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
 
     # Recheck both source policy/protection and the immutable carrier contract
     # immediately before making the source-bearing commit executable.
-    if legacy.verify_protected_origin(
-            repository, approved_policy, approved_repository_id) != protected_sha:
-        raise Denied("source protected main advanced before publication")
-    checked_control_plane(trusted_root, protected_sha)
+    if authorized_main_sha(
+            repository, approved_policy, approved_repository_id) != authority_sha:
+        raise Denied("source governance authority advanced before publication")
+    checked_control_plane(trusted_root, authority_sha)
     checked_contract(
         trusted_root, repository, source_pr,
-        contract["test_plan_path"], protected_sha
+        contract["test_plan_path"], authority_sha
     )
     checked_destination(repository, contract)
     if verify_source_pr(source_pr, source_commit) != source_repo_id:
@@ -650,13 +907,13 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         # The payload ref is inert without the authorization ref. Re-run every
         # mutable governance check in that safe window so protection, policy,
         # contract or carrier-base drift cannot be authorized.
-        if legacy.verify_protected_origin(
-                repository, approved_policy, approved_repository_id) != protected_sha:
-            raise Denied("source protected main advanced before authorization")
-        checked_control_plane(trusted_root, protected_sha)
+        if authorized_main_sha(
+                repository, approved_policy, approved_repository_id) != authority_sha:
+            raise Denied("source governance authority advanced before authorization")
+        checked_control_plane(trusted_root, authority_sha)
         checked_contract(
             trusted_root, repository, source_pr,
-            contract["test_plan_path"], protected_sha
+            contract["test_plan_path"], authority_sha
         )
         checked_destination(repository, contract)
 
