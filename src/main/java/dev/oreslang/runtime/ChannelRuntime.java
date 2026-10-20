@@ -531,23 +531,13 @@ public final class ChannelRuntime {
             return registration.tryNow();
         }
 
-        private int[] initialOrder(SelectPolicy policy, long ticket, boolean useStaticTicket) {
-            int count = cases.size();
+        /**
+         * FAIR and PRIORITY are arithmetic views over immutable arm indexes.
+         * Only RANDOM requires a newly shuffled order per selection.
+         * Called under COORDINATOR during the registration's admission.
+         */
+        private static int[] shuffledRandomOrder(int count) {
             int[] order = new int[count];
-
-            if (policy == SelectPolicy.PRIORITY) {
-                for (int i = 0; i < count; i++) order[i] = i;
-                return order;
-            }
-
-            if (policy == SelectPolicy.FAIR) {
-                int start = Math.floorMod(useStaticTicket ? ticket : fairCursor.get(), count);
-                for (int i = 0; i < count; i++) {
-                    order[i] = (start + i) % count;
-                }
-                return order;
-            }
-
             for (int i = 0; i < count; i++) order[i] = i;
             for (int i = count - 1; i > 0; i--) {
                 int j = ThreadLocalRandom.current().nextInt(i + 1);
@@ -823,8 +813,10 @@ public final class ChannelRuntime {
         private final SelectPolicy policy;
         private final long staticTicket;
         private final boolean useStaticTicket;
-        /** Captured under COORDINATOR at admission, after preceding FAIR commits. */
-        private int[] order;
+        /** FAIR offset captured under COORDINATOR, after preceding commits. */
+        private int fairStart;
+        /** Allocated only for RANDOM; FAIR and PRIORITY use arithmetic indexes. */
+        private int[] randomOrder;
         private final ArrayList<CaseRegistration> registrations =
                 new ArrayList<>();
         /**
@@ -1070,6 +1062,26 @@ public final class ChannelRuntime {
             if (!useStaticTicket) set.selected(index, policy);
         }
 
+        private void captureOrderLocked() {
+            if (policy == SelectPolicy.FAIR) {
+                fairStart = Math.floorMod(
+                        useStaticTicket ? staticTicket : set.fairCursor.get(),
+                        set.cases.size());
+            } else if (policy == SelectPolicy.RANDOM) {
+                randomOrder = SelectSet.shuffledRandomOrder(set.cases.size());
+            }
+        }
+
+        private int orderedIndex(int ordinal) {
+            if (policy == SelectPolicy.PRIORITY) return ordinal;
+            if (policy == SelectPolicy.RANDOM) return randomOrder[ordinal];
+            // No per-select index array and no start+ordinal overflow.
+            int remaining = set.cases.size() - fairStart;
+            return ordinal < remaining
+                    ? fairStart + ordinal
+                    : ordinal - remaining;
+        }
+
         private CaseRegistration caseOrDefault(int index) {
             for (CaseRegistration registration : registrations) {
                 if (registration.index == index) return registration;
@@ -1100,12 +1112,12 @@ public final class ChannelRuntime {
         // this registration object was constructed. Capture the fairness
         // cursor at atomic admission, not at construction, so overlapping
         // invocations observe all earlier committed rotations.
-        selection.order = selection.set.initialOrder(
-                selection.policy, selection.staticTicket, selection.useStaticTicket);
+        selection.captureOrderLocked();
         selection.registered = true;
         ACTIVE.add(selection);
 
-        for (int index : selection.order) {
+        for (int step = 0; step < selection.set.cases.size(); step++) {
+            int index = selection.orderedIndex(step);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
@@ -1273,7 +1285,8 @@ public final class ChannelRuntime {
         // completion authorities, even when their values compare equal.
         // IdentityHashMap accepts null values so PENDING is cached too.
         java.util.IdentityHashMap<OresFuture<?>, Object> observedFutureStates = null;
-        for (int index : selection.order) {
+        for (int step = 0; step < selection.set.cases.size(); step++) {
+            int index = selection.orderedIndex(step);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
@@ -1333,7 +1346,8 @@ public final class ChannelRuntime {
         java.util.IdentityHashMap<OresFuture<?>, Boolean> observedFutureReadiness =
                 new java.util.IdentityHashMap<>();
 
-        for (int index : selection.order) {
+        for (int step = 0; step < selection.set.cases.size(); step++) {
+            int index = selection.orderedIndex(step);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
