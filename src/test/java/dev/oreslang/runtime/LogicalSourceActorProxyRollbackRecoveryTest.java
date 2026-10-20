@@ -230,6 +230,8 @@ final class LogicalSourceActorProxyRollbackRecoveryTest {
                         "retainedMessages");
                 Field pending = reflect(LogicalSourceActorRouterV1.class,
                         "pendingProxyRollbackTicket");
+                Field pendingTransfer = reflect(LogicalSourceActorRouterV1.class,
+                        "pendingRollbackTransfer");
                 retained.setInt(mailbox, -1);
                 try {
                     upgrade.join(12_000);
@@ -253,9 +255,13 @@ final class LogicalSourceActorProxyRollbackRecoveryTest {
                         + TimeUnit.SECONDS.toNanos(10);
                 while (System.nanoTime() < recoveryDeadline) {
                     router.reapRetired();
-                    if (!router.reconcileFailedUpgradeRollback()) {
-                        Thread.sleep(2);
-                        continue;
+                    if (pendingTransfer.get(router) != null) {
+                        // Source-transfer rollback and proxy-ticket rollback are
+                        // independent recovery owners. The source method can
+                        // legitimately return false after clearing its owner
+                        // while the proxy quarantine is still active, so its
+                        // boolean must not gate the proxy retry.
+                        router.reconcileFailedUpgradeRollback();
                     }
                     if (router.reconcileFailedProxyRollback()) break;
                     Thread.sleep(2);
