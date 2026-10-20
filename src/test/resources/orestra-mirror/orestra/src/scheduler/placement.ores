@@ -2,17 +2,17 @@
 define module placement as
   pub fnc fits(int capacity_cpu, int used_cpu, int need_cpu,
                int capacity_mem, int used_mem, int need_mem): bool {
-    if capacity_cpu < 0 | used_cpu < 0 | need_cpu <= 0; do
+    if capacity_cpu < 0 || used_cpu < 0 || need_cpu <= 0; do
       return false;
     fi
-    if capacity_mem < 0 | used_mem < 0 | need_mem <= 0; do
+    if capacity_mem < 0 || used_mem < 0 || need_mem <= 0; do
       return false;
     fi
     // Subtraction prevents signed overflow in a used + need expression.
-    if used_cpu > capacity_cpu | used_mem > capacity_mem; do
+    if used_cpu > capacity_cpu || used_mem > capacity_mem; do
       return false;
     fi
-    return need_cpu <= capacity_cpu - used_cpu &
+    return need_cpu <= capacity_cpu - used_cpu &&
            need_mem <= capacity_mem - used_mem;
   }
 
@@ -25,17 +25,14 @@ define module placement as
       return -1;
     fi
     // Avoid float nondeterminism and zero denominators.
-    if capacity_cpu == 0 | capacity_mem == 0; do
+    if capacity_cpu == 0 || capacity_mem == 0; do
       return -1;
     fi
-    val int next_cpu = used_cpu + need_cpu;
-    val int next_mem = used_mem + need_mem;
-    // Multiplication by 1000 must not overflow signed 64-bit integers.
-    if next_cpu > 9223372036854775 | next_mem > 9223372036854775; do
-      return -1;
-    fi
-    return (next_cpu * 1000 / capacity_cpu) +
-           (next_mem * 1000 / capacity_mem);
+    // Oreslang '/' is real division, not integer division.
+    // Pre-alpha deterministic absolute-CPU packing heuristic.
+    // Filter already checks CPU and memory feasibility without overflow.
+    // Future: checked fixed-point utilization with explicit integer division.
+    return used_cpu + need_cpu;
   }
 
   pub fnc preferred(int score_left, int score_right,

@@ -6,36 +6,36 @@ define module workload_state as
                            bool delete_requested,
                            bool external_fence_proven): bool {
     if from == to; do return true; fi
-    if from == "Pending" & to == "Assigned"; do
+    if from == "Pending" && to == "Assigned"; do
       return !delete_requested;
     fi
-    if from == "Assigned" & to == "Running"; do
-      return sandbox_observed & !delete_requested;
+    if from == "Assigned" && to == "Running"; do
+      return sandbox_observed && !delete_requested;
     fi
-    if from == "Running" & to == "Succeeded"; do
+    if from == "Running" && to == "Succeeded"; do
       return sandbox_observed;
     fi
-    if from == "Running" & to == "Failed"; do
+    if from == "Running" && to == "Failed"; do
       return sandbox_observed;
     fi
     if to == "Terminating"; do
-      return delete_requested & (from == "Pending" |
-             from == "Assigned" | from == "Running" | from == "Failed");
+      return delete_requested && (from == "Pending" ||
+             from == "Assigned" || from == "Running" || from == "Failed");
     fi
-    if to == "Stopped" & from == "Terminating"; do
+    if to == "Stopped" && from == "Terminating"; do
       return external_fence_proven;
     fi
-    if to == "Unknown" & (from == "Assigned" | from == "Running"); do
+    if to == "Unknown" && (from == "Assigned" || from == "Running"); do
       return !sandbox_observed;
     fi
-    if from == "Unknown" & to == "Stopped"; do
+    if from == "Unknown" && to == "Stopped"; do
       return external_fence_proven;
     fi
     return false;
   }
 
   pub fnc replacement_safe(String old_phase, bool external_fence_proven): bool {
-    if old_phase == "Succeeded" | old_phase == "Stopped"; do return true; fi
+    if old_phase == "Succeeded" || old_phase == "Stopped"; do return true; fi
     if old_phase == "Unknown"; do return external_fence_proven; fi
     return false;
   }

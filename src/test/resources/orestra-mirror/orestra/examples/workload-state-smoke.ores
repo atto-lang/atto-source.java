@@ -13,7 +13,7 @@ pub routine main(): void {
     stdio.println("ERROR: lost external fence requirement");
     return;
   fi
-  if replacement_safe("Unknown", false) |
+  if replacement_safe("Unknown", false) ||
      !replacement_safe("Unknown", true); do
     stdio.println("ERROR: unsafe replacement");
     return;
