@@ -501,22 +501,53 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     )
     checked_destination(repository, contract)
 
-    # Create the source-bearing branch first. The carrier workflow fails closed
-    # while it waits for the exact authorization ref below.
-    created = legacy.gh_api(
-        f"repos/{repository}/git/refs", method="POST",
-        payload={"ref": "refs/heads/" + branch, "sha": commit_sha},
-    )
-    if created.get("ref") != "refs/heads/" + branch:
-        raise Denied("carrier did not confirm exact-tree CI branch creation")
-
+    # Ref publication is not atomic in GitHub's API. If either write fails,
+    # best-effort rollback every source-bearing ref created by this invocation.
+    # The carrier workflow also waits for the exact authorization ref before
+    # checkout, but fail-closed execution is not a substitute for retention
+    # cleanup after a partial publication.
     authorization = "ci/authorized-" + commit_sha
-    approved = legacy.gh_api(
-        f"repos/{repository}/git/refs", method="POST",
-        payload={"ref": "refs/heads/" + authorization, "sha": commit_sha},
-    )
-    if approved.get("ref") != "refs/heads/" + authorization:
-        raise Denied("carrier did not confirm dispatcher authorization ref")
+    branch_ref = "refs/heads/" + branch
+    authorization_ref = "refs/heads/" + authorization
+    created_refs = []
+
+    def rollback_created_refs():
+        failures = []
+        for ref in reversed(created_refs):
+            try:
+                legacy.gh_api(
+                    f"repos/{repository}/git/{ref}", method="DELETE")
+            except Exception as exc:
+                failures.append((ref, exc))
+        return failures
+
+    try:
+        auth()
+        created = legacy.gh_api(
+            f"repos/{repository}/git/refs", method="POST",
+            payload={"ref": branch_ref, "sha": commit_sha},
+        )
+        if created.get("ref") != branch_ref:
+            raise Denied("carrier did not confirm exact-tree CI branch creation")
+        created_refs.append(branch_ref)
+
+        auth()
+        approved = legacy.gh_api(
+            f"repos/{repository}/git/refs", method="POST",
+            payload={"ref": authorization_ref, "sha": commit_sha},
+        )
+        if approved.get("ref") != authorization_ref:
+            raise Denied("carrier did not confirm dispatcher authorization ref")
+        created_refs.append(authorization_ref)
+    except BaseException as publication_failure:
+        cleanup_failures = rollback_created_refs()
+        if cleanup_failures:
+            detail = ", ".join(ref for ref, _ in cleanup_failures)
+            raise Denied(
+                "partial carrier ref publication could not be fully rolled back: "
+                + detail
+            ) from publication_failure
+        raise
 
     return {
         "commit": commit_sha,
