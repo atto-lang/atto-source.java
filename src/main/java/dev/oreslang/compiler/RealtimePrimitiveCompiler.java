@@ -22,11 +22,12 @@ import javax.tools.ToolProvider;
 /**
  * A deliberately narrow, closed-world source-to-Java-bytecode proof of concept.
  *
- * This is a SOURCE admission filter and portable backend for a pure primitive
- * subset, NOT an RTSJ NoHeapRealtimeThread verifier or a timing certificate.
- * Only a caller which has already passed TypeChecker and OwnershipChecker may
- * treat the report as a compiler-derived source property. Post-lowering bytecode
- * admission and target-specific runtime qualification are separate mandatory gates.
+ * This is a closed-world admission/lowering backend for a pure primitive
+ * subset, NOT a VM timing certificate. Public callers enter through
+ * {@link OresCompiler#compileRealtimePrimitive}, which performs type and
+ * ownership checking first. Compilation then performs an exact post-lowering
+ * classfile audit and emits a deterministic evidence manifest. Machine-code
+ * AOT, WCET and deployment qualification remain separate mandatory gates.
  */
 public final class RealtimePrimitiveCompiler {
     public static final String CLASS_NAME = "RtPrimitiveModule";
@@ -53,6 +54,7 @@ public final class RealtimePrimitiveCompiler {
 
     public record Artifact(
             Path classFile,
+            Path manifestFile,
             String bytecodeSha256,
             SourceReport sourceReport,
             RealtimeClassfileAudit.Report classfileReport) { }
@@ -113,9 +115,13 @@ public final class RealtimePrimitiveCompiler {
         if (classfileReport.verifiedMethods() != report.reachableFunctions()) {
             throw invalid("post-lowering method set does not match the source call graph");
         }
+        String bytecodeSha256 = sha256(Files.readAllBytes(result));
+        Path manifest = RealtimeArtifactManifest.write(
+                directory, bytecodeSha256, report, classfileReport);
         return new Artifact(
                 result,
-                sha256(Files.readAllBytes(result)),
+                manifest,
+                bytecodeSha256,
                 report,
                 classfileReport);
     }
