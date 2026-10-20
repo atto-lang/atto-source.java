@@ -22,7 +22,12 @@ const map: Map<string,int> = Map.from_entries(entries);
 - Infer or context-check exact `K,V` and reject unresolved/unchecked key
   domains, unsafe widening, capability leaks and borrowed/affine escapes.
 - Key domains must use the typed guest Map's canonical key codec. Distinguish
-  `"x"` from `#x`, and process Symbols from stable Symbols.
+  `"x"` from `#x`, and process Symbols from stable Symbols. The v1
+  storage preserves String byte/code-point identity (including decomposed
+  versus composed Unicode String values), but constructs Symbol identities
+  through the verified normalized Symbol domain. Do not silently normalize
+  String keys unless the whole Map get/put/from_entries contract changes
+  together and is tested end-to-end.
 - No user-defined equality/hash callbacks, host `equals/hashCode`, string
   coercion or identity-based hashing may decide duplicate keys.
 - For v1, reject duplicate **logical** keys. Never silently last-write-wins.
@@ -50,7 +55,8 @@ const map: Map<string,int> = Map.from_entries(entries);
 ## Required adversarial tests
 
 - empty input, one entry, repeated distinct keys, duplicate first/last keys;
-- duplicate normalized Unicode String keys and duplicate tagged Symbols;
+- duplicate identical String keys, distinct decomposed/composed String keys
+  (current v1 policy), and duplicate normalized tagged Symbols;
 - String/Symbol lookalikes remain separate keys;
 - wrong key/value type, Option.None versus missing, nested Option values;
 - maximum entry count, maximum aggregate key bytes, oversized individual key;
@@ -71,3 +77,14 @@ const map: Map<string,int> = Map.from_entries(entries);
    `OresKeyedMap` storage and key codec, not `java.util.Map`.
 4. Execute the adversarial suite, Maven/JDK25/Graal, and native parity gates.
 5. Merge only in dependency order after the relevant CI/security reviews.
+
+## Current-main runtime staging (not guest-accessible)
+
+The isolated host/runtime foundation `OresKeyedMap.fromNominalEntries(...)`
+accepts an `Iterable` of actual `OresEntry` runtime carriers and a concrete
+String/Symbol key/value domain. It rejects impostor entries, invalid keys or
+values, oversized inputs, and duplicate logical keys while building a private
+candidate. It **throws** a sanitized `DuplicateKeyException`; it does *not*
+yet implement the guest `Result<Map<K,V>, DuplicateKey<K>>` facade, move
+semantics, actor admission, or arbitrary numeric key domains. Those are
+separate compiler/runtime milestones.
