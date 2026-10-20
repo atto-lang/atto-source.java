@@ -140,17 +140,24 @@ def gh_api(route, method="GET", payload=None):
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("authenticated GitHub API request unavailable") from exc
+    # Apply the acceptance bound to both channels even on failed requests.
+    # This is a post-capture limit, not a substitute for OS-level byte bounds.
+    if (not isinstance(p.stdout, str) or not isinstance(p.stderr, str)
+            or len(p.stdout) > MAX_GH_API_RESPONSE_CHARS
+            or len(p.stderr) > MAX_GH_API_RESPONSE_CHARS):
+        raise Denied("authenticated GitHub API response exceeds size limit")
     if p.returncode != 0:
-        # Ref-create 422 responses are definitive rejected writes. Expose this
-        # distinction so rollback code never deletes a pre-existing ref after
-        # an atomic create conflict.
+        # Only the standard first-line gh HTTP status is eligible for a
+        # definitive 422 classification. Incidental "HTTP 422" text in a
+        # remote error body must never override ambiguous-write cleanup.
+        first_line = p.stderr.split("\n", 1)[0]
+        definite_conflict = re.fullmatch(
+            r"gh: [^\r\n]{1,4096} \(HTTP 422\)", first_line
+        )
         if (method == "POST" and route.endswith("/git/refs")
-                and isinstance(p.stderr, str) and "HTTP 422" in p.stderr):
+                and definite_conflict is not None):
             raise GitHubWriteRejected("authenticated GitHub ref creation was rejected")
         raise Denied("authenticated GitHub API request failed")
-    if (not isinstance(p.stdout, str)
-            or len(p.stdout) > MAX_GH_API_RESPONSE_CHARS):
-        raise Denied("authenticated GitHub API response exceeds size limit")
     data = strict_json_loads(p.stdout)
     reviews_route = re.fullmatch(
         rf"repos/{re.escape(SOURCE_REPO)}/pulls/[1-9][0-9]{{0,9}}/reviews\\?per_page=100",
