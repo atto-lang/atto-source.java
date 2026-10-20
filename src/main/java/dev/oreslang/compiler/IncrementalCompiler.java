@@ -494,9 +494,16 @@ public final class IncrementalCompiler {
         public CompiledUnit {
             dependencies = Set.copyOf(dependencies);
             java.util.Objects.requireNonNull(program, "compiled unit program");
-            if (checkedProgram != null && checkedProgram.program() != program) {
-                throw new IllegalArgumentException(
-                        "compiled unit checked-program proof must bind the exact program identity");
+            if (checkedProgram != null) {
+                if (checkedProgram.program() != program) {
+                    throw new IllegalArgumentException(
+                            "compiled unit checked-program proof must bind the exact program identity");
+                }
+                if (!java.util.Objects.equals(checkedProgram.codeUnitId(), unitId)
+                        || !checkedProgram.sourceText().equals(sourceText)) {
+                    throw new IllegalArgumentException(
+                            "compiled unit checked-program proof must bind exact unit/source identity");
+                }
             }
         }
 
