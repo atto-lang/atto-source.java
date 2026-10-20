@@ -693,14 +693,37 @@ public final class UnaryTcpSessionAdapterCheck {
                     awaitTrue(() -> adapter.activeGlobalWorkItems() == 0,
                             1000, "race terminal credit " + id);
 
+                    long rejectedBefore = adapter.rejectedCancellationTasks();
                     try {
                         var terminal = read(client);
                         check(terminal.kind() == UnaryTransportFrame.Kind.REPLY
                                         && terminal.correlationId() == id,
                                 "race may publish only its matching successful reply");
-                    } catch (SocketTimeoutException cancelledWon) {
-                        awaitTrue(handle.cancelled::get, 1000,
-                                "absence of reply requires cancellation to have won");
+                    } catch (SocketTimeoutException fastProbeExpired) {
+                        if (handle.cancelled.get()
+                                || adapter.rejectedCancellationTasks() > rejectedBefore) {
+                            continue;
+                        }
+
+                        // A successful response write may be delayed by host
+                        // scheduling beyond the deliberately aggressive 25 ms
+                        // probe. Give that terminal a bounded fallback window
+                        // before declaring a lost reply.
+                        client.setSoTimeout(250);
+                        try {
+                            var delayed = read(client);
+                            check(delayed.kind() == UnaryTransportFrame.Kind.REPLY
+                                            && delayed.correlationId() == id,
+                                    "delayed race terminal must still be its matching reply");
+                        } catch (SocketTimeoutException stillAbsent) {
+                            awaitTrue(
+                                    () -> handle.cancelled.get()
+                                            || adapter.rejectedCancellationTasks() > rejectedBefore,
+                                    1000,
+                                    "absence of reply requires cancellation to have won");
+                        } finally {
+                            client.setSoTimeout(25);
+                        }
                     }
                 }
             }
