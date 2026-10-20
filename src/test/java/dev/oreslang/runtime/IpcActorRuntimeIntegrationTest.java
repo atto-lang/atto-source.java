@@ -26,16 +26,9 @@ final class IpcActorRuntimeIntegrationTest {
 
     @Test
     void actorHandsBlockingIpcToHostWorkerAndReceivesTerminalOutcome() throws Exception {
-        String previousCarriers = System.getProperty("ores.runtime.carriers");
-        String previousAffinity = System.getProperty("ores.actor.affinity");
-        // Respect an explicitly requested CI/production carrier backend.
-        // Use the portable Java carrier only when the caller did not select
-        // one, while disabling affinity so this test does not require CPU
-        // pinning configuration.
-        if (previousCarriers == null) {
-            System.setProperty("ores.runtime.carriers", "java");
-        }
-        System.setProperty("ores.actor.affinity", "none");
+        String requestedCarriers = System.getProperty(
+                "ores.runtime.carriers", "auto").trim()
+                .toLowerCase(java.util.Locale.ROOT);
 
         ExecutorService hostIo = Executors.newSingleThreadExecutor(r -> {
             Thread thread = new Thread(r, "ipc-actor-host-io");
@@ -74,7 +67,7 @@ final class IpcActorRuntimeIntegrationTest {
                      IsolatePolicy.developer(),
                      new ActorRuntime.DispatcherConfig(1, 1, 8, 64))) {
 
-            if ("native".equals(previousCarriers)) {
+            if ("native".equals(requestedCarriers)) {
                 assertEquals(
                         ActorRuntime.CarrierBackend.NATIVE_PTHREAD,
                         runtime.carrierBackend(),
@@ -263,16 +256,6 @@ final class IpcActorRuntimeIntegrationTest {
             hostIo.awaitTermination(2, TimeUnit.SECONDS);
             cleanup.awaitTermination(2, TimeUnit.SECONDS);
 
-            if (previousCarriers == null) {
-                System.clearProperty("ores.runtime.carriers");
-            } else {
-                System.setProperty("ores.runtime.carriers", previousCarriers);
-            }
-            if (previousAffinity == null) {
-                System.clearProperty("ores.actor.affinity");
-            } else {
-                System.setProperty("ores.actor.affinity", previousAffinity);
-            }
         }
     }
 }
