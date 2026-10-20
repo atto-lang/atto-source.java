@@ -189,6 +189,11 @@ public final class OresTaskScope {
         Objects.requireNonNull(task, "task");
         Objects.requireNonNull(readClaims, "readClaims");
         List<ScopedReadClaim> claims = List.copyOf(readClaims);
+
+        OresFuture<T> admitted = null;
+        Throwable admissionFailure = null;
+        Throwable rollbackPoison = null;
+
         synchronized (lock) {
             if (state != State.OPEN) {
                 throw new IllegalStateException("Task scope is already sealed");
@@ -197,16 +202,16 @@ public final class OresTaskScope {
             Child child = new Child();
             reserveScopedReadsLocked(child, claims);
             children.add(child);
-            final OresFuture<T> future;
             try {
-                future = scheduler.start(
+                admitted = scheduler.start(
                         task,
                         () -> childQuiescent(child),
                         () -> childTerminal(child));
+                child.future = admitted;
             } catch (RuntimeException | Error failure) {
-                // Admission can fail before TaskRunner ownership exists, in which
-                // case no lifecycle callback will arrive. Roll back authority
-                // before removing the forensic child from the join set.
+                // Admission can fail before TaskRunner ownership exists, in
+                // which case no lifecycle callback will arrive. Prove complete
+                // authority rollback before removing the forensic child.
                 try {
                     releaseScopedReadsLocked(child);
                     rollbackScopedReadIssuesLocked(child);
@@ -214,30 +219,32 @@ public final class OresTaskScope {
                         throw new IllegalStateException(
                                 "failed-admission Task child disappeared during rollback");
                     }
+                    admissionFailure = failure;
                 } catch (RuntimeException | Error rollbackFailure) {
                     if (rollbackFailure != failure) {
                         rollbackFailure.addSuppressed(failure);
                     }
-                    // A failed authority rollback is itself a lifetime
-                    // bookkeeping failure. Keep the child pinned; it has no
-                    // carrier, so it is already terminal + physically
-                    // quiescent for poison-barrier purposes.
+                    // No carrier was admitted, so this child is already
+                    // physically quiescent. Its authority remains pinned if
+                    // rollback could not be proved.
                     child.terminal = true;
                     child.quiescent = true;
                     child.retirementClaimed = true;
                     poisonScopeLocked(rollbackFailure);
-                    Throwable poison = poisonedDrainReadyLocked();
-                    if (poison != null) {
-                        completePoisonedDrain(poison);
-                    }
-                    throw rollbackFailure;
+                    rollbackPoison = poisonedDrainReadyLocked();
                 }
-                throw failure;
             }
-
-            child.future = future;
-            return future;
         }
+
+        if (rollbackPoison != null) {
+            completePoisonedDrain(rollbackPoison);
+            throw rethrowUnchecked(rollbackPoison);
+        }
+        if (admissionFailure != null) {
+            throw rethrowUnchecked(admissionFailure);
+        }
+        return Objects.requireNonNull(
+                admitted, "Task scope scheduler admission produced no Future");
     }
 
     /**
@@ -484,6 +491,13 @@ public final class OresTaskScope {
                     "Task scope drain settled before scoped-read retirement poison",
                     terminalFailure);
         }
+    }
+
+    private static RuntimeException rethrowUnchecked(Throwable failure) {
+        if (failure instanceof RuntimeException runtime) return runtime;
+        if (failure instanceof Error error) throw error;
+        return new IllegalStateException(
+                "unexpected checked failure in Task scope runtime", failure);
     }
 
     private List<OresFuture<?>> childFuturesLocked() {
