@@ -129,6 +129,37 @@ final class OresTaskScopeAuthorityPoisonTest {
     }
 
     @Test
+    void schedulerChildBindAndRollbackFailurePinsLoanAndOwner() {
+        try (OresScheduler scheduler = new OresScheduler(1);
+             AsyncRuntime runtime = new AsyncRuntime()) {
+            OresTaskScope scope = new OresTaskScope(runtime);
+            Loan loan = new Loan();
+            RuntimeException bindFailure =
+                    new RuntimeException("scheduler child bind failed");
+            RuntimeException rollbackFailure =
+                    new RuntimeException("pre-scheduler rollback failed");
+            loan.schedulerBindFailure = bindFailure;
+            loan.retireFailure = rollbackFailure;
+
+            RuntimeException observed = assertThrows(
+                    RuntimeException.class,
+                    () -> scope.startCompilerFrame(
+                            scheduler,
+                            resume -> new OresScheduler.Done<>(1),
+                            () -> { },
+                            loan));
+
+            assertSame(bindFailure, observed);
+            assertNotNull(loan.child);
+            assertNull(loan.schedulerChild);
+            assertEquals(1, scope.failedCompilerAuthoritiesForTesting());
+            assertFalse(scope.physicallyQuiescent(),
+                    "failed pre-scheduler rollback must retain authority");
+            assertThrows(IllegalStateException.class, scope::close);
+        }
+    }
+
+    @Test
     void physicalCleanupFailurePinsCleanupAndStillLiveLoan() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1);
              AsyncRuntime runtime = new AsyncRuntime()) {
