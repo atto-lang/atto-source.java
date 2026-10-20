@@ -76,8 +76,10 @@ public final class OresTaskScope implements AutoCloseable {
                 @Override public void bindScope(CompilerScopeEpoch scopeEpoch) { }
                 @Override public void bindChild(
                         CompilerScopeEpoch scopeEpoch, OresTask<?> child) { }
-                @Override public void retireNeverStarted(
+                @Override public void retireBeforeChildBound(
                         CompilerScopeEpoch scopeEpoch) { }
+                @Override public void retireNeverStarted(
+                        CompilerScopeEpoch scopeEpoch, OresTask<?> child) { }
                 @Override public void retireAfterPhysicalQuiescence(
                         CompilerScopeEpoch scopeEpoch, OresTask<?> child) { }
             };
