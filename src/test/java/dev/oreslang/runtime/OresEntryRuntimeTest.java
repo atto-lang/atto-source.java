@@ -58,4 +58,16 @@ final class OresEntryRuntimeTest {
         assertEquals("OresEntry", right.toString());
     }
 
+    @Test
+    void nullPayloadsRemainLegalAndTraversable() {
+        OresEntry entry = new OresEntry(null, null);
+        assertNull(entry.key());
+        assertNull(entry.value());
+        assertEquals(java.util.Arrays.asList(null, null), entry.sharedStateChildren());
+
+        OresEntry frozen = assertInstanceOf(OresEntry.class, ActorRuntime.freeze(entry));
+        assertNull(frozen.key());
+        assertNull(frozen.value());
+    }
+
 }

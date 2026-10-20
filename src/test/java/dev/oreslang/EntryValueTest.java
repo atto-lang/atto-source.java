@@ -598,4 +598,49 @@ final class EntryValueTest {
     }
 
 
+    @Test
+    void entryNullPayloadsRemainLegalAtRuntime() throws Exception {
+        String code = """
+                pub fnc main(): void {
+                  const entry = Entry.of(null, 42);
+                  stdio.println(entry.value);
+                  return;
+                }
+                """;
+
+        Ast.Program typed = TypeChecker.check(Parser.parse(code));
+        OwnershipChecker.check(typed);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                        OresLanguage.ID, code, "entry-null.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        assertEquals(
+                "42",
+                output.toString(StandardCharsets.UTF_8)
+                        .replace("\r\n", "\n")
+                        .strip());
+    }
+
+    @Test
+    void entryComposesSendAcrossAsyncAndActorBoundaries() {
+        accepted("""
+                async fnc pass_entry(Entry<int, string> value): int {
+                  return value.key;
+                }
+
+                define actor EntrySink as
+                  receive(ActorMail<Entry<int, string>> mail): void {
+                    return;
+                  }
+                end
+                """);
+    }
+
 }

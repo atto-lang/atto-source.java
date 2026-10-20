@@ -19,6 +19,8 @@ const entry = Entry.of(1, 2);     // Entry<int,int>
 
 `Entry.of(key, value)` infers both type arguments. Entry fields are immutable and preserve their names through member and checked computed access. A structural record or struct with fields named `key` and `value` is **not** assignable to `Entry<K,V>`; callers must construct an Entry explicitly.
 
+`null` is preserved as an ordinary Entry component when the inferred or declared component type admits `null`; the host carrier must not reject a value that the guest typechecker accepts.
+
 
 ### Equality and host-runtime boundary
 

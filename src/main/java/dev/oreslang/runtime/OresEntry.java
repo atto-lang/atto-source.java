@@ -1,7 +1,6 @@
 package dev.oreslang.runtime;
 
-import java.util.List;
-import java.util.Objects;
+import java.util.Arrays;
 
 /**
  * Oreslang's immutable, nominal Entry<K,V> value carrier.
@@ -14,15 +13,15 @@ import java.util.Objects;
  * host graphs, mixed numeric domains, Symbols, and future typed-Map keys.</p>
  *
  * <p>The carrier never grants authority to its payloads: actor transport must
- * independently validate and detach both fields.</p>
+ * independently validate and detach both fields. Java null is preserved as\n * Oreslang's null value; null admission is governed by the guest type contract.</p>
  */
 public final class OresEntry implements OresMutex.SharedState {
     private final Object key;
     private final Object value;
 
     public OresEntry(Object key, Object value) {
-        this.key = Objects.requireNonNull(key, "Entry key");
-        this.value = Objects.requireNonNull(value, "Entry value");
+        this.key = key;
+        this.value = value;
     }
 
     public Object key() {
@@ -35,7 +34,7 @@ public final class OresEntry implements OresMutex.SharedState {
 
     @Override
     public Iterable<?> sharedStateChildren() {
-        return List.of(key, value);
+        return Arrays.asList(key, value);
     }
 
     /**
