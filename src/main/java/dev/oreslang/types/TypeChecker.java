@@ -2864,14 +2864,21 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "Entry.of infers K and V and does not accept call-site type arguments");
                 }
-                if (call.arguments().size() != 2) {
+                List<ExpandedCallArgument> entryArguments =
+                        expandFixedCallArguments(
+                                call.arguments(), env, generics, self, "Entry.of");
+                if (entryArguments.size() != 2) {
                     throw new IllegalArgumentException(
                             "Entry.of expects exactly two arguments: key, value");
                 }
                 Type key = widenCollectionElement(
-                        typeOf(call.arguments().get(0), env, generics, self));
+                        entryArguments.get(0).expression() == null
+                                ? entryArguments.get(0).staticType()
+                                : typeOf(entryArguments.get(0).expression(), env, generics, self));
                 Type value = widenCollectionElement(
-                        typeOf(call.arguments().get(1), env, generics, self));
+                        entryArguments.get(1).expression() == null
+                                ? entryArguments.get(1).staticType()
+                                : typeOf(entryArguments.get(1).expression(), env, generics, self));
                 return entryProductType(key, value);
             }
 
