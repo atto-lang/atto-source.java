@@ -1,7 +1,8 @@
 package dev.oreslang;
 
-import com.oracle.truffle.api.source.Source;
+import dev.oreslang.compiler.OresCompiler;
 import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
