@@ -26,7 +26,7 @@ public final class BehaviorLayoutModel {
         final int[] parent;
         final Map<Key, Integer> edges = new HashMap<>();
         // Closed vocabulary, precomputed once: zero per-event Key allocations.
-        final Map<OresSymbol, int[]> compiledDispatch = new HashMap<>();
+        private final Map<OresSymbol, int[]> compiledDispatch = new HashMap<>();
         Chart(List<OresSymbol> states, Map<OresSymbol, OresSymbol> parents, List<Edge> rules) {
             require(!states.isEmpty() && states.size() <= 4096, "empty or excessive states");
             for (OresSymbol state : states) {
