@@ -133,7 +133,7 @@ public final class RealtimePrimitiveCompiler {
             for (Ast.Param param : fn.parameters()) {
                 if (!locals.add(param.name())) throw invalid("duplicate parameter: " + param.name());
             }
-            if (!alwaysReturns(fn.body())) throw invalid("function can complete without returning: " + id);
+            if (!alwaysReturns(fn.body(), 0)) throw invalid("function can complete without returning: " + id);
             Cost body = statements(fn.body(), locals);
             Cost total = new Cost(plus(1, body.steps()), body.depth());
             costs.put(id, total);
@@ -147,7 +147,8 @@ public final class RealtimePrimitiveCompiler {
      * Every accepted non-void function must return on every path. Reject
      * unreachable trailing statements: they cannot silently hide effects.
      */
-    private static boolean alwaysReturns(List<Ast.Stmt> statements) {
+    private static boolean alwaysReturns(List<Ast.Stmt> statements, int nesting) {
+        if (nesting > MAX_AST_NESTING) throw invalid("control flow nesting too deep");
         boolean terminated = false;
         for (Ast.Stmt stmt : statements) {
             if (terminated) throw invalid("unreachable statement after guaranteed return");
@@ -157,9 +158,9 @@ public final class RealtimePrimitiveCompiler {
                 if (cond.branches().isEmpty()) throw invalid("empty conditional");
                 boolean branchesReturn = true;
                 for (Ast.IfBranch arm : cond.branches()) {
-                    branchesReturn &= alwaysReturns(arm.body());
+                    branchesReturn &= alwaysReturns(arm.body(), nesting + 1);
                 }
-                boolean elseReturns = !cond.elseBody().isEmpty() && alwaysReturns(cond.elseBody());
+                boolean elseReturns = !cond.elseBody().isEmpty() && alwaysReturns(cond.elseBody(), nesting + 1);
                 terminated = branchesReturn && elseReturns;
             }
         }
