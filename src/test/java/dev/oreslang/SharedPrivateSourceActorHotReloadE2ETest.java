@@ -158,6 +158,25 @@ final class SharedPrivateSourceActorHotReloadE2ETest {
                 b.send(-2L);
                 assertEquals(45L, next(a));
                 assertEquals(11L, next(b));
+
+                // Regression: old immutable code images may be republished,
+                // but the actor-owned state and logical identity cannot reset.
+                // A performs 128 sequential code-only generation changes
+                // while B continues to use its own independent heap/state.
+                for (int revision = 0; revision < 128; revision++) {
+                    upgradeEventually(runtime, a,
+                            (revision & 1) == 0 ? v1 : v2);
+                    assertEquals(aAddress, a.address(),
+                            "actor address changed under repeated code replacement");
+                    a.send(0L);
+                    assertEquals(45L, next(a),
+                            "persistent actor state lost on generation " + revision);
+                    if ((revision & 15) == 0) {
+                        b.send(0L);
+                        assertEquals(11L, next(b),
+                                "unmodified actor affected by another actor's reload");
+                    }
+                }
                 a.stop();
                 b.stop();
                 assertTrue(a.awaitTermination(5, TimeUnit.SECONDS));
