@@ -205,6 +205,42 @@ final class GenericHasFutureAwaitTest {
                         """));
     }
 
+
+    @Test
+    void specializesInheritedGenericClassCapability() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                define trait HasFuture<T> as
+                    get_future(): Future<T>;
+                end
+                async fnc source(): int { return 33; }
+                define class Parent<T> implements HasFuture<T> as
+                    pub val Future<T> pending;
+                    pub get_future(): Future<T> { return self.pending; }
+                end
+                define class Child<U> extends Parent<U> as
+                end
+                fnc read(Child<int> child): int { return await child; }
+                fnc make(): int { return await new Child<int>(source()); }
+                """));
+    }
+
+    @Test
+    void specializesGenericCapabilityThroughTraitExtension() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                define trait HasFuture<T> as
+                    get_future(): Future<T>;
+                end
+                define trait DerivedFuture<U> extends HasFuture<U> as
+                end
+                async fnc source(): string { return "ok"; }
+                define class Derived<V> implements DerivedFuture<V> as
+                    pub val Future<V> pending;
+                    pub get_future(): Future<V> { return self.pending; }
+                end
+                fnc read(Derived<string> op): string { return await op; }
+                """));
+    }
+
     @Test
     void rejectsMalformedHasFutureGenericArity() {
         assertThrows(IllegalArgumentException.class,
