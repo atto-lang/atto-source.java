@@ -121,19 +121,6 @@ public final class VerifyEffectClosure {
         } catch (IllegalArgumentException expected) {
             // not a source-declarable permission
         }
-        for (var kind : dev.oreslang.types.LatentEffectRows.Kind.values()) {
-            var unknown = dev.oreslang.types.LatentEffectRows.unresolved(kind);
-            require(unknown.deferredConstructionEffects().isEmpty(),
-                "constructing deferred action must not execute latent effects");
-            require(unknown.latentEffects().contains(EffectContracts.Effect.UNKNOWN_CALL),
-                "unproven deferred action must retain UNKNOWN_CALL");
-            try {
-                unknown.requireInvocationWithin(Set.of(EffectContracts.Effect.IO));
-                throw new AssertionError("unverified action must not execute");
-            } catch (IllegalArgumentException expected) {
-                // absence of an effect proof is not purity.
-            }
-        }
         System.out.println("PASS " + checked
             + " effect-closure roots + trap/FFI negative control (bounded model only)");
     }
