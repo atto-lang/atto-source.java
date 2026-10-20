@@ -373,8 +373,12 @@ final class TaskAccessVerifier {
     public synchronized int activeChildren() { return live.size(); }
 
     private Child child(Ticket ticket) {
-        Child result = live.get(Objects.requireNonNull(ticket, "ticket"));
-        if (result == null) throw new IllegalArgumentException("stale or foreign Task ticket");
+        Objects.requireNonNull(ticket, "ticket");
+        if (ticket.scopeEpoch != scopeEpoch) {
+            throw new IllegalArgumentException("foreign Task scope epoch");
+        }
+        Child result = live.get(ticket);
+        if (result == null) throw new IllegalArgumentException("stale Task ticket");
         return result;
     }
 }
