@@ -87,11 +87,11 @@ final class EffectGraphAdmissionBoundaryTest {
 
     @Test void controlAndUnicodeFormatCharactersCannotSpoofEffectWitnesses() {
         assertThrows(IllegalArgumentException.class,
-                () -> EffectContracts.Call.direct("function\\nIO".replace("\\n", "\n")));
+                () -> EffectContracts.Call.direct("function" + (char) 10 + "IO"));
         assertThrows(IllegalArgumentException.class,
-                () -> EffectContracts.Call.unresolved("callback\\r".replace("\\r", "\r")));
+                () -> EffectContracts.Call.unresolved("callback" + (char) 13));
         assertThrows(IllegalArgumentException.class,
-                () -> EffectContracts.Callable.inferred("name\\u200B".replace("\\u200B", "\u200B"),
+                () -> EffectContracts.Callable.inferred("name" + (char) 0x200B,
                         Set.of(), List.of()));
         assertThrows(NullPointerException.class,
                 () -> new EffectContracts.Call("target", null));
