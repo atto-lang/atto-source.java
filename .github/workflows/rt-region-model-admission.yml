@@ -8,6 +8,7 @@ on:
       - 'src/test/java/dev/oreslang/compiler/RealtimeRegionEffectModelSelfTest.java'
       - 'src/test/java/dev/oreslang/compiler/RealtimeActorSourceEffectsSelfTest.java'
       - 'docs/realtime/region-effect-stage1.md'
+      - 'tools/test_realtime_region_model.sh'
       - '.github/workflows/rt-region-model-admission.yml'
 permissions:
   contents: read
@@ -23,23 +24,5 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - name: Compile real-time symbolic region analyzer
-        run: |
-          mkdir -p target/rt-region-model
-          javac --release 21 -d target/rt-region-model \
-            src/main/java/dev/oreslang/compiler/RealtimeRegionEffectModel.java \
-            src/test/java/dev/oreslang/compiler/RealtimeRegionEffectModelSelfTest.java
-      - name: Execute deterministic region/borrow/lifetime policy tests
-        run: |
-          java -ea -cp target/rt-region-model \
-            dev.oreslang.compiler.RealtimeRegionEffectModelSelfTest
-      - name: Compile checked-AST actor source gate
-        run: |
-          javac --release 21 -d target/rt-region-model \
-            src/main/java/dev/oreslang/ast/Ast.java \
-            src/main/java/dev/oreslang/compiler/RealtimeActorSourceEffects.java \
-            src/test/java/dev/oreslang/compiler/RealtimeActorSourceEffectsSelfTest.java
-      - name: Run actual-AST actor callback negative tests
-        run: |
-          java -ea -cp target/rt-region-model \
-            dev.oreslang.compiler.RealtimeActorSourceEffectsSelfTest
+      - name: Compile and run exact region/actor-source selftests
+        run: bash tools/test_realtime_region_model.sh
