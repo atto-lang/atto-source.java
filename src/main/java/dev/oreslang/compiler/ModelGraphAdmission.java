@@ -163,6 +163,6 @@ public final class ModelGraphAdmission {
                     signature.output(), signature.vjp()));
             prior = signature.output();
         }
-        return new ModelGraph(source.name(), input, prior, nodes, used);
+        return new ModelGraph(source.name(), input, prior, formalConfig, nodes, used);
     }
 }
