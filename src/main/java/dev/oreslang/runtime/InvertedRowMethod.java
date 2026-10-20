@@ -20,6 +20,8 @@ import java.util.Objects;
 final class InvertedRowMethod {
     private static final int MAX_ASSIGNMENTS = 128;
     private static final int MAX_EXPRESSION_DEPTH = 64;
+    private static final int MAX_PARAMETERS = 32;
+    private static final int MAX_EXPRESSION_NODES = 4096;
 
     @FunctionalInterface
     private interface ScalarExpr {
@@ -46,7 +48,9 @@ final class InvertedRowMethod {
                 || method.structural() || method.explicitReceiverType() != null
                 || !method.genericParameters().isEmpty() || !method.annotations().isEmpty()
                 || method.returnType() == null || !method.returnType().name().equals("void")
+                || method.returnType().inferArguments()
                 || !method.returnType().arguments().isEmpty()
+                || method.parameters().size() > MAX_PARAMETERS
                 || method.body().isEmpty() || method.body().size() > MAX_ASSIGNMENTS) {
             throw new IllegalArgumentException("inverted method '" + method.name()
                     + "' requires a non-suspending, nongeneric, void scalar body");
@@ -55,6 +59,7 @@ final class InvertedRowMethod {
         for (int i = 0; i < method.parameters().size(); i++) {
             Ast.Param parameter = method.parameters().get(i);
             if (parameter.type() == null || !parameter.type().name().equals("f64")
+                    || parameter.type().inferArguments()
                     || !parameter.type().arguments().isEmpty()
                     || parameter.structural() || parameter.mutable()
                     || parameters.putIfAbsent(parameter.name(), i) != null
@@ -63,13 +68,14 @@ final class InvertedRowMethod {
             }
         }
         List<Assignment> result = new ArrayList<>();
+        int[] remainingNodes = {MAX_EXPRESSION_NODES};
         for (Ast.Stmt statement : method.body()) {
             if (!(statement instanceof Ast.ExprStmt expr)
                     || !(expr.expression() instanceof Ast.AssignExpr assignment)) {
                 throw new IllegalArgumentException("inverted method supports only scalar field assignments");
             }
             int target = checkedField(assignment.target(), schema);
-            ScalarExpr rhs = lower(assignment.value(), schema, parameters, 0);
+            ScalarExpr rhs = lower(assignment.value(), schema, parameters, 0, remainingNodes);
             result.add(new Assignment(target, rhs));
         }
         return new InvertedRowMethod(method.name(), method.parameters().size(), result);
@@ -89,7 +95,11 @@ final class InvertedRowMethod {
     }
 
     private static ScalarExpr lower(
-            Ast.Expr value, InvertedArray.Schema schema, Map<String, Integer> parameters, int depth) {
+            Ast.Expr value, InvertedArray.Schema schema, Map<String, Integer> parameters,
+            int depth, int[] remainingNodes) {
+        if (--remainingNodes[0] < 0) {
+            throw new IllegalArgumentException("inverted scalar expression budget exceeded");
+        }
         if (depth > MAX_EXPRESSION_DEPTH) {
             throw new IllegalArgumentException("inverted method expression nesting exceeds limit");
         }
@@ -109,12 +119,12 @@ final class InvertedRowMethod {
             return (row, args) -> (Double) row[field];
         }
         if (value instanceof Ast.UnaryExpr unary && unary.operator().equals("-")) {
-            ScalarExpr operand = lower(unary.operand(), schema, parameters, depth + 1);
+            ScalarExpr operand = lower(unary.operand(), schema, parameters, depth + 1, remainingNodes);
             return (row, args) -> -operand.read(row, args);
         }
         if (value instanceof Ast.BinaryExpr binary) {
-            ScalarExpr left = lower(binary.left(), schema, parameters, depth + 1);
-            ScalarExpr right = lower(binary.right(), schema, parameters, depth + 1);
+            ScalarExpr left = lower(binary.left(), schema, parameters, depth + 1, remainingNodes);
+            ScalarExpr right = lower(binary.right(), schema, parameters, depth + 1, remainingNodes);
             return switch (binary.operator()) {
                 case "+" -> (row, args) -> left.read(row, args) + right.read(row, args);
                 case "-" -> (row, args) -> left.read(row, args) - right.read(row, args);
