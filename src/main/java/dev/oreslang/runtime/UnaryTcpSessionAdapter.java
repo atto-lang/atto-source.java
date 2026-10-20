@@ -136,29 +136,40 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
         }
     }
 
-    record Reply(UnaryTransportFrame.Kind kind, byte[] payload) {
+    record Reply(UnaryTransportFrame.Kind kind, OresBytes payloadValue) {
         Reply {
             Objects.requireNonNull(kind, "kind");
-            Objects.requireNonNull(payload, "payload");
+            Objects.requireNonNull(payloadValue, "payloadValue");
             if (kind != UnaryTransportFrame.Kind.REPLY
                     && kind != UnaryTransportFrame.Kind.ERROR) {
                 throw new IllegalArgumentException("terminal TCP actor result must be REPLY or ERROR");
             }
-            if (payload.length > UnaryTransportFrame.MAX_PAYLOAD_BYTES)
+            if (payloadValue.size() > UnaryTransportFrame.MAX_PAYLOAD_BYTES)
                 throw new IllegalArgumentException("unary TCP reply exceeds protocol byte limit");
-            if (kind == UnaryTransportFrame.Kind.ERROR && payload.length != 0)
+            if (kind == UnaryTransportFrame.Kind.ERROR && !payloadValue.isEmpty())
                 throw new IllegalArgumentException("unary TCP ERROR frames must be bodyless");
-            payload = payload.clone();
         }
 
-        @Override public byte[] payload() { return payload.clone(); }
+        Reply(UnaryTransportFrame.Kind kind, byte[] payload) {
+            this(kind, OresBytes.copyOf(payload));
+        }
+
+        byte[] payload() { return payloadValue.toByteArray(); }
+        int payloadLength() { return payloadValue.size(); }
 
         static Reply success(byte[] payload) {
             return new Reply(UnaryTransportFrame.Kind.REPLY, payload);
         }
 
+        static Reply successFresh(byte[] freshPayload) {
+            Objects.requireNonNull(freshPayload, "freshPayload");
+            return new Reply(
+                    UnaryTransportFrame.Kind.REPLY,
+                    OresBytes.wrapTrusted(freshPayload));
+        }
+
         static Reply error() {
-            return new Reply(UnaryTransportFrame.Kind.ERROR, new byte[0]);
+            return new Reply(UnaryTransportFrame.Kind.ERROR, OresBytes.wrapTrusted(new byte[0]));
         }
     }
 
