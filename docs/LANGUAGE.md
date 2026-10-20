@@ -178,7 +178,7 @@ fnc mixed(): Array<type intOrBoolOrString> {
 }
 
 fnc fixed(): [int, bool, string] {
-  return [3, true, "yes"];
+  return tuple {3, true, "yes"};
 }
 
 fnc named(): {foo: int, bar: string} {
@@ -186,7 +186,7 @@ fnc named(): {foo: int, bar: string} {
 }
 ```
 
-The `type` marker inside `Array<type intOrBoolOrString>` is accepted as an explicit alias marker; `Array<intOrBoolOrString>` is equivalent. A finite tuple type records exact arity and the type of each position even though the interpreter represents the value with a JVM `List`. A record type names required members; extra members remain compatible with the structural type system.
+The `type` marker inside `Array<type intOrBoolOrString>` is accepted as an explicit alias marker; `Array<intOrBoolOrString>` is equivalent. A finite tuple type records exact arity and the type of each position. At runtime, tuples use the immutable nominal `OresTuple` carrier, distinct from JVM lists representing arrays. This distinction is preserved across guest equality, checked return boundaries and actor transport. A record type names required members; extra members remain compatible with the structural type system.
 
 ## Collection shapes and named type metadata
 
