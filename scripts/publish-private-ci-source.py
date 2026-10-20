@@ -97,8 +97,10 @@ def trusted_github_cli():
         info = os.lstat(target)
     except OSError as exc:
         raise Denied("trusted GitHub CLI is unavailable") from exc
+    # setuid/setgid executables are not an acceptable GitHub API client:
+    # publication must not gain filesystem or process privileges on exec.
     if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
-            or info.st_mode & 0o022 or not info.st_mode & 0o111):
+            or info.st_mode & 0o6022 or not info.st_mode & 0o111):
         raise Denied("trusted GitHub CLI executable is not root-controlled")
     return target
 
