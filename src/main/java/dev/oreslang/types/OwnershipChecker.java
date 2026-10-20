@@ -2600,6 +2600,8 @@ public final class OwnershipChecker {
             else if (stmt instanceof Ast.DeferStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.BlockStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.TaskScopeStmt s) {
+                scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.LoopStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.IfStmt s) {
