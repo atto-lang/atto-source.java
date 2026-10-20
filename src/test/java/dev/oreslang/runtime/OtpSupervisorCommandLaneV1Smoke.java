@@ -148,6 +148,52 @@ public final class OtpSupervisorCommandLaneV1Smoke {
         }
     }
 
+
+    private static void terminalStopRacesPhysicalLeaseSettlement() throws Exception {
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            for (int i = 0; i < 512; i++) {
+                var lane = new OtpSupervisorCommandLaneV1(2);
+                var command = lane.submit(target(1), 7,
+                        OtpSupervisorCommandLaneV1.Kind.PREPARE_UPGRADE, DIGEST);
+                lane.submit(target(2), 7,
+                        OtpSupervisorCommandLaneV1.Kind.QUIESCE_CHECK, DIGEST);
+                var lease = lane.poll().orElseThrow();
+                var start = new CountDownLatch(1);
+                var ack = pool.submit(() -> {
+                    start.await();
+                    try { lease.ack(); } catch (IllegalStateException revoked) { }
+                    return null;
+                });
+                var stop = pool.submit(() -> {
+                    start.await();
+                    return lane.quarantineOnTermination();
+                });
+                start.countDown();
+                ack.get(5, TimeUnit.SECONDS);
+                int quarantined = stop.get(5, TimeUnit.SECONDS);
+                var snapshot = lane.snapshot();
+                check(snapshot.outstanding() == 0
+                        && snapshot.inFlight() == 0 && snapshot.queued() == 0,
+                        "terminal race left ghost command or lease");
+                check(snapshot.acknowledged() + quarantined == 2,
+                        "terminal race lost or double-counted CONTROL command");
+                check(snapshot.quarantined() == quarantined,
+                        "quarantine count mismatch");
+                check(lane.quarantineOnTermination() == 0,
+                        "terminal stop must be idempotent");
+                try {
+                    lane.submit(target(3), 8,
+                            OtpSupervisorCommandLaneV1.Kind.GRACEFUL_STOP, null);
+                    throw new AssertionError("stopped lane accepted new command");
+                } catch (IllegalStateException expected) { }
+                lease.close();
+                check(lane.snapshot().quarantined() == quarantined,
+                        "closing a revoked lease mutated terminal count");
+                check(command.sequence() == 1, "initial command identity changed");
+            }
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         lifecycleAndCapacity();
         epochAndAbort();
@@ -155,8 +201,10 @@ public final class OtpSupervisorCommandLaneV1Smoke {
         retryFairnessBetweenActors();
         quarantinesUnsettledCommandsOnTermination();
         abortRace();
+        terminalStopRacesPhysicalLeaseSettlement();
         System.out.println("PASS: lease idempotence/retry/duplicate admission/capacity/epoch fencing");
         System.out.println("PASS: 512 concurrent ack-vs-explicit-abort races");
+        System.out.println("PASS: 512 concurrent ACK-vs-terminal-quarantine races");
         System.out.println("LIMIT: host-only supervisor command queue, not actor dispatch or hot route publication");
     }
 }
