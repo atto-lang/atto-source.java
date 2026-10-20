@@ -662,12 +662,14 @@ public final class UnaryTcpSessionAdapterCheck {
                 catch (IOException failure) { throw new AssertionError(failure); }
             });
 
-            try (Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort())) {
-                client.setSoTimeout(25);
+            try (Socket client = new Socket(
+                    InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                client.setSoTimeout(1500);
                 Binding b = binding(client);
                 for (long id = 1; id <= 250; id++) {
                     send(client, request(b, id, new byte[] {1}));
                     TestHandle handle = dispatcher.await(b.sessionId(), id);
+                    long rejectedBefore = adapter.rejectedCancellationTasks();
                     CountDownLatch go = new CountDownLatch(1);
                     Future<?> complete = pool.submit(() -> {
                         try { go.await(); }
@@ -693,37 +695,31 @@ public final class UnaryTcpSessionAdapterCheck {
                     awaitTrue(() -> adapter.activeGlobalWorkItems() == 0,
                             1000, "race terminal credit " + id);
 
-                    long rejectedBefore = adapter.rejectedCancellationTasks();
-                    try {
+                    // Never use a short framed-read timeout as a readiness
+                    // probe: a timeout can consume a partial TCP frame and
+                    // corrupt the next read boundary. Poll availability without
+                    // consuming bytes until one terminal outcome is observable.
+                    long outcomeDeadline =
+                            System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+                    while (client.getInputStream().available() == 0
+                            && !handle.cancelled.get()
+                            && adapter.rejectedCancellationTasks() <= rejectedBefore) {
+                        if (System.nanoTime() >= outcomeDeadline) {
+                            throw new AssertionError(
+                                    "race produced neither reply nor cancellation for " + id);
+                        }
+                        Thread.sleep(1);
+                    }
+
+                    if (client.getInputStream().available() > 0) {
                         var terminal = read(client);
                         check(terminal.kind() == UnaryTransportFrame.Kind.REPLY
                                         && terminal.correlationId() == id,
                                 "race may publish only its matching successful reply");
-                    } catch (SocketTimeoutException fastProbeExpired) {
-                        if (handle.cancelled.get()
-                                || adapter.rejectedCancellationTasks() > rejectedBefore) {
-                            continue;
-                        }
-
-                        // A successful response write may be delayed by host
-                        // scheduling beyond the deliberately aggressive 25 ms
-                        // probe. Give that terminal a bounded fallback window
-                        // before declaring a lost reply.
-                        client.setSoTimeout(250);
-                        try {
-                            var delayed = read(client);
-                            check(delayed.kind() == UnaryTransportFrame.Kind.REPLY
-                                            && delayed.correlationId() == id,
-                                    "delayed race terminal must still be its matching reply");
-                        } catch (SocketTimeoutException stillAbsent) {
-                            awaitTrue(
-                                    () -> handle.cancelled.get()
-                                            || adapter.rejectedCancellationTasks() > rejectedBefore,
-                                    1000,
-                                    "absence of reply requires cancellation to have won");
-                        } finally {
-                            client.setSoTimeout(25);
-                        }
+                    } else {
+                        check(handle.cancelled.get()
+                                        || adapter.rejectedCancellationTasks() > rejectedBefore,
+                                "absence of reply requires cancellation to have won");
                     }
                 }
             }
