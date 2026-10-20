@@ -84,6 +84,57 @@ final class StaticFactsV0ExporterTest {
     }
 
     @Test
+    void producerAndConsumerShareExactProcedureBudget() {
+        StringBuilder source = new StringBuilder();
+        for (int i = 0; i < 513; i++) {
+            source.append("fnc scalar_").append(i)
+                    .append("(): int { return ").append(i).append("; }\n");
+        }
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> StaticFactsV0Exporter.fromSource(source.toString()));
+        assertTrue(failure.getMessage().contains("oversized procedure collection"),
+                failure.getMessage());
+    }
+
+    @Test
+    void exporterRejectsMoreLoopsThanConsumerBudget() {
+        StringBuilder source = new StringBuilder("pub routine main(): void {\n");
+        for (int i = 0; i < 257; i++) {
+            source.append("while (true) { break; }\n");
+        }
+        source.append("return; }\n");
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> StaticFactsV0Exporter.fromSource(source.toString()));
+        assertTrue(failure.getMessage().contains("too many loops"),
+                failure.getMessage());
+    }
+
+    @Test
+    void deeplyNestedValidBooleanExpressionIsRejectedDeterministically() {
+        String source = "pub routine main(): bool { return "
+                + "!".repeat(150) + "true; }";
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> StaticFactsV0Exporter.fromSource(source));
+        assertTrue(failure.getMessage().contains("nested AST exceeds recursive traversal depth budget"),
+                failure.getMessage());
+    }
+
+    @Test
+    void repeatedCallSiteCannotBeSilentlyDeduplicated() {
+        String source = """
+                fnc leaf(): int { return 3; }
+                pub routine main(): int {
+                    leaf();
+                    return leaf();
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> StaticFactsV0Exporter.fromSource(source));
+        assertTrue(failure.getMessage().contains("multiple static call sites"),
+                failure.getMessage());
+    }
+
+    @Test
     void invalidSourceRejectedBeforeFactProduction() {
         assertThrows(IllegalArgumentException.class,
                 () -> StaticFactsV0Exporter.fromSource("fnc x(): int { return unknown; }"));
