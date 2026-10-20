@@ -79,8 +79,10 @@ These are sanitized, immutable frame projections; no message payloads are expose
 The follow-on Java [#1684](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1684)
 adds an initial host-mailbox implementation, **not yet certified by executed CI**.
 
-- `ActorRuntime.send` stamps an actual admitted receive hop on a child-owned
-  `OresAsyncTrace.Trace` and stores it privately in the mailbox envelope.
+- `ActorRuntime.send` creates a child-owned pending actor-message boundary
+  and stores it privately in the mailbox envelope. A hop is counted as an
+  **actual actor visit only when the receiving callback enters its execution
+  scope**. Rejected or never-run messages cannot inflate visited-actor history.
   An input payload cannot inject this runtime-only field.
 - The receiver installs the trace only for the callback's scheduler turn;
   strict LIFO scope restoration prevents another mailbox message from
@@ -95,10 +97,12 @@ adds an initial host-mailbox implementation, **not yet certified by executed CI*
   representation, preserving the original Throwable and error site.
   Scheduler-control suspension and fatal VM failures are never represented
   as guest errors.
-- Six JUnit integration cases target actual mailbox message chains of 8
+- Host-runtime integration cases target actual mailbox message chains of 8
   actors, a 201-visit two-actor cycle with 185 elided visits, sibling fanout,
   host send isolation, pre-completed awaited Future continuation, and
-  next-tick preservation.
+  next-tick preservation. Source-level tests additionally require real scope
+  entry before a queued boundary becomes a visited actor, and reject duplicate
+  visits after resume.
 
 This host runtime slice does **not** implement authenticated external
 `ProxyActor` IPC/TCP/HTTP, supervisor CONTROL-chain transport, remote
