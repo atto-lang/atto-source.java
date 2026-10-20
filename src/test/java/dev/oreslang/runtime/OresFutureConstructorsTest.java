@@ -362,6 +362,46 @@ final class OresFutureConstructorsTest {
 
 
     @Test
+    void plainCallbackLateNullRejectionSettlesInsteadOfStrandingFuture() throws Exception {
+        AtomicReference<OresFuture.Callback<Integer>> foreign = new AtomicReference<>();
+        OresFuture<Integer> future = OresFutureConstructors.fromRunCallback(foreign::set);
+        assertFalse(future.isDone());
+        assertDoesNotThrow(() -> foreign.get().reject(null));
+        var observed = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> future.get(5, TimeUnit.SECONDS));
+        assertInstanceOf(NullPointerException.class, observed.getCause());
+        assertTrue(foreign.get().isDone());
+        assertThrows(OresFuture.AlreadySettledException.class,
+                () -> foreign.get().resolve(40));
+    }
+
+    @Test
+    void plainCallbackSynchronousNullRejectionSettlesBeforeReturning() throws Exception {
+        OresFuture<Integer> future = OresFutureConstructors.fromRunCallback(
+                callback -> callback.reject(null));
+        var observed = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> future.get(5, TimeUnit.SECONDS));
+        assertInstanceOf(NullPointerException.class, observed.getCause());
+    }
+
+    @Test
+    void trackedTaskCallbackNullRejectionSettlesWithoutBlockingCarrier() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> task = scheduler.start(resume -> {
+                assertTrue(resume.initial());
+                OresFuture<Integer> made =
+                        OresFutureConstructors.fromRunCallbackOnCurrentTask(
+                                callback -> callback.reject(null));
+                var observed = assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> made.get(5, TimeUnit.SECONDS));
+                assertInstanceOf(NullPointerException.class, observed.getCause());
+                return OresScheduler.done(17);
+            });
+            assertEquals(17, task.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void malformedAsynchronousNullRejectionFailsFutureAndDetaches() throws Exception {
         AtomicReference<OresFuture.Callback<Integer>> foreign = new AtomicReference<>();
         java.util.concurrent.atomic.AtomicInteger detaches = new java.util.concurrent.atomic.AtomicInteger();
