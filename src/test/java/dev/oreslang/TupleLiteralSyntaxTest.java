@@ -84,6 +84,45 @@ final class TupleLiteralSyntaxTest {
     }
 
     @Test
+    void tupleTrailingCommaSupportsSingletonAndManyElementForms() {
+        Ast.Program program = Parser.parse("""
+                fnc main(): void {
+                  const explicitSingleton = tuple {1,};
+                  const explicitMany = tuple {1, 2, 3,};
+                  const compactSingleton = (1,);
+                  const compactMany = (1, 2, 3,);
+                  return;
+                }
+                """);
+
+        Ast.FunctionDecl main = assertInstanceOf(
+                Ast.FunctionDecl.class,
+                program.modules().getFirst().declarations().getFirst());
+        for (int i = 0; i < 4; i++) {
+            assertInstanceOf(
+                    Ast.TupleExpr.class,
+                    assertInstanceOf(Ast.BindingStmt.class, main.body().get(i)).initializer());
+        }
+        assertEquals(1, assertInstanceOf(
+                Ast.TupleExpr.class,
+                assertInstanceOf(Ast.BindingStmt.class, main.body().get(0)).initializer())
+                .elements().size());
+        assertEquals(3, assertInstanceOf(
+                Ast.TupleExpr.class,
+                assertInstanceOf(Ast.BindingStmt.class, main.body().get(1)).initializer())
+                .elements().size());
+        assertEquals(1, assertInstanceOf(
+                Ast.TupleExpr.class,
+                assertInstanceOf(Ast.BindingStmt.class, main.body().get(2)).initializer())
+                .elements().size());
+        assertEquals(3, assertInstanceOf(
+                Ast.TupleExpr.class,
+                assertInstanceOf(Ast.BindingStmt.class, main.body().get(3)).initializer())
+                .elements().size());
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+    }
+
+    @Test
     void forOfAcceptsExplicitBraceTuple() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc take(int value): void {
@@ -113,6 +152,31 @@ final class TupleLiteralSyntaxTest {
                 }
                 """)));
     }
+    @Test
+    void namedTupleInferenceAdmitsTrailingCommaButStillRejectsEmpty() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc canonical(): int {
+                  const T values = infer<T> tuple {1, 2, 3,};
+                  return values[2];
+                }
+
+                fnc compatibility(): int {
+                  const U values = infer<U> tuple (4, 5, 6,);
+                  return values[2];
+                }
+                """)));
+
+        IllegalArgumentException empty = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        fnc bad(): void {
+                          const T values = infer<T> tuple {};
+                          return;
+                        }
+                        """));
+        assertTrue(empty.getMessage().contains("at least one"), empty.getMessage());
+    }
+
     @Test
     void legacyTupleCallIsParsedAsOrdinaryCallAndFallsBackToBuiltinCallable() {
         Ast.Program parsed = Parser.parse("""
