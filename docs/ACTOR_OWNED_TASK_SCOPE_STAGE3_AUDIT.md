@@ -373,3 +373,50 @@ These are committed source artifacts but remain **unverified by production
 Maven/GraalVM CI**; security issue #962 still blocks any unreviewed private
 cross-organization mirror. Do not merge until exact-source CI and shard/Task
 shutdown stress tests are verified.
+
+
+## Direct-main integration and structured-child witness hardening (2026-10-20)
+
+**Current dependency reality:** PR #1402 and PR #1407 have already been
+merged and closed. The old Stage-3 base on the former Stage-2 branch was
+stale; current main also introduced `ActorPhysicalTurnGate`, CPU-based
+pool sizing, `ActorShardLease`, and `ActorShardSnapshotLease`. Blindly
+copying an older Stage-3 `ActorRuntime.java` onto main would remove those
+changes.
+
+A reviewed three-way integration was created on the exact current main
+commit `f4e7135b3e1b3b49abef8b340d916e9012798810`: seven Stage-3
+ActorRuntime patch hunks applied unchanged; the single conflicting actor
+finalization block was reconciled manually. The integrated finalizer
+retains mainline shard/snapshot lease revocation as individually guarded
+teardown operations, outside the actor lifecycle monitor. The mainline
+physical-turn gate and scheduler pool sizing remain intact.
+
+The existing Stage-3 PR #1412 was **retargeted to main** using a
+conditional-ref update after saving the former head
+`da5444672fa34810473edeed7fc96dedd753575e` on
+`backup/actor-owned-stage3-pre-main-integration-20261020`.
+GitHub verified a four-file-only diff against main with no missing main
+commits. No private source left its original GitHub organization.
+
+Two additional real-source regression cases cover:
+
+- Actor shard/snapshot quotas are refunded, and retained snapshots
+  invalidated, before the actor's `done` Future can settle.
+- Structured parent termination never reports `done` before its
+  managed child's terminal `done` Future has settled (100 shutdown races).
+
+A related source ordering fix publishes each child's own terminal
+witness before calling `parent.childFinalized(this)`, closing a window
+where a parent could race to finalization before its child even had a
+terminal Future.
+
+Stage-3 now contains **24 JUnit test methods** (10
+`ActorOwnedTaskScopeTest` and 14 `ActorTaskTerminationCascadeTest`).
+These methods are **committed, not verified as passing** on the real
+JDK25/GraalVM project because source-repo GitHub Actions jobs still
+report zero executed steps. Do not equate Git mergeability with test
+success. Keep Stage-3 draft pending exact-source CI and review.
+
+Private cross-organization source mirroring remains explicitly blocked
+by open security issue #962. No cross-org source mirror was attempted.
