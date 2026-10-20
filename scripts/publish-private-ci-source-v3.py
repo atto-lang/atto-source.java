@@ -962,7 +962,8 @@ def direct_tree_entries(repository, tree_sha):
     tree_sha = valid_sha(tree_sha, "direct carrier tree SHA invalid")
     response = legacy.gh_api(f"repos/{repository}/git/trees/{tree_sha}")
     entries = response.get("tree") if isinstance(response, dict) else None
-    if (response.get("sha") != tree_sha
+    if (not isinstance(response, dict)
+            or response.get("sha") != tree_sha
             or response.get("truncated") is not False
             or not isinstance(entries, list)):
         raise Denied("carrier direct tree read-back is incomplete")
@@ -979,9 +980,10 @@ def direct_tree_entries(repository, tree_sha):
         kind = entry.get("type")
         mode = entry.get("mode")
         if (not isinstance(name, str) or not name
-                or "/" in name or "\\x00" in name
+                or "/" in name or chr(0) in name or chr(92) in name
                 or name in (".", "..") or name in result
-                or kind not in modes or mode not in modes[kind]):
+                or not isinstance(kind, str) or kind not in modes
+                or not isinstance(mode, str) or mode not in modes[kind]):
             raise Denied("carrier direct tree contains unsafe or duplicate entry")
         result[name] = (
             mode, kind,
