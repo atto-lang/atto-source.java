@@ -98,7 +98,19 @@ public final class Types {
         }
     }
 
-    public record ListType(Type element) implements Type { }
+    /**
+     * Immutable compile-time positional pattern on a runtime-extent sequence.
+     * An empty repeating unit denotes ordinary homogeneous/union storage.
+     * No reflection or runtime layout is implied by this static proof.
+     */
+    public record ListType(Type element, List<Type> repeatUnit) implements Type {
+        public ListType {
+            Objects.requireNonNull(element, "list element");
+            repeatUnit = List.copyOf(repeatUnit);
+        }
+        public ListType(Type element) { this(element, List.of()); }
+        public boolean patterned() { return !repeatUnit.isEmpty(); }
+    }
 
     public enum TupleKind {
         TUPLE,
@@ -204,7 +216,8 @@ public final class Types {
         if (type instanceof Not not) return containsUncertainType(not.excluded());
         if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Record record) return record.members().values().stream().anyMatch(Types::containsUncertainType);
-        if (type instanceof ListType list) return containsUncertainType(list.element());
+        if (type instanceof ListType list) return containsUncertainType(list.element())
+                || list.repeatUnit().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Function function) return function.parameters().stream().anyMatch(Types::containsUncertainType)
                 || containsUncertainType(function.result());
@@ -224,6 +237,7 @@ public final class Types {
         }
         if (from instanceof Not) return to == Unknown.INSTANCE;
         if (from instanceof BoolLiteral && to == Primitive.BOOL) return true;
+        if (from == Unknown.INSTANCE && to instanceof ListType target && target.patterned()) return false;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
@@ -274,6 +288,9 @@ public final class Types {
         }
 
         if (from instanceof ListType source && to instanceof ListType target) {
+            // Never recover an erased positional proof or expose a shaped list
+            // through a mutable union-only alias.
+            if (!source.repeatUnit().equals(target.repeatUnit())) return false;
             return isAssignable(source.element(), target.element()) && isAssignable(target.element(), source.element());
         }
 

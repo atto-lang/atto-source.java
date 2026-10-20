@@ -2374,6 +2374,8 @@ public final class TypeChecker {
                 } else {
                     requireAssignable(index, Primitive.INT, "array/list/tuple index");
                     if (receiver instanceof ListType list) {
+                        if (list.patterned()) throw new IllegalArgumentException(
+                                "indexed mutation of repeating-pattern collection requires a positional proof");
                         targetType = list.element();
                     } else if (receiver instanceof Tuple tuple) {
                         if (tuple.kind() == TupleKind.TUPLE) {
@@ -4520,6 +4522,20 @@ public final class TypeChecker {
             if (contextual != null) return contextual;
         }
         if (expr instanceof Ast.ListExpr list) {
+            if (expected instanceof ListType patterned && patterned.patterned()) {
+                List<Type> unit = patterned.repeatUnit();
+                if (list.elements().size() % unit.size() != 0) {
+                    throw new IllegalArgumentException(
+                            "list literal does not complete repeating sequence group of "
+                                    + unit.size() + " element(s)");
+                }
+                for (int i = 0; i < list.elements().size(); i++) {
+                    Type actual = typeOf(list.elements().get(i), env, generics, self);
+                    requireAssignable(actual, unit.get(i % unit.size()),
+                            "repeating sequence element " + i);
+                }
+                return patterned;
+            }
             if (expected instanceof Tuple tupleExpected) {
                 return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList(),
                         tupleExpected.kind());
@@ -4621,7 +4637,8 @@ public final class TypeChecker {
                     targetRecord.kind());
         }
         if (source instanceof ListType sourceList && target instanceof ListType targetList) {
-            return new ListType(overlayReadonlyCapabilities(sourceList.element(), targetList.element()));
+            return new ListType(overlayReadonlyCapabilities(sourceList.element(), targetList.element()),
+                    targetList.repeatUnit());
         }
         if (source instanceof Tuple sourceTuple && target instanceof Tuple targetTuple
                 && sourceTuple.kind() == targetTuple.kind()
@@ -5008,7 +5025,8 @@ public final class TypeChecker {
     private Type bindReceiverSelf(Type type, Type receiver) {
         if (type instanceof SelfType) return receiver;
         if (type instanceof Borrow borrow) return new Borrow(bindReceiverSelf(borrow.target(), receiver), borrow.mutable());
-        if (type instanceof ListType list) return new ListType(bindReceiverSelf(list.element(), receiver));
+        if (type instanceof ListType list) return new ListType(bindReceiverSelf(list.element(), receiver),
+                list.repeatUnit().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
         if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> bindReceiverSelf(t, receiver)).toList(), tuple.kind());
         if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
         if (type instanceof Named named) return new Named(
@@ -6295,7 +6313,8 @@ public final class TypeChecker {
             return new Named(named.name(), named.arguments().stream()
                     .map(argument -> resolveSharedGeneric(argument, bindings)).toList());
         }
-        if (type instanceof ListType list) return new ListType(resolveSharedGeneric(list.element(), bindings));
+        if (type instanceof ListType list) return new ListType(resolveSharedGeneric(list.element(), bindings),
+                list.repeatUnit().stream().map(t -> resolveSharedGeneric(t, bindings)).toList());
         if (type instanceof Tuple tuple) {
             return new Tuple(tuple.elements().stream().map(element -> resolveSharedGeneric(element, bindings)).toList(), tuple.kind());
         }
@@ -6422,6 +6441,10 @@ public final class TypeChecker {
     private Type builtinCollectionMember(Type receiver, String member) {
         receiver = deref(receiver);
         if (receiver instanceof ListType list) {
+            if (list.patterned() && (member.equals("add") || member.equals("set"))) {
+                throw new IllegalArgumentException(
+                        "mutation of repeating-pattern collection requires a shape-preserving operation");
+            }
             return switch (member) {
                 case "size" -> Primitive.INT;
                 case "get" -> new Function(List.of(Primitive.INT), list.element());
@@ -7943,7 +7966,8 @@ public final class TypeChecker {
         if (type instanceof Generic generic) return bindings.getOrDefault(generic.name(), type);
         if (type instanceof SelfType receiverSelf) return new SelfType(substituteGenerics(receiverSelf.bound(), bindings));
         if (type instanceof Borrow borrow) return new Borrow(substituteGenerics(borrow.target(), bindings), borrow.mutable());
-        if (type instanceof ListType list) return new ListType(substituteGenerics(list.element(), bindings));
+        if (type instanceof ListType list) return new ListType(substituteGenerics(list.element(), bindings),
+                list.repeatUnit().stream().map(t -> substituteGenerics(t, bindings)).toList());
         if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> substituteGenerics(t, bindings)).toList(), tuple.kind());
         if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> substituteGenerics(t, bindings)).toList());
         if (type instanceof Types.Not not) return Types.notOf(substituteGenerics(not.excluded(), bindings));
@@ -7965,7 +7989,8 @@ public final class TypeChecker {
         if (type == Unknown.INSTANCE) return true;
         if (type instanceof SelfType receiverSelf) return containsUnknown(receiverSelf.bound());
         if (type instanceof Borrow borrow) return containsUnknown(borrow.target());
-        if (type instanceof ListType list) return containsUnknown(list.element());
+        if (type instanceof ListType list) return containsUnknown(list.element())
+                || list.repeatUnit().stream().anyMatch(this::containsUnknown);
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(this::containsUnknown);
         if (type instanceof Union union) return union.options().stream().anyMatch(this::containsUnknown);
         if (type instanceof Types.Not not) return containsUnknown(not.excluded());
@@ -7981,7 +8006,8 @@ public final class TypeChecker {
         if (type instanceof Generic generic) return names.contains(generic.name());
         if (type instanceof SelfType receiverSelf) return containsGenericNamed(receiverSelf.bound(), names);
         if (type instanceof Borrow borrow) return containsGenericNamed(borrow.target(), names);
-        if (type instanceof ListType list) return containsGenericNamed(list.element(), names);
+        if (type instanceof ListType list) return containsGenericNamed(list.element(), names)
+                || list.repeatUnit().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Union union) return union.options().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Types.Not not) return containsGenericNamed(not.excluded(), names);
@@ -8104,9 +8130,18 @@ public final class TypeChecker {
 
         Ast.TypeRef pattern = shape.arguments().getFirst();
         Type element;
+        List<Type> repeatingUnit = List.of();
         if (pattern.isRepeatMany()) {
+            if (declaredRank != null && declaredRank != 1) {
+                throw new IllegalArgumentException(
+                        "repeating sequence patterns currently require rank=1");
+            }
             List<Ast.TypeRef> unit = expandFiniteSequencePatterns(pattern.arguments(), ref.name());
-            element = unionResolved(unit, generics, self, allowNullMarker);
+            repeatingUnit = unit.stream()
+                    .map(slot -> resolve(slot, generics, self, allowNullMarker))
+                    .toList();
+            element = Types.unionOf(repeatingUnit.stream()
+                    .map(this::widenCollectionElement).toList());
         } else if (pattern.isRepeatExact()) {
             throw new IllegalArgumentException(ref.name() + "[" + pattern.repeatExactCount()
                     + " of T] declares a fixed extent; use FixedArray[" + pattern.repeatExactCount()
@@ -8117,7 +8152,7 @@ public final class TypeChecker {
 
         int rank = declaredRank == null ? 1 : declaredRank;
         Type result = element;
-        for (int i = 0; i < rank; i++) result = new ListType(result);
+        for (int i = 0; i < rank; i++) result = new ListType(result, i == 0 ? repeatingUnit : List.of());
         return result;
     }
 
