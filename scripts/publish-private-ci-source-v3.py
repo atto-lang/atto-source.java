@@ -412,12 +412,20 @@ def _gh_ref_request(repository, ref_name, method):
     ]
     env = legacy.github_api_environment()
     try:
-        return subprocess.run(
+        result = subprocess.run(
             argv, capture_output=True, text=True, env=env,
             timeout=30, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("carrier ref rollback is unavailable") from exc
+    # Keep direct ref verification subject to the same bounded-response trust
+    # boundary as legacy.gh_api().  Both stdout and stderr are attacker-useful
+    # memory amplification surfaces before JSON parsing or HTTP-status checks.
+    for stream in (result.stdout, result.stderr):
+        if (not isinstance(stream, str)
+                or len(stream) > legacy.MAX_GH_API_RESPONSE_CHARS):
+            raise Denied("carrier ref API response exceeds size limit")
+    return result
 
 
 def live_ref_sha(repository, ref_name, expected_repository_id):
