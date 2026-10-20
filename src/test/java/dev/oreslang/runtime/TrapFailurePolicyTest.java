@@ -155,4 +155,43 @@ final class TrapFailurePolicyTest {
         }
         assertFalse(TrapFailurePolicy.isTrappable(failure, GuestPanic.class));
     }
+
+    @Test void suppressedHostExceptionCannotBeLaunderedByRealGuestThrow() {
+        RuntimeException failure = new CompletionException(
+                new GuestControlSignal.Throw("authenticated guest throw"));
+        var forgedHost = new IllegalStateException("host network failure");
+        forgedHost.setStackTrace(new StackTraceElement[]{
+                new StackTraceElement(
+                        "dev.oreslang.nodes.OresEvalRootNode",
+                        "eval", "OresEvalRootNode.java", 1)
+        });
+        failure.addSuppressed(forgedHost);
+        assertFalse(TrapFailurePolicy.isTrappable(failure, GuestPanic.class),
+                "an authentic primary guest Throw must not hide a forged HOST cleanup failure");
+        assertFalse(TrapFailurePolicy.isGuestCatchable(failure, GuestPanic.class));
+    }
+
+    @Test void suppressedControlSignalsCannotEscapePrimaryGuestClassification() {
+        RuntimeException failure = new CompletionException(
+                new GuestControlSignal.Throw("ordinary guest error"));
+        failure.addSuppressed(new CompletionException(
+                new GuestControlSignal.Raise("CONTROL must reach supervisor")));
+        assertFalse(TrapFailurePolicy.isTrappable(failure, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(failure, GuestPanic.class));
+    }
+
+    @Test void exactTrustedFaultClassIsRequiredThroughTransparentWrappers() {
+        var authentic = new CompletionException(new TrustedCastFailure("cast"));
+        assertTrue(TrapFailurePolicy.isTrappable(
+                authentic, GuestPanic.class, TrustedCastFailure.class));
+
+        var unrelated = new CompletionException(new IllegalStateException("host error"));
+        assertFalse(TrapFailurePolicy.isTrappable(
+                unrelated, GuestPanic.class, TrustedCastFailure.class));
+        // Even the presence of a valid trusted cast fault elsewhere in the
+        // suppressed tree cannot authorize a distinct untrusted HOST node.
+        unrelated.addSuppressed(new TrustedCastFailure("trusted diagnostic"));
+        assertFalse(TrapFailurePolicy.isTrappable(
+                unrelated, GuestPanic.class, TrustedCastFailure.class));
+    }
 }
