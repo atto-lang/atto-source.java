@@ -189,6 +189,7 @@ public final class OresTaskScope implements AutoCloseable {
                     ensureAdmitting();
                     if (!tasks.add(pendingSlot))
                         throw new IllegalStateException("duplicate Task ownership slot");
+                    pendingSlot.registered = true;
                 }
             }
         } catch (RuntimeException | Error preparationFailure) {
@@ -198,9 +199,15 @@ public final class OresTaskScope implements AutoCloseable {
             if (pendingSlot != null) {
                 try {
                     synchronized (gate) {
-                        if (!tasks.remove(pendingSlot))
-                            throw new IllegalStateException(
-                                    "provisional Task owner rollback did not remove reserved slot");
+                        // A sealed scope can reject before insertion. Do NOT
+                        // call a hostile removal hook for a never-owned slot.
+                        // An insert-then-throw collection is still detected
+                        // by contains() when registered is false.
+                        if (pendingSlot.registered || tasks.contains(pendingSlot)) {
+                            if (!tasks.remove(pendingSlot))
+                                throw new IllegalStateException(
+                                        "provisional Task owner rollback did not remove reserved slot");
+                        }
                     }
                 } catch (RuntimeException | Error failure) {
                     bookkeepingFailure = failure;
