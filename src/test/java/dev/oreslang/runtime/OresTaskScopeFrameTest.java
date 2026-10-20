@@ -505,4 +505,72 @@ final class OresTaskScopeFrameTest {
             }
         }
     }
+
+    @Test
+    void sealedScopeRejectsCompilerFrameWithoutUnregisteredOwnerRemoval() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(1);
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            assertTrue(scope.cancel());
+            var slotsField = OresTaskScope.class.getDeclaredField("tasks");
+            slotsField.setAccessible(true);
+            Object original = slotsField.get(scope);
+            AtomicInteger attemptedRemove = new AtomicInteger();
+            java.util.Set<Object> hostile = new java.util.HashSet<>() {
+                @Override public boolean remove(Object item) {
+                    attemptedRemove.incrementAndGet();
+                    throw new IllegalStateException("never-owned Task removed");
+                }
+            };
+            slotsField.set(scope, hostile);
+            try {
+                AtomicInteger pinReleases = new AtomicInteger();
+                var rejection = assertThrows(
+                        java.util.concurrent.RejectedExecutionException.class,
+                        () -> scope.startCompilerFrame(scheduler,
+                                resume -> new OresScheduler.Done<>(2),
+                                pinReleases::incrementAndGet));
+                assertEquals(0, rejection.getSuppressed().length);
+                assertEquals(0, attemptedRemove.get(),
+                        "rejected-before-insertion slot is not scope-owned");
+                assertEquals(1, pinReleases.get(),
+                        "unconsumed compiler code pin releases once");
+                assertTrue(scope.physicallyQuiescent());
+            } finally {
+                slotsField.set(scope, original);
+            }
+        }
+    }
+
+    @Test
+    void postInsertCompilerSlotFailureStillRetiresPinAndOwner() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(1);
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            var slotsField = OresTaskScope.class.getDeclaredField("tasks");
+            slotsField.setAccessible(true);
+            Object original = slotsField.get(scope);
+            java.util.Set<Object> hostile = new java.util.HashSet<>() {
+                @Override public boolean add(Object item) {
+                    super.add(item);
+                    throw new IllegalStateException("after compiler owner insert");
+                }
+            };
+            slotsField.set(scope, hostile);
+            try {
+                AtomicInteger pinReleases = new AtomicInteger();
+                var failure = assertThrows(IllegalStateException.class,
+                        () -> scope.startCompilerFrame(scheduler,
+                                resume -> new OresScheduler.Done<>(3),
+                                pinReleases::incrementAndGet));
+                assertTrue(failure.getMessage().contains("after compiler owner insert"));
+                assertEquals(1, pinReleases.get());
+                assertTrue(scope.physicallyQuiescent(),
+                        "partial owner must be removed before rejecting admission");
+                assertEquals(0, hostile.size(), "no Task owner leaked after rollback");
+            } finally {
+                slotsField.set(scope, original);
+            }
+        }
+    }
 }
