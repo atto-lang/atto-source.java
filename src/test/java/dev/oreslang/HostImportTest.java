@@ -204,4 +204,66 @@ final class HostImportTest {
                 () -> CapabilityChecker.check(program, policy));
         assertTrue(failure.getMessage().contains("JAVA_INTEROP"));
     }
+    // The counter is initialized independently. Taking LazyHostProbe.class or
+    // allowlisting its binary name does not initialize LazyHostProbe itself.
+    private static final java.util.concurrent.atomic.AtomicInteger HOST_INITIALIZATIONS =
+            new java.util.concurrent.atomic.AtomicInteger();
+
+    public static final class LazyHostProbe {
+        static { HOST_INITIALIZATIONS.incrementAndGet(); }
+        public static int ping() { return 42; }
+    }
+
+    @Test
+    void hostClassAndFunctionImportNeverInitializeClassBeforeExplicitUse() {
+        String host = "dev.oreslang.HostImportTest$LazyHostProbe";
+        assertEquals(0, HOST_INITIALIZATIONS.get());
+        IsolatePolicy policy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.JAVA_INTEROP);
+        try (Context context = policy.restrictedContextBuilder(
+                ExecutionProfile.serverJit(), Set.of(host)).build()) {
+            Value value = context.eval(OresLanguage.ID, """
+                    import class LazyHostProbe from "java:dev.oreslang.HostImportTest$LazyHostProbe";
+                    import fnc ping from "java:dev.oreslang.HostImportTest$LazyHostProbe";
+                    pub fnc main(): int { return 7; }
+                    """);
+            assertEquals(7L, value.asLong());
+            assertEquals(0, HOST_INITIALIZATIONS.get(),
+                    "link and import must not resolve or initialize a host class");
+        }
+        try (Context context = policy.restrictedContextBuilder(
+                ExecutionProfile.serverJit(), Set.of(host)).build()) {
+            Value value = context.eval(OresLanguage.ID, """
+                    import fnc ping from "java:dev.oreslang.HostImportTest$LazyHostProbe";
+                    pub fnc main(): int { return ping(); }
+                    """);
+            assertEquals(42L, value.asLong());
+            assertEquals(1, HOST_INITIALIZATIONS.get(),
+                    "first explicit call initializes the allowlisted host class once");
+        }
+    }
+
+    @Test
+    void missingHostFunctionIsRejectedOnlyWhenCalledNotDuringLink() {
+        IsolatePolicy policy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.JAVA_INTEROP);
+        try (Context context = policy.restrictedContextBuilder(
+                ExecutionProfile.serverJit(), Set.of("java.lang.Math")).build()) {
+            assertEquals(7L, context.eval(OresLanguage.ID, """
+                    import fnc missingMethod from "java:java.lang.Math";
+                    pub fnc main(): int { return 7; }
+                    """).asLong());
+        }
+        try (Context context = policy.restrictedContextBuilder(
+                ExecutionProfile.serverJit(), Set.of("java.lang.Math")).build()) {
+            PolyglotException failure = assertThrows(PolyglotException.class,
+                    () -> context.eval(OresLanguage.ID, """
+                            import fnc missingMethod from "java:java.lang.Math";
+                            pub fnc main(): int { return missingMethod(); }
+                            """));
+            assertTrue(failure.getMessage().contains("does not export invocable static member"),
+                    failure.getMessage());
+        }
+    }
+
 }
