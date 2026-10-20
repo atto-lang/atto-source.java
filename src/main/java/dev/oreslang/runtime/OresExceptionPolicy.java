@@ -45,6 +45,10 @@ public final class OresExceptionPolicy {
         if (failure == null) return;
         if (failure instanceof Error error) throw error;
         if (failure instanceof RuntimeException runtime) throw runtime;
-        throw new IllegalStateException("unexpected checked guest failure", failure);
+        // A raw checked JVM Throwable at this boundary is a host/runtime
+        // protocol violation, not a guest catchable RuntimeException. Never
+        // manufacture an ordinary throw that source catch/trap could swallow.
+        // Keep the original cause attached for trusted host diagnostics.
+        throw new AssertionError("unexpected checked host failure at guest unwind boundary", failure);
     }
 }
