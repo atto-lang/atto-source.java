@@ -128,6 +128,17 @@ public final class TypeChecker {
                     asyncSemantic, "asyncSemantic");
         }
 
+        public TypeCheckResult(
+                Ast.Program program,
+                List<String> warnings,
+                Map<Ast.BindingStmt, String> shortInferredAliases) {
+            this(
+                    program,
+                    warnings,
+                    shortInferredAliases,
+                    AsyncSemanticProvenance.empty());
+        }
+
         public TypeCheckResult(Ast.Program program, List<String> warnings) {
             this(program, warnings, Map.of(), AsyncSemanticProvenance.empty());
         }
