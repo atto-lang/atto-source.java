@@ -177,4 +177,98 @@ final class LogicalSourceActorPreReturnHandoffTest {
             }
         }
     }
+
+    @Test
+    void preReturnCandidateKeepsOldTransferFreezeUntilPhysicalRemoval()
+            throws Exception {
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration("freeze-pre-return-first.ores", OLD);
+            var next = manager.stageActorGeneration("freeze-pre-return-next.ores", NEW);
+            ActorRuntime candidateRuntime = next.linkActorGeneration("Counter").runtime();
+            Field registryField = reflect(ActorRuntime.class, "actors");
+            @SuppressWarnings("unchecked")
+            Map<Object, Object> original =
+                    (Map<Object, Object>) registryField.get(candidateRuntime);
+            assertTrue(original.isEmpty());
+
+            var failPut = new AtomicBoolean(true);
+            var failInitialRemove = new AtomicBoolean(true);
+            var enteredPhysicalRemoval = new java.util.concurrent.CountDownLatch(1);
+            var permitPhysicalRemoval = new java.util.concurrent.CountDownLatch(1);
+            var registry = new ConcurrentHashMap<Object, Object>() {
+                @Override public Object put(Object key, Object value) {
+                    Object old = super.put(key, value);
+                    if (failPut.compareAndSet(true, false))
+                        throw new OutOfMemoryError("injected candidate registration");
+                    return old;
+                }
+                @Override public boolean remove(Object key, Object value) {
+                    if (failInitialRemove.compareAndSet(true, false))
+                        throw new OutOfMemoryError("injected rollback before removal");
+                    enteredPhysicalRemoval.countDown();
+                    try {
+                        if (!permitPhysicalRemoval.await(10, TimeUnit.SECONDS))
+                            throw new AssertionError("physical finalization was not released");
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(interrupted);
+                    }
+                    return super.remove(key, value);
+                }
+            };
+
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                    first, ActorRuntime.ActorKind.SHARED, "Counter", WAIT)) {
+                registryField.set(candidateRuntime, registry);
+                var failure = new java.util.concurrent.FutureTask<Boolean>(() -> {
+                    assertThrows(OutOfMemoryError.class,
+                            () -> router.upgradeTo(next, WAIT));
+                    return true;
+                });
+                Thread upgrading = Thread.ofPlatform().start(failure);
+                try {
+                    assertTrue(enteredPhysicalRemoval.await(10, TimeUnit.SECONDS),
+                            "candidate cleanup must reach physical actor finalization");
+                    assertEquals(1, registry.size(),
+                            "candidate is registered while physical removal is gated");
+                    assertEquals(1, reflect(HotReloadManager.Generation.class,
+                            "actorRoutePins").getInt(next),
+                            "candidate image must remain pinned until physical removal");
+
+                    Field txnField = reflect(
+                            LogicalSourceActorRouterV1.class, "activeUpgradeTxn");
+                    Object txn = txnField.get(router);
+                    assertNotNull(txn, "supervisor must retain the failed staging owner");
+                    Object transfer = reflect(txn.getClass(), "transfer").get(txn);
+                    assertNotNull(transfer, "old ingress freeze must still be owned");
+                    Object transferLock = reflect(
+                            transfer.getClass(), "transferLock").get(transfer);
+                    synchronized (transferLock) {
+                        assertEquals("CLAIMED", String.valueOf(
+                                reflect(transfer.getClass(), "transferState")
+                                        .get(transfer)),
+                                "failed pre-return spawn must not close old freeze early");
+                        assertNotNull(reflect(transfer.getClass(),
+                                "stagedCandidate").get(transfer),
+                                "transfer must own exact preallocated physical candidate");
+                    }
+                    assertEquals(1L, router.physicalRefForTesting().generation(),
+                            "old physical actor remains the original incarnation");
+                } finally {
+                    permitPhysicalRemoval.countDown();
+                    upgrading.join(10_000);
+                    registryField.set(candidateRuntime, original);
+                }
+                assertFalse(upgrading.isAlive(), "upgrade must complete cleanup");
+                assertTrue(failure.get(2, TimeUnit.SECONDS));
+                assertTrue(registry.isEmpty());
+                assertEquals(1L, router.ref().routeEpoch(),
+                        "failed pre-return upgrade cannot publish candidate route");
+                awaitRetirement(next, candidateRuntime, registry,
+                        router::reapRetired);
+            }
+        }
+    }
+
 }
