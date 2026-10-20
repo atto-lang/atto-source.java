@@ -387,9 +387,11 @@ public final class ActorEventBus implements AutoCloseable {
     void removeActor(ActorRuntime.ActorId actorId) {
         for (TopicState topic : topics.values()) {
             synchronized (topic.deliveryLock) {
-                Subscription<?> subscription =
-                        topic.subscriptions.remove(actorId);
-                if (subscription != null) subscription.closeChannelOnly();
+                Subscription<?> subscription = topic.subscriptions.get(actorId);
+                if (subscription != null) {
+                    subscription.closeChannelOnly();
+                    topic.subscriptions.remove(actorId, subscription);
+                }
             }
         }
     }
