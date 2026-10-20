@@ -1283,6 +1283,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
              "type": "tree", "sha": self.expected_tree}])
         self.assertEqual(writes[2][2]["base_tree"], B)
         self.assertEqual(writes[3][2]["tree"], E)
+        self.assertEqual(writes[3][2]["message"].splitlines(), [
+            f"ci: exact private Oreslang tree {D} tree {self.expected_tree}",
+            f"carrier-base {A} tree {B}",
+            f"source-approval-blob {self.snapshot_sha}",
+            f"carrier-approval-blob {self.carrier_snapshot_sha}",
+            "carrier-ruleset-id 777",
+        ])
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
 
     def test_post_readback_public_visibility_denies_success(self):
