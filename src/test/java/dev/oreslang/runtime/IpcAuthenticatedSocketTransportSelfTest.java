@@ -4,6 +4,8 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -73,6 +75,68 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         }
         throw new AssertionError("transport did not reach phase " + phase
                 + ": " + transport.snapshot());
+    }
+
+    private static final class FinalReadGateInputStream extends InputStream {
+        private final byte[] bytes;
+        private final CountDownLatch finalChunkCopied;
+        private final CountDownLatch releaseFinalRead;
+        private int offset;
+
+        FinalReadGateInputStream(
+                byte[] bytes,
+                CountDownLatch finalChunkCopied,
+                CountDownLatch releaseFinalRead) {
+            this.bytes = bytes.clone();
+            this.finalChunkCopied = finalChunkCopied;
+            this.releaseFinalRead = releaseFinalRead;
+        }
+
+        @Override
+        public int read() {
+            if (offset >= bytes.length) return -1;
+            return bytes[offset++] & 0xff;
+        }
+
+        @Override
+        public int read(byte[] target, int targetOffset, int length) throws IOException {
+            if (offset >= bytes.length) return -1;
+            int count = Math.min(length, bytes.length - offset);
+            System.arraycopy(bytes, offset, target, targetOffset, count);
+            offset += count;
+            if (offset == bytes.length) {
+                finalChunkCopied.countDown();
+                try {
+                    if (!releaseFinalRead.await(3, TimeUnit.SECONDS)) {
+                        throw new IOException("final receipt read gate timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("final receipt read gate interrupted", interrupted);
+                }
+            }
+            return count;
+        }
+    }
+
+    private static final class ControlledSocket extends Socket {
+        private final InputStream input;
+        private final ByteArrayOutputStream output = new ByteArrayOutputStream();
+        private final CountDownLatch closeCalled;
+        private volatile boolean closed;
+
+        ControlledSocket(InputStream input, CountDownLatch closeCalled) {
+            this.input = input;
+            this.closeCalled = closeCalled;
+        }
+
+        @Override public InputStream getInputStream() { return input; }
+        @Override public OutputStream getOutputStream() { return output; }
+        @Override public synchronized void close() {
+            closed = true;
+            closeCalled.countDown();
+        }
+        @Override public boolean isClosed() { return closed; }
     }
 
     private static void offCallerCleanup(Runnable cleanup) {
@@ -402,6 +466,75 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             peer.join(5000);
             check(!peer.isAlive());
             check(peerFailure.get() == null);
+        }
+
+        // Key destruction must wait for an already-consumed authenticated
+        // receipt to finish decode + ledger application. The controlled stream
+        // pauses after copying the complete wire frame while readVerifiedReceipt
+        // still owns readGate. Close may interrupt kernel I/O first, but must
+        // not zero the MAC key until that receive transaction exits.
+        byte[] drainPayload = "receipt key drain".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var drainMessage = envelope(1, "receiptKeyDrain", 3, 4, drainPayload);
+        byte[] drainReceipt = IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                drainMessage, 13,
+                IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED,
+                connectionBinding, key);
+        ByteArrayOutputStream drainWireBytes = new ByteArrayOutputStream();
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                drainWireBytes, drainReceipt);
+        CountDownLatch finalChunkCopied = new CountDownLatch(1);
+        CountDownLatch releaseFinalRead = new CountDownLatch(1);
+        CountDownLatch closeCalled = new CountDownLatch(1);
+        var controlledSocket = new ControlledSocket(
+                new FinalReadGateInputStream(
+                        drainWireBytes.toByteArray(),
+                        finalChunkCopied,
+                        releaseFinalRead),
+                closeCalled);
+        ExecutorService drainCleanup = Executors.newSingleThreadExecutor(
+                r -> new Thread(r, "ipc-test-cleanup-key-drain"));
+        try {
+            var bridge = new IpcReceiptCompletionBridge(1);
+            var transport = new IpcAuthenticatedSocketTransport(
+                    controlledSocket, bridge, drainMessage, 13, 1,
+                    key, connectionBinding, drainCleanup::execute);
+            var submission = transport.send(drainMessage, drainPayload);
+            check(!submission.writeAttemptFailed());
+
+            AtomicReference<IpcReceiptCorrelation.Stage> readStage =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> readFailure = new AtomicReference<>();
+            Thread reader = new Thread(() -> {
+                try {
+                    readStage.set(transport.readVerifiedReceipt());
+                } catch (Throwable failure) {
+                    readFailure.set(failure);
+                }
+            }, "ipc-test-key-drain-reader");
+            reader.start();
+
+            check(finalChunkCopied.await(2, TimeUnit.SECONDS));
+            transport.requestClose();
+            check(closeCalled.await(2, TimeUnit.SECONDS));
+            check(!transport.keyCloneZeroized());
+            check(reader.isAlive());
+
+            releaseFinalRead.countDown();
+            reader.join(3000);
+            check(!reader.isAlive());
+            check(readFailure.get() == null);
+            check(readStage.get() == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+            check(transport.requestCloseAndAwait(3000));
+            check(transport.keyCloneZeroized());
+            check(submission.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(bridge.invariant());
+        } finally {
+            releaseFinalRead.countDown();
+            controlledSocket.close();
+            drainCleanup.shutdownNow();
+            drainCleanup.awaitTermination(2, TimeUnit.SECONDS);
         }
 
         // Full route/grant epoch must be validated before receipt admission or wire I/O.
