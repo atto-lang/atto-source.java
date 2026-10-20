@@ -1,0 +1,100 @@
+package dev.oreslang.types;
+
+import dev.oreslang.runtime.AsyncRuntime;
+import dev.oreslang.runtime.OresTask;
+import dev.oreslang.runtime.OresTaskScope;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class TaskLoanAdmissionTest {
+    private static final TaskAccessVerifier.Root ROOT =
+            new TaskAccessVerifier.Root("PROCESS", 901, 1, true);
+
+    private static TaskLoanAdmission admission(TaskAccessVerifier verifier) {
+        return verifier.admitRuntimeBound(List.of(
+                new TaskAccessVerifier.Claim(
+                        TaskAccessVerifier.Place.whole(ROOT),
+                        TaskAccessVerifier.Mode.WRITE)));
+    }
+
+    @Test
+    void physicalRetirementRequiresExactRuntimeScopeEpochAndChildIdentity()
+            throws Exception {
+        TaskAccessVerifier verifier = new TaskAccessVerifier();
+        TaskLoanAdmission admission = admission(verifier);
+        Object scopeEpoch = new Object();
+        Object foreignEpoch = new Object();
+
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            OresTask<Integer> child = scope.submit(() -> 1);
+            OresTask<Integer> lookalike = scope.submit(() -> 2);
+            assertNull(AsyncRuntime.await(child.getDone()));
+            assertNull(AsyncRuntime.await(lookalike.getDone()));
+
+            admission.bindScope(scopeEpoch);
+            admission.bindChild(scopeEpoch, child);
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> admission.retireAfterPhysicalQuiescence(
+                            foreignEpoch, child));
+            assertThrows(IllegalArgumentException.class,
+                    () -> admission.retireAfterPhysicalQuiescence(
+                            scopeEpoch, lookalike));
+            assertEquals(1, verifier.activeChildren(),
+                    "identity mismatch must not release the compiler loan");
+
+            admission.retireAfterPhysicalQuiescence(scopeEpoch, child);
+            assertEquals(0, verifier.activeChildren());
+            assertTrue(admission.retiredForTesting());
+            assertThrows(IllegalStateException.class,
+                    () -> admission.retireAfterPhysicalQuiescence(
+                            scopeEpoch, child),
+                    "one admission cannot retire twice");
+        }
+    }
+
+    @Test
+    void neverStartedRetirementIsASeparateOneShotLifecycleEdge() {
+        TaskAccessVerifier verifier = new TaskAccessVerifier();
+        TaskLoanAdmission admission = admission(verifier);
+        Object scopeEpoch = new Object();
+
+        admission.bindScope(scopeEpoch);
+        assertEquals(1, verifier.activeChildren());
+        admission.retireNeverStarted(scopeEpoch);
+        assertEquals(0, verifier.activeChildren());
+        assertTrue(admission.retiredForTesting());
+        assertThrows(IllegalStateException.class,
+                () -> admission.retireNeverStarted(scopeEpoch));
+    }
+
+    @Test
+    void aChildCannotBeReboundOrMovedAcrossRuntimeScopeEpochs()
+            throws Exception {
+        TaskAccessVerifier verifier = new TaskAccessVerifier();
+        TaskLoanAdmission admission = admission(verifier);
+        Object firstEpoch = new Object();
+        Object secondEpoch = new Object();
+
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            OresTask<Integer> child = scope.submit(() -> 3);
+            assertNull(AsyncRuntime.await(child.getDone()));
+
+            admission.bindScope(firstEpoch);
+            assertThrows(IllegalArgumentException.class,
+                    () -> admission.bindChild(secondEpoch, child));
+            admission.bindChild(firstEpoch, child);
+            assertThrows(IllegalStateException.class,
+                    () -> admission.bindChild(firstEpoch, child));
+            assertEquals(1, verifier.activeChildren());
+
+            admission.retireAfterPhysicalQuiescence(firstEpoch, child);
+        }
+        assertEquals(0, verifier.activeChildren());
+    }
+}
