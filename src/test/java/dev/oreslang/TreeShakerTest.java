@@ -349,4 +349,40 @@ final class TreeShakerTest {
                 Ast.CheckedClassView.lookup(indexed.receiver()),
                 "optimizer must transfer the type checker's static class-domain proof");
     }
+
+    @Test
+    void treeShakingPreservesStructuralFieldDomainForRewrittenReceiver() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                define class Product as
+                    pub val float x = 3.0;
+                    pub val float y = 4.0;
+                    private val string hidden = "secret";
+                end
+
+                pub fnc read(structural Product value, bool chooseLeft, string key): float {
+                    return (chooseLeft ? value : value)[key];
+                }
+                """, BuildOptions.library(Map.of()));
+
+        Ast.FunctionDecl read = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(function -> function.name().equals("read"))
+                .findFirst()
+                .orElseThrow();
+
+        Ast.ReturnStmt returned = read.body().stream()
+                .filter(Ast.ReturnStmt.class::isInstance)
+                .map(Ast.ReturnStmt.class::cast)
+                .findFirst()
+                .orElseThrow();
+        Ast.IndexExpr indexed = assertInstanceOf(Ast.IndexExpr.class, returned.value());
+        assertInstanceOf(Ast.ConditionalExpr.class, indexed.receiver());
+
+        assertEquals(
+                Set.of("x", "y"),
+                Ast.CheckedStructuralFieldDomain.lookup(indexed.receiver()),
+                "optimizer must transfer the checked structural field domain");
+    }
 }
