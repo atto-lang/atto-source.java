@@ -67,8 +67,38 @@ Older `events` can be elided independently.
 - These tests are *requested*, not evidence of passing CI until run on the
   exact PR Git tree.
 
-This change specifically records source-level actor spawn/message boundaries
-that already flow through `OresAsyncTrace`. Host-level `ActorRuntime.ActorRef.send`,
-remote `ProxyActor` transports, and external IPC/RPC envelopes require separate
-explicit propagation, isolation, and trust-boundary integration before the
-same five-hop guarantee can be claimed for those paths.
+## Stacked Java ActorRef integration (draft #1684)
+
+The follow-on Java [#1684](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1684)
+adds an initial host-mailbox implementation, **not yet certified by executed CI**.
+
+- `ActorRuntime.send` stamps an actual admitted receive hop on a child-owned
+  `OresAsyncTrace.Trace` and stores it privately in the mailbox envelope.
+  An input payload cannot inject this runtime-only field.
+- The receiver installs the trace only for the callback's scheduler turn;
+  strict LIFO scope restoration prevents another mailbox message from
+  inheriting it from a pooled carrier thread. Await resumes restore the
+  suspended trace, while timer and next-tick events create independent forks.
+- Runtime actor hops identify trusted ActorRefs by their runtime-issued UUID.
+  The source location is explicitly **unknown**. Do not advertise accurate
+  guest source spans for host ActorRef calls until compiler lowering supplies
+  a validated span. Untrusted sender/recipient boundaries reset and redact
+  the lineage; redaction intentionally limits cross-boundary visibility.
+- Ordinary error attachment uses the same bounded logical diagnostic
+  representation, preserving the original Throwable and error site.
+  Scheduler-control suspension and fatal VM failures are never represented
+  as guest errors.
+- Six JUnit integration cases target actual mailbox message chains of 8
+  actors, a 201-visit two-actor cycle with 185 elided visits, sibling fanout,
+  host send isolation, pre-completed awaited Future continuation, and
+  next-tick preservation.
+
+This host runtime slice does **not** implement authenticated external
+`ProxyActor` IPC/TCP/HTTP, supervisor CONTROL-chain transport, remote
+redaction/serialization, or LLVM parity. No one should claim all transports
+are conformant until actual compiled runtime tests and differential checks
+pass. In particular, the existing Actions job failures with `runner_id=0`
+and zero executed steps are **NOT_EXECUTED**, not proof of Java test success
+or compiler failure. The branch remains draft and must not be mirrored to
+unapproved cross-org carriers. See #1672 and the private-CI bootstrap issue
+oreslang-platform-conformance#69.
