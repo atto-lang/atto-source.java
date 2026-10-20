@@ -104,6 +104,8 @@ public final class NominalEnumRegistry {
                 "ActorMail", "ActorRef", "Channel", "Future",
                 "Mutex", "SharedMutex", "MutexGuard");
 
+        rejectPayloadCycles(declarations);
+
         Map<String, EnumType> enums = new LinkedHashMap<>();
         for (Ast.EnumDecl enumeration : declarations.values()) {
             String name = enumeration.name();
@@ -145,6 +147,74 @@ public final class NominalEnumRegistry {
             enums.put(name, new EnumType(name, cases));
         }
         return new Registry(enums);
+    }
+
+    private static void rejectPayloadCycles(
+            Map<String, Ast.EnumDecl> declarations) {
+        Set<String> complete = new HashSet<>();
+        Set<String> active = new HashSet<>();
+        for (String name : declarations.keySet()) {
+            visitPayloadDependencies(
+                    name,
+                    declarations,
+                    complete,
+                    active);
+        }
+    }
+
+    private static void visitPayloadDependencies(
+            String name,
+            Map<String, Ast.EnumDecl> declarations,
+            Set<String> complete,
+            Set<String> active) {
+        if (complete.contains(name)) return;
+        if (!active.add(name)) {
+            throw new IllegalArgumentException(
+                    "nominal enum payload cycle involving " + name);
+        }
+        Ast.EnumDecl declaration = declarations.get(name);
+        if (declaration != null) {
+            for (Ast.EnumCase variant : declaration.cases()) {
+                if (variant.payload() == null) continue;
+                Set<String> dependencies = new HashSet<>();
+                collectEnumDependencies(
+                        variant.payload(),
+                        declarations.keySet(),
+                        dependencies);
+                for (String dependency : dependencies) {
+                    visitPayloadDependencies(
+                            dependency,
+                            declarations,
+                            complete,
+                            active);
+                }
+            }
+        }
+        active.remove(name);
+        complete.add(name);
+    }
+
+    private static void collectEnumDependencies(
+            Ast.TypeRef type,
+            Set<String> enumNames,
+            Set<String> dependencies) {
+        if (enumNames.contains(type.name())) {
+            dependencies.add(type.name());
+        }
+        for (Ast.TypeRef argument : type.arguments()) {
+            collectEnumDependencies(
+                    argument,
+                    enumNames,
+                    dependencies);
+        }
+        if (type.isRecordType()) {
+            for (Ast.TypeRef member : type.recordMembers().values()) {
+                collectEnumDependencies(
+                        member,
+                        enumNames,
+                        dependencies);
+            }
+        }
     }
 
     private static String declarationName(Ast.Decl declaration) {
