@@ -283,4 +283,17 @@ final class EntryValueTest {
                         .strip());
     }
 
+    @Test
+    void ownershipNormalizesDeclaredEntryCallResults() {
+        ownershipAccepted("""
+                fnc buildEntry(): Entry<int, int> {
+                  return Entry.of(20, 22);
+                }
+
+                fnc main(): int {
+                  return buildEntry().key + buildEntry().value;
+                }
+                """);
+    }
+
 }
