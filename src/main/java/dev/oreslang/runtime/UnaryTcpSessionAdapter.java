@@ -609,10 +609,10 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
         private boolean finish(Pending admitted, Reply requested, boolean cancelDispatch) {
             Objects.requireNonNull(requested, "requested");
             Reply reply = requested;
-            byte[] body = reply.payload;
-            if (body.length > limits.maxPayloadBytes()) {
+            OresBytes body = reply.payloadValue;
+            if (body.size() > limits.maxPayloadBytes()) {
                 reply = Reply.error();
-                body = reply.payload;
+                body = reply.payloadValue;
             }
 
             DispatchHandle handle;
@@ -627,15 +627,15 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
                 handle = admitted.handle;
                 credit = admitted.credit;
 
-                if (body.length
+                if (body.size()
                         > limits.maxPayloadBytesPerConnection()
                                 - inbound.activePayloadBytes() - responsePayloadBytes) {
                     reply = Reply.error();
-                    body = reply.payload;
+                    body = reply.payloadValue;
                 }
-                if (!credit.convertToResponse(body.length)) {
+                if (!credit.convertToResponse(body.size())) {
                     reply = Reply.error();
-                    body = reply.payload;
+                    body = reply.payloadValue;
                     if (!credit.convertToResponse(0))
                         throw new IllegalStateException("cannot shrink unary TCP request credit to empty error");
                 }
