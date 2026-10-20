@@ -287,14 +287,15 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         Thread caller = Thread.currentThread();
         try {
             cleanupScheduler.enqueue(() -> {
+                // A bad scheduler may dispatch this callback onto a different
+                // actor carrier. Reject before any lease monitor acquisition
+                // or Socket.close(); a host supervisor timeout/retry keeps the
+                // generation fail-closed without parking guest execution.
+                RuntimeBlockingGuard.requireBlockingHostThread(
+                        "IPC transport abort worker");
                 if (Thread.currentThread() == caller) {
                     sessionLease.quarantineIfUnsettled(new IllegalStateException(
                             "IPC abort scheduler executed inline on requesting carrier"));
-                    return;
-                }
-                if (RuntimeBlockingGuard.actorCarrierMarked()) {
-                    sessionLease.quarantineIfUnsettled(new IllegalStateException(
-                            "IPC abort scheduler executed on an actor carrier"));
                     return;
                 }
                 try {
