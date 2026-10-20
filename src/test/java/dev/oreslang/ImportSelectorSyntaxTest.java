@@ -76,11 +76,11 @@ final class ImportSelectorSyntaxTest {
                   pub fnc value(): int { return 1; }
                 end
 
-                shared actor Worker {
+                pub shared actor Worker {
                   pub fnc value(): int { return 2; }
                 }
 
-                define class Box as
+                pub define class Box as
                 end
 
                 pub interface Api {
@@ -91,8 +91,8 @@ final class ImportSelectorSyntaxTest {
                   fnc value() => int;
                 }
 
-                type Identifier = int;
-                type OtherIdentifier = int;
+                pub type Identifier = int;
+                pub type OtherIdentifier = int;
                 """);
 
         Files.writeString(main, """
@@ -132,10 +132,38 @@ final class ImportSelectorSyntaxTest {
     }
 
     @Test
+    void publicFileRootClassCanBeImportedWithoutSyntheticModule() throws Exception {
+        Path child = temp.resolve("models.ores");
+        Path main = temp.resolve("main.ores");
+
+        Files.writeString(child, """
+                pub define class Box as
+                  pub let int value = 7;
+
+                  pub constructor() {
+                    return;
+                  }
+                end
+                """);
+
+        Files.writeString(main, """
+                import class Box from './models';
+
+                pub routine main(): void {
+                  val Box box = new Box();
+                  stdio.println(box.value);
+                  return;
+                }
+                """);
+
+        LinkedProgramRunner.validate(main);
+    }
+
+    @Test
     void classAndActorSelectorsDoNotAliasEachOther() throws Exception {
         Path child = temp.resolve("actors.ores");
         Files.writeString(child, """
-                shared actor Worker {
+                pub shared actor Worker {
                   pub fnc value(): int { return 1; }
                 }
 
@@ -165,7 +193,7 @@ final class ImportSelectorSyntaxTest {
         Path main = temp.resolve("main.ores");
 
         Files.writeString(child, """
-                shared actor Worker {
+                pub shared actor Worker {
                   pub fnc value(): int { return 1; }
                 }
                 """);

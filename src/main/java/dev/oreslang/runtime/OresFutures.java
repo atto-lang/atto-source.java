@@ -131,8 +131,13 @@ public final class OresFutures {
 
     public static <T> OresFuture<List<Settled<T>>> allSettled(List<?> awaitables) {
         List<OresFuture<T>> children = normalize(awaitables, "Futures.all_settled");
-        OresFuture<List<Settled<T>>> result = new OresFuture<>(
-                () -> children.forEach(child -> child.cancel(true)));
+        AtomicReferenceArray<OresFuture.RuntimeWaiterRegistration> waiters =
+                new AtomicReferenceArray<>(children.size());
+        Runnable detachWaiters = () -> detachAll(waiters);
+        OresFuture<List<Settled<T>>> result = new OresFuture<>(() -> {
+            detachWaiters.run();
+            children.forEach(child -> child.cancel(true));
+        });
         if (children.isEmpty()) {
             result.completeFromRuntime(List.of());
             return result;
@@ -144,21 +149,33 @@ public final class OresFutures {
 
         for (int index = 0; index < children.size(); index++) {
             int slot = index;
-            children.get(index).whenCompleteRuntime((value, failure) -> {
-                settled.set(
-                        slot,
-                        new Settled<>(
-                                failure == null ? value : null,
-                                failure == null ? null : OresFuture.unwrap(failure)));
-                if (remaining.decrementAndGet() == 0) {
-                    ArrayList<Settled<T>> ordered =
-                            new ArrayList<>(children.size());
-                    for (int i = 0; i < children.size(); i++) {
-                        ordered.add(settled.get(i));
-                    }
-                    result.completeFromRuntime(List.copyOf(ordered));
-                }
-            });
+            OresFuture.RuntimeWaiterRegistration registration =
+                    children.get(index).whenCompleteRuntimeCancellable((value, failure) -> {
+                            if (result.isDone()) {
+                                detachWaiters.run();
+                                return;
+                            }
+                            settled.set(
+                                    slot,
+                                    new Settled<>(
+                                            failure == null ? value : null,
+                                            failure == null ? null : OresFuture.unwrap(failure)));
+                            if (remaining.decrementAndGet() == 0) {
+                                ArrayList<Settled<T>> ordered =
+                                        new ArrayList<>(children.size());
+                                for (int i = 0; i < children.size(); i++) {
+                                    ordered.add(settled.get(i));
+                                }
+                                result.completeFromRuntime(List.copyOf(ordered));
+                                detachWaiters.run();
+                            }
+                        });
+            waiters.set(slot, registration);
+            if (result.isDone()) {
+                OresFuture.RuntimeWaiterRegistration raced =
+                        waiters.getAndSet(slot, null);
+                if (raced != null) raced.detach();
+            }
         }
         return result;
     }

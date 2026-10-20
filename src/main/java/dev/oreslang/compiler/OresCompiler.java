@@ -7,8 +7,6 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
 
-import java.util.Map;
-
 /** Trusted compiler front-end API for build systems and isolate admission. */
 public final class OresCompiler {
     private OresCompiler() { }
@@ -19,20 +17,48 @@ public final class OresCompiler {
 
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
-        return analyze(program, Map.of());
+        TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return checked.program();
+    }
+
+    /** Imported module contracts participate in type proofs, not runtime declarations. */
+    public static Ast.Program analyze(
+            Ast.Program program, java.util.Map<String, Ast.InterfaceDecl> importedContracts) {
+        TypeChecker.TypeCheckResult checked =
+                TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
+                        program, java.util.Map.of(), java.util.Map.of(), importedContracts);
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return checked.program();
+    }
+
+    /** Compiler diagnostics are returned explicitly instead of written to shared stderr. */
+    public record AnalysisResult(Ast.Program program, java.util.List<String> warnings) {
+        public AnalysisResult { warnings = java.util.List.copyOf(warnings); }
+    }
+
+    public static AnalysisResult parseAndTypeCheckWithDiagnostics(String source) {
+        return analyzeWithDiagnostics(Parser.parse(source));
+    }
+
+    public static AnalysisResult analyzeWithDiagnostics(Ast.Program program) {
+        TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return new AnalysisResult(checked.program(), checked.warnings());
     }
 
     /**
-     * Runs complete front-end admission with linker-supplied imported type
-     * metadata. Metadata participates in static resolution only and is never
-     * injected into the runtime/source declaration graph.
+     * Opt-in RT primitive subset: perform the full existing type/ownership check
+     * before admitting any source-level resource bounds or lowering to Java 8.
+     * This is not a verified no-heap runtime or WCET proof. Consumers must run
+     * the independent exact-classfile audit and target qualification gates.
      */
-    public static Ast.Program analyze(
-            Ast.Program program,
-            Map<String, Ast.InterfaceDecl> importedInterfaces) {
-        program = TypeChecker.checkTypes(program, importedInterfaces);
-        OwnershipChecker.check(program);
-        return program;
+    public static RealtimePrimitiveCompiler.Artifact compileRealtimePrimitive(
+            String source, String entry, int arity,
+            RealtimePrimitiveCompiler.Budget budget, java.nio.file.Path outputDirectory)
+            throws java.io.IOException {
+        Ast.Program checked = parseAndTypeCheck(source);
+        return RealtimePrimitiveCompiler.compile(checked, entry, arity, budget, outputDirectory);
     }
 
     /**

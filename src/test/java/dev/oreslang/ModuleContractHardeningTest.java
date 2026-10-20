@@ -59,7 +59,7 @@ final class ModuleContractHardeningTest {
                         end
                         """)));
 
-        assertTrue(failure.getMessage().contains("binding kind"));
+        assertTrue(failure.getMessage().contains("binding capabilities"));
     }
 
     @Test
@@ -217,7 +217,7 @@ final class ModuleContractHardeningTest {
         IllegalArgumentException failure =
                 assertThrows(IllegalArgumentException.class, () -> compiler.compile(sources));
         assertTrue(failure.getMessage().contains("does not conform")
-                        || failure.getMessage().contains("binding kind"),
+                        || failure.getMessage().contains("binding capabilities"),
                 failure::getMessage);
     }
 
@@ -277,4 +277,29 @@ final class ModuleContractHardeningTest {
         assertTrue(failure.getMessage().contains("without linker provenance"), failure::getMessage);
     }
 
+
+    @Test
+    void classFieldProofsAndImportedContractProofsComposeInOneUnit() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> sources = new LinkedHashMap<>();
+        sources.put("data.ores", """
+                pub define class Box as
+                  pub const int value = 1;
+                end
+                """);
+        sources.put("api.ores", """
+                pub define contract Api as
+                  fnc run(): int;
+                end
+                """);
+        sources.put("worker.ores", """
+                import class Box from "./data.ores";
+                import contract Api as LocalApi from "./api.ores";
+                define module Worker conforms LocalApi as
+                  pub fnc run(): int { return 1; }
+                  pub fnc read(Box box): int { return box.value; }
+                end
+                """);
+        assertDoesNotThrow(() -> compiler.compile(sources));
+    }
 }

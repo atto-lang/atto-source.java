@@ -120,15 +120,13 @@ define module math conforms MathApi as
 end
 ```
 
-Only exported (`pub`) module members satisfy a module contract. Contracts may require exported fields/constants as well as functions. An unqualified field requirement such as `String name;` or `name: String;` means “a readable exported field of this type”; the implementing module may expose it as `const`, `val`, or `let`. Writing the binding kind explicitly in the contract strengthens the requirement: `const name: String;`, `val name: String;`, and `let name: String;` each require that exact exported binding kind.
+Only exported (`pub`) module members satisfy a module contract. Contracts may require exported fields/constants as well as functions. A module may conform to multiple contracts with comma-separated names. The legacy module `@AdheresTo(...)` form is rejected; use `conforms` instead.
 
-A module may conform to multiple contracts with comma-separated names. Contract declarations are private to their code unit by default; use `pub define contract ...` when the contract must be selected by `import contract`. The legacy module `@AdheresTo(...)` form is rejected; use `conforms` instead.
-
-A module contract is not a class/struct interface and cannot be implemented by a class or actor. Contract identity, field binding requirements, and a module's declared `conforms` list are part of the incremental compilation ABI and therefore invalidate dependent code units when they change.
+A module contract is not a class/struct interface and cannot be implemented by a class or actor.
 
 ## Functions and returns
 
-Functions use `fnc` and are private by default. `pub` exports them. Return statements are always explicit; a non-`void` function must return on every control-flow path.
+Functions use `fnc` and are private by default. `pub` exports them. Named callables and braced lambda bodies use explicit return statements; a non-`void` named callable or braced lambda must return on every control-flow path. Expression-bodied lambdas are the deliberate compact exception: their sole expression is the return value.
 
 Class fields, instance methods, and `static fnc` members are also private by default unless marked `pub`. Private class-member access is scoped to the **declaring class**, not to a particular receiver instance: code declared in class `A` may access an `A` private member on another `A` instance, but subclasses and external callers may not. A lexical lambda created inside an `A` method retains that private-access authority with its lexical environment; an explicit or inherited `nlex` lambda does not. Runtime member dispatch enforces the same rule for dynamically linked/wildcard-imported values whose static type is `Unknown`, so imports cannot bypass private visibility. Public/structural class shapes expose only public members.
 
@@ -184,7 +182,7 @@ fnc fixed(): [int, bool, string] {
 }
 
 fnc named(): {foo: int, bar: string} {
-  return obj{foo: 5, bar: "x"};
+  return infer struct{foo: 5, bar: "x"};
 }
 ```
 
@@ -447,6 +445,12 @@ end
 
 ## Classes, receivers, multiple inheritance, and interfaces
 
+> **Planned, not yet implemented:** `sealed`, `non-sealed`, `final` class headers
+> and explicit `permits` lists are specified by the
+> [sealed class hierarchy v1 design](SEALED_CLASS_HIERARCHIES_V1.md).
+> This is a prospective contract and the current Java/LLVM compilers must not be
+> assumed to parse, typecheck, or execute these declarations yet.
+
 Class headers use `as` as the required body delimiter. The canonical form is `define class Name as ... end`; when `extends` or `implements` are present, `as` follows the complete class header.
 
 Methods omit `fnc`. Instance methods always have an implicit receiver named `self`.
@@ -501,7 +505,7 @@ define class Combined extends Cacheable, Serializable implements HasId, Named as
 end
 ```
 
-Parent order is never used to break a same-method-slot tie. If distinct parents contribute the same method name and caller-visible arity, the child must explicitly declare that slot; argument types, return types, and parent ordering never choose a winner. A true diamond that reaches the same original declaration through the same generic view is not ambiguous. The static checker rejects inheritance cycles and incompatible inherited member shapes. Child **methods** may override inherited methods only with compatible contracts. Storage fields are not virtual slots: a field name must be unique across the effective inheritance graph, so child fields may not shadow inherited fields and two distinct parent fields may not collide. Reaching the same field declaration twice through a diamond is not a collision.
+Parent order is never used to break a same-method-slot tie. If distinct parents contribute the same method name and caller-visible arity, the child must explicitly declare that slot; argument types, return types, and parent ordering never choose a winner. A true diamond that reaches the same original declaration through the same generic view is not ambiguous. The static checker rejects inheritance cycles and incompatible inherited member shapes. Child **methods** may override inherited methods only with compatible contracts. An overriding method or static function must remain `pub` if any inherited implementation of the same name + arity is `pub`; a `private` child declaration cannot silently hide an inherited public callable, even when it resolves a diamond conflict. Storage fields are not virtual slots: a field name must be unique across the effective inheritance graph, so child fields may not shadow inherited fields and two distinct parent fields may not collide. Reaching the same field declaration twice through a diamond is not a collision.
 
 `Object` and `List` are extensible base classes:
 
@@ -513,36 +517,101 @@ define class Names extends List as
 end
 ```
 
-Inline object and array literals are values, not classes, and cannot be inherited from.
+Anonymous structs and array literals are values, not classes, and cannot be inherited from.
 
 ## Inline values
 
-Structural inline object:
+Oreslang structs always have a compile-time-known, closed field shape. The
+canonical inferred spelling is `infer struct{...}`:
 
 ```ores
-val user = obj{name: "Ada", age: 37};
+const user = infer struct{name: "Ada", age: 37};
 stdio.println(user.name);
 ```
 
-Static object/map keys may be identifiers, reserved member keys such as
-`stop`/`do`/`done`, or strings written with either single or double
-quotes. Backticks make the key dynamic: the expression between the backticks
-must evaluate to a string.
+Whitespace before the initializer is optional: `infer struct {...}`.
+
+The canonical anonymous record spelling is `record{...}`:
 
 ```ores
-val key = "score";
-val stats = obj{
+const position = record{x: 3.0, y: 4.0};
+```
+
+Records are closed, field-name-based **structural** values rather than dynamic
+maps. Their field set is statically known, field order does not define type
+identity, and record assignment may use structural row compatibility under the
+normal readonly-capability rules. Plain `record{...}` carries **no type-capture
+intent**: `const Row r = record{...}` requires `Row` to already exist.
+`infer record{...}` remains accepted as a compatibility spelling;
+`infer<T> record{...}` may capture a lexical structural alias, but it does not
+create nominal identity or a runtime type object.
+
+An inferred struct is deliberately different. `infer struct{...}` synthesizes a
+**concrete closed struct shape** from the initializer. Struct compatibility is
+exact-shape rather than record row-width compatibility, and a struct is not
+implicitly erased to a record (or vice versa). The generated type can be
+captured explicitly:
+
+```ores
+const Point p = infer<Point> struct{x: 3.0, y: 4.0};
+```
+
+or with the checked short form when `Point` is otherwise unbound:
+
+```ores
+const Point p = infer struct{x: 3.0, y: 4.0};
+```
+
+The alias is lexical and compile-time only. Existing types, imported names,
+builtins, generics, reserved forward declarations and conflicting definitions
+cannot be silently shadowed. The declaration that *creates* a captured alias is
+a `const` declaration so the type introduction itself is stable; this does not
+make every later value of that captured type immutable.
+
+`infer` determines where the struct type comes from; it is **not** a freeze
+operator. Binding/referent mutability remains independent. A `const` binding
+cannot mutate through the value, while a mutable-referent binding of the same
+captured struct type can:
+
+```ores
+fnc update(): float {
+    const Point seed = infer<Point> struct{x: 3.0, y: 4.0};
+    val Point current = infer struct{x: 5.0, y: 6.0};
+    current.x = 9.0;
+    return current.x;
+}
+```
+
+Host-side `SoaSnapshot` provides independently tested scalar row/column
+snapshots, but it is NOT an Oreslang guest `SoA<T>` or zero-copy GPU/native
+representation. AoS/SoA guest lowering and ownership still require verification.
+
+Static struct keys may be identifiers, reserved member keys such as
+`stop`/`do`/`done`, or strings written with either single or double
+quotes:
+
+```ores
+const stats = infer struct{
   stop: 1,
   'do': 2,
-  "done": 3,
-  `key`: 4
+  "done": 3
 };
 ```
 
-An `obj{...}` containing a dynamic key has type `DynamicStruct<T>`, where
-`T` is the joined value type. A `DynamicStruct<T>` can also be created
-directly with `new DynamicStruct<T>()`; it accepts arbitrary string keys but
-only values assignable to `T`.
+Computed/backtick struct keys are rejected. Oreslang intentionally has no
+`DynamicStruct<T>` or open-ended anonymous object shape; this keeps anonymous
+struct layout statically knowable for AOT compilation.
+
+When mutation or staged initialization is required, declare the complete shape
+explicitly:
+
+```ores
+val stats = struct{score: int, ready: bool}{score: 1};
+stats.ready = true;
+```
+
+Explicit structs are still closed: only fields declared in the shape may ever
+exist.
 
 Inline array:
 
@@ -577,6 +646,75 @@ val sameShape: [int, string] = (1, "one");
 A tuple is a product value, not a growable array. Its `size` metadata is
 redundant by design but useful as an ABI/layout assertion; a mismatch with the
 declared positional arity is a compile-time error.
+
+### Computed access on fixed products
+
+Bracket access is also the computed-property form for fixed products. It does
+**not** turn a class, record, struct or tuple into a dynamic map.
+
+- Records and structs use a `string` field key: `value[key]`.
+- Class instances use a `string` key for **instance data fields only**.
+  Methods are never discoverable or callable through `[]`.
+- Tuples use an `int` positional index.
+- A two-slot positional pair is therefore a tuple. Key/value `Entry<K,V>`
+  values are named products with fields `key` and `value`, so their computed
+  access follows record rules rather than tuple rules.
+- A compile-time-fixed string key such as `const key = "x"` or
+  `const string key = "x"` keeps the exact selected field type; a scalar type
+  annotation does not erase the selector proof. CONST aliases of a proven
+  selector keep that precision as well. A literal integer or simple compile-time
+  integer constant such as `const int index = 0` keeps the exact selected tuple
+  slot type, including through CONST aliases.
+- A genuinely dynamic key/index has the union of every field/slot type it can
+  select. It cannot be assigned to a narrower type without an explicit,
+  type-checked narrowing operation.
+- Unknown runtime keys and out-of-range tuple indexes fail at runtime; `[]`
+  does not implicitly return `Option`.
+- Dynamic class access never bypasses visibility. If an arbitrary runtime key
+  could select an inaccessible field, the access is rejected rather than
+  creating a private-field side channel.
+- Class computed access is bounded by the receiver's **static class view**, not
+  by the most-derived runtime object. If a `Parent` reference holds a `Child`,
+  `parent[key]` may select only fields admitted by `Parent`; child-only fields
+  remain inaccessible through that view. The same rule applies to computed
+  writes and inherited parent methods executing on child instances.
+- Structural records are readonly, and tuples are immutable product values.
+  Indexed writes are therefore rejected for both.
+- Concrete structs may be written through `[]` only through a mutable
+  binding/exclusive authority. For a genuinely dynamic key, the assigned value
+  must be valid for **every** possible destination field.
+- Dynamic class writes likewise require every field selectable by the key to be
+  visible, mutable, and compatible with the assigned value.
+- Computed access participates in definite initialization. An exact indexed
+  write can initialize that declared explicit-struct field; a dynamic read is
+  rejected while any field in the closed shape remains uninitialized.
+- Projected borrows through computed aggregate/class/tuple indexes remain
+  fail-closed until path-exclusive loan tracking can prove the selected place.
+  Reading a value does not imply that a borrow of that computed place is safe.
+
+For example:
+
+```ores
+const Point seed = infer<Point> struct{x: 3.0, y: 4.0};
+const key = "x";
+const float x = seed[key];       // exact field type: float
+
+const row = record{x: 3.0, y: "boo"};
+const yKey = "y";
+const string y = row[yKey];      // exact field type: string
+
+fnc lookup({x: float, y: string} row, string key): float | string {
+    return row[key];             // dynamic key => float | string
+}
+
+const pair = tuple(3.0, 4.0);
+const int i = 0;
+const float first = pair[i];     // homogeneous tuple => float
+```
+
+The compiler does not reinterpret the value selected by the key. In particular,
+`row["y"]` above is `"boo"`; it is not `3.0`, and it cannot be assigned
+to `int`.
 
 ## Structural typing and interfaces
 
@@ -711,7 +849,7 @@ Owned sum values cannot hide lexical borrows until explicit lifetime parameters 
 
 Panics are distinct from ordinary recoverable errors. Normal `try/catch` does not swallow an unwrap panic, while lexical cleanup and `finally` still execute during unwind. Use `unwrap_safe()`, matching, or explicit variant inspection when absence/failure should remain data.
 
-`Option<null>` is accepted only as an explicit type-level escape hatch when an interoperability boundary truly needs to preserve a null marker. The `null` marker cannot escape that direct `Option<null>` position. `Option<void>` is invalid; use `void` when a function returns no value.
+`Option<null>` is accepted only as an explicit type-level escape hatch when an interoperability boundary truly needs to preserve a null marker. The `null` marker cannot escape that direct `Option<null>` position. Ordinary non-trapped functions return `void` when no value is produced. `Option<void>` is a valid compiler-produced completion marker for `trap` callables (and the proposed `trap expression` operator): `Some(void)` means the computation finished normally and `None` means an ordinary throw escaped. See [trap callable semantics](TRAP.md) and the [expression-trap/unwrap contract](TRAP_EXPRESSION_UNWRAP.md).
 
 ## Numbers
 
@@ -725,14 +863,34 @@ Numeric widening is loss-aware; real values can widen toward complex values, but
 
 ## Lambdas
 
-Lambdas are lexical closures by default and use `->`. The canonical block
-form keeps returns explicit:
+Lambdas are lexical closures by default and use `->`. The braced form keeps
+control flow explicit:
 
 ```ores
 val Fnc<int, int> inc = |int x| -> {
   return x + 1;
 };
 ```
+
+A braced lambda never treats its final statement as an implicit return. If its
+result type is non-`void`, every control-flow path must execute an explicit
+`return <value>;`.
+
+For a single returned expression, the full expression-body form omits the braces
+and `return`:
+
+```ores
+val Fnc<int, int> twice = |value| -> value * 2;
+
+val Fnc<int, int> shifted = |value| ->
+  value * 2 + 1;
+```
+
+The containing statement must end with an explicit semicolon. A newline alone
+does not terminate a statement that contains an expression-bodied lambda. Only
+an immediate `{` after `->` starts the block form; any other token begins the
+expression. This keeps prefix expressions unambiguous, including future forms
+such as `struct{...}{...}`.
 
 A normal lambda may capture activation-local bindings from its enclosing
 function or block. Captured mutable state remains part of the closure.
@@ -758,6 +916,9 @@ Actor entry points remain governed by their actor isolation rules. `nlex` may
 add a capture-free guarantee to an actor fnc, but it does not replace mailbox,
 private-slice, or shared-actor isolation.
 
+See [value and suspension boundaries](VALUE_BOUNDARIES.md) for tuple/record
+interop, indexing, argument expansion, map ordering and template-string status.
+
 ## Conditionals
 
 `fi` is a real, distinct conditional terminator. It is not an alias for module/class `end`.
@@ -773,6 +934,21 @@ fi
 ```
 
 Within a condition, comma means AND and `|` means OR. Comma binds more tightly.
+
+Inline value binding is supported with an explicit boolean predicate:
+
+```ores
+if some_call() as let value when value > 0 {
+  consume(value);
+} fi
+while some_call() as let value when value > 0 {
+  consume(value);
+}
+```
+
+Each reached initializer is evaluated once. The `if` binding is scoped to its
+predicate and remaining branch chain; a `while` binding is recreated on every
+test, including after `continue`. See [the full contract](VALUE_BOUNDARIES.md).
 
 ## Exceptions and defer
 
@@ -1331,6 +1507,9 @@ The same Oreslang source model supports three deployment profiles:
 
 The CLI accepts `--mode=jit|aot|hybrid` and `--platform=server|windows|macos|linux|android|ios`. The iOS execution contract is intentionally AOT-only. Source hot reload does not depend on executable dynamic libraries, JNI, or NFI.
 
+Build capability is fixed in the native executable; `--build-info` reports it.
+AOT-only images reject runtime requests for JIT/hybrid. See [native deployment](NATIVE_DEPLOYMENT.md).
+
 Maven profiles:
 - `mvn -Pnative-aot -DskipTests package`
 - `mvn -Pnative-hybrid -DskipTests package`
@@ -1431,9 +1610,10 @@ The structural marker never weakens actor isolation or ownership rules. An actor
 method may carry structural callable metadata, but the actor itself remains a nominal,
 mailbox-mediated identity.
 
-`structural` remains contextual. Ordinary declarations such as a method named
-`structural()` remain legal because the parser consumes the word as a modifier only
-where the following syntax makes that interpretation unambiguous.
+`over` is a reserved match delimiter. `structural` remains contextual: ordinary
+declarations such as a method named `structural()` remain legal because the parser
+consumes the word as a modifier only where the following syntax makes that
+interpretation unambiguous. Match-arm words such as `on` and `when` remain contextual.
 
 ## Receiver identity and method calls
 
@@ -1586,13 +1766,12 @@ fnc sink(): ((bool foo) => void) {
 
 Parameter names inside function types are documentation-only; structural function compatibility is determined by parameter/result types.
 
-The canonical lambda syntax is pipe-delimited and block-only:
+The canonical lambda parameter syntax is pipe-delimited. The body may be a
+braced statement block or one returned expression:
 
 ```ores
 fnc find(bool found): F {
-  return || -> {
-    return found ? 5 : 6;
-  };
+  return || -> found ? 5 : 6;
 }
 
 fnc callback(): ((bool foo) => void) {
@@ -1605,9 +1784,12 @@ fnc callback(): ((bool foo) => void) {
 
 Lambda parameters may be inferred from a contextual function type (`|foo|`) or typed explicitly (`|bool foo|`).
 
-There are no expression-body lambdas. Every lambda has braces. When the contextual result type is non-void, every control-flow path must contain an explicit `return <value>;`. Void lambdas may use `return;`.
-
-This means higher-order functions and functors do not introduce a second return convention: named functions, methods, static functions, and anonymous functions all use the same explicit `return` statement semantics.
+Expression-bodied lambdas return exactly their sole expression. Braced lambdas
+retain ordinary statement semantics: there is no implicit last-expression
+return, non-`void` results require explicit `return <value>;` on every path,
+and `void` lambdas may use `return;`. A statement containing an
+expression-bodied lambda must use an explicit trailing semicolon, including when
+the lambda body is laid out across multiple lines.
 
 
 ## Lexical closures
@@ -1691,30 +1873,50 @@ fnc example(): void {
 }
 ```
 
-Shared immutable borrowing uses `&T`:
+Immutable borrowing uses `rt borrow value`, with `borrow T` in type positions:
 
 ```ores
-fnc inspect(&Bar value): void {
+fnc inspect(borrow Bar value): void {
   stdio.println(value.foo);
   return;
 }
 ```
 
-Exclusive mutable borrowing uses `&mut T`:
+Exclusive mutable borrowing uses `rt borrow mut value` and `borrow mut T`:
 
 ```ores
-fnc change(&mut Bar value): void {
+fnc change(borrow mut Bar value): void {
   value.foo = "changed";
   return;
 }
 
 fnc example(): void {
-  let Bar b = new Bar();
-  change(&mut b);
-  stdio.println(b.foo); // owner is usable again after the call
+  val Bar b = new Bar();
+  change(rt borrow mut b);
+  stdio.println(b.foo);
   return;
 }
 ```
+
+Parentheses group expressions; they do not create singleton tuples:
+
+```ores
+val Array<int> values = new Array<int>();
+val borrowed = (rt borrow values);
+```
+
+The explicit `tuple (...)` constructor supports zero, one, or multiple elements.
+Parenthesized sequence bindings can unpack it:
+
+```ores
+val (borrowed) = tuple (rt borrow values);
+```
+
+Immediate tuple unpacking gives each borrowed binding a lexical lease. Storing
+borrows in an owned tuple remains rejected until container lifetimes are supported.
+Neither `await` nor `rt cooperate` may suspend with an ordinary live borrow.
+Legacy ampersand borrow spellings remain parser compatibility aliases; new code
+uses the keyword forms above. There is no pointer dereference operation.
 
 Borrow rules:
 
@@ -1778,3 +1980,20 @@ When explicit thread/task spawning is added, cross-thread transfer will require 
 `@FromJson("key")` is a compiler annotation for typed class fields. It expands before type/ownership checking into public typed getters/setters; no JVM reflection or guest-code macro execution is involved. The field must have an explicit type and mutable storage. The name-first shorthand `field_name: Type` is mutable only when annotated with `@FromJson`; otherwise it is an immutable `val` field.
 
 Generated setters still require a mutable owner at the call site. Duplicate/blank keys, immutable annotated fields, accessor collisions, annotations on module bindings/callables, and annotations on actor state all fail closed. JSON wire keys participate in incremental ABI fingerprints.
+
+## Incremental imported module-contract reconciliation (2026-10-20)
+
+An unqualified module-contract field requires readable exported access of the
+declared type. An explicit binding retains the current rebindability and
+referent-mutability requirements; equivalent capability spellings stay equivalent.
+
+Named, exported contract imports and aliases supply type-only linker metadata.
+They do not splice foreign declarations into runtime modules or exports.
+Inherited foreign contracts and foreign nominal member types without linked
+provenance remain rejected. Class-field imports, private alias provenance,
+short inferred type aliases and return-cleanup admission share the same
+type/ownership pipeline with these contract imports.
+
+Module conformance names, contract/interface identity and field capabilities
+participate in the incremental ABI. This snapshot needs exact-head Maven tests;
+conflict reconciliation alone is not test evidence.
