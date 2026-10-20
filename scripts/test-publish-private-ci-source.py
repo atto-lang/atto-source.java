@@ -127,7 +127,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             f"{path} {sha}\n" for path, sha in sorted(self.carrier_workflows.items()))
         self.carrier_workflow_manifest_sha = None
         self.carrier_execution_profile_text = (
-            "profile bwrap-offline-maven-v1\n"
+            "profile docker-networkless-maven-v1\n"
             f"trusted-pom-blob {self.trusted_pom_sha}\n"
             f"workflow .github/workflows/oreslang-private-ci-gate.yml {W1}\n"
         )
@@ -665,11 +665,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     self.publish()
                 self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
         self.carrier_codeowners_text = (
+            "/scripts/verify-oreslang-carrier-admin-policy.py @ORESoftware\n"
+            "/scripts/verify-oreslang-private-runner-attestation.py @ORESoftware\n"
             "/.github/private-oreslang-approved-source-snapshots.txt @ORESoftware\n"
             "/.github/CODEOWNERS @ORESoftware\n"
             "/scripts/verify-oreslang-private-ci-snapshot.sh @ORESoftware\n"
             "/scripts/launch-oreslang-private-ci-publisher.py @ORESoftware\n"
+            "/.github/oreslang-private-publisher.txt @ORESoftware\n"
             "/.github/oreslang-private-build-images.txt @ORESoftware\n"
+            "/.github/oreslang-private-execution-profile.txt @ORESoftware\n"
+            "/.github/oreslang-private-workflows.txt @ORESoftware\n"
             "/scripts/run-oreslang-private-build-in-sandbox.py @ORESoftware\n"
             "/.github/workflows/ @ORESoftware\n"
         )
@@ -3009,10 +3014,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 "profile unknown\n"
                 f"trusted-pom-blob {self.trusted_pom_sha}\n"
                 f"workflow .github/workflows/oreslang-private-ci-gate.yml {W1}\n",
-                "profile bwrap-offline-maven-v1\n"
+                "profile docker-networkless-maven-v1\n"
                 "trusted-pom-blob not-a-sha\n"
                 f"workflow .github/workflows/oreslang-private-ci-gate.yml {W1}\n",
-                "profile bwrap-offline-maven-v1\n"
+                "profile docker-networkless-maven-v1\n"
                 f"trusted-pom-blob {self.trusted_pom_sha}\n"
                 f"workflow .github/workflows/oreslang-private-ci-gate.yml {W2}\n"):
             with self.subTest(policy=policy):
@@ -3348,7 +3353,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 if calls["manifest"] >= 2:
                     self.route_calls.append((method, route, payload))
                     raw = (
-                        ".github/workflows/private-oreslang-exact-tree.yml " + W1 + "\n"
+                        ".github/workflows/oreslang-private-ci-gate.yml " + W1 + "\n"
                     ).encode("utf-8")
                     sha = hashlib.sha1(
                         b"blob " + str(len(raw)).encode("ascii") + bytes([0]) + raw
