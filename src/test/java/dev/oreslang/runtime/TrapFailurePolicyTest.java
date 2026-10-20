@@ -139,7 +139,8 @@ final class TrapFailurePolicyTest {
         assertFalse(TrapFailurePolicy.isTrappable(foreign, GuestPanic.class));
         assertFalse(TrapFailurePolicy.isGuestCatchable(foreign, GuestPanic.class));
         RuntimeException wrapped = new CompletionException(
-                new GuestControlSignal.Throw("guest error"), foreign);
+                new GuestControlSignal.Throw("guest error"));
+        wrapped.addSuppressed(foreign);
         assertFalse(TrapFailurePolicy.isTrappable(wrapped, GuestPanic.class),
                 "a guest cause must not hide a forged host error in cleanup");
     }
