@@ -371,3 +371,21 @@ substitute: the protected source-origin and reviewed carrier allowlist remain
 unsatisfied. A passing synthetic host-adapter harness, if available, is not
 a substitute for exact-head guest tests.
 
+
+
+### Sealed Future type namespace — 2026-10-20
+
+`Future` is a compiler intrinsic, not a user-defined nominal class.
+The constructor is checked and lowered on both the direct/synchronous and
+suspendable expression paths. The declaration pass must therefore reject
+*all user-defined type declarations* with this name: **classes, type
+aliases, and interfaces/traits**. Merely rejecting classes is insufficient:
+an interface named `Future` could otherwise occupy a nominal type namespace
+while the source compiler continues to interpret `Future<T>` as its intrinsic.
+The latest tests assert the **specific sealed-intrinsic diagnostic** for
+class, alias and interface shadowing; unrelated parser errors are not
+acceptable substitutes for this contract.
+
+The interface/trait declaration gate is staged on PR #1676. A source-free
+JDK21 syntax/probe cannot validate Oreslang's complete parser or GraalVM
+runtime; these cases still require real exact-head guest JUnit execution.
