@@ -199,9 +199,10 @@ hardlinks to outside files, FIFOs, `.git` directories, and other unsafe
 filesystem objects. Directory enumeration is bounded to 4,096 entries,
 1,024 directories and a maximum depth of 64. It verifies every uploaded
 Git blob SHA-1 against the source bytes. It checks that the reviewed
-destination policy has not changed
-before every API write, in addition to rechecking the destination's live
-private visibility. It does not print source contents in API failures.
+destination policy has not changed before every API write, pins source main to
+the exact governance authority SHA accepted at admission, and revalidates the
+carrier's live protected-main/CODEOWNER/admin/no-bypass boundary at the exact
+reviewed base before each source-bearing write. It does not print source contents in API failures.
 API failure before ref creation can leave unreferenced Git objects in
 the private destination; a follow-up retention policy is still needed.
 
