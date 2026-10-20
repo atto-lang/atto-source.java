@@ -91,7 +91,10 @@ public final class TaskSemanticAdmission {
     }
 
     public List<Entry> entriesFor(Ast.Expr boundary) {
-        return entriesForIdentity(boundary);
+        Objects.requireNonNull(boundary, "boundary");
+        return boundary instanceof Ast.TaskExpr task
+                ? entriesForIdentity(task)
+                : List.of();
     }
 
     public int boundaryCount() { return byBoundary.size(); }
