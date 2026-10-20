@@ -27,8 +27,8 @@ MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
 MIRROR_DESTINATION = "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra"
-DEST_BASE_COMMIT = "5e1079638ba322d0208631ef34fcbd3f129b40ab"
-DEST_BASE_TREE = "1f2f5d5f816213192d13c179d0e9381d00fdeaf7"
+DEST_BASE_COMMIT = "c5f5155259aa37b808f4e96dbe09cddded4c04ed"
+DEST_BASE_TREE = "15fcb558350a2965d9edf1f503d45a6d8e7f98df"
 
 
 class Denied(RuntimeError):
