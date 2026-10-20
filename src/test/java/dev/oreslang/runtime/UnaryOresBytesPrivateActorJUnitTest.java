@@ -30,11 +30,15 @@ final class UnaryOresBytesPrivateActorJUnitTest {
                         assertEquals(UnaryTransportFrame.MAX_PAYLOAD_BYTES, bytes.size());
                         assertEquals(11, bytes.unsignedAt(0));
                         assertEquals(251, bytes.unsignedAt(bytes.size() - 1));
-                        OresBytes produced = OresBytes.copyOf(new byte[] {7, 8, 9});
+                        byte[] response = new byte[UnaryTransportFrame.MAX_PAYLOAD_BYTES];
+                        response[0] = 7;
+                        response[response.length - 1] = (byte) 249;
+                        OresBytes produced = OresBytes.wrapTrusted(response);
                         actorResult.set(produced);
                         return produced;
                     },
-                    UnaryTcpActorDispatcher.bytesCodec(3));
+                    UnaryTcpActorDispatcher.bytesCodec(
+                            UnaryTransportFrame.MAX_PAYLOAD_BYTES));
 
             var handle = dispatcher.dispatch(new UnaryTcpSessionAdapter.Request(
                     new UnaryTcpSessionAdapter.PeerIdentity("peer:private-large"),
@@ -52,6 +56,11 @@ final class UnaryOresBytesPrivateActorJUnitTest {
             assertEquals(actorResult.get(), reply.get().payloadValue());
             assertNotSame(actorResult.get(), reply.get().payloadValue(),
                     "PRIVATE actor result bytes must be copied into supervisor ownership");
+            assertEquals(UnaryTransportFrame.MAX_PAYLOAD_BYTES,
+                    reply.get().payloadValue().size());
+            assertEquals(7, reply.get().payloadValue().unsignedAt(0));
+            assertEquals(249, reply.get().payloadValue().unsignedAt(
+                    reply.get().payloadValue().size() - 1));
         }
     }
 }
