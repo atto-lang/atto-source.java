@@ -93,6 +93,17 @@ public final class RealtimePrimitiveSmoke {
                         List.of(ret(num(3))))));
         var ifProof = RealtimePrimitiveCompiler.analyze(program(condition), "choose", 1, budget);
         if (ifProof.maxSourceSteps() < 4) throw new AssertionError("branch cost was not analyzed");
-        System.out.println("PASS: portable Java 8 Oreslang AST primitive subset, execution, and 10 negative/budget tests");
+        Path branchOut = out.resolve("branch");
+        RealtimePrimitiveCompiler.compile(program(condition), "choose", 1, budget, branchOut);
+        try (URLClassLoader loader = new URLClassLoader(new java.net.URL[] {branchOut.toUri().toURL()})) {
+            Method choose = Class.forName(RealtimePrimitiveCompiler.CLASS_NAME, true, loader)
+                    .getDeclaredMethod("choose", int.class);
+            choose.setAccessible(true);
+            for (int input : new int[] {-7, 0, 1, 30}) {
+                int actual = (int) choose.invoke(null, input);
+                if (actual != (input > 0 ? 4 : 3)) throw new AssertionError("bad branch output");
+            }
+        }
+        System.out.println("PASS: portable Java 8 Oreslang AST primitive subset, execution, and 9 negative/budget checks and branch execution");
     }
 }
