@@ -614,6 +614,48 @@ class PrivateCiV3Test(unittest.TestCase):
         with self.assertRaisesRegex(v3.Denied, "target is invalid"):
             v3._gh_ref_request("trusted/ci", "ci/not-an-oreslang-handoff", "GET")
 
+    def test_live_ref_404_requires_carrier_identity_to_remain_visible(self):
+        response = type(
+            "Result", (),
+            {"returncode": 1, "stderr": "HTTP 404: Not Found", "stdout": ""},
+        )()
+        with (
+            patch.object(v3, "_gh_ref_request", return_value=response),
+            patch.object(
+                v3.legacy,
+                "checked_repo",
+                side_effect=v3.Denied("carrier no longer visible"),
+            ),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "no longer visible"):
+                v3.live_ref_sha(
+                    "trusted/ci", "ci/authorized-" + COMMIT
+                )
+
+    def test_live_ref_404_is_absent_only_after_private_carrier_recheck(self):
+        response = type(
+            "Result", (),
+            {"returncode": 1, "stderr": "HTTP 404: Not Found", "stdout": ""},
+        )()
+        with (
+            patch.object(v3, "_gh_ref_request", return_value=response),
+            patch.object(
+                v3.legacy,
+                "checked_repo",
+                return_value={
+                    "full_name": "trusted/ci",
+                    "private": True,
+                    "visibility": "private",
+                },
+            ) as checked_repo,
+        ):
+            self.assertIsNone(
+                v3.live_ref_sha(
+                    "trusted/ci", "ci/authorized-" + COMMIT
+                )
+            )
+        checked_repo.assert_called_once_with("trusted/ci")
+
     def test_delete_exact_ref_missing_is_idempotent(self):
         with patch.object(v3, "live_ref_sha", return_value=None):
             self.assertFalse(
