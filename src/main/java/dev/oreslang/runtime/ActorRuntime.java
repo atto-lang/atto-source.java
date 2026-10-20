@@ -1677,13 +1677,24 @@ public final class ActorRuntime implements AutoCloseable {
      * identity or carrier pool.
      */
     public <T> OresFuture<T> startActorTask(OresScheduler.Task<T> task) {
+        return startActorTask(task, () -> { });
+    }
+
+    public <T> OresFuture<T> startActorTask(
+            OresScheduler.Task<T> task,
+            Runnable retireAfterPhysicalDone) {
         Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(
+                retireAfterPhysicalDone, "physical Task retirement");
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        if (cell.kind != ActorKind.UNTRUSTED) return cell.sourceScheduler().start(task);
+        if (cell.kind != ActorKind.UNTRUSTED) {
+            return cell.sourceScheduler().startCompilerAdmittedTask(
+                    task, retireAfterPhysicalDone);
+        }
         // Do not mint multiple independent root budgets from one physical
         // mailbox turn. While one source-task cohort is live, its nested
         // tasks share the same quota; a second top-level task fails closed.
@@ -1758,12 +1769,16 @@ public final class ActorRuntime implements AutoCloseable {
         Runnable retireOnce = () -> {
             if (released.compareAndSet(false, true)) {
                 try {
-                    releaseUntrustedSourceTask(cell, quota);
+                    // Reached only from scheduler carrier quiescence (or the
+                    // proven never-admitted failure path).
+                    retireAfterPhysicalDone.run();
                 } finally {
-                    // A completed Future is not proof that an untrusted
-                    // physical carrier has exited the actor boundary.
-                    physicalQuiescenceConfirmed.set(true);
-                    releaseTimedWhenSafe.run();
+                    try {
+                        releaseUntrustedSourceTask(cell, quota);
+                    } finally {
+                        physicalQuiescenceConfirmed.set(true);
+                        releaseTimedWhenSafe.run();
+                    }
                 }
             }
         };

@@ -406,6 +406,31 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /**
+     * Trusted compiler-lowering path for moved Task values. The callback is
+     * reached only from scheduler physical quiescence, never from Future
+     * cancellation/result settlement.
+     */
+    public <T> OresFuture<T> startCompilerAdmittedTask(
+            Task<T> task,
+            Runnable retireAfterPhysicalDone) {
+        Objects.requireNonNull(retireAfterPhysicalDone,
+                "physical Task retirement");
+        AtomicBoolean retired = new AtomicBoolean();
+        Runnable retireOnce = () -> {
+            if (retired.compareAndSet(false, true)) {
+                retireAfterPhysicalDone.run();
+            }
+        };
+        try {
+            return start(task, retireOnce);
+        } catch (RuntimeException | Error admissionFailure) {
+            // No scheduler child exists if admission itself throws.
+            retireOnce.run();
+            throw admissionFailure;
+        }
+    }
+
+    /**
      * Trusted runtime lifecycle hook. A cancelled Future can settle before
      * the current guest carrier has physically exited; this callback fires
      * only after task execution is quiescent (or before it ever started).
