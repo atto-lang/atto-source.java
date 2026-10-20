@@ -1065,8 +1065,9 @@ final class ActorRuntimeTest {
             });
 
             ref.send((byte) 42);
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-            while (ref.isAlive() && System.nanoTime() < deadline) Thread.sleep(5);
+            // isAlive observes the logical stop flag before physical teardown.
+            // done settles after private memory and the carrier are finalized.
+            ref.done().get(2, TimeUnit.SECONDS);
             assertFalse(ref.isAlive());
             assertTrue(ref.failure().isEmpty());
             assertEquals(0L, runtime.privateMemoryBytes(), "actor teardown must release its private direct-memory quota");

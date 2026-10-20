@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import java.util.IdentityHashMap;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
@@ -123,6 +124,46 @@ public final class OresScheduler implements AutoCloseable {
 
         private static Resume completed(Object value, Throwable failure) {
             return new Resume(false, value, failure);
+        }
+    }
+
+    // Await dependencies are VM-wide, not scheduler-local: tasks on distinct
+    // schedulers may await each other. Identity is essential for Future tokens.
+    // Entries exist only while a task is suspended on a pending Future.
+    private static final Object AWAIT_GRAPH_LOCK = new Object();
+    private static final IdentityHashMap<OresFuture<?>, OresFuture<?>> AWAIT_GRAPH =
+            new IdentityHashMap<>();
+
+    private static boolean registerAwaitDependency(
+            OresFuture<?> owner, OresFuture<?> awaited) {
+        synchronized (AWAIT_GRAPH_LOCK) {
+            if (AWAIT_GRAPH.containsKey(owner)) {
+                throw new IllegalStateException("task already has an active Future await");
+            }
+            OresFuture<?> cursor = awaited;
+            int remaining = AWAIT_GRAPH.size() + 1;
+            while (cursor != null && remaining-- > 0) {
+                if (cursor == owner) return false;
+                cursor = AWAIT_GRAPH.get(cursor);
+            }
+            if (cursor != null) {
+                // A pre-existing cyclic graph is a runtime invariant violation.
+                throw new IllegalStateException("Future await graph contains a cycle");
+            }
+            AWAIT_GRAPH.put(owner, awaited);
+            return true;
+        }
+    }
+
+    private static void removeAwaitDependency(OresFuture<?> owner) {
+        synchronized (AWAIT_GRAPH_LOCK) {
+            AWAIT_GRAPH.remove(owner);
+        }
+    }
+
+    static boolean hasAwaitDependency(OresFuture<?> owner) {
+        synchronized (AWAIT_GRAPH_LOCK) {
+            return AWAIT_GRAPH.containsKey(owner);
         }
     }
 
@@ -336,6 +377,32 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /**
+     * Read-only cooperative cancellation poll for a compiler-generated safe
+     * point inside the CURRENT tracked Task turn. It grants no cancellation
+     * authority and never interrupts a physical carrier.
+     *
+     * Ordinary scheduler tasks without a tracked cancellation owner report
+     * false; nested inline Task turns restore the previous owner's token.
+     */
+    public static boolean cancellationRequested() {
+        return TaskHandle.currentCancellationRequested();
+    }
+
+    /**
+     * Explicit cancellation checkpoint for compiler-lowered loops and
+     * carefully selected synchronous boundaries. A pending cancellation
+     * raises a private runtime marker, unwinding ordinary Java finally blocks
+     * before the Task reaches its terminal quiescence barrier.
+     *
+     * Never lower this inside an ownership-critical or non-reentrant section;
+     * do not insert it automatically into every ordinary watchdog poll.
+     * Async finally/defer lowering requires a separate cleanup state machine.
+     */
+    public static void cancellationCheckpoint() {
+        TaskHandle.checkCurrentCancellationCheckpoint();
+    }
+
+    /**
      * Start one compiler-lowered async task on this scheduler.
      *
      * <p>The returned Future represents the whole task. Awaiting it from another
@@ -343,6 +410,27 @@ public final class OresScheduler implements AutoCloseable {
      */
     public <T> OresFuture<T> start(Task<T> task) {
         return start(task, () -> { });
+    }
+
+    /**
+     * Host-runtime opt-in for a cancellable Task with a distinct physical
+     * quiescence barrier. This does not change existing Future semantics.
+     * Source Task syntax and structured actor scopes require separate lowering.
+     */
+    public <T> TaskHandle<T> startTracked(Task<T> task) {
+        return TaskHandle.start(this, task);
+    }
+
+    /**
+     * Create an explicit host/runtime Task scope. The caller must seal or
+     * close it and await its getDone() barrier when physical quiescence matters.
+     * Guest actor/tenant authority is not exposed by this staging API.
+     */
+    public TaskScope newTaskScope() {
+        synchronized (taskAdmissionLock) {
+            ensureOpen();
+            return new TaskScope(this);
+        }
     }
 
     /**
@@ -570,6 +658,12 @@ public final class OresScheduler implements AutoCloseable {
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
+        /**
+         * Guest cancellation checkpoints are observed during the turn, but
+         * host Future subscribers must be notified after the guest execution
+         * boundary unwinds. Only the RUNNING -> TERMINAL winner owns this.
+         */
+        private final AtomicBoolean checkpointCancellationPending = new AtomicBoolean();
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -713,6 +807,18 @@ public final class OresScheduler implements AutoCloseable {
                             task.resume(resume),
                             "OresScheduler task returned null Step");
                 } catch (Throwable failure) {
+                    if (TaskHandle.isAuthenticatedCheckpointCancellation(failure)) {
+                        // Only the winning checkpoint may change RUNNING to
+                        // TERMINAL. A wall deadline or forced cancellation
+                        // that already won keeps its existing terminal cause.
+                        if (phase.compareAndSet(RUNNING, TERMINAL)) {
+                            checkpointCancellationPending.set(true);
+                        }
+                        // Never invoke arbitrary synchronous Future listeners
+                        // while the guest turn/Truffle context is still bound.
+                        // afterCarrierTurn() will publish cancellation.
+                        return;
+                    }
                     failTerminal(failure);
                     if (failure instanceof VirtualMachineError fatal) throw fatal;
                     if (failure instanceof ThreadDeath fatal) throw fatal;
@@ -777,6 +883,13 @@ public final class OresScheduler implements AutoCloseable {
             try {
                 retireWhenQuiescent();
             } finally {
+                // runBound() and the guest turn have fully unwound. At this
+                // point Future subscribers may run without observing a live
+                // guest context. A competing wall deadline retains precedence
+                // because only the RUNNING -> TERMINAL winner set this bit.
+                if (checkpointCancellationPending.getAndSet(false)) {
+                    completion.cancel(false);
+                }
                 publishTerminalIfReady();
                 scheduleReadyResume();
             }
@@ -797,11 +910,53 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void armAwait(OresFuture<?> awaited) {
+            // Awaiting the task's own completion creates an unresolvable
+            // dependency (including Future.flatten() cycles). Reject before
+            // publishing a waiter, rather than retaining the task forever.
+            if (awaited == completion) {
+                failTerminal(new IllegalStateException(
+                        "scheduler task cannot await its own completion Future"));
+                return;
+            }
             if (!phase.compareAndSet(RUNNING, WAITING)) {
                 return;
             }
 
             try {
+                // Settled futures need no dependency edge and cannot take
+                // part in a *pending* cycle. Keep their fast path lock-free.
+                Object alreadyTerminal = awaited.runtimeTerminalStateOrNull();
+                if (alreadyTerminal != null) {
+                    deliverAwaitCompletion(
+                            OresFuture.runtimeTerminalValue(alreadyTerminal),
+                            OresFuture.runtimeTerminalFailure(alreadyTerminal));
+                    return;
+                }
+                // Register before callback publication. Detect A -> B -> ... -> A
+                // under one lock, including cycles crossing scheduler instances.
+                // No user code executes while the graph lock is held.
+                if (!registerAwaitDependency(completion, awaited)) {
+                    // The producer may have settled while another task
+                    // published a dependency. Prefer the terminal outcome
+                    // over a now-obsolete await graph.
+                    Object terminal = awaited.runtimeTerminalStateOrNull();
+                    if (terminal != null) {
+                        deliverAwaitCompletion(
+                                OresFuture.runtimeTerminalValue(terminal),
+                                OresFuture.runtimeTerminalFailure(terminal));
+                        return;
+                    }
+                    failTerminal(new IllegalStateException(
+                            "cyclic Future await dependency detected"));
+                    return;
+                }
+                // Cancellation might have revoked this task before the graph
+                // edge was installed. Recheck admission before fast-path
+                // observation so terminal results cannot strand an edge.
+                if (phase.get() != WAITING) {
+                    removeAwaitDependency(completion);
+                    return;
+                }
                 // Hot path: terminal Futures are immutable. Observe their
                 // already-published terminal state directly and enqueue the
                 // continuation for a fresh dispatch without allocating a
@@ -848,7 +1003,10 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void deliverAwaitCompletion(Object value, Throwable failure) {
-            if (phase.get() == TERMINAL) return;
+            if (phase.get() == TERMINAL) {
+                removeAwaitDependency(completion);
+                return;
+            }
 
             Resume resume = Resume.completed(
                     value,
@@ -859,6 +1017,9 @@ public final class OresScheduler implements AutoCloseable {
                 return;
             }
 
+            // The awaited Future has settled: this is no longer a pending
+            // dependency, even though scheduling the continuation may lag.
+            removeAwaitDependency(completion);
             if (phase.get() == TERMINAL) {
                 pendingResume.compareAndSet(resume, null);
                 return;
@@ -884,6 +1045,7 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void detachActiveAwaitRegistration() {
+            removeAwaitDependency(completion);
             OresFuture.RuntimeWaiterRegistration<?> registration =
                     activeAwaitRegistration.getAndSet(null);
             if (registration != null) registration.detach();

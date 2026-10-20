@@ -6,6 +6,25 @@ import java.util.HashSet;
 public final class Ast {
     private Ast() { }
 
+    /** Shared guest AST admission rule for closed structural field keys. */
+    private static String requireStaticFieldName(String name) {
+        if (name == null || name.length() > 1024) {
+            throw new IllegalArgumentException("static field name is null or too long");
+        }
+        for (int i = 0; i < name.length(); i++) {
+            char code = name.charAt(i);
+            if (code == 0 || Character.isLowSurrogate(code)) {
+                throw new IllegalArgumentException("static field name contains invalid Unicode");
+            }
+            if (Character.isHighSurrogate(code)) {
+                if (++i >= name.length() || !Character.isLowSurrogate(name.charAt(i))) {
+                    throw new IllegalArgumentException("static field name contains invalid Unicode");
+                }
+            }
+        }
+        return name;
+    }
+
     public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
         public Program {
             imports = List.copyOf(imports);
@@ -305,39 +324,63 @@ public final class Ast {
         }
         public boolean isTupleType() { return name.equals("$tuple$"); }
 
-        private static TypeRef recordType(java.util.Map<String, TypeRef> members, boolean readOnly) {
+        private static TypeRef aggregateType(
+                java.util.Map<String, TypeRef> members,
+                String typeTag,
+                String diagnosticName) {
             java.util.ArrayList<TypeRef> fields = new java.util.ArrayList<>(members.size());
             java.util.ArrayList<java.util.Map.Entry<String, TypeRef>> entries = new java.util.ArrayList<>(members.entrySet());
+            // Reject invalid keys before sorting; even a malicious null key
+            // must not trigger an uncontrolled comparison or enter a type ID.
+            for (java.util.Map.Entry<String, TypeRef> entry : entries) {
+                requireStaticFieldName(entry.getKey());
+                java.util.Objects.requireNonNull(entry.getValue(), diagnosticName + " type field");
+            }
             entries.sort(java.util.Map.Entry.comparingByKey());
             for (java.util.Map.Entry<String, TypeRef> entry : entries) {
-                if (entry.getKey() == null || entry.getKey().isBlank()) {
-                    throw new IllegalArgumentException("record type field name cannot be blank");
-                }
                 fields.add(new TypeRef("$field$" + entry.getKey(), List.of(entry.getValue()), false));
             }
-            return new TypeRef(readOnly ? "$readonly_record$" : "$record$", List.copyOf(fields), false);
+            return new TypeRef(typeTag, List.copyOf(fields), false);
+        }
+        private static TypeRef recordType(java.util.Map<String, TypeRef> members, boolean readOnly) {
+            return aggregateType(members, readOnly ? "$readonly_record$" : "$record$", "record");
         }
         public static TypeRef recordType(java.util.Map<String, TypeRef> members) {
-            return recordType(members, false);
+            // Record values are structurally readonly; mutable fixed products
+            // are represented by structType, never by a writable record shape.
+            return recordType(members, true);
         }
         public static TypeRef readonlyRecordType(java.util.Map<String, TypeRef> members) {
             return recordType(members, true);
         }
+        public static TypeRef structType(java.util.Map<String, TypeRef> members) {
+            return aggregateType(members, "$struct$", "struct");
+        }
         public boolean isRecordType() { return name.equals("$record$") || name.equals("$readonly_record$"); }
         public boolean isReadonlyRecordType() { return name.equals("$readonly_record$"); }
-        public java.util.Map<String, TypeRef> recordMembers() {
-            if (!isRecordType()) throw new IllegalStateException("not a record type");
+        public boolean isStructType() { return name.equals("$struct$"); }
+        public boolean isClosedAggregateType() { return isRecordType() || isStructType(); }
+        public java.util.Map<String, TypeRef> aggregateMembers() {
+            if (!isClosedAggregateType()) throw new IllegalStateException("not a closed aggregate type");
             java.util.LinkedHashMap<String, TypeRef> members = new java.util.LinkedHashMap<>();
             for (TypeRef field : arguments) {
                 if (!field.name().startsWith("$field$") || field.arguments().size() != 1 || field.inferArguments()) {
-                    throw new IllegalStateException("malformed record type field");
+                    throw new IllegalStateException("malformed closed aggregate type field");
                 }
                 String fieldName = field.name().substring("$field$".length());
                 if (members.putIfAbsent(fieldName, field.arguments().getFirst()) != null) {
-                    throw new IllegalStateException("duplicate record type field " + fieldName);
+                    throw new IllegalStateException("duplicate closed aggregate type field " + fieldName);
                 }
             }
             return java.util.Collections.unmodifiableMap(members);
+        }
+        public java.util.Map<String, TypeRef> recordMembers() {
+            if (!isRecordType()) throw new IllegalStateException("not a record type");
+            return aggregateMembers();
+        }
+        public java.util.Map<String, TypeRef> structMembers() {
+            if (!isStructType()) throw new IllegalStateException("not a struct type");
+            return aggregateMembers();
         }
     }
 
@@ -736,7 +779,7 @@ public final class Ast {
     /**
      * Binding rebinding and mutable access to the referent are independent capabilities.
      * inferredTypeName is compiler-only metadata for the local type alias introduced
-     * by `const T value = infer<T> struct {...}` or `infer<T> tuple (...)`.
+     * by `const T value = infer<T> struct {...}`, inferred records, or tuples.
      */
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer,
                               boolean mutableReferent, String inferredTypeName) implements Stmt {
@@ -756,9 +799,9 @@ public final class Ast {
                         || !declaredType.arguments().isEmpty() || declaredType.inferArguments()) {
                     throw new IllegalArgumentException("named inferred type must match the declared binding type");
                 }
-                if (!(initializer instanceof ObjectExpr object && object.inferredStruct())
+                if (!(initializer instanceof ObjectExpr object && object.inferredAggregate())
                         && !(initializer instanceof TupleExpr)) {
-                    throw new IllegalArgumentException("named inferred type requires infer struct or tuple literal");
+                    throw new IllegalArgumentException("named inferred type requires infer struct, record or tuple literal");
                 }
             }
         }
@@ -1241,6 +1284,221 @@ public final class Ast {
         }
     }
 
+    /**
+     * Compiler-verified static Option depth attached to an AST call by
+     * identity, never by structurally-equal source text. Weak keys prevent
+     * cached type metadata from retaining abandoned compilation units.
+     * Runtime reads fail closed for ASTs that never passed type checking.
+     */
+    public static final class CheckedOptionDepth {
+        private CheckedOptionDepth() { }
+
+        private static final java.lang.ref.ReferenceQueue<CallExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, Integer> DEPTHS =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey extends java.lang.ref.WeakReference<CallExpr> {
+            private final int hash;
+            private IdentityKey(
+                    CallExpr call, java.lang.ref.ReferenceQueue<CallExpr> queue) {
+                super(call, queue);
+                hash = System.identityHashCode(call);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                CallExpr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends CallExpr> collected;
+            while ((collected = CLEARED.poll()) != null) {
+                DEPTHS.remove(collected);
+            }
+        }
+
+        public static synchronized void record(CallExpr call, int depth) {
+            java.util.Objects.requireNonNull(call, "call");
+            if (depth < 1) throw new IllegalArgumentException("Option depth must be positive");
+            expunge();
+            IdentityKey key = new IdentityKey(call, CLEARED);
+            Integer old = DEPTHS.putIfAbsent(key, depth);
+            if (old != null && old != depth) {
+                throw new IllegalStateException(
+                        "same Option call site received inconsistent checked depths");
+            }
+        }
+
+        public static synchronized int require(CallExpr call) {
+            java.util.Objects.requireNonNull(call, "call");
+            expunge();
+            Integer depth = DEPTHS.get(new IdentityKey(call, null));
+            if (depth == null) {
+                throw new IllegalStateException(
+                        "Option.unwrap_all requires a statically checked call site");
+            }
+            return depth;
+        }
+
+        public static synchronized void copy(CallExpr source, CallExpr target) {
+            java.util.Objects.requireNonNull(source, "source checked Option call");
+            java.util.Objects.requireNonNull(target, "target checked Option call");
+            expunge();
+            Integer depth = DEPTHS.get(new IdentityKey(source, null));
+            if (depth != null) record(target, depth);
+        }
+    }
+
+    /**
+     * Compiler-verified static ordinary-class domain for a computed-index
+     * receiver. The key is the exact receiver AST node admitted by the type
+     * checker, so runtime never has to rediscover a class view from syntax or
+     * from the more-derived runtime object.
+     *
+     * Weak identity keys avoid retaining abandoned compilation units. A
+     * structurally equal expression from another parse is intentionally not a
+     * match.
+     */
+    public static final class CheckedClassView {
+        private CheckedClassView() { }
+
+        private static final java.lang.ref.ReferenceQueue<Expr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, String> VIEWS =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey extends java.lang.ref.WeakReference<Expr> {
+            private final int hash;
+            private IdentityKey(
+                    Expr expression, java.lang.ref.ReferenceQueue<Expr> queue) {
+                super(expression, queue);
+                hash = System.identityHashCode(expression);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                Expr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends Expr> collected;
+            while ((collected = CLEARED.poll()) != null) {
+                VIEWS.remove(collected);
+            }
+        }
+
+        public static synchronized void record(Expr receiver, String className) {
+            java.util.Objects.requireNonNull(receiver, "computed-index receiver");
+            java.util.Objects.requireNonNull(className, "checked class name");
+            if (className.isBlank()) {
+                throw new IllegalArgumentException("checked class name cannot be blank");
+            }
+            expunge();
+            IdentityKey key = new IdentityKey(receiver, CLEARED);
+            String old = VIEWS.putIfAbsent(key, className);
+            if (old != null && !old.equals(className)) {
+                throw new IllegalStateException(
+                        "same computed-index receiver received inconsistent static class views");
+            }
+        }
+
+        public static synchronized String lookup(Expr receiver) {
+            java.util.Objects.requireNonNull(receiver, "computed-index receiver");
+            expunge();
+            return VIEWS.get(new IdentityKey(receiver, null));
+        }
+
+        public static void copy(Expr source, Expr target) {
+            java.util.Objects.requireNonNull(source, "source computed-index receiver");
+            java.util.Objects.requireNonNull(target, "target computed-index receiver");
+            String className = lookup(source);
+            if (className != null) record(target, className);
+        }
+    }
+
+    /**
+     * Compiler-verified field-name domain for a structural contract receiver.
+     * Runtime values satisfying a structural view may contain additional
+     * fields; computed access must remain bounded to the statically visible
+     * contract instead of exposing those extra fields.
+     */
+    public static final class CheckedStructuralFieldDomain {
+        private CheckedStructuralFieldDomain() { }
+
+        private static final java.lang.ref.ReferenceQueue<Expr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, java.util.Set<String>> DOMAINS =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey extends java.lang.ref.WeakReference<Expr> {
+            private final int hash;
+            private IdentityKey(
+                    Expr expression, java.lang.ref.ReferenceQueue<Expr> queue) {
+                super(expression, queue);
+                hash = System.identityHashCode(expression);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                Expr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends Expr> collected;
+            while ((collected = CLEARED.poll()) != null) {
+                DOMAINS.remove(collected);
+            }
+        }
+
+        public static synchronized void record(
+                Expr receiver, java.util.Collection<String> fieldNames) {
+            java.util.Objects.requireNonNull(receiver, "structural computed-index receiver");
+            java.util.Objects.requireNonNull(fieldNames, "checked structural field domain");
+            java.util.LinkedHashSet<String> checked = new java.util.LinkedHashSet<>();
+            for (String fieldName : fieldNames) {
+                if (fieldName == null || fieldName.isBlank()) {
+                    throw new IllegalArgumentException(
+                            "checked structural field names must be non-blank");
+                }
+                if (!checked.add(fieldName)) {
+                    throw new IllegalArgumentException(
+                            "checked structural field domain contains duplicate '" + fieldName + "'");
+                }
+            }
+            java.util.Set<String> domain = java.util.Set.copyOf(checked);
+            expunge();
+            IdentityKey key = new IdentityKey(receiver, CLEARED);
+            java.util.Set<String> old = DOMAINS.putIfAbsent(key, domain);
+            if (old != null && !old.equals(domain)) {
+                throw new IllegalStateException(
+                        "same computed-index receiver received inconsistent structural field domains");
+            }
+        }
+
+        public static synchronized java.util.Set<String> lookup(Expr receiver) {
+            java.util.Objects.requireNonNull(receiver, "structural computed-index receiver");
+            expunge();
+            return DOMAINS.get(new IdentityKey(receiver, null));
+        }
+
+        public static void copy(Expr source, Expr target) {
+            java.util.Objects.requireNonNull(source, "source structural computed-index receiver");
+            java.util.Objects.requireNonNull(target, "target structural computed-index receiver");
+            java.util.Set<String> domain = lookup(source);
+            if (domain != null) record(target, domain);
+        }
+    }
+
     public record MemberExpr(Expr receiver, String member) implements Expr { }
     public record IndexExpr(Expr receiver, Expr index) implements Expr { }
 
@@ -1329,9 +1587,7 @@ public final class Ast {
      */
     public record ObjectField(String name, Expr value) {
         public ObjectField {
-            if (name == null || name.isBlank()) {
-                throw new IllegalArgumentException("struct field name cannot be blank");
-            }
+            requireStaticFieldName(name);
             java.util.Objects.requireNonNull(value, "value");
         }
         public static ObjectField named(String name, Expr value) {
@@ -1339,21 +1595,28 @@ public final class Ast {
         }
     }
 
-    public enum ObjectKind { INFERRED_STRUCT, EXPLICIT_STRUCT }
+    public enum ObjectKind { RECORD, INFERRED_STRUCT, INFERRED_RECORD, EXPLICIT_STRUCT }
 
     /** A field declaration in the closed shape of an explicit anonymous struct. */
     public record StructFieldSpec(String name, TypeRef type) {
         public StructFieldSpec {
-            if (name == null || name.isBlank()) throw new IllegalArgumentException("struct field name cannot be blank");
+            requireStaticFieldName(name);
             java.util.Objects.requireNonNull(type, "struct field type");
         }
     }
 
     /**
-     * Anonymous struct expression.
+     * Anonymous closed aggregate expression.
      *
-     * <p>INFERRED_STRUCT is a closed, permanently readonly shape inferred
-     * entirely from its initializer. EXPLICIT_STRUCT carries a separately
+     * <p>RECORD is the canonical structural record value and carries no
+     * type-capture intent. INFERRED_RECORD is the compatibility infer-record
+     * spelling and may participate in an explicit/short inferred alias.
+     * Both are closed structural readonly value shapes. INFERRED_STRUCT is a
+     * concrete closed struct shape whose field types are
+     * inferred from the initializer; mutation authority remains a property of
+     * the binding/borrow, not of the {@code infer} keyword. The distinct tags
+     * therefore survive semantic lowering instead of collapsing to one record type.
+     * EXPLICIT_STRUCT carries a separately
      * declared closed shape so declared fields may be initialized after
      * construction under an owned mutable binding. Oreslang has no open-ended
      * dynamic struct/object shape.</p>
@@ -1369,6 +1632,23 @@ public final class Ast {
             if (kind != ObjectKind.EXPLICIT_STRUCT && !declaredFields.isEmpty()) {
                 throw new IllegalArgumentException("only explicit structs may carry a declared field shape");
             }
+            // Direct AST builders and post-parse transforms are equally trusted
+            // by codegen. Prevent ambiguous or overwritten field identities at
+            // construction, not merely during parser/type-checker traversal.
+            java.util.Set<String> fieldNames = new java.util.HashSet<>();
+            for (ObjectField field : fields) {
+                if (!fieldNames.add(field.name())) {
+                    throw new IllegalArgumentException("duplicate struct field '" + field.name() + "'");
+                }
+            }
+            java.util.Set<String> declaredNames = new java.util.HashSet<>();
+            for (StructFieldSpec field : declaredFields) {
+                if (!declaredNames.add(field.name())) {
+                    throw new IllegalArgumentException("duplicate struct field declaration '" + field.name() + "'");
+                }
+            }
+            // Repetition across the two sets is intentional: an explicit
+            // initializer supplies the value of a declared field.
         }
         public ObjectExpr(List<ObjectField> fields) {
             this(fields, ObjectKind.INFERRED_STRUCT, List.of());
@@ -1383,7 +1663,18 @@ public final class Ast {
             }
             return ObjectKind.INFERRED_STRUCT;
         }
+        /** True only when the source explicitly used infer and may introduce a captured type alias. */
+        public boolean inferredAggregate() {
+            return kind == ObjectKind.INFERRED_STRUCT || kind == ObjectKind.INFERRED_RECORD;
+        }
         public boolean inferredStruct() { return kind == ObjectKind.INFERRED_STRUCT; }
+        public boolean inferredRecord() { return kind == ObjectKind.INFERRED_RECORD; }
+        public boolean plainRecord() { return kind == ObjectKind.RECORD; }
+        public boolean structuralRecord() { return plainRecord() || inferredRecord(); }
+        /** All non-explicit aggregate literals infer their field types from initializer values. */
+        public boolean inferredFieldTypes() { return kind != ObjectKind.EXPLICIT_STRUCT; }
+        /** Compatibility helper: structural records carry the readonly record capability. */
+        public boolean readonlyInferredAggregate() { return structuralRecord(); }
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
     }
 
