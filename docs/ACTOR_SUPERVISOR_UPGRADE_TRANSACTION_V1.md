@@ -503,3 +503,68 @@ review. Source security #962 and protected merge checks #904 remain open.
 No cross-org private Git tree or source bytes were copied. Keep the PR
 draft and production hot reload disabled pending exact-head source-owned
 or reviewed/authorized JDK25/Graal/Native Image CI.
+
+## Staged transfer freeze ownership before candidate registry admission — 2026-10-19
+
+The pre-return ActorRef callbacks were successfully wired into
+`LogicalSourceActorRouterV1` for initial source spawn and
+`SupervisorUpgradeTxn` candidate staging. A follow-up audit found a
+SECOND authority edge inside `ActorRuntime.spawnCodeActorFromTransfer`:
+the runtime's `SourceActorTransfer.stagedCandidate` was still bound only
+*after* `spawnInternal` returned. If a candidate ActorCell was inserted
+into its registry, then that insertion threw, and the cleanup removal
+also threw **before** mutation, the transfer's catch path called
+`rollbackFailedRestoreLocked()` and closed the old ingress freeze as
+though no executable candidate existed. A registered candidate could
+therefore outlive the old-route rollback proof.
+
+Production commit `9d2b433e735fee77d939f4f48863a4c070e67557`
+changes the ordering: the runtime transfer binds the exact
+`stagedCandidate` while holding `transferLock`, inside the
+pre-registration physical-ref callback, **before** invoking the
+source-router owner callback or attempting checkpoint restoration and
+actor registry admission. If spawn fails without an allocated candidate,
+normal failed-restore rollback can still close the freeze. If it fails
+with a staged candidate, the transfer remains `CLAIMED`; only the
+supervisor's `SourceActorTransfer.close()` rollback may release old
+ingress, and only after the staged candidate's physical finalization
+is verified. Any ambiguous physical retirement keeps the freeze and
+registered candidate owner for retry rather than reopening old ingress.
+
+Real source-compiled JUnit
+`LogicalSourceActorPreReturnHandoffTest.preReturnCandidateKeepsOldTransferFreezeUntilPhysicalRemoval`
+was added in commits `f59e4fd78201ac44933c6f6329f8ffc7fecc0ddb`
+and `275b08b9ef38c8e07af8513e45190a7f9bfeccad`.
+The fixture's map inserts then throws, fails the first removal
+without mutation, and blocks the final physical removal under a
+test-only latch. It requires exact staged-transfer identity,
+`CLAIMED` rollback state, candidate code-generation pin retained at
+one, old physical route identity still authoritative, and release
+only after the latch allows terminal cleanup. This JUnit has
+**NOT** executed on the private source-owned CI.
+
+Independent source-free Java 25 protocol proof was committed to
+`gha-indie-worker/gha-indie-worker-e2e` test branch at
+`eb71426f454290b44a8d07d170f7b67a5258e3c8`.
+GitHub Actions run
+https://github.com/gha-indie-worker/gha-indie-worker-e2e/actions/runs/39351166287,
+job `118395407425`, completed **SUCCESS** on JDK25,
+compiling `TransferFreezeOracle.java` with
+`javac --release 25 -Xlint:all -Werror`, then running
+**110,001** checks including **5,000 four-worker** retirement races
+and a negative control that forces premature old-freeze release using
+the former staging order. No private Oreslang source bytes were
+transferred to the funded carrier. This is a separately authored
+protocol model and **NOT** production Java runtime/Graal/Native Image
+certification.
+
+Exact source CI at `275b08b9ef38c8e07af8513e45190a7f9bfeccad`
+reported `fast-ci` run `39351044684` and full `ci` run
+`39351044700` as failures with every inspected job showing
+`steps:null`. The job log endpoint returned `BlobNotFound`.
+This cannot establish exhausted Actions minutes, source JVM
+compilation, or a failing JUnit assertion. Source `main`
+contains no **approved** cross-org private mirror destinations;
+security issue #962 and independent merge controls #904 remain
+open. Continue holding PR #1367 DRAFT, private source in its
+authorized repository, and production hot reload disabled.
