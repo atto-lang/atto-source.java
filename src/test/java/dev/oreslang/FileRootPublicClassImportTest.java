@@ -107,6 +107,7 @@ final class FileRootPublicClassImportTest {
 
                 pub fnc main(): void {
                   val Box box = new Box();
+                  box[key()] = 9;
                   stdio.stdout.write(box[key()]);
                   return;
                 }
@@ -122,6 +123,6 @@ final class FileRootPublicClassImportTest {
                 out,
                 new ByteArrayOutputStream());
 
-        assertEquals("7", out.toString(StandardCharsets.UTF_8));
+        assertEquals("9", out.toString(StandardCharsets.UTF_8));
     }
 }
