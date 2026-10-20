@@ -21,8 +21,10 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * GUEST execution gate for the actual Oreslang ML scalar actor-state fixture.
  *
- * The .ores fixture was copied byte-for-byte from oreslang-ml's stacked
- * actor-state PR #7 (Git blob d5ce8ea58245751a5d814f3866a8d109ab80671d).
+ * The .ores fixture is derived from oreslang-ml's stacked actor-state PR #7
+ * and refactored here so optimizer publication uses the sealed detached
+ * snapshot/prepare/publish path (Git blob
+ * d5ce8ea58245751a5d814f3866a8d109ab80671d).
  * This JUnit class requires an actual GraalVM Oreslang context evaluation;
  * pure host-side arithmetic is explicitly NOT accepted as execution evidence.
  *
