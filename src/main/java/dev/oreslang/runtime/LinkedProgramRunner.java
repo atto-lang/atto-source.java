@@ -9,7 +9,6 @@ import dev.oreslang.interop.MixedInteropBridge;
 import dev.oreslang.interop.MixedJavaCompiler;
 import dev.oreslang.interop.MixedSourceUnit;
 import dev.oreslang.nodes.OresEvalRootNode;
-import dev.oreslang.parser.Parser;
 import dev.oreslang.stdlib.CoreLibrarySources;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
