@@ -1,6 +1,10 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.ActorStateContract;
+import dev.oreslang.types.DeclaredEffectVerifier;
+import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -15,6 +19,14 @@ import static org.junit.jupiter.api.Assertions.*;
  * This deliberately excludes #623's actor-wire and pattern-spread subsystems.
  */
 final class TrainingErrorNominalResultGuestTest {
+    private static void verify(String source) {
+        Ast.Program program = Parser.parse(source);
+        ActorStateContract.verify(program);
+        DeclaredEffectVerifier.verify(program);
+        TypeChecker.checkTypes(program);
+        OwnershipChecker.check(program);
+    }
+
     private static final String ERRORS = """
             define enum TrainingError as
                 INVALID_INPUT = 1
@@ -44,7 +56,7 @@ final class TrainingErrorNominalResultGuestTest {
                     return;
                 }
                 """;
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        assertDoesNotThrow(() -> verify(program));
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(
@@ -119,7 +131,7 @@ final class TrainingErrorNominalResultGuestTest {
                     return;
                 }
                 """;
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        assertDoesNotThrow(() -> verify(program));
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder(OresLanguage.ID)
