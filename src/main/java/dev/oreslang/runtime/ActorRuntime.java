@@ -4254,6 +4254,21 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
         Object prepared = cell.kind.memoryIsolated() ? isolateCopy(message) : freezeForTransport(message);
+        // Capture causality only after ownership/transport checks succeeded.
+        // A copy-on-child trace is owned by this one admitted mailbox envelope.
+        // Never embed it in a guest message graph or reuse the sender's mutable Trace.
+        OresAsyncTrace.SourceSite actorSite =
+                OresAsyncTrace.SourceSite.unknown("actor-runtime", null);
+        boolean restricted = cell.kind == ActorKind.UNTRUSTED
+                || (sender != null && sender.kind == ActorKind.UNTRUSTED);
+        OresAsyncTrace.Frame receivingActor = new OresAsyncTrace.Frame(
+                restricted ? "<redacted-actor>" : "actor:" + ref.id().value(),
+                actorSite);
+        OresAsyncTrace.Trace parentTrace = restricted ? null : OresAsyncTrace.current();
+        OresAsyncTrace.Trace messageTrace = parentTrace == null
+                ? OresAsyncTrace.root(receivingActor)
+                : parentTrace.child(receivingActor, actorSite);
+        messageTrace.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, actorSite);
         Runnable release;
         if (cell.kind.memoryIsolated()) {
             MemoryReservation reservation;
@@ -4271,21 +4286,6 @@ public final class ActorRuntime implements AutoCloseable {
             release = () -> cell.releaseSharedInbox(bytes);
         }
 
-        // Capture causality only after ownership/transport checks succeeded.
-        // A copy-on-child trace is owned by this one admitted mailbox envelope.
-        // Never embed it in a guest message graph or reuse the sender's mutable Trace.
-        OresAsyncTrace.SourceSite actorSite =
-                OresAsyncTrace.SourceSite.unknown("actor-runtime", null);
-        boolean restricted = cell.kind == ActorKind.UNTRUSTED
-                || (sender != null && sender.kind == ActorKind.UNTRUSTED);
-        OresAsyncTrace.Frame receivingActor = new OresAsyncTrace.Frame(
-                restricted ? "<redacted-actor>" : "actor:" + ref.id().value(),
-                actorSite);
-        OresAsyncTrace.Trace parentTrace = restricted ? null : OresAsyncTrace.current();
-        OresAsyncTrace.Trace messageTrace = parentTrace == null
-                ? OresAsyncTrace.root(receivingActor)
-                : parentTrace.child(receivingActor, actorSite);
-        messageTrace.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, actorSite);
         MessageEnvelope envelope = new MessageEnvelope(prepared, release, messageTrace);
         List<OresMutex.Shared<?>> sharedMutexReservations = List.of();
         boolean admitted = false;
