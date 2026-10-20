@@ -342,6 +342,39 @@ final class ActorTaskTerminationCascadeTest {
     }
 
     @Test
+    @Timeout(90)
+    void parentDoneNeverPrecedesStructuredChildDone() throws Exception {
+        // Structured lifetime order must hold even when both actors'
+        // virtual finalizers race on different host carriers.
+        var config = new ActorRuntime.DispatcherConfig(2, 2, 128, 32);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            for (int iteration = 0; iteration < 100; iteration++) {
+                AtomicReference<ActorRuntime.ActorRef<Integer>> childRef =
+                        new AtomicReference<>();
+                CountDownLatch childSpawned = new CountDownLatch(1);
+                var parent = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                    var child = runtime.<Integer>spawnChildShared(
+                            () -> (childMessage, childContext) -> { });
+                    childRef.set(child.ref());
+                    childSpawned.countDown();
+                    context.self().stop();
+                });
+                parent.send(1);
+                assertTrue(childSpawned.await(5, TimeUnit.SECONDS),
+                        "parent must spawn its managed child");
+                assertTrue(parent.awaitTermination(10, TimeUnit.SECONDS),
+                        "parent shutdown exceeded its deadline");
+                var child = childRef.get();
+                assertNotNull(child);
+                assertTrue(parent.done().isDone());
+                assertTrue(child.done().isDone(),
+                        "structured parent's done must imply child's done");
+                assertTrue(child.awaitTermination(1, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    @Test
     void actorDoneWaitsForOwnedFutureCancellationCallbacksAfterTaskScopeJoin()
             throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
