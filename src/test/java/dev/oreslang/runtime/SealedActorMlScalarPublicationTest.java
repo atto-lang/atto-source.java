@@ -104,6 +104,13 @@ final class SealedActorMlScalarPublicationTest {
                             () -> state.critical(false,
                                     read -> read.snapshotScalars(
                                             "version", "weight", "weight")));
+                    assertThrows(IllegalArgumentException.class,
+                            () -> state.critical(false,
+                                    read -> read.snapshotScalars("version")));
+                    assertThrows(IllegalArgumentException.class,
+                            () -> state.critical(false,
+                                    read -> read.snapshotScalars(
+                                            "version", "version")));
                     long x = 2, target = 8, learningRateDenominator = 8;
                     long prediction = Math.multiplyExact(w, x);
                     long gradient = Math.multiplyExact(
