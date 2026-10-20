@@ -126,4 +126,27 @@ final class TrapFailurePolicyTest {
         assertFalse(TrapFailurePolicy.isGuestCatchable(cleanup, GuestPanic.class));
     }
 
+
+    @Test void checkedWrappersCannotMaskStructuredScopePoisonDuringCleanup() {
+        StructuredTaskScopePoisonException poison =
+                new StructuredTaskScopePoisonException(
+                        "structured Task scope authority accounting poisoned",
+                        new IllegalStateException("region accounting corrupt"));
+
+        Exception checkedCauseWrapper =
+                new Exception("checked host wrapper", poison);
+        assertFalse(TrapFailurePolicy.isTrappable(
+                checkedCauseWrapper, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(
+                checkedCauseWrapper, GuestPanic.class));
+
+        Exception checkedSuppressedWrapper =
+                new Exception("checked cleanup wrapper");
+        checkedSuppressedWrapper.addSuppressed(poison);
+        assertFalse(TrapFailurePolicy.isTrappable(
+                checkedSuppressedWrapper, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(
+                checkedSuppressedWrapper, GuestPanic.class));
+    }
+
 }
