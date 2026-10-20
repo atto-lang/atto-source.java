@@ -133,6 +133,52 @@ final class TaskAdmissionProofTest {
     }
 
     @Test
+    void invalidFreshReturnSummaryCannotOutrunSemanticValidation() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.proveTaskTransfers(Parser.parse("""
+                    pub fnc make(): Array<int> {
+                        return arr["not-an-int"];
+                    }
+                    pub fnc main(): void {
+                        let Task<int> result =
+                            (async task |Array<int> value| -> {
+                                return 1;
+                            })(make());
+                        return;
+                    }
+                    """)));
+        assertTrue(
+                failure.getMessage().contains("return value")
+                        || failure.getMessage().contains("expected"),
+                failure::getMessage);
+    }
+
+    @Test
+    void invalidMovedParameterSummaryCannotOutrunSemanticValidation() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.proveTaskTransfers(Parser.parse("""
+                    pub fnc moveThrough(
+                            string value): Array<int> {
+                        return value;
+                    }
+                    pub fnc main(): void {
+                        val string text = "hello";
+                        let Task<int> result =
+                            (async task |Array<int> value| -> {
+                                return 1;
+                            })(moveThrough(text));
+                        return;
+                    }
+                    """)));
+        assertTrue(
+                failure.getMessage().contains("return value")
+                        || failure.getMessage().contains("expected"),
+                failure::getMessage);
+    }
+
+    @Test
     void readonlyBackingFailsAtResolvedSemanticHalf() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
