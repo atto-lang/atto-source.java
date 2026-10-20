@@ -174,14 +174,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                             // is interrupted without waiting on readGate.
                             socket.close();
                         } finally {
-                            // A reader may already have consumed a complete frame
-                            // and be authenticating/applying it under readGate.
-                            // Do not destroy authentication/replay material until
-                            // that ordered receive transaction exits.
-                            synchronized (readGate) {
-                                Arrays.fill(this.macKey, (byte) 0);
-                                Arrays.fill(this.connectionBinding, (byte) 0);
-                            }
+                            destroyAuthenticationMaterialAfterPhysicalClose();
                         }
                     },
                     this.cleanupScheduler);
@@ -195,6 +188,17 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                     socket, privateMacKey, privateConnectionBinding,
                     constructionFailure);
             throw constructionFailure;
+        }
+    }
+
+    private void destroyAuthenticationMaterialAfterPhysicalClose() {
+        // A reader may already have consumed a complete frame and be
+        // authenticating/applying it under readGate. The descriptor is already
+        // closing/closed, so no new authenticated receive may start after this
+        // drain point.
+        synchronized (readGate) {
+            Arrays.fill(this.macKey, (byte) 0);
+            Arrays.fill(this.connectionBinding, (byte) 0);
         }
     }
 
@@ -381,20 +385,40 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                     return;
                 }
 
-                // Claim this exact queued attempt before touching the socket.
-                // A retry can invalidate a positive queued token, but once
-                // negative the physical close is already executing and retry
-                // must not race a second close attempt against it.
+                // Claim this exact queued attempt and then the lease's
+                // descriptor-close ownership before touching the socket. The
+                // second claim is shared with finalization, so writer drain can
+                // never race a duplicate Socket.close().
                 if (!abortState.compareAndSet(attempt, -attempt)) return;
+                if (!sessionLease.beginExternalPhysicalClose()) {
+                    abortState.compareAndSet(-attempt, 0);
+                    return;
+                }
+
+                Throwable abortFailure = null;
                 try {
                     socket.close();
-                } catch (IOException | RuntimeException abortFailure) {
-                    sessionLease.quarantineIfUnsettled(abortFailure);
-                } catch (Error fatalAbortFailure) {
-                    sessionLease.quarantineIfUnsettled(fatalAbortFailure);
-                    throw fatalAbortFailure;
+                } catch (IOException | RuntimeException | Error failure) {
+                    abortFailure = failure;
                 } finally {
-                    abortState.compareAndSet(-attempt, 0);
+                    try {
+                        // Whether close confirmed or threw, this physical
+                        // generation is no longer allowed to authenticate new
+                        // traffic. Drain any reader already inside readGate and
+                        // destroy the transferred key/binding before reporting
+                        // close completion.
+                        destroyAuthenticationMaterialAfterPhysicalClose();
+                    } finally {
+                        try {
+                            sessionLease.completeExternalPhysicalClose(abortFailure);
+                        } finally {
+                            abortState.compareAndSet(-attempt, 0);
+                        }
+                    }
+                }
+
+                if (abortFailure instanceof Error fatalAbortFailure) {
+                    throw fatalAbortFailure;
                 }
             });
         } catch (RuntimeException | Error schedulingFailure) {
@@ -428,9 +452,10 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                 "IPC transport quarantined abort retry");
         var snapshot = sessionLease.snapshot();
         if (snapshot.phase() != IpcTransportSessionLease.Phase.QUARANTINED
-                || snapshot.activeWrites() <= 0) {
+                || snapshot.activeWrites() <= 0
+                || !sessionLease.externalPhysicalCloseRetryable()) {
             throw new IllegalStateException(
-                    "transport has no quarantined active write to abort");
+                    "transport has no retryable quarantined active write to abort");
         }
 
         // Atomically invalidate a merely queued stale attempt. If an old
