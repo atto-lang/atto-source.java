@@ -147,9 +147,12 @@ named_inferred_binding
 named_inferred_literal
                 = "infer" "<" IDENT ">" (
                     "struct" "{" [ struct_value_field { "," struct_value_field } ] "}"
+                  | "record" "{" [ struct_value_field { "," struct_value_field } ] "}"
                   | "tuple" "(" expression { "," expression } ")" ) ;
 (* The first type IDENT of named_inferred_binding must equal the IDENT after infer<...>.
-   Named inference is currently a local immutable binding, not an arbitrary expression. *)
+   Named inference captures a lexical compile-time type alias; it does not create a
+   runtime type object. infer struct captures an exact closed struct shape. Record
+   aliases remain structural. Binding/referent mutability is independent of infer. *)
 
 destructure_stmt= [ binding_kind ] sequence_pattern "=" expression stmt_terminator
                 | [ binding_kind ] object_pattern "=" expression stmt_terminator ;
@@ -304,6 +307,11 @@ member_name     = IDENT | "stop" | "do" | "done"
                 | "case" | "default" | "first" | "switch"
                 | "nb" | "select" | "readch" | "writech" ;
 index_suffix    = "[" expression "]" ;
+(* Index semantics are receiver-directed: Array/List/Tuple use integer indexes;
+   closed record/struct/class data fields use string keys. Exact compile-time
+   keys preserve the selected field/slot type; dynamic fixed-product access
+   yields the union of possible field/slot types. This never enables open-ended
+   property insertion, private-field reflection, method lookup, or tuple writes. *)
 argument_list   = expression { "," expression } ;
 
 primary         = literal
@@ -314,7 +322,9 @@ primary         = literal
                 | tuple_literal
                 | array_literal
                 | legacy_array_literal
+                | record_literal
                 | inferred_struct_literal
+                | inferred_record_literal
                 | explicit_struct_literal
                 | "(" expression ")" ;
 
@@ -329,9 +339,19 @@ tuple_literal   = "tuple" "(" [ argument_list ] ")"
                 | "(" expression "," expression { "," expression } ")" ;
 array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
 legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
+record_literal  = "record"
+                  "{" [ struct_value_field { "," struct_value_field } ] "}" ;
 inferred_struct_literal
                 = "infer" "struct"
                   "{" [ struct_value_field { "," struct_value_field } ] "}" ;
+inferred_record_literal
+                = "infer" "record"
+                  "{" [ struct_value_field { "," struct_value_field } ] "}" ;
+(* Canonical anonymous record syntax is record {...}; it carries no type-capture
+   intent. infer record {...} remains accepted for compatibility and explicit
+   infer<T> record may capture a structural alias. Records are structural readonly
+   values. Inferred/explicit structs are a distinct concrete closed-shape category;
+   no implicit record<->struct erasure. *)
 explicit_struct_literal
                 = "struct" "{"
                   [ struct_field_spec { "," struct_field_spec } ]

@@ -567,7 +567,7 @@ public final class OresEvalRootNode extends RootNode {
                         owned == null ? klass : owned.owner();
                 Env initializerEnv =
                         new Env(null, false, fieldOwner, object);
-                initializerEnv.define("self", object, Ast.BindingKind.VAL);
+                initializerEnv.define("self", object, Ast.BindingKind.VAL, fieldOwner);
                 fields.put(
                         field.name(),
                         eval(field.initializer(), initializerEnv));
@@ -869,6 +869,145 @@ public final class OresEvalRootNode extends RootNode {
             return (List<Object>) args;
         }
 
+        private Ast.ClassDecl staticClassView(Ast.TypeRef type) {
+            if (type == null) return null;
+            Ast.TypeRef concrete = type.isBorrow() ? type.borrowedTarget() : type;
+            Ast.ClassDecl direct = findClass(concrete.name());
+            if (direct != null) return direct;
+            Ast.TypeAliasDecl alias = findTypeAlias(concrete.name());
+            if (alias != null && alias.genericParameters().isEmpty()) {
+                return staticClassView(alias.target());
+            }
+            return null;
+        }
+
+        private record CheckedRuntimeClassView(
+                Evaluator owner,
+                Ast.ClassDecl klass) { }
+
+        private CheckedRuntimeClassView checkedComputedClassView(
+                Ast.Expr receiverExpression) {
+            String checkedClassName = Ast.CheckedClassView.lookup(receiverExpression);
+            if (checkedClassName == null) {
+                throw new IllegalStateException(
+                        "computed class indexing requires type-checked static receiver metadata");
+            }
+
+            Ast.ClassDecl checked = findClass(checkedClassName);
+            Evaluator checkedOwner = this;
+            if (checked == null) {
+                Object imported = importedValue(checkedClassName);
+                if (imported instanceof ClassFacade facade) {
+                    checkedOwner = facade.owner();
+                    checked = facade.klass();
+                }
+            }
+            if (checked == null) {
+                throw new IllegalStateException(
+                        "statically checked computed-access class '"
+                                + checkedClassName + "' is unavailable at runtime");
+            }
+            if (checked.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalStateException(
+                        "statically checked computed-access receiver is not an ordinary class");
+            }
+            return new CheckedRuntimeClassView(checkedOwner, checked);
+        }
+
+        private Ast.ClassDecl staticClassView(Ast.Expr expression, Env env) {
+            // General expression-view tracking is independent from the
+            // computed-index proof tables. Indexing consumes those proofs only
+            // at indexValue/assignIndexValue; importing them here would make an
+            // unrelated binding/destructure path depend on caller-local class
+            // lookup and could mis-handle a checked imported class.
+            if (expression instanceof Ast.NameExpr name) {
+                return env == null ? null : env.lookupStaticClassView(name.name());
+            }
+            if (expression instanceof Ast.NewExpr created) {
+                return staticClassView(created.type());
+            }
+            if (expression instanceof Ast.CastExpr cast) {
+                return staticClassView(cast.targetType());
+            }
+            if (expression instanceof Ast.AwaitExpr awaited) {
+                // Await unwraps Future<T> without changing T's static class view.
+                // Preserve that checked view for direct computed access such as
+                // (await load())["field"] rather than falling back to runtime type.
+                return staticClassView(awaited.expression(), env);
+            }
+            if (expression instanceof Ast.ConditionalExpr conditional) {
+                Ast.ClassDecl left = staticClassView(conditional.whenTrue(), env);
+                Ast.ClassDecl right = staticClassView(conditional.whenFalse(), env);
+                return left != null && left == right ? left : null;
+            }
+            if (expression instanceof Ast.MemberExpr member) {
+                Ast.ClassDecl owner = staticClassView(member.receiver(), env);
+                if (owner == null) return null;
+                OwnedField field = findField(owner, member.member(), new LinkedHashSet<>());
+                if (field == null) return null;
+                if (field.field().type() != null) {
+                    return staticClassView(field.field().type());
+                }
+                return field.field().initializer() == null
+                        ? null
+                        : staticClassView(field.field().initializer(), env);
+            }
+            if (expression instanceof Ast.CallExpr call) {
+                if (call.callee() instanceof Ast.NameExpr name
+                        && (env == null || env.lookup(name.name()) == Env.MISSING)) {
+                    Ast.FunctionDecl fn = findFunction(name.name(), call.arguments().size());
+                    if (fn != null) return staticClassView(fn.returnType());
+                    Ast.ClassDecl staticOwner = findClass(name.name());
+                    if (staticOwner != null) return staticOwner;
+                }
+                if (call.callee() instanceof Ast.MemberExpr member) {
+                    Ast.ClassDecl receiverClass = staticClassView(member.receiver(), env);
+                    if (receiverClass != null) {
+                        Ast.MethodDecl method = findMethod(
+                                receiverClass,
+                                CallableSelector.instance(
+                                        member.member(), call.arguments().size()));
+                        if (method != null) return staticClassView(method.returnType());
+                    }
+                    if (member.receiver() instanceof Ast.NameExpr className) {
+                        Ast.ClassDecl owner = findClass(className.name());
+                        if (owner != null) {
+                            Ast.MethodDecl fn = findStaticFunction(
+                                    owner,
+                                    CallableSelector.staticFunction(
+                                            member.member(), call.arguments().size()));
+                            if (fn != null) return staticClassView(fn.returnType());
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+
+        private void defineBinding(Env env, Ast.BindingStmt binding, Object value) {
+            Ast.ClassDecl view = staticClassView(binding.declaredType());
+            if (view == null) view = staticClassView(binding.initializer(), env);
+            env.define(binding.name(), value, binding.kind(), view);
+        }
+
+        private Ast.ClassDecl objectDestructureStaticClassView(
+                Ast.Expr sourceExpression,
+                String memberName,
+                Env env) {
+            Ast.ClassDecl sourceClass = staticClassView(sourceExpression, env);
+            if (sourceClass == null) return null;
+            OwnedField field = findField(
+                    sourceClass, memberName, new LinkedHashSet<>());
+            if (field == null) return null;
+            if (field.field().type() != null) {
+                return staticClassView(field.field().type());
+            }
+            return field.field().initializer() == null
+                    ? null
+                    : staticClassView(field.field().initializer(), env);
+        }
+
+
         private void bindCallableArguments(
                 Env env,
                 List<Ast.Param> parameters,
@@ -888,7 +1027,8 @@ public final class OresEvalRootNode extends RootNode {
                 env.define(
                         param.name(),
                         value,
-                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL,
+                        staticClassView(param.type()));
             }
             env.define(
                     "arguments",
@@ -1056,7 +1196,8 @@ public final class OresEvalRootNode extends RootNode {
                             params.define(
                                     "self",
                                     receiver,
-                                    Ast.BindingKind.VAL);
+                                    Ast.BindingKind.VAL,
+                                    declaringClass(method));
                         }
 
                         List<Ast.Param> parameters =
@@ -1972,7 +2113,7 @@ public final class OresEvalRootNode extends RootNode {
                                             SourceFlow.throwing(failure));
                                     return;
                                 }
-                                env.define(binding.name(), value, binding.kind());
+                                defineBinding(env, binding, value);
                                 continuation.accept(t, SourceFlow.normal());
                             });
                     return;
@@ -2013,13 +2154,22 @@ public final class OresEvalRootNode extends RootNode {
                                         for (Ast.DestructureBinding binding :
                                                 destructure.bindings()) {
                                             if (!binding.isDiscard()) {
+                                                Object bound = destructureMember(
+                                                        value,
+                                                        binding.name(),
+                                                        env);
+                                                Ast.ClassDecl staticView =
+                                                        binding.rest()
+                                                                ? null
+                                                                : objectDestructureStaticClassView(
+                                                                        destructure.initializer(),
+                                                                        binding.name(),
+                                                                        env);
                                                 env.define(
                                                         binding.name(),
-                                                        destructureMember(
-                                                                value,
-                                                                binding.name(),
-                                                                env),
-                                                        binding.kind());
+                                                        bound,
+                                                        binding.kind(),
+                                                        staticView);
                                             }
                                         }
                                     }
@@ -3492,7 +3642,9 @@ public final class OresEvalRootNode extends RootNode {
                                                         t2,
                                                         indexValue(
                                                                 receiver,
-                                                                key),
+                                                                key,
+                                                                env,
+                                                                index.receiver()),
                                                         null);
                                             } catch (RuntimeException | Error failure3) {
                                                 continuation.accept(
@@ -3513,6 +3665,57 @@ public final class OresEvalRootNode extends RootNode {
                             (t, value, failure) -> {
                                 if (failure != null) {
                                     continuation.accept(t, null, failure);
+                                    return;
+                                }
+                                if (assignment.target() instanceof Ast.IndexExpr target) {
+                                    // Computed writes must use the same suspension-aware
+                                    // receiver/key lowering as computed reads. Evaluating
+                                    // the target through synchronous eval() here rejects a
+                                    // legal awaited/delayed key after the RHS has completed.
+                                    // Preserve the language's existing RHS-first assignment
+                                    // order while evaluating receiver and key exactly once.
+                                    evalSuspendableExpr(
+                                            t,
+                                            target.receiver(),
+                                            env,
+                                            (t2, receiver, receiverFailure) -> {
+                                                if (receiverFailure != null) {
+                                                    continuation.accept(
+                                                            t2,
+                                                            null,
+                                                            receiverFailure);
+                                                    return;
+                                                }
+                                                evalSuspendableExpr(
+                                                        t2,
+                                                        target.index(),
+                                                        env,
+                                                        (t3, key, keyFailure) -> {
+                                                            if (keyFailure != null) {
+                                                                continuation.accept(
+                                                                        t3,
+                                                                        null,
+                                                                        keyFailure);
+                                                                return;
+                                                            }
+                                                            try {
+                                                                continuation.accept(
+                                                                        t3,
+                                                                        assignIndexValue(
+                                                                                receiver,
+                                                                                key,
+                                                                                value,
+                                                                                env,
+                                                                                target.receiver()),
+                                                                        null);
+                                                            } catch (RuntimeException | Error failure2) {
+                                                                continuation.accept(
+                                                                        t3,
+                                                                        null,
+                                                                        failure2);
+                                                            }
+                                                        });
+                                            });
                                     return;
                                 }
                                 try {
@@ -3776,9 +3979,9 @@ public final class OresEvalRootNode extends RootNode {
                                 "duplicate struct field " + entry.getKey());
                     }
                 }
-                Object built = object.explicitStruct()
-                        ? result
-                        : new ReadonlyRecordValue(result);
+                Object built = object.structuralRecord()
+                        ? new ReadonlyRecordValue(result)
+                        : new MutableStructValue(result);
                 continuation.accept(task, built, null);
                 return;
             }
@@ -4484,10 +4687,136 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof Integer || value instanceof Long)) {
                 throw new IllegalArgumentException("array/list index must be an integer");
             }
-            return Math.toIntExact(((Number) value).longValue());
+            long raw = ((Number) value).longValue();
+            try {
+                return Math.toIntExact(raw);
+            } catch (ArithmeticException overflow) {
+                throw new IllegalArgumentException(
+                        "array/list index outside supported signed 32-bit range: " + raw,
+                        overflow);
+            }
         }
 
-        private Object indexValue(Object receiver, Object index) {
+        private static int checkedSequenceIndex(Object value, int length) {
+            int index = sequenceIndex(value);
+            if (index < 0 || index >= length) {
+                throw new IllegalArgumentException(
+                        "array/list/tuple index " + index + " outside length " + length);
+            }
+            return index;
+        }
+
+        private Object indexValue(
+                Object receiver,
+                Object index,
+                Env env,
+                Ast.Expr receiverExpression) {
+            java.util.Set<String> checkedStructuralDomain =
+                    Ast.CheckedStructuralFieldDomain.lookup(receiverExpression);
+            if (checkedStructuralDomain != null) {
+                if (!(index instanceof String structuralKey)
+                        || !checkedStructuralDomain.contains(structuralKey)) {
+                    throw new IllegalArgumentException(
+                            "structural computed field key outside checked domain: " + index);
+                }
+            }
+
+            if (receiver instanceof OresObject object) {
+                if (!object.klass.actorKind().equals(Ast.ActorKind.NONE)) {
+                    throw new IllegalArgumentException(
+                            "computed indexing requires an ordinary class instance");
+                }
+                if (!(index instanceof String key)) {
+                    throw new IllegalArgumentException(
+                            "class field index must be a String");
+                }
+
+                String checkedClassName = Ast.CheckedClassView.lookup(receiverExpression);
+                if (checkedClassName != null) {
+                    CheckedRuntimeClassView staticView =
+                            checkedComputedClassView(receiverExpression);
+                    Ast.ClassDecl staticClass = staticView.klass();
+                    OwnedField ownedField = staticView.owner().findField(
+                            staticClass, key, new LinkedHashSet<>());
+                    if (ownedField == null) {
+                        throw new IllegalArgumentException(
+                                "unknown class field key " + staticClass.name() + "." + key);
+                    }
+                    staticView.owner().requireClassMemberVisible(
+                            ownedField.field().visibility(),
+                            ownedField.owner(),
+                            env == null ? null : env.accessClass(),
+                            "field",
+                            ownedField.field().name());
+
+                    // The object may be a subtype of staticClass, but computed
+                    // access is intentionally bounded by the static receiver
+                    // domain. A child-only field must never appear merely because
+                    // the runtime object is more derived than the checked type.
+                    if (!object.fields.containsKey(key)) {
+                        throw new IllegalStateException(
+                                "runtime object " + object.klass.name()
+                                        + " does not contain statically admitted field "
+                                        + staticClass.name() + "." + key);
+                    }
+                    Object value = object.fields.get(key);
+                    if (value == UNINITIALIZED_FIELD) {
+                        throw new IllegalArgumentException(
+                                "field '" + staticClass.name() + "." + key
+                                        + "' is read before constructor initialization");
+                    }
+                    return value;
+                }
+
+                if (checkedStructuralDomain == null) {
+                    throw new IllegalStateException(
+                            "computed class indexing requires a type-checked nominal or structural receiver proof");
+                }
+                if (!object.fields.containsKey(key)) {
+                    throw new IllegalStateException(
+                            "runtime object " + object.klass.name()
+                                    + " does not contain structurally admitted field " + key);
+                }
+                Object value = object.fields.get(key);
+                if (value == UNINITIALIZED_FIELD) {
+                    throw new IllegalArgumentException(
+                            "structural field '" + key
+                                    + "' is read before constructor initialization");
+                }
+                return value;
+            }
+            if (receiver instanceof ReadonlyRecordValue record) {
+                if (!(index instanceof String key)) {
+                    throw new IllegalArgumentException(
+                            "record field index must be a String");
+                }
+                if (!record.containsKey(key)) {
+                    throw new IllegalArgumentException(
+                            "unknown record field key " + key);
+                }
+                Object value = record.get(key);
+                if (value == UNINITIALIZED_FIELD) {
+                    throw new IllegalArgumentException(
+                            "record field '" + key + "' is read before initialization");
+                }
+                return value;
+            }
+            if (receiver instanceof MutableStructValue struct) {
+                if (!(index instanceof String key)) {
+                    throw new IllegalArgumentException(
+                            "struct field index must be a String");
+                }
+                if (!struct.containsKey(key)) {
+                    throw new IllegalArgumentException(
+                            "unknown struct field key " + key);
+                }
+                Object value = struct.get(key);
+                if (value == UNINITIALIZED_FIELD) {
+                    throw new IllegalArgumentException(
+                            "explicit struct field '" + key + "' is read before initialization");
+                }
+                return value;
+            }
             if (receiver instanceof Map<?, ?> map) {
                 if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
                     throw new IllegalArgumentException(
@@ -4505,11 +4834,83 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return value;
             }
-            int i = sequenceIndex(index);
-            if (receiver instanceof List<?> list) return list.get(i);
-            if (receiver instanceof Object[] array) return array[i];
+            if (receiver instanceof List<?> list) {
+                return list.get(checkedSequenceIndex(index, list.size()));
+            }
+            if (receiver instanceof Object[] array) {
+                return array[checkedSequenceIndex(index, array.length)];
+            }
             throw new IllegalArgumentException(
                     "value is not indexable");
+        }
+
+        private Object assignIndexValue(
+                Object receiver,
+                Object key,
+                Object value,
+                Env env,
+                Ast.Expr receiverExpression) {
+            if (receiver instanceof OresObject object) {
+                if (!object.klass.actorKind().equals(Ast.ActorKind.NONE)) {
+                    throw new IllegalArgumentException(
+                            "computed indexing requires an ordinary class instance");
+                }
+                if (!(key instanceof String fieldName)) {
+                    throw new IllegalArgumentException(
+                            "class field index must be a String");
+                }
+
+                CheckedRuntimeClassView staticView =
+                        checkedComputedClassView(receiverExpression);
+                Ast.ClassDecl staticClass = staticView.klass();
+                OwnedField targetField = staticView.owner().findField(
+                        staticClass, fieldName, new LinkedHashSet<>());
+                if (targetField == null) {
+                    throw new IllegalArgumentException(
+                            "unknown class field key " + staticClass.name() + "." + fieldName);
+                }
+                staticView.owner().requireClassMemberVisible(
+                        targetField.field().visibility(),
+                        targetField.owner(),
+                        env == null ? null : env.accessClass(),
+                        "field",
+                        targetField.field().name());
+                if (targetField.field().bindingKind() != Ast.BindingKind.LET) {
+                    throw new IllegalArgumentException(
+                            "field '" + targetField.owner().name() + "."
+                                    + targetField.field().name()
+                                    + "' is immutable/final");
+                }
+                if (!object.fields.containsKey(fieldName)) {
+                    throw new IllegalStateException(
+                            "runtime object " + object.klass.name()
+                                    + " does not contain statically admitted field "
+                                    + staticClass.name() + "." + fieldName);
+                }
+                object.fields.put(fieldName, value);
+                return value;
+            }
+            if (receiver instanceof MutableStructValue rawStruct) {
+                if (!(key instanceof String fieldName)) {
+                    throw new IllegalArgumentException(
+                            "struct field index must be a String");
+                }
+                MutableStructValue struct = rawStruct;
+                if (!struct.containsKey(fieldName)) {
+                    throw new IllegalArgumentException(
+                            "unknown struct field key " + fieldName);
+                }
+                struct.put(fieldName, value);
+                return value;
+            }
+            if (receiver instanceof List<?> raw) {
+                @SuppressWarnings("unchecked")
+                List<Object> list = (List<Object>) raw;
+                list.set(checkedSequenceIndex(key, list.size()), value);
+                return value;
+            }
+            throw new IllegalArgumentException(
+                    "indexed assignment requires mutable class/struct state or a mutable sequence");
         }
 
         private Object unaryValue(String operator, Object value) {
@@ -4552,10 +4953,8 @@ public final class OresEvalRootNode extends RootNode {
                     object.fields.put(member.member(), value);
                     return value;
                 }
-                if (receiver instanceof LinkedHashMap<?, ?> rawRecord) {
-                    @SuppressWarnings("unchecked")
-                    LinkedHashMap<String, Object> record =
-                            (LinkedHashMap<String, Object>) rawRecord;
+                if (receiver instanceof MutableStructValue rawRecord) {
+                    MutableStructValue record = rawRecord;
                     if (!record.containsKey(member.member())) {
                         throw new IllegalArgumentException(
                                 "unknown explicit struct field " + member.member());
@@ -4569,14 +4968,8 @@ public final class OresEvalRootNode extends RootNode {
             if (target instanceof Ast.IndexExpr index) {
                 Object receiver = eval(index.receiver(), env);
                 Object key = eval(index.index(), env);
-                if (receiver instanceof List<?> raw) {
-                    @SuppressWarnings("unchecked")
-                    List<Object> list = (List<Object>) raw;
-                    list.set(sequenceIndex(key), value);
-                    return value;
-                }
-                throw new IllegalArgumentException(
-                        "indexed assignment requires a mutable array/list; struct fields use statically known member assignment");
+                return assignIndexValue(
+                        receiver, key, value, env, index.receiver());
             }
             throw new IllegalArgumentException(
                     "unsupported assignment target");
@@ -4823,6 +5216,13 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     return new ReadonlyRecordValue(fields);
                 }
+                if (value instanceof MutableStructValue mutableStruct) {
+                    LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                    for (Map.Entry<String, Object> entry : mutableStruct.entrySet()) {
+                        fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
+                    }
+                    return new MutableStructValue(fields);
+                }
                 if (value instanceof OptionValue option) {
                     return option.present()
                             ? new OptionValue(true, detachAsyncValue(option.value(), visiting))
@@ -5007,7 +5407,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (args.size() != method.arity()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null, false, declaringClass(method));
-            if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
+            if (!method.isStatic()) {
+                env.define("self", receiver, Ast.BindingKind.VAL, declaringClass(method));
+            }
             bindCallableArguments(env, method.parameters(), args, "method " + method.name());
             try {
                 executeBlock(method.body(), env);
@@ -5112,7 +5514,8 @@ public final class OresEvalRootNode extends RootNode {
                     env.reserve(binding.name(), binding.kind());
                     env.initialize(binding.name(), eval(binding.initializer(), env));
                 } else {
-                    env.define(binding.name(), eval(binding.initializer(), env), binding.kind());
+                    Object value = eval(binding.initializer(), env);
+                    defineBinding(env, binding, value);
                 }
                 return;
             }
@@ -5134,7 +5537,17 @@ public final class OresEvalRootNode extends RootNode {
                         Object bound = binding.rest()
                                 ? destructureRestObject(value, selectedMembers)
                                 : destructureMember(value, binding.name(), env);
-                        env.define(binding.name(), bound, binding.kind());
+                        Ast.ClassDecl staticView = binding.rest()
+                                ? null
+                                : objectDestructureStaticClassView(
+                                        destructure.initializer(),
+                                        binding.name(),
+                                        env);
+                        env.define(
+                                binding.name(),
+                                bound,
+                                binding.kind(),
+                                staticView);
                     }
                 }
                 return;
@@ -6254,12 +6667,9 @@ public final class OresEvalRootNode extends RootNode {
                         object.fields.put(target.member(), value);
                         return value;
                     }
-                    // Explicit anonymous structs use this mutable map path.
-                    // infer struct values use ReadonlyRecordValue instead.
-                    if (receiver instanceof LinkedHashMap<?, ?> rawRecord) {
-                        @SuppressWarnings("unchecked")
-                        LinkedHashMap<String, Object> record =
-                                (LinkedHashMap<String, Object>) rawRecord;
+                    // Concrete inferred/explicit structs use this mutable owned-map path.
+                    // Structural records use ReadonlyRecordValue and never reach it.
+                    if (receiver instanceof MutableStructValue record) {
                         if (!record.containsKey(target.member())) {
                             throw new IllegalArgumentException(
                                     "unknown explicit struct field " + target.member());
@@ -6268,19 +6678,13 @@ public final class OresEvalRootNode extends RootNode {
                         return value;
                     }
                     throw new IllegalArgumentException(
-                            "member assignment requires a mutable class or explicit struct");
+                            "member assignment requires a mutable class or concrete struct");
                 }
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     Object index = eval(target.index(), env);
-                    int i = sequenceIndex(index);
-                    if (receiver instanceof List<?> raw) {
-                        @SuppressWarnings("unchecked") List<Object> list = (List<Object>) raw;
-                        list.set(i, value);
-                        return value;
-                    }
-                    throw new IllegalArgumentException(
-                            "indexed assignment requires a mutable array/list; struct fields use statically known member assignment");
+                    return assignIndexValue(
+                            receiver, index, value, env, target.receiver());
                 }
                 throw new IllegalArgumentException("unsupported assignment target");
             }
@@ -6413,7 +6817,11 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member(), env);
             if (expr instanceof Ast.IndexExpr indexed) {
-                return indexValue(eval(indexed.receiver(), env), eval(indexed.index(), env));
+                return indexValue(
+                        eval(indexed.receiver(), env),
+                        eval(indexed.index(), env),
+                        env,
+                        indexed.receiver());
             }
             if (expr instanceof Ast.NewExpr created) {
                 if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
@@ -6532,8 +6940,9 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException("duplicate struct field " + key);
                     }
                 }
-                if (object.explicitStruct()) return result;
-                return new ReadonlyRecordValue(result);
+                return object.structuralRecord()
+                        ? new ReadonlyRecordValue(result)
+                        : new MutableStructValue(result);
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
@@ -7205,7 +7614,7 @@ public final class OresEvalRootNode extends RootNode {
                     case "get" -> (Invokable) args -> {
                         requireOne(args, "List.get");
                         Object index = args.getFirst();
-                        return rawList.get(sequenceIndex(index));
+                        return rawList.get(checkedSequenceIndex(index, rawList.size()));
                     };
                     case "add" -> (Invokable) args -> {
                         requireOne(args, "List.add");
@@ -7222,7 +7631,7 @@ public final class OresEvalRootNode extends RootNode {
                         Object index = args.getFirst();
                         @SuppressWarnings("unchecked")
                         List<Object> list = (List<Object>) rawList;
-                        list.set(sequenceIndex(index), args.get(1));
+                        list.set(checkedSequenceIndex(index, list.size()), args.get(1));
                         return null;
                     };
                     default -> throw new IllegalArgumentException(
@@ -7812,7 +8221,7 @@ public final class OresEvalRootNode extends RootNode {
             // The object is not returned or published until all initializers
             // and constructor-body validation have completed.
             Env constructorEnv = new Env(null, false, klass, object);
-            constructorEnv.define("self", object, Ast.BindingKind.VAL);
+            constructorEnv.define("self", object, Ast.BindingKind.VAL, klass);
             bindCallableArguments(
                     constructorEnv,
                     constructor.parameters(),
@@ -9104,15 +9513,32 @@ public final class OresEvalRootNode extends RootNode {
         }
         private boolean canInitialize(OresObject object) { return constructingObject == object; }
         private void define(String name, Object value, Ast.BindingKind kind) {
-            if (slots.putIfAbsent(name, new Slot(value, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
+            define(name, value, kind, null);
+        }
+        private void define(
+                String name,
+                Object value,
+                Ast.BindingKind kind,
+                Ast.ClassDecl staticClassView) {
+            if (slots.putIfAbsent(name, new Slot(value, kind, staticClassView)) != null) {
+                throw new IllegalArgumentException("duplicate binding " + name);
+            }
         }
         private void reserve(String name, Ast.BindingKind kind) {
-            if (slots.putIfAbsent(name, new Slot(MISSING, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
+            if (slots.putIfAbsent(name, new Slot(MISSING, kind, null)) != null) throw new IllegalArgumentException("duplicate binding " + name);
         }
         private void initialize(String name, Object value) {
             Slot slot = slots.get(name);
             if (slot == null) throw new IllegalArgumentException("unknown binding " + name);
             slot.value = value;
+        }
+        private Slot lookupSlot(String name) {
+            Slot slot = slots.get(name);
+            return slot != null ? slot : parent == null ? null : parent.lookupSlot(name);
+        }
+        private Ast.ClassDecl lookupStaticClassView(String name) {
+            Slot slot = lookupSlot(name);
+            return slot == null ? null : slot.staticClassView;
         }
         private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
         private void assign(String name, Object value) {
@@ -9258,7 +9684,15 @@ public final class OresEvalRootNode extends RootNode {
     private static final class Slot {
         private Object value;
         private final Ast.BindingKind kind;
-        private Slot(Object value, Ast.BindingKind kind) { this.value=value; this.kind=kind; }
+        private final Ast.ClassDecl staticClassView;
+        private Slot(
+                Object value,
+                Ast.BindingKind kind,
+                Ast.ClassDecl staticClassView) {
+            this.value = value;
+            this.kind = kind;
+            this.staticClassView = staticClassView;
+        }
     }
 
     private static final class ReturnSignal extends RuntimeException {
@@ -9292,10 +9726,19 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     /**
-     * Runtime provenance for infer struct. It behaves as a Map for existing
-     * structural operations while remaining immutable across aliases and async
-     * detachment/copy boundaries.
+     * Runtime representation for structural record values. It behaves as a Map
+     * for structural reads while remaining immutable across aliases and async
+     * detachment/copy boundaries. Concrete structs use mutable owned maps; the
+     * static binding/borrow checker decides whether a particular reference may write.
      */
+    /** Runtime tag for closed mutable struct values; never conflated with generic maps. */
+    private static final class MutableStructValue
+            extends LinkedHashMap<String, Object> {
+        private MutableStructValue(Map<String, Object> initial) {
+            super(initial);
+        }
+    }
+
     private static final class ReadonlyRecordValue
             extends java.util.AbstractMap<String, Object>
             implements OresMutex.SharedState {
@@ -9409,7 +9852,7 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         write("}");
                     } else if (value instanceof ReadonlyRecordValue readonly) {
-                        write("infer struct");
+                        write("record");
                         append(readonly.fields, depth + 1);
                     } else if (value instanceof OptionValue option) {
                         if (!option.present()) {
