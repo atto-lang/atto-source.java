@@ -48,6 +48,28 @@ final class FutureConstructorsLanguageTest {
     }
 
     @Test
+    void synchronousGuestMainCanCreateAndAwaitFutureWithoutUnknownClass() throws Exception {
+        String sourceText = program("""
+                  pub fnc main(): void {
+                    let Future<int> pending = new Future<int>(new Producer());
+                    let int value = await pending;
+                    stdio.stdout.write(value * 8);
+                    return;
+                  }
+                """);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                OresLanguage.ID, sourceText, "future-sync-main.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("40"),
+                "the direct NewExpr evaluator must lower the checked Future");
+    }
+
+    @Test
     void constructorRejectsSynchronousRun() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 define module app
