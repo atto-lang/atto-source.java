@@ -400,11 +400,6 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         }
     }
 
-    private int preferredSlot(int affinityKey) {
-        int enabled = Math.max(1, corePoolSize.get());
-        return Math.floorMod(affinityKey, enabled);
-    }
-
     private int localBacklogEscapeThreshold() {
         return Math.max(1, queueCapacity / Math.max(1, corePoolSize.get()));
     }
