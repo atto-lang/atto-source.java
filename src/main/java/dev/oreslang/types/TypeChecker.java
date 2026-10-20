@@ -535,10 +535,12 @@ public final class TypeChecker {
                     && method.parameters().isEmpty()
                     && method.genericParameters().isEmpty()
                     && method.returnType().name().equals("Future")
+                    && !method.returnType().inferArguments()
                     && method.returnType().arguments().size() == 1
                     && method.returnType().arguments().getFirst().name()
                             .equals(iface.genericParameters().getFirst())
-                    && method.returnType().arguments().getFirst().arguments().isEmpty();
+                    && method.returnType().arguments().getFirst().arguments().isEmpty()
+                    && !method.returnType().arguments().getFirst().inferArguments();
             if (!valid) {
                 throw new IllegalArgumentException(
                         "HasFuture<T> must declare exactly get_future(): Future<T>");
@@ -1545,8 +1547,12 @@ public final class TypeChecker {
                 ResolvedMethod projection = findMethodTarget(
                         klass, nominalClassType(klass), "get_future", 0,
                         new LinkedHashSet<>());
-                if (projection == null || projection.method().async()
-                        || projection.method().suspends() || projection.method().isAbstract()) {
+                if (projection == null || projection.method().isStatic()
+                        || projection.method().async() || projection.method().suspends()
+                        || projection.method().isAbstract()
+                        || !projection.method().genericParameters().isEmpty()
+                        || (projection.method().explicitReceiverType() != null
+                            && projection.method().explicitReceiverType().mutableBorrow())) {
                     throw new IllegalArgumentException(
                             "HasFuture.get_future() must be a concrete synchronous zero-argument method");
                 }
@@ -4066,6 +4072,9 @@ public final class TypeChecker {
                         if (method == null || method.method().isStatic()
                                 || method.method().async() || method.method().suspends()
                                 || method.method().isAbstract()
+                                || !method.method().genericParameters().isEmpty()
+                                || (method.method().explicitReceiverType() != null
+                                    && method.method().explicitReceiverType().mutableBorrow())
                                 || method.method().visibility() != Ast.Visibility.PUBLIC) {
                             throw new IllegalArgumentException(
                                     "await requires a public synchronous HasFuture.get_future() projection");
