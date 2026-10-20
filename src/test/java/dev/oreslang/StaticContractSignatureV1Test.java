@@ -310,6 +310,32 @@ final class StaticContractSignatureV1Test {
     }
 
     @Test
+    void incrementalImportGraphRejectsCrossUnitStaticContractImport() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+
+        String provider = """
+                define pub static contract Factory as
+                    fnc create(int id) -> int;
+                end
+                """;
+        String consumer = """
+                import contract Factory from "./factory.ores";
+
+                fnc main(): int {
+                    return 0;
+                }
+                """;
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> compiler.compile(Map.of(
+                        "factory.ores", provider,
+                        "consumer.ores", consumer)));
+        assertTrue(error.getMessage().contains("does not match an exported declaration"),
+                error.getMessage());
+    }
+
+    @Test
     void addingStaticContractToPublicClassInvalidatesImportingUnitAbi() {
         IncrementalCompiler compiler = new IncrementalCompiler();
 
