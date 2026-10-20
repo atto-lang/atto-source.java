@@ -100,7 +100,7 @@ public final class TaskScope implements AutoCloseable {
             // loan before this call, there will be no getDone() callback to
             // retire it. Retire the never-started reservation here.
             try {
-                retireAfterPhysicalQuiescence.run();
+                retirementHook.retireNeverStarted(this);
             } catch (RuntimeException | Error retirementError) {
                 admissionFailure.addSuppressed(retirementError);
                 poisonAfterRetirementFailure(retirementError);
