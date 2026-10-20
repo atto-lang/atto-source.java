@@ -48,8 +48,12 @@ SOURCE_SNAPSHOT_ENTRY = re.compile(
     r"^([a-f0-9]{40}) ([a-f0-9]{40}) ([1-9][0-9]{0,19}) ([a-f0-9]{40}) ([a-f0-9]{40})$"
 )
 CARRIER_APPROVAL_PATH = ".github/private-oreslang-approved-source-snapshots.txt"
+CARRIER_BUILD_IMAGES_PATH = ".github/oreslang-private-build-images.txt"
 CARRIER_SOURCE_ENTRY = re.compile(
     r"^([a-f0-9]{40}) ([a-f0-9]{40}) ([1-9][0-9]{0,19}) ([1-9][0-9]{0,19})$"
+)
+CARRIER_BUILD_IMAGE_ENTRY = re.compile(
+    r"^(java21|java25) (sha256:[a-f0-9]{64})$"
 )
 PROTECTED_REVIEWS_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection/required_pull_request_reviews"
 CODEOWNERS_ROUTE = SOURCE_METADATA_ROUTE + "/contents/.github/CODEOWNERS"
@@ -555,6 +559,46 @@ def require_carrier_source_approval(repository, expected_commit, expected_tree,
     if ruleset_id is None:
         raise Denied("private carrier has not independently approved this source snapshot")
     return digest, ruleset_id
+
+
+def require_carrier_sealed_build_images(repository, carrier_main_sha,
+                                        reviewed_blob_sha=None):
+    """Require exact preloaded, content-addressed images for offline source execution."""
+    valid_sha(carrier_main_sha)
+    route = at_ref(
+        f"repos/{repository}/contents/{CARRIER_BUILD_IMAGES_PATH}",
+        carrier_main_sha)
+    metadata = gh_api(route)
+    if (metadata.get("type") != "file" or metadata.get("encoding") != "base64"
+            or not isinstance(metadata.get("content"), str)
+            or len(metadata["content"]) > 24 * 1024
+            or type(metadata.get("size")) is not int
+            or not 0 <= metadata["size"] <= 16 * 1024):
+        raise Denied("private carrier sealed build-image policy is unavailable")
+    try:
+        raw = base64.b64decode("".join(metadata["content"].splitlines()), validate=True)
+        lines = raw.decode("utf-8").splitlines()
+    except (ValueError, UnicodeError) as exc:
+        raise Denied("private carrier sealed build-image policy is invalid") from exc
+    digest = hashlib.sha1(
+        b"blob " + str(len(raw)).encode("ascii") + bytes([0]) + raw
+    ).hexdigest()
+    if (len(raw) != metadata["size"] or bytes([0]) in raw
+            or valid_sha(metadata.get("sha")) != digest):
+        raise Denied("private carrier sealed build-image policy integrity failed")
+    if reviewed_blob_sha is not None and digest != reviewed_blob_sha:
+        raise Denied("private carrier sealed build-image policy changed during transfer")
+    images = {}
+    for line in lines:
+        if not line or line.startswith("#"):
+            continue
+        match = CARRIER_BUILD_IMAGE_ENTRY.fullmatch(line)
+        if match is None or match.group(1) in images:
+            raise Denied("private carrier sealed build-image policy is malformed or ambiguous")
+        images[match.group(1)] = match.group(2)
+    if set(images) != {"java21", "java25"}:
+        raise Denied("private carrier sealed build images are not fully approved")
+    return digest, images["java21"], images["java25"]
 
 
 def require_carrier_source_ruleset(repository, ruleset_id):
@@ -1246,6 +1290,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
             "isolated CI branch must encode the full approved source and carrier-main SHAs")
     carrier_approval_sha, carrier_ruleset_id = require_carrier_source_approval(
         repository, expected_source_commit, expected_source_tree, base_sha)
+    carrier_build_images = require_carrier_sealed_build_images(repository, base_sha)
     require_carrier_source_ruleset(repository, carrier_ruleset_id)
     require_effective_carrier_source_rules(
         repository, branch, carrier_ruleset_id)
@@ -1291,6 +1336,10 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
             base_sha, carrier_approval_sha)
         if carrier_approval[1] != carrier_ruleset_id:
             raise Denied("private carrier source ruleset approval changed during transfer")
+        current_build_images = require_carrier_sealed_build_images(
+            repository, base_sha, carrier_build_images[0])
+        if current_build_images[1:] != carrier_build_images[1:]:
+            raise Denied("private carrier sealed build images changed during transfer")
         require_carrier_source_ruleset(repository, carrier_ruleset_id)
         require_effective_carrier_source_rules(
             repository, branch, carrier_ruleset_id)
