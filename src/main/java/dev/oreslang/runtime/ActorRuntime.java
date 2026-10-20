@@ -1768,14 +1768,13 @@ public final class ActorRuntime implements AutoCloseable {
         AtomicBoolean released = new AtomicBoolean();
         Runnable retireOnce = () -> {
             if (released.compareAndSet(false, true)) {
-                // Ownership retirement is the stronger authority. If it fails,
-                // keep the untrusted source-task quota pinned and do not publish
-                // the physical-quiescence release witness. Retrying would risk
-                // double retirement; the failed cohort remains fail-closed.
-                retireAfterPhysicalDone.run();
-                releaseUntrustedSourceTask(cell, quota);
-                physicalQuiescenceConfirmed.set(true);
-                releaseTimedWhenSafe.run();
+                retireUntrustedCompilerTransfer(
+                        retireAfterPhysicalDone,
+                        () -> releaseUntrustedSourceTask(cell, quota),
+                        () -> {
+                            physicalQuiescenceConfirmed.set(true);
+                            releaseTimedWhenSafe.run();
+                        });
             }
         };
         Runnable notificationsDrained = () -> {
@@ -1823,6 +1822,26 @@ public final class ActorRuntime implements AutoCloseable {
         // executing. The scheduler invokes retireOnce ONLY after guest
         // carrier quiescence, not merely when the Future settles.
         return future;
+    }
+
+    static void retireUntrustedCompilerTransfer(
+            Runnable retireAfterPhysicalDone,
+            Runnable releaseLogicalQuota,
+            Runnable publishPhysicalQuiescence) {
+        Objects.requireNonNull(
+                retireAfterPhysicalDone, "physical Task retirement");
+        Objects.requireNonNull(
+                releaseLogicalQuota, "logical Task quota release");
+        Objects.requireNonNull(
+                publishPhysicalQuiescence, "physical Task quiescence publication");
+
+        // Ownership retirement is the stronger authority. If it fails, the
+        // actor quota stays pinned and no physical-quiescence release witness
+        // is published. Callers deliberately do not retry a failed retirement:
+        // retrying can double-release ownership.
+        retireAfterPhysicalDone.run();
+        releaseLogicalQuota.run();
+        publishPhysicalQuiescence.run();
     }
 
     private void releaseUntrustedSourceTask(
