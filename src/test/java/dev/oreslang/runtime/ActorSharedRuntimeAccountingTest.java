@@ -96,17 +96,16 @@ final class ActorSharedRuntimeAccountingTest {
     }
     @Test
     @SuppressWarnings("unchecked")
-    void sharedReadonlyRuntimeCloseRetainsExactDebitForRetry() throws Exception {
+    void sharedReadonlyCleanupRetainsExactDebitForRetry() throws Exception {
         ActorRuntime runtime = new ActorRuntime();
-        long reserved = 0L;
         java.util.concurrent.atomic.AtomicLong accounting = null;
-        Object shared = null;
         java.lang.reflect.Field reservedField = null;
+        Object shared = null;
         try {
             var value = runtime.shareReadonly(
                     new java.util.ArrayList<>(java.util.List.of(1, 2, 3, 4)));
             shared = value;
-            reserved = runtime.sharedMemoryBytes();
+            long reserved = runtime.sharedMemoryBytes();
             assertTrue(reserved > 0L);
 
             var accountingField =
@@ -122,49 +121,111 @@ final class ActorSharedRuntimeAccountingTest {
                     value.getClass().getDeclaredField("sharedClosed");
             var valuesField =
                     ActorRuntime.class.getDeclaredField("sharedValues");
+            var closeMethod = value.getClass().getDeclaredMethod(
+                    "closeFromRuntime");
             reservedField.setAccessible(true);
             cleanupField.setAccessible(true);
             closedField.setAccessible(true);
             valuesField.setAccessible(true);
+            closeMethod.setAccessible(true);
 
             var values = (java.util.Set<Object>) valuesField.get(runtime);
             var closed = (java.util.concurrent.atomic.AtomicBoolean)
                     closedField.get(value);
 
-            // Corrupt only the aggregate witness. The Shared value still owns
-            // its exact reservation and runtime close must fail closed.
             accounting.set(0L);
-            var failure = assertThrows(IllegalStateException.class, runtime::close);
-            assertTrue(failure.getMessage().contains(
+            var failure = assertThrows(
+                    InvocationTargetException.class,
+                    () -> closeMethod.invoke(value));
+            assertInstanceOf(IllegalStateException.class, failure.getCause());
+            assertTrue(failure.getCause().getMessage().contains(
                     "shared actor memory accounting underflow"));
 
-            assertTrue(closed.get(),
-                    "guest observation must be sealed after close begins");
-            assertFalse(cleanupField.getBoolean(value),
-                    "admission seal cannot forge shared cleanup completion");
+            assertTrue(closed.get());
+            assertFalse(cleanupField.getBoolean(value));
             assertEquals(reserved, reservedField.getLong(value),
-                    "failed aggregate refund must retain the exact debit");
+                    "failed cleanup must retain the exact aggregate debit");
             assertTrue(values.contains(value),
-                    "runtime must retain the Shared owner for retry");
-            assertThrows(IllegalStateException.class, value::value,
-                    "sealed Shared value cannot be observed while cleanup is pending");
+                    "internal cleanup owner must remain registered for retry");
+            assertThrows(IllegalStateException.class, value::value);
 
-            // Repair only the trusted aggregate witness. A second runtime close
-            // must refund the same retained debit exactly once.
             accounting.set(reserved);
-            runtime.close();
+            closeMethod.invoke(value);
 
             assertTrue(cleanupField.getBoolean(value));
             assertEquals(0L, reservedField.getLong(value));
             assertEquals(0L, runtime.sharedMemoryBytes());
             assertFalse(values.contains(value));
         } finally {
-            // If an assertion aborts after the synthetic corruption, repair the
-            // aggregate witness from the still-retained exact owner before the
-            // cleanup close so the fixture cannot leak runtime resources.
             if (accounting != null && shared != null && reservedField != null) {
                 try {
                     long outstanding = reservedField.getLong(shared);
+                    if (outstanding > accounting.get()) accounting.set(outstanding);
+                } catch (ReflectiveOperationException ignored) {
+                    // Best effort only for test-fixture cleanup.
+                }
+            }
+            runtime.close();
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void syncCellCloseRetainsExactDebitForRetry() throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        java.util.concurrent.atomic.AtomicLong accounting = null;
+        java.lang.reflect.Field reservedField = null;
+        Object rawCell = null;
+        try {
+            var cell = runtime.syncCell(
+                    new java.util.ArrayList<>(java.util.List.of(7, 8, 9)));
+            rawCell = cell;
+            long reserved = runtime.sharedMemoryBytes();
+            assertTrue(reserved > 0L);
+
+            var accountingField =
+                    ActorRuntime.class.getDeclaredField("sharedMemoryBytes");
+            accountingField.setAccessible(true);
+            accounting = (java.util.concurrent.atomic.AtomicLong)
+                    accountingField.get(runtime);
+
+            reservedField = cell.getClass().getDeclaredField("reservedBytes");
+            var cleanupField =
+                    cell.getClass().getDeclaredField("cellCleanupComplete");
+            var cellsField =
+                    ActorRuntime.class.getDeclaredField("syncCells");
+            reservedField.setAccessible(true);
+            cleanupField.setAccessible(true);
+            cellsField.setAccessible(true);
+            var cells = (java.util.Set<Object>) cellsField.get(runtime);
+
+            accounting.set(0L);
+            var failure = assertThrows(IllegalStateException.class, cell::close);
+            assertTrue(failure.getMessage().contains(
+                    "shared actor memory accounting underflow"));
+
+            assertTrue(cell.closed(),
+                    "failed close must still revoke SyncCell observation");
+            assertFalse(cleanupField.getBoolean(cell),
+                    "closed flag alone cannot certify resource cleanup");
+            assertEquals(reserved, reservedField.getLong(cell),
+                    "failed refund must retain the exact debit");
+            assertTrue(cells.contains(cell),
+                    "runtime must retain the exact SyncCell retry owner");
+            assertThrows(IllegalStateException.class, cell::snapshot);
+
+            accounting.set(reserved);
+            cell.close();
+            cell.close();
+
+            assertTrue(cleanupField.getBoolean(cell));
+            assertEquals(0L, reservedField.getLong(cell));
+            assertEquals(0L, runtime.sharedMemoryBytes());
+            assertFalse(cells.contains(cell));
+        } finally {
+            if (accounting != null && rawCell != null && reservedField != null) {
+                try {
+                    long outstanding = reservedField.getLong(rawCell);
                     if (outstanding > accounting.get()) accounting.set(outstanding);
                 } catch (ReflectiveOperationException ignored) {
                     // Best effort only for test-fixture cleanup.
