@@ -118,6 +118,32 @@ final class UnaryTcpTlsRuntimeAuthorityTest {
     }
 
     @Test
+    void deniedAnyLocalBindCannotCreateEndpoint() {
+        RuntimePermissions permissions = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "0.0.0.0:8443")
+                .withDenied(RuntimePermissions.Permission.NET, "127.0.0.1:8443");
+        AtomicInteger endpointCreations = new AtomicInteger();
+
+        assertThrows(
+                SecurityException.class,
+                () -> UnaryTcpTlsRuntime.bind(
+                        permissions::requireNetworkBind,
+                        () -> {
+                            endpointCreations.incrementAndGet();
+                            return null;
+                        },
+                        "0.0.0.0",
+                        8443,
+                        8,
+                        limits(),
+                        authorizer(),
+                        dispatcher()));
+
+        assertEquals(0, endpointCreations.get(),
+                "any-local deny must be decided before SSL endpoint creation");
+    }
+
+    @Test
     void bindFailureClosesFreshTlsEndpoint() throws Exception {
         SSLContext tls = SSLContext.getDefault();
         AtomicReference<SSLServerSocket> created = new AtomicReference<>();
