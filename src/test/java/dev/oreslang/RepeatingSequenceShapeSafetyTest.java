@@ -125,4 +125,32 @@ final class RepeatingSequenceShapeSafetyTest {
                 }
                 """);
     }
+
+    @Test
+    void countedRepeatedUnitRemainsNinePositionTypedAcrossCalls() {
+        accepts("""
+                pub fnc preserve(
+                    Array[...(3 of int, 3 of string, 3 of bool)] input
+                ): Array[...(3 of int, 3 of string, 3 of bool)] {
+                  return input;
+                }
+                pub fnc main(): void {
+                  val xs: Array[...(3 of int, 3 of string, 3 of bool)] =
+                      [1, 2, 3, "a", "b", "c", true, false, true];
+                  val ys: Array[...(3 of int, 3 of string, 3 of bool)] =
+                      preserve(xs);
+                  return;
+                }
+                """);
+        rejects("""
+                pub fnc bad(): Array[...(3 of int, 3 of string, 3 of bool)] {
+                  return [1, 2, 3, "a", "b", "c", true, false];
+                }
+                """);
+        rejects("""
+                pub fnc bad(): Array[...(3 of int, 3 of string, 3 of bool)] {
+                  return [1, 2, 3, "a", "b", "c", true, false, 99];
+                }
+                """);
+    }
 }
