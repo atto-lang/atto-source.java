@@ -453,7 +453,7 @@ final class OresKeyedMapTest {
         assertEquals(2, target.size());
     }
 
-    @Test void typedMapEqualityIncludesKeyAndValueDomains() {
+    @Test void distinctTypedMapInstancesRemainHostIdentityDistinctAcrossDomains() {
         OresKeyedMap<Object, Integer> mixed =
                 OresKeyedMap.stringOrSymbolKeys(OresKeyedMap.ValueDomain.INT);
         OresKeyedMap<String, Integer> strings =
@@ -540,6 +540,26 @@ final class OresKeyedMapTest {
         assertEquals(7, map.getRequired("kept"),
                 "accounting corruption must fail before removing the live entry");
         assertEquals(1, map.size());
+    }
+
+
+    @Test void emptyBatchIsConstantTimeNoOpAndReleasesMutationFence() {
+        java.util.concurrent.atomic.AtomicInteger validations =
+                new java.util.concurrent.atomic.AtomicInteger();
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys(
+                OresKeyedMap.ValueDomain.INT,
+                (key, value) -> validations.incrementAndGet());
+        map.put("kept", 1);
+        validations.set(0);
+
+        map.putAll(Map.of());
+
+        assertEquals(0, validations.get());
+        assertEquals(1, map.getRequired("kept"));
+        map.put("after", 2);
+        assertEquals(1, validations.get(),
+                "early-return path must release the bulk mutation fence");
+        assertEquals(2, map.size());
     }
 
 
