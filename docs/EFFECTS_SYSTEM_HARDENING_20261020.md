@@ -196,3 +196,66 @@ locally; a separate representative C++ smoke test passed all 1,048,576
 declared/inferred valid-row pairs and all 1,024 unresolved-call denial cases
 under GCC and Clang, debug and NDEBUG/release. This is narrower than running
 the repository's actual `function_effects_test.cpp` or its complete native CI.
+
+
+## Round 3: compiler gate, Haskell-style latent rows and cross-backend ABI
+
+`OresCompiler.requireConservativelyEffectFree(source)` is a new **opt-in**
+closed-subset admission path. It performs the existing compiler parse,
+type and ownership checks, obtains a source effect report, and rejects on
+any nonempty effect row or unsupported declaration. It explicitly does not
+change default compiler acceptance or enable `pure` for general Oreslang
+source. Literal-only functions are accepted; all calls (including apparently
+same-file calls), unproven operators, unverified annotations, routines,
+imports, unknown AST nodes and runtime-affine constructs are denied until
+qualified HIR resolution/evidence exists. No empty source file receives a
+vacuous purity certificate. Scanner budgets now cover the **whole** source
+unit rather than resetting on each function, with a 1,024-declaration cap.
+
+`EffectContracts.Effect` now includes explicit `STATE_READ`,
+`STATE_WRITE`, `SUSPEND`, `BLOCK`, `ALLOC` and `FFI` vocabulary
+distinct from older Java-only approximations. `EffectAbiV1` maps exactly
+the 10 reviewed native `FunctionEffect` flags and rejects all
+unrepresentable Java facts instead of dropping them: particularly unknown
+calls/FFI, actor/scheduler facts and cancellation. The 1,024 legal native
+masks round-trip by tests and JDK-only oracle. **A representable effect set
+is not itself proof of complete compiler source-effect inference.**
+
+`LatentEffectRows.Descriptor` is a compiler-side contract for callable,
+`IO_ACTION`, Future, Stream and Observable values. Constructing a deferred
+value does not invoke its latent effects. `compose` (map/bind) and
+`as(kind)` preserve those latent rows; execution must check the row
+against the enclosing declaration. Publicly unverified descriptors carry
+`UNKNOWN_CALL` and can never be admitted as pure. Non-owned captures
+cannot be invoked across suspension or into deferred work. This is a
+**compiler metadata model, not executable Haskell IO, actor loan minting,
+or a runtime continuation safety certificate**; full closure/capability
+admission remains outside the model.
+
+Verification: exact Git blob SHAs for **six** focused Java/native source
+files were compared between the upstream branches and the funded test
+repository PR #225; all six match, including the 1,024-row native tests
+and bounded JDK Java graph oracle. These are focused mirrored files, **not
+the full private trees**. An Actions run has not yet been observed for the
+test PR, so no exact-CI test success is claimed for Round 3. Source-level
+JUnit tests, full Maven, GraalVM Native Image, and compiled LLVM guest
+execution remain required before merge.
+
+## P0 work that remains
+
+1. Have the compiler's **typed symbol-resolution pass** emit an
+   authenticated direct-call ID/effect row for each call, method dispatch,
+   constructor, overloaded operator and dictionary; keep every unproven
+   call unresolved. This is what allows eliminating false-positive
+   `UNKNOWN_CALL` facts safely.
+2. Carry `LatentEffectRows` in actual callable/generic/Future/Stream/IO
+   types and ensure suspension/cancellation/actor epochs are enforced by
+   real runtime admission; the model's `requireInvocationWithin` checks
+   declarations only and grants no capabilities.
+3. Align Java `with` effect declarations, scoped `using` loans, LLVM
+   `FunctionEffects` and checked exceptions only after the draft
+   parser/AST stacks are semantically rebased onto their current main
+   branches; do not merge obsolete stacked branches independently.
+4. Run full exact-tree Maven, Java Native Image, LLVM CTest and actual
+   guest execution on available funded CI, plus source-to-typed-HIR
+   differential positive/negative effect witnesses.
