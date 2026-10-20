@@ -189,7 +189,6 @@ public final class OresFutureConstructors {
 
         AtomicReference<Runnable> detachAction = new AtomicReference<>();
         AtomicReference<StagedCallback<T>> registration = new AtomicReference<>();
-        AtomicBoolean terminal = new AtomicBoolean();
 
         OresFuture<T> future = OresFuture.fromCallback(callback -> {
             StagedCallback<T> staged = new StagedCallback<>(callback);
@@ -200,14 +199,14 @@ public final class OresFutureConstructors {
             // Only after a valid detach action exists can synchronous
             // registration callbacks publish completion.
             staged.arm();
-            if (terminal.get()) {
-                Runnable late = detachAction.getAndSet(null);
-                if (late != null) late.run();
-            }
         });
 
+        // The Future is not exposed to callers until this method returns.
+        // Foreign callbacks remain staged until after detachAction is stored
+        // and arm() is called. A Future that settles before this subscription
+        // is installed notifies this runtime waiter immediately, so no
+        // separate terminal flag / second detach path is necessary.
         future.whenCompleteRuntime((value, failure) -> {
-            terminal.set(true);
             StagedCallback<T> staged = registration.getAndSet(null);
             if (staged != null) staged.revoke();
             Runnable detach = detachAction.getAndSet(null);
