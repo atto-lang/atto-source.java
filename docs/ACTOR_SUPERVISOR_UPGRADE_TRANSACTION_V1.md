@@ -449,3 +449,57 @@ reports failures with no executed steps; the private-source mirror
 destination in protected main remains a comment-only proposal, **not**
 an authorization. Source security #962 and merge protection #904
 remain open. Keep PR #1367 draft and production hot reload disabled.
+
+## Candidate-retirement quarantine exit barrier — October 20, 2026
+
+The source router's `reapRetiredLocked()` previously cleared
+`retirementQuarantined` when no old routes or pending rollback transfer
+remained, **without checking whether an unpublished candidate was still
+tracked in `retiredCandidates`**. A candidate that survived a failed
+prepublication registration/transfer can remain physically live and pin its
+executable generation even after all other cleanup owners have disappeared.
+Reopening physical mailbox/Task admission in that state violates the
+supervisor's fail-closed generation boundary.
+
+Commit `ca6a1eae4daac87590eddf49c41b39837560abb7` changes the sole
+automatic quarantine exit gate to require
+`retiredCandidates.isEmpty()` as well as no active transaction,
+pending rollback transfer, or retired old routes. Successfully published
+candidates' nonowning staging witnesses are removed in the preceding
+candidate-reaper loop; unpublished physically live or noneligible
+candidates must continue blocking quarantine clearance.
+
+`LogicalSourceActorCandidateQuarantineBarrierTest` is new real-source
+JUnit code committed at `367feebc5ce22cc79d90382b528550f49ae0dc8c`
+and strengthened at `659326945d41ee63b6c8b32ecfa576a33eeb0243`.
+It uses a real compiler-linked SHARED old actor and real separate
+candidate physical actor, a pre-reserved candidate generation pin, and a
+test-only injected candidate-retirement ledger owner. It verifies that
+unpublished live candidates cannot reopen physical message admission,
+that `retirementEligible` alone is not physical-finalization proof,
+and that physical finalization permits one successful generation-pin
+debit, retirement ledger removal and restoration of the old route's
+message delivery. This test is **COMMITTED BUT NOT EXECUTED** under the
+private Oreslang JUnit/Graal build.
+
+A **separately authored source-free Java25 model** was committed to
+`gha-indie-worker/gha-indie-worker-e2e` on its isolated oracle branch;
+workflow source commit `838ffae421cd2d66a7dae20721cb18eabf08f29a`.
+Actual GitHub Actions run `39348892604`, job `118388105501`,
+completed SUCCESS on Temurin 25.0.4+1. The logs confirm both
+`javac --release 25 -Xlint:all -Werror` and:
+```
+PASS source-free candidate quarantine assertions=185001
+concurrent_rounds=5000 workers=4
+negative_control=exposes_early_release private_source_bytes=0
+```
+The same job passed existing independent lifecycle/admission tests.
+This is objective JDK25 execution of a **model**, not execution of any
+private Java/Graal Oreslang production source or Native Image.
+
+Security/CI hold: protected `main` has no *approved* private carrier;
+its proposed destination appears only in commented policy lines requiring
+review. Source security #962 and protected merge checks #904 remain open.
+No cross-org private Git tree or source bytes were copied. Keep the PR
+draft and production hot reload disabled pending exact-head source-owned
+or reviewed/authorized JDK25/Graal/Native Image CI.
