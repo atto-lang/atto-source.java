@@ -48,8 +48,10 @@ callable_decl   = { annotation } visibility { callable_modifier } callable_kind 
 (* The end-delimited form is admitted only for ordinary free/module callables.
    It requires an explicit slim-arrow return type. Without the optional "do"
    separator, the first body token begins on the next source line; with "do",
-   compact same-line bodies are also unambiguous. Actor callables and class
-   instance/static methods remain brace-bodied. *)
+   compact same-line bodies are also unambiguous. A trailing ";" belongs only
+   to bodyless signature grammar in declaration contexts; it never starts a
+   free/module executable body. Actor callables and class instance/static
+   methods remain brace-bodied. *)
 callable_kind   = "fnc" | "routine" ;
 
 actor_callable_decl
