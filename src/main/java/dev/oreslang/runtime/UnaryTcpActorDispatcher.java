@@ -102,12 +102,9 @@ final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher
     }
 
     private Object stageResult(Object value) {
-        Object frozen = ActorRuntime.freeze(value);
-        if (kind == ActorRuntime.ActorKind.PRIVATE
-                && frozen instanceof OresBytes bytes) {
-            return bytes.isolatedCopy();
-        }
-        return frozen;
+        return kind == ActorRuntime.ActorKind.PRIVATE
+                ? ActorRuntime.copyPrivateResultForSupervisor(value)
+                : ActorRuntime.freeze(value);
     }
 
     @Override
