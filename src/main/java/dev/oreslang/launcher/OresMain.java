@@ -68,6 +68,12 @@ public final class OresMain {
     }
 
     private static int runForExitStatus(String[] args) throws Exception {
+        // Advisory compiler-source inspection never executes guest code and
+        // cannot be combined with runtime/capability/isolate flags. Keeping
+        // this in a closed, early argument branch prevents build profiles
+        // from accidentally treating an AST warning scan as safety proof.
+        if (java.util.Arrays.asList(args).contains("--static-safety"))
+            return runStaticSafety(args);
         if (args.length == 1 && args[0].equals("--build-info")) {
             System.out.println("{\"build_mode\":\"" + NativeBuildMode.kind().name().toLowerCase(Locale.ROOT)
                     + "\",\"default_execution_mode\":\"" + NativeBuildMode.defaultExecutionMode()
@@ -311,6 +317,42 @@ public final class OresMain {
                 System.out,
                 System.err).exitStatus();
         return exitStatus;
+    }
+
+    /**
+     * Advisory AST safety diagnostics. Only accepted forms:
+     * --static-safety source.ores
+     * --static-safety --fail-on=warning source.ores
+     * --static-safety --fail-on=never source.ores
+     *
+     * Source must first pass normal type and ownership checks. JSON output
+     * never represents a verified temporal/security/termination certificate.
+     */
+    private static int runStaticSafety(String[] args) throws IOException {
+        if (args.length < 2 || args.length > 3 || !args[0].equals("--static-safety"))
+            throw new UsageException("--static-safety accepts only [--fail-on=never|warning] source.ores");
+        boolean failOnWarning = false;
+        String filename;
+        if (args.length == 2) {
+            filename = args[1];
+        } else {
+            if (args[1].equals("--fail-on=warning")) failOnWarning = true;
+            else if (!args[1].equals("--fail-on=never"))
+                throw new UsageException("invalid --static-safety failure policy");
+            filename = args[2];
+        }
+        if (filename.startsWith("--") || !filename.endsWith(".ores"))
+            throw new UsageException("--static-safety requires exactly one .ores source file");
+        final Path path;
+        try {
+            path = Path.of(filename);
+        } catch (java.nio.file.InvalidPathException invalid) {
+            throw new UsageException("invalid static-safety source path: " + invalid.getMessage());
+        }
+        if (!Files.isRegularFile(path)) throw new UsageException("not a source file: " + path);
+        var findings = OresCompiler.analyzeStaticSafety(readBoundedOresSource(path));
+        System.out.println(dev.oreslang.compiler.StaticSafetyReport.render(findings));
+        return failOnWarning && !findings.isEmpty() ? 1 : 0;
     }
 
     // Share admission policy with the linked-unit loader, including imports.
