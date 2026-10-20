@@ -30,6 +30,18 @@ final class V3ZeroArgumentCallRegressionTest {
     }
 
     @Test
+    void ordinaryPositionalLiteralIsNormalized() {
+        var p = V3ScalarDefaultProgramNormalizer.parseNormalizeAndAnalyze("""
+                pub fnc value(int a): int { return a; }
+                pub fnc main(): int { return value(9); }
+                """);
+        var fn = (dev.oreslang.ast.Ast.FunctionDecl)p.modules().getFirst().declarations().get(1);
+        var call = (dev.oreslang.ast.Ast.CallExpr)
+                ((dev.oreslang.ast.Ast.ReturnStmt)fn.body().getFirst()).value();
+        assertEquals(9L, ((dev.oreslang.ast.Ast.LiteralExpr)call.arguments().getFirst()).value());
+    }
+
+    @Test
     void requiredParameterCannotBeOmittedByZeroArgumentDirectCall() {
         assertThrows(IllegalArgumentException.class,
                 () -> V3ScalarDefaultProgramNormalizer.parseNormalizeAndAnalyze("""
