@@ -1024,7 +1024,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 commit_payload.update(payload)
                 return {"sha": COMMIT}
             if method == "POST" and route.endswith("/git/refs"):
-                return {"ref": payload["ref"], "object": {"sha": payload["sha"]}}
+                return {"ref": payload["ref"], "object": {"type": "commit", "sha": payload["sha"]}}
             raise AssertionError((method, route))
 
         with tempfile.TemporaryDirectory() as td:
@@ -1192,7 +1192,7 @@ class PrivateCiV3Test(unittest.TestCase):
             if method == "POST" and route.endswith("/git/commits"):
                 return {"sha": COMMIT}
             if method == "POST" and route.endswith("/git/refs"):
-                return {"ref": payload["ref"], "object": {"sha": payload["sha"]}}
+                return {"ref": payload["ref"], "object": {"type": "commit", "sha": payload["sha"]}}
             raise AssertionError((method, route))
 
         with tempfile.TemporaryDirectory() as td:
@@ -1266,7 +1266,7 @@ class PrivateCiV3Test(unittest.TestCase):
             if method == "POST" and route.endswith("/git/commits"):
                 return {"sha": COMMIT}
             if method == "POST" and route.endswith("/git/refs"):
-                return {"ref": payload["ref"], "object": {"sha": payload["sha"]}}
+                return {"ref": payload["ref"], "object": {"type": "commit", "sha": payload["sha"]}}
             raise AssertionError((method, route))
 
         with tempfile.TemporaryDirectory() as td:
@@ -1343,7 +1343,7 @@ class PrivateCiV3Test(unittest.TestCase):
             if method == "POST" and route.endswith("/git/refs"):
                 if payload["ref"].startswith("refs/heads/ci/authorized-"):
                     raise v3.Denied("authorization creation failed")
-                return {"ref": payload["ref"], "object": {"sha": payload["sha"]}}
+                return {"ref": payload["ref"], "object": {"type": "commit", "sha": payload["sha"]}}
             raise AssertionError((method, route))
 
         with tempfile.TemporaryDirectory() as td:
@@ -1422,7 +1422,7 @@ class PrivateCiV3Test(unittest.TestCase):
             if method == "POST" and route.endswith("/git/refs"):
                 if payload["ref"].startswith("refs/heads/ci/authorized-"):
                     raise KeyboardInterrupt("synthetic interrupted write")
-                return {"ref": payload["ref"], "object": {"sha": payload["sha"]}}
+                return {"ref": payload["ref"], "object": {"type": "commit", "sha": payload["sha"]}}
             raise AssertionError((method, route))
 
         with tempfile.TemporaryDirectory() as td:
@@ -1500,8 +1500,8 @@ class PrivateCiV3Test(unittest.TestCase):
                 return {"sha": COMMIT}
             if method == "POST" and route.endswith("/git/refs"):
                 if payload["ref"].startswith("refs/heads/ci/authorized-"):
-                    return {"ref": payload["ref"], "object": {"sha": "9" * 40}}
-                return {"ref": payload["ref"], "object": {"sha": payload["sha"]}}
+                    return {"ref": payload["ref"], "object": {"type": "commit", "sha": "9" * 40}}
+                return {"ref": payload["ref"], "object": {"type": "commit", "sha": payload["sha"]}}
             raise AssertionError((method, route))
 
         with tempfile.TemporaryDirectory() as td:
@@ -1730,6 +1730,20 @@ class PrivateCiV3Test(unittest.TestCase):
             [call.args[1] for call in read.call_args_list], list(branches)
         )
 
+    def test_handoff_entropy_is_128_bit_and_fails_closed(self):
+        with patch.object(v3.secrets, "token_hex", return_value="a" * 32) as entropy:
+            self.assertEqual(v3.fresh_handoff_nonce(), "a" * 32)
+        entropy.assert_called_once_with(16)
+        for unsafe in (None, "", "g" * 32, "a" * 31, "A" * 32):
+            with self.subTest(nonce=unsafe), patch.object(
+                v3.secrets, "token_hex", return_value=unsafe
+            ):
+                with self.assertRaisesRegex(v3.Denied, "entropy invalid"):
+                    v3.fresh_handoff_nonce()
+        with patch.object(v3.secrets, "token_hex", side_effect=OSError("no entropy")):
+            with self.assertRaisesRegex(v3.Denied, "entropy unavailable"):
+                v3.fresh_handoff_nonce()
+
     def test_create_handoff_ref_requires_live_numeric_identity(self):
         ref = "ci/oreslang-" + SOURCE_TREE
         with (
@@ -1747,10 +1761,12 @@ class PrivateCiV3Test(unittest.TestCase):
 
     def test_create_handoff_ref_requires_exact_post_response(self):
         ref = "ci/oreslang-" + SOURCE_TREE
-        exact = {"ref": "refs/heads/" + ref, "object": {"sha": COMMIT}}
+        exact = {"ref": "refs/heads/" + ref, "object": {"type": "commit", "sha": COMMIT}}
         poisoned = (
             {},
-            {"ref": "refs/heads/" + ref, "object": {"sha": "9" * 40}},
+            {"ref": "refs/heads/" + ref, "object": {"sha": COMMIT}},
+            {"ref": "refs/heads/" + ref, "object": {"type": "tag", "sha": COMMIT}},
+            {"ref": "refs/heads/" + ref, "object": {"type": "commit", "sha": "9" * 40}},
             {"ref": "refs/heads/ci/oreslang-other",
              "object": {"sha": COMMIT}},
             {"ref": "refs/heads/" + ref},
