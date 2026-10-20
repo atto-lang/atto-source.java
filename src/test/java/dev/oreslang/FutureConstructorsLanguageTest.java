@@ -162,4 +162,30 @@ final class FutureConstructorsLanguageTest {
         assertTrue(output.toString(StandardCharsets.UTF_8).contains("accepted"));
     }
 
+    @Test
+    void constructorRejectsWideningThatRequiresRuntimeResultAdaptation() {
+        // The constructor currently aliases the provider method's existing
+        // Future<int>, so it cannot claim to have produced Future<float>
+        // merely because an int expression can be assigned to a float.
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
+                program("""
+                  pub fnc main(): void {
+                    let Future<float> f = new Future<float>(new Producer());
+                    return;
+                  }
+                """)));
+    }
+
+    @Test
+    void constructorRejectsAnyTypedResultWithoutPayloadMapping() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
+                program("""
+                  pub fnc main(): void {
+                    let Future<Any> f = new Future<Any>(new Producer());
+                    return;
+                  }
+                """)));
+    }
+
+
 }
