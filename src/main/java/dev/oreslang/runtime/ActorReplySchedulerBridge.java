@@ -29,6 +29,26 @@ public final class ActorReplySchedulerBridge {
      * Handler-side response uses ActorContext.replyCurrentCall(value). The
      * current source compiler still lacks run()/ref.request() lowering.
      */
+    /** Idempotent caller/callee-incarnation teardown hook for an admitted
+     * service actor. Retiring the endpoint fails all outstanding local calls.
+     * This hook runs in runtime plumbing, never as guest code. */
+    static void retireWhenDone(
+            GenerationalReplyRegistry registry,
+            GenerationalReplyRegistry.Endpoint endpoint,
+            ActorRuntime.ActorRef<?> actor) {
+        Objects.requireNonNull(registry, "registry");
+        Objects.requireNonNull(endpoint, "endpoint");
+        Objects.requireNonNull(actor, "actor");
+        actor.done().whenCompleteRuntime((ignored, failure) -> {
+            try {
+                registry.retire(endpoint);
+            } catch (SecurityException alreadyRetired) {
+                // A registry shutdown or earlier incarnation retirement
+                // already resolved all affected call futures.
+            }
+        });
+    }
+
     static <M, R> OresFuture<R> requestCurrentActor(
             ActorRuntime runtime,
             GenerationalReplyRegistry registry,
@@ -78,11 +98,7 @@ public final class ActorReplySchedulerBridge {
         Objects.requireNonNull(timeout, "timeout");
         Objects.requireNonNull(timer, "timer");
         Objects.requireNonNull(continuation, "continuation");
-        if (timeout.isZero() || timeout.isNegative()) {
-            ticket.failAdmission(caller,
-                    new IllegalArgumentException("request deadline must be positive"));
-            return OresFuture.from(ticket.result());
-        }
+        final boolean invalidTimeout = timeout.isZero() || timeout.isNegative();
 
         final ActorRuntime.ContinuationTarget owner = runtime.captureCurrentContinuationTarget();
         // Atomically claim the *producer* ticket before reporting cancellation
@@ -105,6 +121,11 @@ public final class ActorReplySchedulerBridge {
             }
         });
 
+        if (invalidTimeout) {
+            ticket.failAdmission(caller,
+                    new IllegalArgumentException("request deadline must be positive"));
+            return future;
+        }
         final long delay;
         try {
             delay = timeout.toNanos();
