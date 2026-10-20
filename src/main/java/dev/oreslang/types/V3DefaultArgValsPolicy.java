@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -22,6 +23,49 @@ import java.util.Objects;
 public final class V3DefaultArgValsPolicy {
     private V3DefaultArgValsPolicy() { }
 
+    // A compiler-created or imported AST can bypass the source parser's
+    // size limits. The v3 preview recursively visits nested type arguments
+    // while translating T? sugar, so preflight MUST run BEFORE that traversal.
+    // This is a bounds check only: it is not nominal Option type admission.
+    private static final int MAX_FORMALS = 1024;
+    private static final int MAX_ANNOTATIONS = 1024;
+    private static final int MAX_NAMED_DEFAULTS = 1024;
+    private static final int MAX_TYPE_DEPTH = 64;
+    private static final int MAX_TYPE_NODES = 8192;
+
+    private record TypeVisit(Ast.TypeRef type, int depth) { }
+
+    private static void preflight(List<Ast.Param> parameters, List<Ast.Annotation> annotations) {
+        if (parameters.size() > MAX_FORMALS || annotations.size() > MAX_ANNOTATIONS) {
+            throw new IllegalArgumentException("v3 default contract formal/annotation budget exceeded");
+        }
+        int namedDefaults = 0;
+        for (Ast.Annotation annotation : annotations) {
+            Objects.requireNonNull(annotation, "declaration annotation");
+            namedDefaults += annotation.namedDefaults().size();
+            if (namedDefaults > MAX_NAMED_DEFAULTS) {
+                throw new IllegalArgumentException("v3 named default count exceeds budget");
+            }
+        }
+        ArrayDeque<TypeVisit> pending = new ArrayDeque<>();
+        for (Ast.Param param : parameters) {
+            Objects.requireNonNull(param, "formal");
+            pending.addLast(new TypeVisit(Objects.requireNonNull(param.type(), "formal type"), 0));
+        }
+        int visited = 0;
+        while (!pending.isEmpty()) {
+            TypeVisit candidate = pending.removeLast();
+            if (candidate.depth() > MAX_TYPE_DEPTH || ++visited > MAX_TYPE_NODES) {
+                throw new IllegalArgumentException(
+                        "v3 default contract type depth/node budget exceeded");
+            }
+            for (Ast.TypeRef nested : candidate.type().arguments()) {
+                pending.addLast(new TypeVisit(
+                        Objects.requireNonNull(nested, "nested type"), candidate.depth() + 1));
+            }
+        }
+    }
+
     public record FormalPreview(
             String name, Ast.TypeRef bodyType, boolean omittable,
             boolean optionTyped, DefaultArgumentPolicy.Literal defaultValue) {
@@ -35,6 +79,7 @@ public final class V3DefaultArgValsPolicy {
             List<Ast.Param> parameters, List<Ast.Annotation> annotations) {
         Objects.requireNonNull(parameters, "parameters");
         Objects.requireNonNull(annotations, "annotations");
+        preflight(parameters, annotations);
 
         Map<String, Ast.Param> byName = new LinkedHashMap<>();
         for (Ast.Param param : parameters) {
