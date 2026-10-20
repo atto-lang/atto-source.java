@@ -5805,12 +5805,17 @@ public final class OresEvalRootNode extends RootNode {
                 ModelGraphCompiler.CompiledModel model =
                         modelCatalog.find(namespace.name() + "." + qualifiedModel.member());
                 if (model != null) {
-                    List<Object> configuration = evaluateArguments(call.arguments(), env);
+                    List<Object> constructorArguments = evaluateArguments(call.arguments(), env);
+                    Map<String, Object> configuration =
+                            model.bindConfiguration(constructorArguments);
+                    String configuredGraphDigest =
+                            model.configuredGraphDigest(configuration);
                     return invokableInvocation(
                             ignored -> new ModelInstance(
                                     this,
                                     model,
-                                    model.bindConfiguration(configuration),
+                                    configuration,
+                                    configuredGraphDigest,
                                     modelInstanceSequence.incrementAndGet()),
                             List.of());
                 }
@@ -5820,12 +5825,17 @@ public final class OresEvalRootNode extends RootNode {
                     && env.lookup(directName.name()) == Env.MISSING) {
                 ModelGraphCompiler.CompiledModel model = modelCatalog.find(directName.name());
                 if (model != null) {
-                    List<Object> configuration = evaluateArguments(call.arguments(), env);
+                    List<Object> constructorArguments = evaluateArguments(call.arguments(), env);
+                    Map<String, Object> configuration =
+                            model.bindConfiguration(constructorArguments);
+                    String configuredGraphDigest =
+                            model.configuredGraphDigest(configuration);
                     return invokableInvocation(
                             ignored -> new ModelInstance(
                                     this,
                                     model,
-                                    model.bindConfiguration(configuration),
+                                    configuration,
+                                    configuredGraphDigest,
                                     modelInstanceSequence.incrementAndGet()),
                             List.of());
                 }
@@ -7577,23 +7587,26 @@ public final class OresEvalRootNode extends RootNode {
             private final Evaluator owner;
             private final ModelGraphCompiler.CompiledModel model;
             private final Map<String, Object> configuration;
+            private final String configuredGraphDigest;
             private final long instanceSequence;
 
             private ModelInstance(
                     Evaluator owner,
                     ModelGraphCompiler.CompiledModel model,
                     Map<String, Object> configuration,
+                    String configuredGraphDigest,
                     long instanceSequence) {
                 this.owner = owner;
                 this.model = model;
                 this.configuration = Map.copyOf(configuration);
+                this.configuredGraphDigest = configuredGraphDigest;
                 this.instanceSequence = instanceSequence;
             }
 
             @Override public String toString() {
                 return "<model " + model.qualifiedName()
                         + " instance=" + instanceSequence
-                        + " graph=" + model.graphDigest().substring(0, 12) + ">";
+                        + " graph=" + configuredGraphDigest.substring(0, 12) + ">";
             }
         }
 
