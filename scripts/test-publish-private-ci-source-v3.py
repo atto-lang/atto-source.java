@@ -29,6 +29,9 @@ PLAN = (
             "schema": "ores-private-ci-test-plan-v1",
             "source_repo": v3.legacy.SOURCE_REPO,
             "allowed_prs": [1482],
+            "required_source_blobs": {
+                "hello.ores": v3.git_blob_sha(b"synthetic\n"),
+            },
             "commands": [
                 {
                     "argv": ["python3", "-c", "print('ok')"],
@@ -87,6 +90,32 @@ class PrivateCiV3Test(unittest.TestCase):
             v3.parse_contract(
                 raw, "trusted/ci", 1483, "ci/test-plans/java-pr1482.json"
             )
+
+    def test_reviewed_plan_requires_exact_source_blob_bindings(self):
+        missing = (
+            json.dumps({
+                "schema": "ores-private-ci-test-plan-v1",
+                "source_repo": v3.legacy.SOURCE_REPO,
+                "allowed_prs": [1482],
+                "commands": [{"argv": ["python3", "-c", "print('ok')"],
+                              "cwd": ".", "timeout_seconds": 30}],
+            }) + "\n"
+        ).encode()
+        with self.assertRaisesRegex(v3.Denied, "required source blobs"):
+            v3.validate_test_plan(missing, 1482)
+
+        maven_without_pom = (
+            json.dumps({
+                "schema": "ores-private-ci-test-plan-v1",
+                "source_repo": v3.legacy.SOURCE_REPO,
+                "allowed_prs": [1482],
+                "required_source_blobs": {"hello.ores": "a" * 40},
+                "commands": [{"argv": ["mvn", "test"],
+                              "cwd": ".", "timeout_seconds": 30}],
+            }) + "\n"
+        ).encode()
+        with self.assertRaisesRegex(v3.Denied, "bind exact pom.xml"):
+            v3.validate_test_plan(maven_without_pom, 1482)
 
     def test_contract_rejects_duplicate_json_keys(self):
         raw = (
