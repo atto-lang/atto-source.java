@@ -59,6 +59,13 @@ rendered logical trace can contain:
 The above is an excerpt of a trace, not a complete diagnostic envelope.
 Older `events` can be elided independently.
 
+At the Polyglot interop boundary, each `async_traces[]` element also exports
+`actor_history` (oldest-to-newest), `actor_history_order`, and
+`elided_actor_visits`. Its `frames` stream includes an `actor` entry for
+all retained actor visits (newest-first), even if unrelated await events
+have evicted the original actor-message boundary from the general event ring.
+These are sanitized, immutable frame projections; no message payloads are exposed.
+
 ## Validation and scope
 
 - Runtime tests exercise 10 actor hops with 1,500 await events and a
