@@ -2318,6 +2318,11 @@ public final class TypeChecker {
                 }
                 Type receiver = receiverDispatchType(deref(receiverSource));
                 Type index = typeOf(indexed.index(), env, generics, self);
+                if (receiver instanceof Named entry && isEntryType(entry)) {
+                    requireAssignable(index, Primitive.STRING, "Entry field key");
+                    throw new IllegalArgumentException(
+                            "Entry<K,V> is immutable; indexed assignment is not allowed");
+                }
                 if (receiver instanceof Record record) {
                     requireAssignable(index, Primitive.STRING, "record/struct field key");
                     Map<String, Type> indexableMembers = indexableRecordMembers(record);
@@ -3809,6 +3814,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("unknown static member '" + member.member() + "' on " + klass.name());
             }
 
+            if (receiver instanceof Named entry && isEntryType(entry)) {
+                return entryMemberType(entry, member.member(), false);
+            }
+
             if (receiver instanceof Record record) {
                 Type result = record.members().get(member.member());
                 if (result != null) return result;
@@ -3868,6 +3877,18 @@ public final class TypeChecker {
             String constantKey = constantStringKey(indexed.index(), env);
             Env.Binding indexedOwner = indexed.receiver() instanceof Ast.NameExpr ownerName
                     ? env.lookup(ownerName.name()) : null;
+            if (receiver instanceof Named entry && isEntryType(entry)) {
+                requireAssignable(index, Primitive.STRING, "Entry field key");
+                if (constantKey == null) {
+                    return indexedElementUnion(entry.arguments());
+                }
+                return switch (constantKey) {
+                    case "key" -> entry.arguments().get(0);
+                    case "value" -> entry.arguments().get(1);
+                    default -> throw new IllegalArgumentException(
+                            "unknown Entry field key '" + constantKey + "'");
+                };
+            }
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "record/struct field key");
                 Map<String, Type> indexableMembers = indexableRecordMembers(record);
@@ -4915,6 +4936,14 @@ public final class TypeChecker {
             if (member == null) throw new IllegalArgumentException("object destructure requires member '" + memberName + "'");
             return member;
         }
+        if (source instanceof Named entry && isEntryType(entry)) {
+            return switch (memberName) {
+                case "key" -> entry.arguments().get(0);
+                case "value" -> entry.arguments().get(1);
+                default -> throw new IllegalArgumentException(
+                        "object destructure requires Entry member '" + memberName + "'");
+            };
+        }
         if (source instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass == null) throw new IllegalArgumentException("object destructuring requires a record/map-like value");
@@ -5296,6 +5325,9 @@ public final class TypeChecker {
         }
         Type receiver = receiverDispatchType(
                 unwrapMutexGuard(deref(rawReceiver)));
+        if (receiver instanceof Named entry && isEntryType(entry)) {
+            return entryMemberType(entry, member.member(), writing);
+        }
         if (writing && receiver instanceof Record record && record.readOnly()) {
             throw new IllegalArgumentException(
                     "cannot mutate a readonly structural record value");
@@ -5442,6 +5474,7 @@ public final class TypeChecker {
 
         // Built-in sum/container values are data-only when their arguments pass.
         if (named.name().equals("Option") || named.name().equals("Result")
+                || named.name().equals("Entry")
                 || named.name().equals("OptionUnwrapError")) {
             return;
         }
@@ -5501,6 +5534,11 @@ public final class TypeChecker {
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("Iterator")
                 || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
+        if (named.name().equals("Entry")) {
+            return named.arguments().size() == 2
+                    && isSharedSafe(named.arguments().get(0), seen, genericBindings)
+                    && isSharedSafe(named.arguments().get(1), seen, genericBindings);
+        }
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
             return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
@@ -6492,11 +6530,29 @@ public final class TypeChecker {
         return null;
     }
 
-    private Record entryProductType(Type key, Type value) {
-        LinkedHashMap<String, Type> members = new LinkedHashMap<>();
-        members.put("key", widenCollectionElement(key));
-        members.put("value", widenCollectionElement(value));
-        return new Record(members, true, AggregateKind.RECORD);
+    private Named entryProductType(Type key, Type value) {
+        return new Named(
+                "Entry",
+                List.of(widenCollectionElement(key), widenCollectionElement(value)));
+    }
+
+    private static boolean isEntryType(Type type) {
+        return type instanceof Named named
+                && named.name().equals("Entry")
+                && named.arguments().size() == 2;
+    }
+
+    private Type entryMemberType(Named entry, String member, boolean writing) {
+        if (writing) {
+            throw new IllegalArgumentException(
+                    "Entry<K,V> is an immutable nominal key/value product");
+        }
+        return switch (member) {
+            case "key" -> entry.arguments().get(0);
+            case "value" -> entry.arguments().get(1);
+            default -> throw new IllegalArgumentException(
+                    "unknown Entry member '" + member + "'");
+        };
     }
 
     private Type builtinCollectionMember(Type receiver, String member) {
