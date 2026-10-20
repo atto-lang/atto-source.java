@@ -131,6 +131,64 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         }
     }
 
+    private static final class FirstFrameGateInputStream extends InputStream {
+        private final byte[] bytes;
+        private final int firstFrameBytes;
+        private final CountDownLatch firstFrameCopied;
+        private final CountDownLatch releaseFirstFrame;
+        private int offset;
+        private boolean gated;
+
+        FirstFrameGateInputStream(
+                byte[] bytes,
+                int firstFrameBytes,
+                CountDownLatch firstFrameCopied,
+                CountDownLatch releaseFirstFrame) {
+            this.bytes = bytes.clone();
+            if (firstFrameBytes <= 0 || firstFrameBytes >= bytes.length) {
+                throw new IllegalArgumentException("invalid first-frame boundary");
+            }
+            this.firstFrameBytes = firstFrameBytes;
+            this.firstFrameCopied = firstFrameCopied;
+            this.releaseFirstFrame = releaseFirstFrame;
+        }
+
+        private void gateAtFirstFrame() throws IOException {
+            if (gated || offset != firstFrameBytes) return;
+            gated = true;
+            firstFrameCopied.countDown();
+            try {
+                if (!releaseFirstFrame.await(3, TimeUnit.SECONDS)) {
+                    throw new IOException("first receipt frame gate timed out");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IOException("first receipt frame gate interrupted", interrupted);
+            }
+        }
+
+        @Override
+        public int read() throws IOException {
+            if (offset >= bytes.length) return -1;
+            int value = bytes[offset++] & 0xff;
+            gateAtFirstFrame();
+            return value;
+        }
+
+        @Override
+        public int read(byte[] target, int targetOffset, int length) throws IOException {
+            if (offset >= bytes.length) return -1;
+            int boundary = offset < firstFrameBytes ? firstFrameBytes : bytes.length;
+            int count = Math.min(length, boundary - offset);
+            System.arraycopy(bytes, offset, target, targetOffset, count);
+            offset += count;
+            gateAtFirstFrame();
+            return count;
+        }
+
+        int bytesRead() { return offset; }
+    }
+
     private static final class ConstructionFailureSocket extends Socket {
         private final boolean failOutput;
         private final boolean failClose;
@@ -871,6 +929,116 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             controlledSocket.close();
             drainCleanup.shutdownNow();
             drainCleanup.awaitTermination(2, TimeUnit.SECONDS);
+        }
+
+        // Close intent fences receipt admission, not merely key erasure.
+        // Reader A already owns readGate and may finish its authenticated ACK.
+        // Reader B starts before close but is queued behind A; after close
+        // begins it must recheck the fence inside readGate and consume none of
+        // the already-buffered terminal frame.
+        byte[] readFencePayload = "receipt read admission fence".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var readFenceMessage = envelope(
+                1, "receiptReadFence", 3, 4, readFencePayload);
+        byte[] readFenceAck = IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                readFenceMessage, 133,
+                IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED,
+                connectionBinding, key);
+        byte[] readFenceTerminal =
+                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                        readFenceMessage, 133,
+                        IpcReceiptCorrelation.Stage.HANDLER_COMMITTED,
+                        connectionBinding, key);
+        ByteArrayOutputStream firstReadFenceWire = new ByteArrayOutputStream();
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                firstReadFenceWire, readFenceAck);
+        ByteArrayOutputStream readFenceWire = new ByteArrayOutputStream();
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                readFenceWire, readFenceAck);
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                readFenceWire, readFenceTerminal);
+
+        CountDownLatch firstFenceFrameCopied = new CountDownLatch(1);
+        CountDownLatch releaseFirstFenceFrame = new CountDownLatch(1);
+        CountDownLatch readFenceCloseCalled = new CountDownLatch(1);
+        CountDownLatch secondReaderStarted = new CountDownLatch(1);
+        var readFenceInput = new FirstFrameGateInputStream(
+                readFenceWire.toByteArray(),
+                firstReadFenceWire.size(),
+                firstFenceFrameCopied,
+                releaseFirstFenceFrame);
+        var readFenceSocket = new ControlledSocket(
+                readFenceInput, readFenceCloseCalled);
+        ExecutorService readFenceCleanup = Executors.newSingleThreadExecutor(
+                r -> new Thread(r, "ipc-test-receipt-read-fence"));
+        try {
+            var bridge = new IpcReceiptCompletionBridge(1);
+            var transport = new IpcAuthenticatedSocketTransport(
+                    readFenceSocket, bridge, readFenceMessage, 1,
+                    authority(133, key, connectionBinding),
+                    readFenceCleanup::execute);
+            var submission = transport.send(readFenceMessage, readFencePayload);
+            check(!submission.writeAttemptFailed());
+
+            AtomicReference<IpcReceiptCorrelation.Stage> firstStage =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> firstFailure = new AtomicReference<>();
+            Thread firstReader = new Thread(() -> {
+                try {
+                    firstStage.set(transport.readVerifiedReceipt());
+                } catch (Throwable failure) {
+                    firstFailure.set(failure);
+                }
+            }, "ipc-test-read-fence-first");
+            firstReader.start();
+            check(firstFenceFrameCopied.await(2, TimeUnit.SECONDS));
+
+            AtomicReference<IpcReceiptCorrelation.Stage> secondStage =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> secondFailure = new AtomicReference<>();
+            Thread secondReader = new Thread(() -> {
+                secondReaderStarted.countDown();
+                try {
+                    secondStage.set(transport.readVerifiedReceipt());
+                } catch (Throwable failure) {
+                    secondFailure.set(failure);
+                }
+            }, "ipc-test-read-fence-second");
+            secondReader.start();
+            check(secondReaderStarted.await(2, TimeUnit.SECONDS));
+
+            transport.requestClose();
+            check(readFenceCloseCalled.await(2, TimeUnit.SECONDS));
+            check(readFenceInput.bytesRead() == firstReadFenceWire.size());
+            check(!transport.keyCloneZeroized());
+
+            releaseFirstFenceFrame.countDown();
+            firstReader.join(3000);
+            secondReader.join(3000);
+            check(!firstReader.isAlive());
+            check(!secondReader.isAlive());
+            check(firstFailure.get() == null);
+            check(firstStage.get()
+                    == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+            check(secondStage.get() == null);
+            check(secondFailure.get() instanceof IOException);
+            check(secondFailure.get().getMessage().contains(
+                    "receipt read after close request"));
+            check(readFenceInput.bytesRead() == firstReadFenceWire.size());
+
+            check(transport.requestCloseAndAwait(3000));
+            check(transport.keyCloneZeroized());
+            check(transport.connectionBindingCloneZeroized());
+            check(submission.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(bridge.counters().equals(
+                    new IpcReceiptCorrelation.Counters(0, 0)));
+            check(bridge.invariant());
+        } finally {
+            releaseFirstFenceFrame.countDown();
+            readFenceSocket.close();
+            readFenceCleanup.shutdownNow();
+            readFenceCleanup.awaitTermination(2, TimeUnit.SECONDS);
         }
 
         // Authenticated terminal receipt vs trusted close has one winner
