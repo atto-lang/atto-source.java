@@ -26,9 +26,25 @@ final class TaskCancellation {
 
     private final Set<TaskCancellation> children =
             Collections.newSetFromMap(new IdentityHashMap<>());
+    // Separate physical-lifetime edges from revocation edges. Cancellation
+    // detaches revocation edges immediately, but a child still occupies a
+    // parent join slot until its own scheduler-confirmed retirement.
+    private final Set<TaskCancellation> lifetimeChildren =
+            Collections.newSetFromMap(new IdentityHashMap<>());
     private final Set<Registration> revokers = new LinkedHashSet<>();
     private final Set<Registration> observers = new LinkedHashSet<>();
+    // Links are registered on a separate source authority. Their target
+    // owns the subscription lifetime so source observers cannot retain a
+    // physically completed downstream task indefinitely.
+    private final Set<Subscription> upstreamLinks = new LinkedHashSet<>();
     private TaskCancellation owner;
+    private TaskCancellation lifetimeParent;
+    // Set once the owning Task reaches terminal/quiescent publication.
+    // No new child or adoption may race a completed parent join barrier.
+    private boolean childAdmissionSealed;
+    private Runnable childrenDrained;
+    // Protected by GRAPH_LOCK: completed tokens must not regain authority.
+    private boolean retired;
     private volatile boolean cancelled;
     private volatile String cancellationReason;
     // Protected by GRAPH_LOCK: observers registered after the cancel decision
@@ -39,7 +55,12 @@ final class TaskCancellation {
 
     TaskCancellation child() {
         synchronized (GRAPH_LOCK) {
+            if (retired || childAdmissionSealed) {
+                throw new IllegalStateException("cannot spawn from sealed task authority");
+            }
             TaskCancellation child = new TaskCancellation();
+            child.lifetimeParent = this;
+            lifetimeChildren.add(child);
             if (cancelled) {
                 child.cancellationReason = cancellationReason;
                 child.cancelled = true;
@@ -56,6 +77,95 @@ final class TaskCancellation {
         return cancelled;
     }
 
+    /**
+     * Retire a physically completed task from its lifetime owner. This is
+     * distinct from cancellation: it must only be called after scheduler
+     * quiescence AND terminal-result publication. Without retirement, a
+     * long-lived scope retains every successfully completed child token.
+     *
+     * A concurrent parent cancellation either observes this child while it
+     * is still live or observes a completed child already unlinked from the
+     * tree. The graph lock supplies the linearization point.
+     */
+    void retire() {
+        List<Registration> detached = new ArrayList<>();
+        List<Subscription> detachedLinks = new ArrayList<>();
+        Runnable notifyLifetimeParent;
+        synchronized (GRAPH_LOCK) {
+            if (retired) return;
+            // Retiring a parent with live children would orphan structured
+            // cancellation authority: their next owner could no longer
+            // request revocation through this parent.
+            if (!lifetimeChildren.isEmpty()) {
+                throw new IllegalStateException("cannot retire authority with live children");
+            }
+            retired = true;
+            detachedLinks.addAll(upstreamLinks);
+            upstreamLinks.clear();
+            if (owner != null) owner.children.remove(this);
+            owner = null;
+            notifyLifetimeParent = detachLifetimeParentLocked();
+            detached.addAll(revokers);
+            revokers.clear();
+            // Cancellation may have marked this token while a synchronous
+            // revoker is still executing. Its pre-admitted observers are
+            // entitled to exactly one notification once revocation finishes,
+            // even if physical task quiescence races ahead of that callback.
+            // Never discard them here: the cancellation dispatch drains them
+            // after publishing revocationComplete under GRAPH_LOCK.
+            if (!cancelled || revocationComplete) {
+                detached.addAll(observers);
+                observers.clear();
+            }
+        }
+        // Release retained callback captures even when the caller keeps a
+        // Subscription reference after task completion. Do not invoke hooks.
+        // The graph lock cannot be held while detaching registrations.
+        for (Registration registration : detached) registration.close();
+        // Close subscriptions outside GRAPH_LOCK: Registration.close()
+        // synchronizes on GRAPH_LOCK to unlink from the source's observers.
+        for (Subscription link : detachedLinks) link.close();
+        if (notifyLifetimeParent != null) notifyLifetimeParent.run();
+    }
+
+    /**
+     * Close child admission and subscribe to the physical child-lifetime
+     * barrier. Caller invokes onDrained itself if true is returned. If not,
+     * onDrained is invoked once outside GRAPH_LOCK when the final child
+     * retires or transfers to another live owner. Never call guest code here.
+     */
+    boolean sealAndObserveChildQuiescence(Runnable onDrained) {
+        Objects.requireNonNull(onDrained, "onDrained");
+        synchronized (GRAPH_LOCK) {
+            if (retired) return true;
+            if (childAdmissionSealed) {
+                throw new IllegalStateException("child completion observer already registered");
+            }
+            childAdmissionSealed = true;
+            if (lifetimeChildren.isEmpty()) return true;
+            childrenDrained = onDrained;
+            return false;
+        }
+    }
+
+    private Runnable detachLifetimeParentLocked() {
+        TaskCancellation previous = lifetimeParent;
+        lifetimeParent = null;
+        if (previous == null) return null;
+        previous.lifetimeChildren.remove(this);
+        if (!previous.lifetimeChildren.isEmpty()) return null;
+        Runnable ready = previous.childrenDrained;
+        previous.childrenDrained = null;
+        return ready;
+    }
+
+    /** Runtime diagnostic for bounded lifetime-tree retention tests. */
+    int ownedChildCount() {
+        synchronized (GRAPH_LOCK) {
+            return children.size();
+        }
+    }
+
     /** Null until cancellation; writing reason precedes volatile cancelled. */
     String cancellationReason() {
         return cancellationReason;
@@ -70,7 +180,12 @@ final class TaskCancellation {
     /** Atomic reparent, never a detach. Caller must separately prove authority. */
     void adoptInto(TaskCancellation newOwner) {
         Objects.requireNonNull(newOwner, "newOwner");
+        Runnable notifyPreviousOwner = null;
         synchronized (GRAPH_LOCK) {
+            if (retired) throw new IllegalStateException("cannot transfer retired task");
+            if (newOwner.retired || newOwner.childAdmissionSealed) {
+                throw new IllegalStateException("cannot adopt into sealed task owner");
+            }
             if (cancelled) throw new IllegalStateException("cannot transfer cancelled task");
             if (newOwner.cancelled) throw new IllegalStateException("cannot adopt into cancelled owner");
             if (owner == null) throw new IllegalStateException("cannot transfer a root authority");
@@ -81,7 +196,11 @@ final class TaskCancellation {
             owner.children.remove(this);
             newOwner.children.add(this);
             owner = newOwner;
+            notifyPreviousOwner = detachLifetimeParentLocked();
+            lifetimeParent = newOwner;
+            newOwner.lifetimeChildren.add(this);
         }
+        if (notifyPreviousOwner != null) notifyPreviousOwner.run();
     }
 
     /**
@@ -96,7 +215,7 @@ final class TaskCancellation {
         List<TaskCancellation> marked = new ArrayList<>();
         List<Registration> revoke = new ArrayList<>();
         synchronized (GRAPH_LOCK) {
-            if (cancelled) return false;
+            if (retired || cancelled) return false;
             ArrayDeque<TaskCancellation> queue = new ArrayDeque<>();
             queue.addLast(this);
             while (!queue.isEmpty()) {
@@ -164,7 +283,7 @@ final class TaskCancellation {
     Subscription linkCancellationFrom(TaskCancellation source) {
         Objects.requireNonNull(source, "source");
         if (source == this) throw new IllegalArgumentException("self cancellation link");
-        return source.onCancel(() -> {
+        Subscription link = source.onCancel(() -> {
             String from = Objects.requireNonNullElse(
                     source.cancellationReason(), DEFAULT_REASON);
             String linked = from.startsWith("linked:") ? from : "linked:" + from;
@@ -173,19 +292,34 @@ final class TaskCancellation {
             }
             cancel(linked);
         });
+        boolean discard;
+        synchronized (GRAPH_LOCK) {
+            // Registration can race task completion. A link installed before
+            // retirement is owned by this target; one installed afterward
+            // is immediately closed instead of pinning this target on source.
+            discard = retired;
+            if (!discard) upstreamLinks.add(link);
+        }
+        if (discard) link.close();
+        return link;
     }
 
     private Subscription register(Runnable hook, boolean revoke) {
         Objects.requireNonNull(hook, "hook");
         Registration registration = new Registration(this, hook, revoke);
         boolean deliver;
+        boolean discard;
         synchronized (GRAPH_LOCK) {
-            // During cancellation, new revokers execute immediately; new
-            // observers wait until the initial revoker batch completes.
-            deliver = cancelled && (revoke || revocationComplete);
-            if (!deliver) (revoke ? revokers : observers).add(registration);
+            // A completed task cannot accept new listeners that keep its
+            // captured actor/guest state alive indefinitely.
+            discard = retired;
+            deliver = !discard && cancelled && (revoke || revocationComplete);
+            if (!discard && !deliver) {
+                (revoke ? revokers : observers).add(registration);
+            }
         }
-        if (deliver) dispatch(registration::deliver);
+        if (discard) registration.close();
+        else if (deliver) dispatch(registration::deliver);
         return registration;
     }
 
