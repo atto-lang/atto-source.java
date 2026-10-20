@@ -145,7 +145,70 @@ public final class RealtimeRegionEffectModelSelfTest {
                 new RealtimeRegionEffectModel.Budget(64, 32, 1, 3),
                 fn("run", new RealtimeRegionEffectModel.CopyBytes(1),
                         new RealtimeRegionEffectModel.CopyBytes(1))));
-        if (negatives != 23) throw new AssertionError("expected 23 negative checks, got " + negatives);
+        // Scope cleanup obligations cannot disappear when no binding remains.
+        rejects("unclosed empty scope", plan(
+                List.of(actor(), scope()), Set.of(), NORMAL,
+                fn("run", new RealtimeRegionEffectModel.CopyBytes(0))));
+        rejects("unclosed dropped binding scope", basic(
+                new RealtimeRegionEffectModel.Allocate("tmp", "scratch", 3, false),
+                new RealtimeRegionEffectModel.Drop("tmp")));
+
+        RealtimeRegionEffectModel.Region inner =
+                new RealtimeRegionEffectModel.Region("inner",
+                        RealtimeRegionEffectModel.RegionKind.SCOPED, ACTOR, null, 2, 1, 16);
+        RealtimeRegionEffectModel.Region outer =
+                new RealtimeRegionEffectModel.Region("outer",
+                        RealtimeRegionEffectModel.RegionKind.SCOPED, ACTOR, null, 1, 1, 16);
+        RealtimeRegionEffectModel.Region equal =
+                new RealtimeRegionEffectModel.Region("equal",
+                        RealtimeRegionEffectModel.RegionKind.SCOPED, ACTOR, null, 0, 1, 16);
+
+        // A retained pointer must survive Drop of the *source binding*.
+        rejects("stored pointer dangling after source scope closes", plan(
+                List.of(actor(), inner, outer), Set.of(), NORMAL,
+                fn("run",
+                        new RealtimeRegionEffectModel.Allocate("local", "inner", 4, false),
+                        new RealtimeRegionEffectModel.Store("local", "outer"),
+                        new RealtimeRegionEffectModel.Drop("local"),
+                        new RealtimeRegionEffectModel.EndScope("inner"),
+                        new RealtimeRegionEffectModel.EndScope("outer"))));
+        rejects("equal rank does not prove scope nesting", plan(
+                List.of(actor(), inner, equal), Set.of(), NORMAL,
+                fn("run",
+                        new RealtimeRegionEffectModel.Allocate("local", "inner", 4, false),
+                        new RealtimeRegionEffectModel.Store("local", "equal"),
+                        new RealtimeRegionEffectModel.Drop("local"),
+                        new RealtimeRegionEffectModel.EndScope("inner"),
+                        new RealtimeRegionEffectModel.EndScope("equal"))));
+        rejects("scope already ended cannot receive reference", basic(
+                new RealtimeRegionEffectModel.EndScope("scratch"),
+                new RealtimeRegionEffectModel.Allocate("live", "arena", 2, false),
+                new RealtimeRegionEffectModel.Store("live", "scratch")));
+        rejects("duplicate region must not override original", plan(
+                List.of(actor(), actor()), Set.of(), NORMAL,
+                fn("run", new RealtimeRegionEffectModel.CopyBytes(0))));
+
+        // Closing the destination first is safe in this symbolic model:
+        // no surviving region retains a pointer into the source at its end.
+        var ordered = plan(List.of(actor(), inner, outer), Set.of(), NORMAL,
+                fn("run",
+                        new RealtimeRegionEffectModel.Allocate("v", "inner", 4, false),
+                        new RealtimeRegionEffectModel.Store("v", "outer"),
+                        new RealtimeRegionEffectModel.EndScope("outer"),
+                        new RealtimeRegionEffectModel.Drop("v"),
+                        new RealtimeRegionEffectModel.EndScope("inner")));
+        if (!RealtimeRegionEffectModel.check(ordered).assurance().startsWith("SYMBOLIC_REGION_MODEL_ONLY")) {
+            throw new AssertionError("valid scope closure order was not modeled");
+        }
+        var selfContained = plan(List.of(actor(), inner), Set.of(), NORMAL,
+                fn("run",
+                        new RealtimeRegionEffectModel.Allocate("v", "inner", 2, false),
+                        new RealtimeRegionEffectModel.Store("v", "inner"),
+                        new RealtimeRegionEffectModel.Drop("v"),
+                        new RealtimeRegionEffectModel.EndScope("inner")));
+        RealtimeRegionEffectModel.check(selfContained);
+
+        if (negatives != 29) throw new AssertionError("expected 29 negative checks, got " + negatives);
         System.out.println("PASS: RT symbolic region model, transitive resource accounting, and "
                 + negatives + " denied unsafe plans");
     }
