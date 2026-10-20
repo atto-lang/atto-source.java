@@ -69,6 +69,7 @@ public final class TaskBoundaryAdmissions {
     private final IdentityHashMap<Ast.TaskExpr, BoundaryAdmission> byBoundary =
             new IdentityHashMap<>();
     private boolean sealed;
+    private boolean executable;
 
     TaskBoundaryAdmissions(Ast.Program programIdentity) {
         this.programIdentity =
@@ -81,7 +82,10 @@ public final class TaskBoundaryAdmissions {
      */
     public static TaskBoundaryAdmissions rejectAll(
             Ast.Program programIdentity) {
-        return new TaskBoundaryAdmissions(programIdentity).seal();
+        TaskBoundaryAdmissions admissions =
+                new TaskBoundaryAdmissions(programIdentity).seal();
+        admissions.executable = true;
+        return admissions;
     }
 
     void recordScalar(
@@ -129,6 +133,23 @@ public final class TaskBoundaryAdmissions {
     }
 
     /**
+     * Upgrade a type-sealed ledger to executable authority only after the
+     * ownership checker has validated this same exact Program identity.
+     */
+    public TaskBoundaryAdmissions authorizeExecution(
+            Ast.Program program,
+            OwnershipChecker.TaskAdmissionSeal ownershipSeal) {
+        Objects.requireNonNull(ownershipSeal, "ownershipSeal");
+        requireTypeSealedProgram(program);
+        if (ownershipSeal.programIdentity() != programIdentity) {
+            throw new IllegalArgumentException(
+                    "ownership Task seal belongs to a different exact program instance");
+        }
+        executable = true;
+        return this;
+    }
+
+    /**
      * Fail-closed executable scalar lookup. A valid zero-capture literal Task
      * still has a concrete ScalarAdmission; missing proof never returns null or
      * an empty list that lowering could mistake for authorization.
@@ -136,7 +157,7 @@ public final class TaskBoundaryAdmissions {
     public ScalarAdmission requireScalar(
             Ast.Program program,
             Ast.TaskExpr boundary) {
-        requireProgram(program);
+        requireExecutableProgram(program);
         BoundaryAdmission admission = requireBoundary(boundary);
         if (!(admission instanceof ScalarBoundary scalar)) {
             throw new IllegalArgumentException(
@@ -155,7 +176,7 @@ public final class TaskBoundaryAdmissions {
             Ast.Program program,
             Ast.TaskExpr boundary,
             TaskAccessVerifier verifier) {
-        requireProgram(program);
+        requireExecutableProgram(program);
         Objects.requireNonNull(verifier, "verifier");
         BoundaryAdmission admission = requireBoundary(boundary);
         if (!(admission instanceof ScopedLoanBoundary scoped)) {
@@ -166,9 +187,9 @@ public final class TaskBoundaryAdmissions {
                 scoped.accessProof(), program);
     }
 
-    /** Verify this sealed ledger belongs to this exact checked program. */
+    /** Verify executable authority belongs to this exact checked program. */
     public void requireProgramIdentity(Ast.Program program) {
-        requireProgram(program);
+        requireExecutableProgram(program);
     }
 
     public int boundaryCount() {
@@ -177,6 +198,10 @@ public final class TaskBoundaryAdmissions {
 
     public boolean sealed() {
         return sealed;
+    }
+
+    public boolean executable() {
+        return executable;
     }
 
     private void put(Ast.TaskExpr boundary, BoundaryAdmission admission) {
@@ -203,7 +228,7 @@ public final class TaskBoundaryAdmissions {
         return byBoundary.get(boundary);
     }
 
-    private void requireProgram(Ast.Program program) {
+    private void requireTypeSealedProgram(Ast.Program program) {
         Objects.requireNonNull(program, "program");
         if (!sealed) {
             throw new IllegalStateException(
@@ -212,6 +237,14 @@ public final class TaskBoundaryAdmissions {
         if (program != programIdentity) {
             throw new IllegalArgumentException(
                     "Task admission belongs to a different exact program instance");
+        }
+    }
+
+    private void requireExecutableProgram(Ast.Program program) {
+        requireTypeSealedProgram(program);
+        if (!executable) {
+            throw new IllegalStateException(
+                    "Task boundary admissions lack ownership-validated execution authority");
         }
     }
 
