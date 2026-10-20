@@ -2152,6 +2152,12 @@ public final class TypeChecker {
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
         if (expr instanceof Ast.AssignExpr assignment) {
+            if (currentConstructorOwner != null
+                    && capturesConstructorSelfValue(assignment.value())) {
+                throw new IllegalArgumentException(
+                        "constructor self cannot escape through assignment before "
+                                + "definite class-field initialization and escape safety are proven");
+            }
             Type targetType;
             List<Type> dynamicFixedSlots = List.of();
             String where;
@@ -2400,6 +2406,13 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (currentConstructorOwner != null
+                    && call.arguments().stream()
+                            .anyMatch(TypeChecker::capturesConstructorSelfValue)) {
+                throw new IllegalArgumentException(
+                        "constructor self cannot be passed as a call argument before "
+                                + "definite class-field initialization and escape safety are proven");
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
@@ -3691,6 +3704,13 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, closed struct/record, or class field");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (currentConstructorOwner != null
+                    && created.arguments().stream()
+                            .anyMatch(TypeChecker::capturesConstructorSelfValue)) {
+                throw new IllegalArgumentException(
+                        "constructor self cannot be passed into nested construction before "
+                                + "definite class-field initialization and escape safety are proven");
+            }
             // Guest Symbols are immutable keys, not fresh reference capabilities.
             // Do not silently reinterpret the historical STABLE constructor.
             if (created.type().name().equals("Symbol") && findClass("Symbol") == null) {
@@ -3806,6 +3826,13 @@ public final class TypeChecker {
                     "await requires Future<T> or ActorRef<T>; got " + awaitedType);
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
+            if (currentConstructorOwner != null
+                    && channelOp.operation() == Ast.ChannelOperation.WRITE
+                    && capturesConstructorSelfValue(channelOp.value())) {
+                throw new IllegalArgumentException(
+                        "constructor self cannot be written to a channel before "
+                                + "definite class-field initialization and escape safety are proven");
+            }
             Type element = channelElementType(
                     typeOf(channelOp.channel(), env, generics, self),
                     channelOp.operation() == Ast.ChannelOperation.READ ? "readch" : "writech");
