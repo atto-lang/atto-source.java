@@ -7518,6 +7518,9 @@ public final class TypeChecker {
             if (actual.methodKeys().contains(required.getKey())
                     != expected.methodKeys().contains(required.getKey())) return false;
             if (!assignable(candidate, required.getValue())) return false;
+            if (expected.readOnly()
+                    && !Types.representationPreservingFieldRead(candidate, required.getValue()))
+                return false;
             // Writable slots must be genuinely invariant. Two-way assignability
             // is insufficient: Unknown, dynamic interop and permissive generic
             // relations can pass both directions without equal representations.

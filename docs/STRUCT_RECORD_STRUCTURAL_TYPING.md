@@ -46,6 +46,18 @@ storage location, but none of these narrowed parameter views exposes it.
 `record{foo: int}` is not a `record{foo: 3}` value initializer, a nominal
 record declaration, or a separate runtime layout.
 
+## Representation-preserving readonly projections (batch 11)
+
+A readonly record or struct type view must not retype a stored field using an
+ordinary expression's numeric widening rule. A source `{foo: int}` cannot
+satisfy a readonly `record{foo: float}` just because an expression of type
+`int` can be explicitly or implicitly converted to `float`: no field
+conversion or copy occurs at the view boundary. This prohibition propagates
+through nested row views, lists and tuples; width narrowing and exact field
+types remain allowed. No dynamic-map allocation or class/actor identity
+conversion is introduced. This is a staged Java contract until full exact-head
+JDK 25 and backend parity testing succeeds.
+
 ## Soundness gates
 
 - **Direction:** `S` satisfies `R` if every required public/readable field

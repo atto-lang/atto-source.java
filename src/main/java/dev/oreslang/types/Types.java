@@ -121,6 +121,43 @@ public final class Types {
 
     public enum Unknown implements Type { INSTANCE }
 
+    /**
+     * A readonly record projection does not materialize a numeric conversion.
+     * In particular, a stored int cannot be read as float merely because an
+     * ordinary expression could widen int to float. Nested containers and
+     * shape views must preserve this rule transitively. Nominal class/interface
+     * conversion is checked separately by TypeChecker.
+     */
+    static boolean representationPreservingFieldRead(Type from, Type to) {
+        if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return false;
+        if (from.equals(to)) return true;
+        if (from instanceof Primitive source && to instanceof Primitive target)
+            return source == target;
+        if (from instanceof Tuple source && to instanceof Tuple target) {
+            if (source.kind() != target.kind()
+                    || source.elements().size() != target.elements().size()) return false;
+            for (int i = 0; i < source.elements().size(); i++)
+                if (!representationPreservingFieldRead(
+                        source.elements().get(i), target.elements().get(i))) return false;
+            return true;
+        }
+        if (from instanceof ListType source && to instanceof ListType target)
+            return representationPreservingFieldRead(source.element(), target.element());
+        if (from instanceof Record source && to instanceof Record target)
+            return isAssignable(source, target);
+        if (from instanceof Named source && to instanceof Named target
+                && source.name().equals(target.name())) {
+            if (source.arguments().size() != target.arguments().size()) return false;
+            for (int i = 0; i < source.arguments().size(); i++)
+                if (!representationPreservingFieldRead(
+                        source.arguments().get(i), target.arguments().get(i))) return false;
+        }
+        // Other nominal/concrete projections still require normal assignability
+        // and ownership checks; this helper only excludes known non-preserving
+        // field coercions, not their independently proven subtyping.
+        return true;
+    }
+
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
@@ -169,6 +206,9 @@ public final class Types {
                 if (source.methodKeys().contains(required.getKey())
                         != target.methodKeys().contains(required.getKey())) return false;
                 if (!isAssignable(actual, required.getValue())) return false;
+                if (target.readOnly()
+                        && !representationPreservingFieldRead(actual, required.getValue()))
+                    return false;
                 // Writable data slots require equal resolved types. Bidirectional
                 // assignability is not enough: Unknown/Generic can match both
                 // directions and would allow writes through an unsafe alias.
