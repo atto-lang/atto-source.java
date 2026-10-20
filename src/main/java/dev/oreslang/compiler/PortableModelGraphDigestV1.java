@@ -90,3 +90,123 @@ public final class PortableModelGraphDigestV1 {
         }
         byte[] finish() { return out.toByteArray(); }
     }
+
+    private static void encodeConstant(Bytes out, Constant c) {
+        int tag = ordinal(c.kind(), new String[]{"bool","i64","f64bits","string","symbol"}, "MODEL_INVALID_CONST");
+        out.u8(tag);
+        switch (c.kind()) {
+            case "bool" -> {
+                if (!c.value().equals("true") && !c.value().equals("false")) fail("MODEL_INVALID_CONST");
+                out.u8(c.value().equals("true") ? 1 : 0);
+            }
+            case "i64" -> {
+                if (!c.value().matches("-?(0|[1-9][0-9]*)")) fail("MODEL_INVALID_CONST");
+                try { out.i64(Long.parseLong(c.value())); }
+                catch (NumberFormatException e) { fail("MODEL_CONST_OVERFLOW"); }
+            }
+            case "f64bits" -> {
+                if (!c.value().matches("0x[0-9a-f]{16}")) fail("MODEL_INVALID_CONST");
+                long bits;
+                try { bits = Long.parseUnsignedLong(c.value().substring(2), 16); }
+                catch (NumberFormatException e) { fail("MODEL_INVALID_CONST"); return; }
+                if (((bits >>> 52) & 0x7ffL) == 0x7ffL) fail("MODEL_NONFINITE_CONST");
+                out.i64(bits);
+            }
+            case "string", "symbol" -> out.string(c.value());
+            default -> fail("MODEL_INVALID_CONST");
+        }
+    }
+
+    private static void encodePort(Bytes out, Port port) {
+        if (port instanceof NominalPort n) {
+            out.u8(1); out.string(n.typeAbi()); out.u64(n.bytes()); return;
+        }
+        if (!(port instanceof BufferPort b) || b.shape().size() > 8) fail("MODEL_INVALID_PORT");
+        out.u8(0);
+        out.u8(ordinal(b.dtype(), new String[]{"bool","i32","i64","f32","f64"}, "MODEL_INVALID_PORT"));
+        out.u8(b.shape().size());
+        for (long extent : b.shape()) { if (extent < 0) fail("MODEL_INVALID_PORT"); out.u64(extent); }
+        String layout = b.layout() == null ? (b.shape().isEmpty() ? "scalar" : "contiguous") : b.layout();
+        if ((b.shape().isEmpty() && !layout.equals("scalar")) ||
+                (!b.shape().isEmpty() && !layout.equals("contiguous"))) fail("MODEL_INVALID_PORT");
+        out.u8(ordinal(layout, new String[]{"scalar","contiguous"}, "MODEL_INVALID_PORT"));
+        if (b.unit() == null) out.u8(0); else { out.u8(1); out.string(b.unit()); }
+    }
+
+    public static byte[] canonicalBytes(Graph graph) {
+        if (graph.version() != 1 || graph.nodes().isEmpty() || graph.outputs().isEmpty())
+            fail("MODEL_INVALID_RESOLVED_GRAPH");
+        Bytes out = new Bytes();
+        out.raw("ORESLANG-MODEL-GRAPH-V1\0".getBytes(StandardCharsets.US_ASCII));
+        out.u32(1);
+        out.string(graph.modelTypeId());
+
+        Map<String,Integer> ordinals = new HashMap<>();
+        for (int i = 0; i < graph.nodes().size(); i++) {
+            String id = graph.nodes().get(i).id();
+            if (id.isEmpty() || ordinals.putIfAbsent(id, i) != null) fail("MODEL_DUPLICATE_NODE");
+        }
+
+        out.u32(graph.nodes().size());
+        for (int index = 0; index < graph.nodes().size(); index++) {
+            Node node = graph.nodes().get(index);
+            Signature sig = node.signature();
+            if (node.constArgs().size() != sig.constKinds().size()) fail("MODEL_CONST_ARITY_MISMATCH");
+            out.string(node.op());
+            out.string(sig.abi());
+            out.digest(sig.implDigest());
+            out.u8(ordinal(sig.provenance(), new String[]{"verified-ores","trusted-native"}, "MODEL_INVALID_OP_SIGNATURE"));
+            out.u8(ordinal(sig.effect(), new String[]{"pure","io","network","random","clock","actor","ffi","suspend"},
+                    "MODEL_INVALID_OP_SIGNATURE"));
+            out.u8(sig.vjp() ? 1 : 0);
+            out.u32(sig.constKinds().size());
+            for (String kind : sig.constKinds())
+                out.u8(ordinal(kind, new String[]{"bool","i64","f64bits","string","symbol"}, "MODEL_INVALID_OP_SIGNATURE"));
+            out.u32(node.constArgs().size());
+            for (int i = 0; i < node.constArgs().size(); i++) {
+                if (!node.constArgs().get(i).kind().equals(sig.constKinds().get(i)))
+                    fail("MODEL_CONST_TYPE_MISMATCH");
+                encodeConstant(out, node.constArgs().get(i));
+            }
+            out.u32(node.inputs().size());
+            for (String parent : node.inputs()) {
+                Integer p = ordinals.get(parent);
+                if (p == null || p >= index) fail("MODEL_FORWARD_OR_CYCLIC_EDGE");
+                out.u32(p);
+            }
+            out.u32(sig.inputs().size());
+            for (Port input : sig.inputs()) encodePort(out, input);
+            encodePort(out, sig.output());
+            out.u64(sig.scratchBytes());
+            out.u8(sig.profile().freestanding() ? 1 : 0);
+            out.u8(ordinal(sig.profile().allocation(), new String[]{"none","scratch","dynamic"}, "MODEL_INVALID_OP_PROFILE"));
+            out.u8(sig.profile().deterministic() ? 1 : 0);
+        }
+
+        out.u32(graph.outputs().size());
+        Map<String,Boolean> seen = new HashMap<>();
+        for (String output : graph.outputs()) {
+            Integer n = ordinals.get(output);
+            if (n == null) fail("MODEL_UNKNOWN_OUTPUT");
+            if (seen.putIfAbsent(output, Boolean.TRUE) != null) fail("MODEL_DUPLICATE_OUTPUT");
+            out.u32(n);
+        }
+        return out.finish();
+    }
+
+    public static String digest(Graph graph) {
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256").digest(canonicalBytes(graph));
+            char[] chars = new char[64];
+            char[] hex = "0123456789abcdef".toCharArray();
+            for (int i = 0; i < hash.length; i++) {
+                int b = hash[i] & 0xff;
+                chars[i*2] = hex[b >>> 4];
+                chars[i*2+1] = hex[b & 15];
+            }
+            return new String(chars);
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
+}
