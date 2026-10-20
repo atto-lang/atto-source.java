@@ -300,4 +300,23 @@ final class RepeatingSequenceShapeSafetyTest {
                 }
                 """);
     }
+
+    @Test
+    void nestedAliasesAndBorrowWrappersCannotEraseOrInventShape() {
+        var element = Types.unionOf(List.of(
+                Types.Primitive.INT, Types.Primitive.STRING, Types.Primitive.BOOL));
+        var shaped = new Types.ListType(element, List.of(
+                Types.Primitive.INT, Types.Primitive.STRING, Types.Primitive.BOOL));
+        var plain = new Types.ListType(element);
+        var shapedOption = new Types.Named("Option", List.of(shaped));
+        var plainOption = new Types.Named("Option", List.of(plain));
+        assertFalse(Types.isAssignable(shapedOption, plainOption));
+        assertFalse(Types.isAssignable(plainOption, shapedOption));
+        assertFalse(Types.isAssignable(new Types.Borrow(shaped, true),
+                new Types.Borrow(plain, true)));
+        assertFalse(Types.isAssignable(new Types.Borrow(plain, true),
+                new Types.Borrow(shaped, true)));
+        assertTrue(Types.isAssignable(new Types.Borrow(shaped, true),
+                new Types.Borrow(shaped, true)));
+    }
 }
