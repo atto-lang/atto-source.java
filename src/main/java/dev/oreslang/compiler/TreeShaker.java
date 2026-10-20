@@ -353,8 +353,13 @@ public final class TreeShaker {
                         member.member());
             }
             if (expression instanceof Ast.IndexExpr indexed) {
+                Ast.Expr substitutedReceiver =
+                        substitute(indexed.receiver(), substitutions, shadowed);
+                Ast.CheckedClassView.copy(indexed.receiver(), substitutedReceiver);
+                Ast.CheckedStructuralFieldDomain.copy(
+                        indexed.receiver(), substitutedReceiver);
                 return new Ast.IndexExpr(
-                        substitute(indexed.receiver(), substitutions, shadowed),
+                        substitutedReceiver,
                         substitute(indexed.index(), substitutions, shadowed));
             }
             if (expression instanceof Ast.NewExpr created) {
