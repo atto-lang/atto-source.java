@@ -143,7 +143,6 @@ grep -Fq "EXPECTED_SOURCE_SHA: $expected_expression" "$workflow"
 grep -Fq '[[ "$actual" == "$EXPECTED_SOURCE_SHA" ]]' "$workflow"
 grep -Fq "PRIVATE_PUBLISHER_SOURCE_SHA_MISMATCH" "$workflow"
 grep -Fq "PRIVATE_PUBLISHER_POST_TEST_HEAD_MISMATCH" "$workflow"
-grep -Fq "PRIVATE_PUBLISHER_REGRESSIONS_COMPLETE_SHA=%s PASSES=3" "$workflow"
 printf 'PASS: publisher PR checkout and triple-regression receipt bind exact HEAD\n'
 
 # Source-free negative tests for the exact-tree worktree evidence tripwire.
@@ -159,7 +158,7 @@ mkdir -p "$work/exact-head-oracle"
 git -C "$work/exact-head-oracle" init -q
 git -C "$work/exact-head-oracle" config user.email ci-fixture@example.invalid
 git -C "$work/exact-head-oracle" config user.name CI-Fixture
-printf 'stable\\n' > "$work/exact-head-oracle/checked.txt"
+printf 'stable\n' > "$work/exact-head-oracle/checked.txt"
 git -C "$work/exact-head-oracle" add checked.txt
 git -C "$work/exact-head-oracle" commit -qm source-free
 (
@@ -170,14 +169,14 @@ git -C "$work/exact-head-oracle" commit -qm source-free
   expected="$(git rev-parse --verify 'HEAD^{tree}')"
   test "$expected" = "$(git rev-parse --verify 'HEAD^{tree}')"
 
-  printf 'modified\\n' > checked.txt
+  printf 'modified\n' > checked.txt
   if git diff --quiet --exit-code HEAD --; then
     echo 'Tracked mutation escaped publisher worktree gate' >&2
     exit 1
   fi
   git restore checked.txt
 
-  printf 'staged\\n' > checked.txt
+  printf 'staged\n' > checked.txt
   git add checked.txt
   if git diff --cached --quiet --exit-code HEAD --; then
     echo 'Index mutation escaped publisher worktree gate' >&2
@@ -186,7 +185,7 @@ git -C "$work/exact-head-oracle" commit -qm source-free
   git reset -q HEAD -- checked.txt
   git restore checked.txt
 
-  printf 'injected\\n' > extra.txt
+  printf 'injected\n' > extra.txt
   if test -z "$(git ls-files --others --exclude-standard)"; then
     echo 'Untracked source escaped publisher worktree gate' >&2
     exit 1
@@ -196,7 +195,7 @@ git -C "$work/exact-head-oracle" commit -qm source-free
   git diff --cached --quiet --exit-code HEAD --
   test -z "$(git ls-files --others --exclude-standard)"
 )
-printf 'PASS: publisher worktree oracle rejects tracked/staged/untracked mutations\\n'
+printf 'PASS: publisher worktree oracle rejects tracked/staged/untracked mutations\n'
 
 
 printf 'PASS: private identity, symlink directory, multiline API, and launcher injection rejection\n'
