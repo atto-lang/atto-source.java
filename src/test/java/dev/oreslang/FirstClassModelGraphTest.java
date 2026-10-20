@@ -254,8 +254,8 @@ final class FirstClassModelGraphTest {
 
         assertThrowsMessage("MODEL_TYPE_NAME_COLLISION", () ->
                 OresCompiler.parseAndTypeCheck("""
-                        define interface PriceEstimate as
-                          fnc read(): float;
+                        define interface PriceEstimate
+                          fnc read() => float;
                         end
                         fnc Identity(float input): float { return input; }
                         define model PriceEstimate as
