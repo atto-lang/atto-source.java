@@ -1267,6 +1267,14 @@ public final class OwnershipChecker {
             return new ValueInfo(elementType, elementKind, null);
         }
         if (expr instanceof Ast.NewExpr created) {
+            // Creating a Future immediately schedules an async provider and
+            // arms a completion path. It is not a pure value constructor:
+            // that activity must not escape a live MutexGuard/critical
+            // section, even if the provider itself is stateless.
+            if (created.type().name().equals("Future")
+                    && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
+                throw error("cannot start new Future<T> while holding a MutexGuard");
+            }
             List<Ast.TypeRef> argumentTypes = new ArrayList<>(created.arguments().size());
             for (Ast.Expr arg : created.arguments()) {
                 ValueInfo info = checkExpr(arg, scope, true);
