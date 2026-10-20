@@ -396,6 +396,43 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /**
+     * Trusted compiler-lowering path for moved Task values. The retirement
+     * callback is one-shot and runs only after the Task's own physical
+     * quiescence contract has completed, or immediately when admission throws
+     * before any scheduler child can own the transfer.
+     */
+    public <T> OresFuture<T> startCompilerAdmittedTask(
+            Task<T> task,
+            Runnable retireAfterPhysicalDone) {
+        return startCompilerAdmittedTask(
+                task, retireAfterPhysicalDone, ignored -> { });
+    }
+
+    public <T> OresFuture<T> startCompilerAdmittedTask(
+            Task<T> task,
+            Runnable retireAfterPhysicalDone,
+            java.util.function.Consumer<OresFuture<T>> onTerminalReady) {
+        Objects.requireNonNull(retireAfterPhysicalDone,
+                "physical Task retirement");
+        Objects.requireNonNull(onTerminalReady, "terminal-ready hook");
+        AtomicBoolean retired = new AtomicBoolean();
+        Runnable retireOnce = () -> {
+            if (retired.compareAndSet(false, true)) {
+                retireAfterPhysicalDone.run();
+            }
+        };
+        try {
+            return start(task, retireOnce, onTerminalReady);
+        } catch (RuntimeException | Error admissionFailure) {
+            // No scheduler child exists when start(...) itself throws. A
+            // failure after publication is represented by the returned Future
+            // and retires through the ordinary physical-quiescence path.
+            retireOnce.run();
+            throw admissionFailure;
+        }
+    }
+
+    /**
      * Trusted runtime lifecycle hook. A cancelled Future can settle before
      * the current guest carrier has physically exited; this callback fires
      * only after task execution is quiescent (or before it ever started).
@@ -650,6 +687,11 @@ public final class OresScheduler implements AutoCloseable {
         private final Task<T> task;
         private final Runnable onQuiescent;
         private final AtomicBoolean quiescenceNotified = new AtomicBoolean();
+        // quiescenceNotified means physical retirement has been initiated.
+        // retirementResolved is stronger: the trusted lifecycle callback has
+        // either succeeded or failed, so terminal publication has an outcome.
+        private final AtomicBoolean retirementCallbackClaimed = new AtomicBoolean();
+        private final AtomicBoolean retirementResolved = new AtomicBoolean();
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
@@ -1100,30 +1142,71 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void retireWhenQuiescent() {
-            if (phase.get() == TERMINAL && !executing.get()
-                    && quiescenceNotified.compareAndSet(false, true)) {
-                // Keep the task observable in the scheduler's live set while a
-                // cancelled/failed guest turn is still physically executing.
-                // A terminal Future is not a carrier-exit witness.
-                task.afterCarrierQuiescent(() -> {
-                    // A child can still own actor/arena memory even after this
-                    // parent's guest carrier has stopped. Keep the scheduler
-                    // live-set entry and quiescence callback until descendants
-                    // retire physically, not merely after Future cancellation.
+            if (phase.get() != TERMINAL || executing.get()
+                    || !quiescenceNotified.compareAndSet(false, true)) {
+                return;
+            }
+
+            // SourceTask may defer this callback until every lexical TaskScope
+            // has physically drained. Merely beginning that handoff is not
+            // permission to publish the terminal Future.
+            AtomicBoolean hookReturned = new AtomicBoolean();
+            Runnable resolvePhysicalRetirement = () -> {
+                if (!retirementCallbackClaimed.compareAndSet(false, true)) {
+                    return;
+                }
+                cancelWallDeadline();
+                try {
+                    // Ownership/arena retirement is the stronger reclamation
+                    // authority. Do not remove the live-set pin or release a
+                    // timed admission slot unless it succeeds.
+                    onQuiescent.run();
                     tasks.remove(this);
-                    cancelWallDeadline();
-                    try {
-                        onQuiescent.run();
-                    } finally {
-                        deadlineQuiescenceRetired.set(true);
-                        releaseDeadlineSlotIfRetired();
+                    deadlineQuiescenceRetired.set(true);
+                    releaseDeadlineSlotIfRetired();
+                } catch (RuntimeException | Error retirementFailure) {
+                    // Lifecycle failure supersedes an otherwise-successful
+                    // guest result, but resources remain deliberately pinned.
+                    terminalOutcome.set(new TerminalFailure<>(retirementFailure));
+                    retirementResolved.set(true);
+                    if (hookReturned.get()) publishTerminalIfReady();
+                    if (retirementFailure instanceof VirtualMachineError fatal) {
+                        throw fatal;
                     }
-                });
+                    if (retirementFailure instanceof ThreadDeath fatal) {
+                        throw fatal;
+                    }
+                    if (retirementFailure instanceof LinkageError fatal) {
+                        throw fatal;
+                    }
+                    return;
+                }
+                retirementResolved.set(true);
+                if (hookReturned.get()) publishTerminalIfReady();
+            };
+
+            try {
+                task.afterCarrierQuiescent(resolvePhysicalRetirement);
+                hookReturned.set(true);
+                if (retirementResolved.get()) publishTerminalIfReady();
+            } catch (RuntimeException | Error hookFailure) {
+                hookReturned.set(true);
+                // If the callback already succeeded, the hook still violated
+                // its lifecycle contract. Fail the Future rather than
+                // manufacturing guest success. If the callback never ran, the
+                // scheduler live-set entry remains pinned.
+                terminalOutcome.set(new TerminalFailure<>(hookFailure));
+                retirementResolved.set(true);
+                publishTerminalIfReady();
+                if (hookFailure instanceof VirtualMachineError fatal) throw fatal;
+                if (hookFailure instanceof ThreadDeath fatal) throw fatal;
+                if (hookFailure instanceof LinkageError fatal) throw fatal;
             }
         }
 
         private void publishTerminalIfReady() {
-            if (phase.get() != TERMINAL || completion.isDone()) return;
+            if (phase.get() != TERMINAL || completion.isDone()
+                    || !retirementResolved.get()) return;
             TerminalOutcome<T> outcome = terminalOutcome.get();
             if (outcome instanceof TerminalSuccess<?> success) {
                 @SuppressWarnings("unchecked")
