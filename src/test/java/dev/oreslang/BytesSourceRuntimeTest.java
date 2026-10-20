@@ -117,8 +117,8 @@ final class BytesSourceRuntimeTest {
                 pub fnc main(): void {
                   val good = [0, 255] as? Bytes;
                   val bad = [0, 256] as? Bytes;
-                  stdio.println(good.has_value);
-                  stdio.println(bad.has_value);
+                  stdio.println(good.is_some());
+                  stdio.println(bad.is_some());
                   return;
                 }
                 """;
