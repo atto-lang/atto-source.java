@@ -47,6 +47,28 @@ final class DirectNamedLiteralCallExecutionTest {
     }
 
     @Test
+    void reorderedNamedIntLiteralPreservesAllSixtyFourBits() throws Exception {
+        // A named-argument permutation must never route a signed int through
+        // double (which would round 2^53 + 1 to 2^53), or change the selected
+        // declaration's positional ABI.
+        String source = """
+                pub fnc keep(int marker, int value): int { return value; }
+                pub routine main(): void {
+                    stdio.stdout.write(keep(value: 9007199254740993, marker: 7));
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = IsolatePolicy.developer()
+                .restrictedContextBuilder(ExecutionProfile.serverJit()).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, "named-int64-permutation.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("9007199254740993", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void missingRequiredNamedSlotIsACompileTimeError() {
         String source = """
                 pub fnc pick(int a, bool c): int { return a; }
