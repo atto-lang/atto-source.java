@@ -137,8 +137,18 @@ public final class CallbackOrderingAnalyzer {
         }
 
         private void publish(Event event, String invoker, State state) {
-            if (!registered(event, state))
+            if (!registered(event, state)) {
                 state.pending.putIfAbsent(event, new Exposure(event, invoker));
+            } else {
+                // A source-level call named on()/once() is only a syntactic
+                // registration request. It does not certify synchronous,
+                // successful installation or retention through publication.
+                findings.add(new StaticSafetyAnalyzer.Finding(
+                        "ORES-CB-006", "potential", callable,
+                        "listener registration precedes callback publication but "
+                                + "installation timing and lease lifetime are unverified",
+                        List.of(event.emitter() + ".on(" + event.event() + ")", invoker)));
+            }
         }
 
         private void register(Event event, State state) {
