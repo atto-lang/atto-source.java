@@ -21,8 +21,9 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * GUEST execution gate for the actual Oreslang ML scalar actor-state fixture.
  *
- * The .ores fixture was copied byte-for-byte from oreslang-ml's stacked
- * actor-state PR #7 (Git blob d9addeb0279b3c4023665b551c487adf7405903b).
+ * The .ores fixture started from oreslang-ml's stacked actor-state PR #7 and
+ * is now reconciled with #1547's detached scalar snapshot/publication contract
+ * (Git blob a492c9d5a195b2ff244d2441042e1e0e4e297bfc).
  * This JUnit class requires an actual GraalVM Oreslang context evaluation;
  * pure host-side arithmetic is explicitly NOT accepted as execution evidence.
  *
@@ -47,7 +48,7 @@ final class MlActorStateScalarGuestTest {
 
     @Test void compiledActorStageHasOneStateSchemaAndDeclaredEffects() throws Exception {
         String text = source();
-        assertEquals("d9addeb0279b3c4023665b551c487adf7405903b",
+        assertEquals("a492c9d5a195b2ff244d2441042e1e0e4e297bfc",
                 gitBlobSha(text), "ML fixture drifted from pinned source Git blob");
         assertDoesNotThrow(() -> verify(text));
         assertEquals(1, count(text, "    state {"));
@@ -71,7 +72,13 @@ final class MlActorStateScalarGuestTest {
         assertTrue(text.contains("input_second: int"));
         assertTrue(text.contains("if upstream < -10000 || upstream > 10000"));
         assertTrue(text.contains("if candidate_weight < -10000 || candidate_weight > 10000"));
-        assertTrue(text.contains("if s.step >= 1000000 || s.version >= 1000000"));
+        assertTrue(text.contains("if step >= 1000000 || version >= 1000000"));
+        assertTrue(text.contains("state_snapshot("));
+        assertTrue(text.contains("snapshot_version(snapshot)"));
+        assertTrue(text.contains("prepare_scalar_publication("));
+        assertTrue(text.contains("publish_scalar_publication(s, publication)"));
+        assertFalse(text.contains("s.weight = candidate_weight"));
+        assertFalse(text.contains("s.version = s.version + 1"));
         assertTrue(text.contains("private cancel_rejected("));
         assertTrue(text.contains("define enum TrainingError as"));
         assertTrue(text.contains("match outcome over"));
@@ -98,7 +105,7 @@ final class MlActorStateScalarGuestTest {
         assertTrue(text.contains("worker.send(\"wrong_incarnation\")"));
         assertTrue(text.contains("Result<int, TrainingError>"));
         assertTrue(text.contains("return Err(TrainingError.STALE_STEP())"));
-        assertTrue(text.contains("return Ok(s.version)"));
+        assertTrue(text.contains("return Ok(version + 1)"));
         assertTrue(text.contains("s.input_first * upstream"));
         assertTrue(text.contains("s.input_second * upstream"));
         assertFalse(text.contains("private forward("));
