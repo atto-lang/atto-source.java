@@ -260,11 +260,16 @@ public final class Types {
             return true;
         }
         if (from instanceof Record source && to instanceof Record target) {
-            if (!compatibleAggregateKinds(source.kind(), target.kind())) return false;
-            // Structs are closed concrete shapes: unlike records/contracts, they do not
-            // participate in row-width subtyping. A lexical infer<T> alias can
-            // therefore name the exact generated struct shape.
-            if (source.kind() == AggregateKind.STRUCT
+            // Only an explicitly readonly structural contract may view a
+            // concrete struct by a subset of its fields. Plain RECORD and
+            // writable CONTRACT destinations must not erase STRUCT identity.
+            boolean readonlyStructView = source.kind() == AggregateKind.STRUCT
+                    && target.kind() == AggregateKind.CONTRACT
+                    && target.readOnly();
+            if (!readonlyStructView && !compatibleAggregateKinds(source.kind(), target.kind())) return false;
+            // Ordinary struct-to-struct assignment remains exact, including
+            // arity; width is exclusively available through readonly CONTRACT.
+            if (target.kind() == AggregateKind.STRUCT
                     && source.members().size() != target.members().size()) return false;
             // Readonly structural views may covariantly read fields, but a
             // writable destination cannot widen a slot or recover mutation from
