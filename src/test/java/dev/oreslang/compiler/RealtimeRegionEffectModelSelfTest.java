@@ -200,15 +200,25 @@ public final class RealtimeRegionEffectModelSelfTest {
         if (!RealtimeRegionEffectModel.check(ordered).assurance().startsWith("SYMBOLIC_REGION_MODEL_ONLY")) {
             throw new AssertionError("valid scope closure order was not modeled");
         }
+        // A destructor could release an object even when the arena itself
+        // persists. Once an address was stored, Drop and Move fail closed.
         var selfContained = plan(List.of(actor(), inner), Set.of(), NORMAL,
                 fn("run",
                         new RealtimeRegionEffectModel.Allocate("v", "inner", 2, false),
                         new RealtimeRegionEffectModel.Store("v", "inner"),
                         new RealtimeRegionEffectModel.Drop("v"),
                         new RealtimeRegionEffectModel.EndScope("inner")));
-        RealtimeRegionEffectModel.check(selfContained);
+        rejects("self-retained object cannot be dropped before clearing store", selfContained);
+        rejects("move of retained value requires explicit relocation proof", plan(
+                List.of(actor(), inner, outer), Set.of(), NORMAL,
+                fn("run",
+                        new RealtimeRegionEffectModel.Allocate("x", "inner", 2, false),
+                        new RealtimeRegionEffectModel.Store("x", "outer"),
+                        new RealtimeRegionEffectModel.Move("y", "x"),
+                        new RealtimeRegionEffectModel.EndScope("outer"),
+                        new RealtimeRegionEffectModel.EndScope("inner"))));
 
-        if (negatives != 29) throw new AssertionError("expected 29 negative checks, got " + negatives);
+        if (negatives != 31) throw new AssertionError("expected 31 negative checks, got " + negatives);
         System.out.println("PASS: RT symbolic region model, transitive resource accounting, and "
                 + negatives + " denied unsafe plans");
     }
