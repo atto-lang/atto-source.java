@@ -30,7 +30,7 @@ public final class CoreLibrarySources {
     // Closed registry: a classpath resource must never create an unapproved
     // stdlib module. Update deliberately when adding a new native .ores module.
     private static final Set<String> PACKAGED_SOURCES = Set.of("core.ores", "testing.ores", "assert.ores", "trace.ores", "http_wire.ores",
-            "db_pool.ores", "actor_persistence.ores");
+            "db_pool.ores", "actor_persistence.ores", "data_pool.ores");
 
     private CoreLibrarySources() { }
 

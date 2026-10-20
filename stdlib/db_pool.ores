@@ -102,8 +102,9 @@ define module db_pool as
     return new AdmissionBudget(max_requests, max_bytes, max_request_bytes);
   }
 
-  // A single physical PostgreSQL protocol session has one trusted owner.
-  // This gate handles admission order; it does not implement the wire protocol.
+  // A physical ordered request-response protocol session has one trusted owner.
+  // This gate handles admission order independent of driver flavor; it does
+  // not implement PostgreSQL or Redis wire protocols, TLS or session cleanup.
   // mode: 0=idle, 1=queries, 2=exclusive transaction, 3=quarantined.
   // In-flight queries are ordered, not parallel PostgreSQL execution.
   pub define class SessionGate as

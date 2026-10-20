@@ -1,7 +1,9 @@
 # Actor database infrastructure: Oreslang stdlib stage 1 (2026-10-20)
 
-Status: **Oreslang source-level policy building blocks**, not a live PostgreSQL
-driver or production connection pool. The classes are packaged with the Java
+Status: **Oreslang source-level policy building blocks**, not a live PostgreSQL,
+CockroachDB or Redis driver, or production connection pool. The generic
+adapter architecture and additional policy module are specified in
+`docs/DATA_POOL_DRIVER_NEUTRAL_V1.md`. The classes are packaged with the Java
 reference interpreter. LLVM/native parity, async actor integration and database
 integration remain work to be implemented and validated.
 
@@ -9,6 +11,7 @@ integration remain work to be implemented and validated.
 
 - `std/db_pool`: `PoolLimits`, `AdmissionBudget`, `SessionGate` and factories.
 - `std/actor_persistence`: `WritePlan`, `Cursor` and factories.
+- `std/data_pool`: driver capabilities, pool partitions, retry policy and shard affinity.
 
 These classes deliberately do not contain credentials, native pointers,
 PostgreSQL sockets, SQL strings, database security principals, or actor refs.
