@@ -207,6 +207,183 @@ class PrivateCiV3Test(unittest.TestCase):
         with self.assertRaisesRegex(v3.Denied, "nonfinite"):
             v3.validate_test_plan(raw, 1482)
 
+    def test_carrier_main_governance_accepts_exact_protected_base(self):
+        rules = (
+            b"# Independently protected CI owner rules\\n"
+            b"* @ORESoftware\\n"
+            b"/.github/ @ORESoftware\\n"
+            b"/.github/CODEOWNERS @ORESoftware\\n"
+        )
+        # Use actual LF delimiters; the digest binds exactly these bytes.
+        rules = rules.replace(b"\\\\n", b"\\n")
+        branch = {
+            "name": "main", "protected": True, "commit": {"sha": BASE}
+        }
+        protection = {
+            "required_pull_request_reviews": {
+                "require_code_owner_reviews": True,
+                "dismiss_stale_reviews": True,
+                "required_approving_review_count": 1,
+                "bypass_pull_request_allowances": {
+                    "users": [], "teams": [], "apps": [],
+                },
+            },
+            "enforce_admins": {"enabled": True},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False},
+        }
+        owners = {
+            "path": ".github/CODEOWNERS",
+            "type": "file",
+            "encoding": "base64",
+            "content": base64.b64encode(rules).decode("ascii"),
+            "sha": v3.git_blob_sha(rules),
+        }
+        root = "repos/trusted/ci"
+        def api(route):
+            return {
+                root + "/branches/main": branch,
+                root + "/branches/main/protection": protection,
+                root + "/contents/.github/CODEOWNERS?ref=" + BASE: owners,
+            }[route]
+        with patch.object(v3.legacy, "gh_api", side_effect=api) as gh:
+            v3.require_destination_main_governance("trusted/ci", BASE)
+        self.assertEqual(gh.call_count, 3)
+
+    def test_carrier_main_governance_rejects_unprotected_and_moved_base(self):
+        for changed in (
+            {"name": "main", "protected": False, "commit": {"sha": BASE}},
+            {"name": "main", "protected": True, "commit": {"sha": "0" * 40}},
+            {"name": "other", "protected": True, "commit": {"sha": BASE}},
+        ):
+            with self.subTest(branch=changed), patch.object(
+                v3.legacy, "gh_api", return_value=changed
+            ) as api:
+                with self.assertRaisesRegex(v3.Denied, "carrier main"):
+                    v3.require_destination_main_governance("trusted/ci", BASE)
+                api.assert_called_once_with("repos/trusted/ci/branches/main")
+
+    def test_carrier_main_governance_rejects_bypasses_and_weak_reviews(self):
+        baseline = {
+            "required_pull_request_reviews": {
+                "require_code_owner_reviews": True,
+                "dismiss_stale_reviews": True,
+                "required_approving_review_count": 1,
+            },
+            "enforce_admins": {"enabled": True},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False},
+        }
+        attacks = (
+            ("no codeowners", lambda p: p["required_pull_request_reviews"].update(
+                require_code_owner_reviews=False)),
+            ("no stale dismissal", lambda p: p["required_pull_request_reviews"].update(
+                dismiss_stale_reviews=False)),
+            ("zero approvals", lambda p: p["required_pull_request_reviews"].update(
+                required_approving_review_count=0)),
+            ("boolean approvals", lambda p: p["required_pull_request_reviews"].update(
+                required_approving_review_count=True)),
+            ("admin bypass", lambda p: p["enforce_admins"].update(enabled=False)),
+            ("force push", lambda p: p["allow_force_pushes"].update(enabled=True)),
+            ("deletion", lambda p: p["allow_deletions"].update(enabled=True)),
+            ("user bypass", lambda p: p["required_pull_request_reviews"].update(
+                bypass_pull_request_allowances={"users": [{"login": "attacker"}]})),
+            ("team bypass", lambda p: p["required_pull_request_reviews"].update(
+                bypass_pull_request_allowances={"teams": ["developers"]})),
+            ("app bypass", lambda p: p["required_pull_request_reviews"].update(
+                bypass_pull_request_allowances={"apps": [1]})),
+        )
+        root = "repos/trusted/ci"
+        for label, mutate in attacks:
+            policy = json.loads(json.dumps(baseline))
+            mutate(policy)
+            with self.subTest(attack=label):
+                def api(route):
+                    if route == root + "/branches/main":
+                        return {
+                            "name": "main", "protected": True,
+                            "commit": {"sha": BASE},
+                        }
+                    if route == root + "/branches/main/protection":
+                        return policy
+                    raise AssertionError("unsafe rules reached CODEOWNERS lookup")
+                with patch.object(v3.legacy, "gh_api", side_effect=api):
+                    with self.assertRaises(v3.Denied):
+                        v3.require_destination_main_governance("trusted/ci", BASE)
+
+    def test_carrier_main_governance_rejects_missing_or_diverted_owners(self):
+        approved = (
+            b"* @ORESoftware\\n"
+            b"/.github/ @ORESoftware\\n"
+            b"/.github/CODEOWNERS @ORESoftware\\n"
+        ).replace(b"\\\\n", b"\\n")
+        bad_rules = (
+            b"* @ORESoftware\\n"
+            b"/.github/ @attacker\\n"
+            b"/.github/CODEOWNERS @ORESoftware\\n"
+        ).replace(b"\\\\n", b"\\n")
+        path = ".github/CODEOWNERS"
+        def owner_item(raw):
+            return {
+                "path": path, "type": "file", "encoding": "base64",
+                "content": base64.b64encode(raw).decode("ascii"),
+                "sha": v3.git_blob_sha(raw),
+            }
+        invalid = (
+            {},
+            owner_item(bad_rules),
+            dict(owner_item(approved), sha="f" * 40),
+            dict(owner_item(approved), content="%%%"),
+        )
+        root = "repos/trusted/ci"
+        for value in invalid:
+            with self.subTest(value=value):
+                def api(route):
+                    if route == root + "/branches/main":
+                        return {"name": "main", "protected": True, "commit": {"sha": BASE}}
+                    if route == root + "/branches/main/protection":
+                        return {
+                            "required_pull_request_reviews": {
+                                "require_code_owner_reviews": True,
+                                "dismiss_stale_reviews": True,
+                                "required_approving_review_count": 1,
+                            },
+                            "enforce_admins": {"enabled": True},
+                            "allow_force_pushes": {"enabled": False},
+                            "allow_deletions": {"enabled": False},
+                        }
+                    if route == root + "/contents/" + path + "?ref=" + BASE:
+                        return value
+                    raise AssertionError(route)
+                with patch.object(v3.legacy, "gh_api", side_effect=api):
+                    with self.assertRaises(v3.Denied):
+                        v3.require_destination_main_governance("trusted/ci", BASE)
+
+    def test_checked_destination_checks_governance_before_workflow(self):
+        carrier = contract()
+        root = "repos/trusted/ci"
+        def api(route, method="GET", payload=None):
+            if route == root + "/git/ref/heads/main":
+                return {"object": {"sha": BASE}}
+            if route == root + "/git/commits/" + BASE:
+                return {"sha": BASE, "tree": {"sha": ROOT_TREE}}
+            if route == root + "/git/trees/" + ROOT_TREE + "?recursive=1":
+                return {"sha": ROOT_TREE, "truncated": False, "tree": []}
+            if route == root + "/branches/main":
+                return {"name": "main", "protected": False, "commit": {"sha": BASE}}
+            raise AssertionError("governance failure should prevent workflow read: " + route)
+        with (
+            patch.object(v3.legacy, "checked_repo", return_value={
+                "id": carrier["repository_id"],
+                "private": True, "visibility": "private",
+                "archived": False, "disabled": False, "fork": False,
+                "default_branch": "main",
+            }),
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "carrier main"):
+                v3.checked_destination("trusted/ci", carrier)
+
     def test_checked_destination_rejects_source_bearing_reviewed_base(self):
         carrier = contract()
         def api(route, method="GET", payload=None):
