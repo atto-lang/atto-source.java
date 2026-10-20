@@ -63,6 +63,65 @@ final class AsyncRuntimeAdversarialAdmissionTest {
     }
 
     @Test
+    void aPreparedTaskCannotBeDispatchedOrAbandonedByAnotherRuntime() {
+        try (var owner = new AsyncRuntime();
+             var stranger = new AsyncRuntime()) {
+            var admission = owner.<Integer>prepareTaskAdmission();
+            var releases = new AtomicInteger();
+            admission.installRetirement(releases::incrementAndGet);
+            assertThrows(IllegalArgumentException.class,
+                    () -> stranger.submitPreparedTask(admission, () -> 2));
+            assertThrows(IllegalArgumentException.class,
+                    () -> stranger.abandonPreparedTask(admission));
+            assertEquals(0, releases.get());
+            assertFalse(admission.owner.getDone().isDone(),
+                    "wrong runtime cannot settle owner physical fence");
+            owner.abandonPreparedTask(admission);
+            assertNull(AsyncRuntime.await(admission.owner.getDone()));
+            assertEquals(1, releases.get());
+        }
+    }
+
+    @Test
+    void retirementHookIsSingleAssignmentAndCannotChangeDuringDispatch()
+            throws Exception {
+        var executor = new FaultExecutor(
+                new RejectedExecutionException("controlled admission rejection"));
+        try (var runtime = new AsyncRuntime(AsyncRuntime.TurnExecutor.direct(), executor)) {
+            var admission = runtime.<Integer>prepareTaskAdmission();
+            var original = new AtomicInteger();
+            var substituted = new AtomicInteger();
+            admission.installRetirement(original::incrementAndGet);
+            assertThrows(IllegalStateException.class,
+                    () -> admission.installRetirement(substituted::incrementAndGet));
+            var thrown = new AtomicReference<Throwable>();
+            Thread submitter = Thread.ofVirtual().start(() -> {
+                try {
+                    runtime.submitPreparedTask(admission, () -> 3);
+                } catch (Throwable failure) {
+                    thrown.set(failure);
+                }
+            });
+            try {
+                assertTrue(executor.submitted.await(3, TimeUnit.SECONDS));
+                assertThrows(IllegalStateException.class,
+                        () -> admission.installRetirement(substituted::incrementAndGet));
+                assertFalse(admission.owner.getDone().isDone(),
+                        "retirement cannot precede queued admission resolution");
+            } finally {
+                executor.admit.countDown();
+                submitter.join(3000);
+            }
+            assertFalse(submitter.isAlive());
+            assertInstanceOf(RejectedExecutionException.class, thrown.get());
+            assertNull(AsyncRuntime.await(admission.owner.getDone()));
+            assertEquals(1, original.get());
+            assertEquals(0, substituted.get(),
+                    "a racing caller cannot replace the original resource release");
+        }
+    }
+
+    @Test
     void closeDuringBlockedRejectedAdmissionRetiresExactlyOnce() throws Exception {
         var executor = new FaultExecutor(
                 new RejectedExecutionException("injected executor rejection"));
