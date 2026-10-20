@@ -40,6 +40,7 @@ public final class OwnershipChecker {
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
+    private ModelGraphCompiler.Catalog modelCatalog;
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private int mutexCriticalSectionDepth;
@@ -94,6 +95,7 @@ public final class OwnershipChecker {
                 else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
             }
         }
+        modelCatalog = ModelGraphCompiler.compile(program);
     }
 
     private void indexFunction(String module, Ast.FunctionDecl fn) {
@@ -1424,6 +1426,24 @@ public final class OwnershipChecker {
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
 
+        if (call.callee() instanceof Ast.NameExpr modelName
+                && scope.lookup(modelName.name()) == null
+                && modelCatalog != null) {
+            ModelGraphCompiler.CompiledModel model = modelCatalog.find(modelName.name());
+            if (model != null) {
+                if (call.arguments().size() > model.parameters().size()) {
+                    throw error("MODEL_CONFIG_ARITY: too many model configuration arguments");
+                }
+                for (Ast.Expr argument : call.arguments()) {
+                    checkExpr(argument, scope, false);
+                }
+                return new ValueInfo(
+                        Ast.TypeRef.simple(model.modelTypeName()),
+                        ValueKind.MOVE_ONLY,
+                        null);
+            }
+        }
+
         if (call.callee() instanceof Ast.NameExpr name
                 && scope.lookup(name.name()) == null) {
             Ast.FunctionDecl fn = findFunction(
@@ -1460,6 +1480,8 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.MemberExpr member) {
+            ValueInfo modelReceiver = checkModelRunReceiver(member, call.arguments(), scope);
+            if (modelReceiver != null) return modelReceiver;
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
             // Native collection mutations are effects on the receiver, not
@@ -3191,6 +3213,29 @@ public final class OwnershipChecker {
         }
         seen.remove(klass);
         return false;
+    }
+
+    private ValueInfo checkModelRunReceiver(
+            Ast.MemberExpr member,
+            List<Ast.Expr> arguments,
+            Scope scope) {
+        if (modelCatalog == null || !member.member().equals("run")) return null;
+        Ast.TypeRef receiverType = receiverType(member.receiver(), scope);
+        if (receiverType == null || receiverType.isBorrow()) return null;
+        ModelGraphCompiler.CompiledModel model =
+                modelCatalog.findByTypeName(receiverType.name());
+        if (model == null) return null;
+
+        // Running reads the model instance; it does not move its independently
+        // owned identity/configuration. Stateful mutation remains unavailable in
+        // this first slice.
+        checkExpr(member.receiver(), scope, false);
+        if (arguments.size() != 1) {
+            throw error("MODEL_RUN_ARITY: model.run expects exactly one input");
+        }
+        checkExpr(arguments.getFirst(), scope, true);
+        Ast.TypeRef output = model.outputType();
+        return new ValueInfo(output, kindOfType(output), null);
     }
 
     private Ast.FunctionDecl findFunction(String name, int arity) {
