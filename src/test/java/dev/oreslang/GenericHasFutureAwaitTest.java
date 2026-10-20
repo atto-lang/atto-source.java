@@ -316,6 +316,30 @@ final class GenericHasFutureAwaitTest {
     }
 
     @Test
+    void rejectsStructuralHasFutureContract() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define trait HasFuture<T> as
+                            @structural fnc get_future(): Future<T>;
+                        end
+                        """));
+    }
+
+    @Test
+    void rejectsPrivateProjectionImplementation() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define trait HasFuture<T> as
+                            get_future(): Future<T>;
+                        end
+                        async fnc pending(): int { return 12; }
+                        define class Hidden implements HasFuture<int> as
+                            private get_future(): Future<int> { return pending(); }
+                        end
+                        """));
+    }
+
+    @Test
     void rejectsMalformedHasFutureGenericArity() {
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
