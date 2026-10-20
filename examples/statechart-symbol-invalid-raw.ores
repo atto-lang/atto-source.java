@@ -1,0 +1,16 @@
+import class Chart from '../stdlib/behavior/statechart';
+import fnc step from '../stdlib/behavior/statechart';
+
+// Bypassing the checked() factory must not bypass step-time validation.
+pub routine main(): void {
+  val Chart raw = new Chart(
+    arr[#root, #root],
+    arr[-1, -1],
+    arr[#root],
+    arr[#ping],
+    arr[#root]
+  );
+  val Symbol target = step(&raw, #root, #ping);
+  stdio.println("INVALID_UNCHECKED_CHART_ACCEPTED");
+  return;
+}
