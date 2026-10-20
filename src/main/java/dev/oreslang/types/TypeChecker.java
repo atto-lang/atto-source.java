@@ -117,12 +117,30 @@ public final class TypeChecker {
         return program;
     }
 
+    /**
+     * Model syntax is retained in the parsed AST, but no compiler-owned operation
+     * signatures / typed HIR / guest execution path have been implemented.
+     * Reject before annotation expansion or desugaring can drop the declaration.
+     */
+    private static void rejectUnloweredModels(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.ModelDecl model) {
+                    throw new IllegalArgumentException(
+                            "MODEL_LOWERING_UNSUPPORTED: model '" + model.name()
+                            + "' requires typed op/effect/ownership resolution and backend lowering");
+                }
+            }
+        }
+    }
+
     /** Type analysis only; executable admission must use OresCompiler.analyze. */
     public static Ast.Program checkTypes(Ast.Program program) {
         return checkTypesWithDiagnostics(program).program();
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        rejectUnloweredModels(program);
         program = AnnotationExpander.expand(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
@@ -144,6 +162,7 @@ public final class TypeChecker {
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
+        rejectUnloweredModels(program);
         program = AnnotationExpander.expand(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
