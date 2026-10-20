@@ -6180,6 +6180,16 @@ public final class ActorRuntime implements AutoCloseable {
         return isolateCopy(value, new IdentityHashMap<>(), 0);
     }
 
+    /**
+     * Deep-copy one PRIVATE/ISOLATED actor result into supervisor ownership.
+     * The supervisor must never retain objects whose storage belongs to a
+     * finalized private actor, even when those objects are deeply immutable.
+     */
+    static Object copyPrivateResultForSupervisor(Object value) {
+        validateMessageGraph(value);
+        return isolateCopy(value);
+    }
+
     private static Object isolateCopy(
             Object value,
             IdentityHashMap<Object, Boolean> visiting,
