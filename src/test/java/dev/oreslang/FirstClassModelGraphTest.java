@@ -22,7 +22,7 @@ final class FirstClassModelGraphTest {
     // Pinned to common-source contracts/v1/model-graph/executable-v1-conformance.json.
     // A common corpus revision bump requires an explicit backend review/update.
     private static final String SHARED_EXECUTABLE_CORPUS_REVISION =
-            "model-core-i64-v1.2026-10-20.8";
+            "model-core-i64-v1.2026-10-20.9";
 
     private static final String PRICE_MODEL = """
             fnc ValidatePrice(float input): float {
@@ -48,7 +48,7 @@ final class FirstClassModelGraphTest {
 
     @Test
     void sharedExecutableCorpusRevisionIsExplicitlyPinned() {
-        assertEquals("model-core-i64-v1.2026-10-20.8",
+        assertEquals("model-core-i64-v1.2026-10-20.9",
                 SHARED_EXECUTABLE_CORPUS_REVISION);
     }
 
@@ -61,6 +61,7 @@ final class FirstClassModelGraphTest {
 
         for (SharedCase item : corpus.cases()) {
             if (item.javaMode().equals("reject")) {
+                assertNotNull(item.diagnostic(), item.id());
                 assertThrowsMessage(item.diagnostic(), () ->
                         ModelGraphCompiler.compile(
                                 OresCompiler.parseAndTypeCheck(item.source())));
@@ -77,8 +78,12 @@ final class FirstClassModelGraphTest {
                 assertEquals(item.graphDigest(), model.graphDigest(), item.id());
             }
             if (item.configuredDigest() != null) {
+                assertNotNull(item.configurationI64(),
+                        "configured digest requires an explicit corpus configuration: " + item.id());
+                long configured = Long.parseLong(item.configurationI64());
                 assertEquals(item.configuredDigest(),
-                        model.configuredGraphDigest(model.bindConfiguration(java.util.List.of())),
+                        model.configuredGraphDigest(
+                                model.bindConfiguration(java.util.List.of(configured))),
                         item.id());
             }
         }
@@ -808,6 +813,7 @@ final class FirstClassModelGraphTest {
             String graphDigest,
             String configuredDigest,
             String semanticResult,
+            String configurationI64,
             String source) { }
 
     private record SharedIdentity(
@@ -843,12 +849,13 @@ final class FirstClassModelGraphTest {
                     case "revision" -> revision = parts[1];
                     case "profile" -> profile = parts[1];
                     case "case" -> {
-                        assertEquals(11, parts.length, lines[i]);
+                        assertEquals(12, parts.length, lines[i]);
                         cases.add(new SharedCase(
                                 parts[1], parts[2], parts[3], parts[4],
                                 dashNull(parts[5]), dashNull(parts[6]),
                                 dashNull(parts[7]), dashNull(parts[8]),
-                                dashNull(parts[9]), decodeHexAscii(parts[10])));
+                                dashNull(parts[9]), dashNull(parts[10]),
+                                decodeHexAscii(parts[11])));
                     }
                     case "identity" -> {
                         assertEquals(8, parts.length, lines[i]);
