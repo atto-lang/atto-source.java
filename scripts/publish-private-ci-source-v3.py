@@ -245,7 +245,7 @@ def checked_contract(root, repository, source_pr, test_plan, main_sha):
 
 
 def checked_destination(repository, contract):
-    repo = legacy.checked_repo(repository)
+    repo = legacy.checked_repo(repository, contract["repository_id"])
     if (repo.get("id") != contract["repository_id"]
             or repo.get("archived") is not False
             or repo.get("disabled") is not False
@@ -401,7 +401,7 @@ def _gh_ref_request(repository, ref_name, method):
 
 
 def live_ref_sha(repository, ref_name, expected_repository_id):
-    repo = legacy.checked_repo(repository)
+    repo = legacy.checked_repo(repository, expected_repository_id)
     if repo.get("id") != expected_repository_id:
         raise Denied("carrier repository identity changed during ref verification")
     result = _gh_ref_request(repository, ref_name, "GET")
@@ -457,12 +457,20 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
 
     # Authorize before reading private source bytes.
     legacy.require_preflight(repository, trusted_root)
-    approved_policy = legacy.checked_policy_fingerprint(trusted_root, repository)
-    protected_sha = legacy.verify_protected_origin(repository, approved_policy)
+    approved_policy, approved_repository_id = legacy.checked_policy_approval(
+        trusted_root, repository
+    )
+    protected_sha = legacy.verify_protected_origin(
+        repository, approved_policy, approved_repository_id
+    )
     checked_control_plane(trusted_root, protected_sha)
     contract = checked_contract(
         trusted_root, repository, source_pr, test_plan, protected_sha
     )
+    if contract["repository_id"] != approved_repository_id:
+        raise Denied(
+            "carrier contract repository ID differs from independently reviewed approval"
+        )
     source_repo_id = verify_source_pr(source_pr, source_commit)
     destination, base_tree, plan_bytes = checked_destination(repository, contract)
     plan_sha256 = validate_test_plan(plan_bytes, source_pr)
@@ -601,7 +609,8 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
 
     # Recheck both source policy/protection and the immutable carrier contract
     # immediately before making the source-bearing commit executable.
-    if legacy.verify_protected_origin(repository, approved_policy) != protected_sha:
+    if legacy.verify_protected_origin(
+            repository, approved_policy, approved_repository_id) != protected_sha:
         raise Denied("source protected main advanced before publication")
     checked_control_plane(trusted_root, protected_sha)
     checked_contract(
