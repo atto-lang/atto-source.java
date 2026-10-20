@@ -37,11 +37,13 @@ public final class TreeShaker {
             Ast.Program program,
             Set<String> retainedSymbols,
             Set<String> removedSymbols,
-            Map<String, Object> compileTimeConstants) {
+            Map<String, Object> compileTimeConstants,
+            Set<String> rootSymbols) {
         public Result {
             retainedSymbols = Set.copyOf(retainedSymbols);
             removedSymbols = Set.copyOf(removedSymbols);
             compileTimeConstants = Map.copyOf(compileTimeConstants);
+            rootSymbols = Set.copyOf(rootSymbols);
         }
 
         public boolean retained(String symbol) {
@@ -77,6 +79,7 @@ public final class TreeShaker {
         private final Set<String> scannedModuleMetadata = new LinkedHashSet<>();
 
         private final LinkedHashSet<String> retained = new LinkedHashSet<>();
+        private final LinkedHashSet<String> roots = new LinkedHashSet<>();
         private final LinkedHashSet<String> externalBindings = new LinkedHashSet<>();
         private final ArrayDeque<String> work = new ArrayDeque<>();
 
@@ -107,7 +110,7 @@ public final class TreeShaker {
             Ast.Program pruned = pruneProgram(rewritten);
             LinkedHashSet<String> removed = new LinkedHashSet<>(symbols.keySet());
             removed.removeAll(retained);
-            return new Result(pruned, retained, removed, constantValues);
+            return new Result(pruned, retained, removed, constantValues, roots);
         }
 
         private void collectConstants() {
@@ -1041,7 +1044,7 @@ public final class TreeShaker {
         private void seedRoots() {
             if (options.preservePublicApi()) {
                 for (Symbol symbol : symbols.values()) {
-                    if (isPublicApi(symbol.declaration())) mark(symbol.id());
+                    if (isPublicApi(symbol.declaration())) markRoot(symbol.id());
                 }
             }
 
@@ -1051,7 +1054,7 @@ public final class TreeShaker {
                     throw new IllegalArgumentException(
                             "build entry point '" + requested + "' was not found");
                 }
-                mark(root);
+                markRoot(root);
             }
         }
 
@@ -1069,6 +1072,11 @@ public final class TreeShaker {
                 return klass.visibility() == Ast.Visibility.PUBLIC;
             }
             return declaration instanceof Ast.TypeAliasDecl;
+        }
+
+        private void markRoot(String id) {
+            if (id != null) roots.add(id);
+            mark(id);
         }
 
         private void mark(String id) {
