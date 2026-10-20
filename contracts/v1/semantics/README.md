@@ -118,3 +118,22 @@ production tracing API. The sequence is reconstructed after join from real
 admission and callback evidence, not a timestamped total order. Java/Graal
 shares the schema and adversarial validator but does not yet emit native
 carrier traces.
+
+
+## Semantic producer checkout binding
+
+When executing a backend (not `--validate`), `run.py` now verifies that
+`--revision` equals the actual local `git rev-parse HEAD`, that the
+semantic suite lives at the root of that checkout, and that its tracked
+working tree has no staged or unstaged modifications. It prints the inspected
+Git tree SHA. Before writing a report it rechecks the revision, tracked
+status, Git tree and the complete fixture/schema suite digest, failing closed
+if any changed during execution. Build output in untracked `target/` remains
+permitted.
+
+This binds a producer's revision label to its observed local checkout; it is
+**not** independent GitHub Actions provenance, binary reproducibility,
+external report authentication, or a guest-parity certificate. Independently
+verify the workflow run, checkout tree and compiler artifact before using a
+report as evidence. A change-and-restore race between checks is outside this
+guard's threat model.
