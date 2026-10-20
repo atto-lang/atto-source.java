@@ -372,6 +372,18 @@ public final class TreeShaker {
                         member.member());
             }
             if (expression instanceof Ast.IndexExpr indexed) {
+                // Constant-call substitution has no post-rewrite type/visibility/
+                // ownership pass. A certified projection therefore remains an
+                // opaque checked unit: do not descend into either child and
+                // substitute a parameter underneath already-minted authority.
+                // The current inliner rejects every indexed return before this
+                // point; keep this defense here so future callers of substitute()
+                // cannot silently weaken that invariant.
+                if (Ast.CheckedIndexKeys.hasProjectionProof(indexed)) {
+                    return Ast.CheckedIndexKeys.propagate(
+                            indexed,
+                            new Ast.IndexExpr(indexed.receiver(), indexed.index()));
+                }
                 return Ast.CheckedIndexKeys.propagate(indexed, new Ast.IndexExpr(
                         substitute(indexed.receiver(), substitutions, shadowed),
                         substitute(indexed.index(), substitutions, shadowed)));
