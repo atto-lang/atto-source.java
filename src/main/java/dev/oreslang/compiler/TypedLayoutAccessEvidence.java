@@ -35,6 +35,7 @@ public final class TypedLayoutAccessEvidence {
         public Report { loops = List.copyOf(loops); }
     }
 
+    private static final int MAX_SOURCE_CODE_UNITS = 1_048_576;
     private static final int MAX_STATEMENTS = 16_384;
     private static final int MAX_LOOPS = 1_024;
     private static final int MAX_MEMBERS_PER_LOOP = 256;
@@ -42,6 +43,8 @@ public final class TypedLayoutAccessEvidence {
     /** The only public entry point: type and ownership admission run first. */
     public static Report inspectSource(String source) {
         Objects.requireNonNull(source, "source");
+        if (source.length() > MAX_SOURCE_CODE_UNITS)
+            throw new IllegalArgumentException("layout source admission exceeds size budget");
         return inspectAdmitted(OresCompiler.parseAndTypeCheck(source));
     }
 
