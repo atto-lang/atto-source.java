@@ -1962,8 +1962,10 @@ public final class OresEvalRootNode extends RootNode {
                                             SourceFlow.throwing(failure));
                                     return;
                                 }
+                                Env loopEnv = new Env(env);
+                                loopEnv.enableLoopSelectPlans();
                                 if (loop.asyncIteration()) {
-                                    runAsyncForOf(t, iterable, env, loop.body(),
+                                    runAsyncForOf(t, iterable, loopEnv, loop.body(),
                                             (iteration, item) -> iteration.define(
                                                     loop.bindingName(), item, loop.bindingKind()),
                                             continuation);
@@ -1973,7 +1975,7 @@ public final class OresEvalRootNode extends RootNode {
                                 runForOfIteration(
                                         t,
                                         loop,
-                                        env,
+                                        loopEnv,
                                         values.iterator(),
                                         0,
                                         (completed, flow) -> finishSourceIterable(
@@ -1994,8 +1996,10 @@ public final class OresEvalRootNode extends RootNode {
                                             SourceFlow.throwing(failure));
                                     return;
                                 }
+                                Env loopEnv = new Env(env);
+                                loopEnv.enableLoopSelectPlans();
                                 if (loop.asyncIteration()) {
-                                    runAsyncForOf(t, iterable, env, loop.body(),
+                                    runAsyncForOf(t, iterable, loopEnv, loop.body(),
                                             (iteration, item) -> {
                                                 List<?> parts = asSequence(item);
                                                 if (parts.size() != loop.bindings().size()) {
@@ -2013,7 +2017,7 @@ public final class OresEvalRootNode extends RootNode {
                                 runForOfDestructureIteration(
                                         t,
                                         loop,
-                                        env,
+                                        loopEnv,
                                         values.iterator(),
                                         0,
                                         (completed, flow) -> finishSourceIterable(
@@ -4739,10 +4743,12 @@ public final class OresEvalRootNode extends RootNode {
                 Iterable<?> values = loop.asyncIteration()
                         ? asyncIterableValues(iterable, env)
                         : iterableValues(iterable, env);
+                Env loopEnv = new Env(env);
+                loopEnv.enableLoopSelectPlans();
                 try {
                     for (Object item : values) {
                         context.schedulerSafepoint();
-                        Env iteration = new Env(env);
+                        Env iteration = new Env(loopEnv);
                         bindSequenceDestructure(iterableValues(item, env), loop.bindings(), iteration,
                                 "for-of destructure");
                         try {
@@ -4766,10 +4772,12 @@ public final class OresEvalRootNode extends RootNode {
                 Iterable<?> values = loop.asyncIteration()
                         ? asyncIterableValues(iterable, env)
                         : iterableValues(iterable, env);
+                Env loopEnv = new Env(env);
+                loopEnv.enableLoopSelectPlans();
                 try {
                     for (Object item : values) {
                         context.schedulerSafepoint();
-                        Env iteration = new Env(env);
+                        Env iteration = new Env(loopEnv);
                         iteration.define(loop.bindingName(), item, loop.bindingKind());
                         try {
                             executeBlock(
