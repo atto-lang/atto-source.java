@@ -59,6 +59,12 @@ final class ModelGraphAdmissionTest {
         assertEquals(USD, first.input());
         assertEquals(USD, first.output());
         assertFalse(first.nodes().getFirst().vjp()); // forward-only model is admissible
+        byte[] descriptor = ModelGraphAdmission.canonicalDescriptor(first, "app::Tax@v1");
+        assertEquals(514, descriptor.length);
+        assertEquals("7ffbb2b813a560a93cda79dfcdcd999183b65b1bfe2562002e85f5a7ba0b3545",
+                ModelGraphAdmission.graphDigest(first, "app::Tax@v1"));
+        assertNotEquals(ModelGraphAdmission.graphDigest(first, "app::Tax@v1"),
+                ModelGraphAdmission.graphDigest(first, "other::Tax@v1"));
     }
 
     @Test
