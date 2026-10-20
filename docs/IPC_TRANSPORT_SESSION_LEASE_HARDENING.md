@@ -165,7 +165,7 @@ after authoritative retirement.
 ## Current-head adapter hardening (latest audit)
 
 At the latest audit, the current source blobs are:
-- `IpcReceiptCorrelation.java`: `04c109ff0c39db90e66c03d5011f9f71ffa09332`
+- `IpcReceiptCorrelation.java`: `0db39a49de798f713503f1bcec813f730716297d`
 - `IpcReceiptCompletionBridge.java`: `d320550828f4837f935e0159ab09527546a04dc7`
 - `IpcPhysicalConnectionBroker.java`: `ab1325fd561a88d0a849bd6fb46ab8eb313f1967`
 - `IpcTransportSessionLease.java`: `109f49824327abf4af29691b6d8e41572e88e00e`
