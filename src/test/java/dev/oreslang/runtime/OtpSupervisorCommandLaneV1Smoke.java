@@ -194,6 +194,54 @@ public final class OtpSupervisorCommandLaneV1Smoke {
         }
     }
 
+
+    private static void auditCountersNeverWrapNegative() throws Exception {
+        var lane = new OtpSupervisorCommandLaneV1(2);
+        for (String name : new String[] {"sent", "acknowledged", "retried",
+                "aborted", "admissionRejected", "duplicateTargetRejected",
+                "quarantined"}) {
+            var field = OtpSupervisorCommandLaneV1.class.getDeclaredField(name);
+            field.setAccessible(true);
+            field.setLong(lane, Long.MAX_VALUE - 1);
+        }
+        var a = lane.submit(target(1), 9,
+                OtpSupervisorCommandLaneV1.Kind.PREPARE_UPGRADE, DIGEST);
+        var b = lane.submit(target(2), 9,
+                OtpSupervisorCommandLaneV1.Kind.PREPARE_UPGRADE, DIGEST);
+        check(a.sequence() == 1 && b.sequence() == 2,
+                "telemetry saturation changed authoritative sequence numbers");
+        try {
+            lane.submit(target(1), 9,
+                    OtpSupervisorCommandLaneV1.Kind.QUIESCE_CHECK, DIGEST);
+            throw new AssertionError("duplicate accepted");
+        } catch (IllegalStateException expected) { }
+        try {
+            lane.submit(target(3), 9,
+                    OtpSupervisorCommandLaneV1.Kind.QUIESCE_CHECK, DIGEST);
+            throw new AssertionError("full command lane accepted");
+        } catch (java.util.concurrent.RejectedExecutionException expected) { }
+        try (var retry = lane.poll().orElseThrow()) { retry.retry(); }
+        try (var ack = lane.poll().orElseThrow()) { ack.ack(); }
+        check(lane.abortAfterRollback(target(1), 9).isPresent(),
+                "outstanding retried command could not be rolled back");
+        var snapshot = lane.snapshot();
+        check(snapshot.sent() == Long.MAX_VALUE
+                        && snapshot.retried() == Long.MAX_VALUE
+                        && snapshot.acknowledged() == Long.MAX_VALUE
+                        && snapshot.aborted() == Long.MAX_VALUE
+                        && snapshot.admissionRejected() == Long.MAX_VALUE
+                        && snapshot.duplicateTargetRejected() == Long.MAX_VALUE,
+                "CONTROL telemetry silently wrapped instead of saturating");
+        lane.submit(target(3), 10,
+                OtpSupervisorCommandLaneV1.Kind.GRACEFUL_STOP, null);
+        lane.submit(target(4), 10,
+                OtpSupervisorCommandLaneV1.Kind.GRACEFUL_STOP, null);
+        check(lane.quarantineOnTermination() == 2,
+                "terminal quarantine count mismatch");
+        check(lane.snapshot().quarantined() == Long.MAX_VALUE,
+                "quarantine metric overflowed instead of saturating");
+    }
+
     public static void main(String[] args) throws Exception {
         lifecycleAndCapacity();
         epochAndAbort();
@@ -202,6 +250,7 @@ public final class OtpSupervisorCommandLaneV1Smoke {
         quarantinesUnsettledCommandsOnTermination();
         abortRace();
         terminalStopRacesPhysicalLeaseSettlement();
+        auditCountersNeverWrapNegative();
         System.out.println("PASS: lease idempotence/retry/duplicate admission/capacity/epoch fencing");
         System.out.println("PASS: 512 concurrent ack-vs-explicit-abort races");
         System.out.println("PASS: 512 concurrent ACK-vs-terminal-quarantine races");
