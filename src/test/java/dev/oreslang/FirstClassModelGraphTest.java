@@ -103,6 +103,17 @@ final class FirstClassModelGraphTest {
                 "verified operation semantics must participate in graph identity even when the function ABI is unchanged");
         assertNotEquals(a.nodes().get(1).implementationDigest(),
                 changed.nodes().get(1).implementationDigest());
+
+        Map<String, Object> defaults = a.bindConfiguration(java.util.List.of());
+        Map<String, Object> explicit = a.bindConfiguration(java.util.List.of(0.5d));
+        assertNotEquals(
+                a.configuredGraphDigest(defaults),
+                a.configuredGraphDigest(explicit),
+                "static construction values that change computation must change configured graph identity");
+        assertEquals(
+                a.configuredGraphDigest(defaults),
+                b.configuredGraphDigest(b.bindConfiguration(java.util.List.of())),
+                "configured graph identity must be deterministic across equivalent compiler inputs");
     }
 
     @Test
