@@ -148,6 +148,28 @@ final class CpuTopologyTest {
     }
 
     @Test
+    void largeNumaPoolProbesAtMost64CarrierSlots() {
+        CpuTopology topology = CpuTopology.of(
+                new CpuTopology.Location(10, -1, 1),
+                new CpuTopology.Location(11, -1, 2));
+        java.util.concurrent.atomic.AtomicInteger probes =
+                new java.util.concurrent.atomic.AtomicInteger();
+        java.util.function.IntUnaryOperator targets = slot -> {
+            if (probes.incrementAndGet() > 64) {
+                throw new AssertionError("Task scheduling scanned unbounded carriers");
+            }
+            return slot == 63 ? 10 : 11;
+        };
+        assertEquals(63, topology.preferredSlotForNuma(0, 1, 8192, targets));
+        assertEquals(64, probes.get());
+
+        probes.set(0);
+        assertEquals(0, topology.preferredSlotForNuma(0, 55, 8192, targets));
+        assertEquals(64, probes.get(),
+                "missing NUMA node must not scan all 8192 carriers");
+    }
+
+    @Test
     void duplicateLogicalCpuIsRejected() {
         assertThrows(IllegalArgumentException.class, () -> CpuTopology.of(
                 new CpuTopology.Location(0, 1, 0),
