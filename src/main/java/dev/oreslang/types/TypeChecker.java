@@ -6336,7 +6336,7 @@ public final class TypeChecker {
         source = deref(source);
         if (isBytesType(source)) return true;
         if (source instanceof ListType list) {
-            return assignable(deref(list.element()), Primitive.INT);
+            return deref(list.element()) == Primitive.INT;
         }
         return false;
     }
