@@ -407,15 +407,11 @@ final class TaskAccessVerifier {
         return ticket;
     }
 
-    /**
-     * Mint one opaque runtime-bound admission after the same alias/generation
-     * checks as ordinary compiler admission. The returned capability, not the
-     * numeric ticket id, is what may cross into runtime lowering.
+    /*
+     * Runtime-bound admissions intentionally have no raw Claim-only mint.
+     * Executable lowering must pass the coherent source/resolved type proof
+     * below in addition to alias and generation checks.
      */
-    TaskLoanAdmission admitRuntimeBound(List<Claim> requested) {
-        return new TaskLoanAdmission(this, admit(requested));
-    }
-
     TaskLoanAdmission admitCoherentTypedRuntimeBound(
             List<CoherentTypedClaim> requested, SendSyncTraits sourceProof,
             ThreadSafetyTraits.NominalProof resolvedNominals) {
