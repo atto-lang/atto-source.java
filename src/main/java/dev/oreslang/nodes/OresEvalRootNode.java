@@ -6654,6 +6654,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Channel")) return new ChannelFactory();
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
+                if (name.name().equals("Entry")) return EntryFactory.INSTANCE;
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
                 if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                     return BooleanOpsNamespace.INSTANCE;
@@ -7448,6 +7449,12 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException(
                             "unknown Channel member " + name);
                 };
+            }
+            if (receiver instanceof EntryFactory) {
+                if (!name.equals("of")) {
+                    throw new IllegalArgumentException("unknown Entry member " + name);
+                }
+                return (Invokable) EntryFactory::create;
             }
             if (receiver instanceof ChannelFactory factory) {
                 if (!name.equals("new")) {
@@ -10074,6 +10081,18 @@ public final class OresEvalRootNode extends RootNode {
             return value == null ? List.of() : List.of(value);
         }
     }
+    private enum EntryFactory {
+        INSTANCE;
+
+        private static Object create(List<Object> args) {
+            requireTwo(args, "Entry.of");
+            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+            fields.put("key", args.get(0));
+            fields.put("value", args.get(1));
+            return new ReadonlyRecordValue(fields);
+        }
+    }
+
     private enum FutureFactory { INSTANCE }
     private enum BooleanOpsNamespace { INSTANCE }
 
