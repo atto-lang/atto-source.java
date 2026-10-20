@@ -2396,6 +2396,12 @@ public final class OwnershipChecker {
             return;
         }
         if (target instanceof Ast.MemberExpr member) {
+            Ast.TypeRef receiverType = receiverType(member.receiver(), scope);
+            if (receiverType != null
+                    && receiverType.name().equals("Entry")
+                    && receiverType.arguments().size() == 2) {
+                throw error("Entry<K,V> is immutable; member assignment is not allowed");
+            }
             Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
             if (klass != null) {
                 Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
@@ -2421,6 +2427,12 @@ public final class OwnershipChecker {
             return;
         }
         if (target instanceof Ast.IndexExpr indexed) {
+            Ast.TypeRef receiverType = receiverType(indexed.receiver(), scope);
+            if (receiverType != null
+                    && receiverType.name().equals("Entry")
+                    && receiverType.arguments().size() == 2) {
+                throw error("Entry<K,V> is immutable; indexed assignment is not allowed");
+            }
             ensureMutableReceiver(indexed.receiver(), scope, "indexed value");
             checkExpr(indexed.index(), scope, false);
             return;
@@ -2494,7 +2506,13 @@ public final class OwnershipChecker {
             Ast.TypeRef type = receiver.type();
             if (type.isBorrow()) type = type.borrowedTarget();
             Ast.TypeRef fieldType = null;
-            if (type.isClosedAggregateType()) {
+            if (type.name().equals("Entry") && type.arguments().size() == 2) {
+                fieldType = switch (member.member()) {
+                    case "key" -> type.arguments().get(0);
+                    case "value" -> type.arguments().get(1);
+                    default -> null;
+                };
+            } else if (type.isClosedAggregateType()) {
                 fieldType = type.aggregateMembers().get(member.member());
             } else {
                 Ast.ClassDecl klass = findClass(type.name());
