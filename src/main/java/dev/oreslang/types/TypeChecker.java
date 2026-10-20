@@ -6,6 +6,7 @@ import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
+import dev.oreslang.types.Types.BoolLiteral;
 import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
 import dev.oreslang.types.Types.Generic;
@@ -107,6 +108,8 @@ public final class TypeChecker {
     private boolean currentMaySuspend;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
+    // Scoped collector, active only while checking an unannotated Task block.
+    private List<Type> inferredTaskReturnTypes;
     private final List<String> warnings = new ArrayList<>();
 
     /** Non-fatal compiler diagnostics, detached from mutable checker state. */
@@ -1892,6 +1895,15 @@ public final class TypeChecker {
             checkBlock(block.body(), env, generics, expectedReturn, self);
             return;
         }
+        if (stmt instanceof Ast.TaskScopeStmt taskScope) {
+            if (currentActorKind != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "nb scope is not enabled inside actor execution until "
+                                + "actor quota/hot-reload structured-scope integration is proven");
+            }
+            checkBlock(taskScope.body(), env, generics, expectedReturn, self);
+            return;
+        }
         if (stmt instanceof Ast.BreakStmt) {
             if (loopDepth == 0) throw new IllegalArgumentException("'break' may only appear inside loop or for");
             return;
@@ -1921,6 +1933,9 @@ public final class TypeChecker {
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
             requireReadonlyCapabilityPreserved(actual, expectedReturn, "return value");
             requireAssignable(actual, expectedReturn, "return value");
+            if (expectedReturn == Unknown.INSTANCE && inferredTaskReturnTypes != null) {
+                inferredTaskReturnTypes.add(widenCollectionElement(actual));
+            }
             return;
         }
         if (stmt instanceof Ast.YieldStmt yielded) {
@@ -4228,6 +4243,8 @@ public final class TypeChecker {
             defineImplicitArguments(lambdaEnv, parameters);
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+            List<Type> previousTaskInference = inferredTaskReturnTypes;
+            inferredTaskReturnTypes = null;
             Map<Env.Binding, Set<String>> outerInitialization = env.initializationSnapshot();
             if (nonLexical) currentClassOwner = null;
             // A lambda checked within a constructor runs on invocation, not
@@ -4249,6 +4266,7 @@ public final class TypeChecker {
                 env.restoreInitialization(outerInitialization);
                 currentClassOwner = previousClassOwner;
                 currentConstructorOwner = previousConstructorOwner;
+                inferredTaskReturnTypes = previousTaskInference;
             }
             return new Function(parameters, result);
         }
@@ -4503,7 +4521,116 @@ public final class TypeChecker {
         return Primitive.BOOL;
     }
 
+    /**
+     * A Task runs after the enclosing function continues, so source analysis
+     * cannot credit Task assignments toward parent definite initialization.
+     * Neither can a child inherit constructor-only field write privileges.
+     */
+    private Type checkTaskBlock(Ast.TaskExpr task, Type expected, Env env,
+                                Set<String> generics, Type self) {
+        Env child = new Env(env);
+        Map<Env.Binding, Set<String>> initializedBefore = env.initializationSnapshot();
+        Ast.ClassDecl previousClass = currentClassOwner;
+        Ast.ClassDecl previousConstructor = currentConstructorOwner;
+        List<Type> previousInference = inferredTaskReturnTypes;
+        boolean previousMaySuspend = currentMaySuspend;
+        List<Type> discovered = expected == Unknown.INSTANCE ? new ArrayList<>() : null;
+        currentConstructorOwner = null;
+        inferredTaskReturnTypes = discovered;
+        // Task bodies are scheduler continuations by definition. They may await
+        // and may invoke declared suspends callables even when their lexical
+        // parent is an ordinary synchronous function.
+        currentMaySuspend = true;
+        try {
+            checkCallableBlock(task.body(), child, generics, expected, self);
+        } finally {
+            currentMaySuspend = previousMaySuspend;
+            inferredTaskReturnTypes = previousInference;
+            env.restoreInitialization(initializedBefore);
+            currentClassOwner = previousClass;
+            currentConstructorOwner = previousConstructor;
+        }
+        Type result = expected;
+        if (result == Unknown.INSTANCE) {
+            if (discovered.isEmpty()) {
+                result = Primitive.VOID;
+            } else {
+                result = discovered.getFirst();
+                for (int i = 1; i < discovered.size(); i++) {
+                    Type joined = capabilitySafeEquivalentJoin(result, discovered.get(i));
+                    if (joined == null) {
+                        throw new IllegalArgumentException(
+                                "unannotated Task returns incompatible result types: "
+                                        + result + " and " + discovered.get(i)
+                                        + "; declare Task<T> explicitly");
+                    }
+                    result = joined;
+                }
+            }
+        }
+        if (result != Primitive.VOID && !definitelyReturns(task.body())) {
+            throw new IllegalArgumentException(
+                    "Task<" + result + "> must return a value on every path");
+        }
+        validateAsyncBoundaryType(result, true, "Task result");
+        task.bindResultType(taskOwnershipResultRef(result));
+        return new Named("Task", List.of(result));
+    }
+
+    /**
+     * Preserve exact checked result types in the ownership AST. Unresolved,
+     * affine or otherwise unsupported types cannot be inferred implicitly.
+     */
+    private Ast.TypeRef taskOwnershipResultRef(Type result) {
+        if (result instanceof Primitive primitive) {
+            return Ast.TypeRef.simple(primitive.name().toLowerCase(java.util.Locale.ROOT));
+        }
+        if (result instanceof StringLiteral) return Ast.TypeRef.simple("string");
+        if (result instanceof BoolLiteral) return Ast.TypeRef.simple("bool");
+        if (result instanceof Named named) {
+            return new Ast.TypeRef(named.name(),
+                    named.arguments().stream().map(this::taskOwnershipResultRef).toList(), false);
+        }
+        if (result instanceof ListType list) {
+            return new Ast.TypeRef("List", List.of(taskOwnershipResultRef(list.element())), false);
+        }
+        if (result instanceof Tuple tuple) {
+            List<Ast.TypeRef> elements =
+                    tuple.elements().stream().map(this::taskOwnershipResultRef).toList();
+            if (tuple.kind() != TupleKind.TUPLE) {
+                throw new IllegalArgumentException(
+                        "inferred Task tuple result requires a supported ownership shape");
+            }
+            return Ast.TypeRef.tupleType(elements);
+        }
+        if (result instanceof Record record) {
+            Map<String, Ast.TypeRef> fields = new LinkedHashMap<>();
+            resultRecordMembers(record, fields);
+            return record.readOnly()
+                    ? Ast.TypeRef.readonlyRecordType(fields)
+                    : Ast.TypeRef.recordType(fields);
+        }
+        if (result instanceof Union union) {
+            return Ast.TypeRef.union(
+                    union.options().stream().map(this::taskOwnershipResultRef).toList());
+        }
+        throw new IllegalArgumentException(
+                "Task result cannot be represented as an owned concrete type: " + result);
+    }
+
+    private void resultRecordMembers(Record record, Map<String, Ast.TypeRef> destination) {
+        for (Map.Entry<String, Type> entry : record.members().entrySet()) {
+            destination.put(entry.getKey(), taskOwnershipResultRef(entry.getValue()));
+        }
+    }
+
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.TaskExpr task
+                && expected instanceof Named named
+                && named.name().equals("Task")
+                && named.arguments().size() == 1) {
+            return checkTaskBlock(task, named.arguments().getFirst(), env, generics, self);
+        }
         if (expr instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
             return fn;
@@ -5277,6 +5404,18 @@ public final class TypeChecker {
             boolean returnPosition,
             String where) {
         if (returnPosition && type == Primitive.VOID) return;
+        // First prove transferable ownership independently from actor transport.
+        // A class's nominal Send proof is deliberately restricted to the
+        // existing transitively owned/data-only class analysis. Source-level
+        // unsafe auto-trait overrides are not supported.
+        if (!SendSyncTraits.isOwnedSend(type, (nominal, trait) ->
+                trait == SendSyncTraits.Trait.SEND
+                        && isSharedSafe(nominal, new LinkedHashSet<>(), Map.of()))) {
+            throw new IllegalArgumentException(
+                    where + " is not an owned Send value across an async Task boundary; "
+                            + "transfer owned data, not thread-affine capabilities, "
+                            + "unguarded state aliases, or unresolved types");
+        }
         // A typed channel handle is an Ores-owned synchronized transport, not
         // an actor/mailbox capability. Async tasks may receive the handle when
         // its payload is concrete, owned and task-safe. Actor boundaries retain
@@ -7466,6 +7605,8 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(defer.expression(), classGenerics, klass, method);
             } else if (statement instanceof Ast.BlockStmt block) {
                 rejectStaticClassGenericReferences(block.body(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.TaskScopeStmt taskScope) {
+                rejectStaticClassGenericReferences(taskScope.body(), classGenerics, klass, method);
             } else if (statement instanceof Ast.LoopStmt loop) {
                 rejectStaticClassGenericReferences(loop.body(), classGenerics, klass, method);
             } else if (statement instanceof Ast.IfStmt conditional) {
@@ -8880,6 +9021,7 @@ public final class TypeChecker {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.ReturnStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
+            if (stmt instanceof Ast.TaskScopeStmt taskScope && definitelyReturns(taskScope.body())) return true;
             if (stmt instanceof Ast.LoopStmt loop && !containsBreakForCurrentLoop(loop.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 boolean allBranches = !conditional.branches().isEmpty()
@@ -8907,6 +9049,8 @@ public final class TypeChecker {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.BreakStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && containsBreakForCurrentLoop(block.body())) return true;
+            if (stmt instanceof Ast.TaskScopeStmt taskScope
+                    && containsBreakForCurrentLoop(taskScope.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
                     if (containsBreakForCurrentLoop(branch.body())) return true;
