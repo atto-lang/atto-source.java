@@ -62,23 +62,21 @@ public final class TaskScope implements AutoCloseable {
     }
 
     /**
-     * Runtime/compiler-only retirement hook. The callback is invoked from the
-     * child's getDone() completion, never from cancellation request or result
-     * settlement. The sole exception is scheduler admission failure before a
-     * Task exists at all; in that case the reservation is retired on the
-     * never-started path because no guest execution could own it.
+     * Runtime/compiler-only retirement hook. Scheduler rejection and physical
+     * quiescence are separate methods so a never-started reservation cannot be
+     * mistaken for a completed child. The physical path receives this exact
+     * TaskScope and exact TaskHandle, giving the compiler/runtime bridge the
+     * identities it must validate before releasing memory authority.
      *
-     * <p>Package-private by design: guest/source code cannot supply a callback
-     * that manufactures release authority. A callback failure leaves the scope
-     * join slot live (fail closed) rather than publishing premature completion.
+     * <p>Package-private by design: guest/source code cannot supply a hook that
+     * manufactures release authority. A hook failure leaves the scope join slot
+     * live (fail closed) rather than publishing premature completion.
      */
     <T> TaskHandle<T> startTask(
             OresScheduler.Task<T> task,
-            Runnable retireAfterPhysicalQuiescence) {
+            RetirementHook<T> retirementHook) {
         Objects.requireNonNull(task, "task");
-        Objects.requireNonNull(
-                retireAfterPhysicalQuiescence,
-                "physical-quiescence retirement hook");
+        Objects.requireNonNull(retirementHook, "retirement hook");
         synchronized (admissionLock) {
             if (sealed) {
                 throw new RejectedExecutionException("TaskScope is sealed");
