@@ -71,7 +71,8 @@ final class TaskRegionPermitBridge {
         private static final int BOUND = 1;
         private static final int RETIRING = 2;
         private static final int RETIRED = 3;
-        private static final int FAILED = 4;
+        private static final int ABANDONED = 4;
+        private static final int FAILED = 5;
 
         private final TaskAccessVerifier ledger;
         private final TaskAccessVerifier.Ticket ticket;
@@ -117,7 +118,10 @@ final class TaskRegionPermitBridge {
             return ledger.cancellationRequested(ticket);
         }
 
-        boolean retired() { return retirement.get() == RETIRED; }
+        boolean retired() {
+            int state = retirement.get();
+            return state == RETIRED || state == ABANDONED;
+        }
 
         private void retireOnPhysicalExit() {
             retireFrom(BOUND, "Task region physical-exit callback is not bound");
@@ -126,7 +130,11 @@ final class TaskRegionPermitBridge {
         private void retireFrom(int expected, String denial) {
             if (!retirement.compareAndSet(expected, RETIRING)) {
                 int prior = retirement.get();
-                if (prior == RETIRED) return;
+                // A completed physical exit is not equivalent to an
+                // abandoned unbound reservation. Only the *same* successful
+                // completion route is idempotent.
+                if ((prior == RETIRED && expected == BOUND)
+                        || (prior == ABANDONED && expected == RESERVED)) return;
                 if (prior == FAILED)
                     throw new IllegalStateException(
                             "Task region retirement previously failed", failure);
@@ -137,7 +145,7 @@ final class TaskRegionPermitBridge {
             }
             try {
                 ledger.quiescent(ticket);
-                retirement.set(RETIRED);
+                retirement.set(expected == RESERVED ? ABANDONED : RETIRED);
             } catch (RuntimeException | Error error) {
                 failure = error;
                 retirement.set(FAILED);
