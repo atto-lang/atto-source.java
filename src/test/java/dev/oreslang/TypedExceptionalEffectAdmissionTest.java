@@ -160,6 +160,36 @@ final class TypedExceptionalEffectAdmissionTest {
                 """));
     }
 
+
+    @Test
+    void proposedPostfixCallableEffectsFailClosedAtTheirSignatureBoundary() {
+        for (String effect : List.of("throws", "raises", "panics")) {
+            for (String source : List.of(
+                    "fnc f(): int " + effect + "(Error) { return 1; }",
+                    "fnc f(): int " + effect + " { return 1; }",
+                    "fnc f = |int x| -> int " + effect + "(Error) { return x; }",
+                    "define class C as fnc f(): int " + effect
+                            + "(Error) { return 1; } end",
+                    "define interface I as fnc f(): int " + effect
+                            + "(Error); end")) {
+                IllegalArgumentException exception = assertThrows(
+                        IllegalArgumentException.class, () -> Parser.parse(source),
+                        "unlowered effect annotation must not be admitted: " + source);
+                assertTrue(exception.getMessage().contains(
+                        "postfix '" + effect + "' exceptional effect contract is not yet enabled"),
+                        exception::getMessage);
+            }
+        }
+    }
+
+    @Test
+    void effectWordsRemainIdentifiersWhenNotInPostfixEffectPosition() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc throws(): int { return 1; }
+                fnc raises(): int { return throws(); }
+                fnc panics(): int { return raises(); }
+                """));
+    }
     /** Simulates the compiler's trusted std/error import signature, not a user-defined Error. */
     private static void checkWithCoreErrorClass(Ast.Program program) {
         Ast.Program stub = Parser.parse("""
