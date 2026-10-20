@@ -53,6 +53,14 @@ public final class OresBytes {
         return new OresBytes(bytes, true);
     }
 
+    void writeTo(java.io.OutputStream output) throws java.io.IOException {
+        output.write(bytes);
+    }
+
+    void putInto(java.nio.ByteBuffer output) {
+        output.put(bytes);
+    }
+
     @Override
     public boolean equals(Object other) {
         return this == other
