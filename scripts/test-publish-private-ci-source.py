@@ -45,6 +45,68 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.source_tree_mock = self.source_tree_guard.start()
         self.addCleanup(self.source_tree_guard.stop)
 
+    def test_local_policy_denial_never_runs_unattested_shell(self):
+        with (
+            patch.object(
+                pub, "require_preflight",
+                side_effect=AssertionError("checkout shell executed before review"),
+            ) as shell,
+            patch.object(
+                pub, "checked_policy_approval",
+                side_effect=pub.Denied("independent destination policy missing"),
+            ) as policy,
+            patch.object(
+                pub, "verify_protected_origin",
+                side_effect=AssertionError("remote authority queried after local denial"),
+            ) as origin,
+            patch.object(
+                pub, "collect_source",
+                side_effect=AssertionError("private source read"),
+            ) as source,
+            patch.object(
+                pub, "gh_api",
+                side_effect=AssertionError("GitHub API used after local denial"),
+            ) as api,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "independent destination policy missing"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, A)
+        policy.assert_called_once_with(self.root, "trusted/ci")
+        shell.assert_not_called()
+        origin.assert_not_called()
+        source.assert_not_called()
+        api.assert_not_called()
+
+    def test_origin_denial_stops_before_source_and_checkout_shell(self):
+        with (
+            patch.object(
+                pub, "require_preflight",
+                side_effect=AssertionError("checkout shell executed before review"),
+            ) as shell,
+            patch.object(
+                pub, "checked_policy_approval",
+                return_value=(b"p" * 32, 246810),
+            ) as policy,
+            patch.object(
+                pub, "verify_protected_origin",
+                side_effect=pub.Denied("protected source review missing"),
+            ) as origin,
+            patch.object(
+                pub, "collect_source",
+                side_effect=AssertionError("source read despite authority denial"),
+            ) as source,
+            patch.object(
+                pub, "gh_api",
+                side_effect=AssertionError("GitHub API after authority denial"),
+            ) as api,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "protected source review missing"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, A)
+        policy.assert_called_once_with(self.root, "trusted/ci")
+        origin.assert_called_once_with("trusted/ci", b"p" * 32, 246810)
+        shell.assert_not_called()
+        source.assert_not_called()
+        api.assert_not_called()
+
     def test_descriptor_safety_flags_require_distinct_positive_integers(self):
         with (
             patch.object(pub.os, "O_DIRECTORY", 1, create=True),
