@@ -106,7 +106,7 @@ final class CpuTopologyTest {
         assertEquals(2, topology.localityRank(0, 1));
 
         Files.writeString(cache.resolve("id"), "7");
-        Files.writeString(cache.resolve("type"), "Unified\u0000Spoofed");
+        Files.writeString(cache.resolve("type"), "Unified\0Spoofed");
         topology = CpuTopology.discoverAt(root);
         assertEquals(2, topology.localityRank(0, 1));
 
