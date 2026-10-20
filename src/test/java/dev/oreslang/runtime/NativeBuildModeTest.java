@@ -28,6 +28,10 @@ final class NativeBuildModeTest {
                 NativeBuildMode.parseManagedReferenceMode(true, "native64"));
         assertEquals(NativeBuildMode.ManagedReferenceMode.JVM_MANAGED,
                 NativeBuildMode.parseManagedReferenceMode(false, "native64"));
+        assertEquals(NativeBuildMode.ManagedReferenceMode.JVM_MANAGED,
+                NativeBuildMode.parseManagedReferenceMode(false, null));
+        assertThrows(IllegalStateException.class,
+                () -> NativeBuildMode.parseManagedReferenceMode(true, null));
         assertThrows(IllegalStateException.class,
                 () -> NativeBuildMode.parseManagedReferenceMode(true, "auto"));
     }
