@@ -400,9 +400,12 @@ final class IpcTransportSessionLease {
         }
     }
 
-    synchronized Snapshot snapshot() {
-        return new Snapshot(generation, phase, activeWrites,
-                physicalCloseConfirmed, receiptsRetired);
+    Snapshot snapshot() {
+        RuntimeBlockingGuard.requireBlockingHostThread("IPC transport snapshot");
+        synchronized (this) {
+            return new Snapshot(generation, phase, activeWrites,
+                    physicalCloseConfirmed, receiptsRetired);
+        }
     }
 
     synchronized Throwable closeFailure() { return closeFailure; }
