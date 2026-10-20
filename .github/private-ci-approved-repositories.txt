@@ -1,7 +1,9 @@
 # Private CI destinations explicitly approved for source transfers.
 # No repositories are approved by default.
-# Changes must be reviewed by maintainers and security owners on a protected branch.
+# Changes must be independently security-reviewed and enforced either by
+# protected-main rules or the exact review-attested v3 publisher fallback.
 # Format: one exact owner/repo per uncommented line, no whitespace or wildcards.
-# Proposed narrow private carrier for v3 exact-tree tests; requires CODEOWNER review and protected merge.
-# Approved only after this PR receives independent CODEOWNER/security review and is merged under enforced source governance:
+# Proposed narrow private carrier for v3 exact-tree tests.
+# Approved only after this exact PR head receives independent CODEOWNER/security
+# approval before merge; v3 revalidates that review and exact governance blobs:
 usa-acc/usa-acc-e2e
