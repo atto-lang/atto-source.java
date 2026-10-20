@@ -2866,7 +2866,7 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             factory.name() + "<T> requires owned data; borrowed values cannot become mutex state");
                 }
-                if (factory.name().equals("SharedMutex") && !isSendSafe(element, new LinkedHashSet<>(), Map.of())) {
+                if (factory.name().equals("SharedMutex") && !isSharedMutexPayloadSafe(element, new LinkedHashSet<>(), Map.of())) {
                     throw new IllegalArgumentException(
                             "SharedMutex<T> requires shared-safe owned data; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
                 }
@@ -5366,7 +5366,7 @@ public final class TypeChecker {
                         where + " cannot use SharedMutex<T> with isoactor/private actors");
             }
             if (named.arguments().size() != 1
-                    || !isSendSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
+                    || !isSharedMutexPayloadSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
                 throw new IllegalArgumentException(
                         where + " requires SharedMutex<T> to contain shared-safe owned data");
             }
@@ -5409,6 +5409,160 @@ public final class TypeChecker {
                 where + " cannot transport class instance '" + klass.name()
                         + "' by value; actor boundaries require data-only values "
                         + "or an explicit serialization/copy contract");
+    }
+
+    private boolean isSharedMutexPayloadSafe(
+            Type type,
+            Set<Ast.ClassDecl> seen,
+            Map<String, Type> genericBindings) {
+        if (type == Unknown.INSTANCE || type instanceof SelfType
+                || type instanceof Borrow || type instanceof Function
+                || type instanceof ClassNamespace) {
+            return false;
+        }
+        if (type instanceof Primitive primitive) {
+            return primitive != Primitive.VOID;
+        }
+        if (type instanceof StringLiteral) return true;
+        if (type instanceof Generic generic) {
+            Type bound = genericBindings.get(generic.name());
+            return bound != null
+                    && bound != type
+                    && isSharedMutexPayloadSafe(
+                            bound, seen, genericBindings);
+        }
+        if (type instanceof ListType list) {
+            return isSharedMutexPayloadSafe(
+                    list.element(), seen, genericBindings);
+        }
+        if (type instanceof Union union) {
+            for (Type option : union.options()) {
+                if (!isSharedMutexPayloadSafe(
+                        option, seen, genericBindings)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (type instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) {
+                if (!isSharedMutexPayloadSafe(
+                        element, seen, genericBindings)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (type instanceof Record record) {
+            for (Type member : record.members().values()) {
+                if (!isSharedMutexPayloadSafe(
+                        member, seen, genericBindings)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (!(type instanceof Named named)) return false;
+
+        // This is storage-admission policy, not another auto trait. Keep
+        // runtime-domain capabilities out of SharedMutex payloads even when
+        // some of them are independently Send.
+        if (Set.of(
+                "Box", "Arc", "Weak", "Rc", "RefCell", "RwLock",
+                "Mutex", "MutexGuard", "SharedMutex",
+                "Future", "Iterator", "AsyncIterator",
+                "Channel", "SelectCase", "SelectSet", "SelectResult")
+                .contains(named.name())) {
+            return false;
+        }
+        if (named.name().equals("OptionUnwrapError")) {
+            return named.arguments().isEmpty();
+        }
+        if (named.name().equals("Option")
+                || named.name().equals("IteratorResult")) {
+            return named.arguments().size() == 1
+                    && isSharedMutexPayloadSafe(
+                            named.arguments().getFirst(),
+                            seen,
+                            genericBindings);
+        }
+        if (named.name().equals("Result")) {
+            return named.arguments().size() == 2
+                    && isSharedMutexPayloadSafe(
+                            named.arguments().get(0),
+                            seen,
+                            genericBindings)
+                    && isSharedMutexPayloadSafe(
+                            named.arguments().get(1),
+                            seen,
+                            genericBindings);
+        }
+
+        for (Type argument : named.arguments()) {
+            if (!isSharedMutexPayloadSafe(
+                    argument, seen, genericBindings)) {
+                return false;
+            }
+        }
+
+        Ast.ClassDecl klass = findClass(named.name());
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE) {
+            return false;
+        }
+        if (!seen.add(klass)) return true;
+
+        try {
+            Map<String, Type> classBindings = new HashMap<>(genericBindings);
+            if (named.arguments().size()
+                    != klass.genericParameters().size()) {
+                return false;
+            }
+            for (int i = 0; i < klass.genericParameters().size(); i++) {
+                classBindings.put(
+                        klass.genericParameters().get(i),
+                        resolveSharedGeneric(
+                                named.arguments().get(i),
+                                genericBindings));
+            }
+
+            Type nominal = nominalClassType(klass);
+            Set<String> classGenerics =
+                    Set.copyOf(klass.genericParameters());
+
+            for (Ast.FieldDecl field : klass.fields()) {
+                Type fieldType = resolveSharedGeneric(
+                        resolve(
+                                field.type(),
+                                classGenerics,
+                                nominal),
+                        classBindings);
+                if (!isSharedMutexPayloadSafe(
+                        fieldType, seen, classBindings)) {
+                    return false;
+                }
+            }
+
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                if (parentRef.name().equals("Object")
+                        || parentRef.name().equals("List")) {
+                    continue;
+                }
+                Type parentType = resolveSharedGeneric(
+                        resolve(
+                                parentRef,
+                                classGenerics,
+                                nominal),
+                        classBindings);
+                if (!isSharedMutexPayloadSafe(
+                        parentType, seen, classBindings)) {
+                    return false;
+                }
+            }
+
+            return true;
+        } finally {
+            seen.remove(klass);
+        }
     }
 
     private boolean isSendSafe(
@@ -8527,6 +8681,18 @@ public final class TypeChecker {
                 yield new Named("Mutex", List.of(element));
             }
             case "Box", "Arc", "Weak", "Rc", "RefCell", "RwLock" -> {
+                Ast.ClassDecl declared = findClass(ref.name());
+                if (declared != null) {
+                    validateGenericArity(
+                            ref,
+                            declared.genericParameters(),
+                            "class " + declared.name());
+                    yield new Named(
+                            qualifiedClassName(declared),
+                            ref.arguments().stream()
+                                    .map(arg -> resolve(arg, generics, self))
+                                    .toList());
+                }
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
                     throw new IllegalArgumentException(
                             ref.name() + " requires exactly one explicit type argument");
@@ -8570,7 +8736,7 @@ public final class TypeChecker {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("SharedMutex requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
                 if (element == Primitive.VOID) throw new IllegalArgumentException("SharedMutex<void> is invalid");
-                if (!isSendSafe(element, new LinkedHashSet<>(), Map.of())) {
+                if (!isSharedMutexPayloadSafe(element, new LinkedHashSet<>(), Map.of())) {
                     throw new IllegalArgumentException(
                             "SharedMutex<T> requires a concrete shared-safe type; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
                 }
