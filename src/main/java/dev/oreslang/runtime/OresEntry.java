@@ -13,7 +13,8 @@ import java.util.Arrays;
  * host graphs, mixed numeric domains, Symbols, and future typed-Map keys.</p>
  *
  * <p>The carrier never grants authority to its payloads: actor transport must
- * independently validate and detach both fields. Java null is preserved as\n * Oreslang's null value; null admission is governed by the guest type contract.</p>
+ * independently validate and detach both fields. Java null is preserved as
+ * Oreslang's null value; null admission is governed by the guest type contract.</p>
  */
 public final class OresEntry implements OresMutex.SharedState {
     private final Object key;
