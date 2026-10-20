@@ -183,4 +183,28 @@ final class ActorDatabaseStdlibTest {
                 }
                 """));
     }
+
+    @Test
+    void requestReceiptRejectsDuplicateSettlementAndStaleGeneration() throws Exception {
+        assertEquals("""
+                false
+                false
+                true
+                true
+                false
+                false
+                """, run("""
+                import * as pool from "std/db_pool";
+                pub routine main(): void {
+                  let receipt = pool.request_receipt(7, 22, 4096);
+                  stdio.println(receipt.settle(6, 22));
+                  stdio.println(receipt.settle(7, 23));
+                  stdio.println(receipt.settle(7, 22));
+                  stdio.println(receipt.is_settled());
+                  stdio.println(receipt.settle(7, 22));
+                  stdio.println(receipt.settle(8, 22));
+                  return;
+                }
+                """));
+    }
 }
