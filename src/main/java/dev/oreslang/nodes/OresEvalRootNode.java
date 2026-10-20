@@ -6335,13 +6335,18 @@ public final class OresEvalRootNode extends RootNode {
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             if (call.callee() instanceof Ast.NameExpr directName
-                    && env.lookup(directName.name()) == Env.MISSING) {
-                Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
-                if (direct != null) {
-                    requireExplicitClassCallableImport(env, directName.name());
-                    List<Object> args = evaluateArguments(call.arguments(), env);
-                    return functionInvocation(direct, args);
+                    && env.lookup(directName.name()) == Env.MISSING
+                    && hasFunctionFamily(directName.name())) {
+                requireExplicitClassCallableImport(env, directName.name());
+                List<Object> args = evaluateArguments(call.arguments(), env);
+                Ast.FunctionDecl direct =
+                        findFunction(directName.name(), args.size());
+                if (direct == null) {
+                    throw new IllegalArgumentException(
+                            "no function " + directName.name()
+                                    + " with arity " + args.size());
                 }
+                return functionInvocation(direct, args);
             }
 
             if (call.callee() instanceof Ast.NameExpr tupleName
