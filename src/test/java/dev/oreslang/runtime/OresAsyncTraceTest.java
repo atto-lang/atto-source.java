@@ -195,6 +195,27 @@ final class OresAsyncTraceTest {
     }
 
     @Test
+    void forkOfMessageTraceCopiesBoundedHistoryWithoutInventingAnAdditionalCall() {
+        OresAsyncTrace.Trace parent = OresAsyncTrace.root(
+                new OresAsyncTrace.Frame("actor-A", site(1)));
+        parent.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, site(1));
+        parent.awaitAt(site(2));
+
+        OresAsyncTrace.Trace sibling = parent.fork();
+        assertEquals(parent.events(), sibling.events());
+        assertEquals(parent.actorVisits(), sibling.actorVisits());
+        assertEquals(parent.elidedActorVisits(), sibling.elidedActorVisits());
+
+        parent.awaitAt(site(3));
+        sibling.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, site(4));
+
+        assertEquals(1, parent.actorVisits().size());
+        assertEquals(2, sibling.actorVisits().size());
+        assertEquals(2, parent.events().size());
+        assertEquals(3, sibling.events().size());
+    }
+
+    @Test
     void twoHundredActorVisitsKeepLastSixteenAndMarkEarlierElision() {
         OresAsyncTrace.Trace trace = OresAsyncTrace.root(
                 new OresAsyncTrace.Frame("entry", site(1)));
