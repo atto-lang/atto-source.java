@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
 
 /**
  * Trusted host adapter between one bounded receipt table and terminal host
@@ -18,8 +19,15 @@ import java.util.concurrent.CompletionStage;
 final class IpcReceiptCompletionBridge {
     private final Object gate = new Object();
     private final IpcReceiptCorrelation correlations;
+    private final int capacity;
     private final Map<Long, CompletableFuture<IpcReceiptCorrelation.Stage>> completions =
             new HashMap<>();
+    // A completion remains charged against this bridge until synchronous
+    // dependent callbacks return on its isolated delivery virtual thread.
+    // Together with completions.size(), this keeps delivery work bounded by
+    // the same configured receipt capacity and prevents an unbounded callback
+    // backlog while still allowing independent terminal notifications.
+    private int deliveriesInFlight;
     // A production physical transport may claim this bridge exactly once.
     // Never clear/rebind these fields: reconnect must allocate a fresh bridge,
     // preventing delayed generation-N close from retiring generation-N+1 work.
@@ -33,6 +41,7 @@ final class IpcReceiptCompletionBridge {
 
     public IpcReceiptCompletionBridge(int capacity) {
         correlations = new IpcReceiptCorrelation(capacity);
+        this.capacity = capacity;
     }
 
     /**
@@ -106,6 +115,10 @@ final class IpcReceiptCompletionBridge {
                 throw new IllegalStateException(
                         "IPC physical transport already lost");
             }
+            if (completions.size() + deliveriesInFlight >= capacity) {
+                throw new IllegalStateException(
+                        "bounded IPC completion delivery capacity exhausted");
+            }
             if (completions.containsKey(envelope.messageSequence())) {
                 throw new IllegalArgumentException("duplicate host correlation");
             }
@@ -131,12 +144,85 @@ final class IpcReceiptCompletionBridge {
     }
 
     /**
+     * One prestarted, isolated terminal-delivery carrier. It is created before
+     * any irreversible ledger transition, then armed under the bridge gate and
+     * released only after the caller has dropped its receive/lifecycle locks.
+     */
+    final class PreparedDelivery {
+        private final CompletableFuture<IpcReceiptCorrelation.Stage> done;
+        private final CountDownLatch release = new CountDownLatch(1);
+        private IpcReceiptCorrelation.Stage terminal;
+        private boolean armed;
+
+        private PreparedDelivery(
+                CompletableFuture<IpcReceiptCorrelation.Stage> done) {
+            this.done = Objects.requireNonNull(done, "done");
+            Thread worker = Thread.ofVirtual()
+                    .name("ipc-receipt-completion")
+                    .unstarted(this::run);
+            // Thread creation/start is deliberately preflighted before receipt
+            // mutation. A resource failure therefore leaves ledger authority
+            // unchanged rather than losing an already-known terminal result.
+            worker.start();
+        }
+
+        private void arm(IpcReceiptCorrelation.Stage stage) {
+            if (armed) {
+                throw new IllegalStateException("IPC completion delivery already armed");
+            }
+            terminal = Objects.requireNonNull(stage, "stage");
+            armed = true;
+        }
+
+        void deliver() {
+            RuntimeBlockingGuard.requireBlockingHostThread(
+                    "IPC terminal completion delivery");
+            release.countDown();
+        }
+
+        private void cancel() {
+            release.countDown();
+        }
+
+        private void run() {
+            boolean interrupted = false;
+            for (;;) {
+                try {
+                    release.await();
+                    break;
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) Thread.currentThread().interrupt();
+            if (!armed) return;
+            try {
+                done.complete(terminal);
+            } finally {
+                synchronized (gate) {
+                    if (deliveriesInFlight <= 0) {
+                        throw new IllegalStateException(
+                                "IPC completion delivery accounting underflow");
+                    }
+                    --deliveriesInFlight;
+                }
+            }
+        }
+
+        private boolean owns(
+                CompletableFuture<IpcReceiptCorrelation.Stage> candidate) {
+            return done == candidate;
+        }
+    }
+
+    /**
      * Apply one authenticated receipt while the caller holds its ordered
      * receive gate, but do not run an arbitrary completion callback there.
-     * The caller completes the returned terminal future after releasing that
+     * A terminal transition prestarts an isolated delivery carrier before
+     * mutating the ledger; the caller releases it after dropping the receive
      * gate. REMOTE_ACCEPTED returns null because it is not terminal.
      */
-    CompletableFuture<IpcReceiptCorrelation.Stage> acceptVerifiedDeferred(
+    PreparedDelivery acceptVerifiedDeferred(
             Object owner, IpcReceiptCorrelation.Envelope envelope,
             long generation, IpcReceiptCorrelation.Stage stage) {
         RuntimeBlockingGuard.requireBlockingHostThread(
@@ -144,30 +230,41 @@ final class IpcReceiptCompletionBridge {
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(envelope, "envelope");
         Objects.requireNonNull(stage, "stage");
-        CompletableFuture<IpcReceiptCorrelation.Stage> done = null;
-        synchronized (gate) {
-            requirePhysicalTransport(owner, envelope, generation);
-            if (transportLossClaimed) {
-                throw new IllegalStateException(
-                        "IPC physical transport already lost");
-            }
-            if (stage != IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED) {
-                done = completions.get(envelope.messageSequence());
-                if (done == null) {
-                    throw new IllegalStateException("missing host completion");
-                }
-            }
-            correlations.acceptVerified(envelope, stage);
-            if (done != null) {
-                CompletableFuture<IpcReceiptCorrelation.Stage> removed =
-                        completions.remove(envelope.messageSequence());
-                if (removed != done) {
+        PreparedDelivery delivery = null;
+        boolean armed = false;
+        try {
+            synchronized (gate) {
+                requirePhysicalTransport(owner, envelope, generation);
+                if (transportLossClaimed) {
                     throw new IllegalStateException(
-                            "host completion identity changed under receipt gate");
+                            "IPC physical transport already lost");
+                }
+                CompletableFuture<IpcReceiptCorrelation.Stage> done = null;
+                if (stage != IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED) {
+                    done = completions.get(envelope.messageSequence());
+                    if (done == null) {
+                        throw new IllegalStateException("missing host completion");
+                    }
+                    delivery = new PreparedDelivery(done);
+                }
+                correlations.acceptVerified(envelope, stage);
+                if (done != null) {
+                    CompletableFuture<IpcReceiptCorrelation.Stage> removed =
+                            completions.remove(envelope.messageSequence());
+                    if (removed != done) {
+                        throw new IllegalStateException(
+                                "host completion identity changed under receipt gate");
+                    }
+                    ++deliveriesInFlight;
+                    delivery.arm(stage);
+                    armed = true;
                 }
             }
+            return delivery;
+        } catch (RuntimeException | Error failure) {
+            if (delivery != null && !armed) delivery.cancel();
+            throw failure;
         }
-        return done;
     }
 
     /** Host bridge use outside a transport receive gate. */
@@ -175,41 +272,39 @@ final class IpcReceiptCompletionBridge {
                         IpcReceiptCorrelation.Envelope envelope,
                         long generation,
                         IpcReceiptCorrelation.Stage stage) {
-        CompletableFuture<IpcReceiptCorrelation.Stage> done =
+        PreparedDelivery delivery =
                 acceptVerifiedDeferred(owner, envelope, generation, stage);
-        if (done != null) done.complete(stage);
+        if (delivery != null) delivery.deliver();
     }
 
     /**
-     * Retired correlation outcomes prepared without invoking callbacks. Only
-     * the trusted host may call complete() and it must do so after releasing
-     * transport lifecycle locks and publishing physical RETIRED status.
+     * Retired correlation outcomes whose delivery carriers were reserved before
+     * ledger mutation. complete() only releases those already-prepared virtual
+     * threads; it never invokes dependent callbacks on the cleanup worker.
      */
-    static final class RetiredCompletions {
-        private final ArrayList<CompletableFuture<IpcReceiptCorrelation.Stage>> done =
-                new ArrayList<>();
-        private List<IpcReceiptCorrelation.LostCorrelation> losses = List.of();
+    final class RetiredCompletions {
+        private final ArrayList<PreparedDelivery> deliveries = new ArrayList<>();
 
-        int size() { return done.size(); }
+        int size() { return deliveries.size(); }
 
         void complete() {
-            for (int i = 0; i < losses.size(); ++i) {
-                var loss = losses.get(i);
-                IpcReceiptCorrelation.Stage terminal =
-                        loss.lastObserved() == IpcReceiptCorrelation.Stage.LOCAL_ADMITTED
-                                ? IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE
-                                : IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN;
-                done.get(i).complete(terminal);
-            }
+            RuntimeBlockingGuard.requireBlockingHostThread(
+                    "IPC retired completion delivery");
+            for (PreparedDelivery delivery : deliveries) delivery.deliver();
+        }
+
+        private void cancelPrepared() {
+            for (PreparedDelivery delivery : deliveries) delivery.cancel();
         }
     }
 
     /**
-     * Fence admission and retire the receipt ledger, but do not execute user
-     * completion callbacks. Physical shutdown uses this to publish RETIRED
-     * before any dependent application callback can block its cleanup worker.
-     * Every potentially allocating container is prepared before ledger
-     * mutation, so allocation failure leaves retry authority intact.
+     * Fence admission and retire the receipt ledger without executing user
+     * completion callbacks. Exact loss/completion identity and isolated
+     * delivery carriers are preflighted before the irreversible ledger
+     * transition. Physical shutdown can therefore publish RETIRED first, then
+     * release independent terminal deliveries without serial callback head-of-
+     * line blocking on its cleanup worker.
      */
     RetiredCompletions transportLostDeferred(
             Object owner, IpcReceiptCorrelation.Envelope trustedEpoch,
@@ -219,24 +314,74 @@ final class IpcReceiptCompletionBridge {
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(trustedEpoch, "trustedEpoch");
         RetiredCompletions terminal = new RetiredCompletions();
-        synchronized (gate) {
-            requirePhysicalTransport(owner, trustedEpoch, generation);
-            transportLossClaimed = true;
-            terminal.done.ensureCapacity(completions.size());
-            if (completions.size() != correlations.counters().pending()) {
-                throw new IllegalStateException("host correlation parity violated");
-            }
-            terminal.losses = correlations.retireTransportLost(trustedEpoch);
-            for (var loss : terminal.losses) {
-                var completion = completions.remove(
-                        loss.envelope().messageSequence());
-                if (completion == null) {
-                    throw new IllegalStateException("missing lost completion");
+        Map<Long, PreparedDelivery> prepared = new HashMap<>();
+        boolean committed = false;
+        try {
+            synchronized (gate) {
+                requirePhysicalTransport(owner, trustedEpoch, generation);
+                transportLossClaimed = true;
+                if (completions.size() != correlations.counters().pending()) {
+                    throw new IllegalStateException("host correlation parity violated");
                 }
-                terminal.done.add(completion);
+
+                List<IpcReceiptCorrelation.LostCorrelation> preview =
+                        correlations.previewTransportLost(trustedEpoch);
+                if (preview.size() != completions.size()) {
+                    throw new IllegalStateException(
+                            "host transport-loss completion parity violated");
+                }
+
+                for (var loss : preview) {
+                    long sequence = loss.envelope().messageSequence();
+                    var completion = completions.get(sequence);
+                    if (completion == null) {
+                        throw new IllegalStateException(
+                                "missing preflight lost completion");
+                    }
+                    PreparedDelivery delivery = new PreparedDelivery(completion);
+                    if (prepared.put(sequence, delivery) != null) {
+                        delivery.cancel();
+                        throw new IllegalStateException(
+                                "duplicate preflight lost completion");
+                    }
+                    terminal.deliveries.add(delivery);
+                }
+
+                List<IpcReceiptCorrelation.LostCorrelation> losses =
+                        correlations.retireTransportLost(trustedEpoch);
+                if (!losses.equals(preview)) {
+                    throw new IllegalStateException(
+                            "IPC transport-loss preview changed under bridge gate");
+                }
+
+                for (var loss : losses) {
+                    long sequence = loss.envelope().messageSequence();
+                    var completion = completions.remove(sequence);
+                    PreparedDelivery delivery = prepared.remove(sequence);
+                    if (completion == null || delivery == null
+                            || !delivery.owns(completion)) {
+                        throw new IllegalStateException(
+                                "lost completion identity changed under receipt gate");
+                    }
+                    IpcReceiptCorrelation.Stage terminalStage =
+                            loss.lastObserved()
+                                    == IpcReceiptCorrelation.Stage.LOCAL_ADMITTED
+                                    ? IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE
+                                    : IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN;
+                    ++deliveriesInFlight;
+                    delivery.arm(terminalStage);
+                }
+                if (!prepared.isEmpty() || !completions.isEmpty()) {
+                    throw new IllegalStateException(
+                            "host transport-loss completion residue");
+                }
+                committed = true;
             }
+            return terminal;
+        } catch (RuntimeException | Error failure) {
+            if (!committed) terminal.cancelPrepared();
+            throw failure;
         }
-        return terminal;
     }
 
     /** Compatibility entry point for non-lease host self-tests. */
@@ -257,7 +402,10 @@ final class IpcReceiptCompletionBridge {
     public boolean invariant() {
         RuntimeBlockingGuard.requireBlockingHostThread("IPC receipt bridge invariant");
         synchronized (gate) {
-            return correlations.invariant()
+            return deliveriesInFlight >= 0
+                    && deliveriesInFlight <= capacity
+                    && completions.size() + deliveriesInFlight <= capacity
+                    && correlations.invariant()
                     && completions.size() == correlations.counters().pending();
         }
     }
