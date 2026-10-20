@@ -1287,12 +1287,28 @@ public final class OresEvalRootNode extends RootNode {
             // normal lambda Env.snapshot() intentionally shares its Slot
             // instances and MUST NOT be used directly for cross-Task moves.
             Env captured = caller.taskProjection(proofs);
-            return startSourceBlockTask(task.body(), captured);
+            List<OresTaskScope.ScopedReadClaim> readClaims = proofs.stream()
+                    .filter(proof ->
+                            proof.mode() == Ast.TaskCaptureMode.SCOPED_READ_BORROW)
+                    .map(proof -> new OresTaskScope.ScopedReadClaim(
+                            proof.name(),
+                            proof.regionId(),
+                            proof.regionGeneration(),
+                            proof.accessPath()))
+                    .toList();
+            return startSourceBlockTask(task.body(), captured, readClaims);
         }
 
         private OresFuture<Object> startSourceBlockTask(
                 List<Ast.Stmt> body,
                 Env env) {
+            return startSourceBlockTask(body, env, List.of());
+        }
+
+        private OresFuture<Object> startSourceBlockTask(
+                List<Ast.Stmt> body,
+                Env env,
+                List<OresTaskScope.ScopedReadClaim> readClaims) {
             SourceTask task = new SourceTask(body);
             // Lexically snapshot at spawn time. Captured owned values were
             // consumed by the compile-time ownership pass; no borrowed or
@@ -1306,7 +1322,11 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException(
                             "nb scope inside actor execution is not enabled until actor quota/hot-reload integration is proven");
                 }
-                return structuredScope.fork(task);
+                return structuredScope.fork(task, readClaims);
+            }
+            if (!readClaims.isEmpty()) {
+                throw new IllegalStateException(
+                        "scoped read Task reached scheduler admission without its lexical scope");
             }
             if (ActorRuntime.inActorExecution()) {
                 OresFuture<Object> future = context.actors().startActorTask(task);
@@ -9232,19 +9252,27 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     if (ticket != null
                             && (ticket.regionId() != proof.regionId()
-                                || ticket.generation() != proof.regionGeneration())) {
+                                || ticket.generation() != proof.regionGeneration()
+                                || !ticket.accessPath().equals(proof.accessPath()))) {
                         throw new IllegalStateException(
                                 "scoped read capture '" + name
-                                        + "' changed region identity/generation");
+                                        + "' changed region identity/generation/access");
+                    }
+                    if (ticket != null
+                            && !ticket.lexicalScope().hasScopedReadLease(
+                                    ticket.regionId(), ticket.generation())) {
+                        throw new IllegalStateException(
+                                "scoped read capture '" + name
+                                        + "' lost its originating physical-lifetime lease");
                     }
                     // First projection mints a hidden runtime continuity ticket
                     // from compiler proof metadata. Nested projections must
-                    // preserve the same region/generation. The current lexical
-                    // scope is recorded so debugging/audits can distinguish
-                    // reticketing into a nested structured scope.
+                    // preserve the same region/generation/access and prove that
+                    // the originating child's lease is still physically live.
                     ticket = new ScopedReadTicket(
                             proof.regionId(),
                             proof.regionGeneration(),
+                            proof.accessPath(),
                             structuredTaskScope);
                 } else if (ticket != null) {
                     throw new IllegalStateException(
@@ -9406,11 +9434,17 @@ public final class OresEvalRootNode extends RootNode {
     private record ScopedReadTicket(
             long regionId,
             long generation,
+            String accessPath,
             OresTaskScope lexicalScope) {
         private ScopedReadTicket {
             if (regionId <= 0L || generation < 0L) {
                 throw new IllegalArgumentException(
                         "invalid scoped read runtime ticket");
+            }
+            Objects.requireNonNull(accessPath, "accessPath");
+            if (!accessPath.equals("$")) {
+                throw new IllegalArgumentException(
+                        "projected scoped read runtime tickets are not enabled");
             }
             Objects.requireNonNull(lexicalScope, "lexicalScope");
         }
