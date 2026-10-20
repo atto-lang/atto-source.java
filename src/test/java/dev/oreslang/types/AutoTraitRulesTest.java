@@ -40,6 +40,17 @@ final class AutoTraitRulesTest {
     }
 
     @Test
+    void arcDoesNotManufactureRecursiveShare() {
+        var scalar = AutoTraitRules.TypeModel.scalar();
+        var boxed = AutoTraitRules.TypeModel.wrapped(BOX, scalar, false);
+        var caps = AutoTraitRules.infer(
+                AutoTraitRules.TypeModel.wrapped(ARC, boxed, true));
+        assertTrue(caps.send());
+        assertTrue(caps.sync());
+        assertFalse(caps.share());
+    }
+
+    @Test
     void rcAndRefCellDoNotAcquireUnsafeCrossLaneSharing() {
         var scalar = AutoTraitRules.TypeModel.scalar();
         var rc = AutoTraitRules.TypeModel.wrapped(RC, scalar, false);
