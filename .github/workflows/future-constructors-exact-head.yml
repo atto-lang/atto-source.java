@@ -5,10 +5,18 @@ on:
     branches: [main]
     paths:
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/main/java/dev/oreslang/runtime/OresFuture.java'
       - 'src/main/java/dev/oreslang/runtime/OresFutureConstructors.java'
+      - 'src/main/java/dev/oreslang/runtime/OresScheduler.java'
+      - 'src/main/java/dev/oreslang/runtime/AsyncRuntime.java'
+      - 'src/main/java/dev/oreslang/runtime/TaskScope.java'
       - 'src/test/java/dev/oreslang/FutureConstructorsLanguageTest.java'
+      - 'src/test/java/dev/oreslang/AsyncAwaitLanguageTest.java'
       - 'src/test/java/dev/oreslang/runtime/OresFutureConstructorsTest.java'
+      - 'src/test/java/dev/oreslang/runtime/OresFutureCallbackTest.java'
+      - 'src/test/java/dev/oreslang/runtime/AsyncRuntimeTest.java'
       - '.github/workflows/future-constructors-exact-head.yml'
 
 permissions:
