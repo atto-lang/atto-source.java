@@ -362,36 +362,62 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         var constructionEpoch = envelope(
                 1, "constructionTxn", 3, 4, constructionPayload);
         var constructionBridge = new IpcReceiptCompletionBridge(1);
+        var constructionAuthority = authority(
+                901, key, connectionBinding);
         var streamFailureSocket = new ConstructionFailureSocket(true, false);
         try {
             new IpcAuthenticatedSocketTransport(
-                    streamFailureSocket, constructionBridge, constructionEpoch, 1,
-                    authority(901, key, connectionBinding), IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+                    streamFailureSocket, constructionBridge,
+                    constructionEpoch, 1, constructionAuthority,
+                    IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
             throw new AssertionError("constructor stream failure was swallowed");
         } catch (IOException expected) {
             check(expected.getMessage().contains("output acquisition"));
         }
         check(streamFailureSocket.closeCount() == 1);
-        Object laterOwner = new Object();
-        constructionBridge.claimPhysicalTransport(
-                laterOwner, constructionEpoch, 901);
-        check(constructionBridge.transportLost(
-                laterOwner, constructionEpoch, 901) == 0);
+        check(!constructionAuthority.consumedOrDestroyed());
+
+        // Pre-consumption failure leaves the exact same authority retryable.
+        var recoverySocket = new ConstructionFailureSocket(false, false);
+        var recoveredTransport = new IpcAuthenticatedSocketTransport(
+                recoverySocket, constructionBridge, constructionEpoch, 1,
+                constructionAuthority,
+                IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+        check(constructionAuthority.consumedOrDestroyed());
+        check(recoveredTransport.requestCloseAndAwait(3000));
+        check(recoverySocket.closeCount() == 1);
+        check(recoveredTransport.keyCloneZeroized());
+        check(recoveredTransport.connectionBindingCloneZeroized());
         check(constructionBridge.invariant());
 
-        // The final irreversible claim may itself fail (for example because
-        // another physical transport already owns the bridge). Cleanup must
-        // close the socket, preserve that original binding failure, and attach
-        // any unchecked close failure only as suppressed diagnostics.
+        // A consumed authority cannot create a second physical transport.
+        var reusedAuthoritySocket = new ConstructionFailureSocket(false, false);
+        try {
+            new IpcAuthenticatedSocketTransport(
+                    reusedAuthoritySocket, new IpcReceiptCompletionBridge(1),
+                    constructionEpoch, 1, constructionAuthority,
+                    IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+            throw new AssertionError("consumed physical authority reused");
+        } catch (IllegalStateException expected) {
+            check(expected.getMessage().contains("already consumed"));
+        }
+        check(reusedAuthoritySocket.closeCount() == 1);
+
+        // The final irreversible bridge claim may itself fail (for example
+        // because another physical transport already owns the bridge).
+        // Credentials already transferred from the broker are destroyed and
+        // that authority remains permanently spent.
         var occupiedBridge = new IpcReceiptCompletionBridge(1);
         Object occupiedOwner = new Object();
         occupiedBridge.claimPhysicalTransport(
                 occupiedOwner, constructionEpoch, 902);
+        var claimAuthority = authority(902, key, connectionBinding);
         var claimFailureSocket = new ConstructionFailureSocket(false, true);
         try {
             new IpcAuthenticatedSocketTransport(
-                    claimFailureSocket, occupiedBridge, constructionEpoch, 1,
-                    authority(902, key, connectionBinding), IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+                    claimFailureSocket, occupiedBridge,
+                    constructionEpoch, 1, claimAuthority,
+                    IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
             throw new AssertionError("duplicate physical bridge claim succeeded");
         } catch (IllegalStateException expected) {
             check(expected.getMessage().contains("already bound"));
@@ -399,10 +425,23 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             check(expected.getSuppressed()[0].getMessage().contains(
                     "construction close failed"));
         }
+        check(claimAuthority.consumedOrDestroyed());
         check(claimFailureSocket.closeCount() == 1);
         check(occupiedBridge.transportLost(
                 occupiedOwner, constructionEpoch, 902) == 0);
         check(occupiedBridge.invariant());
+
+        var burnedAuthoritySocket = new ConstructionFailureSocket(false, false);
+        try {
+            new IpcAuthenticatedSocketTransport(
+                    burnedAuthoritySocket, new IpcReceiptCompletionBridge(1),
+                    constructionEpoch, 1, claimAuthority,
+                    IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+            throw new AssertionError("post-claim-failure authority reused");
+        } catch (IllegalStateException expected) {
+            check(expected.getMessage().contains("already consumed"));
+        }
+        check(burnedAuthoritySocket.closeCount() == 1);
 
         // TCP stream publication is single-file. Physical write concurrency
         // greater than one is rejected; outstanding receipt lifetimes are a
