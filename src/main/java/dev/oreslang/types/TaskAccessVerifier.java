@@ -467,7 +467,7 @@ final class TaskAccessVerifier {
      * must use TaskLoanAdmission so a caller cannot choose the lifecycle edge.
      */
     @Deprecated
-    public synchronized void quiescent(Ticket ticket) {
+    synchronized void quiescent(Ticket ticket) {
         retireAfterPhysicalQuiescence(ticket);
     }
 
