@@ -263,15 +263,24 @@ def review_attested_main_sha(repository, expected_policy_digest):
     )
     head = authority.get("head")
     base = authority.get("base")
+    author = authority.get("user")
     if (authority.get("number") != REVIEW_AUTHORITY_PR
             or authority.get("state") != "closed"
             or authority.get("merged_at") is None
+            or not isinstance(author, dict)
+            or author.get("id") == REVIEW_AUTHORITY_USER_ID
             or not isinstance(head, dict)
             or not isinstance(head.get("repo"), dict)
             or head["repo"].get("full_name") != legacy.SOURCE_REPO
+            or head["repo"].get("id") != SOURCE_REPOSITORY_ID
             or not isinstance(base, dict)
+            or not isinstance(base.get("repo"), dict)
+            or base["repo"].get("full_name") != legacy.SOURCE_REPO
+            or base["repo"].get("id") != SOURCE_REPOSITORY_ID
             or base.get("ref") != legacy.SOURCE_PROTECTED_BRANCH):
-        raise Denied("private-CI authority PR is not a merged source-main review")
+        raise Denied(
+            "private-CI authority PR is not an independent merged source-main review"
+        )
     reviewed_head = valid_sha(
         head.get("sha"), "private-CI authority PR head SHA invalid"
     )
