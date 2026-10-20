@@ -1183,7 +1183,7 @@ class PrivateCiV3Test(unittest.TestCase):
             ],
         )
 
-    def test_publish_rolls_back_payload_if_protection_changes_before_authorization(self):
+    def test_publish_leaves_nonce_payload_inert_if_protection_changes_before_authorization(self):
         carrier = contract()
 
         def api(route, method="GET", payload=None):
@@ -1252,7 +1252,7 @@ class PrivateCiV3Test(unittest.TestCase):
 
         delete_ref.assert_not_called()
 
-    def test_publish_rolls_back_payload_if_pr_head_moves_before_authorization(self):
+    def test_publish_leaves_nonce_payload_inert_if_pr_head_moves_before_authorization(self):
         carrier = contract()
         writes = []
 
@@ -1318,10 +1318,7 @@ class PrivateCiV3Test(unittest.TestCase):
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
 
-        delete_ref.assert_called_once_with(
-            "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE, COMMIT,
-            carrier["repository_id"]
-        )
+        delete_ref.assert_not_called()
         ref_posts = [
             payload["ref"]
             for method, route, payload in writes
@@ -1333,7 +1330,7 @@ class PrivateCiV3Test(unittest.TestCase):
             r"^refs/heads/ci/oreslang-" + SOURCE_TREE + r"-[0-9a-f]{32}$",
         )
 
-    def test_publish_rolls_back_payload_if_authorization_creation_fails(self):
+    def test_publish_does_not_destructively_rollback_if_authorization_creation_fails(self):
         carrier = contract()
 
         def api(route, method="GET", payload=None):
@@ -1400,7 +1397,7 @@ class PrivateCiV3Test(unittest.TestCase):
 
         delete_ref.assert_not_called()
 
-    def test_publish_rolls_back_both_attempts_on_keyboard_interrupt(self):
+    def test_publish_does_not_delete_refs_on_keyboard_interrupt(self):
         carrier = contract()
 
         def api(route, method="GET", payload=None):
@@ -1465,21 +1462,9 @@ class PrivateCiV3Test(unittest.TestCase):
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
 
-        self.assertEqual(
-            [call.args for call in delete_ref.call_args_list],
-            [
-                (
-                    "trusted/ci", "ci/authorized-" + COMMIT + "-" + NONCE, COMMIT,
-                    carrier["repository_id"],
-                ),
-                (
-                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE, COMMIT,
-                    carrier["repository_id"],
-                ),
-            ],
-        )
+        delete_ref.assert_not_called()
 
-    def test_publish_rolls_back_both_refs_on_authorization_confirmation_mismatch(self):
+    def test_publish_does_not_delete_refs_on_authorization_confirmation_mismatch(self):
         carrier = contract()
 
         def api(route, method="GET", payload=None):
@@ -1544,19 +1529,7 @@ class PrivateCiV3Test(unittest.TestCase):
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
 
-        self.assertEqual(
-            [call.args for call in delete_ref.call_args_list],
-            [
-                (
-                    "trusted/ci", "ci/authorized-" + COMMIT + "-" + NONCE, COMMIT,
-                    carrier["repository_id"],
-                ),
-                (
-                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE, COMMIT,
-                    carrier["repository_id"],
-                ),
-            ],
-        )
+        delete_ref.assert_not_called()
 
     def test_publisher_failure_path_never_calls_destructive_ref_delete(self):
         source = v3.publish.__code__.co_names
