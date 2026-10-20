@@ -74,6 +74,10 @@ public final class AsyncTransferProvenance {
         return byCall.containsKey(call);
     }
 
+    public java.util.List<Ast.CallExpr> calls() {
+        return java.util.List.copyOf(byCall.keySet());
+    }
+
     public int callCount() {
         return byCall.size();
     }
