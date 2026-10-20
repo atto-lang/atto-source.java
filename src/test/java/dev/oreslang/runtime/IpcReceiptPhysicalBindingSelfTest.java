@@ -86,8 +86,8 @@ public final class IpcReceiptPhysicalBindingSelfTest {
                                 guardedOwner, guardedEpoch, 190),
                         () -> guardedBridge.transportLost(
                                 guardedOwner, guardedEpoch, 190),
-                        guardedBridge::counters,
-                        guardedBridge::invariant
+                        () -> guardedBridge.counters(),
+                        () -> guardedBridge.invariant()
                 };
                 for (Runnable probe : probes) {
                     try {
