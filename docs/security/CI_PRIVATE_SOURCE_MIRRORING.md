@@ -417,6 +417,39 @@ The Bash test uses a temporary policy checkout; Python tests mock all GitHub
 API operations. The real policy remains empty and **no destination is
 authorized** unless separately reviewed.
 
+### Private-source execution must be networkless and host-isolated
+
+A private repository token is not the only exfiltration channel. Even with no
+`GITHUB_TOKEN`, `GH_TOKEN` or repository secrets, code under test can send
+its own private bytes over ordinary outbound network access or encode them into
+logs/artifacts. Therefore an approved mirror is still **not executable** on a
+normal GitHub-hosted runner or directly on the carrier host.
+
+The reviewed carrier design requires source-bearing build jobs to run only on a
+disposable runner labeled `self-hosted, linux, x64, oreslang-private-ephemeral,
+oreslang-egress-locked`. The source itself executes only inside a preloaded,
+content-addressed Docker image approved on pinned carrier `main` as exact
+`sha256:<64hex>` IDs for the Java 21 and Java 25 roles. The source publisher
+requires both image IDs before reading/uploading private source and revalidates
+the exact pinned policy before each destination write.
+
+The production sandbox uses `--pull=never`, `--network=none`,
+`--ipc=none`, `--log-driver=none`, a read-only container root and read-only
+source bind, dropped capabilities, `no-new-privileges`, non-root UID 65532,
+private bind propagation, tmpfs work/scratch, bounded PIDs/memory/CPU, swap
+disabled, and a minimal environment. Maven executes with `-o` offline mode;
+all required toolchains/plugins/dependencies must already exist in the reviewed
+sealed image. Untrusted build stdout/stderr is discarded and every nonzero
+private build exit is normalized to one generic failure result rather than
+publishing the exact exit code.
+
+Source-free carrier head `88c353fe5b56f50c76baae1809f6c7fb7f11599e`
+passed **52/52** deterministic tests plus the real hosted Docker isolation
+probe in run `39346307005`. That probe verified the sandbox contract using
+synthetic bytes only. It does **not** prove the dedicated self-hosted runner's
+egress controls and does not authorize private-source transfer while protected
+main/ruleset/review gates remain unavailable.
+
 ### Exact production-module verification — 2026-10-19
 
 The current draft publisher was materialized locally from GitHub and its bytes
