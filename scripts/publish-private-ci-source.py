@@ -13,8 +13,10 @@ import os
 import stat
 from pathlib import Path
 import re
+import resource
 import subprocess
 import sys
+import tempfile
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 BRANCH = re.compile(r"^ci/oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}$")
@@ -123,20 +125,62 @@ def canonical_security_lines(contents, label):
     return contents.decode("ascii").split("\n")
 
 
+def run_bounded_gh(argv, *, input=None, env=None, timeout=45):
+    """Run the authenticated CLI with an OS-enforced output-file byte cap.
+
+    capture_output=True buffers an untrusted response in the parent before a
+    size check can reject it. Redirect each stream to an anonymous regular
+    file and set RLIMIT_FSIZE on the child *before exec*, so even a malicious
+    or malfunctioning CLI cannot grow either file past the cap. Fail closed
+    on platforms that cannot enforce the limit.
+
+    The limit is per stream and in bytes (intentionally stricter than a
+    Unicode character count). A stream exactly at the cap is ambiguous:
+    the child may have suppressed EFBIG/SIGXFSZ, so it is rejected.
+    """
+    limit = MAX_GH_API_RESPONSE_CHARS
+    if (not hasattr(resource, "RLIMIT_FSIZE")
+            or type(limit) is not int or limit < 2):
+        raise Denied("OS cannot safely bound GitHub CLI output")
+
+    def limit_child_files():
+        resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+
+    try:
+        with tempfile.TemporaryFile(mode="w+b") as stdout_file, \
+                tempfile.TemporaryFile(mode="w+b") as stderr_file:
+            result = subprocess.run(
+                argv, input=input, stdout=stdout_file, stderr=stderr_file,
+                text=True, env=env, timeout=timeout, check=False,
+                start_new_session=True, preexec_fn=limit_child_files,
+            )
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout_bytes = stdout_file.read(limit + 1)
+            stderr_bytes = stderr_file.read(limit + 1)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise Denied("authenticated GitHub CLI bounded execution unavailable") from exc
+    if len(stdout_bytes) >= limit or len(stderr_bytes) >= limit:
+        raise Denied("authenticated GitHub API response exceeds size limit")
+    try:
+        stdout = stdout_bytes.decode("utf-8")
+        stderr = stderr_bytes.decode("utf-8")
+    except UnicodeError as exc:
+        raise Denied("authenticated GitHub API response is not UTF-8") from exc
+    return subprocess.CompletedProcess(argv, result.returncode, stdout, stderr)
+
+
 def gh_api(route, method="GET", payload=None):
     argv = [trusted_github_cli(), "api", "--method", method, route,
             "--header", "Accept: application/vnd.github+json"]
     if payload is not None:
         argv.extend(["--input", "-"])
     try:
-        p = subprocess.run(
+        p = run_bounded_gh(
             argv,
             input=json.dumps(payload) if payload is not None else None,
-            capture_output=True,
-            text=True,
             env=github_api_environment(),
             timeout=45,
-            check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("authenticated GitHub API request unavailable") from exc
