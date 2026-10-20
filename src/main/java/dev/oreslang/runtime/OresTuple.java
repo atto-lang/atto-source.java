@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.util.AbstractCollection;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
@@ -9,17 +8,17 @@ import java.util.Objects;
 /**
  * Immutable nominal carrier for Oreslang's fixed positional Tuple.
  *
- * <p>Intentionally NOT a java.util.List. Otherwise ArrayList/List.of could
- * compare equal to a Tuple by calling their own list equality, even if the
- * tuple overrides equals(). Existing sequence lowering must adapt explicitly
- * using {@link #elements()} where a read-only positional view is needed.</p>
+ * <p>Intentionally NOT a java.util.Collection or java.util.List. Otherwise
+ * host collection operations could invoke component-defined equals/hashCode
+ * callbacks, and List equality could confuse Arrays and Tuples. Existing
+ * sequence lowering adapts explicitly through a readonly {@link #elements()}
+ * view when a positional Java List is unavoidable.</p>
  *
  * <p>TypeChecker and checked callable/pattern boundaries supply precise
  * positional type proofs; this runtime kind tag and immutable arity must be
  * retained through every copy, actor, and async boundary.</p>
  */
-public final class OresTuple extends AbstractCollection<Object>
-        implements OresMutex.SharedState {
+public final class OresTuple implements Iterable<Object>, OresMutex.SharedState {
     private final Object[] elements;
 
     public OresTuple(List<?> values) {
@@ -34,7 +33,7 @@ public final class OresTuple extends AbstractCollection<Object>
         return elements[index];
     }
 
-    @Override public int size() {
+    public int size() {
         return elements.length;
     }
 
