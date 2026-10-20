@@ -1648,10 +1648,14 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
             }
         }
         if (retirementQuarantined && activeUpgradeTxn == null
-                && pendingRollbackTransfer == null && retiredRoutes.isEmpty()) {
-            // All old physical actors are finalized and their generation
-            // route pins have been successfully debited. This is the only
-            // path that reopens the quarantined route.
+                && pendingRollbackTransfer == null && retiredRoutes.isEmpty()
+                && retiredCandidates.isEmpty()) {
+            // A failed rollback may leave a physically live, unpublished
+            // candidate even after every old route and transfer owner is gone.
+            // Do not restore message/Task admission until ALL candidate
+            // retirement owners have also closed their code-image leases.
+            // Published candidates are nonowning ledger witnesses and were
+            // already removed in the loop above.
             retirementQuarantined = false;
         }
         return released;
