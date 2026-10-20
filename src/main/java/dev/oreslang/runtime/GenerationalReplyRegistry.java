@@ -55,9 +55,12 @@ public final class GenerationalReplyRegistry implements AutoCloseable {
         long localHandle() {
             return (generation << 32) | (Integer.toUnsignedLong(index) + 1);
         }
-        boolean reply(Endpoint responder, R value) {
+        void validateResponse(Object value) {
             Objects.requireNonNull(value, "unary reply value");
             if (!replyType.isInstance(value)) throw new IllegalArgumentException("reply type mismatch");
+        }
+        boolean reply(Endpoint responder, R value) {
+            validateResponse(value);
             if (!owner.claim(this, responder, true, State.REPLIED)) return false;
             future.complete(value);
             return true;
