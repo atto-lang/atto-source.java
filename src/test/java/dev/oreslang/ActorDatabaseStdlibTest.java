@@ -153,4 +153,34 @@ final class ActorDatabaseStdlibTest {
                 }
                 """));
     }
+
+    @Test
+    void cacheReplicaRejectsStaleGenerationsAndDeltaGapsWithoutClaimingDurability() throws Exception {
+        assertEquals("""
+                false
+                false
+                true
+                8
+                false
+                true
+                true
+                false
+                10
+                """, run("""
+                import * as persistence from "std/actor_persistence";
+                pub routine main(): void {
+                  let replica = persistence.replica_cursor(4, 5);
+                  stdio.println(replica.apply_snapshot(3, 9));
+                  stdio.println(replica.apply_delta(4, 7));
+                  stdio.println(replica.apply_snapshot(4, 8));
+                  stdio.println(replica.applied());
+                  stdio.println(replica.apply_snapshot(4, 6));
+                  stdio.println(replica.apply_delta(4, 9));
+                  stdio.println(replica.apply_delta(4, 10));
+                  stdio.println(replica.apply_delta(4, 10));
+                  stdio.println(replica.applied());
+                  return;
+                }
+                """));
+    }
 }
