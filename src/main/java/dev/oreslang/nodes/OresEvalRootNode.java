@@ -5128,7 +5128,7 @@ public final class OresEvalRootNode extends RootNode {
         // Fatal panic and scheduler cancellation remain uncatchable.
         private boolean isGuestCatchableFailure(Throwable failure) {
             return dev.oreslang.runtime.TrapFailurePolicy.isGuestCatchable(
-                    failure, OresPanic.class);
+                    failure, OresPanic.class, OresCastError.class);
         }
 
         private Object callFunctionBodyUnchecked(Ast.FunctionDecl fn, List<?> args) {
