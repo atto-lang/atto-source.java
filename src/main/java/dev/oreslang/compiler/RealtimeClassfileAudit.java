@@ -16,6 +16,7 @@ import java.util.Map;
  */
 public final class RealtimeClassfileAudit {
     private static final int ACC_STATIC = 0x0008;
+    private static final int ACC_SYNCHRONIZED = 0x0020;
 
     public record Report(
             String className,
@@ -102,6 +103,9 @@ public final class RealtimeClassfileAudit {
                 }
                 if ("<clinit>".equals(name)) deny("class initialization is forbidden");
                 if ((access & ACC_STATIC) == 0) deny("critical method is not static: " + name);
+                if ((access & ACC_SYNCHRONIZED) != 0) {
+                    deny("synchronized critical methods are forbidden: " + name);
+                }
                 requirePrimitiveDescriptor(descriptor);
                 if (code == null) deny("critical method has no Code attribute: " + name);
                 if (exceptionHandlers != 0) deny("exception handlers are forbidden: " + name);
@@ -150,7 +154,9 @@ public final class RealtimeClassfileAudit {
                      0xa7 -> {                              // goto
                     if (pc > code.length - 3) deny("truncated branch in " + method);
                     short offset = (short) u2(code, pc + 1);
-                    branchTargets.add(pc + (int) offset);
+                    int target = pc + (int) offset;
+                    if (target <= pc) deny("backward/self branch is forbidden in " + method);
+                    branchTargets.add(target);
                     width = 3;
                 }
                 case 0x12 -> {                             // ldc
