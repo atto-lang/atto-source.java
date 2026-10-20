@@ -232,7 +232,15 @@ public final class TaskScope {
             }
             Throwable cause = OresFuture.runtimeTerminalFailure(terminalState);
             synchronized (this) {
-                if (notified) return;
+                if (notified) {
+                    // Duplicate terminal publication from the same scheduler
+                    // Future is harmless. A different Future, or any Future
+                    // after failed admission (terminalFuture == null), is an
+                    // authority mismatch and must not be silently ignored.
+                    if (terminalFuture == future) return;
+                    throw new IllegalStateException(
+                            "retired Task scope ticket received a different Future");
+                }
                 if (attachedFuture != null && attachedFuture != future) {
                     throw new IllegalStateException(
                             "Task scope terminal witness belongs to a different Future");
