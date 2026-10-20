@@ -234,12 +234,13 @@ public final class RealtimeClassfileAudit {
                 }
                 case 7 -> new ClassCp(in.readUnsignedShort());
                 case 8,16,19,20 -> { in.readUnsignedShort(); yield new OtherCp(tag); }
-                case 9,11,12,17,18 -> {
+                case 9,11,17,18 -> {
                     in.readUnsignedShort();
                     in.readUnsignedShort();
                     yield new OtherCp(tag);
                 }
                 case 10 -> new MethodRefCp(in.readUnsignedShort(), in.readUnsignedShort());
+                case 12 -> new NameAndTypeCp(in.readUnsignedShort(), in.readUnsignedShort());
                 case 15 -> {
                     in.readUnsignedByte();
                     in.readUnsignedShort();
