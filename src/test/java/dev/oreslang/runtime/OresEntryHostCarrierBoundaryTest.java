@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -77,4 +79,26 @@ final class OresEntryHostCarrierBoundaryTest {
         // Identity-safe host carriers do not authorize cyclic actor transport.
         assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(first));
     }
+    @Test
+    void actorFreezeNeverSilentlyCollapsesDistinctHostEntryCarriers() {
+        OresEntry first = new OresEntry("same", List.of(1, 2));
+        OresEntry second = new OresEntry("same", List.of(1, 2));
+        Set<Object> identitySet = Collections.newSetFromMap(new IdentityHashMap<>());
+        identitySet.add(first);
+        identitySet.add(second);
+
+        Set<?> frozenSet = assertInstanceOf(Set.class, ActorRuntime.freeze(identitySet));
+        assertEquals(2, frozenSet.size(),
+                "transport must not coalesce host-distinct Entry carriers");
+
+        Map<OresEntry, String> identityMap = new IdentityHashMap<>();
+        identityMap.put(first, "a");
+        identityMap.put(second, "b");
+        Map<?, ?> frozenMap = assertInstanceOf(Map.class, ActorRuntime.freeze(identityMap));
+        assertEquals(2, frozenMap.size(),
+                "transport must not coalesce host-distinct Entry keys");
+        assertTrue(frozenMap.containsValue("a"));
+        assertTrue(frozenMap.containsValue("b"));
+    }
+
 }
