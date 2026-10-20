@@ -29,12 +29,14 @@ public final class CallbackOrderingAnalyzer {
     private static final class State {
         final Map<Event, Exposure> pending = new LinkedHashMap<>();
         final Set<Event> registered = new HashSet<>();
+        final Set<Event> oneShot = new HashSet<>();
         final Map<String, Ast.LambdaExpr> lambdas = new HashMap<>();
         final Map<String, String> aliases = new HashMap<>();
         State copy() {
             State copy = new State();
             copy.pending.putAll(pending);
             copy.registered.addAll(registered);
+            copy.oneShot.addAll(oneShot);
             copy.lambdas.putAll(lambdas);
             copy.aliases.putAll(aliases);
             return copy;
@@ -137,6 +139,17 @@ public final class CallbackOrderingAnalyzer {
                     || left.event().equals("*") || right.event().equals("*"));
         }
 
+        private void consumeOnce(Event event, State state) {
+            // An actual or potentially inline emission can consume a
+            // one-shot listener. Ordinary on() subscriptions are unaffected.
+            Set<Event> consumed = new HashSet<>();
+            for (Event once : state.oneShot) {
+                if (matches(once, event)) consumed.add(once);
+            }
+            state.oneShot.removeAll(consumed);
+            state.registered.removeAll(consumed);
+        }
+
         private void publish(Event event, String invoker, State state) {
             // A preceding wildcard subscription remains uncertain, never
             // proof that this exact event has an installed listener.
@@ -154,9 +167,10 @@ public final class CallbackOrderingAnalyzer {
                                 + "installation timing and lease lifetime are unverified",
                         List.of(event.emitter() + ".on(" + event.event() + ")", invoker)));
             }
+            consumeOnce(event, state);
         }
 
-        private void register(Event event, State state) {
+        private void register(Event event, boolean once, State state) {
             for (Exposure prior : state.pending.values()) {
                 if (matches(event, prior.event)) {
                     findings.add(new StaticSafetyAnalyzer.Finding(
@@ -172,6 +186,8 @@ public final class CallbackOrderingAnalyzer {
             }
             state.pending.entrySet().removeIf(entry -> matches(entry.getKey(), event));
             state.registered.add(event);
+            if (once) state.oneShot.add(event);
+            else state.oneShot.remove(event);
         }
 
         private void emissionExpressions(Ast.Expr expr, State state, List<Event> result) {
@@ -271,7 +287,13 @@ public final class CallbackOrderingAnalyzer {
                 if (call.callee() instanceof Ast.MemberExpr member
                         && listener(member.member()) && !call.arguments().isEmpty()) {
                     String obj = receiver(member.receiver(), state);
-                    if (obj != null) register(new Event(obj, event(call.arguments().get(0))), state);
+                    if (obj != null) register(new Event(obj, event(call.arguments().get(0))),
+                            member.member().equals("once"), state);
+                }
+                if (call.callee() instanceof Ast.MemberExpr member && member.member().equals("emit")
+                        && !call.arguments().isEmpty()) {
+                    String obj = receiver(member.receiver(), state);
+                    if (obj != null) consumeOnce(new Event(obj, event(call.arguments().get(0))), state);
                 }
                 if (call.callee() instanceof Ast.MemberExpr member
                         && listenerRemoval(member.member())) {
@@ -286,6 +308,9 @@ public final class CallbackOrderingAnalyzer {
                         state.registered.removeIf(installed -> installed.emitter().equals(obj)
                                 && (removed.equals("*") || installed.event().equals("*")
                                 || installed.event().equals(removed)));
+                        state.oneShot.removeIf(installed -> installed.emitter().equals(obj)
+                                && (removed.equals("*") || installed.event().equals("*")
+                                || installed.event().equals(removed)));
                     }
                 }
                 // Non-lambda callee may have side effects; source-level source order
@@ -296,6 +321,7 @@ public final class CallbackOrderingAnalyzer {
                     state.lambdas.remove(n.name());
                     state.aliases.remove(n.name());
                     state.registered.removeIf(e -> e.emitter().equals(n.name()));
+                    state.oneShot.removeIf(e -> e.emitter().equals(n.name()));
                 }
             } else if (expr instanceof Ast.BinaryExpr b) {
                 inspect(b.left(), state); inspect(b.right(), state);
@@ -332,6 +358,13 @@ public final class CallbackOrderingAnalyzer {
             for (State a : alternatives) definite.retainAll(a.registered);
             target.registered.clear();
             target.registered.addAll(definite);
+            Set<Event> possibleOneShot = new HashSet<>();
+            for (State a : alternatives) possibleOneShot.addAll(a.oneShot);
+            target.oneShot.clear();
+            // If ANY branch keeps the one-shot classification, treating it
+            // as ordinary registration would incorrectly prove persistence.
+            possibleOneShot.retainAll(definite);
+            target.oneShot.addAll(possibleOneShot);
             for (State a : alternatives)
                 for (var e : a.pending.entrySet()) target.pending.putIfAbsent(e.getKey(), e.getValue());
             // Local lambda / alias definitions become unknown after divergence,
