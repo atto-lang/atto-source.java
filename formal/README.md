@@ -95,3 +95,18 @@ current trapping abstraction does not discard PANIC or unknown calls.
 not a proof that compiler-produced call edges, exception handlers, imports,
 or FFI effect labels are complete or authenticated. Source AST-to-effect-IR
 refinement remains an independent obligation.
+
+## Effect-model trust-boundary regression (2026-10-19 follow-up)
+
+`EffectGraphAdmissionBoundaryTest` verifies transitive unresolved-host effects
+through recursive call graphs, that trapping cannot swallow RAISE/PANIC or
+cancellation, and that rejected over-budget symbol/edge graphs do not mutate
+the accepted environment. The existing
+`FormalEffectClosureModelCheckTest` exhausts finite three-node effect graphs.
+
+Run both with `mvn -B -Dtest=FormalEffectClosureModelCheckTest,EffectGraphAdmissionBoundaryTest,TypeclassesAndEffectsFoundationTest test`.
+
+**Important:** all graph nodes and edges are supplied to the Java analysis
+library, not derived from the full Oreslang source frontend. A pass is a model
+property only; complete AST/HIR-to-effect-IR refinement, authenticated imports
+and dynamic dispatch effects are still unproved.
