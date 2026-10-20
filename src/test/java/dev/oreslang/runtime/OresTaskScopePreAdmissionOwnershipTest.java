@@ -5,7 +5,9 @@ import org.junit.jupiter.api.Timeout;
 
 import java.lang.reflect.Field;
 import java.util.HashSet;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -87,6 +89,94 @@ final class OresTaskScopePreAdmissionOwnershipTest {
                     resume -> OresScheduler.done(2));
             assertEquals(2, accepted.getAwaited().get());
             accepted.getDone().get();
+        }
+    }
+
+    @Test
+    void compilerRetirementPublicationFailureDoesNotReplayExternalRelease()
+            throws Exception {
+        try (var scheduler = new OresScheduler(1);
+             var scope = OresTaskScope.compilerOwned()) {
+            var entered = new CountDownLatch(1);
+            var releaseFrame = new CountDownLatch(1);
+            var externalReleases = new AtomicInteger();
+
+            var task = scope.startCompilerFrame(
+                    scheduler,
+                    resume -> {
+                        entered.countDown();
+                        try {
+                            if (!releaseFrame.await(10, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException(
+                                        "compiler frame release timeout");
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(interrupted);
+                        }
+                        return OresScheduler.done(7);
+                    },
+                    externalReleases::incrementAndGet);
+
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            Field field = tasksField();
+            @SuppressWarnings("unchecked")
+            var owned = (java.util.Set<Object>) field.get(scope);
+            assertEquals(1, owned.size());
+            Object slot = owned.iterator().next();
+
+            Field retirementField = slot.getClass().getDeclaredField(
+                    "physicalRetirement");
+            retirementField.setAccessible(true);
+            Object retirement = retirementField.get(slot);
+            assertNotNull(retirement);
+
+            Field faultField = retirement.getClass().getDeclaredField(
+                    "afterReleaseBeforePublishFaultForTesting");
+            Field releaseCompleteField = retirement.getClass().getDeclaredField(
+                    "releaseComplete");
+            Field publishedField = retirement.getClass().getDeclaredField(
+                    "retirementPublished");
+            faultField.setAccessible(true);
+            releaseCompleteField.setAccessible(true);
+            publishedField.setAccessible(true);
+
+            var publicationAttempts = new AtomicInteger();
+            faultField.set(retirement, (Runnable) () -> {
+                if (publicationAttempts.incrementAndGet() == 1) {
+                    throw new OutOfMemoryError(
+                            "injected after external release before retirement publication");
+                }
+            });
+
+            releaseFrame.countDown();
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (publicationAttempts.get() == 0 && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertEquals(1, publicationAttempts.get(),
+                    "scheduler exit must cross the injected publication boundary once");
+            assertEquals(1, externalReleases.get(),
+                    "external generation/resource release must already have succeeded");
+            assertTrue(releaseCompleteField.getBoolean(retirement));
+            assertFalse(publishedField.getBoolean(retirement),
+                    "failed Future publication cannot forge a retirement witness");
+            assertFalse(task.isQuiescent(),
+                    "Task quiescence must remain false until the retirement fence publishes");
+
+            scope.close();
+
+            assertEquals(2, publicationAttempts.get(),
+                    "host close must retry only the publication stage");
+            assertEquals(1, externalReleases.get(),
+                    "successful external release must never replay");
+            assertTrue(publishedField.getBoolean(retirement));
+            assertTrue(task.isQuiescent());
+            assertTrue(scope.physicallyQuiescent());
+            assertTrue(owned.isEmpty(),
+                    "published retirement must release the exact Task ownership slot");
         }
     }
 
