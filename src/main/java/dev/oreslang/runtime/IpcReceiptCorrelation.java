@@ -198,6 +198,21 @@ public final class IpcReceiptCorrelation {
     }
 
     /**
+     * Snapshot the exact correlations a trusted physical-loss retirement would
+     * remove, without mutating the ledger. The host completion bridge uses this
+     * to preflight completion-table identity and reserve callback-delivery
+     * carriers before the irreversible receipt-table transition.
+     */
+    List<LostCorrelation> previewTransportLost(Envelope trustedEpoch) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport-loss retirement preview");
+        Objects.requireNonNull(trustedEpoch, "trustedEpoch");
+        synchronized (this) {
+            return snapshotTransportLost(trustedEpoch);
+        }
+    }
+
+    /**
      * Local trusted EOF/disconnect with an authenticated transport epoch,
      * not a guest-chosen or textual session name. Caller must prove the
      * physical session incarnation/route/grant before invoking this method.
@@ -209,16 +224,8 @@ public final class IpcReceiptCorrelation {
         RuntimeBlockingGuard.requireBlockingHostThread("IPC transport-loss retirement");
         Objects.requireNonNull(trustedEpoch, "trustedEpoch");
         synchronized (this) {
-            ArrayList<LostCorrelation> losses = new ArrayList<>();
-            for (Map.Entry<Long, Entry> item : pending.entrySet()) {
-                Entry entry = item.getValue();
-                if (sameTransportEpoch(entry.envelope, trustedEpoch)) {
-                    losses.add(new LostCorrelation(entry.envelope, entry.stage));
-                }
-            }
-            // Materialize immutable return value before touching the table:
-            // List.copyOf can allocate and throw OutOfMemoryError.
-            List<LostCorrelation> immutableLosses = List.copyOf(losses);
+            List<LostCorrelation> immutableLosses =
+                    snapshotTransportLost(trustedEpoch);
             // No allocation or user callbacks in the mutation/commit phase.
             for (LostCorrelation loss : immutableLosses) {
                 Entry removed = pending.remove(loss.envelope().messageSequence());
@@ -227,6 +234,20 @@ public final class IpcReceiptCorrelation {
             }
             return immutableLosses;
         }
+    }
+
+    /** Only called while holding this monitor. */
+    private List<LostCorrelation> snapshotTransportLost(Envelope trustedEpoch) {
+        ArrayList<LostCorrelation> losses = new ArrayList<>();
+        for (Map.Entry<Long, Entry> item : pending.entrySet()) {
+            Entry entry = item.getValue();
+            if (sameTransportEpoch(entry.envelope, trustedEpoch)) {
+                losses.add(new LostCorrelation(entry.envelope, entry.stage));
+            }
+        }
+        // Materialize immutable return value before any retirement mutation:
+        // List.copyOf can allocate and throw OutOfMemoryError.
+        return List.copyOf(losses);
     }
 
     /**
