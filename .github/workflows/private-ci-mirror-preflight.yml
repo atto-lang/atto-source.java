@@ -48,7 +48,8 @@ jobs:
         run: python3 -I -B scripts/test-private-ci-review-coverage.py
       - name: Validate offline regression runner
         run: |
-          bash -n scripts/run-private-ci-regressions-local.sh scripts/test-run-private-ci-regressions-local.sh
+          bash -n scripts/run-private-ci-regressions-local.sh
+          bash -n scripts/test-run-private-ci-regressions-local.sh
           bash scripts/test-run-private-ci-regressions-local.sh
       - name: Execute exact source-free publisher suite with isolated Python
         run: |
