@@ -34,7 +34,7 @@ final class ModelRunFencingTest {
         assertEquals("MODEL_PARAMETER_VERSION_MISMATCH",
                 rejected(new RunStamp("run-3", "app::Tax@v1", G, 7, "instance-1", 12L, P)));
         assertEquals("MODEL_EXECUTION_PROFILE_MISMATCH",
-                rejected(new RunStamp("run-4", "app::Tax@v1", G, 7, "instance-1", 11, "c".repeat(64))));
+                rejected(new RunStamp("run-4", "app::Tax@v1", G, 7, "instance-1", 11L, "c".repeat(64))));
     }
 
     @Test
