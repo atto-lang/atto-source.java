@@ -333,4 +333,43 @@ final class RepeatingSequenceShapeSafetyTest {
                 }
                 """);
     }
+
+    @Test
+    void nestedUnresolvedAndMismatchedGenericSlotsCannotForgeShapeProofs() {
+        var unknownBox = new Types.Named("Box", List.of(Types.Unknown.INSTANCE));
+        var intBox = new Types.Named("Box", List.of(Types.Primitive.INT));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Types.ListType(unknownBox, List.of(unknownBox)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Types.ListType(new Types.Borrow(unknownBox, false),
+                        List.of(new Types.Borrow(unknownBox, false))));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Types.ListType(
+                        new Types.Named("Box", List.of(new Types.Generic("T"))),
+                        List.of(new Types.Named("Box", List.of(new Types.Generic("S"))))));
+        var sameGeneric = new Types.Named("Box", List.of(new Types.Generic("T")));
+        assertDoesNotThrow(() -> new Types.ListType(sameGeneric, List.of(sameGeneric)));
+        assertDoesNotThrow(() -> new Types.ListType(intBox, List.of(intBox)));
+    }
+
+
+    @Test
+    void unknownCannotForgePatternProofThroughWrapperOrUnion() {
+        var joined = Types.unionOf(List.of(Types.Primitive.INT, Types.Primitive.STRING));
+        var shape = new Types.ListType(joined,
+                List.of(Types.Primitive.INT, Types.Primitive.STRING));
+        var optional = new Types.Named("Option", List.of(shape));
+        var result = new Types.Named("Result", List.of(shape, Types.Primitive.BOOL));
+        var tuple = new Types.Tuple(List.of(Types.Primitive.INT, shape));
+        var record = new Types.Record(java.util.Map.of("items", shape));
+        var union = Types.unionOf(List.of(shape, Types.Primitive.BOOL));
+        for (Types.Type wrapped : List.of(optional, result, tuple, record, union)) {
+            assertTrue(Types.containsPatternedList(wrapped));
+            assertFalse(Types.isAssignable(Types.Unknown.INSTANCE, wrapped));
+            assertFalse(Types.isAssignable(new Types.Generic("Unbound"), wrapped));
+            assertTrue(Types.isAssignable(wrapped, wrapped));
+        }
+        assertFalse(Types.containsPatternedList(new Types.ListType(joined)));
+    }
+
 }
