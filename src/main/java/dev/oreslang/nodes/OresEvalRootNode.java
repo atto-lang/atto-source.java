@@ -9201,111 +9201,202 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
 
-        private boolean valueEquals(Object left, Object right) {
-            return valueEquals(left, right, new IdentityHashMap<>());
+        // Guest equality is graph-aware, not Java host Object.equals.
+        // An explicit worklist avoids JVM stack overflow on deeply nested
+        // acyclic values. The bounded budget also prevents cyclic/aliased
+        // products from consuming unbounded CPU or comparison memory.
+        private static final int MAX_GUEST_VALUE_EQUALITY_WORK = 65_536;
+
+        private sealed interface ValueEqualityStep
+                permits ValueEqualityPair, SequenceEqualityFrame, MapEqualityFrame { }
+
+        private record ValueEqualityPair(Object left, Object right)
+                implements ValueEqualityStep { }
+
+        private record SequenceEqualityFrame(Object left, Object right, int index, int size)
+                implements ValueEqualityStep { }
+
+        private record MapEqualityFrame(
+                java.util.Iterator<? extends Map.Entry<?, ?>> leftIterator,
+                Map<?, ?> rightFields) implements ValueEqualityStep { }
+
+        private static void enqueueValueEqualityStep(
+                ArrayDeque<ValueEqualityStep> pending, ValueEqualityStep step) {
+            if (pending.size() >= MAX_GUEST_VALUE_EQUALITY_WORK) {
+                throw new IllegalArgumentException(
+                        "guest equality graph exceeds comparison work limit");
+            }
+            pending.addLast(step);
         }
 
-        private boolean valueEquals(
-                Object left,
-                Object right,
-                IdentityHashMap<Object, IdentityHashMap<Object, Boolean>> seen) {
-            if (left == right) return true;
-            if (left == null || right == null) return false;
+        private static void enqueueValueEquality(
+                ArrayDeque<ValueEqualityStep> pending, Object left, Object right) {
+            enqueueValueEqualityStep(pending, new ValueEqualityPair(left, right));
+        }
 
-            if (left instanceof dev.oreslang.runtime.OresSymbol
-                    || right instanceof dev.oreslang.runtime.OresSymbol) {
-                return left instanceof dev.oreslang.runtime.OresSymbol
-                        && right instanceof dev.oreslang.runtime.OresSymbol
-                        && left.equals(right);
-            }
-            if (left instanceof Number a && right instanceof Number b) {
-                return numericValueEquals(a, b);
-            }
-            if (left instanceof Complex || right instanceof Complex) {
-                try {
-                    Complex a = asComplex(left);
-                    Complex b = asComplex(right);
-                    return a.real == b.real && a.imaginary == b.imaginary;
-                } catch (IllegalArgumentException ignored) {
-                    return false;
+        private boolean valueEquals(Object left, Object right) {
+            IdentityHashMap<Object, IdentityHashMap<Object, Boolean>> seen =
+                    new IdentityHashMap<>();
+            ArrayDeque<ValueEqualityStep> pending = new ArrayDeque<>();
+            enqueueValueEquality(pending, left, right);
+            int comparisons = 0;
+
+            while (!pending.isEmpty()) {
+                if (++comparisons > MAX_GUEST_VALUE_EQUALITY_WORK) {
+                    throw new IllegalArgumentException(
+                            "guest equality graph exceeds comparison work limit");
                 }
-            }
-
-            if (left instanceof OresEntry || right instanceof OresEntry) {
-                if (!(left instanceof OresEntry a) || !(right instanceof OresEntry b)) return false;
-                if (comparisonPairSeen(left, right, seen)) return true;
-                return valueEquals(a.key(), b.key(), seen)
-                        && valueEquals(a.value(), b.value(), seen);
-            }
-
-            // Class/actor instances have identity equality by default.
-            if (left instanceof OresObject || right instanceof OresObject) return false;
-
-            if (left instanceof ActorRuntime.ActorId || right instanceof ActorRuntime.ActorId) {
-                return left instanceof ActorRuntime.ActorId
-                        && right instanceof ActorRuntime.ActorId
-                        && left.equals(right);
-            }
-            if (left instanceof ActorRuntime.ActorRef<?> || right instanceof ActorRuntime.ActorRef<?>) {
-                return left instanceof ActorRuntime.ActorRef<?> a
-                        && right instanceof ActorRuntime.ActorRef<?> b
-                        && a.kind() == b.kind()
-                        && a.id().equals(b.id());
-            }
-
-            if (left instanceof OptionValue || right instanceof OptionValue) {
-                if (!(left instanceof OptionValue a) || !(right instanceof OptionValue b)) return false;
-                if (a.present() != b.present()) return false;
-                if (!a.present()) return true;
-                if (comparisonPairSeen(left, right, seen)) return true;
-                return valueEquals(a.value(), b.value(), seen);
-            }
-
-            if (left instanceof ResultValue || right instanceof ResultValue) {
-                if (!(left instanceof ResultValue a) || !(right instanceof ResultValue b)) return false;
-                if (a.ok() != b.ok()) return false;
-                if (comparisonPairSeen(left, right, seen)) return true;
-                return valueEquals(a.value(), b.value(), seen);
-            }
-
-            if (left instanceof GeneratorRuntime.Step<?> || right instanceof GeneratorRuntime.Step<?>) {
-                if (!(left instanceof GeneratorRuntime.Step<?> a)
-                        || !(right instanceof GeneratorRuntime.Step<?> b)) return false;
-                if (a.done() != b.done()) return false;
-                if (a.done()) return true;
-                if (comparisonPairSeen(left, right, seen)) return true;
-                return valueEquals(a.value(), b.value(), seen);
-            }
-
-            Map<?, ?> leftFields = structuralFields(left);
-            Map<?, ?> rightFields = structuralFields(right);
-            if (leftFields != null || rightFields != null) {
-                if (leftFields == null || rightFields == null || leftFields.size() != rightFields.size()) return false;
-                if (comparisonPairSeen(left, right, seen)) return true;
-                for (Map.Entry<?, ?> entry : leftFields.entrySet()) {
-                    Object key = entry.getKey();
-                    if (!rightFields.containsKey(key)) return false;
-                    if (!valueEquals(entry.getValue(), rightFields.get(key), seen)) return false;
+                ValueEqualityStep next = pending.removeLast();
+                if (next instanceof SequenceEqualityFrame sequence) {
+                    if (sequence.index() < sequence.size()) {
+                        // Delay access to later slots until earlier comparisons
+                        // succeed; host List.get() must not run out of order.
+                        enqueueValueEqualityStep(pending, new SequenceEqualityFrame(
+                                sequence.left(), sequence.right(),
+                                sequence.index() + 1, sequence.size()));
+                        enqueueValueEquality(
+                                pending,
+                                sequenceElement(sequence.left(), sequence.index()),
+                                sequenceElement(sequence.right(), sequence.index()));
+                    }
+                    continue;
                 }
-                return true;
-            }
-
-            int leftSize = sequenceSize(left);
-            int rightSize = sequenceSize(right);
-            if (leftSize >= 0 || rightSize >= 0) {
-                if (leftSize < 0 || rightSize < 0 || leftSize != rightSize) return false;
-                if (comparisonPairSeen(left, right, seen)) return true;
-                for (int i = 0; i < leftSize; i++) {
-                    if (!valueEquals(sequenceElement(left, i), sequenceElement(right, i), seen)) return false;
+                if (next instanceof MapEqualityFrame fields) {
+                    if (fields.leftIterator().hasNext()) {
+                        Map.Entry<?, ?> field = fields.leftIterator().next();
+                        Object key = field.getKey();
+                        if (!fields.rightFields().containsKey(key)) return false;
+                        enqueueValueEqualityStep(pending, fields);
+                        enqueueValueEquality(
+                                pending, field.getValue(), fields.rightFields().get(key));
+                    }
+                    continue;
                 }
-                return true;
-            }
+                ValueEqualityPair pair = (ValueEqualityPair) next;
+                Object a = pair.left();
+                Object b = pair.right();
+                if (a == b) continue;
+                if (a == null || b == null) return false;
 
-            if (isScalarEqualityCarrier(left) && isScalarEqualityCarrier(right)) {
-                return Objects.equals(left, right);
-            }
+                if (a instanceof dev.oreslang.runtime.OresSymbol
+                        || b instanceof dev.oreslang.runtime.OresSymbol) {
+                    if (!(a instanceof dev.oreslang.runtime.OresSymbol)
+                            || !(b instanceof dev.oreslang.runtime.OresSymbol)
+                            || !a.equals(b)) return false;
+                    continue;
+                }
+                if (a instanceof Number leftNumber && b instanceof Number rightNumber) {
+                    if (!numericValueEquals(leftNumber, rightNumber)) return false;
+                    continue;
+                }
+                if (a instanceof Complex || b instanceof Complex) {
+                    try {
+                        Complex leftComplex = asComplex(a);
+                        Complex rightComplex = asComplex(b);
+                        if (leftComplex.real != rightComplex.real
+                                || leftComplex.imaginary != rightComplex.imaginary) {
+                            return false;
+                        }
+                    } catch (IllegalArgumentException ignored) {
+                        return false;
+                    }
+                    continue;
+                }
 
-            return false;
+                if (a instanceof OresEntry || b instanceof OresEntry) {
+                    if (!(a instanceof OresEntry leftEntry)
+                            || !(b instanceof OresEntry rightEntry)) return false;
+                    if (comparisonPairSeen(a, b, seen)) continue;
+                    // LIFO: compare key before value, like the recursive walker.
+                    enqueueValueEquality(pending, leftEntry.value(), rightEntry.value());
+                    enqueueValueEquality(pending, leftEntry.key(), rightEntry.key());
+                    continue;
+                }
+
+                // Class/actor instances have identity equality by default.
+                if (a instanceof OresObject || b instanceof OresObject) return false;
+
+                if (a instanceof ActorRuntime.ActorId || b instanceof ActorRuntime.ActorId) {
+                    if (!(a instanceof ActorRuntime.ActorId)
+                            || !(b instanceof ActorRuntime.ActorId)
+                            || !a.equals(b)) return false;
+                    continue;
+                }
+                if (a instanceof ActorRuntime.ActorRef<?>
+                        || b instanceof ActorRuntime.ActorRef<?>) {
+                    if (!(a instanceof ActorRuntime.ActorRef<?> leftRef)
+                            || !(b instanceof ActorRuntime.ActorRef<?> rightRef)
+                            || leftRef.kind() != rightRef.kind()
+                            || !leftRef.id().equals(rightRef.id())) return false;
+                    continue;
+                }
+
+                if (a instanceof OptionValue || b instanceof OptionValue) {
+                    if (!(a instanceof OptionValue leftOption)
+                            || !(b instanceof OptionValue rightOption)
+                            || leftOption.present() != rightOption.present()) return false;
+                    if (!leftOption.present()) continue;
+                    if (comparisonPairSeen(a, b, seen)) continue;
+                    enqueueValueEquality(pending, leftOption.value(), rightOption.value());
+                    continue;
+                }
+
+                if (a instanceof ResultValue || b instanceof ResultValue) {
+                    if (!(a instanceof ResultValue leftResult)
+                            || !(b instanceof ResultValue rightResult)
+                            || leftResult.ok() != rightResult.ok()) return false;
+                    if (comparisonPairSeen(a, b, seen)) continue;
+                    enqueueValueEquality(pending, leftResult.value(), rightResult.value());
+                    continue;
+                }
+
+                if (a instanceof GeneratorRuntime.Step<?>
+                        || b instanceof GeneratorRuntime.Step<?>) {
+                    if (!(a instanceof GeneratorRuntime.Step<?> leftStep)
+                            || !(b instanceof GeneratorRuntime.Step<?> rightStep)
+                            || leftStep.done() != rightStep.done()) return false;
+                    if (leftStep.done()) continue;
+                    if (comparisonPairSeen(a, b, seen)) continue;
+                    enqueueValueEquality(pending, leftStep.value(), rightStep.value());
+                    continue;
+                }
+
+                Map<?, ?> leftFields = structuralFields(a);
+                Map<?, ?> rightFields = structuralFields(b);
+                if (leftFields != null || rightFields != null) {
+                    if (leftFields == null || rightFields == null
+                            || leftFields.size() != rightFields.size()) return false;
+                    if (comparisonPairSeen(a, b, seen)) continue;
+                    if (leftFields.size() > MAX_GUEST_VALUE_EQUALITY_WORK) {
+                        throw new IllegalArgumentException(
+                                "guest equality graph exceeds comparison work limit");
+                    }
+                    enqueueValueEqualityStep(pending, new MapEqualityFrame(
+                            leftFields.entrySet().iterator(), rightFields));
+                    continue;
+                }
+
+                int leftSize = sequenceSize(a);
+                int rightSize = sequenceSize(b);
+                if (leftSize >= 0 || rightSize >= 0) {
+                    if (leftSize < 0 || rightSize < 0 || leftSize != rightSize) return false;
+                    if (comparisonPairSeen(a, b, seen)) continue;
+                    if (leftSize > MAX_GUEST_VALUE_EQUALITY_WORK) {
+                        throw new IllegalArgumentException(
+                                "guest equality graph exceeds comparison work limit");
+                    }
+                    enqueueValueEqualityStep(
+                            pending, new SequenceEqualityFrame(a, b, 0, leftSize));
+                    continue;
+                }
+
+                if (isScalarEqualityCarrier(a) && isScalarEqualityCarrier(b)) {
+                    if (!Objects.equals(a, b)) return false;
+                    continue;
+                }
+                return false;
+            }
+            return true;
         }
 
         private boolean numericValueEquals(Number left, Number right) {

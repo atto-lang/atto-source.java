@@ -33,6 +33,17 @@ future typed Maps must use the explicit Oreslang key equality/hash contract,
 The built-in `Entry` is immutable at its top level; ownership and actor
 isolation rules still govern mutable nested payloads.
 
+Guest equality is alias-insensitive structural/value comparison: distinct
+`Entry` carriers with equal key/value graphs compare equal, regardless of
+sharing. Cyclic value graphs are compared using an identity-pair visited set
+(coinductive graph traversal); cyclic structure must not recurse through the
+Java call stack. The evaluator uses a bounded worklist (65,536 comparison
+steps), raising a language-level error if the limit is exceeded rather than
+silently treating an incomplete comparison as equal or unequal. A guest
+Map key hash must eventually agree with these equality semantics; the Java
+identity hash is not a valid substitute.
+
+
 An array of entries is distinct from an array of arrays or tuples:
 
 ```ores
