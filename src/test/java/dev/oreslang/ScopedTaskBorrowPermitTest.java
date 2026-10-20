@@ -339,6 +339,76 @@ final class ScopedTaskBorrowPermitTest {
         assertEquals(first.regionGeneration(), second.regionGeneration());
     }
 
+
+    @Test
+    void nestedTaskPreservesScopedReadRegionIdentityAcrossProjection() throws Exception {
+        String source = """
+                async fnc suffix(): int {
+                    return 2;
+                }
+
+                pub routine main(): void {
+                    let int value = 40;
+                    val ref = rt borrow value;
+                    nb scope {
+                        let outer = nb {
+                            let inner = nb {
+                                let int tail = await suffix();
+                                stdio.stdout.write(ref + tail);
+                            };
+                            await inner;
+                        };
+                    }
+                    return;
+                }
+                """;
+
+        Ast.Program program = OresCompiler.parseAndTypeCheck(source);
+        Ast.FunctionDecl main = (Ast.FunctionDecl) program.modules()
+                .getFirst().declarations().get(1);
+        Ast.TaskScopeStmt scope = (Ast.TaskScopeStmt) main.body().get(2);
+        Ast.TaskExpr outer = (Ast.TaskExpr) ((Ast.BindingStmt)
+                scope.body().getFirst()).initializer();
+        Ast.TaskExpr inner = (Ast.TaskExpr) ((Ast.BindingStmt)
+                outer.body().getFirst()).initializer();
+
+        Ast.TaskCaptureProof outerProof = outer.captureProofs().stream()
+                .filter(proof -> proof.name().equals("ref"))
+                .findFirst()
+                .orElseThrow();
+        Ast.TaskCaptureProof innerProof = inner.captureProofs().getFirst();
+
+        assertEquals(Ast.TaskCaptureMode.SCOPED_READ_BORROW, outerProof.mode());
+        assertEquals(Ast.TaskCaptureMode.SCOPED_READ_BORROW, innerProof.mode());
+        assertEquals(outerProof.regionId(), innerProof.regionId());
+        assertEquals(outerProof.regionGeneration(), innerProof.regionGeneration());
+        assertEquals("$", innerProof.accessPath());
+        assertEquals("42", run(source));
+    }
+
+    @Test
+    void scopedReadCaptureCannotBeReborrowedIntoDerivativeAuthority() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub routine main(): void {
+                            let int value = 42;
+                            val ref = rt borrow value;
+                            nb scope {
+                                let outer = nb {
+                                    val nested = rt borrow ref;
+                                    stdio.stdout.write(nested);
+                                };
+                            }
+                            return;
+                        }
+                        """));
+
+        String message = failure.getMessage().toLowerCase();
+        assertTrue(message.contains("reborrow")
+                || message.contains("scoped task read permit"), message);
+    }
+
     private static Ast.TaskCaptureProof firstCapture(Ast.Program program) {
         Ast.FunctionDecl main = (Ast.FunctionDecl) program.modules()
                 .getFirst().declarations().getFirst();
