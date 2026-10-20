@@ -54,6 +54,14 @@ public final class SourceBoundaryTrace extends RuntimeException {
     public static <T extends Throwable> T record(
             T failure, String codeUnit, String callable, String boundary) {
         Objects.requireNonNull(failure, "failure");
+        // A fatal host VM failure may leave insufficient memory or stack to
+        // allocate even a minimal source marker. Do not compound that failure
+        // with diagnostic work; these are not recoverable Oreslang effects.
+        if (failure instanceof VirtualMachineError
+                || failure instanceof ThreadDeath
+                || failure instanceof LinkageError) {
+            return failure;
+        }
         synchronized (failure) {
             int existing = failure.getSuppressed().length;
             if (existing < MAX_BOUNDARIES - 1) {
