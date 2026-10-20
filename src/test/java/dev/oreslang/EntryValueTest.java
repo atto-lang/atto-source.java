@@ -640,6 +640,61 @@ final class EntryValueTest {
     }
 
     @Test
+    void ownershipCheckerRejectsImplicitPartialMovesFromEntry() {
+        IllegalArgumentException member = ownershipRejectedDirect("""
+                fnc consume(Array<int> values): void {
+                  return;
+                }
+
+                fnc bad(): void {
+                  const entry = Entry.of([1, 2], 0);
+                  consume(entry.key);
+                  return;
+                }
+                """);
+        assertTrue(
+                member.getMessage().contains("move-only Entry member projection"),
+                member.getMessage());
+
+        IllegalArgumentException indexed = ownershipRejectedDirect("""
+                fnc consume(Array<int> values): void {
+                  return;
+                }
+
+                fnc bad(): void {
+                  const entry = Entry.of([1, 2], 0);
+                  consume(entry["key"]);
+                  return;
+                }
+                """);
+        assertTrue(
+                indexed.getMessage().contains("move-only Entry indexed projection"),
+                indexed.getMessage());
+
+        IllegalArgumentException explicitTake = ownershipRejectedDirect("""
+                fnc bad(): void {
+                  const entry = Entry.of([1, 2], 0);
+                  const values = rt take entry.key;
+                  return;
+                }
+                """);
+        assertTrue(
+                explicitTake.getMessage().contains("rt take cannot move an Entry member projection"),
+                explicitTake.getMessage());
+
+        accepted("""
+                fnc consume(int value): int {
+                  return value;
+                }
+
+                fnc good(): int {
+                  const entry = Entry.of(20, 22);
+                  return consume(entry.key) + consume(entry["value"]);
+                }
+                """);
+    }
+
+    @Test
     void ownershipCheckerRejectsEntryFactoryExtractionIndependently() {
         IllegalArgumentException member = ownershipRejectedDirect("""
                 fnc bad(): void {
