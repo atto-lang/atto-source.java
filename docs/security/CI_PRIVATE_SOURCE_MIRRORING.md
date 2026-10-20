@@ -828,3 +828,37 @@ disabled private forking, and bounded retention.
 The destination must report `fork=false`. Private fork networks introduce a
 separate access and retention boundary, so a fork is rejected before source
 collection even when it is private and otherwise satisfies the Actions policy.
+
+
+### 2026-10-19 carrier protocol convergence
+
+The protected-ledger publisher now emits a deterministic five-line carrier
+commit provenance envelope:
+
+```
+ci: exact private Oreslang tree <source-commit> tree <source-tree>
+carrier-base <carrier-main-commit> tree <carrier-main-tree>
+source-approval-blob <protected-source-ledger-blob>
+carrier-approval-blob <protected-carrier-ledger-blob>
+carrier-ruleset-id <immutable-ci-ref-ruleset-id>
+```
+
+The destination ref remains deterministically
+`ci/oreslang-<source-commit>-<carrier-main-commit>`. Combined with the
+no-bypass update/deletion ruleset and pre-publication absence proof, this is
+single-use without adding a second nonce mechanism.
+
+Carrier CI must independently verify the exact source/tree and carrier
+base/tree from this envelope, the pinned carrier approval blob and ruleset ID,
+the live protected carrier main revision, the effective immutable rules for
+the exact ref, and the one-parent carrier commit. The source-approval blob SHA
+is recorded as provenance; the carrier token is not expected to read the
+private source repository cross-organization.
+
+Source-bearing refs are retained immutable after validation rather than deleted.
+Deleting such a ref would contradict the replay-prevention rule and would
+require a write-capable cleanup token. Each source-bearing runner must instead
+purge its source workspace and private logs, prohibit Actions artifact/cache
+persistence of private source, and rely on the hosted runner lifecycle for the
+remaining ephemeral filesystem. Retaining an immutable Git ref is not
+cryptographic erasure and must not be described as such.
