@@ -46,6 +46,11 @@ public abstract class OresSubscription<T> {
             source = Objects.requireNonNull(
                     nextFromRuntime(),
                     "nextFromRuntime returned null Future");
+        } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+            // Host-fatal signals must not be laundered into ordinary pull
+            // Futures. In the emergency path, avoid allocating diagnostics
+            // or running arbitrary cancellation callbacks.
+            throw fatal;
         } catch (Throwable failure) {
             synchronized (gate) {
                 pulling = false;
