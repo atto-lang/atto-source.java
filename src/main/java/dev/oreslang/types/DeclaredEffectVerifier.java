@@ -241,6 +241,13 @@ public final class DeclaredEffectVerifier {
                 collect(call.arguments(), effects, stateAccess, callableName, serial);
                 return;
             }
+            if (call.callee() instanceof Ast.NameExpr sumConstructor
+                    && (sumConstructor.name().equals("Some")
+                            || sumConstructor.name().equals("Ok")
+                            || sumConstructor.name().equals("Err"))) {
+                collect(call.arguments(), effects, stateAccess, callableName, serial);
+                return;
+            }
             if (call.callee() instanceof Ast.NameExpr intrinsic) {
                 String name = intrinsic.name();
                 if (name.equals("state_snapshot")) {
