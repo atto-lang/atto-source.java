@@ -125,7 +125,9 @@ final class TypedMapGuestLanguageTest {
                 val Map<String, int> map;
             end
             """,
-            "val Map<String, int> global = new Map<String, int>();"
+            "val Map<String, int> global = new Map<String, int>();",
+            "pub fnc bad(): void { val Channel<Map<String, int>> ch = Channel.new<Map<String, int>>(1); return; }",
+            "pub fnc bad(ActorMail<Map<String, int>> mail): void { return; }"
         };
         for (String source : invalid) rejectTypes(source);
     }
@@ -135,6 +137,15 @@ final class TypedMapGuestLanguageTest {
             "pub fnc bad(): void { val m = new Map<String, int>(); val f = m.get; return; }",
             "pub fnc bad(): void { val m = new Map<String, int>(); val f = m.take; return; }",
             "pub fnc bad(): void { val m = new Map<String, int>(); val x = m.ready; return; }"
+        };
+        for (String source : invalid) rejectTypes(source);
+    }
+
+    @Test void ownershipIntrinsicsCannotCopyMoveOrShareTypedMaps() {
+        String[] invalid = {
+            "pub fnc bad(): void { val m = new Map<String, int>(); val x = rt copy m; return; }",
+            "pub fnc bad(): void { val m = new Map<String, int>(); val x = rt take m; return; }",
+            "pub fnc bad(): void { val m = new Map<String, int>(); val x = rt share m; return; }"
         };
         for (String source : invalid) rejectTypes(source);
     }
