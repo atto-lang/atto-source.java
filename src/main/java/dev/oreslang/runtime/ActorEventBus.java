@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -283,6 +284,9 @@ public final class ActorEventBus implements AutoCloseable {
                         (Subscription<T>) topic.subscriptions.get(subscriber);
                 if (existing != null) {
                     if (!existing.closed()) return existing;
+                    // A sealed subscription can still own failed teardown.
+                    // Finish that exact cleanup before unlinking it.
+                    existing.closeChannelOnly();
                     topic.subscriptions.remove(subscriber, existing);
                     continue;
                 }
@@ -501,9 +505,11 @@ public final class ActorEventBus implements AutoCloseable {
                 for (Subscription<?> subscription : snapshot) {
                     if (subscription.closed()
                             || !group.isMember(subscription.subscriber)) {
+                        // Keep stale membership as a concrete cleanup owner
+                        // until every retained delivery has been released.
+                        subscription.closeChannelOnly();
                         topic.subscriptions.remove(
                                 subscription.subscriber, subscription);
-                        subscription.closeChannelOnly();
                     } else {
                         active.add(subscription);
                     }
@@ -751,6 +757,13 @@ public final class ActorEventBus implements AutoCloseable {
         private final AtomicInteger pendingReads = new AtomicInteger();
         private final int pendingReadLimit;
         private final AtomicBoolean subscriptionClosed = new AtomicBoolean();
+        /**
+         * Pending RELIABLE writes own an Event ref before channel admission.
+         * The owner remains here until the write either commits successfully
+         * or its failed/cancelled delivery release completes.
+         */
+        private final Set<ReliableDeliveryOwner> reliableDeliveryOwners =
+                ConcurrentHashMap.newKeySet();
         /** Guarded by this: exact dequeued delivery retained across failed cleanup. */
         private Event<T> closePendingDelivery;
         /** Guarded by this: admission seal is distinct from completed drain. */
@@ -855,26 +868,93 @@ public final class ActorEventBus implements AutoCloseable {
         }
 
         private OresFuture<Void> writeReliableReserved(Event<T> event) {
-            event.retainDelivery();
+            ReliableDeliveryOwner owner = new ReliableDeliveryOwner(event);
+            // Publish recovery ownership before retaining/admitting the Event.
+            // Set insertion may allocate; doing it first avoids creating an
+            // untracked retained ref if memory pressure strikes here.
+            reliableDeliveryOwners.add(owner);
+            boolean retained = false;
+            OresFuture<Void> write = null;
             try {
+                event.retainDelivery();
+                retained = true;
+                owner.markRetained();
+
                 if (subscriptionClosed.get()) {
-                    event.releaseDelivery();
-                    releaseReliableEvent();
+                    owner.failAndRelease();
                     return OresFuture.failed(
                             new IllegalStateException("event subscription is closed"));
                 }
-                OresFuture<Void> write = channel.writeAsync(event);
+
+                write = channel.writeAsync(event);
                 write.whenCompleteRuntime((ignored, failure) -> {
-                    if (failure != null) {
-                        event.releaseDelivery();
-                        releaseReliableEvent();
-                    }
+                    if (failure == null) owner.admitted();
+                    else owner.failAndRelease();
                 });
                 return write;
             } catch (Throwable failure) {
+                if (write != null) {
+                    // If callback registration itself failed, revoke the
+                    // pending channel admission before releasing its Event ref.
+                    // A concurrently completed successful write owns the Event
+                    // through the channel and must not be released here.
+                    boolean cancelled = write.cancel(false);
+                    if (!cancelled && write.isDone()
+                            && !write.isCompletedExceptionally()) {
+                        owner.admitted();
+                        throw failure;
+                    }
+                }
+                if (retained) owner.failAndRelease();
+                else reliableDeliveryOwners.remove(owner);
+                throw failure;
+            }
+        }
+
+        private final class ReliableDeliveryOwner {
+            private final Event<T> event;
+            private boolean retained;
+            private boolean failed;
+            private boolean settled;
+
+            private ReliableDeliveryOwner(Event<T> event) {
+                this.event = Objects.requireNonNull(event, "event");
+            }
+
+            private synchronized void markRetained() {
+                retained = true;
+            }
+
+            private synchronized void admitted() {
+                if (settled) return;
+                settled = true;
+                reliableDeliveryOwners.remove(this);
+            }
+
+            private synchronized void failAndRelease() {
+                if (settled) return;
+                failed = true;
+                if (!retained) {
+                    settled = true;
+                    reliableDeliveryOwners.remove(this);
+                    return;
+                }
+                // Event.releaseDelivery() can fail at the aggregate accounting
+                // boundary. Keep this owner in reliableDeliveryOwners until
+                // both the Event ref and reliable admission credit settle.
                 event.releaseDelivery();
                 releaseReliableEvent();
-                throw failure;
+                settled = true;
+                reliableDeliveryOwners.remove(this);
+            }
+
+            private synchronized void retryFailedRelease() {
+                if (settled) return;
+                if (!failed) {
+                    throw new IllegalStateException(
+                            "RELIABLE delivery remained pending after channel close");
+                }
+                failAndRelease();
             }
         }
 
@@ -961,6 +1041,7 @@ public final class ActorEventBus implements AutoCloseable {
             channel.close();
 
             releasePendingCloseDelivery();
+            retryFailedReliableDeliveries();
 
             while (channel.drainOne(buffered -> {
                 closePendingDelivery = buffered;
@@ -970,7 +1051,22 @@ public final class ActorEventBus implements AutoCloseable {
                 // writers were failed by channel.close() and release their own
                 // delivery/accounting reservations from completion callbacks.
             }
+            // channel.close() synchronously fails pending writers. Retry any
+            // delivery whose failure callback could not finish its resource
+            // release, including callbacks whose exception OresFuture ignored
+            // after claiming the waiter.
+            retryFailedReliableDeliveries();
             closeCleanupComplete = true;
+        }
+
+        private void retryFailedReliableDeliveries() {
+            for (ReliableDeliveryOwner owner : reliableDeliveryOwners) {
+                owner.retryFailedRelease();
+            }
+            if (!reliableDeliveryOwners.isEmpty()) {
+                throw new IllegalStateException(
+                        "RELIABLE delivery cleanup retained unresolved owners");
+            }
         }
 
         private void releasePendingCloseDelivery() {
