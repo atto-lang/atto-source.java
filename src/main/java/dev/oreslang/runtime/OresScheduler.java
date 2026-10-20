@@ -622,6 +622,8 @@ public final class OresScheduler implements AutoCloseable {
         private final Task<T> task;
         private final Runnable onQuiescent;
         private final AtomicBoolean quiescenceNotified = new AtomicBoolean();
+        /** Physical lifetime barrier; a Future success/failure is not visible before retirement. */
+        private final AtomicBoolean lifecycleRetired = new AtomicBoolean();
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
@@ -1073,15 +1075,27 @@ public final class OresScheduler implements AutoCloseable {
                     try {
                         onQuiescent.run();
                     } finally {
-                        deadlineQuiescenceRetired.set(true);
-                        releaseDeadlineSlotIfRetired();
+                        try {
+                            deadlineQuiescenceRetired.set(true);
+                            releaseDeadlineSlotIfRetired();
+                        } finally {
+                            // A source Task may defer this retirement until
+                            // every scoped descendant has physically quiesced.
+                            // Publish a normal terminal outcome only AFTER that.
+                            lifecycleRetired.set(true);
+                            publishTerminalIfReady();
+                        }
                     }
                 });
             }
         }
 
         private void publishTerminalIfReady() {
-            if (phase.get() != TERMINAL || completion.isDone()) return;
+            // Future cancellation is handled independently by the cancellation
+            // revocation hook, but normal success/failure publication must not
+            // release a source Task's owner before descendants retire.
+            if (phase.get() != TERMINAL || !lifecycleRetired.get()
+                    || completion.isDone()) return;
             TerminalOutcome<T> outcome = terminalOutcome.get();
             if (outcome instanceof TerminalSuccess<?> success) {
                 @SuppressWarnings("unchecked")
