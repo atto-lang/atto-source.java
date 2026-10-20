@@ -103,4 +103,33 @@ final class RecordWriteVarianceCurrentMainTest {
                 """)));
     }
 
+    @Test void structuralPatternProvesReadShapeNotWriteAuthority() {
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc bad({value: int} input): void {
+                          match input over
+                            on structural { value: int } narrowed -> {
+                              narrowed.value = 9;
+                            }
+                            on _ -> { return; }
+                          end
+                          return;
+                        }
+                        """)));
+    }
+
+    @Test void structuralPatternRetainsReadonlyFieldProjection() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok(): string {
+                  const value = infer struct{bar: "ok"};
+                  match value over
+                    on structural { bar: string } narrowed -> {
+                      return narrowed.bar;
+                    }
+                    on _ -> { return "missing"; }
+                  end
+                }
+                """)));
+    }
+
 }
