@@ -89,7 +89,7 @@ public final class OresSymbol {
 
     @Override public String toString() {
         if (kind == Kind.STABLE) return "Symbol.stable(\"" + name + "\")";
-        if (name.matches("[A-Za-z_][A-Za-z0-9_]*")) return "#" + name;
+        if (name.length() <= 128 && name.matches("[A-Za-z_][A-Za-z0-9_]*")) return "#" + name;
         return "#\"" + name.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
     }
 }
