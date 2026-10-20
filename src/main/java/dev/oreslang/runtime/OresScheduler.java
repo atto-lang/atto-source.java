@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Objects;
 import java.util.Set;
@@ -83,6 +84,11 @@ public final class OresScheduler implements AutoCloseable {
     @FunctionalInterface
     interface TurnExecutor {
         void execute(Runnable turn);
+    }
+
+    /** Runtime-only owner for lexical structured Task scopes. */
+    private interface StructuredScopeOwner {
+        OresTaskScope openStructuredScope();
     }
 
     /** One compiler-generated async state-machine turn. */
@@ -350,6 +356,19 @@ public final class OresScheduler implements AutoCloseable {
      */
     public static Object currentTaskDomain() {
         return CURRENT_TASK_DOMAIN.get();
+    }
+
+    /**
+     * Open a structured child scope owned by the currently executing logical
+     * Task. Guest lowering reaches this through OresTaskScope.openCurrent().
+     */
+    static OresTaskScope openCurrentTaskScope() {
+        Object domain = CURRENT_TASK_DOMAIN.get();
+        if (!(domain instanceof StructuredScopeOwner owner)) {
+            throw new IllegalStateException(
+                    "structured Task scope requires an executing OresScheduler task");
+        }
+        return owner.openStructuredScope();
     }
 
     /**
@@ -653,6 +672,9 @@ public final class OresScheduler implements AutoCloseable {
 
         private final Task<T> task;
         private final Runnable onQuiescent;
+        private final Object structuredScopeLock = new Object();
+        private final Set<OresTaskScope> structuredScopes =
+                Collections.newSetFromMap(new IdentityHashMap<>());
         private final AtomicBoolean quiescenceNotified = new AtomicBoolean();
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
@@ -1057,6 +1079,10 @@ public final class OresScheduler implements AutoCloseable {
                 return;
             }
             terminalOutcome.set(new TerminalSuccess<>(value));
+            // A live lexical scope is a runtime safety obligation. Correct
+            // source lowering normally quiesces it before function return;
+            // this fallback cancels any scope escaped by early/abnormal exit.
+            cancelStructuredScopes();
             // afterCarrierTurn() publishes only after the carrier has fully
             // unwound runBound(...).
         }
@@ -1078,6 +1104,7 @@ public final class OresScheduler implements AutoCloseable {
             } while (!phase.compareAndSet(observed, TERMINAL));
             pendingResume.set(null);
             terminalOutcome.compareAndSet(null, new TerminalFailure<>(failure));
+            cancelStructuredScopes();
             if (!executing.get()) {
                 // Quiescence retirement can acquire an actor lifecycle lock,
                 // which might be held indefinitely by a stuck host callback.
@@ -1105,6 +1132,7 @@ public final class OresScheduler implements AutoCloseable {
             } while (!phase.compareAndSet(observed, TERMINAL));
 
             terminalOutcome.compareAndSet(null, new TerminalFailure<>(failure));
+            cancelStructuredScopes();
             if (!executing.get()) {
                 try {
                     retireWhenQuiescent();
@@ -1155,6 +1183,7 @@ public final class OresScheduler implements AutoCloseable {
                 if (observed == TERMINAL) return;
             } while (!phase.compareAndSet(observed, TERMINAL));
             pendingResume.set(null);
+            cancelStructuredScopes();
             retireWhenQuiescent();
         }
 
