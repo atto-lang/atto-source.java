@@ -15,7 +15,6 @@ import java.util.OptionalLong;
 public final class ActorDenseIndexColumns extends ActorShardBacking implements AutoCloseable {
     private static final int MAX_BYTES = 16 * 1024 * 1024;
 
-    private final ActorRuntime.ActorId owner;
     private final ActorShardColumns.Layout layout;
     private final int rows;
     private final int fields;
@@ -25,7 +24,7 @@ public final class ActorDenseIndexColumns extends ActorShardBacking implements A
 
     public ActorDenseIndexColumns(
             ActorShardColumns.Layout layout, int rows, int fields, int lanes) {
-        this.owner = ActorRuntime.currentActorId().orElseThrow(() ->
+        ActorRuntime.currentActorId().orElseThrow(() ->
                 new SecurityException("index shard creation requires an executing actor"));
         this.layout = Objects.requireNonNull(layout, "layout");
         if (rows <= 0 || fields <= 0) {
