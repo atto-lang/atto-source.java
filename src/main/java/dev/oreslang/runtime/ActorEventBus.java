@@ -436,11 +436,10 @@ public final class ActorEventBus implements AutoCloseable {
                 doubleReductions.clear();
                 closeCleanupComplete = true;
             } catch (RuntimeException | Error cleanupFailure) {
-                // Some subscription/channel teardown may already have mutated
-                // state. Without an authenticated per-subscription replay
-                // receipt it is unsafe to infer completion from closed/empty
-                // observations after the fact.
-                closeCleanupAmbiguous = true;
+                // Per-subscription cleanup retains an exact dequeued delivery
+                // until its resource release succeeds, so a later closed-group
+                // cleanup attempt can resume instead of quarantining a
+                // recoverable accounting failure.
                 throw cleanupFailure;
             }
         }
