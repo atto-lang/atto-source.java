@@ -206,9 +206,15 @@ def review_attested_main_sha(repository, expected_policy_digest):
     )
 
     review = latest_authority_review()
+    submitted_at = review.get("submitted_at")
+    merged_at = authority.get("merged_at")
     if (review.get("state") != "APPROVED"
-            or review.get("commit_id") != reviewed_head):
-        raise Denied("independent private-CI review is stale or not approved")
+            or review.get("commit_id") != reviewed_head
+            or not isinstance(submitted_at, str)
+            or not isinstance(merged_at, str)
+            or submitted_at > merged_at):
+        raise Denied(
+            "independent private-CI review is stale, late, or not approved")
 
     for path in REVIEWED_GOVERNANCE_PATHS:
         _reviewed_raw, reviewed_blob = remote_file_at_source_main(
