@@ -170,8 +170,31 @@ regressions exercise actual child writes to both descriptors, decoding,
 timeouts, and spoofed status lines. **A passing focused reproduction is not
 a passing full publisher regression or compiler CI run.**
 
-API failure before ref creation can leave unreferenced Git objects in
-the private destination; a follow-up retention policy is still needed.
+GitHub exposes no API to delete individual blobs, trees, or commits. Therefore
+any failure after the first private Git-object upload is a **retention
+incident**, even when every handoff ref is successfully rolled back. The v3
+publisher tags that failure, the CLI emits `PRIVATE_CI_RETENTION_INCIDENT`,
+and exits with status 2.
+
+After a retention incident:
+
+1. Stop retries and do not reuse the carrier for another private-source handoff.
+2. Keep the repository private and restrict access; never make it public/internal
+   to "clean up" the failed run.
+3. Record the carrier repository ID, attempted source PR/head, UTC time, and
+   operator/run identity in the private incident record. Do not paste source
+   bytes or compiler output into the ticket.
+4. Have an administrator determine the repository-level retention response.
+   For a dedicated disposable carrier, prefer quarantining and replacing it;
+   if retained Git objects must be purged, engage GitHub Support because deleting
+   refs alone does not prove object deletion.
+5. Review and repin the protected carrier contract to a clean replacement before
+   any later transfer. The ordinary publisher must not treat successful ref
+   rollback as proof that the destination is clean.
+
+A normal destination-rejection exit (status 1) is only safe before private
+object upload. A retention-incident exit (status 2) requires the procedure
+above before reuse.
 
 It does **not** intercept arbitrary connector/API tool writes, cannot
 completely prevent visibility changes between API checks, and cannot
