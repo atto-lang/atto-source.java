@@ -168,11 +168,21 @@ public final class OresTaskScope {
                         },
                         () -> childTerminal(child));
             } catch (RuntimeException | Error failure) {
-                // The exact compiler lifecycle path may already have reported
-                // never-started retirement before throwing (for example a
-                // closed scheduler). No Future will publish terminal-ready, so
-                // establish that fact here and retire only if the exact child
-                // token was already quiesced.
+                // No executable child can exist when startCompilerAdmittedTask
+                // throws. If bind() never published an exact handle, remove the
+                // purely local placeholder and leave the caller-owned transfer
+                // unbound. If bind() partially accepted the exact handle before
+                // failing, explicitly drive the never-started path: success
+                // rolls the authority back, while retirement failure poisons
+                // the scope and pins the child fail-closed.
+                if (child.compilerHandle == null) {
+                    children.remove(child);
+                    throw failure;
+                }
+                if (!child.quiescent) {
+                    child.quiescent = true;
+                    child.neverStarted = true;
+                }
                 child.terminal = true;
                 retireChildIfReady(child);
                 throw failure;
