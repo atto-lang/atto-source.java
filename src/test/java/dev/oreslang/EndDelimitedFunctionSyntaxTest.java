@@ -27,7 +27,6 @@ final class EndDelimitedFunctionSyntaxTest {
         String source = """
                 fnc log_once() -> void
                     const int x = 1
-                    x + 1
                 end
                 """;
 
