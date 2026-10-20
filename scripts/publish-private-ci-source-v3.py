@@ -616,6 +616,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     commit_message = (
         f"ci: exact private Oreslang tree {source_commit} tree {source_tree}\n"
         f"carrier-base {contract['base_sha']} tree {base_tree}\n"
+        f"receipt-sha256 {receipt_digest}\n"
         f"connector-authorized source-repository "
         f"{legacy.SOURCE_REPO} id {source_repo_id}"
     )
