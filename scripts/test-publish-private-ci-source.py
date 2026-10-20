@@ -654,6 +654,25 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 with self.assertRaisesRegex(pub.Denied, "security #962"):
                     pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, A)
 
+    def test_real_gate_precedes_every_policy_and_provenance_probe(self):
+        # Fail closed before checking the local allowlist or probing GitHub.
+        with patch.object(pub, "require_independent_source_authorization", REAL_EXPORT_GATE):
+            with patch.object(pub, "checked_policy_fingerprint", side_effect=AssertionError("policy read")):
+                with patch.object(pub, "verify_protected_origin", side_effect=AssertionError("origin probe")):
+                    with patch.object(pub, "require_preflight", side_effect=AssertionError("destination probe")):
+                        with patch.object(pub, "gh_api", side_effect=AssertionError("GitHub API")):
+                            with self.assertRaisesRegex(pub.Denied, "security #962"):
+                                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, A)
+        self.assertEqual(self.route_calls, [])
+
+    def test_real_gate_cannot_be_enabled_by_local_policy_edit(self):
+        self.approval.write_text("trusted/ci\\nother/private-ci\\n")
+        with patch.object(pub, "require_independent_source_authorization", REAL_EXPORT_GATE):
+            with patch.object(pub, "gh_api", side_effect=AssertionError("GitHub API")):
+                with self.assertRaisesRegex(pub.Denied, "security #962"):
+                    pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, A)
+        self.assertEqual(self.route_calls, [])
+
     def test_denied_preflight_halts_before_api(self):
         with patch.object(pub, "require_preflight", side_effect=pub.Denied("not approved")):
             with self.assertRaisesRegex(pub.Denied, "not approved"):
