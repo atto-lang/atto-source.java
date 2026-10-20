@@ -1131,7 +1131,12 @@ public final class OwnershipChecker {
             // marked moved. Only after a valid owned replacement exists may a
             // rebindable local become usable again.
             if (assignment.target() instanceof Ast.NameExpr name) {
-                ownershipRoot(requireState(scope, name.name())).moved = false;
+                VarState root = ownershipRoot(requireState(scope, name.name()));
+                if (root.regionGeneration == Long.MAX_VALUE) {
+                    throw error("region generation overflow for '" + name.name() + "'");
+                }
+                root.regionGeneration++;
+                root.moved = false;
             }
             return assigned;
         }
