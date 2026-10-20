@@ -32,6 +32,21 @@ final class SourceBoundaryTruncationTest {
         assertTrue(TrapFailurePolicy.isGuestCatchable(failure, GuestPanic.class));
     }
 
+
+    @Test
+    void shortTraceKeepsAllSourceBoundariesWithoutTruncationNotice() {
+        var failure = new IllegalStateException("short");
+        for (int i = 0; i < 63; i++) {
+            SourceBoundaryTrace.record(failure, "short.ores", "call_" + i, "source task");
+        }
+        assertEquals(63, failure.getSuppressed().length);
+        assertTrue(failure.getSuppressed()[62].getMessage().contains("call_62"));
+        for (var marker : failure.getSuppressed()) {
+            assertFalse(marker.getMessage().contains("truncated"));
+        }
+        assertTrue(TrapFailurePolicy.isTrappable(failure, GuestPanic.class));
+    }
+
     @Test
     void tracingCannotConcealRealSuppressedTerminalFailures() {
         var failure = new IllegalStateException("ordinary");
