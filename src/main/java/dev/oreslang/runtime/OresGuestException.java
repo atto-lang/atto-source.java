@@ -71,6 +71,25 @@ public final class OresGuestException extends AbstractTruffleException {
         return new OresGuestException(failure);
     }
 
+    /**
+     * Only failures carrying Oreslang logical evidence are projected as guest
+     * exceptions. Internal runtime defects without guest evidence remain host
+     * implementation errors instead of being silently reclassified.
+     */
+    public static boolean hasLogicalDiagnostics(Throwable failure) {
+        Objects.requireNonNull(failure, "failure");
+        Throwable actual = unwrap(failure);
+        if (actual instanceof OresGuestException) return true;
+        for (Throwable suppressed : actual.getSuppressed()) {
+            if (suppressed instanceof OresAsyncTrace.LogicalGuestStackTrace
+                    || suppressed instanceof OresAsyncTrace.LogicalAsyncStackTrace
+                    || suppressed instanceof OresAsyncTrace.LogicalAsyncTraceElision) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     @ExportMessage
     @SuppressWarnings("static-method")
     ExceptionType getExceptionType() {
