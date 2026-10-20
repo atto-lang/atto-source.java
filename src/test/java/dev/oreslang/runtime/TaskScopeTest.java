@@ -377,7 +377,20 @@ public class TaskScopeTest {
         assertThrows(RejectedExecutionException.class,
                 () -> scope.startTask(
                         r -> OresScheduler.done(4),
-                        retired::incrementAndGet));
+                        new TaskScope.RetirementHook<Integer>() {
+                            @Override
+                            public void retireNeverStarted(TaskScope actualScope) {
+                                assertSame(scope, actualScope);
+                                retired.incrementAndGet();
+                            }
+
+                            @Override
+                            public void retireAfterPhysicalQuiescence(
+                                    TaskScope actualScope,
+                                    TaskHandle<Integer> actualChild) {
+                                fail("rejected Task must never reach physical retirement");
+                            }
+                        }));
 
         assertEquals(1, retired.get(),
                 "never-started child must retire its pre-admitted loan once");
