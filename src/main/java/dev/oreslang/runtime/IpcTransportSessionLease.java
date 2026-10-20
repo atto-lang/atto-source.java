@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * implementation or zero-copy ABI. The caller supplies an independently
  * authenticated, synchronous host frame writer and a physical close callback.
  * Never dispatch on an actor carrier or route UNTRUSTED NETWORK through here.
- * Synchronous send/write/wait entry points enforce that carrier boundary before
+ * Synchronous send/wait entry points enforce that carrier boundary before
  * receipt mutation, writer invocation, or monitor acquisition for blocking waits.
  * The authenticated socket adapter repeats the outer check, while this lease
  * is the non-bypassable package-local enforcement point.
@@ -92,15 +92,6 @@ final class IpcTransportSessionLease {
     IpcTransportSessionLease(IpcReceiptCorrelation.Envelope trustedEpoch,
                              long generation, int limit,
                              IpcReceiptCompletionBridge receipts,
-                             FrameWriter writer, PhysicalCloser closer,
-                             CleanupScheduler scheduler) {
-        this(trustedEpoch, generation, limit, receipts, null,
-                writer, closer, scheduler);
-    }
-
-    IpcTransportSessionLease(IpcReceiptCorrelation.Envelope trustedEpoch,
-                             long generation, int limit,
-                             IpcReceiptCompletionBridge receipts,
                              Object physicalOwner,
                              FrameWriter writer, PhysicalCloser closer,
                              CleanupScheduler scheduler) {
@@ -111,7 +102,7 @@ final class IpcTransportSessionLease {
         this.generation = generation;
         this.limit = limit;
         this.receipts = Objects.requireNonNull(receipts, "receipts");
-        this.physicalOwner = physicalOwner;
+        this.physicalOwner = Objects.requireNonNull(physicalOwner, "physicalOwner");
         this.writer = Objects.requireNonNull(writer, "writer");
         this.closer = Objects.requireNonNull(closer, "closer");
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
@@ -151,10 +142,6 @@ final class IpcTransportSessionLease {
                 throw new PreDispatchRejectedException(
                         "closed/stale/bounded IPC transport");
             }
-            if (physicalOwner == null) {
-                throw new IllegalStateException(
-                        "atomic IPC admission requires bound physical owner");
-            }
             outcome = receipts.admitAndCommit(
                     physicalOwner, message, generation);
             ++activeWrites;
@@ -173,56 +160,6 @@ final class IpcTransportSessionLease {
             releaseWrite();
         }
         return new WriteAttempt(outcome, error);
-    }
-
-    /**
-     * Linearize session admission, receipt dispatch commitment, and close
-     * intent on this session monitor, BEFORE any possible physical write.
-     * The transport callback is invoked OUTSIDE both session and receipt
-     * monitors while this operation pins the underlying physical resource.
-     */
-    void writeFrame(long expectedGeneration,
-                    IpcReceiptCorrelation.Envelope message,
-                    byte[] preparedFrame) throws IOException {
-        RuntimeBlockingGuard.requireBlockingHostThread("IPC transport write");
-        Objects.requireNonNull(message, "message");
-        Objects.requireNonNull(preparedFrame, "preparedFrame");
-        synchronized (this) {
-            absorbDeferredSchedulerFailureLocked();
-            if (phase != Phase.OPEN || expectedGeneration != generation
-                    || !sameTrustedEpoch(message) || activeWrites >= limit) {
-                throw new PreDispatchRejectedException(
-                        "closed/stale/bounded IPC transport");
-            }
-            // No arbitrary user callbacks or memory allocation after
-            // commitment until the writer has acquired the physical pin.
-            ++activeWrites;
-            try {
-                if (physicalOwner == null) {
-                    receipts.commitDispatch(message);
-                } else {
-                    receipts.commitDispatch(
-                            physicalOwner, message, generation);
-                }
-            } catch (RuntimeException failure) {
-                --activeWrites;
-                throw new PreDispatchRejectedException(
-                        "IPC receipt dispatch commitment rejected", failure);
-            } catch (Error failure) {
-                --activeWrites;
-                throw failure;
-            }
-        }
-        try {
-            writer.write(message, preparedFrame);
-        } catch (IOException | RuntimeException | Error failure) {
-            // A dispatch-committed failed write is INDETERMINATE, even when
-            // the host call threw before reporting any accepted bytes.
-            requestClose();
-            throw failure;
-        } finally {
-            releaseWrite();
-        }
     }
 
     /**
@@ -407,11 +344,8 @@ final class IpcTransportSessionLease {
         synchronized (this) { physicalCloseConfirmed = true; }
         try {
             // Arbitrary dependent user callbacks can run: no session lock held.
-            if (physicalOwner == null) {
-                receipts.transportLost(trustedEpoch);
-            } else {
-                receipts.transportLost(physicalOwner, trustedEpoch, generation);
-            }
+            receipts.transportLost(
+                    physicalOwner, trustedEpoch, generation);
         } catch (RuntimeException | Error failure) {
             synchronized (this) {
                 closeFailure = failure;
