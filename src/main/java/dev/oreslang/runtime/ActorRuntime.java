@@ -1229,7 +1229,12 @@ public final class ActorRuntime implements AutoCloseable {
             Runnable release,
             Runnable continuation,
             ActorId sender,
-            long sequence) implements AutoCloseable {
+            long sequence,
+            AtomicBoolean released) implements AutoCloseable {
+        private MessageEnvelope {
+            Objects.requireNonNull(released, "released");
+        }
+
         private static MessageEnvelope message(
                 Object value,
                 Runnable release,
@@ -1238,7 +1243,13 @@ public final class ActorRuntime implements AutoCloseable {
             if (sequence < 0) {
                 throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
             }
-            return new MessageEnvelope(value, release, null, sender, sequence);
+            return new MessageEnvelope(
+                    value,
+                    Objects.requireNonNull(release, "release"),
+                    null,
+                    sender,
+                    sequence,
+                    new AtomicBoolean());
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
@@ -1247,7 +1258,8 @@ public final class ActorRuntime implements AutoCloseable {
                     null,
                     Objects.requireNonNull(continuation, "continuation"),
                     null,
-                    -1L);
+                    -1L,
+                    new AtomicBoolean());
         }
 
         private boolean isContinuation() {
@@ -1255,8 +1267,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         @Override
-        public void close() {
+        public synchronized void close() {
+            if (released.get()) return;
+            // Transport/accounting release is the fallible boundary. Retain
+            // this exact envelope owner until it returns normally.
             if (release != null) release.run();
+            released.set(true);
         }
     }
 
@@ -2222,6 +2238,10 @@ public final class ActorRuntime implements AutoCloseable {
                 synchronized (cell.lifecycleLock) {
                     completedSequence = cell.activeMail == null
                             ? -1L : cell.activeMail.sequence();
+                    // Transport accounting remains live for the complete
+                    // suspended receive lifetime. Retire it before clearing
+                    // the semantic active-mail owner.
+                    cell.retireSuspendedUserEnvelope();
                     cell.sourceReceiveSuspended = false;
                     cell.activeMail = null;
                     cell.lifecycleLock.notifyAll();
@@ -2244,8 +2264,9 @@ public final class ActorRuntime implements AutoCloseable {
                 boolean failActor = false;
                 synchronized (cell.lifecycleLock) {
                     if (!cell.stopped.get() && !cell.finalized) {
-                        cell.sourceReceiveSuspended = false;
-                        cell.activeMail = null;
+                        // Do not clear a suspended envelope whose completion
+                        // could not re-enter the actor. Teardown retains and
+                        // retires that exact transport owner.
                         failActor = true;
                     }
                 }
@@ -8460,6 +8481,27 @@ public final class ActorRuntime implements AutoCloseable {
         private final HashMap<Long, PhysicalMailReceipt> pendingPhysicalReceipts =
                 new HashMap<>();
         private ActorInboxMail<M> activeMail;
+        /**
+         * Exact envelope dequeued for the currently executing physical turn.
+         * Published before mailbox-slot release, so a failed debit cannot make
+         * the dequeued transport owner unreachable.
+         */
+        private MessageEnvelope currentEnvelopeOwner;
+        private boolean currentEnvelopeSlotReleased;
+        /**
+         * A source receive can remain logically active after its physical turn
+         * unwinds. Its payload reservation remains owned here until the
+         * completion continuation retires the exact envelope.
+         */
+        private MessageEnvelope suspendedUserEnvelopeOwner;
+        /**
+         * Exact envelope removed by teardown drain. The two progress bits let a
+         * retry resume after either mailbox-slot release or transport release
+         * without double-debiting the completed stage.
+         */
+        private MessageEnvelope drainPendingEnvelope;
+        private boolean drainPendingContinuation;
+        private boolean drainPendingSlotReleased;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
@@ -8524,10 +8566,8 @@ public final class ActorRuntime implements AutoCloseable {
             final Throwable stopCause;
             final PhysicalMailDisposition receiptDisposition;
             boolean physicalTeardownPrepared;
-            // Once reservation-draining begins, an exception may leave a
-            // removed envelope whose quota-release/close callback is not
-            // independently replayable. Do not mistake two certified channel
-            // closes for proof that this separate drain has completed.
+            // Diagnostic progress bit: exact dequeued-envelope owners now
+            // make reservation draining replayable across cleanup failure.
             boolean mailboxReservationDrainStarted;
             // A channel close may mark itself closed before all pending
             // completion callbacks run. Never replay an ambiguous partial
@@ -9437,32 +9477,33 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                     }
                     if (envelope == null) break;
-                    releaseMailboxSlot(envelope.isContinuation());
-                    // The local is assigned from both continuation and user-mail
-                    // queues above, so it is not effectively final. Bind the
-                    // selected envelope to a final resource for deterministic
-                    // close/permit release across every dispatch path.
-                    try (MessageEnvelope activeEnvelope = envelope) {
+
+                    synchronized (lifecycleLock) {
+                        claimCurrentEnvelope(envelope);
+                        releaseCurrentEnvelopeSlot();
+                    }
+
+                    boolean guestCompleted = false;
+                    try {
                         /*
-                         * Linearize queued-work start against stop/cancel.
-                         * If cancellation acquired lifecycleLock first, this
-                         * envelope is discarded and no new guest work begins.
-                         * If this gate wins first, the envelope is already-active
-                         * actor work; a later cancellation is observed at the
-                         * normal scheduler safepoints.
+                         * Linearize queued-work start against stop/cancel, but
+                         * never execute guest/continuation code under the
+                         * lifecycle monitor.
                          */
+                        final boolean runGuest;
                         synchronized (lifecycleLock) {
-                            if (stopped.get() || finalized) break;
+                            runGuest = !stopped.get() && !finalized;
                         }
 
-                        if (activeEnvelope.isContinuation()) {
-                            activeEnvelope.continuation().run();
-                        } else {
+                        if (runGuest && envelope.isContinuation()) {
+                            envelope.continuation().run();
+                            guestCompleted = true;
+                        } else if (runGuest) {
                             ActorInboxMail<M> mail = new ActorInboxMail<>(
                                     ref.id(),
-                                    Optional.ofNullable(activeEnvelope.sender()),
-                                    activeEnvelope.sequence(),
-                                    (M) activeEnvelope.value());
+                                    Optional.ofNullable(envelope.sender()),
+                                    envelope.sequence(),
+                                    (M) envelope.value());
                             activeMail = mail;
                             try {
                                 if (codeExecutor != null) {
@@ -9485,27 +9526,32 @@ public final class ActorRuntime implements AutoCloseable {
                                 } else {
                                     behavior.onMessage(mail.value(), context);
                                 }
+                                guestCompleted = true;
                             } finally {
                                 if (!sourceReceiveSuspended) activeMail = null;
                             }
                         }
-                        if (codeExecutor == null
+
+                        if (guestCompleted
+                                && codeExecutor == null
                                 && isPrivateKind(kind)
                                 && !trustedFactory) {
-                            // Private state that survives a mailbox turn must
-                            // remain in actor-owned storage/capabilities. This
-                            // catches behavior fields that were null/immutable
-                            // at construction but later retain a mutable JVM
-                            // object across turns.
                             validatePrivateBehaviorState(ref.id(), behavior);
                         }
+                    } finally {
+                        synchronized (lifecycleLock) {
+                            retireCurrentEnvelopeAfterTurn();
+                        }
                     }
+
                     // A source receive that suspended is not processed until
                     // its continuation completes; the continuation marks it.
-                    if (!envelope.isContinuation() && !sourceReceiveSuspended) {
+                    if (guestCompleted
+                            && !envelope.isContinuation()
+                            && !sourceReceiveSuspended) {
                         markMessageProcessed(envelope.sequence());
                     }
-                    processed++;
+                    if (guestCompleted) processed++;
 
                     synchronized (lifecycleLock) {
                         if (sourceHandoffRequested) {
@@ -9554,25 +9600,128 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private void claimCurrentEnvelope(MessageEnvelope envelope) {
+            if (currentEnvelopeOwner != null) {
+                throw new IllegalStateException(
+                        "actor dequeued a second envelope before retiring the current owner");
+            }
+            currentEnvelopeOwner = Objects.requireNonNull(envelope, "envelope");
+            currentEnvelopeSlotReleased = false;
+        }
+
+        private void releaseCurrentEnvelopeSlot() {
+            MessageEnvelope envelope = Objects.requireNonNull(
+                    currentEnvelopeOwner,
+                    "actor current envelope owner is missing");
+            if (currentEnvelopeSlotReleased) return;
+            releaseMailboxSlot(envelope.isContinuation());
+            currentEnvelopeSlotReleased = true;
+        }
+
+        private void retireCurrentEnvelopeAfterTurn() {
+            MessageEnvelope envelope = Objects.requireNonNull(
+                    currentEnvelopeOwner,
+                    "actor current envelope owner is missing");
+            if (!currentEnvelopeSlotReleased) {
+                throw new IllegalStateException(
+                        "actor current envelope cannot retire before mailbox-slot release");
+            }
+
+            if (!envelope.isContinuation() && sourceReceiveSuspended) {
+                if (suspendedUserEnvelopeOwner != null
+                        && suspendedUserEnvelopeOwner != envelope) {
+                    throw new IllegalStateException(
+                            "actor already owns another suspended user envelope");
+                }
+                suspendedUserEnvelopeOwner = envelope;
+                currentEnvelopeOwner = null;
+                currentEnvelopeSlotReleased = false;
+                return;
+            }
+
+            envelope.close();
+            currentEnvelopeOwner = null;
+            currentEnvelopeSlotReleased = false;
+        }
+
+        private void retireSuspendedUserEnvelope() {
+            MessageEnvelope envelope = suspendedUserEnvelopeOwner;
+            if (envelope == null) {
+                throw new IllegalStateException(
+                        "source receive lost its suspended transport envelope");
+            }
+            envelope.close();
+            suspendedUserEnvelopeOwner = null;
+        }
+
+        private void publishDrainOwner(
+                MessageEnvelope envelope,
+                boolean continuation) {
+            if (drainPendingEnvelope != null) {
+                throw new IllegalStateException(
+                        "actor mailbox drain already retains a dequeued envelope");
+            }
+            drainPendingEnvelope = Objects.requireNonNull(envelope, "envelope");
+            drainPendingContinuation = continuation;
+            drainPendingSlotReleased = false;
+        }
+
+        private void retirePendingDrainEnvelope() {
+            MessageEnvelope envelope = drainPendingEnvelope;
+            if (envelope == null) return;
+            if (!drainPendingSlotReleased) {
+                releaseMailboxSlot(drainPendingContinuation);
+                drainPendingSlotReleased = true;
+            }
+            envelope.close();
+            drainPendingEnvelope = null;
+            drainPendingContinuation = false;
+            drainPendingSlotReleased = false;
+        }
+
         private void drainMailboxReservations() {
             synchronized (lifecycleLock) {
+                // Resume any exact envelope removed by a previous failed drain.
+                retirePendingDrainEnvelope();
+
                 while (continuationMailbox.drainOne(continuation -> {
-                    releaseMailboxSlot(true);
-                    continuation.close();
+                    publishDrainOwner(continuation, true);
+                    retirePendingDrainEnvelope();
                 })) {
                     // Reclaim admitted control mail even after termination closes the channel.
                 }
                 sourceHandoffRequested = false;
-            }
 
-            while (mailbox.drainOne(envelope -> {
-                releaseMailboxSlot(false);
-                envelope.close();
-            })) {
-                // Drain all committed user-message envelopes, including after close.
+                while (mailbox.drainOne(envelope -> {
+                    publishDrainOwner(envelope, false);
+                    retirePendingDrainEnvelope();
+                })) {
+                    // Drain all committed user-message envelopes, including after close.
+                }
+
+                // Never race a live physical turn. Once the carrier has exited,
+                // teardown owns any active/suspended envelope that guest code
+                // can no longer resume.
+                if (activeTurns == 0 && !carrierActive) {
+                    if (currentEnvelopeOwner != null) {
+                        releaseCurrentEnvelopeSlot();
+                        // Teardown never preserves source suspension as a
+                        // runnable lifetime after actor stop.
+                        boolean suspended = sourceReceiveSuspended;
+                        sourceReceiveSuspended = false;
+                        try {
+                            retireCurrentEnvelopeAfterTurn();
+                        } finally {
+                            sourceReceiveSuspended = suspended;
+                        }
+                    }
+                    if (suspendedUserEnvelopeOwner != null) {
+                        retireSuspendedUserEnvelope();
+                    }
+                    sourceReceiveSuspended = false;
+                    activeMail = null;
+                }
             }
-            sourceReceiveSuspended = false;
-            activeMail = null;
         }
 
         private void fail(Throwable failure) {
@@ -9778,11 +9927,10 @@ public final class ActorRuntime implements AutoCloseable {
                             // arbitration and callbacks settle. Only its
                             // original selector-free, normally completed
                             // close witness may prove that retrying the
-                            // *remaining* teardown cannot lose a notification.
-                            // A partial reservation drain is separately
-                            // ambiguous and never automatically replayed.
-                            if (batch.mailboxReservationDrainStarted
-                                    || !mailbox.closeSettledWithoutSelectorsForTeardown()
+                            // remaining teardown cannot lose a notification.
+                            // Reservation draining itself is replayable because
+                            // every dequeued envelope has an exact retained owner.
+                            if (!mailbox.closeSettledWithoutSelectorsForTeardown()
                                     || (continuationMailbox.isClosed()
                                         && !continuationMailbox
                                                 .closeSettledWithoutSelectorsForTeardown())) {
@@ -9805,9 +9953,9 @@ public final class ActorRuntime implements AutoCloseable {
                                 terminalTeardownAfterFirstCloseFaultForTesting;
                         if (afterFirstClose != null) afterFirstClose.run();
                         continuationMailbox.close(batch.stopCause);
-                        // Drain is not transactionally replayable: advance
-                        // the durable fence BEFORE removing the first slot.
-                        // If anything throws, old actor code remains pinned.
+                        // Publish diagnostic progress before draining.
+                        // Exact dequeued-envelope owners make the drain itself
+                        // retryable across slot/accounting failures.
                         batch.mailboxReservationDrainStarted = true;
                         drainMailboxReservations();
                         batch.physicalTeardownPrepared = true;
