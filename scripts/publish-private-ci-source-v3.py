@@ -17,6 +17,7 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import re
+import secrets
 import stat
 import subprocess
 import sys
@@ -951,6 +952,19 @@ def require_exact_ref(repository, ref_name, expected_sha, expected_repository_id
         raise Denied("carrier ref does not point to exact handoff commit")
 
 
+def require_handoff_refs_absent(
+        repository, branch, authorization, expected_repository_id):
+    """Reject pre-existing refs before any create attempt.
+
+    GitHub does not provide an atomic compare-and-delete operation, so this
+    is an ownership admission check rather than a complete concurrency lock.
+    Each publisher also creates a different nonce-bound commit SHA.
+    """
+    for ref_name in (branch, authorization):
+        if live_ref_sha(repository, ref_name, expected_repository_id) is not None:
+            raise Denied("carrier handoff ref already exists before publication")
+
+
 def delete_exact_ref(repository, ref_name, expected_sha, expected_repository_id):
     expected_sha = valid_sha(expected_sha, "invalid rollback commit SHA")
     actual = live_ref_sha(repository, ref_name, expected_repository_id)
@@ -965,6 +979,28 @@ def delete_exact_ref(repository, ref_name, expected_sha, expected_repository_id)
     if live_ref_sha(repository, ref_name, expected_repository_id) is not None:
         raise Denied("carrier ref still exists after rollback")
     return True
+
+
+def create_handoff_ref(repository, ref_name, commit_sha, expected_repository_id):
+    """POST one ref, accepting only an exact create response.
+
+    Callers mark a create as attempted before this function: if the server
+    created the ref but the response was lost, cleanup still checks its SHA.
+    """
+    commit_sha = valid_sha(commit_sha, "invalid handoff commit SHA")
+    if not isinstance(ref_name, str) or not HANDOFF_REF.fullmatch(ref_name):
+        raise Denied("handoff ref target is invalid")
+    legacy.checked_repo(repository, expected_repository_id)
+    result = legacy.gh_api(
+        f"repos/{repository}/git/refs", method="POST",
+        payload={"ref": "refs/heads/" + ref_name, "sha": commit_sha},
+    )
+    if (not isinstance(result, dict)
+            or result.get("ref") != "refs/heads/" + ref_name
+            or not isinstance(result.get("object"), dict)
+            or result["object"].get("sha") != commit_sha):
+        raise Denied("carrier did not confirm exact handoff ref creation")
+    return result
 
 
 def direct_tree_entries(repository, tree_sha):
@@ -1279,11 +1315,22 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     )
 
     auth()
+    # An independent writer exporting the same tree must produce a different
+    # commit identity, so a failed CREATE cannot confuse ordinary collisions.
+    # This is not an atomic compare-and-delete guarantee.
+    try:
+        handoff_nonce = secrets.token_hex(16)
+    except (OSError, RuntimeError) as exc:
+        raise Denied("private CI handoff entropy unavailable") from exc
+    if not isinstance(handoff_nonce, str) or not re.fullmatch(
+            r"[0-9a-f]{32}", handoff_nonce):
+        raise Denied("private CI handoff entropy invalid")
     commit_message = (
         f"ci: exact private Oreslang tree {source_commit} tree {source_tree}\n"
         f"carrier-base {contract['base_sha']} tree {base_tree}\n"
         f"connector-authorized source-repository "
-        f"{legacy.SOURCE_REPO} id {source_repo_id}"
+        f"{legacy.SOURCE_REPO} id {source_repo_id}\n"
+        f"handoff-nonce {handoff_nonce}"
     )
     commit = legacy.gh_api(
         f"repos/{repository}/git/commits", method="POST",
@@ -1324,25 +1371,25 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     # as potentially successful before it returns: transport ambiguity must not
     # strand a source-bearing ref.
     authorization = "ci/authorized-" + commit_sha
+    # Admission is read-only. A pre-existing deterministic branch might
+    # belong to another invocation; never try to delete it.
+    require_handoff_refs_absent(
+        repository, branch, authorization, contract["repository_id"]
+    )
     payload_attempted = False
     authorization_attempted = False
     try:
         auth()
         payload_attempted = True
-        created = legacy.gh_api(
-            f"repos/{repository}/git/refs", method="POST",
-            payload={"ref": "refs/heads/" + branch, "sha": commit_sha},
+        create_handoff_ref(
+            repository, branch, commit_sha, contract["repository_id"]
         )
-        if (created.get("ref") != "refs/heads/" + branch
-                or created.get("object", {}).get("sha") not in (None, commit_sha)):
-            raise Denied("carrier did not confirm exact-tree CI branch creation")
         require_exact_ref(
             repository, branch, commit_sha, contract["repository_id"]
         )
 
-        # The payload ref is inert without the authorization ref. Re-run every
-        # mutable governance check in that safe window so protection, policy,
-        # contract or carrier-base drift cannot be authorized.
+        # Revalidate all mutable security authority before granting the
+        # separate authorization ref; private payload ref alone is inert.
         if authorized_main_sha(
                 repository, approved_policy, approved_repository_id) != authority_sha:
             raise Denied("source governance authority advanced before authorization")
@@ -1352,31 +1399,25 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
             contract["test_plan_path"], authority_sha
         )
         checked_destination(repository, contract)
-
-        # Revalidate the exact open PR head last, immediately before making the
-        # carrier executable.
         if verify_source_pr(source_pr, source_commit) != source_repo_id:
             raise Denied("source repository identity changed before authorization")
 
         auth()
         authorization_attempted = True
-        approved = legacy.gh_api(
-            f"repos/{repository}/git/refs", method="POST",
-            payload={"ref": "refs/heads/" + authorization, "sha": commit_sha},
+        create_handoff_ref(
+            repository, authorization, commit_sha, contract["repository_id"]
         )
-        if (approved.get("ref") != "refs/heads/" + authorization
-                or approved.get("object", {}).get("sha") not in (None, commit_sha)):
-            raise Denied("carrier did not confirm dispatcher authorization ref")
-
-        # Do not trust create responses alone. Re-read both live refs before
-        # reporting a successful handoff.
         require_exact_ref(
             repository, branch, commit_sha, contract["repository_id"]
         )
         require_exact_ref(
             repository, authorization, commit_sha, contract["repository_id"]
         )
-    except Denied as exc:
+    except BaseException:
+        # The remote API may commit before its response is lost. Attempt
+        # cleanup only for refs this invocation attempted, and never delete a
+        # moved ref: delete_exact_ref re-reads immutable repository identity
+        # and exact SHA before DELETE, then verifies absence afterwards.
         rollback_error = None
         if authorization_attempted:
             try:
@@ -1384,7 +1425,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
                     repository, authorization, commit_sha,
                     contract["repository_id"],
                 )
-            except Denied as rollback_exc:
+            except BaseException as rollback_exc:
                 rollback_error = rollback_exc
         if payload_attempted:
             try:
@@ -1392,13 +1433,13 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
                     repository, branch, commit_sha,
                     contract["repository_id"],
                 )
-            except Denied as rollback_exc:
+            except BaseException as rollback_exc:
                 rollback_error = rollback_error or rollback_exc
         if rollback_error is not None:
             raise Denied(
                 "private CI handoff failed and carrier ref rollback was incomplete"
             ) from rollback_error
-        raise exc
+        raise
 
     return {
         "commit": commit_sha,
