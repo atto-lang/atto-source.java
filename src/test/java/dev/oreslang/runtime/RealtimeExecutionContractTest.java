@@ -66,8 +66,8 @@ final class RealtimeExecutionContractTest {
         var timing = new RealtimeExecutionContract.TimingBudget(
                 Long.MAX_VALUE, Long.MAX_VALUE, 1, 1, 1);
         assertEquals(Long.MAX_VALUE, timing.worstCaseResponseNanos());
-        assertTrue(timing.withinDeadline(),
-                "saturated arithmetic is equal to the largest representable deadline");
+        assertFalse(timing.withinDeadline(),
+                "overflowed response-time arithmetic must fail closed");
         assertThrows(IllegalArgumentException.class, () ->
                 new RealtimeExecutionContract.TimingBudget(0, 0, 0, 0, 0));
         assertThrows(IllegalArgumentException.class, () ->
