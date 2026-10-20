@@ -7,6 +7,7 @@ import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.types.ScalarTaskPlan;
+import dev.oreslang.types.TaskBoundaryAdmissions;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
@@ -52,16 +53,31 @@ public final class OresEvalRootNode extends RootNode {
 
     private final Ast.Program program;
     private final String codeUnitId;
+    private final TaskBoundaryAdmissions taskAdmissions;
     private volatile Evaluator evaluator;
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program) {
-        this(language, program, "<anonymous>");
+        this(language, program, "<anonymous>",
+                TaskBoundaryAdmissions.rejectAll(program));
     }
 
-    public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId) {
+    public OresEvalRootNode(
+            OresLanguage language, Ast.Program program, String codeUnitId) {
+        this(language, program, codeUnitId,
+                TaskBoundaryAdmissions.rejectAll(program));
+    }
+
+    public OresEvalRootNode(
+            OresLanguage language,
+            Ast.Program program,
+            String codeUnitId,
+            TaskBoundaryAdmissions taskAdmissions) {
         super(language);
-        this.program = program;
+        this.program = Objects.requireNonNull(program, "program");
         this.codeUnitId = codeUnitId;
+        this.taskAdmissions =
+                Objects.requireNonNull(taskAdmissions, "taskAdmissions");
+        this.taskAdmissions.requireProgramIdentity(this.program);
     }
 
     @Override public String getName() { return "ores-eval"; }
