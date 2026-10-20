@@ -233,6 +233,29 @@ final class InvertedArrayTest {
     }
 
     @Test
+    void methodPlannerRejectsExcessiveParameterAndExpressionBudgets() {
+        StringBuilder params = new StringBuilder();
+        for (int i = 0; i < 33; i++) {
+            if (i != 0) params.append(", ");
+            params.append("f64 p").append(i);
+        }
+        String tooManyParams = "define inverted class Counter as value: f64; "
+                + "inc(" + params + "): void { self.value = self.value + p0; } end";
+        assertThrows(IllegalArgumentException.class,
+                () -> InvertedArray.fromClass(declaration(tooManyParams), 1));
+
+        // 60 bounded-depth expressions, with a cumulative AST node budget
+        // exceeding the stage-one compiler's 4,096 expression-node ceiling.
+        String expression = "self.value" + " + 1.0".repeat(45);
+        String body = ("self.value = " + expression + "; ").repeat(60);
+        String tooManyNodes = "define inverted class Counter as value: f64; "
+                + "inc(f64 delta): void { " + body + " } end";
+        var ex = assertThrows(IllegalArgumentException.class,
+                () -> InvertedArray.fromClass(declaration(tooManyNodes), 1));
+        assertTrue(ex.getMessage().contains("budget"), ex.getMessage());
+    }
+
+    @Test
     void rejectsUnsupportedAndEffectfulMethodBodiesBeforeAllocatingOwner() {
         String[] methods = {
                 "sleep(f64 x): void { await x; }",
