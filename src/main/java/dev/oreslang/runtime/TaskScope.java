@@ -78,7 +78,17 @@ package dev.oreslang.runtime;
                 }
                 admitted = children.toArray(new Registration[0]);
             }
-            for (Registration ticket : admitted) ticket.cancelAttached();
+            for (Registration ticket : admitted) {
+                try {
+                    ticket.cancelAttached();
+                } catch (RuntimeException notificationFailure) {
+                    synchronized (this) {
+                        if (firstFailure == null) firstFailure = notificationFailure;
+                        else if (firstFailure != notificationFailure)
+                            firstFailure.addSuppressed(notificationFailure);
+                    }
+                }
+            }
             publishIfReady();
             return drained;
         }
