@@ -157,6 +157,40 @@ final class FirstClassModelGraphTest {
     }
 
     @Test
+    void unqualifiedConstructionInsideModuleUsesLexicalModelEvenWhenNamesAreAmbiguous() throws Exception {
+        String output = run("""
+                define module left as
+                  fnc Identity(float input): float { return input; }
+                  fnc Scale(float factor, float input): float { return input * factor; }
+                  pub define model Scaler(factor: float = 2.0) as
+                    Identity()
+                    Scale(factor)
+                  end
+                  pub fnc evaluate(float input): float {
+                    val Scaler local = Scaler(3.0);
+                    return local.run(input);
+                  }
+                end
+
+                define module right as
+                  fnc Identity(float input): float { return input; }
+                  fnc Scale(float factor, float input): float { return input * factor; }
+                  pub define model Scaler(factor: float = 10.0) as
+                    Identity()
+                    Scale(factor)
+                  end
+                end
+
+                pub routine main(): void {
+                  stdio.stdout.write(left.evaluate(7.0));
+                  return;
+                }
+                """);
+
+        assertEquals("21.0", output);
+    }
+
+    @Test
     void modelConstructionAndRunAreStrictlyTyped() {
         assertThrowsMessage("MODEL_NONCONSTANT_CONFIG", () ->
                 OresCompiler.parseAndTypeCheck(PRICE_MODEL + """
