@@ -119,7 +119,7 @@ public record ReachabilityManifest(
         for (int i = 0; i < value.length(); i++) {
             char ch = value.charAt(i);
             switch (ch) {
-                case '"' -> json.append("\\"");
+                case '"' -> json.append("\\\"");
                 case '\\' -> json.append("\\\\");
                 case '\b' -> json.append("\\b");
                 case '\f' -> json.append("\\f");
