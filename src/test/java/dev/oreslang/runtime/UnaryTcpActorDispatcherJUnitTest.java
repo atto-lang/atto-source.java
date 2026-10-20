@@ -80,6 +80,7 @@ final class UnaryTcpActorDispatcherJUnitTest {
         CountDownLatch completed = new CountDownLatch(1);
         AtomicReference<UnaryTcpSessionAdapter.Reply> reply = new AtomicReference<>();
         AtomicReference<Throwable> failure = new AtomicReference<>();
+        AtomicReference<OresBytes> actorResult = new AtomicReference<>();
 
         try (ActorRuntime runtime = new ActorRuntime()) {
             var dispatcher = new UnaryTcpActorDispatcher(
@@ -89,6 +90,7 @@ final class UnaryTcpActorDispatcherJUnitTest {
                         Object value = message.get("payload");
                         assertInstanceOf(OresBytes.class, value);
                         OresBytes bytes = (OresBytes) value;
+                        actorResult.set(bytes);
                         assertEquals(UnaryTransportFrame.MAX_PAYLOAD_BYTES, bytes.size());
                         assertEquals(255, bytes.unsignedAt(0));
                         assertEquals(7, bytes.unsignedAt(bytes.size() - 1));
@@ -109,6 +111,9 @@ final class UnaryTcpActorDispatcherJUnitTest {
             assertTrue(completed.await(5, TimeUnit.SECONDS));
             assertNull(failure.get());
             assertNotNull(reply.get());
+            assertNotNull(actorResult.get());
+            assertSame(actorResult.get(), reply.get().payloadValue(),
+                    "SHARED immutable result bytes should not be copied");
             assertEquals(UnaryTransportFrame.MAX_PAYLOAD_BYTES, reply.get().payload().length);
             assertEquals((byte) 255, reply.get().payload()[0]);
             assertEquals((byte) 7, reply.get().payload()[reply.get().payload().length - 1]);
