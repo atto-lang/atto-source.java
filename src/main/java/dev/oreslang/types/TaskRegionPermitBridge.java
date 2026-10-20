@@ -33,7 +33,20 @@ final class TaskRegionPermitBridge {
                  ThreadSafetyTraits.NominalProof resolvedProof) {
         TaskAccessVerifier.Ticket ticket =
                 ledger.admitCoherentTyped(footprint, sourceProof, resolvedProof);
-        return new Permit(ledger, ticket);
+        // Permit preparation is after the static claim reservation but still
+        // BEFORE scheduler submission. If allocation fails, revoke the ticket
+        // without fabricating a live child or leaving the parent blocked.
+        try {
+            return new Permit(ledger, ticket);
+        } catch (RuntimeException | Error preparationFailure) {
+            try {
+                ledger.quiescent(ticket); // no executable frame was admitted
+            } catch (RuntimeException | Error cleanupFailure) {
+                if (preparationFailure != cleanupFailure)
+                    preparationFailure.addSuppressed(cleanupFailure);
+            }
+            throw preparationFailure;
+        }
     }
 
     boolean parentMayAccess(TaskAccessVerifier.Claim claim) {
