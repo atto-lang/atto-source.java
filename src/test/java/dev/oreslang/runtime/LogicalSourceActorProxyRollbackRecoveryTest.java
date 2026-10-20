@@ -171,4 +171,103 @@ final class LogicalSourceActorProxyRollbackRecoveryTest {
             }
         }
     }
+
+    @Test
+    void supervisorRetainsRealFailedProxyRollbackTicketAfterCandidateTimeout()
+            throws Exception {
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var old = manager.stageActorGeneration(
+                    "proxy-real-rollback-first.ores", SOURCE);
+            var next = manager.stageActorGeneration(
+                    "proxy-real-rollback-next.ores",
+                    SOURCE.replace("self.count + mail.value;",
+                            "self.count + mail.value + 1;"));
+            ActorRuntime candidateRuntime =
+                    next.linkActorGeneration("Counter").runtime();
+            Field dispatcher = reflect(ActorRuntime.class, "sharedDispatcher");
+            java.util.concurrent.ExecutorService original =
+                    (java.util.concurrent.ExecutorService) dispatcher.get(candidateRuntime);
+            var scheduled = new java.util.concurrent.atomic.AtomicReference<Runnable>();
+            var silent = new java.util.concurrent.AbstractExecutorService() {
+                private volatile boolean shutdown;
+                @Override public void execute(Runnable task) {
+                    if (shutdown) throw new java.util.concurrent.RejectedExecutionException();
+                    if (!scheduled.compareAndSet(null, task))
+                        throw new AssertionError("unexpected second candidate schedule");
+                }
+                @Override public void shutdown() { shutdown = true; }
+                @Override public java.util.List<Runnable> shutdownNow() {
+                    shutdown = true;
+                    return java.util.List.of();
+                }
+                @Override public boolean isShutdown() { return shutdown; }
+                @Override public boolean isTerminated() { return shutdown; }
+                @Override public boolean awaitTermination(
+                        long time, TimeUnit unit) { return shutdown; }
+            };
+            dispatcher.set(candidateRuntime, silent);
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                    old, ActorRuntime.ActorKind.SHARED, "Counter", WAIT);
+                 var mailbox = new LogicalActorProxyMailboxV1(4, 8, 32)) {
+                router.bindProxyMailboxForSupervisor(mailbox);
+                var result = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+                Thread upgrade = Thread.ofPlatform().start(() -> {
+                    try {
+                        router.upgradeToForProxy(
+                                next, Duration.ofMillis(250), mailbox);
+                        result.set(new AssertionError("candidate unexpectedly upgraded"));
+                    } catch (Throwable failed) {
+                        result.set(failed);
+                    }
+                });
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (scheduled.get() == null && System.nanoTime() < deadline)
+                    Thread.sleep(2);
+                assertNotNull(scheduled.get(),
+                        "candidate must have reached fallible physical admission");
+                Field retained = reflect(LogicalActorProxyMailboxV1.class,
+                        "retainedMessages");
+                Field pending = reflect(LogicalSourceActorRouterV1.class,
+                        "pendingProxyRollbackTicket");
+                retained.setInt(mailbox, -1);
+                try {
+                    upgrade.join(12_000);
+                    assertFalse(upgrade.isAlive(), "failed candidate must exit transaction");
+                    assertNotNull(result.get());
+                    assertNotNull(pending.get(router),
+                            "actual failed transaction must register its exact proxy ticket");
+                } finally {
+                    retained.setInt(mailbox, 0);
+                    if (upgrade.isAlive()) upgrade.interrupt();
+                }
+                assertTrue(mailbox.snapshot().dispatchFrozen());
+                assertEquals(1L, router.ref().routeEpoch(),
+                        "unpublished candidate cannot change logical route");
+
+                // Candidate stop was requested while its scheduler was
+                // captured. Execute the stale scheduling token so physical
+                // finalization can complete before rollback reconciliation.
+                scheduled.get().run();
+                long recoveryDeadline = System.nanoTime()
+                        + TimeUnit.SECONDS.toNanos(10);
+                while (System.nanoTime() < recoveryDeadline) {
+                    router.reapRetired();
+                    if (!router.reconcileFailedUpgradeRollback()) {
+                        Thread.sleep(2);
+                        continue;
+                    }
+                    if (router.reconcileFailedProxyRollback()) break;
+                    Thread.sleep(2);
+                }
+                assertNull(pending.get(router));
+                assertFalse(mailbox.snapshot().dispatchFrozen());
+                assertEquals(1L, router.ref().routeEpoch());
+                assertTrue(router.reconcileFailedProxyRollback());
+            } finally {
+                dispatcher.set(candidateRuntime, original);
+                silent.shutdownNow();
+            }
+        }
+    }
 }
