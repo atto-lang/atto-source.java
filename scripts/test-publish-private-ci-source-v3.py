@@ -209,13 +209,12 @@ class PrivateCiV3Test(unittest.TestCase):
 
     def test_carrier_main_governance_accepts_exact_protected_base(self):
         rules = (
-            b"# Independently protected CI owner rules\\n"
-            b"* @ORESoftware\\n"
-            b"/.github/ @ORESoftware\\n"
-            b"/.github/CODEOWNERS @ORESoftware\\n"
+            b"# Independently protected CI owner rules\n"
+            b"* @ORESoftware\n"
+            b"/.github/ @ORESoftware\n"
+            b"/.github/CODEOWNERS @ORESoftware\n"
         )
         # Use actual LF delimiters; the digest binds exactly these bytes.
-        rules = rules.replace(b"\\\\n", b"\\n")
         branch = {
             "name": "main", "protected": True, "commit": {"sha": BASE}
         }
@@ -313,15 +312,15 @@ class PrivateCiV3Test(unittest.TestCase):
 
     def test_carrier_main_governance_rejects_missing_or_diverted_owners(self):
         approved = (
-            b"* @ORESoftware\\n"
-            b"/.github/ @ORESoftware\\n"
-            b"/.github/CODEOWNERS @ORESoftware\\n"
-        ).replace(b"\\\\n", b"\\n")
+            b"* @ORESoftware\n"
+            b"/.github/ @ORESoftware\n"
+            b"/.github/CODEOWNERS @ORESoftware\n"
+        ).replace(b"\\\n", b"\n")
         bad_rules = (
-            b"* @ORESoftware\\n"
-            b"/.github/ @attacker\\n"
-            b"/.github/CODEOWNERS @ORESoftware\\n"
-        ).replace(b"\\\\n", b"\\n")
+            b"* @ORESoftware\n"
+            b"/.github/ @attacker\n"
+            b"/.github/CODEOWNERS @ORESoftware\n"
+        ).replace(b"\\\n", b"\n")
         path = ".github/CODEOWNERS"
         def owner_item(raw):
             return {
@@ -387,10 +386,10 @@ class PrivateCiV3Test(unittest.TestCase):
     def test_destination_governance_accepts_only_protected_security_owner(self):
         """Source-free happy path binds exact branch, rules and CODEOWNERS blob."""
         path = ".github/CODEOWNERS"
-        body = (b"# independently reviewed carrier policy\\n"
-                b"* @ORESoftware\\n"
-                b"/.github/ @ORESoftware\\n"
-                b"/.github/CODEOWNERS @ORESoftware\\n")
+        body = (b"# independently reviewed carrier policy\n"
+                b"* @ORESoftware\n"
+                b"/.github/ @ORESoftware\n"
+                b"/.github/CODEOWNERS @ORESoftware\n")
         prefix = "repos/trusted/ci"
         routes = {
             prefix + "/branches/main": {
@@ -423,8 +422,8 @@ class PrivateCiV3Test(unittest.TestCase):
 
     def test_destination_governance_denies_missing_protection_and_codeowners(self):
         path = ".github/CODEOWNERS"
-        body = (b"* @ORESoftware\\n/.github/ @ORESoftware\\n"
-                b"/.github/CODEOWNERS @ORESoftware\\n")
+        body = (b"* @ORESoftware\n/.github/ @ORESoftware\n"
+                b"/.github/CODEOWNERS @ORESoftware\n")
         prefix = "repos/trusted/ci"
         def fixtures():
             return {
@@ -457,8 +456,8 @@ class PrivateCiV3Test(unittest.TestCase):
             ("wrong-base", lambda d: d[prefix + "/branches/main"]["commit"].update(sha="2" * 40)),
             ("no-codeowners", lambda d: d[prefix + "/contents/" + path + "?ref=" + BASE].update(type="dir")),
             ("owner-override", lambda d: d[prefix + "/contents/" + path + "?ref=" + BASE].update(
-                content=base64.b64encode(body + b"*.yml @attacker\\n").decode("ascii"),
-                sha=v3.git_blob_sha(body + b"*.yml @attacker\\n"))),
+                content=base64.b64encode(body + b"*.yml @attacker\n").decode("ascii"),
+                sha=v3.git_blob_sha(body + b"*.yml @attacker\n"))),
             ("disabled-owner-review", lambda d: d[prefix + "/branches/main/protection"]["required_pull_request_reviews"].update(require_code_owner_reviews=False)),
             ("stale-review-allowed", lambda d: d[prefix + "/branches/main/protection"]["required_pull_request_reviews"].update(dismiss_stale_reviews=False)),
             ("bypass", lambda d: d[prefix + "/branches/main/protection"]["required_pull_request_reviews"]["bypass_pull_request_allowances"]["users"].append({"login": "attacker"})),
