@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -68,6 +69,17 @@ public final class IpcReceiptCompletionBridgeSelfTest {
     private static IpcReceiptCorrelation.Stage result(
             CompletionStage<IpcReceiptCorrelation.Stage> stage) {
         return stage.toCompletableFuture().join();
+    }
+
+    private static Semaphore globalBudgetForTest() {
+        try {
+            var field = IpcReceiptCompletionBridge.class.getDeclaredField(
+                    "globalCompletionBudget");
+            field.setAccessible(true);
+            return (Semaphore) field.get(null);
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError(failure);
+        }
     }
 
     private static Object removeCompletionForTest(
@@ -242,6 +254,57 @@ public final class IpcReceiptCompletionBridgeSelfTest {
                     == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
             check(callbackFailure.get() == null);
             check(observed.get() == 1);
+            check(transport.bridge().invariant());
+        }
+
+        // Global (not merely per-bridge) admission slots remain held while
+        // user dependents block, are refunded after delivery, and are not
+        // leaked by a rejected duplicate/over-capacity admission.
+        {
+            Semaphore budget = globalBudgetForTest();
+            int before = budget.availablePermits();
+            var firstMessage = env(1, "global-terminal-budget");
+            var secondMessage = env(2, "global-terminal-budget");
+            var transport = bound(1, firstMessage, 51);
+            var first = transport.admit(firstMessage);
+            check(budget.availablePermits() == before - 1);
+            denied(() -> transport.admit(secondMessage));
+            check(budget.availablePermits() == before - 1);
+            CountDownLatch callbackEntered = new CountDownLatch(1);
+            CountDownLatch releaseCallback = new CountDownLatch(1);
+            CountDownLatch callbackReturned = new CountDownLatch(1);
+            first.thenRun(() -> {
+                callbackEntered.countDown();
+                try {
+                    if (!releaseCallback.await(3, TimeUnit.SECONDS)) {
+                        throw new AssertionError("completion budget callback timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                } finally {
+                    callbackReturned.countDown();
+                }
+            });
+            transport.accept(
+                    firstMessage, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+            transport.accept(
+                    firstMessage, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            try {
+                check(callbackEntered.await(2, TimeUnit.SECONDS));
+                check(budget.availablePermits() == before - 1);
+                check(result(first)
+                        == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            } finally {
+                releaseCallback.countDown();
+            }
+            check(callbackReturned.await(2, TimeUnit.SECONDS));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (budget.availablePermits() != before
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            check(budget.availablePermits() == before);
             check(transport.bridge().invariant());
         }
 

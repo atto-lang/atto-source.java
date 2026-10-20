@@ -8,6 +8,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Semaphore;
 
 /**
  * Trusted host adapter between one bounded receipt table and terminal host
@@ -17,6 +18,14 @@ import java.util.concurrent.CountDownLatch;
  * held. Source actor scheduling must separately project results onto CONTROL.
  */
 final class IpcReceiptCompletionBridge {
+    // Per-transport capacity alone is insufficient: a malicious peer could
+    // open many independent transports and pin a virtual thread per callback.
+    // Reserve one global slot BEFORE receipt admission, and hold it until all
+    // synchronous dependents for that terminal have returned. Fail closed at
+    // admission on exhaustion, never while trying to retire an admitted receipt.
+    private static final Semaphore globalCompletionBudget =
+            new Semaphore(16_384);
+
     private final Object gate = new Object();
     private final IpcReceiptCorrelation correlations;
     private final int capacity;
@@ -106,10 +115,17 @@ final class IpcReceiptCompletionBridge {
                 "IPC receipt bridge atomic admission");
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(envelope, "envelope");
-        CompletableFuture<IpcReceiptCorrelation.Stage> future = new CompletableFuture<>();
-        CompletionStage<IpcReceiptCorrelation.Stage> publicView =
-                future.minimalCompletionStage();
-        synchronized (gate) {
+        if (!globalCompletionBudget.tryAcquire()) {
+            throw new IllegalStateException(
+                    "bounded global IPC completion capacity exhausted");
+        }
+        boolean accepted = false;
+        try {
+            CompletableFuture<IpcReceiptCorrelation.Stage> future =
+                    new CompletableFuture<>();
+            CompletionStage<IpcReceiptCorrelation.Stage> publicView =
+                    future.minimalCompletionStage();
+            synchronized (gate) {
             requirePhysicalTransport(owner, envelope, generation);
             if (transportLossClaimed) {
                 throw new IllegalStateException(
@@ -139,8 +155,12 @@ final class IpcReceiptCompletionBridge {
                 }
                 throw failure;
             }
+            }
+            accepted = true;
+            return publicView;
+        } finally {
+            if (!accepted) globalCompletionBudget.release();
         }
-        return publicView;
     }
 
     /**
@@ -206,6 +226,7 @@ final class IpcReceiptCompletionBridge {
                     }
                     --deliveriesInFlight;
                 }
+                globalCompletionBudget.release();
             }
         }
 
