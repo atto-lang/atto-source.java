@@ -274,11 +274,7 @@ public final class Types {
                 Type actual = source.members().get(required.getKey());
                 if (actual == null) return false;
                 if (target.readOnly()) {
-                    if (!actual.equals(required.getValue())
-                            && (containsUncertainType(actual)
-                                    || !isAssignable(actual, required.getValue()))) {
-                        return false;
-                    }
+                    if (!readonlyViewMemberCompatible(actual, required.getValue())) return false;
                 } else if (!actual.equals(required.getValue())) {
                     return false;
                 }
@@ -313,6 +309,40 @@ public final class Types {
         }
 
         return numericWidening(from, to);
+    }
+
+    /**
+     * A structural view reads an existing slot without converting/repacking it.
+     * General assignability is too permissive here (e.g. int -> float).
+     * Nominal subtyping needs declaration metadata and is handled by TypeChecker.
+     */
+    private static boolean readonlyViewMemberCompatible(Type source, Type target) {
+        if (source.equals(target)) return true;
+        if (containsUncertainType(source) || containsUncertainType(target)) return false;
+        if (source instanceof StringLiteral && target == Primitive.STRING) return true;
+        if (source instanceof BoolLiteral && target == Primitive.BOOL) return true;
+        if (source instanceof Union union) {
+            return union.options().stream().allMatch(t -> readonlyViewMemberCompatible(t, target));
+        }
+        if (target instanceof Union union) {
+            return union.options().stream().anyMatch(t -> readonlyViewMemberCompatible(source, t));
+        }
+        if (source instanceof Record from && target instanceof Record to) {
+            return isAssignable(from, to);
+        }
+        if (source instanceof Tuple from && target instanceof Tuple to) {
+            if (from.kind() != to.kind() || from.elements().size() != to.elements().size()) return false;
+            for (int i = 0; i < from.elements().size(); i++) {
+                if (!readonlyViewMemberCompatible(from.elements().get(i), to.elements().get(i))) return false;
+            }
+            return true;
+        }
+        // Callable values have their own variance/ABI rules. This does not
+        // grant writable access to a data field containing the callable.
+        if (source instanceof Function && target instanceof Function) {
+            return isAssignable(source, target);
+        }
+        return false;
     }
 
     private static boolean numericWidening(Type from, Type to) {
