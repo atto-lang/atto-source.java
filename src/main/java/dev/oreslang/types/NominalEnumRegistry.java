@@ -54,6 +54,24 @@ public final class NominalEnumRegistry {
         Objects.requireNonNull(program, "program");
         Map<String, EnumType> enums = new LinkedHashMap<>();
 
+        java.util.Set<String> reserved = new java.util.HashSet<>(java.util.Set.of(
+                "bool", "int", "uint", "float", "decimal", "complex",
+                "string", "String", "void", "Option", "Result", "Tuple",
+                "Array", "List", "Future", "Channel", "ActorMail", "ActorRef",
+                "Mutex", "SharedMutex", "Object"));
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.EnumDecl) continue;
+                String name = null;
+                if (declaration instanceof Ast.FunctionDecl fn) name = fn.name();
+                else if (declaration instanceof Ast.ClassDecl klass) name = klass.name();
+                else if (declaration instanceof Ast.InterfaceDecl iface) name = iface.name();
+                else if (declaration instanceof Ast.TypeAliasDecl alias) name = alias.name();
+                else if (declaration instanceof Ast.FieldDecl field) name = field.name();
+                if (name != null) reserved.add(name);
+            }
+        }
+
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (!(declaration instanceof Ast.EnumDecl enumeration)) continue;
@@ -63,6 +81,11 @@ public final class NominalEnumRegistry {
                 }
                 if (enumeration.name() == null || enumeration.name().isBlank()) {
                     throw new IllegalArgumentException("enum name cannot be blank");
+                }
+                if (reserved.contains(enumeration.name())) {
+                    throw new IllegalArgumentException(
+                            "enum name conflicts with an existing declaration or builtin: "
+                                    + enumeration.name());
                 }
                 if (enumeration.cases().isEmpty() || enumeration.cases().size() > 4096) {
                     throw new IllegalArgumentException("enum must declare 1..4096 cases");
