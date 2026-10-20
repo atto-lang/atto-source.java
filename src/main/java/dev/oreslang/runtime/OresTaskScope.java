@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 /**
@@ -40,14 +41,22 @@ public final class OresTaskScope {
      * claims stay fail-closed until the compiler/runtime can prove disjoint
      * projections end-to-end.</p>
      */
-    public record ScopedReadClaim(
-            String bindingName,
-            long regionId,
-            long generation,
-            String accessPath) {
-        public ScopedReadClaim {
-            Objects.requireNonNull(bindingName, "bindingName");
-            Objects.requireNonNull(accessPath, "accessPath");
+    public static final class ScopedReadClaim {
+        private final String bindingName;
+        private final long regionId;
+        private final long generation;
+        private final String accessPath;
+        private final AtomicBoolean issued = new AtomicBoolean();
+
+        public ScopedReadClaim(
+                String bindingName,
+                long regionId,
+                long generation,
+                String accessPath) {
+            this.bindingName = Objects.requireNonNull(bindingName, "bindingName");
+            this.accessPath = Objects.requireNonNull(accessPath, "accessPath");
+            this.regionId = regionId;
+            this.generation = generation;
             if (bindingName.isBlank()) {
                 throw new IllegalArgumentException(
                         "scoped read binding name cannot be blank");
@@ -60,6 +69,27 @@ public final class OresTaskScope {
                 throw new IllegalArgumentException(
                         "only whole-region scoped read claims are enabled");
             }
+        }
+
+        public String bindingName() { return bindingName; }
+        public long regionId() { return regionId; }
+        public long generation() { return generation; }
+        public String accessPath() { return accessPath; }
+
+        private boolean tryIssue() {
+            return issued.compareAndSet(false, true);
+        }
+
+        private void rollbackIssueAfterFailedAdmission() {
+            if (!issued.compareAndSet(true, false)) {
+                throw new IllegalStateException(
+                        "scoped read claim issuance rollback failed for '"
+                                + bindingName + "'");
+            }
+        }
+
+        boolean issued() {
+            return issued.get();
         }
     }
 
@@ -99,14 +129,6 @@ public final class OresTaskScope {
      * stale ticket valid.
      */
     private final Set<ScopedReadClaim> liveScopedReadClaims =
-            Collections.newSetFromMap(new IdentityHashMap<>());
-    /**
-     * One-shot claim identities admitted by this scope. Retired claims remain
-     * here to prevent ABA resurrection of stale hidden tickets. A scheduler
-     * admission failure explicitly rolls the issuance back because no child
-     * lifetime was established.
-     */
-    private final Set<ScopedReadClaim> issuedScopedReadClaims =
             Collections.newSetFromMap(new IdentityHashMap<>());
     private int activeScopedReadClaims;
     // Runtime barrier: it is intentionally non-cancellable. Cancelling the
@@ -381,9 +403,9 @@ public final class OresTaskScope {
                         "duplicate scoped read claim identity for binding '"
                                 + claim.bindingName() + "'");
             }
-            if (issuedScopedReadClaims.contains(claim)) {
+            if (claim.issued()) {
                 throw new IllegalStateException(
-                        "scoped read claim identity was already issued by this scope: '"
+                        "scoped read claim identity was already issued: '"
                                 + claim.bindingName() + "'");
             }
             if (!bindings.add(claim.bindingName())) {
@@ -407,10 +429,25 @@ public final class OresTaskScope {
             }
         }
 
+        // Claim one-shot identities before mutating region reader counts.
+        // A concurrent attempt from another scope may win after validation;
+        // roll back every identity acquired in this batch before failing.
+        ArrayList<ScopedReadClaim> issuedNow = new ArrayList<>(claims.size());
+        for (ScopedReadClaim claim : claims) {
+            if (!claim.tryIssue()) {
+                for (ScopedReadClaim acquired : issuedNow) {
+                    acquired.rollbackIssueAfterFailedAdmission();
+                }
+                throw new IllegalStateException(
+                        "scoped read claim identity was concurrently issued: '"
+                                + claim.bindingName() + "'");
+            }
+            issuedNow.add(claim);
+        }
+
         child.readClaims = claims;
         for (ScopedReadClaim claim : claims) {
-            if (!issuedScopedReadClaims.add(claim)
-                    || !liveScopedReadClaims.add(claim)) {
+            if (!liveScopedReadClaims.add(claim)) {
                 throw new IllegalStateException(
                         "scoped read claim identity changed during reservation");
             }
@@ -488,17 +525,7 @@ public final class OresTaskScope {
 
     private void rollbackScopedReadIssuesLocked(Child child) {
         for (ScopedReadClaim claim : child.readClaims) {
-            if (!issuedScopedReadClaims.remove(claim)) {
-                throw new IllegalStateException(
-                        "failed Task admission could not roll back scoped-read issuance for '"
-                                + claim.bindingName() + "'");
-            }
-        }
-    }
-
-    int issuedScopedReadClaims() {
-        synchronized (lock) {
-            return issuedScopedReadClaims.size();
+            claim.rollbackIssueAfterFailedAdmission();
         }
     }
 
