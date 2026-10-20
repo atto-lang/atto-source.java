@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -40,7 +41,8 @@ public final class ReachabilityManifest {
         this.roots = List.copyOf(roots);
         this.retainedSymbols = List.copyOf(retainedSymbols);
         this.removedSymbols = List.copyOf(removedSymbols);
-        this.compileTimeConstants = Map.copyOf(compileTimeConstants);
+        this.compileTimeConstants = Collections.unmodifiableMap(
+                new LinkedHashMap<>(compileTimeConstants));
     }
 
     public static ReachabilityManifest from(TreeShaker.Result result, BuildOptions options) {
