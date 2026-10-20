@@ -612,6 +612,20 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     if created.get("ref") != "refs/heads/" + branch:
         raise Denied("carrier did not confirm exact-tree CI branch creation")
 
+    # The payload ref starts the carrier event, but the reviewed workflow is
+    # fail-closed until this detached authorization ref appears. Re-attest
+    # protected source policy and the exact carrier control plane at this
+    # final enablement edge so a policy/main change after payload publication
+    # cannot be authorized by stale pre-branch evidence.
+    legacy.verify_protected_origin(repository, approved_policy)
+    if protected_main_sha() != protected_sha:
+        raise Denied("source protected main advanced before authorization")
+    checked_contract(
+        trusted_root, repository, source_pr, test_plan, protected_sha
+    )
+    checked_destination(repository, contract)
+    auth()
+
     authorization = "ci/authorized-" + commit_sha
     approved = legacy.gh_api(
         f"repos/{repository}/git/refs", method="POST",
