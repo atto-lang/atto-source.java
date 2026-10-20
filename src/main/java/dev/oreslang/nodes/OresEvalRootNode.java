@@ -17,6 +17,7 @@ import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.OresKeyedMap;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -987,7 +988,7 @@ public final class OresEvalRootNode extends RootNode {
         private void defineBinding(Env env, Ast.BindingStmt binding, Object value) {
             Ast.ClassDecl view = staticClassView(binding.declaredType());
             if (view == null) view = staticClassView(binding.initializer(), env);
-            env.define(binding.name(), value, binding.kind(), view);
+            env.define(binding.name(), value, binding.kind(), view, binding.mutableReferent());
         }
 
         private Ast.ClassDecl objectDestructureStaticClassView(
@@ -4625,6 +4626,10 @@ public final class OresEvalRootNode extends RootNode {
             Ast.MemberExpr member =
                     (Ast.MemberExpr) call.callee();
 
+            if (receiver instanceof OresKeyedMap<?, ?> map) {
+                return prepareTypedMapInvocation(map, member, args, env);
+            }
+
             if (receiver instanceof OptionValue option
                     && member.member().equals("unwrap_all")) {
                 int depth = checkedOptionDepth(call);
@@ -4751,6 +4756,113 @@ public final class OresEvalRootNode extends RootNode {
                         "member is not callable: " + member.member());
             }
             return invokableInvocation(invokable, args);
+        }
+
+        private Invocation prepareTypedMapInvocation(
+                OresKeyedMap<?, ?> map,
+                Ast.MemberExpr member,
+                List<Object> args,
+                Env env) {
+            String operation = member.member();
+            if (!java.util.Set.of("has", "get", "take", "remove").contains(operation)) {
+                throw new IllegalArgumentException(
+                        "unknown typed Map operation '" + operation + "'");
+            }
+            if (args.size() != 1) {
+                throw new IllegalArgumentException(
+                        "Map." + operation + " expects exactly one key argument");
+            }
+            Object key = args.getFirst();
+            if (operation.equals("take") || operation.equals("remove")) {
+                if (!(member.receiver() instanceof Ast.NameExpr owner)
+                        || !env.canWriteMap(owner.name(), map)) {
+                    throw new SecurityException(
+                            "Map." + operation
+                                    + " requires a directly owned mutable binding");
+                }
+            }
+            return invokableInvocation(ignored -> switch (operation) {
+                case "has" -> map.containsKey(key);
+                case "get" -> {
+                    OresKeyedMap.Lookup<?> found = map.lookup(key);
+                    yield new OptionValue(found.present(), found.value());
+                }
+                case "take" -> {
+                    @SuppressWarnings("unchecked")
+                    OresKeyedMap<Object, Object> owned =
+                            (OresKeyedMap<Object, Object>) map;
+                    OresKeyedMap.Lookup<Object> found = owned.take(key);
+                    yield new OptionValue(found.present(), found.value());
+                }
+                case "remove" -> {
+                    @SuppressWarnings("unchecked")
+                    OresKeyedMap<Object, Object> owned =
+                            (OresKeyedMap<Object, Object>) map;
+                    yield owned.take(key).present();
+                }
+                default -> throw new IllegalStateException(
+                        "unreachable typed Map operation " + operation);
+            }, List.of());
+        }
+
+        private OresKeyedMap.ValueDomain mapValueDomain(Ast.TypeRef value) {
+            if (value.inferArguments() || value.isUnion() || value.isBorrow()
+                    || value.isTupleType() || value.isRecordType()
+                    || !value.arguments().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "unsupported runtime Map value type " + value);
+            }
+            return switch (value.name()) {
+                case "int" -> OresKeyedMap.ValueDomain.INT;
+                case "bool", "Bool" -> OresKeyedMap.ValueDomain.BOOL;
+                case "String", "string" -> OresKeyedMap.ValueDomain.STRING;
+                case "Symbol" -> OresKeyedMap.ValueDomain.SYMBOL;
+                default -> throw new IllegalArgumentException(
+                        "unsupported runtime Map value type " + value);
+            };
+        }
+
+        private Object newGuestMap(Ast.TypeRef type) {
+            if (ActorRuntime.currentActorKind() != null) {
+                throw new SecurityException(
+                        "typed Map allocation inside actors requires ownership and memory accounting");
+            }
+            if (type.inferArguments() || type.arguments().size() != 2) {
+                throw new IllegalArgumentException(
+                        "Map<K,V> requires two explicit type arguments");
+            }
+            Ast.TypeRef key = type.arguments().getFirst();
+            OresKeyedMap.ValueDomain valueDomain =
+                    mapValueDomain(type.arguments().get(1));
+            if (!key.isUnion()) {
+                if (key.arguments().isEmpty() && !key.inferArguments()) {
+                    if (key.name().equals("Symbol")) {
+                        return OresKeyedMap.symbolKeys(valueDomain);
+                    }
+                    if (key.name().equals("String") || key.name().equals("string")) {
+                        return OresKeyedMap.stringKeys(valueDomain);
+                    }
+                }
+                throw new IllegalArgumentException("unsupported runtime Map key domain");
+            }
+            if (key.arguments().size() == 2) {
+                Ast.TypeRef a = key.arguments().get(0);
+                Ast.TypeRef b = key.arguments().get(1);
+                boolean aSymbol = a.name().equals("Symbol")
+                        && a.arguments().isEmpty() && !a.inferArguments();
+                boolean bSymbol = b.name().equals("Symbol")
+                        && b.arguments().isEmpty() && !b.inferArguments();
+                boolean aString =
+                        (a.name().equals("String") || a.name().equals("string"))
+                        && a.arguments().isEmpty() && !a.inferArguments();
+                boolean bString =
+                        (b.name().equals("String") || b.name().equals("string"))
+                        && b.arguments().isEmpty() && !b.inferArguments();
+                if ((aSymbol && bString) || (bSymbol && aString)) {
+                    return OresKeyedMap.stringOrSymbolKeys(valueDomain);
+                }
+            }
+            throw new IllegalArgumentException("unsupported runtime Map key union");
         }
 
         private static int sequenceIndex(Object value) {
@@ -6317,6 +6429,10 @@ public final class OresEvalRootNode extends RootNode {
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
                 List<Object> args = evaluateArguments(call.arguments(), env);
+
+                if (receiver instanceof OresKeyedMap<?, ?> map) {
+                    return prepareTypedMapInvocation(map, methodCall, args, env);
+                }
 
                 if (receiver instanceof OptionValue option
                         && methodCall.member().equals("unwrap_all")) {
