@@ -201,6 +201,9 @@ public final class RealtimeClassfileAudit {
     private static List<String> auditCode(
             byte[] code, Cp[] cp, String ownClass, String methodId) {
         boolean[] instructionStart = new boolean[code.length];
+        int[] instructionWidths = new int[code.length];
+        int[] branches = new int[code.length];
+        java.util.Arrays.fill(branches, -1);
         ArrayList<Integer> branchTargets = new ArrayList<>();
         ArrayList<String> calls = new ArrayList<>();
         int pc = 0;
@@ -226,6 +229,7 @@ public final class RealtimeClassfileAudit {
                     int target = pc + (int) offset;
                     if (target <= pc) deny("backward/self branch is forbidden in " + methodId);
                     branchTargets.add(target);
+                    branches[pc] = target;
                     width = 3;
                 }
                 case 0x12 -> {                             // ldc
@@ -246,6 +250,7 @@ public final class RealtimeClassfileAudit {
                         + Integer.toHexString(op) + " in " + methodId + " at pc " + pc);
             }
             if (pc > code.length - width) deny("truncated instruction in " + methodId);
+            instructionWidths[pc] = width;
             pc += width;
         }
         if (pc != code.length) deny("misaligned bytecode in " + methodId);
@@ -253,6 +258,29 @@ public final class RealtimeClassfileAudit {
             if (target < 0 || target >= code.length || !instructionStart[target]) {
                 deny("branch target is outside an instruction boundary in " + methodId);
             }
+        }
+        boolean[] reachable = new boolean[code.length];
+        java.util.ArrayDeque<Integer> pending = new java.util.ArrayDeque<>();
+        pending.add(0);
+        while (!pending.isEmpty()) {
+            int at = pending.removeFirst();
+            if (at < 0 || at >= code.length || !instructionStart[at]) {
+                deny("reachable branch or fallthrough leaves instruction boundaries in " + methodId);
+            }
+            if (reachable[at]) continue;
+            reachable[at] = true;
+            int opcode = code[at] & 0xff;
+            if (opcode == 0xac) continue;
+            if (branches[at] >= 0) {
+                pending.add(branches[at]);
+                if (opcode == 0xa7) continue;
+            }
+            int next = at + instructionWidths[at];
+            if (next >= code.length) deny("critical path falls off end of bytecode: " + methodId);
+            pending.add(next);
+        }
+        for (int at = 0; at < code.length; at++) {
+            if (instructionStart[at] && !reachable[at]) deny("unreachable bytecode in " + methodId);
         }
         return List.copyOf(calls);
     }
