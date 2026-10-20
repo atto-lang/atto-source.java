@@ -527,8 +527,9 @@ final class OresKeyedMapTest {
     void processAndStableSymbolsWithSameNameRemainDistinct() {
         OresKeyedMap<OresSymbol, Integer> map =
                 OresKeyedMap.symbolKeys(OresKeyedMap.ValueDomain.INT);
-        OresSymbol process = OresSymbol.process("same");
-        OresSymbol stable = OresSymbol.stable("same");
+        String sharedName = "550e8400-e29b-41d4-a716-446655440000";
+        OresSymbol process = OresSymbol.process(sharedName);
+        OresSymbol stable = OresSymbol.stable(sharedName);
 
         map.putEntries(List.of(
                 new OresEntry(process, 1),
