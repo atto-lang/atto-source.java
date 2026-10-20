@@ -1165,19 +1165,70 @@ public final class Ast {
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
     }
 
+    public enum TaskCaptureMode {
+        OWNED_SEND,
+        SCOPED_READ_BORROW
+    }
+
     /**
-     * Lightweight Task expression (nb { ... }), returning Task<void>.
+     * Compiler-issued proof for one Task capture.
+     *
+     * <p>Owned Send captures carry no region authority. Scoped read borrows
+     * carry an opaque compiler region identity/generation plus a canonical
+     * whole-region access path. Guest code cannot construct this metadata.</p>
+     */
+    public record TaskCaptureProof(
+            String name,
+            TaskCaptureMode mode,
+            long regionId,
+            long regionGeneration,
+            String accessPath) {
+        public TaskCaptureProof {
+            java.util.Objects.requireNonNull(name, "Task capture name");
+            java.util.Objects.requireNonNull(mode, "Task capture mode");
+            java.util.Objects.requireNonNull(accessPath, "Task capture access path");
+            if (name.isBlank()) {
+                throw new IllegalArgumentException("Task capture name cannot be blank");
+            }
+            if (mode == TaskCaptureMode.OWNED_SEND) {
+                if (regionId != 0L || regionGeneration != 0L || !accessPath.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "owned Task capture must not carry region authority");
+                }
+            } else {
+                if (regionId <= 0L || regionGeneration < 0L || accessPath.isBlank()) {
+                    throw new IllegalArgumentException(
+                            "scoped borrowed Task capture requires region/generation/access proof");
+                }
+            }
+        }
+
+        public static TaskCaptureProof owned(String name) {
+            return new TaskCaptureProof(
+                    name, TaskCaptureMode.OWNED_SEND, 0L, 0L, "");
+        }
+
+        public static TaskCaptureProof scopedRead(
+                String name, long regionId, long generation, String accessPath) {
+            return new TaskCaptureProof(
+                    name,
+                    TaskCaptureMode.SCOPED_READ_BORROW,
+                    regionId,
+                    generation,
+                    accessPath);
+        }
+    }
+
+    /**
+     * Lightweight Task expression (nb { ... }).
      * Captures are proved at the ownership pass and materialized when
      * execution is scheduled, not rebound to a physical Java carrier.
-     *
-     * The Phase-1 Task is void-returning. Scoped borrowed captures and
-     * value-returning Task<T> need additional checked lowering.
      */
     public static final class TaskExpr implements Expr {
         private final List<Stmt> body;
         // Bound only by the ownership pass, before lowering/execution. null
         // means an unchecked AST and MUST NOT be treated as empty captures.
-        private volatile List<String> capturedNames;
+        private volatile List<TaskCaptureProof> captureProofs;
         // Established by the type checker before the ownership checker runs.
         // Only compiler-checked Task results can flow into a Task handle.
         private volatile TypeRef checkedResultType;
@@ -1188,16 +1239,29 @@ public final class Ast {
 
         public List<Stmt> body() { return body; }
 
+        /** Compatibility helper for owned-only callers/tests. */
         public synchronized void bindCaptures(List<String> captures) {
             java.util.Objects.requireNonNull(captures, "Task captures");
-            List<String> copy = List.copyOf(captures);
-            if (new java.util.HashSet<>(copy).size() != copy.size()) {
-                throw new IllegalArgumentException("duplicate Task capture");
+            bindCaptureProofs(captures.stream()
+                    .map(TaskCaptureProof::owned)
+                    .toList());
+        }
+
+        public synchronized void bindCaptureProofs(List<TaskCaptureProof> proofs) {
+            java.util.Objects.requireNonNull(proofs, "Task capture proofs");
+            List<TaskCaptureProof> copy = List.copyOf(proofs);
+            java.util.HashSet<String> names = new java.util.HashSet<>();
+            for (TaskCaptureProof proof : copy) {
+                if (!names.add(proof.name())) {
+                    throw new IllegalArgumentException(
+                            "duplicate Task capture proof for '" + proof.name() + "'");
+                }
             }
-            if (capturedNames != null && !capturedNames.equals(copy)) {
-                throw new IllegalStateException("Task capture metadata changed after ownership checking");
+            if (captureProofs != null && !captureProofs.equals(copy)) {
+                throw new IllegalStateException(
+                        "Task capture metadata changed after ownership checking");
             }
-            capturedNames = copy;
+            captureProofs = copy;
         }
 
         public synchronized void bindResultType(TypeRef result) {
@@ -1216,12 +1280,19 @@ public final class Ast {
             return type;
         }
 
-        public List<String> captures() {
-            List<String> proof = capturedNames;
-            if (proof == null) {
-                throw new IllegalStateException("nb Task reached runtime without ownership proof");
+        public List<TaskCaptureProof> captureProofs() {
+            List<TaskCaptureProof> proofs = captureProofs;
+            if (proofs == null) {
+                throw new IllegalStateException(
+                        "nb Task reached runtime without ownership proof");
             }
-            return proof;
+            return proofs;
+        }
+
+        public List<String> captures() {
+            return captureProofs().stream()
+                    .map(TaskCaptureProof::name)
+                    .toList();
         }
     }
 
