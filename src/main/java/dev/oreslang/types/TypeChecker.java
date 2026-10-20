@@ -2364,7 +2364,18 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "rt " + runtime.operation() + " expects exactly one argument");
             }
-            Type operand = typeOf(runtime.arguments().getFirst(), env, generics, self);
+            Ast.Expr runtimeArgument = runtime.arguments().getFirst();
+            if (currentConstructorOwner != null
+                    && (runtime.operation().equals("borrow")
+                            || runtime.operation().equals("copy")
+                            || runtime.operation().equals("take")
+                            || runtime.operation().equals("share"))
+                    && referencesConstructorSelf(runtimeArgument)) {
+                throw new IllegalArgumentException(
+                        "constructor self cannot be used by runtime ownership operations "
+                                + "before definite class-field initialization is proven");
+            }
+            Type operand = typeOf(runtimeArgument, env, generics, self);
             if (runtime.operation().equals("fail")) {
                 requireAssignable(operand, Primitive.STRING, "rt fail message");
                 return Primitive.VOID;
