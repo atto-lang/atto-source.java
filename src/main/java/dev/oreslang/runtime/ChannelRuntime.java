@@ -672,6 +672,13 @@ public final class ChannelRuntime {
         public synchronized void put(K key, SelectCase selectCase) {
             Objects.requireNonNull(key, "key");
             Objects.requireNonNull(selectCase, "selectCase");
+            // Preserve the mainline admission/resource bound at the mutable
+            // builder edge, not only when a snapshot is materialized.
+            // Replacement at the limit is legal; adding a 257th arm is not.
+            if (!entries.containsKey(key) && entries.size() >= MAX_SELECT_CASES) {
+                throw new SelectAdmissionException(
+                        "dynamic select case count exceeds maximum " + MAX_SELECT_CASES);
+            }
             if (selectCase instanceof DefaultCase) {
                 for (Map.Entry<K, SelectCase> entry : entries.entrySet()) {
                     if (!entry.getKey().equals(key) && entry.getValue() instanceof DefaultCase) {
