@@ -108,6 +108,47 @@ final class OresTaskOrdinaryRetirementTest {
     }
 
     @Test
+    void runtimeAwaitTaskExitDoesNotSkipPendingTrustedRetirement()
+            throws Exception {
+        try (var runtime = new AsyncRuntime()) {
+            CountDownLatch inRetirement = new CountDownLatch(1);
+            CountDownLatch allowRetirement = new CountDownLatch(1);
+            CountDownLatch joined = new CountDownLatch(1);
+            var admission = runtime.<Integer>prepareTaskAdmission();
+            admission.installRetirement(() -> {
+                inRetirement.countDown();
+                boolean interrupted = false;
+                while (true) {
+                    try {
+                        allowRetirement.await();
+                        break;
+                    } catch (InterruptedException ignored) {
+                        interrupted = true;
+                    }
+                }
+                if (interrupted) Thread.currentThread().interrupt();
+            });
+            Thread waiter = null;
+            try {
+                runtime.submitPreparedTask(admission, () -> 43);
+                assertEquals(43, AsyncRuntime.await(admission.owner.getAwaited()));
+                assertTrue(inRetirement.await(3, TimeUnit.SECONDS));
+                waiter = Thread.ofVirtual().start(() -> {
+                    runtime.awaitTaskExit(admission.owner.getAwaited());
+                    joined.countDown();
+                });
+                assertFalse(joined.await(100, TimeUnit.MILLISECONDS),
+                        "map removal before retirement allowed an early join");
+            } finally {
+                allowRetirement.countDown();
+                if (waiter != null) waiter.join(3000);
+            }
+            assertEquals(0L, joined.getCount());
+            assertNull(AsyncRuntime.await(admission.owner.getDone()));
+        }
+    }
+
+    @Test
     void physicalExitWaitsUntilTrustedRetirementCallbackFinishes() throws Exception {
         try (var runtime = new AsyncRuntime()) {
             var enteredRetirement = new CountDownLatch(1);
