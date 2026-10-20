@@ -4,6 +4,26 @@ Never transfer private Oreslang source into a public or internal GitHub
 repository, including temporary refs, dangling Git objects, Actions artifacts,
 cache entries, and logs.
 
+## Temporary unconditional publisher stop (security #962)
+
+The current draft publisher calls `require_independent_source_authorization()`
+inside `publish()` after validating arguments and before destination preflight,
+local policy access, source traversal, or GitHub API calls. The function always
+raises `Denied`. No environment variable, local allowlist edit, successful
+source-free canary, or available Actions budget authorizes an exception.
+
+Synthetic object-writer unit tests explicitly mock this gate to exercise
+transport behavior; they do **not** establish production authorization.
+The production negative tests restore the real gate and require denial before
+preflight, source-tree verification, or GitHub API activity.
+
+Do not remove this stop until independent security reviewers confirm the
+protected source branch and immutable source commit/tree, source repository
+identity, destination numeric repository ID and visibility, pinned destination
+workflow blob, destination permissions and retention, and exact-tree receipt
+verification. Missing evidence must fail closed. In particular, a temporary
+branch in a different GitHub organization is still a private-source transfer.
+
 ## Destination approval
 
 The policy file `.github/private-ci-approved-repositories.txt` is **empty by
