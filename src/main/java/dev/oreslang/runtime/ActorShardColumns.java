@@ -11,7 +11,7 @@ import java.util.Objects;
  * snapshotColumn returns a copy. No guest lowering or scoped Task permit is
  * implied by this host-only type.</p>
  */
-public final class ActorShardColumns implements AutoCloseable, ActorShardBacking {
+public final class ActorShardColumns extends ActorShardBacking implements AutoCloseable {
     public enum Layout { AOS, SOA, AOSOA }
     private static final int MAX_BYTES = 16 * 1024 * 1024;
 
@@ -74,11 +74,11 @@ public final class ActorShardColumns implements AutoCloseable, ActorShardBacking
     }
 
     @Override
-    public boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor) {
+    boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor) {
         return reservation.ownedBy(runtime, actor);
     }
     @Override
-    public boolean isPrivateBacked() { return reservation.privateBacking(); }
+    boolean isPrivateBacked() { return reservation.privateBacking(); }
 
     public Layout layout() { return layout; }
     public int rows() { return rows; }
@@ -91,7 +91,7 @@ public final class ActorShardColumns implements AutoCloseable, ActorShardBacking
      * Must not publish or retain the old mutable backing reference.
      */
     @Override
-    public void revokeBackingFromLease() {
+    void revokeBackingFromLease() {
         double[] old = storage;
         if (old != null) {
             java.util.Arrays.fill(old, 0.0);
