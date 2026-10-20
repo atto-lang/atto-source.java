@@ -110,6 +110,14 @@ def strict_json_loads(text, label="invalid GitHub API JSON response"):
         raise Denied(label) from exc
 
 
+def canonical_security_lines(contents, label):
+    """Accept only printable ASCII records separated by LF."""
+    if not isinstance(contents, bytes) or any(
+            byte != 10 and not 32 <= byte <= 126 for byte in contents):
+        raise Denied(label + " contains noncanonical ASCII LF bytes")
+    return contents.decode("ascii").split("\n")
+
+
 def gh_api(route, method="GET", payload=None):
     argv = [trusted_github_cli(), "api", "--method", method, route,
             "--header", "Accept: application/vnd.github+json"]
@@ -149,16 +157,13 @@ def checked_repo(repository):
 
 
 def require_preflight(repository, root):
-    guard = root / "scripts" / "check-private-ci-destination.sh"
-    if guard.is_symlink() or not guard.is_file():
-        raise Denied("trusted destination approval guard missing")
-    try:
-        p = subprocess.run(["bash", str(guard), repository],
-                           capture_output=True, text=True, timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise Denied("destination policy check unavailable") from exc
-    if p.returncode != 0:
-        raise Denied("destination not approved by checked-in private policy")
+    """Perform only data checks before protected-source authorization.
+
+    The checkout under test may be an unreviewed PR. Executing its shell guard
+    here would run attacker-controlled code with the operator's GitHub token
+    before protected main has authenticated the control plane.
+    """
+    checked_policy_fingerprint(root, repository)
     checked_repo(repository)
 
 
@@ -198,10 +203,9 @@ def checked_policy_fingerprint(root, repository):
         raise Denied("private CI approval policy cannot be opened safely") from exc
     if len(contents) > 16 * 1024:
         raise Denied("private CI approval policy exceeds size limit")
-    try:
-        lines = contents.decode("utf-8").splitlines()
-    except UnicodeDecodeError as exc:
-        raise Denied("private CI approval policy cannot be decoded") from exc
+    lines = canonical_security_lines(
+        contents, "private CI approval policy"
+    )
     approved = False
     for line in lines:
         if not line or line.startswith("#"):
