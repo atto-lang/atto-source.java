@@ -45,6 +45,30 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
 public final class OresEvalRootNode extends RootNode {
+    static record ReservedTaskTransfer<T>(
+            TaskScope.Registration child,
+            T transferred) { }
+
+    /**
+     * Structured Task spawn must acquire runtime lifetime authority before any
+     * ownership slot is consumed. If reservation is denied by close/cancel,
+     * the transfer supplier is never invoked. If transfer preparation itself
+     * fails after reservation, the ticket is retired as failed admission.
+     */
+    static <T> ReservedTaskTransfer<T> reserveBeforeTaskTransfer(
+            TaskScope scope,
+            TaskScope.Registration parent,
+            java.util.function.Supplier<T> transfer) {
+        Objects.requireNonNull(transfer, "Task transfer");
+        TaskScope.Registration child =
+                scope == null ? null : scope.reserve(parent);
+        try {
+            return new ReservedTaskTransfer<>(child, transfer.get());
+        } catch (RuntimeException | Error failure) {
+            if (child != null) child.failedAdmission(failure);
+            throw failure;
+        }
+    }
     public static final String LINK_ONLY_COMMAND = "__ores_internal_link_only__";
     public static final String INIT_ONLY_COMMAND = "__ores_internal_init_only__";
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
@@ -1383,14 +1407,15 @@ public final class OresEvalRootNode extends RootNode {
                         "scoped Task execution inside actors is disabled until actor quota/hot-reload integration is proven");
             }
 
-            // Reserve structured-lifetime authority before consuming any
-            // runtime ownership slots. A cancellation/close race can reject
-            // reserve(); that must leave the caller's values untouched.
-            TaskScope.Registration child = scope == null
-                    ? null : scope.reserve(caller.taskScopeParent);
+            ReservedTaskTransfer<Env> reserved =
+                    reserveBeforeTaskTransfer(
+                            scope,
+                            caller.taskScopeParent,
+                            () -> caller.taskProjection(admitted));
+            TaskScope.Registration child = reserved.child();
+            Env captured = reserved.transferred();
             TaskTransferLease lease = null;
             try {
-                Env captured = caller.taskProjection(admitted);
                 lease = TaskTransferLease.retain(admitted, captured);
                 captured.taskScopeParent = child;
                 TaskTransferLease retainedLease = lease;
@@ -1409,8 +1434,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (child != null) child.attach(future);
                 return future;
             } catch (RuntimeException | Error failure) {
-                // reserve() succeeded, so every later pre-admission failure
-                // must retire both the transfer retention and the scope ticket.
+                // reserveBeforeTaskTransfer already handled failures while
+                // building the projection. Everything here is post-projection.
                 if (lease != null) lease.retire();
                 if (child != null) child.failedAdmission(failure);
                 throw failure;
