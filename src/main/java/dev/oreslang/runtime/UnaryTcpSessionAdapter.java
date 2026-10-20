@@ -757,8 +757,10 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             cancellationWorkers.execute(() -> {
                 try {
                     handle.cancel();
-                } catch (Throwable ignored) {
-                    // Never let an actor cancellation failure interrupt cleanup.
+                } catch (Throwable failure) {
+                    rethrowJvmFatal(failure);
+                    // Ordinary hostile actor cancellation failures are
+                    // contained after request/connection credits are reclaimed.
                 }
             });
         } catch (RejectedExecutionException saturated) {
@@ -766,6 +768,12 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             // callback is best effort; retain a visible diagnostic counter.
             rejectedCancellationTasks.incrementAndGet();
         }
+    }
+
+    static void rethrowJvmFatal(Throwable failure) {
+        if (failure instanceof VirtualMachineError fatal) throw fatal;
+        if (failure instanceof ThreadDeath fatal) throw fatal;
+        if (failure instanceof LinkageError fatal) throw fatal;
     }
 
     private static void closeQuietly(Socket socket) {
