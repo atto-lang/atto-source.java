@@ -13,15 +13,38 @@ import java.util.Set;
  * replaced by interprocedural typed effect inference in the shared IR.
  */
 public final class DeclaredEffectVerifier {
+    private static final Set<String> ML_SCALAR_INTRINSICS = Set.of(
+            "state_snapshot",
+            "snapshot_int",
+            "snapshot_bool",
+            "snapshot_string",
+            "snapshot_version",
+            "snapshot_revision",
+            "prepare_scalar_publication",
+            "publish_scalar_publication");
+
     private DeclaredEffectVerifier() { }
 
     public static void verify(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl function) {
+                    if (ML_SCALAR_INTRINSICS.contains(function.name())) {
+                        throw new IllegalArgumentException(
+                                "module function '" + function.name()
+                                        + "' is reserved by the sealed actor scalar publication API");
+                    }
+                    rejectReservedMlBindings(
+                            function.parameters(), function.name());
+                    rejectReservedMlBindings(
+                            function.body(), function.name());
                     check(function.name(), function.annotations(), function.body(), false);
                 } else if (declaration instanceof Ast.ClassDecl klass) {
                     for (Ast.MethodDecl method : klass.methods()) {
+                        rejectReservedMlBindings(
+                                method.parameters(), klass.name() + "." + method.name());
+                        rejectReservedMlBindings(
+                                method.body(), klass.name() + "." + method.name());
                         if (klass.actorKind() != Ast.ActorKind.NONE
                                 && method.isStatic() && containsStateLoan(method.body())) {
                             throw new IllegalArgumentException(
@@ -95,6 +118,47 @@ public final class DeclaredEffectVerifier {
         }
     }
 
+    private static void rejectReservedMlBindings(
+            Object node,
+            String callableName) {
+        if (node == null) return;
+        String bound = null;
+        if (node instanceof Ast.Param parameter) {
+            bound = parameter.name();
+        } else if (node instanceof Ast.BindingStmt binding) {
+            bound = binding.name();
+        } else if (node instanceof Ast.DestructureBinding binding
+                && !binding.isDiscard()) {
+            bound = binding.name();
+        } else if (node instanceof Ast.ForOfStmt loop) {
+            bound = loop.bindingName();
+        }
+        if (bound != null && ML_SCALAR_INTRINSICS.contains(bound)) {
+            throw new IllegalArgumentException(
+                    callableName + " binds reserved sealed ML intrinsic name '"
+                            + bound + "'");
+        }
+        if (node instanceof Iterable<?> items) {
+            for (Object item : items) {
+                rejectReservedMlBindings(item, callableName);
+            }
+            return;
+        }
+        if (node instanceof java.lang.Record record
+                && node.getClass().getName().startsWith("dev.oreslang.ast.")) {
+            for (RecordComponent component : record.getClass().getRecordComponents()) {
+                try {
+                    rejectReservedMlBindings(
+                            component.getAccessor().invoke(record),
+                            callableName);
+                } catch (ReflectiveOperationException e) {
+                    throw new IllegalStateException(
+                            "cannot inspect sealed ML intrinsic bindings", e);
+                }
+            }
+        }
+    }
+
     private static boolean containsStateLoan(Object node) {
         if (node == null) return false;
         if (node instanceof Ast.CallExpr call
@@ -151,6 +215,54 @@ public final class DeclaredEffectVerifier {
                 }
                 effects.addAll(callbackEffects);
                 return;
+            }
+            if (call.callee() instanceof Ast.NameExpr intrinsic) {
+                String name = intrinsic.name();
+                if (name.equals("state_snapshot")) {
+                    if (stateAccess == null
+                            || call.arguments().size() < 3
+                            || !(call.arguments().getFirst() instanceof Ast.NameExpr loan)
+                            || !loan.name().equals(stateAccess)) {
+                        throw new IllegalArgumentException(
+                                "state_snapshot requires the active lexical actor state loan");
+                    }
+                    effects.add(FunctionEffects.Effect.STATE_READ);
+                    effects.add(FunctionEffects.Effect.ALLOC);
+                    for (int i = 1; i < call.arguments().size(); i++) {
+                        collect(call.arguments().get(i), effects, stateAccess, callableName, serial);
+                    }
+                    return;
+                }
+                if (name.equals("snapshot_int")
+                        || name.equals("snapshot_bool")
+                        || name.equals("snapshot_string")
+                        || name.equals("snapshot_version")
+                        || name.equals("snapshot_revision")) {
+                    collect(call.arguments(), effects, stateAccess, callableName, serial);
+                    return;
+                }
+                if (name.equals("prepare_scalar_publication")) {
+                    if (stateAccess != null) {
+                        throw new IllegalArgumentException(
+                                "prepare_scalar_publication must run after the actor state loan is released");
+                    }
+                    effects.add(FunctionEffects.Effect.ALLOC);
+                    collect(call.arguments(), effects, stateAccess, callableName, serial);
+                    return;
+                }
+                if (name.equals("publish_scalar_publication")) {
+                    if (stateAccess == null
+                            || call.arguments().size() != 2
+                            || !(call.arguments().getFirst() instanceof Ast.NameExpr loan)
+                            || !loan.name().equals(stateAccess)) {
+                        throw new IllegalArgumentException(
+                                "publish_scalar_publication requires the active lexical actor state loan");
+                    }
+                    effects.add(FunctionEffects.Effect.STATE_READ);
+                    effects.add(FunctionEffects.Effect.STATE_WRITE);
+                    collect(call.arguments().get(1), effects, stateAccess, callableName, serial);
+                    return;
+                }
             }
             if (call.callee() instanceof Ast.MemberExpr member
                     && member.receiver() instanceof Ast.NameExpr namespace

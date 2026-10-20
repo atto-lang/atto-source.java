@@ -14,6 +14,16 @@ import java.util.Set;
  * actor's ordinary member namespace or to an escaped closure/argument.
  */
 public final class ActorStateContract {
+    private static final Set<String> ML_SCALAR_INTRINSICS = Set.of(
+            "state_snapshot",
+            "snapshot_int",
+            "snapshot_bool",
+            "snapshot_string",
+            "snapshot_version",
+            "snapshot_revision",
+            "prepare_scalar_publication",
+            "publish_scalar_publication");
+
     private ActorStateContract() { }
 
     public static boolean isStateField(Ast.FieldDecl field) {
@@ -105,6 +115,9 @@ public final class ActorStateContract {
             }
         }
         for (Ast.MethodDecl method : klass.methods()) {
+            for (Ast.Param parameter : method.parameters()) {
+                rejectReservedMlBinding(parameter.name(), klass.name() + "." + method.name());
+            }
             if (method.name().equals("handle_state")) {
                 throw new IllegalArgumentException("handle_state is a sealed actor intrinsic");
             }
@@ -117,6 +130,18 @@ public final class ActorStateContract {
                               String activeAccess, boolean nestedClosure, boolean instanceMethod,
                               Ast.CriticalMode accessMode) {
         if (node == null) return;
+        if (node instanceof Ast.BindingStmt binding) {
+            rejectReservedMlBinding(binding.name(), actor);
+        } else if (node instanceof Ast.DestructureBinding binding
+                && !binding.isDiscard()) {
+            rejectReservedMlBinding(binding.name(), actor);
+        } else if (node instanceof Ast.ForOfStmt loop) {
+            rejectReservedMlBinding(loop.bindingName(), actor);
+        } else if (node instanceof Ast.LambdaExpr lambda) {
+            for (Ast.Param parameter : lambda.parameters()) {
+                rejectReservedMlBinding(parameter.name(), actor);
+            }
+        }
         if (node instanceof Ast.CallExpr call
                 && call.callee() instanceof Ast.MemberExpr callee
                 && isSelf(callee.receiver()) && callee.member().equals("handle_state")) {
@@ -172,6 +197,7 @@ public final class ActorStateContract {
             if (variable.equals("self")) {
                 throw new IllegalArgumentException("actor state access parameter cannot shadow self");
             }
+            rejectReservedMlBinding(variable, actor + ".handle_state");
             // A slim-arrow callback has an implicit return expression, not
             // an Ast.ReturnStmt. Applying escape checks only to ReturnStmt
             // silently exposes s.referenceField via |s| -> s.referenceField.
@@ -184,6 +210,83 @@ public final class ActorStateContract {
             visit(lambda.blockBody(), actor, keys, variable, false, instanceMethod, loanMode);
             return;
         }
+        // Two compiler-sealed ML intrinsics are the only calls allowed to
+        // receive the raw lexical state-loan parameter. They do not expose the
+        // loan itself: state_snapshot copies named detached scalar values into
+        // an issuer-bound capability, while publish_scalar_publication consumes
+        // a compiler-issued publication under the active WRITE loan. Keep this
+        // exception here, in the independent state-contract pass, instead of
+        // weakening the generic "loan name cannot be an argument" rule below.
+        if (activeAccess != null
+                && node instanceof Ast.CallExpr scalarIntrinsic
+                && scalarIntrinsic.callee() instanceof Ast.NameExpr intrinsicName
+                && intrinsicName.name().equals("state_snapshot")) {
+            if (nestedClosure) {
+                throw new IllegalArgumentException(
+                        "state_snapshot cannot capture an actor state loan in a nested closure");
+            }
+            if (scalarIntrinsic.typeArgumentsPresent()
+                    || scalarIntrinsic.arguments().size() < 3
+                    || !(scalarIntrinsic.arguments().getFirst() instanceof Ast.NameExpr loan)
+                    || !loan.name().equals(activeAccess)) {
+                throw new IllegalArgumentException(
+                        "state_snapshot requires the exact active actor state loan, "
+                                + "a version field, and at least one scalar field");
+            }
+            for (int i = 1; i < scalarIntrinsic.arguments().size(); i++) {
+                Ast.Expr argument = scalarIntrinsic.arguments().get(i);
+                if (!(argument instanceof Ast.LiteralExpr literal)
+                        || !(literal.value() instanceof String)) {
+                    throw new IllegalArgumentException(
+                            "state_snapshot field names must be compile-time string literals");
+                }
+            }
+            return;
+        }
+        if (activeAccess != null
+                && node instanceof Ast.CallExpr scalarIntrinsic
+                && scalarIntrinsic.callee() instanceof Ast.NameExpr intrinsicName
+                && intrinsicName.name().equals("publish_scalar_publication")) {
+            if (nestedClosure) {
+                throw new IllegalArgumentException(
+                        "publish_scalar_publication cannot capture an actor state loan in a nested closure");
+            }
+            if (scalarIntrinsic.typeArgumentsPresent()
+                    || scalarIntrinsic.arguments().size() != 2
+                    || !(scalarIntrinsic.arguments().getFirst() instanceof Ast.NameExpr loan)
+                    || !loan.name().equals(activeAccess)) {
+                throw new IllegalArgumentException(
+                        "publish_scalar_publication requires the exact active actor state loan "
+                                + "and one compiler-issued publication");
+            }
+            if (accessMode != Ast.CriticalMode.WRITE) {
+                throw new IllegalArgumentException(
+                        "publish_scalar_publication requires a critical write actor state loan");
+            }
+            // The publication expression may contain ordinary detached values,
+            // but it must not smuggle the live loan as part of its expression.
+            if (referencesAccess(scalarIntrinsic.arguments().get(1), activeAccess)) {
+                throw new IllegalArgumentException(
+                        "publish_scalar_publication publication argument cannot contain the live state loan");
+            }
+            visit(
+                    scalarIntrinsic.arguments().get(1),
+                    actor,
+                    keys,
+                    activeAccess,
+                    nestedClosure,
+                    instanceMethod,
+                    accessMode);
+            return;
+        }
+        if (activeAccess != null
+                && node instanceof Ast.CallExpr scalarIntrinsic
+                && scalarIntrinsic.callee() instanceof Ast.NameExpr intrinsicName
+                && intrinsicName.name().equals("prepare_scalar_publication")) {
+            throw new IllegalArgumentException(
+                    "prepare_scalar_publication must run after the actor state loan is released");
+        }
+
         if (activeAccess != null
                 && (node instanceof Ast.AwaitExpr || node instanceof Ast.SelectStmt
                     || node instanceof Ast.DynamicSelectExpr || node instanceof Ast.ChannelOpExpr
@@ -393,6 +496,15 @@ public final class ActorStateContract {
                     throw new IllegalStateException("failed to validate actor state AST", failure);
                 }
             }
+        }
+    }
+
+    private static void rejectReservedMlBinding(
+            String name,
+            String context) {
+        if (ML_SCALAR_INTRINSICS.contains(name)) {
+            throw new IllegalArgumentException(
+                    context + " binds reserved sealed ML intrinsic name '" + name + "'");
         }
     }
 
