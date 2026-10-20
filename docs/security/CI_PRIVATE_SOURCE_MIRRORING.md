@@ -8,39 +8,43 @@ cache entries, and logs.
 
 The policy file `.github/private-ci-approved-repositories.txt` is **empty by
 default**. No cross-repository mirroring is authorized until maintainers and
-security reviewers explicitly add an exact `owner/repo` destination through a
-reviewed, protected-branch change.
+security reviewers explicitly add an exact `owner/repo` destination through
+an independently reviewed governance change.
 
-An allowlist line is necessary but no longer sufficient. The protected
+An allowlist line is necessary but no longer sufficient. The reviewed
 `.github/private-ci-carrier-contracts.json` must independently pin the live
 destination repository ID, an exact reviewed source-free carrier `main`
 commit, the carrier workflow blob, and the exact reviewed test-plan blob/PR
 set. A carrier `main` advance, repository delete/recreate, workflow change,
 or test-plan change fails closed until the source policy is reviewed again.
 
-**Origin protection is mandatory.** Before reading private source files, the
-publisher now checks the live GitHub identity of
-`ores-truffle-oreslang/oreslang-source.java`, verifies that its official
-`main` branch reports `protected: true`, and reads branch-protection rules
-from GitHub. It requires `required_pull_request_reviews.require_code_owner_reviews`,
-`required_pull_request_reviews.dismiss_stale_reviews`,
-at least one required approving review, and `enforce_admins.enabled` to be
-true. Force pushes and branch deletions must be explicitly disabled, and any
-pull-request review bypass allowances are rejected. Missing or unreadable rules fail
-closed, even if GitHub reports `protected: true`. The publisher pins the
-policy read to that branch's Git commit and compares its policy bytes
-with the local checkout policy.
-It repeats these checks immediately before publishing the new CI ref. Merely
-adding the allowlist line to an unreviewed checkout does not authorize export,
-and a CODEOWNERS file without enforced branch protection is not sufficient.
-**At the 2026-10-19 audit, GitHub reported `main protected: false`, so the
-publisher deliberately fails closed until administrators enable protection
-and verify that CODEOWNER reviews are required.** GitHub returned a 403
-for ruleset inspection on the available repository plan, so this tool session
-could not independently establish an equivalent enforced ruleset.
+V3 supports two fail-closed origin-governance modes:
 
-Until that prerequisite is met, do not mirror private blobs even if an
-allowlist pull request is approved. Source-free test suites are permissible.
+1. **Protected-main mode.** When GitHub reports `main protected: true`, the
+   publisher reads branch-protection rules and requires CODEOWNER reviews,
+   stale-review dismissal, at least one approval, administrator enforcement,
+   no force pushes/deletions, and no PR-review bypass allowances.
+2. **Exact review-attested mode.** On private-repository plans where GitHub does
+   not provide branch protection/rulesets, V3 requires the designated
+   authorization PR to be merged to source `main`, requires the latest review
+   from immutable security reviewer ID `11139560` (`ORESoftware`) to be
+   `APPROVED` on that PR's **exact current head**, requires that approval to
+   have been submitted before merge, and compares every export-critical
+   governance blob on current `main` against the independently reviewed PR
+   head. Any stale/revoked review, later governance edit, reviewer mismatch,
+   review-history ambiguity, or policy-byte mismatch fails closed.
+
+The review-attested fallback is deliberately narrow: it does not make an
+unprotected branch generally trustworthy. It only authorizes the exact
+reviewed private-CI governance blobs, and V3 repeats the authorization check
+immediately before creating the source-bearing and one-use authorization refs.
+The legacy publisher remains protected-main-only.
+
+At the 2026-10-20 audit GitHub still reported `main protected: false`, and
+ruleset inspection returned a 403 requiring a paid/private-repository feature.
+Therefore V3 must use the exact review-attested path for this repository unless
+its GitHub plan changes. Source-free test suites remain permissible while the
+independent review is pending.
 
 Do **not** accept a CI destination allowlist from environment variables or
 unreviewed workflow inputs: a caller must not be able to grant its own approval.
@@ -120,8 +124,9 @@ the private destination; a follow-up retention policy is still needed.
 
 It does **not** intercept arbitrary connector/API tool writes, cannot
 completely prevent visibility changes between API checks, and cannot
-guarantee that the source directory itself is free of secrets. Run only
-from an authorized protected checkout using narrowly scoped credentials.
+guarantee that the source directory itself is free of secrets. Run only from a checkout whose private-CI governance matches the exact
+protected-main or review-attested authority accepted by V3, using narrowly
+scoped credentials.
 There is no permission to use a public repository when CI minutes run out.
 
 Test without network access or sending any source:
