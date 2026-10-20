@@ -202,22 +202,30 @@ public final class V3ScalarDefaultProgramNormalizer {
             // Ordinary positional calls with zero or more closed literals
             // also need omission lowering, especially f() for optional
             // Option<T> formals. Never convert custom callees or effects.
+            Ast.FunctionDecl selected = functions.get(direct.name());
             List<Ast.CallArgument> items = new ArrayList<>();
             for (Ast.Expr arg : ordinary.arguments()) {
                 if (!(arg instanceof Ast.LiteralExpr)) {
                     throw new IllegalArgumentException(
                             "closed-default positional calls require literal supplied arguments");
                 }
-                items.add(Ast.CallArgument.value(arg));
+                if (items.size() >= selected.parameters().size()) {
+                    throw new IllegalArgumentException(
+                            "too many supplied positional literals for closed-default callable");
+                }
+                // A staged argument list requires an actual label or omit.
+                // Map ordinary positional sources to their exact formal name
+                // only after the closed-world declaration is proven unique.
+                items.add(Ast.CallArgument.named(
+                        selected.parameters().get(items.size()).name(), arg));
             }
             if (items.isEmpty()) {
-                Ast.FunctionDecl selected = functions.get(direct.name());
                 if (selected.parameters().isEmpty()) return ordinary;
                 for (Ast.Param p : selected.parameters()) items.add(Ast.CallArgument.omit(p.name()));
             }
             return lowerClosedCall(
                     new Ast.StagedCallExpr(ordinary.callee(), List.of(), false, items),
-                    functions.get(direct.name()));
+                    selected);
         }
         if (expr instanceof Ast.StagedCallExpr call) {
             if (!(call.callee() instanceof Ast.NameExpr callee)
