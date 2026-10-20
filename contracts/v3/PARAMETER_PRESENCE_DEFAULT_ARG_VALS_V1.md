@@ -328,3 +328,43 @@ Next blockers: actual targeted JDK25 test execution; typechecked
 independent Option identity and Some/None adaptation; nonliteral
 source-order/ownership/effect verification; method/constructor and import
 parity; LLVM native lowering and exact-tree conformance.
+
+
+### Follow-on: closed-world intrinsic Option<scalar> evaluation slice
+
+A new `V3ClosedOptionCallLowering` extends only the *explicit opt-in*
+one-module normalizer with closed `Option<int>`, `Option<bool>` and
+`Option<string>` formals, including v3 `T?` sugar. Type resolution is
+restricted to a module containing ordinary fnc declarations only, no
+imports, no classes/aliases, and no declarations or parameters shadowing
+the built-in `Option`, `Some` or `None` names. The compiler emits
+ordinary `Some(literal)` and `None` AST nodes and passes the resulting
+fully supplied positional call through OresCompiler's actual type and
+ownership checks. **String matching inside the lowering helper alone
+is NOT nominal Option proof**; the enclosing closed-world exclusions
+are part of its mandatory trust boundary. Future general imports and
+aliases require independent resolved nominal identity.
+
+A source-supplied scalar literal into a statically known Option<T>
+formal becomes Some(T); source-supplied `None` remains None, even
+when the declaration has a non-None default. Omitting an Option<T>
+formal with `@Default(v)` inserts Some(v); with `@Default(None)`
+or without a declared default, an explicitly omittable Option<T> slot
+inserts None. The v3 presence rule **has not changed**: default-free
+`Option<T> name` is required; use `name?` for omitted None.
+
+The closed-body grammar admits immutable parameter reads, closed scalar
+binary expressions, and zero-argument built-in Option introspection
+`param.is_none()`, `param.is_some()` or `param.unwrap()`. Ordinary
+zero-argument or scalar-literal positional calls are translated to the
+same checked slot binder; this allows `f()` to trigger defaults without
+inventing a guest argument expression. Arbitrary argument expressions,
+borrowed parameters, nested Option, generic Option payloads, user
+`Some(...)` expressions, indirection and user-defined Option names are
+still rejected.
+
+GraalVM Polyglot integration fixtures have been authored for omitted
+default -> Some, omitted default-free Option -> None, explicit supplied
+None overriding defaults, supplied scalar -> Some, `@Default(None)`
+and v3 `int? value?` sugar. **No passing JDK25/Polyglot execution result
+is claimed until runner steps actually execute and tests are green.**
