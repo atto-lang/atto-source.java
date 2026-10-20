@@ -11,6 +11,9 @@ package dev.oreslang.runtime;
         private boolean closing;
         private boolean published;
         private Throwable firstFailure;
+        private boolean cancellationRequested;
+        private final java.util.Set<Registration> children =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
 
         public TaskScope() {
             // A join is an internal lifetime gate, never a cancellable user Future.
@@ -38,7 +41,9 @@ package dev.oreslang.runtime;
                 throw new IllegalStateException("Task scope admission exhausted");
             }
             active++;
-            return new Registration(this);
+            Registration ticket = new Registration(this);
+            children.add(ticket);
+            return ticket;
         }
 
         public OresFuture<Void> close() {
@@ -47,12 +52,44 @@ package dev.oreslang.runtime;
             return drained;
         }
 
-        private void childDone(Throwable failure) {
+        /** Observe the internal barrier without closing this lexical scope. */
+        public OresFuture<Void> drained() { return drained; }
+
+        /**
+         * Called after the owning SourceTask's guest carrier exits. Revokes
+         * every admitted child, but does not release its ticket until BOTH
+         * terminal notification and scheduler quiescence have occurred.
+         * Repeated calls are safe; cancellation runs outside the scope lock.
+         */
+        public OresFuture<Void> cancelAndDrain() {
+            Registration[] admitted;
+            synchronized (this) {
+                closing = true;
+                cancellationRequested = true;
+                if (firstFailure == null) {
+                    firstFailure = new java.util.concurrent.CancellationException(
+                            "enclosing scoped Task was cancelled");
+                }
+                admitted = children.toArray(new Registration[0]);
+            }
+            for (Registration ticket : admitted) ticket.cancelAttached();
+            publishIfReady();
+            return drained;
+        }
+
+        private synchronized boolean isCancellationRequested() {
+            return cancellationRequested;
+        }
+
+        private void childDone(Registration ticket, Throwable failure) {
             synchronized (this) {
                 if (active == 0) throw new IllegalStateException("Task scope ticket underflow");
                 if (failure != null) {
                     if (firstFailure == null) firstFailure = failure;
                     else if (firstFailure != failure) firstFailure.addSuppressed(failure);
+                }
+                if (!children.remove(ticket)) {
+                    throw new IllegalStateException("Task scope ticket retired twice");
                 }
                 active--;
             }
@@ -77,6 +114,7 @@ package dev.oreslang.runtime;
             private boolean notified;
             private boolean attached;
             private boolean beganExecution;
+            private OresFuture<?> attachedFuture;
             private Throwable failure;
 
             private Registration(TaskScope scope) { this.scope = scope; }
@@ -113,8 +151,16 @@ package dev.oreslang.runtime;
                         throw new IllegalStateException("Task scope ticket already attached or retired");
                     }
                     attached = true;
+                    attachedFuture = future;
                 }
                 future.whenCompleteRuntime((value, cause) -> settle(cause, false));
+                if (scope.isCancellationRequested()) future.cancel(false);
+            }
+
+            private void cancelAttached() {
+                OresFuture<?> future;
+                synchronized (this) { future = attachedFuture; }
+                if (future != null) future.cancel(false);
             }
 
             public void quiesced() { settle(null, true); }
@@ -154,7 +200,7 @@ package dev.oreslang.runtime;
                     notified = true;
                     cause = failure;
                 }
-                scope.childDone(cause);
+                scope.childDone(this, cause);
             }
         }
     }
