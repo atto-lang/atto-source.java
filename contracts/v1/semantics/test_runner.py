@@ -167,6 +167,56 @@ class DiagnosticProof(unittest.TestCase):
             self.assertEqual("fail", result["status"])
 
 
+class CheckoutAdmissionProof(unittest.TestCase):
+    """Semantic report revisions must identify the actual clean Git tree."""
+
+    def test_actual_commit_tree_and_dirty_refusal(self):
+        import tempfile
+        import subprocess
+
+        def git(root, *args):
+            result = subprocess.run(
+                ["git", "-C", str(root), *args], capture_output=True,
+                text=True, check=True)
+            return result.stdout.strip()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            semantics = repo / "contracts/v1/semantics"
+            semantics.mkdir(parents=True)
+            git(repo, "init", "-q")
+            fixture = semantics / "fixture.ores"
+            fixture.write_text("pub fnc main(): int { return 42; }\n")
+            git(repo, "add", ".")
+            git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                "commit", "-q", "-m", "initial")
+            head, tree = git(repo, "rev-parse", "HEAD"), git(repo, "rev-parse", "HEAD^{tree}")
+            with patch.object(run, "ROOT", semantics):
+                self.assertEqual(run.verify_checkout_revision(head), tree)
+                with self.assertRaisesRegex(ValueError, "differs from actual"):
+                    run.verify_checkout_revision("a" * 40)
+                fixture.write_text("uncommitted change")
+                with self.assertRaisesRegex(ValueError, "tracked modifications"):
+                    run.verify_checkout_revision(head)
+                git(repo, "checkout", "--", "contracts/v1/semantics/fixture.ores")
+                target = repo / "target"
+                target.mkdir()
+                (target / "generated").write_text("untracked build artifact")
+                self.assertEqual(run.verify_checkout_revision(head), tree)
+                git(repo, "add", "target/generated")
+                with self.assertRaisesRegex(ValueError, "tracked modifications"):
+                    run.verify_checkout_revision(head)
+
+    def test_checkout_without_git_repository_rejected(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as temporary:
+            semantics = Path(temporary) / "contracts/v1/semantics"
+            semantics.mkdir(parents=True)
+            with patch.object(run, "ROOT", semantics):
+                with self.assertRaisesRegex(ValueError, "cannot inspect Git checkout"):
+                    run.verify_checkout_revision("a" * 40)
+
+
 class ComparatorParityProof(unittest.TestCase):
     """The incremental conformance comparison must never certify pending parity."""
 
