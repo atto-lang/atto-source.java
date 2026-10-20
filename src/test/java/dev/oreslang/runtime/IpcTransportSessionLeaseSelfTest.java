@@ -303,6 +303,24 @@ public final class IpcTransportSessionLeaseSelfTest {
         cleanupMonitorHolder.start();
         check(cleanupMonitorHeld.await(2, TimeUnit.SECONDS));
 
+        AtomicReference<Throwable> actorSnapshotFailure = new AtomicReference<>();
+        Thread actorSnapshotWorker = new Thread(() -> {
+            RuntimeBlockingGuard.enterActorCarrier();
+            try {
+                carrierCleanup.snapshot();
+            } catch (Throwable failure) {
+                actorSnapshotFailure.set(failure);
+            } finally {
+                RuntimeBlockingGuard.exitActorCarrier();
+            }
+        }, "ipc-test-illegal-actor-snapshot");
+        actorSnapshotWorker.start();
+        actorSnapshotWorker.join(1000);
+        check(!actorSnapshotWorker.isAlive());
+        check(actorSnapshotFailure.get() instanceof IllegalStateException);
+        check(actorSnapshotFailure.get().getMessage().contains(
+                "cannot block an actor carrier"));
+
         AtomicReference<Throwable> actorCleanupFailure = new AtomicReference<>();
         Thread actorCleanupWorker = new Thread(() -> {
             RuntimeBlockingGuard.enterActorCarrier();
