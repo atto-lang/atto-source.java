@@ -48,7 +48,19 @@ endpoint="${2-}"
 shift 2
 case "$endpoint" in
   "repos/ores-truffle-oreslang/oreslang-source.java")
-    printf '%s\n' "1400792274"
+    jq=""
+    while [[ "$#" -gt 0 ]]; do
+      if [[ "$1" == "--jq" ]]; then jq="$2"; shift 2; else shift; fi
+    done
+    case "$jq" in
+      "[.id, .full_name, .private] | @tsv")
+        printf '%s\t%s\t%s\n' \
+          "${SYNTH_SOURCE_ID:-1400792274}" \
+          "${SYNTH_SOURCE_NAME:-ores-truffle-oreslang/oreslang-source.java}" \
+          "${SYNTH_SOURCE_PRIVATE:-true}"
+        ;;
+      *) exit 65 ;;
+    esac
     ;;
   "repos/ores-truffle-oreslang/oreslang-source.java/pulls/1425")
     jq=""
@@ -181,6 +193,15 @@ assert_exit 1 run_preflight SYNTH_PROTECTED=true \
 
 # Unprotected main fails unless the exact dual attestation is supplied.
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch"
+
+# Source repository identity is bound by immutable ID, canonical name, and
+# private visibility before any authorization mode can pass.
+assert_exit 1 run_preflight SYNTH_SOURCE_ID=999999 SYNTH_PROTECTED=true \
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch"
+assert_exit 1 run_preflight SYNTH_SOURCE_NAME=renamed-owner/oreslang-source.java SYNTH_PROTECTED=true \
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch"
+assert_exit 1 run_preflight SYNTH_SOURCE_PRIVATE=false SYNTH_PROTECTED=true \
   bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch"
 
 # Correct, distinct, unedited attestations pass only when GitHub explicitly
