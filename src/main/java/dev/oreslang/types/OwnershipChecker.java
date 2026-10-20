@@ -49,6 +49,11 @@ public final class OwnershipChecker {
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
+    /**
+     * Bodies that may execute after their lexical checker position. An active
+     * nb scope must never lend its read-borrow authority to one of these bodies.
+     */
+    private int deferredExecutionDepth;
     /** Every active try records outer roots transferred anywhere inside its body. */
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
     /**
@@ -683,12 +688,14 @@ public final class OwnershipChecker {
                     boolean previousDiscard = discardingSelectReturn;
                     loopDepth = 0;
                     discardingSelectReturn = selected.explicitDo();
+                    deferredExecutionDepth++;
                     try {
                         checkBlock(arm.body(), armScope,
                                 selected.explicitDo()
                                         ? Ast.TypeRef.inferred()
                                         : Ast.TypeRef.simple("void"));
                     } finally {
+                        deferredExecutionDepth--;
                         loopDepth = previousLoopDepth;
                         discardingSelectReturn = previousDiscard;
                     }
@@ -1320,9 +1327,11 @@ public final class OwnershipChecker {
                     boolean savedDiscard = discardingSelectReturn;
                     loopDepth = 0;
                     discardingSelectReturn = false;
+                    deferredExecutionDepth++;
                     try {
                         checkBlock(channelOp.callbackBody(), callbackScope, Ast.TypeRef.simple("void"));
                     } finally {
+                        deferredExecutionDepth--;
                         loopDepth = savedLoopDepth;
                         discardingSelectReturn = savedDiscard;
                         callbackScope.close();
@@ -2522,6 +2531,11 @@ public final class OwnershipChecker {
                 throw error("nb Task borrowed capture '" + capture.name
                         + "' requires an enclosing nb scope");
             }
+            if (deferredExecutionDepth > 0) {
+                throw error("nb Task borrowed capture '" + capture.name
+                        + "' is inside deferred/escaping execution; scoped read "
+                        + "authority cannot outlive the lexical nb scope");
+            }
             if (source.kind != ValueKind.IMM_BORROW
                     || source.type.mutableBorrow()
                     || capture.write) {
@@ -2732,6 +2746,7 @@ public final class OwnershipChecker {
         // Closures may execute after the class constructor returns; their
         // bodies cannot write fixed slots through the ctor-only exception.
         initializingClass = null;
+        deferredExecutionDepth++;
         try {
             if (lambda.expressionBody() != null) {
                 // An expression body has return-value ownership semantics even
@@ -2746,6 +2761,7 @@ public final class OwnershipChecker {
                 }
             }
         } finally {
+            deferredExecutionDepth--;
             loopDepth = previousLoopDepth;
             discardingSelectReturn = previousDiscard;
             initializingClass = previousInitializingClass;
