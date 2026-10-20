@@ -643,4 +643,34 @@ final class EntryValueTest {
                 """);
     }
 
+    @Test
+    void entryFactoryCannotHideMutexGuards() {
+        IllegalArgumentException keyGuard = ownershipRejected("""
+                fnc bad(): void {
+                  const mutex = Mutex.new(1);
+                  const guard = mutex.lock();
+                  const hidden = Entry.of(guard, 1);
+                  stdio.println(hidden);
+                  return;
+                }
+                """);
+        assertTrue(
+                keyGuard.getMessage().contains("Entry.of cannot store a MutexGuard"),
+                keyGuard.getMessage());
+
+        IllegalArgumentException valueGuard = ownershipRejected("""
+                fnc bad(): void {
+                  const mutex = Mutex.new(1);
+                  const guard = mutex.lock();
+                  const hidden = Entry.of("guard", guard);
+                  stdio.println(hidden);
+                  return;
+                }
+                """);
+        assertTrue(
+                valueGuard.getMessage().contains("Entry.of cannot store a MutexGuard"),
+                valueGuard.getMessage());
+    }
+
+
 }
