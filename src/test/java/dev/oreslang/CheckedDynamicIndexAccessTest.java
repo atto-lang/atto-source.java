@@ -424,6 +424,51 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void constructorTypePhaseRejectsSelfAliasesAndPackagingButAllowsDerivedFieldRead() {
+        for (String body : java.util.List.of(
+                """
+                const alias = self;
+                const int observed = alias["value"];
+                self.value = next;
+                """,
+                """
+                const alias = self as Box;
+                const int observed = alias["value"];
+                self.value = next;
+                """,
+                """
+                const packed = (self, 1);
+                self.value = next;
+                """,
+                """
+                const (alias, marker) = (self, 1);
+                self.value = next;
+                """)) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse("""
+                    define class Box as
+                      val int value;
+                      constructor(int next) {
+                    """ + body + """
+                      }
+                    end
+                    """)));
+            assertTrue(failure.getMessage().contains("constructor self"), failure::getMessage);
+        }
+
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse("""
+                define class Box as
+                  val int value;
+                  constructor(int next) {
+                    self.value = next;
+                    const int observed = self.value;
+                  }
+                end
+                """)));
+    }
+
+    @Test
     void constructorCannotCreateRuntimeBorrowAliasOfSelfThenIndexIt() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse("""
