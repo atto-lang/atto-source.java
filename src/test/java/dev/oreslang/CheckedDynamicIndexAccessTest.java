@@ -5,6 +5,7 @@ import dev.oreslang.compiler.BuildOptions;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.TreeShaker;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
@@ -389,6 +390,37 @@ final class CheckedDynamicIndexAccessTest {
                   }
                 end
                 """)));
+    }
+
+    @Test
+    void constructorCannotCreateRuntimeBorrowAliasOfSelfThenIndexIt() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse("""
+                define class Box as
+                  val int value;
+                  constructor(int next) {
+                    const alias = rt borrow self;
+                    const int observed = alias["value"];
+                    self.value = next;
+                  }
+                end
+                """)));
+        assertTrue(failure.getMessage().contains("constructor self"), failure::getMessage);
+    }
+
+    @Test
+    void ownershipRejectsBorrowOfProjectionRootedInConstructorSelf() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse("""
+                define class Box as
+                  val Array<int> items = new Array<int>();
+                  constructor() {
+                    const alias = rt borrow self.items;
+                  }
+                end
+                """)));
+        assertTrue(failure.getMessage().contains("constructor cannot borrow partially initialized self"),
+                failure::getMessage);
     }
 
     @Test
