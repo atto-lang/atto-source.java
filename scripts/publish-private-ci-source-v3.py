@@ -36,6 +36,7 @@ CONTRACT_SCHEMA = 1
 MAX_CONTRACT = 64 * 1024
 MAX_PLAN = 64 * 1024
 RECEIPT_TTL = dt.timedelta(hours=24)
+SOURCE_REPOSITORY_ID = 1400792274
 
 
 def valid_sha(value, label="invalid SHA"):
@@ -271,10 +272,13 @@ def verify_source_pr(source_pr, source_commit):
     origin = legacy.gh_api(f"repos/{legacy.SOURCE_REPO}")
     repo_id = origin.get("id")
     if (origin.get("full_name") != legacy.SOURCE_REPO
+            or repo_id != SOURCE_REPOSITORY_ID
             or origin.get("private") is not True
-            or not isinstance(repo_id, int) or isinstance(repo_id, bool)
-            or repo_id <= 0):
-        raise Denied("source repository identity invalid")
+            or origin.get("visibility") != "private"
+            or origin.get("archived") is not False
+            or origin.get("disabled") is not False
+            or origin.get("fork") is not False):
+        raise Denied("source repository identity/state invalid")
     pr = legacy.gh_api(f"repos/{legacy.SOURCE_REPO}/pulls/{source_pr}")
     head = pr.get("head")
     base = pr.get("base")
@@ -330,8 +334,12 @@ def authorize_write(root, repository, approved_policy, contract):
     if legacy.checked_policy_fingerprint(root, repository) != approved_policy:
         raise Denied("private CI destination approval policy changed during transfer")
     repo = legacy.checked_repo(repository)
-    if repo.get("id") != contract["repository_id"]:
-        raise Denied("carrier repository id changed during transfer")
+    if (repo.get("id") != contract["repository_id"]
+            or repo.get("archived") is not False
+            or repo.get("disabled") is not False
+            or repo.get("fork") is not False
+            or repo.get("default_branch") != "main"):
+        raise Denied("carrier identity/state changed during transfer")
 
 
 def publish(repository, source, source_commit, source_pr, test_plan, trusted_root, now=None):

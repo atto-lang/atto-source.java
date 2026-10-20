@@ -140,9 +140,13 @@ class PrivateCiV3Test(unittest.TestCase):
         def api(route, method="GET", payload=None):
             if route == "repos/" + v3.legacy.SOURCE_REPO:
                 return {
-                    "id": 7,
+                    "id": v3.SOURCE_REPOSITORY_ID,
                     "full_name": v3.legacy.SOURCE_REPO,
                     "private": True,
+                    "visibility": "private",
+                    "archived": False,
+                    "disabled": False,
+                    "fork": False,
                 }
             if route == "repos/" + v3.legacy.SOURCE_REPO + "/pulls/1482":
                 return {
@@ -158,6 +162,47 @@ class PrivateCiV3Test(unittest.TestCase):
         with patch.object(v3.legacy, "gh_api", side_effect=api):
             with self.assertRaisesRegex(v3.Denied, "exact open PR head"):
                 v3.verify_source_pr(1482, "8" * 40)
+
+    def test_verify_source_pr_rejects_source_repository_id_replacement(self):
+        def api(route, method="GET", payload=None):
+            if route == "repos/" + v3.legacy.SOURCE_REPO:
+                return {
+                    "id": v3.SOURCE_REPOSITORY_ID + 1,
+                    "full_name": v3.legacy.SOURCE_REPO,
+                    "private": True,
+                    "visibility": "private",
+                    "archived": False,
+                    "disabled": False,
+                    "fork": False,
+                }
+            raise AssertionError(route)
+        with patch.object(v3.legacy, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(v3.Denied, "identity/state"):
+                v3.verify_source_pr(1482, "8" * 40)
+
+    def test_authorize_write_rechecks_carrier_eligibility(self):
+        carrier = contract()
+        ineligible = {
+            "id": carrier["repository_id"],
+            "full_name": "trusted/ci",
+            "private": True,
+            "visibility": "private",
+            "archived": True,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+        with (
+            patch.object(
+                v3.legacy,
+                "checked_policy_fingerprint",
+                return_value=POLICY,
+            ),
+            patch.object(v3.legacy, "checked_repo", return_value=ineligible),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "identity/state"):
+                v3.authorize_write(
+                    Path("."), "trusted/ci", POLICY, carrier)
 
     def test_publish_binds_receipt_branch_and_authorization_ref(self):
         carrier = contract()
@@ -193,7 +238,11 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3.legacy, "verify_protected_origin"),
                 patch.object(v3, "protected_main_sha", return_value=PROTECTED),
                 patch.object(v3, "checked_contract", return_value=carrier),
-                patch.object(v3, "verify_source_pr", return_value=1400792274),
+                patch.object(
+                    v3,
+                    "verify_source_pr",
+                    return_value=v3.SOURCE_REPOSITORY_ID,
+                ),
                 patch.object(
                     v3,
                     "checked_destination",
@@ -240,6 +289,8 @@ class PrivateCiV3Test(unittest.TestCase):
         receipt = json.loads(receipt_bytes)
         self.assertEqual(receipt["expires_at"], "2026-10-21T00:00:00Z")
         self.assertEqual(receipt["source"]["pr"], 1482)
+        self.assertEqual(
+            receipt["source"]["repo_id"], v3.SOURCE_REPOSITORY_ID)
         self.assertEqual(receipt["source"]["head_sha"], "4" * 40)
         self.assertEqual(receipt["source"]["root_tree_sha"], SOURCE_TREE)
         self.assertEqual(receipt["mirror"]["root_tree_sha"], SOURCE_TREE)
