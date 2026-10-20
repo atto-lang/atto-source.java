@@ -12,6 +12,7 @@ MODULE = Path(__file__).with_name("publish-private-ci-source.py")
 spec = importlib.util.spec_from_file_location("private_publisher", MODULE)
 pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
+REAL_EXPORT_GATE = pub.require_independent_source_authorization
 ORIGINAL_VERIFY_PROTECTED_ORIGIN = pub.verify_protected_origin
 ORIGINAL_VERIFY_EXACT_SOURCE_TREE = pub.verified_exact_source_tree
 A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
@@ -30,6 +31,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.route_calls = []
         self.visibility = ["private"] * 100
+        # Synthetic transport tests do not exercise production authorization.
+        self.synthetic_authorization = patch.object(pub, "require_independent_source_authorization")
+        self.synthetic_authorization.start()
+        self.addCleanup(self.synthetic_authorization.stop)
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
@@ -633,6 +638,21 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             (outside / "outside.ores").unlink()
             outside.rmdir()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_real_gate_rejects_before_source_or_api_access(self):
+        with patch.object(pub, "require_independent_source_authorization", REAL_EXPORT_GATE):
+            with patch.object(pub, "require_preflight", side_effect=AssertionError("preflight called")):
+                with patch.object(pub, "gh_api", side_effect=AssertionError("API called")):
+                    with patch.object(pub, "verified_exact_source_tree", side_effect=AssertionError("source read")):
+                        with self.assertRaisesRegex(pub.Denied, "security #962"):
+                            pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, A)
+        self.assertEqual(self.route_calls, [])
+
+    def test_real_gate_ignores_environment_override(self):
+        with patch.dict("os.environ", {"PRIVATE_CI_ALLOW_EXPORT": "true"}):
+            with patch.object(pub, "require_independent_source_authorization", REAL_EXPORT_GATE):
+                with self.assertRaisesRegex(pub.Denied, "security #962"):
+                    pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, A)
 
     def test_denied_preflight_halts_before_api(self):
         with patch.object(pub, "require_preflight", side_effect=pub.Denied("not approved")):
