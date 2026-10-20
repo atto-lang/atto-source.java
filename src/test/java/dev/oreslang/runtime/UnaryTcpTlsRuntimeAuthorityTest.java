@@ -2,6 +2,8 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.net.InetAddress;
+import java.net.ServerSocket;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -112,6 +114,43 @@ final class UnaryTcpTlsRuntimeAuthorityTest {
             assertEquals(1, endpointCreations.get());
             assertEquals(1, listener.availableConnectionSlots());
             assertEquals(0, listener.activeConnections());
+        }
+    }
+
+    @Test
+    void bindFailureClosesFreshTlsEndpoint() throws Exception {
+        SSLContext tls = SSLContext.getDefault();
+        AtomicReference<SSLServerSocket> created = new AtomicReference<>();
+
+        try (ServerSocket blocker = new ServerSocket(
+                0, 1, InetAddress.getLoopbackAddress())) {
+            int occupiedPort = blocker.getLocalPort();
+            RuntimePermissions permissions = RuntimePermissions.denyAll()
+                    .withAllowed(
+                            RuntimePermissions.Permission.NET,
+                            "127.0.0.1:" + occupiedPort);
+
+            assertThrows(
+                    java.io.IOException.class,
+                    () -> UnaryTcpTlsRuntime.bind(
+                            permissions::requireNetworkBind,
+                            () -> {
+                                SSLServerSocket endpoint = (SSLServerSocket)
+                                        tls.getServerSocketFactory()
+                                                .createServerSocket();
+                                created.set(endpoint);
+                                return endpoint;
+                            },
+                            "127.0.0.1",
+                            occupiedPort,
+                            8,
+                            limits(),
+                            authorizer(),
+                            dispatcher()));
+
+            assertNotNull(created.get());
+            assertTrue(created.get().isClosed(),
+                    "failed bind must close the freshly created TLS endpoint");
         }
     }
 
