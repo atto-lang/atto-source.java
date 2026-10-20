@@ -36,7 +36,43 @@ public final class Ast {
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl, ModelDecl { }
+
+    // Proposed first-class pure computational graph syntax. Parser-only until
+    // compiler-owned op resolution and backend execution are implemented.
+    public enum ModelValueKind { FORMAL, INTEGER, FLOAT, BOOLEAN, STRING }
+    public record ModelValue(ModelValueKind kind, String source) {
+        public ModelValue {
+            java.util.Objects.requireNonNull(kind);
+            java.util.Objects.requireNonNull(source);
+        }
+    }
+    public record ModelFormal(String name, TypeRef type, ModelValue defaultValue) {
+        public ModelFormal {
+            java.util.Objects.requireNonNull(name);
+            java.util.Objects.requireNonNull(type);
+        }
+    }
+    public record ModelArgument(String label, ModelValue value) {
+        public ModelArgument { java.util.Objects.requireNonNull(value); }
+    }
+    public record ModelOperation(String name, List<ModelArgument> arguments) {
+        public ModelOperation {
+            java.util.Objects.requireNonNull(name);
+            arguments = List.copyOf(arguments);
+        }
+    }
+    public record ModelDecl(
+            String name, Visibility visibility, List<ModelFormal> formals,
+            List<ModelOperation> operations) implements Decl {
+        public ModelDecl {
+            java.util.Objects.requireNonNull(name);
+            java.util.Objects.requireNonNull(visibility);
+            formals = List.copyOf(formals);
+            operations = List.copyOf(operations);
+            if (operations.isEmpty()) throw new IllegalArgumentException("MODEL_EMPTY_BODY");
+        }
+    }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
