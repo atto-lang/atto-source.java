@@ -173,6 +173,11 @@ public final class OresMain {
         if (checkOnly && buildAnalysis) {
             throw new UsageException("--check and --build-analysis are mutually exclusive");
         }
+        if (buildProfile != BuildProfile.DEV && !checkOnly && !buildAnalysis) {
+            throw new UsageException("--" + buildProfile.cliName()
+                    + " is a build contract, not a runtime mode; use --check/--build-analysis "
+                    + "until the final artifact build command is wired");
+        }
         if (buildProfile.requiresFullAot()) {
             if (modeExplicit && !"aot".equalsIgnoreCase(mode)) {
                 throw new UsageException("--" + buildProfile.cliName()
