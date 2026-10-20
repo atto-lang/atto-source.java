@@ -37,6 +37,13 @@ def owner_matches(pattern, path):
     return pattern.lstrip("/") == path
 
 
+def security_step_blocks(job):
+    """Split every top-level step item, regardless of YAML key spelling."""
+    starts = list(re.finditer(r"(?m)^      -(?: .*)?$", job))
+    return [job[m.start():starts[i + 1].start() if i + 1 < len(starts)
+                else len(job)] for i, m in enumerate(starts)]
+
+
 def require_unconditional_test_step(workflow, name, command):
     """Accept only a standalone executable Action step, not commented text.
 
@@ -44,9 +51,7 @@ def require_unconditional_test_step(workflow, name, command):
     layout, not a full YAML parser. Unknown keys, skip conditions, multiline
     run bodies and continue-on-error all fail closed.
     """
-    starts = list(re.finditer(r"(?m)^      - (?:name|uses): ", workflow))
-    blocks = [workflow[m.start():starts[i + 1].start() if i + 1 < len(starts)
-                       else len(workflow)] for i, m in enumerate(starts)]
+    blocks = security_step_blocks(workflow)
     expected = ["- name: " + name, "run: " + command]
     matching = [block for block in blocks if block.splitlines()[0].strip() == expected[0]]
     if len(matching) != 1:
@@ -57,27 +62,28 @@ def require_unconditional_test_step(workflow, name, command):
 
 
 def require_active_security_job(workflow):
-    """Reject unsupported job-level conditions and failure masking."""
-    marker = "jobs:\n  preflight-regressions:\n"
-    if workflow.count(marker) != 1:
+    """Reject every noncanonical job or job-level control, including quoted keys."""
+    if len(re.findall(r"(?m)^jobs:\n", workflow)) != 1:
         raise ValueError("required private-CI security job is missing or duplicated")
-    block = workflow.split(marker, 1)[1]
-    next_job = re.search(r"(?m)^  [A-Za-z_][A-Za-z_0-9-]*:\s*$", block)
-    if next_job:
+    jobs = workflow.split("jobs:\n", 1)[1]
+    job_headers = [line for line in jobs.splitlines()
+                   if re.match(r"^  \S", line)]
+    if job_headers != ["  preflight-regressions:"]:
         raise ValueError("private-CI workflow contains an unreviewed additional job")
-    fields = re.findall(r"(?m)^    ([A-Za-z_][A-Za-z_0-9-]*):", block)
-    if fields != ["runs-on", "timeout-minutes", "steps"]:
+    block = jobs.split("  preflight-regressions:\n", 1)[1]
+    controls = [line.strip() for line in block.splitlines()
+                if re.match(r"^    \S", line)]
+    if controls != [
+            "runs-on: ubuntu-24.04",
+            "timeout-minutes: 10",
+            "steps:"]:
         raise ValueError("private-CI security job contains an unsupported control")
-    if not re.search(r"(?m)^    runs-on: ubuntu-24\.04\s*$", block):
-        raise ValueError("private-CI job runner is not pinned")
     return block
 
 
 def require_exact_security_steps(job):
     """Only the reviewed checkout and three mandatory verification steps may run."""
-    matches = list(re.finditer(r"(?m)^      - (?:name|uses): ", job))
-    blocks = [job[m.start():matches[i + 1].start() if i + 1 < len(matches)
-                  else len(job)] for i, m in enumerate(matches)]
+    blocks = security_step_blocks(job)
     headings = [block.splitlines()[0].strip() for block in blocks]
     expected = [
         "- uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4",
@@ -95,9 +101,7 @@ def require_exact_security_steps(job):
 def require_exact_publisher_execution(workflow):
     """Pin the reviewed publisher execution step; reject masked or inert edits."""
     name = "Execute exact source-free publisher suite with isolated Python"
-    starts = list(re.finditer(r"(?m)^      - (?:name|uses): ", workflow))
-    blocks = [workflow[m.start():starts[i + 1].start() if i + 1 < len(starts)
-                       else len(workflow)] for i, m in enumerate(starts)]
+    blocks = security_step_blocks(workflow)
     matching = [block for block in blocks
                 if block.splitlines()[0].strip() == "- name: " + name]
     if len(matching) != 1:
@@ -454,6 +458,27 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
     def test_unreviewed_additional_action_step_is_denied(self):
         damaged = self.workflow + "      - uses: actions/cache@unreviewed-step\n"
         with self.assertRaisesRegex(ValueError, "unreviewed step"):
+            validate(self.owners, damaged)
+
+    def test_quoted_unreviewed_second_job_is_denied(self):
+        damaged = (self.workflow
+                   + '  "quoted-job":\n'
+                   + '    "runs-on": ubuntu-24.04\n'
+                   + '    "steps":\n'
+                   + '      - "run": echo bypass\n')
+        with self.assertRaisesRegex(ValueError, "unreviewed additional job"):
+            validate(self.owners, damaged)
+
+    def test_quoted_unreviewed_step_is_denied(self):
+        damaged = self.workflow + '      - "run": echo bypass\n'
+        with self.assertRaisesRegex(ValueError, "unreviewed step"):
+            validate(self.owners, damaged)
+
+    def test_quoted_job_control_is_denied(self):
+        damaged = self.workflow.replace(
+            "    timeout-minutes: 10\n",
+            '    timeout-minutes: 10\n    "env": {BYPASS: "1"}\n', 1)
+        with self.assertRaisesRegex(ValueError, "unsupported control"):
             validate(self.owners, damaged)
 
     def test_unreviewed_step_before_security_check_is_denied(self):
