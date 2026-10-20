@@ -73,9 +73,11 @@ public final class LatentEffectRows {
                 excess.removeAll(allowed);
                 throw new IllegalArgumentException("latent effects exceed declared with row: " + excess);
             }
-            if (capture != Capture.OWNED && (latent.contains(Effect.SUSPEND)
-                    || latent.contains(Effect.SCHEDULER))) {
-                throw new IllegalArgumentException("borrowed/state loan cannot cross suspension");
+            if (capture != Capture.OWNED
+                    && (kind != Kind.CALLABLE || latent.contains(Effect.SUSPEND)
+                            || latent.contains(Effect.SCHEDULER))) {
+                throw new IllegalArgumentException(
+                        "borrowed/state loan cannot escape into deferred work or suspension");
             }
             return latent;
         }
