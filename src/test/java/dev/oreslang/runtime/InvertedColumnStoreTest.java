@@ -250,7 +250,7 @@ final class InvertedColumnStoreTest {
     }
 
     @Test
-    void teardownInsideRowTransformRevokesStoreAndCannotCommit() {
+    void reentrantTeardownIsRejectedAndNeverCommitsPartialRow() {
         var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32);
         var h = store.push(7);
         assertThrows(IllegalStateException.class, () ->
@@ -259,6 +259,10 @@ final class InvertedColumnStoreTest {
                     store.close();
                     return row;
                 }));
+        // Teardown is not allowed to run inside an atomic method callback;
+        // the failed update leaves the store intact and independently closable.
+        assertEquals(7, store.get(h, 0));
+        store.close();
         assertThrows(IllegalStateException.class, () -> store.get(h, 0));
         assertThrows(IllegalStateException.class, () -> store.push(1));
     }
@@ -267,10 +271,17 @@ final class InvertedColumnStoreTest {
     void transactionCannotCloseOrReenterAndRollbackWorks() {
         try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32)) {
             var row = store.push(10);
+            assertThrows(IllegalStateException.class, () ->
+                    store.transformRow(row, values -> {
+                        assertThrows(IllegalStateException.class, store::close);
+                        assertThrows(IllegalStateException.class, () -> store.get(row, 0));
+                        assertThrows(IllegalStateException.class, () -> store.set(row, 0, 21));
+                        values[0] = 20;
+                        return values;
+                    }));
+            // Even swallowed nested-access exceptions taint the transaction.
+            assertEquals(10, store.get(row, 0));
             store.transformRow(row, values -> {
-                assertThrows(IllegalStateException.class, store::close);
-                assertThrows(IllegalStateException.class, () -> store.get(row, 0));
-                assertThrows(IllegalStateException.class, () -> store.set(row, 0, 21));
                 values[0] = 20;
                 return values;
             });
