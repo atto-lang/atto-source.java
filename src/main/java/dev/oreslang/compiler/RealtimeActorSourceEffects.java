@@ -159,12 +159,17 @@ public final class RealtimeActorSourceEffects {
         }
         Ast.ClassDecl actor = null;
         for (Ast.Decl declaration : module.declarations()) {
-            if (!(declaration instanceof Ast.ClassDecl c)
-                    || !c.name().equals(actorName)) {
+            // A rejecting void helper is not modeled by Java's definite-
+            // assignment analysis as a guaranteed throw. Cast explicitly.
+            if (!(declaration instanceof Ast.ClassDecl)) {
+                reject("unknown module declaration or actor name");
+            }
+            Ast.ClassDecl candidate = (Ast.ClassDecl) declaration;
+            if (!candidate.name().equals(actorName)) {
                 reject("unknown module declaration or actor name");
             }
             if (actor != null) reject("ambiguous actor declaration");
-            actor = c;
+            actor = candidate;
         }
         if (actor == null || actor.actorKind() != Ast.ActorKind.PRIVATE
                 || actor.isAbstract() || actor.constructor() != null
