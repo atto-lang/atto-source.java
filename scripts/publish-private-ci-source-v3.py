@@ -105,9 +105,16 @@ def safe_policy_path(value, prefix, suffix):
     if not isinstance(value, str):
         raise Denied("invalid protected carrier path")
     parts = PurePosixPath(value).parts
-    if (not value.startswith(prefix) or not value.endswith(suffix)
-            or not parts or ".." in parts or ".git" in parts
-            or "\\" in value or value.startswith("/")):
+    # These paths are interpolated into GitHub Contents API routes.  Require a
+    # single canonical ASCII spelling so caller/contract data cannot introduce
+    # query strings, fragments, percent-encoded separators, redundant slashes,
+    # dot components or other route ambiguity.
+    if (not re.fullmatch(r"[A-Za-z0-9._/-]+", value)
+            or PurePosixPath(value).as_posix() != value
+            or not value.startswith(prefix) or not value.endswith(suffix)
+            or not parts or any(part in (".", "..") for part in parts)
+            or any(part.casefold() == ".git" for part in parts)
+            or value.startswith("/")):
         raise Denied("invalid protected carrier path")
     return value
 
