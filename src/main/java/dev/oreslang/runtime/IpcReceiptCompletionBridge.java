@@ -326,6 +326,7 @@ public final class IpcReceiptCompletionBridge {
 
     private int transportLostInternal(IpcReceiptCorrelation.Envelope trustedEpoch) {
         ArrayList<CompletableFuture<IpcReceiptCorrelation.Stage>> done = new ArrayList<>();
+        List<IpcReceiptCorrelation.LostCorrelation> losses;
         synchronized (gate) {
             // Reserve all notification capacity BEFORE the native-equivalent
             // receipt table starts its no-throw retirement phase.
@@ -333,7 +334,7 @@ public final class IpcReceiptCompletionBridge {
             if (completions.size() != correlations.counters().pending()) {
                 throw new IllegalStateException("host correlation parity violated");
             }
-            var losses = correlations.retireTransportLost(trustedEpoch);
+            losses = correlations.retireTransportLost(trustedEpoch);
             for (var loss : losses) {
                 var completion = completions.remove(loss.envelope().messageSequence());
                 if (completion == null) throw new IllegalStateException("missing lost completion");
