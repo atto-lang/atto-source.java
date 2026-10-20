@@ -3245,7 +3245,8 @@ public final class TypeChecker {
                     }
                     return builtin.result();
                 }
-                if (receiver instanceof ListType || receiver instanceof Tuple) {
+                if (receiver instanceof ListType || receiver instanceof Tuple
+                        || isTypedMapType(receiver)) {
                     throw new IllegalArgumentException(
                             "unknown collection member '" + member.member() + "'");
                 }
@@ -3778,7 +3779,8 @@ public final class TypeChecker {
                 };
             }
             if (collectionMember != null) return collectionMember;
-            if (sumReceiver instanceof ListType || sumReceiver instanceof Tuple) {
+            if (sumReceiver instanceof ListType || sumReceiver instanceof Tuple
+                    || isTypedMapType(sumReceiver)) {
                 throw new IllegalArgumentException(
                         "unknown collection member '" + member.member() + "'");
             }
