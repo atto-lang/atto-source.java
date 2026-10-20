@@ -1020,7 +1020,11 @@ public final class TreeShaker {
                     if (name == null) continue;
                     String id = qualify(module.name(), name);
                     Symbol symbol = new Symbol(id, module.name(), declaration);
-                    symbols.put(id, symbol);
+                    Symbol duplicate = symbols.putIfAbsent(id, symbol);
+                    if (duplicate != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate semantic symbol during reachability indexing: " + id);
+                    }
                     String previous = uniqueSymbols.putIfAbsent(name, id);
                     if (previous != null && !previous.equals(id)) {
                         uniqueSymbols.remove(name);
