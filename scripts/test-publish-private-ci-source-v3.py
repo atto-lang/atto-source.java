@@ -335,9 +335,18 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(
             [call.args for call in require_exact_ref.call_args_list],
             [
-                ("trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT),
-                ("trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT),
-                ("trusted/ci", "ci/authorized-" + COMMIT, COMMIT),
+                (
+                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT,
+                    carrier["repository_id"],
+                ),
+                (
+                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT,
+                    carrier["repository_id"],
+                ),
+                (
+                    "trusted/ci", "ci/authorized-" + COMMIT, COMMIT,
+                    carrier["repository_id"],
+                ),
             ],
         )
 
@@ -398,7 +407,8 @@ class PrivateCiV3Test(unittest.TestCase):
                     )
 
         delete_ref.assert_called_once_with(
-            "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT
+            "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT,
+            carrier["repository_id"]
         )
 
     def test_publish_rolls_back_payload_if_pr_head_moves_before_authorization(self):
@@ -457,7 +467,8 @@ class PrivateCiV3Test(unittest.TestCase):
                     )
 
         delete_ref.assert_called_once_with(
-            "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT
+            "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT,
+            carrier["repository_id"]
         )
         ref_posts = [
             payload["ref"]
@@ -523,7 +534,10 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(
             [call.args for call in delete_ref.call_args_list],
             [
-                ("trusted/ci", "ci/authorized-" + COMMIT, COMMIT),
+                (
+                    "trusted/ci", "ci/authorized-" + COMMIT, COMMIT,
+                    carrier["repository_id"],
+                ),
                 ("trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT),
             ],
         )
@@ -585,7 +599,10 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(
             [call.args for call in delete_ref.call_args_list],
             [
-                ("trusted/ci", "ci/authorized-" + COMMIT, COMMIT),
+                (
+                    "trusted/ci", "ci/authorized-" + COMMIT, COMMIT,
+                    carrier["repository_id"],
+                ),
                 ("trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT),
             ],
         )
@@ -643,7 +660,30 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             with self.assertRaisesRegex(v3.Denied, "no longer visible"):
                 v3.live_ref_sha(
-                    "trusted/ci", "ci/authorized-" + COMMIT
+                    "trusted/ci", "ci/authorized-" + COMMIT, 1323598177
+                )
+
+    def test_live_ref_rejects_carrier_repository_id_replacement(self):
+        response = type(
+            "Result", (),
+            {"returncode": 0, "stderr": "", "stdout": "{}"},
+        )()
+        with (
+            patch.object(v3, "_gh_ref_request", return_value=response),
+            patch.object(
+                v3.legacy,
+                "checked_repo",
+                return_value={
+                    "id": 999,
+                    "full_name": "trusted/ci",
+                    "private": True,
+                    "visibility": "private",
+                },
+            ),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "repository identity changed"):
+                v3.live_ref_sha(
+                    "trusted/ci", "ci/authorized-" + COMMIT, 1323598177
                 )
 
     def test_live_ref_404_is_absent_only_after_private_carrier_recheck(self):
@@ -657,6 +697,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 v3.legacy,
                 "checked_repo",
                 return_value={
+                    "id": 1323598177,
                     "full_name": "trusted/ci",
                     "private": True,
                     "visibility": "private",
@@ -665,7 +706,7 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             self.assertIsNone(
                 v3.live_ref_sha(
-                    "trusted/ci", "ci/authorized-" + COMMIT
+                    "trusted/ci", "ci/authorized-" + COMMIT, 1323598177
                 )
             )
         checked_repo.assert_called_once_with("trusted/ci")
@@ -673,14 +714,16 @@ class PrivateCiV3Test(unittest.TestCase):
     def test_delete_exact_ref_missing_is_idempotent(self):
         with patch.object(v3, "live_ref_sha", return_value=None):
             self.assertFalse(
-                v3.delete_exact_ref("trusted/ci", "ci/oreslang-test", COMMIT)
+                v3.delete_exact_ref(
+                    "trusted/ci", "ci/oreslang-test", COMMIT, 1323598177
+                )
             )
 
     def test_delete_exact_ref_refuses_moved_ref(self):
         with patch.object(v3, "live_ref_sha", return_value="9" * 40):
             with self.assertRaisesRegex(v3.Denied, "moved"):
                 v3.delete_exact_ref(
-                    "trusted/ci", "ci/oreslang-test", COMMIT
+                    "trusted/ci", "ci/oreslang-test", COMMIT, 1323598177
                 )
 
     def test_delete_exact_ref_verifies_absence_after_delete(self):
@@ -690,7 +733,9 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3, "_gh_ref_request", return_value=response) as request,
         ):
             self.assertTrue(
-                v3.delete_exact_ref("trusted/ci", "ci/oreslang-test", COMMIT)
+                v3.delete_exact_ref(
+                    "trusted/ci", "ci/oreslang-test", COMMIT, 1323598177
+                )
             )
         request.assert_called_once_with(
             "trusted/ci", "ci/oreslang-test", "DELETE"
@@ -704,7 +749,7 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             with self.assertRaisesRegex(v3.Denied, "still exists"):
                 v3.delete_exact_ref(
-                    "trusted/ci", "ci/oreslang-test", COMMIT
+                    "trusted/ci", "ci/oreslang-test", COMMIT, 1323598177
                 )
 
     def test_manifest_matches_carrier_row_shape(self):
