@@ -47,8 +47,8 @@ public final class RealtimeClassfileAudit {
     private record CodeAttribute(byte[] code, int exceptionHandlers) { }
 
     public static Report audit(Path classFile) throws IOException {
-        long length = Files.size(classFile);
-        if (length < 24 || length > MAX_CLASS_BYTES) deny("invalid or oversized classfile");
+        long fileSize = Files.size(classFile);
+        if (fileSize < 24 || fileSize > MAX_CLASS_BYTES) deny("invalid or oversized classfile");
         byte[] bytes = Files.readAllBytes(classFile);
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
             if (in.readInt() != 0xCAFEBABE) deny("bad classfile magic");
