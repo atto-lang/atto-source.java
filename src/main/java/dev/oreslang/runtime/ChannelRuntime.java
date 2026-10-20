@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -354,7 +355,8 @@ public final class ChannelRuntime {
      */
     public static final class SelectSet {
         private final List<SelectCase> cases;
-        private final AtomicLong fairCursor = new AtomicLong();
+        private final AtomicLong fairCursor;
+        private final int defaultIndex;
 
         public SelectSet(Collection<? extends SelectCase> cases) {
             this(cases, 0L);
@@ -368,7 +370,14 @@ public final class ChannelRuntime {
         public SelectSet(
                 Collection<? extends SelectCase> cases,
                 long initialFairCursor) {
+            this(cases, new AtomicLong(initialFairCursor));
+        }
+
+        private SelectSet(
+                Collection<? extends SelectCase> cases,
+                AtomicLong sharedFairCursor) {
             Objects.requireNonNull(cases, "cases");
+            this.fairCursor = Objects.requireNonNull(sharedFairCursor, "sharedFairCursor");
             if (cases.isEmpty()) {
                 throw new IllegalArgumentException(
                         "select requires at least one case");
@@ -378,14 +387,16 @@ public final class ChannelRuntime {
                         "select case count exceeds maximum " + MAX_SELECT_CASES);
             }
             this.cases = List.copyOf(cases);
-            this.fairCursor.set(initialFairCursor);
-            long defaults = this.cases.stream()
-                    .filter(DefaultCase.class::isInstance)
-                    .count();
-            if (defaults > 1) {
-                throw new IllegalArgumentException(
-                        "select permits at most one default case");
+            int firstDefault = -1;
+            for (int i = 0; i < this.cases.size(); i++) {
+                if (!(this.cases.get(i) instanceof DefaultCase)) continue;
+                if (firstDefault >= 0) {
+                    throw new IllegalArgumentException(
+                            "select permits at most one default case");
+                }
+                firstDefault = i;
             }
+            this.defaultIndex = firstDefault;
         }
 
         public static SelectSet of(SelectCase... cases) {
@@ -498,7 +509,29 @@ public final class ChannelRuntime {
             return registration.tryNow();
         }
 
-        private int[] initialOrder(SelectPolicy policy) {
+        /**
+         * A source select uses its owning actor's site-local ticket, not the
+         * reusable plan's winner-advanced cursor. Capture the ticket per
+         * registration so overlapping pending selections cannot retarget it.
+         */
+        public OresFuture<SelectResult> selectStaticAsync(
+                SelectPolicy policy, long staticTicket) {
+            SelectRegistration registration = new SelectRegistration(
+                    this, Objects.requireNonNull(policy, "policy"),
+                    staticTicket, true, null, null);
+            registration.start(false);
+            return registration.future;
+        }
+
+        public Optional<SelectResult> tryStaticSelect(
+                SelectPolicy policy, long staticTicket) {
+            SelectRegistration registration = new SelectRegistration(
+                    this, Objects.requireNonNull(policy, "policy"),
+                    staticTicket, true, null, null);
+            return registration.tryNow();
+        }
+
+        private int[] initialOrder(SelectPolicy policy, long ticket, boolean useStaticTicket) {
             int count = cases.size();
             int[] order = new int[count];
 
@@ -508,7 +541,7 @@ public final class ChannelRuntime {
             }
 
             if (policy == SelectPolicy.FAIR) {
-                int start = Math.floorMod(fairCursor.get(), count);
+                int start = Math.floorMod(useStaticTicket ? ticket : fairCursor.get(), count);
                 for (int i = 0; i < count; i++) {
                     order[i] = (start + i) % count;
                 }
@@ -526,7 +559,8 @@ public final class ChannelRuntime {
         }
 
         private void selected(int index, SelectPolicy policy) {
-            if (policy == SelectPolicy.FAIR && !cases.isEmpty()) {
+            if (policy == SelectPolicy.FAIR && !cases.isEmpty()
+                    && !(cases.get(index) instanceof DefaultCase)) {
                 fairCursor.set((index + 1L) % cases.size());
             }
         }
@@ -594,6 +628,154 @@ public final class ChannelRuntime {
         }
     }
 
+    /**
+     * Mutation-friendly reusable select plan. Mutations publish an immutable
+     * snapshot for subsequent select operations. Already-armed operations retain
+     * their original case list and can still win after a removal or replacement.
+     *
+     * <p>Each invocation allocates its own registration. No channel waiter or
+     * winner state is recycled. Case indexes refer to the operation's snapshot,
+     * not to a potentially changed current plan. Use the keyed result API when
+     * the application needs stable dispatch under concurrent changes.</p>
+     */
+    public static final class DynamicSelectPlan<K> {
+        private final LinkedHashMap<K, SelectCase> entries = new LinkedHashMap<>();
+        // New structural generations get their own atomic cursor. A winner
+        // from an old registration can only update the old generation, and
+        // arbitration never takes the plan monitor while holding COORDINATOR.
+        private AtomicLong fairness = new AtomicLong();
+        private long version;
+        // Volatile publication permits lock-free repeated selections while
+        // synchronized mutations invalidate the generation.
+        private volatile Snapshot<K> cached;
+
+        private record Snapshot<K>(long version, List<K> keys, SelectSet set) { }
+
+        /** The case key remains stable even when snapshot indexes change. */
+        public record PlannedResult<K>(long version, K key, SelectResult selection) {
+            public PlannedResult {
+                Objects.requireNonNull(key, "key");
+                Objects.requireNonNull(selection, "selection");
+            }
+        }
+
+        public DynamicSelectPlan() { }
+
+        public DynamicSelectPlan(Map<? extends K, ? extends SelectCase> initial) {
+            Objects.requireNonNull(initial, "initial");
+            for (Map.Entry<? extends K, ? extends SelectCase> entry : initial.entrySet()) {
+                put(entry.getKey(), entry.getValue());
+            }
+        }
+
+        /** Add or replace a keyed case, preserving the key's insertion position. */
+        public synchronized void put(K key, SelectCase selectCase) {
+            Objects.requireNonNull(key, "key");
+            Objects.requireNonNull(selectCase, "selectCase");
+            if (selectCase instanceof DefaultCase) {
+                for (Map.Entry<K, SelectCase> entry : entries.entrySet()) {
+                    if (!entry.getKey().equals(key) && entry.getValue() instanceof DefaultCase) {
+                        throw new IllegalArgumentException("select permits at most one default case");
+                    }
+                }
+            }
+            long nextVersion = Math.addExact(version, 1L);
+            entries.put(key, selectCase);
+            fairness = new AtomicLong(fairness.get());
+            version = nextVersion;
+            cached = null;
+        }
+
+        /** Remove a case for future invocations. Pending selections are unaffected. */
+        public synchronized boolean remove(K key) {
+            Objects.requireNonNull(key, "key");
+            if (!entries.containsKey(key)) return false;
+            long nextVersion = Math.addExact(version, 1L);
+            entries.remove(key);
+            fairness = new AtomicLong(fairness.get());
+            version = nextVersion;
+            cached = null;
+            return true;
+        }
+
+        public synchronized long version() {
+            return version;
+        }
+
+        public synchronized int size() {
+            return entries.size();
+        }
+
+        public synchronized List<K> keys() {
+            return List.copyOf(entries.keySet());
+        }
+
+        /**
+         * A single immutable snapshot per mutation generation. The fast path
+         * does not take the mutable plan monitor on every loop iteration.
+         * Observing the previous snapshot concurrently with a put/remove is
+         * valid: that selection linearizes before the generation change.
+         */
+        private Snapshot<K> snapshot() {
+            Snapshot<K> published = cached;
+            if (published != null) return published;
+            synchronized (this) {
+                published = cached;
+                if (published != null) return published;
+                if (entries.isEmpty()) {
+                    throw new IllegalStateException("cannot select from an empty dynamic plan");
+                }
+                published = new Snapshot<>(
+                        version,
+                        List.copyOf(entries.keySet()),
+                        new SelectSet(entries.values(), fairness));
+                cached = published;
+                return published;
+            }
+        }
+
+        public OresFuture<SelectResult> selectAsync() {
+            return selectAsync(SelectPolicy.FAIR);
+        }
+
+        public OresFuture<SelectResult> selectAsync(SelectPolicy policy) {
+            return snapshot().set().selectAsync(policy);
+        }
+
+        public Optional<SelectResult> trySelect() {
+            return trySelect(SelectPolicy.FAIR);
+        }
+
+        public Optional<SelectResult> trySelect(SelectPolicy policy) {
+            return snapshot().set().trySelect(policy);
+        }
+
+        public OresFuture<PlannedResult<K>> selectKeyedAsync(SelectPolicy policy) {
+            Snapshot<K> selectedSnapshot = snapshot();
+            return mapSelection(
+                    selectedSnapshot.set().selectAsync(policy),
+                    result -> keyed(selectedSnapshot, result));
+        }
+
+        public Optional<PlannedResult<K>> trySelectKeyed(SelectPolicy policy) {
+            Snapshot<K> selectedSnapshot = snapshot();
+            return selectedSnapshot.set().trySelect(policy)
+                    .map(result -> keyed(selectedSnapshot, result));
+        }
+
+        private PlannedResult<K> keyed(Snapshot<K> selectedSnapshot, SelectResult result) {
+            return new PlannedResult<>(
+                    selectedSnapshot.version(),
+                    selectedSnapshot.keys().get(result.index()),
+                    result);
+        }
+
+        /** Snapshot for source-language dynamic select; never a mutable waiter list. */
+        public SelectSet selectSetSnapshot() {
+            return snapshot().set();
+        }
+    }
+
     private static final class CaseRegistration {
         private final SelectRegistration selection;
         private final int index;
@@ -632,6 +814,8 @@ public final class ChannelRuntime {
     private static final class SelectRegistration {
         private final SelectSet set;
         private final SelectPolicy policy;
+        private final long staticTicket;
+        private final boolean useStaticTicket;
         /** Captured under COORDINATOR at admission, after preceding FAIR commits. */
         private int[] order;
         private final ArrayList<CaseRegistration> registrations =
@@ -658,26 +842,29 @@ public final class ChannelRuntime {
         private final ArrayList<Runnable> deferredPublication = new ArrayList<>();
 
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
-            this(set, policy, null, null);
+            this(set, policy, 0L, false, null, null);
         }
 
         private SelectRegistration(SelectSet set, SelectPolicy policy,
                 Runnable afterWaiterAttachedForTesting,
                 Runnable beforeLateWaiterDetachedForTesting) {
+            this(set, policy, 0L, false,
+                    afterWaiterAttachedForTesting, beforeLateWaiterDetachedForTesting);
+        }
+
+        private SelectRegistration(SelectSet set, SelectPolicy policy,
+                long staticTicket, boolean useStaticTicket,
+                Runnable afterWaiterAttachedForTesting,
+                Runnable beforeLateWaiterDetachedForTesting) {
             this.set = set;
             this.policy = policy;
+            this.staticTicket = staticTicket;
+            this.useStaticTicket = useStaticTicket;
             this.afterWaiterAttachedForTesting = afterWaiterAttachedForTesting;
             this.beforeLateWaiterDetachedForTesting = beforeLateWaiterDetachedForTesting;
             this.registeredByIndex = new CaseRegistration[set.cases.size()];
 
-            int foundDefault = -1;
-            for (int i = 0; i < set.cases.size(); i++) {
-                if (set.cases.get(i) instanceof DefaultCase) {
-                    foundDefault = i;
-                    break;
-                }
-            }
-            this.defaultIndex = foundDefault;
+            this.defaultIndex = set.defaultIndex;
             this.future = new OresFuture<>(
                     this::cancelAdmission,
                     () -> { });
@@ -870,6 +1057,12 @@ public final class ChannelRuntime {
             return Optional.of(future.join());
         }
 
+        private void selected(int index) {
+            // Compiler static-site tickets must not mutate the independent
+            // reusable-plan cursor, including after terminal Future failures.
+            if (!useStaticTicket) set.selected(index, policy);
+        }
+
         private CaseRegistration caseOrDefault(int index) {
             for (CaseRegistration registration : registrations) {
                 if (registration.index == index) return registration;
@@ -900,7 +1093,8 @@ public final class ChannelRuntime {
         // this registration object was constructed. Capture the fairness
         // cursor at atomic admission, not at construction, so overlapping
         // invocations observe all earlier committed rotations.
-        selection.order = selection.set.initialOrder(selection.policy);
+        selection.order = selection.set.initialOrder(
+                selection.policy, selection.staticTicket, selection.useStaticTicket);
         selection.registered = true;
         ACTIVE.add(selection);
 
@@ -1244,8 +1438,8 @@ public final class ChannelRuntime {
 
         reader.selection.decided = true;
         writer.selection.decided = true;
-        reader.selection.set.selected(reader.index, reader.selection.policy);
-        writer.selection.set.selected(writer.index, writer.selection.policy);
+        reader.selection.selected(reader.index);
+        writer.selection.selected(writer.index);
         unregisterLocked(reader.selection, completions);
         unregisterLocked(writer.selection, completions);
 
@@ -1272,7 +1466,7 @@ public final class ChannelRuntime {
         if (selection.decided) return;
 
         selection.decided = true;
-        selection.set.selected(result.index(), selection.policy);
+        selection.selected(result.index());
         unregisterLocked(selection, completions);
         completions.add(() -> selection.publishAfterAttachment(
                 () -> selection.future.completeFromRuntime(result)));
@@ -1289,7 +1483,7 @@ public final class ChannelRuntime {
         // past it exactly as it does after a successful read/write; otherwise a
         // permanently closed arm can monopolize a reusable SelectSet forever.
         selection.decided = true;
-        selection.set.selected(registration.index, selection.policy);
+        selection.selected(registration.index);
         unregisterLocked(selection, completions);
         completions.add(() -> selection.publishAfterAttachment(
                 () -> selection.future.failFromRuntime(failure)));
