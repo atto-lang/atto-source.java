@@ -4687,7 +4687,12 @@ public final class ActorRuntime implements AutoCloseable {
                             absentFromRegistry = false;
                         }
                     }
-                    if (linkedToParent && cell != null) {
+                    // A failed registry rollback is a still-admitted
+                    // physical child. Keep parent and managed-group lineage
+                    // in place until its real terminal finalization; otherwise
+                    // the parent could complete and unload an image while a
+                    // surviving child remains registered.
+                    if (absentFromRegistry && linkedToParent && cell != null) {
                         try {
                             parent.children.remove(cell);
                         } catch (RuntimeException | Error cleanupFailure) {
@@ -4695,7 +4700,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 failure.addSuppressed(cleanupFailure);
                         }
                     }
-                    if (cell != null) {
+                    if (absentFromRegistry && cell != null) {
                         try {
                             ActorGroupId inheritedId = cell.managedByGroup.get();
                             ActorGroup inherited = inheritedId == null
