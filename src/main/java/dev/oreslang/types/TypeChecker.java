@@ -116,7 +116,7 @@ public final class TypeChecker {
         public TypeCheckResult { warnings = List.copyOf(warnings); }
     }
 
-    /** Type result plus sealed exact-boundary Task execution admissions. */
+    /** Type result plus sealed, non-executable exact-boundary Task proofs. */
     public record TaskTypeCheckResult(
             Ast.Program program,
             List<String> warnings,
@@ -127,6 +127,10 @@ public final class TypeChecker {
             if (!taskAdmissions.sealed()) {
                 throw new IllegalArgumentException(
                         "Task boundary admissions must be sealed");
+            }
+            if (taskAdmissions.executable()) {
+                throw new IllegalArgumentException(
+                        "type analysis cannot mint executable Task authority");
             }
         }
     }
@@ -155,8 +159,9 @@ public final class TypeChecker {
     }
 
     /**
-     * Full type validation while minting exact-identity executable Task proofs.
-     * Ordinary type-only callers intentionally receive no executable authority.
+     * Full type validation while collecting exact-identity Task proofs.
+     * The returned ledger is sealed against mutation but deliberately lacks
+     * executable authority until OwnershipChecker validates the same Program.
      */
     public static TaskTypeCheckResult checkTypesWithTaskAdmissions(
             Ast.Program program) {
