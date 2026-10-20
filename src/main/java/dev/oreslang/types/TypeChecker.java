@@ -272,16 +272,26 @@ public final class TypeChecker {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    rejectReservedSymbolTypeName(klass.name(), "class");
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    rejectReservedSymbolTypeName(iface.name(), "interface");
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    rejectReservedSymbolTypeName(alias.name(), "type alias");
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                     typeAliasOwners.put(alias, module.name());
                 }
             }
+        }
+    }
+
+    private static void rejectReservedSymbolTypeName(String name, String declarationKind) {
+        if ("Symbol".equals(name)) {
+            throw new IllegalArgumentException("Symbol is a reserved nominal built-in; cannot declare "
+                    + declarationKind + " Symbol");
         }
     }
 
@@ -1986,7 +1996,7 @@ public final class TypeChecker {
             Type subject = deref(typeOf(switched.subject(), env, generics, self));
             Map<Env.Binding, Set<String>> beforeCases = env.initializationSnapshot();
             List<Map<Env.Binding, Set<String>>> exits = new ArrayList<>();
-            Set<String> seen = new HashSet<>();
+            Set<Object> seen = new HashSet<>();
             for (Ast.SwitchCase arm : switched.cases()) {
                 env.restoreInitialization(beforeCases);
                 if (arm.constants().isEmpty()) throw new IllegalArgumentException("switch case requires at least one constant");
@@ -1996,8 +2006,12 @@ public final class TypeChecker {
                     if (!assignable(actual, subject) && !assignable(subject, actual)) {
                         throw new IllegalArgumentException("switch case type " + actual + " is incompatible with " + subject);
                     }
-                    String key = constant.toString();
-                    if (!seen.add(key)) throw new IllegalArgumentException("duplicate switch case: " + key);
+                    // Display text cannot be used for identity: String "#x" and
+                    // Symbol #x can render alike, while #x and #"x" are equal.
+                    Object key = constant instanceof Ast.LiteralExpr literal
+                            ? new SwitchLiteralCaseKey(literal.value().getClass(), literal.value())
+                            : constant.toString();
+                    if (!seen.add(key)) throw new IllegalArgumentException("duplicate switch case: " + constant);
                 }
                 checkBlock(arm.body(), env, generics, expectedReturn, self);
                 exits.add(env.initializationSnapshot());
@@ -3917,7 +3931,7 @@ public final class TypeChecker {
             }
             // Guest Symbols are immutable keys, not fresh reference capabilities.
             // Do not silently reinterpret the historical STABLE constructor.
-            if (created.type().name().equals("Symbol") && findClass("Symbol") == null) {
+            if (created.type().name().equals("Symbol")) {
                 throw new IllegalArgumentException("new Symbol(...) is not supported; use #name or Symbol.stable(uuid)");
             }
             if (created.type().name().equals("DynamicStruct")) {
@@ -8871,9 +8885,14 @@ public final class TypeChecker {
 
     private Set<String> uniqueGenerics(List<String> names, String owner) {
         Set<String> result = new HashSet<>();
-        for (String name : names) if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+        for (String name : names) {
+            rejectReservedSymbolTypeName(name, "generic parameter in " + owner);
+            if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+        }
         return result;
     }
+
+    private record SwitchLiteralCaseKey(Class<?> nominalType, Object value) { }
 
     private boolean constant(Ast.Expr expr) {
         if (expr instanceof Ast.LiteralExpr) return true;
