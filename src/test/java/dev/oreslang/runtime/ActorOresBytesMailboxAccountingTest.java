@@ -100,6 +100,28 @@ final class ActorOresBytesMailboxAccountingTest {
     }
 
     @Test
+    void privateResultDeepCopyDoesNotRetainNestedActorStorage() {
+        OresBytes source = OresBytes.copyOf(new byte[] {3, 4, 5});
+        java.util.List<Object> nested = java.util.List.of(source);
+        java.util.Map<String, Object> result = java.util.Map.of("nested", nested);
+
+        Object exportedValue = ActorRuntime.copyPrivateResultForSupervisor(result);
+        java.util.Map<?, ?> exported = assertInstanceOf(
+                java.util.Map.class, exportedValue);
+        assertNotSame(result, exported);
+
+        java.util.List<?> exportedNested = assertInstanceOf(
+                java.util.List.class, exported.get("nested"));
+        assertNotSame(nested, exportedNested);
+
+        OresBytes exportedBytes = assertInstanceOf(
+                OresBytes.class, exportedNested.get(0));
+        assertNotSame(source, exportedBytes,
+                "nested PRIVATE byte storage must not remain supervisor-reachable");
+        assertEquals(source, exportedBytes);
+    }
+
+    @Test
     void privateMailboxChargesByteLengthAndFailsBeforeHeapCeiling() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
