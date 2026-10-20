@@ -71,6 +71,10 @@ final class MinimalNominalEnumGuestTest {
                     END = 2
                 end
 
+                fnc make(): DetailError {
+                    return DetailError.CODE(9);
+                }
+
                 fnc decode(DetailError error): int {
                     match error over
                         on DetailError.CODE(code) -> { return code; }
@@ -79,7 +83,7 @@ final class MinimalNominalEnumGuestTest {
                 }
 
                 pub fnc main(): void {
-                    stdio.println(decode(DetailError.CODE(9)));
+                    stdio.println(decode(make()));
                     return;
                 }
                 """;
@@ -175,6 +179,31 @@ final class MinimalNominalEnumGuestTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(program)));
+    }
+
+    @Test void recursiveNominalEnumPayloadCyclesAreRejected() {
+        String direct = """
+                define enum Recursive as
+                    NEXT: Recursive = 1
+                end
+                """;
+        assertDoesNotThrow(() -> Parser.parse(direct));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(direct)));
+
+        String indirect = """
+                define enum Left as
+                    RIGHT: Right = 1
+                end
+                define enum Right as
+                    LEFT: Left = 1
+                end
+                """;
+        assertDoesNotThrow(() -> Parser.parse(indirect));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(indirect)));
     }
 
     @Test void tagsArePositiveUniqueAndMonotonic() {
