@@ -1,0 +1,36 @@
+package dev.oreslang.runtime;
+
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class OresEntryRuntimeTest {
+    @Test
+    void freezePreservesNominalEntryAndDetachesNestedValues() {
+        ArrayList<Object> mutableKey = new ArrayList<>();
+        mutableKey.add("k");
+        OresEntry source = new OresEntry(mutableKey, List.of("v"));
+
+        Object frozenValue = ActorRuntime.freeze(source);
+        OresEntry frozen = assertInstanceOf(OresEntry.class, frozenValue);
+
+        assertNotSame(source, frozen);
+        assertNotSame(mutableKey, frozen.key());
+        assertEquals(List.of("k"), frozen.key());
+        mutableKey.add("late");
+        assertEquals(List.of("k"), frozen.key());
+
+        @SuppressWarnings("unchecked")
+        List<Object> frozenKey = (List<Object>) frozen.key();
+        assertThrows(UnsupportedOperationException.class, () -> frozenKey.add("mutate"));
+    }
+
+    @Test
+    void entrySharedStateChildrenExposeExactlyKeyAndValue() {
+        OresEntry entry = new OresEntry("left", "right");
+        assertEquals(List.of("left", "right"), entry.sharedStateChildren());
+    }
+}
