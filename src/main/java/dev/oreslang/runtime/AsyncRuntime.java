@@ -80,9 +80,21 @@ public final class AsyncRuntime implements AutoCloseable {
     }
 
     public AsyncRuntime(TurnExecutor turnExecutor) {
-        this.turnExecutor = Objects.requireNonNull(turnExecutor, "turnExecutor");
+        this(turnExecutor, newVirtualThreadExecutor());
+    }
+
+    private static ExecutorService newVirtualThreadExecutor() {
         ThreadFactory factory = Thread.ofVirtual().name("ores-async-", 0L).factory();
-        this.executor = Executors.newThreadPerTaskExecutor(factory);
+        return Executors.newThreadPerTaskExecutor(factory);
+    }
+
+    /**
+     * Package-private adversarial executor seam. Tests can delay, reject or
+     * fail admission deterministically without changing guest semantics.
+     */
+    AsyncRuntime(TurnExecutor turnExecutor, ExecutorService executor) {
+        this.turnExecutor = Objects.requireNonNull(turnExecutor, "turnExecutor");
+        this.executor = Objects.requireNonNull(executor, "executor");
     }
 
     /**
