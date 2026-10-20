@@ -3,7 +3,10 @@ on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/compiler/RealtimeRegionEffectModel.java'
+      - 'src/main/java/dev/oreslang/compiler/RealtimeActorSourceEffects.java'
+      - 'src/main/java/dev/oreslang/compiler/OresCompiler.java'
       - 'src/test/java/dev/oreslang/compiler/RealtimeRegionEffectModelSelfTest.java'
+      - 'src/test/java/dev/oreslang/compiler/RealtimeActorSourceEffectsSelfTest.java'
       - 'docs/realtime/region-effect-stage1.md'
       - '.github/workflows/rt-region-model-admission.yml'
 permissions:
@@ -30,3 +33,13 @@ jobs:
         run: |
           java -ea -cp target/rt-region-model \
             dev.oreslang.compiler.RealtimeRegionEffectModelSelfTest
+      - name: Compile checked-AST actor source gate
+        run: |
+          javac --release 21 -d target/rt-region-model \
+            src/main/java/dev/oreslang/ast/Ast.java \
+            src/main/java/dev/oreslang/compiler/RealtimeActorSourceEffects.java \
+            src/test/java/dev/oreslang/compiler/RealtimeActorSourceEffectsSelfTest.java
+      - name: Run actual-AST actor callback negative tests
+        run: |
+          java -ea -cp target/rt-region-model \
+            dev.oreslang.compiler.RealtimeActorSourceEffectsSelfTest
