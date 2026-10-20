@@ -32,7 +32,6 @@ public final class RealtimeActorSourceEffects {
 
     private static final class Walker {
         private int visited;
-        private long steps;
 
         long walk(List<Ast.Stmt> statements, Set<String> locals, int nesting) {
             if (nesting > MAX_STATEMENT_NESTING) reject("statement nesting exceeds maximum");
@@ -47,6 +46,7 @@ public final class RealtimeActorSourceEffects {
                     terminated = true;
                 } else if (stmt instanceof Ast.BindingStmt bind) {
                     if (bind.initializer() == null || bind.inferredTypeName() != null
+                            || bind.kind() != Ast.BindingKind.CONST
                             || bind.mutableReferent() || !scalar(bind.declaredType())) {
                         reject("only initialized, immutable, explicit scalar locals are admitted");
                     }
