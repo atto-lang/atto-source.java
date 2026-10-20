@@ -159,11 +159,14 @@ end
 
 The end-delimited form never infers its return type: `-> ReturnType` is
 mandatory. Without `do`, the first body token must begin on a later source
-line. An optional `do` may follow the complete return type as a semantics-free
-body separator; when present it also permits compact/minified same-line bodies,
-for example `fnc identity(int x) -> int do return x; end`. Non-`void`
-callables still require an explicit return on every reachable normal completion
-path; `void` may fall through the closing `end`.
+line. An optional semantics-free separator `do` is recognized only when it is
+on the same physical source line as the completed return type; when present it
+also permits compact/minified same-line bodies, for example
+`fnc identity(int x) -> int do return x; end`. A `do` beginning on the next
+line belongs to the function body, so a first statement such as
+`do select { ... }` is not consumed as header syntax. Non-`void` callables
+still require an explicit return on every reachable normal completion path;
+`void` may fall through the closing `end`.
 
 Because the return type is parsed completely before the optional separator,
 higher-order returns remain unambiguous: `fnc callback() -> () => void do ... end`
