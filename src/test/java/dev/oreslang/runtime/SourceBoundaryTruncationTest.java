@@ -155,4 +155,39 @@ final class SourceBoundaryTruncationTest {
         assertTrue(failure.getSuppressed()[63].getMessage().contains("truncated"));
         assertTrue(TrapFailurePolicy.isTrappable(failure, GuestPanic.class));
     }
+
+    @Test
+    void maxLabelLengthsIncludeEllipsisAndNeverSplitSurrogatePairs() {
+        var failure = new IllegalStateException("bounds");
+        SourceBoundaryTrace.record(failure,
+                "c".repeat(161), "😀".repeat(49), "b".repeat(65));
+        String message = failure.getSuppressed()[0].getMessage();
+        assertTrue(message.startsWith("ores "));
+        int codeUnitStart = message.indexOf(" [");
+        assertTrue(codeUnitStart > 5);
+        String callParts = message.substring(5, codeUnitStart);
+        int separator = callParts.indexOf(' ');
+        assertTrue(separator > 0);
+        String boundary = callParts.substring(0, separator);
+        String callable = callParts.substring(separator + 1);
+        String codeUnit = message.substring(codeUnitStart + 2, message.length() - 1);
+
+        assertTrue(boundary.length() <= 64, message);
+        assertTrue(callable.length() <= 96, message);
+        assertTrue(codeUnit.length() <= 160, message);
+        assertTrue(boundary.endsWith("…"), message);
+        assertTrue(callable.endsWith("…"), message);
+        assertTrue(codeUnit.endsWith("…"), message);
+        for (int i = 0; i < message.length(); i++) {
+            char ch = message.charAt(i);
+            if (Character.isHighSurrogate(ch)) {
+                assertTrue(i + 1 < message.length()
+                        && Character.isLowSurrogate(message.charAt(i + 1)));
+                i++;
+            } else {
+                assertFalse(Character.isLowSurrogate(ch));
+            }
+        }
+    }
+
 }
