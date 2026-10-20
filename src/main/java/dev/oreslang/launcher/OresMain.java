@@ -425,6 +425,9 @@ public final class OresMain {
                         + "[--platform=server|windows|macos|linux|android|ios] "
                         + "[--allow=CAP,...] [--allow-host-class=java.util.ArrayList ...] "
                         + "[file.ores|file.java]");
+        System.err.println(
+                "       oreslang-compiler --static-safety [--fail-on=never|warning] file.ores "
+                + "(advisory JSON, not a security or termination certificate)");
     }
 
     static List<String> formatSyntaxWarnings(Path path, String source) {
