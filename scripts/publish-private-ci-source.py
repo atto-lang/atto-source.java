@@ -25,8 +25,12 @@ MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
 SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
+SOURCE_REPO_ID = 1400792274
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
+RECEIPT_PATH = "ci/oreslang-receipt.json"
+CARRIER_WORKFLOW_PATH = ".github/workflows/oreslang-exact-tree-carrier.yml"
+RECEIPT_SCHEMA = "ores-private-ci-receipt-v3"
 
 
 class Denied(RuntimeError):
@@ -149,8 +153,9 @@ def verify_protected_origin(repository, expected_policy_digest):
     """
     origin = gh_api(f"repos/{SOURCE_REPO}")
     if (origin.get("full_name") != SOURCE_REPO
+            or origin.get("id") != SOURCE_REPO_ID
             or origin.get("private") is not True):
-        raise Denied("cannot attest identity and privacy of source origin")
+        raise Denied("cannot attest immutable identity and privacy of source origin")
     branch = gh_api(f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}")
     if (branch.get("name") != SOURCE_PROTECTED_BRANCH
             or branch.get("protected") is not True):
@@ -383,6 +388,8 @@ def verified_exact_source_tree(files, source_commit):
 def publish(repository, source, branch, trusted_root, source_commit):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
+    if branch.startswith("ci/oreslang-synthetic-"):
+        raise Denied("synthetic carrier branch namespace is reserved")
     source_commit = valid_sha(source_commit)
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
@@ -401,14 +408,37 @@ def publish(repository, source, branch, trusted_root, source_commit):
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
         raise Denied("destination default branch is invalid")
+    destination_repo_id = base.get("id")
+    if (not isinstance(destination_repo_id, int)
+            or isinstance(destination_repo_id, bool)
+            or destination_repo_id <= 0):
+        raise Denied("destination repository id is unavailable")
     base_ref = gh_api(f"repos/{repository}/git/ref/heads/{default}")
     base_sha = valid_sha(base_ref.get("object", {}).get("sha"))
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
+    carrier = gh_api(
+        f"repos/{repository}/contents/{CARRIER_WORKFLOW_PATH}?ref={base_sha}")
+    if (carrier.get("path") != CARRIER_WORKFLOW_PATH
+            or carrier.get("type") != "file"):
+        raise Denied("approved destination lacks the exact-tree carrier workflow")
+    carrier_blob_sha = valid_sha(carrier.get("sha"))
     def authorize_write():
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
         checked_repo(repository)
+
+    manifest_rows = []
+    for rel, data, mode in files:
+        expected_blob = hashlib.sha1(
+            b"blob " + str(len(data)).encode("ascii") + bytes([0]) + data
+        ).hexdigest()
+        manifest_rows.append([rel, mode, expected_blob, len(data)])
+    manifest_rows.sort(key=lambda row: row[0])
+    manifest_digest = hashlib.sha256(
+        json.dumps(manifest_rows, separators=(",", ":"),
+                   ensure_ascii=True).encode()
+    ).hexdigest()
 
     elements = []
     for rel, data, mode in files:
@@ -432,17 +462,60 @@ def publish(repository, source, branch, trusted_root, source_commit):
     isolated_sha = valid_sha(isolated.get("sha"))
     if isolated_sha != expected_source_tree:
         raise Denied("uploaded source tree differs from pinned Git commit")
-    # Replace the entire PREFIX subtree atomically in the new root tree.
-    # Preserve unrelated destination files and CI workflows from base_tree.
+
+    receipt = {
+        "schema": RECEIPT_SCHEMA,
+        "source": {
+            "repo": SOURCE_REPO,
+            "repo_id": SOURCE_REPO_ID,
+            "head_sha": source_commit,
+            "root_tree_sha": expected_source_tree,
+            "manifest_sha256": manifest_digest,
+        },
+        "destination": {
+            "repo": repository,
+            "repo_id": destination_repo_id,
+            "base_sha": base_sha,
+        },
+        "mirror": {"root_tree_sha": isolated_sha},
+        "carrier": {"workflow_blob_sha": carrier_blob_sha},
+    }
+    receipt_canonical = json.dumps(
+        receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode()
+    receipt_digest = hashlib.sha256(receipt_canonical).hexdigest()
+    receipt_bytes = receipt_canonical + b"\n"
+    authorize_write()
+    receipt_blob = gh_api(f"repos/{repository}/git/blobs", method="POST", payload={
+        "content": base64.b64encode(receipt_bytes).decode("ascii"),
+        "encoding": "base64",
+    })
+    receipt_blob_sha = valid_sha(receipt_blob.get("sha"))
+    expected_receipt_blob = hashlib.sha1(
+        b"blob " + str(len(receipt_bytes)).encode("ascii")
+        + bytes([0]) + receipt_bytes
+    ).hexdigest()
+    if receipt_blob_sha != expected_receipt_blob:
+        raise Denied("uploaded receipt digest does not match canonical receipt")
+
+    # Replace the entire PREFIX subtree atomically and commit the receipt in
+    # the same source-bearing commit. Preserve only unrelated destination files
+    # and the reviewed carrier workflow from the trusted destination base.
     authorize_write()
     new_tree = gh_api(f"repos/{repository}/git/trees", method="POST",
                       payload={"base_tree": base_tree, "tree": [
                           {"path": PREFIX, "mode": "040000", "type": "tree",
-                           "sha": isolated_sha}]})
+                           "sha": isolated_sha},
+                          {"path": RECEIPT_PATH, "mode": "100644", "type": "blob",
+                           "sha": receipt_blob_sha},
+                      ]})
     new_tree_sha = valid_sha(new_tree.get("sha"))
     authorize_write()
     commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
-        "message": "ci: source snapshot from approved private Oreslang checkout",
+        "message": (
+            "ci: source snapshot from approved private Oreslang checkout\n\n"
+            "Oreslang-CI-Receipt-SHA256: " + receipt_digest
+        ),
         "tree": new_tree_sha, "parents": [base_sha]
     })
     commit_sha = valid_sha(commit.get("sha"))
