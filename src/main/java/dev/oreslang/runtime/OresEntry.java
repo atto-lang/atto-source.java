@@ -1,28 +1,29 @@
 package dev.oreslang.runtime;
 
-import java.util.Arrays;
+import java.util.List;
+import java.util.Objects;
 
 /**
  * Oreslang's immutable, nominal Entry<K,V> value carrier.
  *
- * <p>The host representation intentionally has identity equality/hash rather
- * than a Java record's generated recursive equals/hashCode/toString. Guest
- * equality is implemented by the Oreslang evaluator and recursively compares
- * key/value according to Oreslang value semantics. Host equality and hashing
- * cannot substitute for the guest contract, particularly for cyclic mutable
- * host graphs, mixed numeric domains, Symbols, and future typed-Map keys.</p>
+ * <p>The host representation intentionally uses identity equality/hash rather
+ * than recursive component equality. Guest equality is implemented by the
+ * Oreslang evaluator and recursively compares key/value according to Oreslang
+ * value semantics. Host equality and hashing must never substitute for the
+ * guest contract, particularly for cyclic mutable host graphs, mixed numeric
+ * domains, Symbols, and future typed-Map keys.</p>
  *
- * <p>The carrier never grants authority to its payloads: actor transport must
- * independently validate and detach both fields. Java null is preserved as
- * Oreslang's null value; null admission is governed by the guest type contract.</p>
+ * <p>Standalone guest null is not an Entry component value. Optional absence
+ * is represented by Option<T>; rejecting Java null here keeps host-created
+ * Entry carriers aligned with the source type contract.</p>
  */
 public final class OresEntry implements OresMutex.SharedState {
     private final Object key;
     private final Object value;
 
     public OresEntry(Object key, Object value) {
-        this.key = key;
-        this.value = value;
+        this.key = Objects.requireNonNull(key, "Entry key");
+        this.value = Objects.requireNonNull(value, "Entry value");
     }
 
     public Object key() {
@@ -33,17 +34,33 @@ public final class OresEntry implements OresMutex.SharedState {
         return value;
     }
 
+    /**
+     * Java host identity is not Oreslang value equality.
+     */
     @Override
-    public Iterable<?> sharedStateChildren() {
-        return Arrays.asList(key, value);
+    public boolean equals(Object other) {
+        return this == other;
     }
 
     /**
-     * Source-level diagnostics use the bounded, cycle-aware guest renderer.
-     * Never implicitly stringify hostile host payloads on a host carrier.
+     * Keep host hash semantics aligned with host identity equality.
+     */
+    @Override
+    public int hashCode() {
+        return System.identityHashCode(this);
+    }
+
+    /**
+     * Host diagnostics must not recursively stringify or disclose payloads.
+     * Guest formatting uses the evaluator's bounded, cycle-aware renderer.
      */
     @Override
     public String toString() {
-        return "OresEntry";
+        return "OresEntry<opaque>";
+    }
+
+    @Override
+    public Iterable<?> sharedStateChildren() {
+        return List.of(key, value);
     }
 }
