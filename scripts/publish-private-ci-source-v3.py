@@ -543,9 +543,12 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         contract["test_plan_path"], protected_sha
     )
     checked_destination(repository, contract)
+    if verify_source_pr(source_pr, source_commit) != source_repo_id:
+        raise Denied("source repository identity changed before publication")
 
     # Create the source-bearing branch first. The carrier workflow fails closed
     # while it waits for the exact authorization ref below.
+    auth()
     created = legacy.gh_api(
         f"repos/{repository}/git/refs", method="POST",
         payload={"ref": "refs/heads/" + branch, "sha": commit_sha},
@@ -554,6 +557,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         raise Denied("carrier did not confirm exact-tree CI branch creation")
 
     authorization = "ci/authorized-" + commit_sha
+    auth()
     approved = legacy.gh_api(
         f"repos/{repository}/git/refs", method="POST",
         payload={"ref": "refs/heads/" + authorization, "sha": commit_sha},
