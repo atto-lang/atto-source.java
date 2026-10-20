@@ -963,17 +963,19 @@ public final class TreeShaker {
             }
             if (expression instanceof Ast.IndexExpr indexed) {
                 Ast.Expr receiver = rewriteExpression(indexed.receiver(), module, locals);
-                // Optimizing a receiver into a different expression cannot
-                // reuse the original type-checked access capability. Keep
-                // the original receiver on certified projections until the
-                // optimizer supports a fresh, post-rewrite type/loan proof.
-                if (Ast.CheckedIndexKeys.hasProjectionProof(indexed)
-                        && indexed.receiver() != receiver) {
-                    receiver = indexed.receiver();
+                Ast.Expr selector = rewriteExpression(indexed.index(), module, locals);
+                // A certified projection is authority minted by the completed
+                // type/visibility/ownership passes. This optimizer runs after
+                // those passes and does not re-type replacements, so it may not
+                // swap either half of the projection and carry the old proof
+                // forward. Preserve both exact checked nodes until a future
+                // post-rewrite admission pass can mint a fresh proof.
+                if (Ast.CheckedIndexKeys.hasProjectionProof(indexed)) {
+                    if (indexed.receiver() != receiver) receiver = indexed.receiver();
+                    if (indexed.index() != selector) selector = indexed.index();
                 }
-                return Ast.CheckedIndexKeys.propagate(indexed, new Ast.IndexExpr(
-                        receiver,
-                        rewriteExpression(indexed.index(), module, locals)));
+                return Ast.CheckedIndexKeys.propagate(
+                        indexed, new Ast.IndexExpr(receiver, selector));
             }
             if (expression instanceof Ast.NewExpr created) {
                 List<Ast.Expr> arguments = new ArrayList<>();
