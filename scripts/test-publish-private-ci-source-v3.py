@@ -317,6 +317,142 @@ class PrivateCiV3Test(unittest.TestCase):
             ],
         )
 
+    def test_authorization_ref_failure_rolls_back_attempted_refs(self):
+        carrier = contract()
+        calls = []
+
+        def api(route, method="GET", payload=None):
+            calls.append((method, route, payload))
+            if method == "POST" and route.endswith("/git/blobs"):
+                data = base64.b64decode(payload["content"], validate=True)
+                return {"sha": v3.git_blob_sha(data)}
+            if method == "POST" and route.endswith("/git/trees"):
+                return {"sha": SOURCE_TREE if payload.get("base_tree") is None else ROOT_TREE}
+            if method == "POST" and route.endswith("/git/commits"):
+                return {"sha": COMMIT}
+            if method == "POST" and route.endswith("/git/refs"):
+                if payload["ref"].startswith("refs/heads/ci/oreslang-"):
+                    return {"ref": payload["ref"], "object": {"sha": COMMIT}}
+                raise v3.Denied("synthetic authorization ref failure")
+            if method == "DELETE" and "/git/refs/heads/ci/" in route:
+                return {}
+            raise AssertionError((method, route))
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "snapshot"
+            source.mkdir()
+            (source / "hello.ores").write_text("synthetic\n")
+            with (
+                patch.object(v3.legacy, "require_preflight"),
+                patch.object(v3.legacy, "checked_policy_fingerprint", return_value=POLICY),
+                patch.object(v3.legacy, "verify_protected_origin"),
+                patch.object(v3, "protected_main_sha", return_value=PROTECTED),
+                patch.object(v3, "checked_contract", return_value=carrier),
+                patch.object(v3, "verify_source_pr", return_value=v3.SOURCE_REPOSITORY_ID),
+                patch.object(
+                    v3, "checked_destination",
+                    return_value=(
+                        {"id": carrier["repository_id"], "private": True,
+                         "visibility": "private"},
+                        "3" * 40, PLAN)),
+                patch.object(
+                    v3.legacy, "collect_source",
+                    return_value=[("hello.ores", b"synthetic\n", "100644")]),
+                patch.object(
+                    v3.legacy, "verified_exact_source_tree",
+                    return_value=SOURCE_TREE),
+                patch.object(v3, "authorize_write"),
+                patch.object(v3.legacy, "gh_api", side_effect=api),
+            ):
+                with self.assertRaisesRegex(
+                        v3.Denied, "synthetic authorization ref failure"):
+                    v3.publish(
+                        "trusted/ci", source, "4" * 40, 1482,
+                        "ci/test-plans/java-pr1482.json", root,
+                        now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc))
+
+        deletes = [
+            route for method, route, _ in calls if method == "DELETE"
+        ]
+        self.assertEqual(
+            deletes,
+            [
+                "repos/trusted/ci/git/refs/heads/ci/authorized-" + COMMIT,
+                "repos/trusted/ci/git/refs/heads/ci/oreslang-" + SOURCE_TREE,
+            ],
+        )
+
+    def test_rollback_continues_after_one_delete_failure(self):
+        carrier = contract()
+        calls = []
+
+        def api(route, method="GET", payload=None):
+            calls.append((method, route, payload))
+            if method == "POST" and route.endswith("/git/blobs"):
+                data = base64.b64decode(payload["content"], validate=True)
+                return {"sha": v3.git_blob_sha(data)}
+            if method == "POST" and route.endswith("/git/trees"):
+                return {"sha": SOURCE_TREE if payload.get("base_tree") is None else ROOT_TREE}
+            if method == "POST" and route.endswith("/git/commits"):
+                return {"sha": COMMIT}
+            if method == "POST" and route.endswith("/git/refs"):
+                if payload["ref"].startswith("refs/heads/ci/oreslang-"):
+                    return {"ref": payload["ref"], "object": {"sha": COMMIT}}
+                raise v3.Denied("synthetic authorization ref failure")
+            if method == "DELETE" and route.endswith(
+                    "/git/refs/heads/ci/authorized-" + COMMIT):
+                raise v3.Denied("synthetic authorization cleanup failure")
+            if method == "DELETE" and route.endswith(
+                    "/git/refs/heads/ci/oreslang-" + SOURCE_TREE):
+                return {}
+            raise AssertionError((method, route))
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "snapshot"
+            source.mkdir()
+            (source / "hello.ores").write_text("synthetic\n")
+            with (
+                patch.object(v3.legacy, "require_preflight"),
+                patch.object(v3.legacy, "checked_policy_fingerprint", return_value=POLICY),
+                patch.object(v3.legacy, "verify_protected_origin"),
+                patch.object(v3, "protected_main_sha", return_value=PROTECTED),
+                patch.object(v3, "checked_contract", return_value=carrier),
+                patch.object(v3, "verify_source_pr", return_value=v3.SOURCE_REPOSITORY_ID),
+                patch.object(
+                    v3, "checked_destination",
+                    return_value=(
+                        {"id": carrier["repository_id"], "private": True,
+                         "visibility": "private"},
+                        "3" * 40, PLAN)),
+                patch.object(
+                    v3.legacy, "collect_source",
+                    return_value=[("hello.ores", b"synthetic\n", "100644")]),
+                patch.object(
+                    v3.legacy, "verified_exact_source_tree",
+                    return_value=SOURCE_TREE),
+                patch.object(v3, "authorize_write"),
+                patch.object(v3.legacy, "gh_api", side_effect=api),
+            ):
+                with self.assertRaisesRegex(
+                        v3.Denied, "could not be fully rolled back"):
+                    v3.publish(
+                        "trusted/ci", source, "4" * 40, 1482,
+                        "ci/test-plans/java-pr1482.json", root,
+                        now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc))
+
+        deletes = [
+            route for method, route, _ in calls if method == "DELETE"
+        ]
+        self.assertEqual(
+            deletes,
+            [
+                "repos/trusted/ci/git/refs/heads/ci/authorized-" + COMMIT,
+                "repos/trusted/ci/git/refs/heads/ci/oreslang-" + SOURCE_TREE,
+            ],
+        )
+
     def test_manifest_matches_carrier_row_shape(self):
         rows, digest = v3.manifest(
             [
