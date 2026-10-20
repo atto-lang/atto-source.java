@@ -312,4 +312,53 @@ final class OresFutureConstructorsTest {
     }
 
 
+    @Test
+    void synchronousProducerCancellationDetachesAfterRegistrationReturns() {
+        java.util.concurrent.atomic.AtomicInteger detaches = new java.util.concurrent.atomic.AtomicInteger();
+        OresFuture<Integer> future = OresFutureConstructors.fromCancellableRunCallback(
+                callback -> {
+                    callback.cancel();
+                    return detaches::incrementAndGet;
+                });
+        assertTrue(future.isCancelled());
+        assertEquals(1, detaches.get());
+    }
+
+    @Test
+    void asynchronousProducerCancellationDetachesExactlyOnce() {
+        AtomicReference<OresFuture.Callback<Integer>> producer = new AtomicReference<>();
+        java.util.concurrent.atomic.AtomicInteger detaches = new java.util.concurrent.atomic.AtomicInteger();
+        OresFuture<Integer> future = OresFutureConstructors.fromCancellableRunCallback(
+                callback -> {
+                    producer.set(callback);
+                    return detaches::incrementAndGet;
+                });
+        assertFalse(future.isDone());
+        producer.get().cancel();
+        assertTrue(future.isCancelled());
+        assertEquals(1, detaches.get());
+        assertThrows(OresFuture.AlreadySettledException.class,
+                () -> producer.get().resolve(12));
+        assertEquals(1, detaches.get());
+    }
+
+    @Test
+    void cancellableRegistrarReturningDoesNotImplicitlySettle() throws Exception {
+        AtomicReference<OresFuture.Callback<Integer>> producer = new AtomicReference<>();
+        java.util.concurrent.atomic.AtomicInteger detaches = new java.util.concurrent.atomic.AtomicInteger();
+        OresFuture<Integer> future = OresFutureConstructors.fromCancellableRunCallback(
+                callback -> {
+                    producer.set(callback);
+                    return detaches::incrementAndGet;
+                });
+        assertFalse(future.isDone());
+        assertFalse(producer.get().isDone());
+        assertEquals(0, detaches.get());
+        producer.get().resolve(123);
+        assertEquals(123, future.get(5, TimeUnit.SECONDS));
+        assertTrue(producer.get().isDone());
+        assertEquals(1, detaches.get());
+    }
+
+
 }
