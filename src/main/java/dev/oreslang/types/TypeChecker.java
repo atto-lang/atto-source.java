@@ -6366,6 +6366,30 @@ public final class TypeChecker {
             return referencesConstructorSelf(call.callee())
                     || call.arguments().stream().anyMatch(TypeChecker::referencesConstructorSelf);
         }
+        // Keep the constructor capability check conservative through value
+        // wrappers and composite expressions: type checking must not depend
+        // on whether a later optimizer rewrites a nested self reference into
+        // the eventual indexed receiver.
+        if (receiver instanceof Ast.TrapExpr trapped) return referencesConstructorSelf(trapped.expression());
+        if (receiver instanceof Ast.SpreadExpr spread) return referencesConstructorSelf(spread.expression());
+        if (receiver instanceof Ast.AssignExpr assignment) {
+            return referencesConstructorSelf(assignment.target())
+                    || referencesConstructorSelf(assignment.value());
+        }
+        if (receiver instanceof Ast.BinaryExpr binary) {
+            return referencesConstructorSelf(binary.left())
+                    || referencesConstructorSelf(binary.right());
+        }
+        if (receiver instanceof Ast.TupleExpr tuple) {
+            return tuple.elements().stream().anyMatch(TypeChecker::referencesConstructorSelf);
+        }
+        if (receiver instanceof Ast.ListExpr list) {
+            return list.elements().stream().anyMatch(TypeChecker::referencesConstructorSelf);
+        }
+        if (receiver instanceof Ast.ObjectExpr object) {
+            return object.fields().stream()
+                    .anyMatch(field -> referencesConstructorSelf(field.value()));
+        }
         return false;
     }
 
