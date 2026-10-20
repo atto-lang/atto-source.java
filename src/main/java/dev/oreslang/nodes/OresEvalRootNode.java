@@ -19,6 +19,7 @@ import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
+import dev.oreslang.runtime.OresBytes;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
@@ -3403,29 +3404,24 @@ public final class OresEvalRootNode extends RootNode {
                                     return;
                                 }
                                 try {
-                                    boolean matches =
-                                            oresTypeMatches(
+                                    Object converted =
+                                            castRuntimeValue(
                                                     value,
                                                     cast.targetType());
-                                    if (cast.mode()
-                                            == Ast.CastMode.OPTIONAL) {
+                                    continuation.accept(
+                                            t,
+                                            cast.mode() == Ast.CastMode.OPTIONAL
+                                                    ? new OptionValue(true, converted)
+                                                    : converted,
+                                            null);
+                                } catch (OresCastError mismatch) {
+                                    if (cast.mode() == Ast.CastMode.OPTIONAL) {
                                         continuation.accept(
                                                 t,
-                                                new OptionValue(
-                                                        matches,
-                                                        matches ? value : null),
+                                                new OptionValue(false, null),
                                                 null);
-                                    } else if (!matches) {
-                                        continuation.accept(
-                                                t,
-                                                null,
-                                                new OresCastError(
-                                                        "cannot cast runtime type "
-                                                                + oresRuntimeTypeName(value)
-                                                                + " to "
-                                                                + cast.targetType().name()));
                                     } else {
-                                        continuation.accept(t, value, null);
+                                        continuation.accept(t, null, mismatch);
                                     }
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
@@ -4505,6 +4501,7 @@ public final class OresEvalRootNode extends RootNode {
                 return value;
             }
             int i = sequenceIndex(index);
+            if (receiver instanceof OresBytes bytes) return bytes.unsignedAt(i);
             if (receiver instanceof List<?> list) return list.get(i);
             if (receiver instanceof Object[] array) return array[i];
             throw new IllegalArgumentException(
@@ -4779,6 +4776,7 @@ public final class OresEvalRootNode extends RootNode {
                 Object value,
                 IdentityHashMap<Object, Boolean> visiting) {
             if (value == null
+                    || value instanceof OresBytes
                     || value instanceof String
                     || value instanceof Boolean
                     || value instanceof Character
@@ -6330,15 +6328,17 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.CastExpr cast) {
                 Object value = eval(cast.value(), env);
-                boolean matches = oresTypeMatches(value, cast.targetType());
-                if (cast.mode() == Ast.CastMode.OPTIONAL) {
-                    return new OptionValue(matches, matches ? value : null);
+                try {
+                    Object converted = castRuntimeValue(value, cast.targetType());
+                    return cast.mode() == Ast.CastMode.OPTIONAL
+                            ? new OptionValue(true, converted)
+                            : converted;
+                } catch (OresCastError mismatch) {
+                    if (cast.mode() == Ast.CastMode.OPTIONAL) {
+                        return new OptionValue(false, null);
+                    }
+                    throw mismatch;
                 }
-                if (!matches) {
-                    throw new OresCastError("cannot cast runtime type " + oresRuntimeTypeName(value)
-                            + " to " + cast.targetType().name());
-                }
-                return value;
             }
             if (expr instanceof Ast.SpreadExpr) {
                 throw new IllegalArgumentException("spread expressions are only valid inside call argument lists");
@@ -6557,6 +6557,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof OresBytes bytes) {
+                if (name.equals("length")) return bytes.size();
+                throw new IllegalArgumentException(
+                        "unknown Bytes member " + name);
+            }
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
@@ -8376,6 +8381,37 @@ public final class OresEvalRootNode extends RootNode {
                     type.inferArguments());
         }
 
+        private Object castRuntimeValue(
+                Object value,
+                Ast.TypeRef target) {
+            if (target.name().equals("Bytes")
+                    && !target.inferArguments()
+                    && target.arguments().isEmpty()) {
+                if (value instanceof OresBytes bytes) return bytes;
+                if (value instanceof List<?> values) {
+                    try {
+                        return OresBytes.fromUnsignedIntegers(values);
+                    } catch (IllegalArgumentException invalid) {
+                        throw new OresCastError(
+                                "cannot cast value to Bytes: "
+                                        + invalid.getMessage());
+                    }
+                }
+                throw new OresCastError(
+                        "cannot cast runtime type "
+                                + oresRuntimeTypeName(value)
+                                + " to Bytes");
+            }
+            if (!oresTypeMatches(value, target)) {
+                throw new OresCastError(
+                        "cannot cast runtime type "
+                                + oresRuntimeTypeName(value)
+                                + " to "
+                                + target.name());
+            }
+            return value;
+        }
+
         /**
          * Host-neutral Oreslang type relation. The Truffle bootstrap evaluator reads Oreslang
          * metadata here; native lowering must use the same relation against native type tags
@@ -8414,6 +8450,7 @@ public final class OresEvalRootNode extends RootNode {
                     || name.equals("decimal")) return value instanceof Float || value instanceof Double;
             if (name.equals("bool") || name.equals("Bool")) return value instanceof Boolean;
             if (name.equals("string") || name.equals("String")) return value instanceof String;
+            if (name.equals("Bytes")) return value instanceof OresBytes;
             if (name.equals("Symbol") && findClass("Symbol") == null)
                 return value instanceof dev.oreslang.runtime.OresSymbol;
             if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
@@ -8452,6 +8489,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
             if (value instanceof GeneratorRuntime.AsyncGenerator<?>) return "AsyncIterator";
             if (value instanceof GeneratorRuntime.Step<?>) return "IteratorResult";
+            if (value instanceof OresBytes) return "Bytes";
             if (value instanceof List<?>) return "List";
             if (value instanceof String) return "string";
             if (value instanceof Boolean) return "bool";
@@ -8675,7 +8713,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean isScalarEqualityCarrier(Object value) {
-            return value instanceof String
+            return value instanceof OresBytes
+                    || value instanceof String
                     || value instanceof Boolean
                     || value instanceof Character
                     || value instanceof Enum<?>
@@ -9526,7 +9565,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private static boolean runtimeSharedSafe(Object value, Set<Object> seen) {
-            if (value == null || value instanceof String || value instanceof Boolean || value instanceof Character
+            if (value == null || value instanceof OresBytes || value instanceof String || value instanceof Boolean || value instanceof Character
                     || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                     || value instanceof Float || value instanceof Double || value instanceof java.math.BigInteger
                     || value instanceof java.math.BigDecimal || value instanceof Enum<?> || value instanceof java.util.UUID
