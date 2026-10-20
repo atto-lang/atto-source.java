@@ -343,6 +343,16 @@ public final class OresTaskScope {
             else child.quiescent = true;
 
             if (state == State.POISONED) {
+                try {
+                    // Poison pins only the child whose retirement proof failed.
+                    // Healthy siblings still retire their exact claims after
+                    // terminal + physical quiescence so stale tickets cannot
+                    // remain valid merely because another child corrupted its
+                    // accounting.
+                    retireChildIfReadyLocked(child);
+                } catch (RuntimeException | Error failure) {
+                    poisonScopeLocked(failure);
+                }
                 finalizePoison = poisonedDrainReadyLocked();
             } else {
                 try {
@@ -504,12 +514,6 @@ public final class OresTaskScope {
     boolean isPoisoned() {
         synchronized (lock) {
             return state == State.POISONED;
-        }
-    }
-
-    void corruptScopedReadRegionForTest(long regionId) {
-        synchronized (lock) {
-            scopedReadRegions.remove(regionId);
         }
     }
 
