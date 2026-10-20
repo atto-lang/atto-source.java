@@ -8,6 +8,7 @@ import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
+import dev.oreslang.compiler.ModelGraphCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.ProcessExitSignal;
@@ -153,6 +154,8 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
+        private final ModelGraphCompiler.Catalog modelCatalog;
+        private final AtomicLong modelInstanceSequence = new AtomicLong();
         private final IdentityHashMap<Ast.MethodDecl, Ast.ClassDecl> methodOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ClassDecl, String> classModules = new IdentityHashMap<>();
         /**
@@ -215,6 +218,7 @@ public final class OresEvalRootNode extends RootNode {
             this.program = program;
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
+            this.modelCatalog = ModelGraphCompiler.compile(program);
             indexImports();
             indexDeclarations();
             indexCallableSlots();
@@ -5797,6 +5801,17 @@ public final class OresEvalRootNode extends RootNode {
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
+                ModelGraphCompiler.CompiledModel model = modelCatalog.find(directName.name());
+                if (model != null) {
+                    List<Object> configuration = evaluateArguments(call.arguments(), env);
+                    return invokableInvocation(
+                            ignored -> new ModelInstance(
+                                    this,
+                                    model,
+                                    model.bindConfiguration(configuration),
+                                    modelInstanceSequence.incrementAndGet()),
+                            List.of());
+                }
                 Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
                 if (direct != null) {
                     requireExplicitClassCallableImport(env, directName.name());
@@ -5808,6 +5823,20 @@ public final class OresEvalRootNode extends RootNode {
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
                 List<Object> args = evaluateArguments(call.arguments(), env);
+
+                if (receiver instanceof ModelInstance modelInstance) {
+                    if (!methodCall.member().equals("run")) {
+                        throw new IllegalArgumentException(
+                                "unknown model member '" + methodCall.member() + "'");
+                    }
+                    if (args.size() != 1) {
+                        throw new IllegalArgumentException(
+                                "MODEL_RUN_ARITY: model.run expects exactly one input");
+                    }
+                    return invokableInvocation(
+                            ignored -> runModel(modelInstance, args.getFirst()),
+                            List.of());
+                }
 
                 if (receiver instanceof OptionValue option
                         && methodCall.member().equals("unwrap_all")) {
@@ -6557,6 +6586,16 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof ModelInstance modelInstance) {
+                if (!name.equals("run")) {
+                    throw new IllegalArgumentException(
+                            "unknown model member '" + name + "'");
+                }
+                return (Invokable) args -> {
+                    requireOne(args, "model.run");
+                    return runModel(modelInstance, args.getFirst());
+                };
+            }
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
@@ -7511,6 +7550,54 @@ public final class OresEvalRootNode extends RootNode {
          * is captured; only the owning class and shared static slot family are
          * retained.  Invocation arity selects the closed-world static selector.
          */
+        /**
+         * Runtime value of a nominal stateless/configured model instance.
+         * The graph descriptor and configuration map are immutable; there is
+         * deliberately no optimizer, actor, GPU or mutable parameter state in
+         * this executable v1 slice.
+         */
+        private static final class ModelInstance {
+            private final Evaluator owner;
+            private final ModelGraphCompiler.CompiledModel model;
+            private final Map<String, Object> configuration;
+            private final long instanceSequence;
+
+            private ModelInstance(
+                    Evaluator owner,
+                    ModelGraphCompiler.CompiledModel model,
+                    Map<String, Object> configuration,
+                    long instanceSequence) {
+                this.owner = owner;
+                this.model = model;
+                this.configuration = Map.copyOf(configuration);
+                this.instanceSequence = instanceSequence;
+            }
+
+            @Override public String toString() {
+                return "<model " + model.qualifiedName()
+                        + " instance=" + instanceSequence
+                        + " graph=" + model.graphDigest().substring(0, 12) + ">";
+            }
+        }
+
+        private Object runModel(ModelInstance instance, Object input) {
+            if (instance.owner != this) {
+                throw new IllegalArgumentException(
+                        "MODEL_INSTANCE_OWNER_MISMATCH: model instance belongs to another code unit");
+            }
+            Object current = input;
+            for (ModelGraphCompiler.Node node : instance.model.nodes()) {
+                ArrayList<Object> arguments =
+                        new ArrayList<>(node.staticArguments().size() + 1);
+                for (ModelGraphCompiler.StaticArg argument : node.staticArguments()) {
+                    arguments.add(argument.resolve(instance.configuration));
+                }
+                arguments.add(current);
+                current = invoke(functionInvocation(node.operation(), arguments));
+            }
+            return current;
+        }
+
         private static final class StaticFunctionValue implements Invokable {
             private final Evaluator owner;
             private final Ast.ClassDecl klass;
