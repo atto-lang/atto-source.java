@@ -35,6 +35,32 @@ final class ModelGraphEdgeTypeAdmissionTest {
         deny("MODEL_PORT_TYPE_MISMATCH", withInputs(List.of("source"),
                 List.of(new BufferPort("f64", List.of(2L), "contiguous", "USD"))));
     }
+    @Test void rejectsUnrepresentableBufferByteCountAndAllowsZeroExtents() {
+        Signature huge = new Signature(List.of(),
+                new BufferPort("f64", List.of(Long.MAX_VALUE), "contiguous", null),
+                "pure", false, 0, "ores.model.op.v1",
+                "a".repeat(64), "verified-ores", List.of(), PURE);
+        Graph overflow = new Graph(1, "models.Huge", List.of(
+                new Node("large", "Huge", List.of(), List.of(), huge)), List.of("large"));
+        deny("MODEL_SIZE_OVERFLOW", overflow);
+
+        Signature empty = new Signature(List.of(),
+                new BufferPort("f64", List.of(Long.MAX_VALUE, 0L), "contiguous", null),
+                "pure", false, 0, "ores.model.op.v1",
+                "a".repeat(64), "verified-ores", List.of(), PURE);
+        Graph zero = new Graph(1, "models.Empty", List.of(
+                new Node("empty", "Empty", List.of(), List.of(), empty)), List.of("empty"));
+        assertEquals(64, PortableModelGraphDigestV1.digest(zero).length());
+
+        Signature unit = new Signature(List.of(),
+                new BufferPort("f64", List.of(1L), "contiguous", "bad unit"),
+                "pure", false, 0, "ores.model.op.v1",
+                "a".repeat(64), "verified-ores", List.of(), PURE);
+        Graph invalidUnit = new Graph(1, "models.InvalidUnit", List.of(
+                new Node("unit", "Unit", List.of(), List.of(), unit)), List.of("unit"));
+        deny("MODEL_INVALID_PORT", invalidUnit);
+    }
+
     @Test void admitsCompatibleEdgesAndRejectsForwardReference() {
         assertEquals(64, PortableModelGraphDigestV1.digest(
                 withInputs(List.of("source"), List.of(PRICE))).length());
