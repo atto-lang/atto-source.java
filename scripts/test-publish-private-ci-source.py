@@ -42,7 +42,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         # source Git-tree verifier is tested separately against mocked origin.
         self.source_tree_guard = patch.object(
             pub, "verified_exact_source_tree", return_value=D)
-        self.source_tree_guard.start()
+        self.source_tree_mock = self.source_tree_guard.start()
         self.addCleanup(self.source_tree_guard.stop)
 
     def fake_api(self, route, method="GET", payload=None):
@@ -283,7 +283,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_publisher_rejects_mismatched_uploaded_tree_before_branch(self):
         # GitHub returns a different tree SHA even though blobs matched.
-        self.source_tree_guard.return_value = C
+        self.source_tree_mock.return_value = C
         with self.assertRaisesRegex(pub.Denied, "uploaded source tree differs"):
             self.publish()
         self.assertNotIn("repos/trusted/ci/git/refs",
@@ -664,3 +664,4 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
