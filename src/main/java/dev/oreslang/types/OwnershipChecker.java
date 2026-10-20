@@ -4048,11 +4048,16 @@ public final class OwnershipChecker {
                 && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
         }
+        if (concrete.isTupleType() && concrete.arguments().isEmpty()) {
+            // Independent ownership admission agrees with TypeChecker:
+            // zero-slot tuples have no element type to bind or transport.
+            throw error("for-of cannot infer an element type from an empty tuple; use a typed empty array/list");
+        }
         if (concrete.isTupleType() && !concrete.arguments().isEmpty()) {
             Ast.TypeRef first = concrete.arguments().getFirst();
             return concrete.arguments().stream().allMatch(first::equals)
                     ? first
-                    : Ast.TypeRef.inferred();
+                    : Ast.TypeRef.union(concrete.arguments());
         }
         Ast.TypeRef sequence = sequenceDestructureSourceType(concrete);
         if (!sequence.equals(concrete)) return iterableElementType(sequence, asyncIteration);
