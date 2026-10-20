@@ -348,11 +348,36 @@ public final class OresTaskScope implements AutoCloseable {
         OresCancellationToken.Registration registration =
                 token.onCancellationRequested(this::cancel);
         final boolean detach;
-        synchronized (treeAdmissionGate) {
-            synchronized (gate) {
-                detach = cancelled;
-                if (!detach) externalCancellation.add(registration);
+        try {
+            synchronized (treeAdmissionGate) {
+                synchronized (gate) {
+                    detach = cancelled;
+                    if (!detach) externalCancellation.add(registration);
+                }
             }
+        } catch (RuntimeException | Error admissionFailure) {
+            // The upstream registration was already installed. If owner-set
+            // growth / insertion fails, do not leak a live callback retaining
+            // this scope or let it unexpectedly cancel future descendants.
+            // Cleanup executes OUTSIDE both locks, including for injected
+            // insert-then-throw collections.
+            try {
+                synchronized (treeAdmissionGate) {
+                    synchronized (gate) {
+                        externalCancellation.remove(registration);
+                    }
+                }
+            } catch (RuntimeException | Error bookkeepingFailure) {
+                if (bookkeepingFailure != admissionFailure)
+                    admissionFailure.addSuppressed(bookkeepingFailure);
+            }
+            try {
+                registration.close();
+            } catch (RuntimeException | Error unsubscribeFailure) {
+                if (unsubscribeFailure != admissionFailure)
+                    admissionFailure.addSuppressed(unsubscribeFailure);
+            }
+            throw admissionFailure;
         }
         // Host unregister may block or invoke callbacks: never execute it
         // under the tree admission monitor or this scope's ownership lock.
