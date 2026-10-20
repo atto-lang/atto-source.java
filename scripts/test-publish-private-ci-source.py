@@ -98,12 +98,28 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def verified_origin_api(self, protected=True, policy=b"trusted/ci 246810\n",
                             codeowners=True, stale=True, admins=True,
                             approvals=1, force=False, deletions=False,
-                            bypasses=None):
+                            bypasses=None, strict_checks=True, contexts=None,
+                            named_checks=None, source_id=None, codeowners_file=None):
         routes = []
+        if contexts is None:
+            contexts = ["private-ci-gate"]
+        if named_checks is None:
+            named_checks = []
+        if source_id is None:
+            source_id = pub.SOURCE_REPOSITORY_ID
+        if codeowners_file is None:
+            codeowners_file = (
+                "# Terminal private-export ownership rules\n"
+                + "\n".join(
+                    path + " @ores-truffle-oreslang/security-review"
+                    for path in pub.SECURITY_CODEOWNER_PATHS
+                )
+                + "\n"
+            ).encode("utf-8")
         def fake(route, method="GET", payload=None):
             routes.append(route)
             if route == "repos/"+pub.SOURCE_REPO:
-                return {"full_name": pub.SOURCE_REPO, "private": True}
+                return {"id": source_id, "full_name": pub.SOURCE_REPO, "private": True}
             if route == "repos/"+pub.SOURCE_REPO+"/branches/main":
                 return {"name": "main", "protected": protected,
                         "commit": {"sha": A}}
@@ -114,6 +130,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 if bypasses is not None:
                     reviews["bypass_pull_request_allowances"] = bypasses
                 return {"required_pull_request_reviews": reviews,
+                        "required_status_checks": {
+                            "strict": strict_checks,
+                            "contexts": list(contexts),
+                            "checks": list(named_checks),
+                        },
                         "enforce_admins": {"enabled": admins},
                         "allow_force_pushes": {"enabled": force},
                         "allow_deletions": {"enabled": deletions}}
@@ -122,6 +143,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 return {"path": pub.POLICY_PATH, "type": "file",
                         "encoding": "base64",
                         "content": base64.b64encode(policy).decode("ascii")}
+            if route == ("repos/"+pub.SOURCE_REPO+"/contents/"
+                         +pub.CODEOWNERS_PATH+"?ref="+A):
+                return {"path": pub.CODEOWNERS_PATH, "type": "file",
+                        "encoding": "base64",
+                        "content": base64.b64encode(codeowners_file).decode("ascii")}
             return self.fake_api(route, method, payload)
         return fake, routes
 
@@ -133,6 +159,53 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest),
                 A,
             )
+
+    def test_origin_rejects_source_repository_id_replacement(self):
+        api, _ = self.verified_origin_api(
+            source_id=pub.SOURCE_REPOSITORY_ID + 1
+        )
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        with patch.object(pub, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(pub.Denied, "identity and privacy"):
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_requires_strict_nonempty_required_status_checks(self):
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        for options in (
+            {"strict_checks": False},
+            {"contexts": [], "named_checks": []},
+            {"contexts": [""]},
+            {"contexts": [], "named_checks": [{"context": ""}]},
+        ):
+            with self.subTest(options=options):
+                api, _ = self.verified_origin_api(**options)
+                with patch.object(pub, "gh_api", side_effect=api):
+                    with self.assertRaisesRegex(pub.Denied, "strict required CI"):
+                        ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_rejects_bare_organization_codeowner(self):
+        bad = (
+            "\n".join(path + " @ORESoftware"
+                      for path in pub.SECURITY_CODEOWNER_PATHS)
+            + "\n"
+        ).encode("utf-8")
+        api, _ = self.verified_origin_api(codeowners_file=bad)
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        with patch.object(pub, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(pub.Denied, "Oreslang team"):
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_rejects_nonterminal_security_codeowners(self):
+        valid = (
+            "\n".join(path + " @ores-truffle-oreslang/security-review"
+                      for path in pub.SECURITY_CODEOWNER_PATHS)
+            + "\n/scripts/ @the1mills\n"
+        ).encode("utf-8")
+        api, _ = self.verified_origin_api(codeowners_file=valid)
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        with patch.object(pub, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(pub.Denied, "terminal"):
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
     def test_policy_approval_returns_reviewed_numeric_repository_id(self):
         digest, repository_id = pub.checked_policy_approval(
