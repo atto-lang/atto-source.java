@@ -26,6 +26,7 @@ public final class EcsAccessPlanner {
     public static final int MAX_SYSTEMS = 4096;
     public static final int MAX_ACCESSES_PER_SYSTEM = 4096;
     public static final long MAX_COMPARISONS = 16_000_000L;
+    public static final int MAX_SYSTEM_NAME_CHARS = 1_024;
 
     public enum Mode { READ, WRITE }
 
@@ -40,8 +41,8 @@ public final class EcsAccessPlanner {
 
     public record SystemAccess(String name, List<Access> accesses) {
         public SystemAccess {
-            if (name == null || name.isBlank()) {
-                throw new IllegalArgumentException("ECS system needs a name");
+            if (name == null || name.length() > MAX_SYSTEM_NAME_CHARS || name.isBlank()) {
+                throw new IllegalArgumentException("ECS system needs a bounded nonblank name");
             }
             accesses = boundedSnapshot(
                     Objects.requireNonNull(accesses, "accesses"),
