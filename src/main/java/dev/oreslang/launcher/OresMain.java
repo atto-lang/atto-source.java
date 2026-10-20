@@ -222,6 +222,11 @@ public final class OresMain {
             if (!buildDefines.isEmpty() || !buildEntryPoints.isEmpty() || reachabilityReportPath != null) {
                 throw new UsageException("--static-facts does not accept build defines, entries or reports");
             }
+            if (strict || permissionCheckMode != PermissionCheckMode.RUNTIME
+                    || !touchedPermissions.isEmpty() || !additionalCapabilities.isEmpty()
+                    || !allowedHostClasses.isEmpty()) {
+                throw new UsageException("--static-facts is advisory only and cannot claim isolate/capability-policy admission");
+            }
             System.out.println(StaticFactsV0Exporter.fromSource(directOresSource));
             return 0;
         }
