@@ -408,4 +408,113 @@ final class EntryValueTest {
                 """);
     }
 
+
+    @Test
+    void entryTypePatternIsReifiedFromRuntimeTagAndComponents() throws Exception {
+        String code = """
+                pub fnc main(): void {
+                  const entry = Entry.of(4, 5);
+                  if entry is type Entry<int, int> exact then
+                    stdio.println(exact.key + exact.value);
+                  else
+                    stdio.println(0);
+                  fi
+                  return;
+                }
+                """;
+
+        Ast.Program typed = TypeChecker.check(Parser.parse(code));
+        OwnershipChecker.check(typed);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, code, "entry-type-pattern.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        assertEquals(
+                "9",
+                output.toString(StandardCharsets.UTF_8)
+                        .replace("\r\n", "\n")
+                        .strip());
+    }
+
+    @Test
+    void entryRuntimeEqualityDoesNotCollapseToStructuralRecordEquality() throws Exception {
+        String code = """
+                pub fnc main(): void {
+                  const left = Entry.of(1, 2);
+                  const right = Entry.of(1, 2);
+                  const Fake fake = infer<Fake> record {
+                    key: 1,
+                    value: 2
+                  };
+                  stdio.println(left == right);
+                  stdio.println(left == fake);
+                  return;
+                }
+                """;
+
+        Ast.Program typed = TypeChecker.check(Parser.parse(code));
+        OwnershipChecker.check(typed);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, code, "entry-equality.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        assertEquals(
+                "true\nfalse",
+                output.toString(StandardCharsets.UTF_8)
+                        .replace("\r\n", "\n")
+                        .strip());
+    }
+
+    @Test
+    void entryPatternRejectsUnreifiableNestedGenericPredicates() {
+        IllegalArgumentException failure = rejected("""
+                fnc bad(Entry<Option<int>, int> entry): int {
+                  if entry is type Entry<Option<int>, int> exact then
+                    return exact.value;
+                  else
+                    return 0;
+                  fi
+                }
+                """);
+        assertTrue(
+                failure.getMessage().contains("reified")
+                        || failure.getMessage().contains("parameterized"),
+                failure.getMessage());
+    }
+
+    @Test
+    void ownershipCheckerIndependentlyRejectsWritesThroughMutableEntryBinding() {
+        IllegalArgumentException member = ownershipRejected("""
+                fnc bad(): void {
+                  let mut entry = Entry.of(1, 2);
+                  entry.key = 3;
+                  return;
+                }
+                """);
+        assertTrue(member.getMessage().contains("Entry"), member.getMessage());
+
+        IllegalArgumentException indexed = ownershipRejected("""
+                fnc bad(): void {
+                  let mut entry = Entry.of(1, 2);
+                  entry["value"] = 3;
+                  return;
+                }
+                """);
+        assertTrue(indexed.getMessage().contains("Entry"), indexed.getMessage());
+    }
+
 }
