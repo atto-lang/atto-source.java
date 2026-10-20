@@ -299,6 +299,31 @@ final class FirstClassModelGraphTest {
     }
 
     @Test
+    void modelOperationsDoNotAcquireAmbientFunctionsFromOtherModules() {
+        assertThrowsMessage("MODEL_UNKNOWN_OP", () ->
+                OresCompiler.parseAndTypeCheck("""
+                        fnc RootOnly(float input): float { return input; }
+
+                        define module local as
+                          define model Bad as
+                            RootOnly()
+                          end
+                        end
+                        """));
+    }
+
+    @Test
+    void explicitWidthNumericTypesDoNotCollapseIntoGenericModelScalars() {
+        assertThrowsMessage("MODEL_INVALID_OP_SIGNATURE", () ->
+                OresCompiler.parseAndTypeCheck("""
+                        fnc Narrow(i32 input): i32 { return input; }
+                        define model NarrowModel as
+                          Narrow()
+                        end
+                        """));
+    }
+
+    @Test
     void graphAdmissionBudgetsConfigurationAndStaticArguments() {
         StringBuilder parameters = new StringBuilder();
         for (int i = 0; i < 65; i++) {
