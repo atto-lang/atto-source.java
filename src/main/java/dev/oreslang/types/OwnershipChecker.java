@@ -2370,6 +2370,10 @@ public final class OwnershipChecker {
     private BorrowPlace borrowPlace(Ast.Expr operand, Scope scope) {
         if (operand instanceof Ast.NameExpr name) {
             VarState owner = borrowOwner(operand, scope);
+            if (owner.scopedTaskReadPermit) {
+                throw error("cannot reborrow scoped Task read permit '" + name.name()
+                        + "'; use the original captured read binding directly");
+            }
             return new BorrowPlace(owner, owner.type, "$", false);
         }
         if (operand instanceof Ast.MemberExpr member) {
