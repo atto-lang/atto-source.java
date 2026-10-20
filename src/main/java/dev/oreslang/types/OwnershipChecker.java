@@ -1278,6 +1278,10 @@ public final class OwnershipChecker {
             return new ValueInfo(elementType, elementKind, null);
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("Entry")) {
+                throw error(
+                        "Entry<K,V> is an immutable value product and has no constructor; use Entry.of(key, value)");
+            }
             List<Ast.TypeRef> argumentTypes = new ArrayList<>(created.arguments().size());
             for (Ast.Expr arg : created.arguments()) {
                 ValueInfo info = checkExpr(arg, scope, true);
