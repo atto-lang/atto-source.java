@@ -199,6 +199,28 @@ final class MinimalNominalEnumGuestTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
     }
 
+    @Test void nominalEnumsUseValueEqualityNotReferenceIdentity() {
+        String valueEquality = ERRORS + """
+                fnc same(): bool {
+                    return TrainingError.STALE_GRAPH()
+                        == TrainingError.STALE_GRAPH();
+                }
+                """;
+        assertDoesNotThrow(
+                () -> TypeChecker.check(Parser.parse(valueEquality)));
+
+        String identity = ERRORS + """
+                fnc wrong(): bool {
+                    return TrainingError.STALE_GRAPH()
+                        is TrainingError.STALE_GRAPH();
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(identity));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(identity)));
+    }
+
     @Test void actorCannotUseAmbientSameFileNominalEnum() {
         String program = """
                 define enum TrainingError as
