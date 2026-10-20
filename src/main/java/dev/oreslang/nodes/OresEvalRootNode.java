@@ -18,6 +18,7 @@ import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.OresEntry;
+import dev.oreslang.runtime.OresKeyedMap;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -4902,6 +4903,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return value;
             }
+            if (receiver instanceof OresKeyedMap map) {
+                return map.getRequired(index);
+            }
             if (receiver instanceof OresEntry entry) {
                 if (!(index instanceof String key)) {
                     throw new IllegalArgumentException(
@@ -6729,6 +6733,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
                 if (name.name().equals("Entry")) return EntryFactory.INSTANCE;
+                if (name.name().equals("Map")) return MapFactory.INSTANCE;
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
                 if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                     return BooleanOpsNamespace.INSTANCE;
@@ -7523,6 +7528,39 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException(
                             "unknown Channel member " + name);
                 };
+            }
+            if (receiver instanceof MapFactory) {
+                if (!name.equals("from_entries")) {
+                    throw new IllegalArgumentException("unknown Map static member " + name);
+                }
+                return (Invokable) MapFactory::fromEntries;
+            }
+            if (receiver instanceof OresKeyedMap map) {
+                return switch (name) {
+                    case "size" -> (long) map.size();
+                    case "has" -> (Invokable) args -> {
+                        requireOne(args, "Map.has");
+                        return map.containsKey(args.getFirst());
+                    };
+                    case "get" -> (Invokable) args -> {
+                        requireOne(args, "Map.get");
+                        OresKeyedMap.Lookup found = map.lookup(args.getFirst());
+                        return found.present()
+                                ? new OptionValue(true, found.value())
+                                : new OptionValue(false, null);
+                    };
+                    case "entries" -> (Invokable) args -> {
+                        requireZero(args, "Map.entries");
+                        return new ArrayList<>(map.entrySnapshot());
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown Map member " + name);
+                };
+            }
+            if (receiver instanceof OresKeyedMap.DuplicateKey duplicate) {
+                if (name.equals("key")) return duplicate.key();
+                throw new IllegalArgumentException(
+                        "unknown DuplicateKey member " + name);
             }
             if (receiver instanceof EntryFactory) {
                 if (!name.equals("of")) {
@@ -8663,6 +8701,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Iterable<?> iterableValues(Object value, Env env) {
+            if (value instanceof OresKeyedMap map) return map.entrySnapshot();
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
             if (value instanceof GeneratorRuntime.Generator<?> generator) return generator;
@@ -9076,6 +9115,8 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
             if (value instanceof OresEntry) return "Entry";
+            if (value instanceof OresKeyedMap) return "Map";
+            if (value instanceof OresKeyedMap.DuplicateKey) return "DuplicateKey";
             if (value instanceof ActorRuntime.ActorOutput<?>) return "ActorOutput";
             if (value instanceof ActorRuntime.ActorOutputStream<?>) return "ActorOutputStream";
             if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
@@ -10190,6 +10231,25 @@ public final class OresEvalRootNode extends RootNode {
         private static Object create(List<Object> args) {
             requireTwo(args, "Entry.of");
             return new OresEntry(args.get(0), args.get(1));
+        }
+    }
+
+    private enum MapFactory {
+        INSTANCE;
+
+        private static Object fromEntries(List<Object> args) {
+            requireOne(args, "Map.from_entries");
+            if (!(args.getFirst() instanceof List<?> entries)) {
+                throw new IllegalArgumentException(
+                        "Map.from_entries expects Array<Entry<K,V>>");
+            }
+            try {
+                return new ResultValue(true, OresKeyedMap.fromEntries(entries));
+            } catch (OresKeyedMap.DuplicateKeyException duplicate) {
+                return new ResultValue(
+                        false,
+                        new OresKeyedMap.DuplicateKey(duplicate.key()));
+            }
         }
     }
 
