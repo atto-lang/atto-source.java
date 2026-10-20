@@ -36,6 +36,13 @@ final class EntryValueTest {
                 () -> OwnershipChecker.check(program));
     }
 
+    private static IllegalArgumentException ownershipRejectedDirect(String source) {
+        Ast.Program program = Parser.parse(source);
+        return assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(program));
+    }
+
     @Test
     void entryOfInfersReadonlyKeyValueProduct() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
@@ -498,7 +505,7 @@ final class EntryValueTest {
 
     @Test
     void ownershipCheckerIndependentlyRejectsWritesThroughMutableEntryBinding() {
-        IllegalArgumentException member = ownershipRejected("""
+        IllegalArgumentException member = ownershipRejectedDirect("""
                 fnc bad(): void {
                   let mut entry = Entry.of(1, 2);
                   entry.key = 3;
@@ -507,7 +514,7 @@ final class EntryValueTest {
                 """);
         assertTrue(member.getMessage().contains("Entry"), member.getMessage());
 
-        IllegalArgumentException indexed = ownershipRejected("""
+        IllegalArgumentException indexed = ownershipRejectedDirect("""
                 fnc bad(): void {
                   let mut entry = Entry.of(1, 2);
                   entry["value"] = 3;
