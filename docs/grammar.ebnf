@@ -43,14 +43,14 @@ method_modifier   = "abstract" | "async" | "suspend" | "suspends" | "structural"
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind callable_name [ generic_params ]
                   ( "(" [ param_list ] ")"
                     ( [ ":" type_ref ] block
-                    | "->" type_ref ( block | [ "do" ] end_callable_body ) )
+                    | "->" type_ref ( block | [ "as" ] end_callable_body ) )
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
 (* The end-delimited form is admitted only for ordinary free/module callables.
-   It requires an explicit slim-arrow return type. Without the optional "do"
-   separator, the first body token begins on the next source line. Separator
-   "do" is recognized only on the same physical source line as the completed
-   return type; this keeps a next-line body statement such as "do select { ... }"
-   from being consumed as header syntax. With same-line "do", compact bodies are
+   It requires an explicit slim-arrow return type. Without optional "as", the
+   first body token begins on the next source line. Separator "as" is recognized
+   only on the same physical source line as the completed return type. "do"
+   always belongs to body syntax, so a first statement such as "do select { ... }"
+   is never consumed as header syntax. With same-line "as", compact bodies are
    unambiguous. A trailing ";" belongs only to bodyless signature grammar in
    declaration contexts; it never starts a free/module executable body. Actor
    callables and class instance/static methods remain brace-bodied. *)
@@ -612,7 +612,7 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - "->" is executable syntax for lambdas, lambda-style callable declarations,
      and explicit-return named callable headers. Named executable declarations
      may use ": ReturnType" for braced bodies or "-> ReturnType"; the latter
-     additionally enables end-delimited bodies and optional "do" separation.
+     additionally enables end-delimited bodies and optional "as" separation.
    - "=>" is type-level syntax for function types and interface callable
      signatures; it is not an executable return separator.
    - Fnc<Result(Arg1, Arg2)> and Function<Result(Arg1, Arg2)> are callable-type
