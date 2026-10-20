@@ -2432,6 +2432,14 @@ public final class TypeChecker {
                             }
                             yield Primitive.BOOL;
                         }
+                        case "get_ready", "get_done" -> {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef." + member.member()
+                                                + " expects no arguments");
+                            }
+                            yield new Named("Future", List.of(Primitive.VOID));
+                        }
                         case "ready", "done", "outputs", "id", "kind" ->
                                 throw new IllegalArgumentException(
                                         "ActorRef." + member.member()
