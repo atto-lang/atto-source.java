@@ -5817,7 +5817,8 @@ public final class ActorRuntime implements AutoCloseable {
             if (value instanceof OresEntry entry) {
                 requireMutexTransport(target, entry.key(), visiting, depth + 1);
                 requireMutexTransport(target, entry.value(), visiting, depth + 1);
-            } else if (value instanceof List<?> list) {
+            } else if (value instanceof List<?> || value instanceof OresTuple) {
+                List<?> list = value instanceof OresTuple tuple ? tuple.elements() : (List<?>) value;
                 for (Object item : list) requireMutexTransport(target, item, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
                 for (Object item : set) requireMutexTransport(target, item, visiting, depth + 1);
@@ -5886,7 +5887,8 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 return;
             }
-            if (value instanceof List<?> list) {
+            if (value instanceof List<?> || value instanceof OresTuple) {
+                List<?> list = value instanceof OresTuple tuple ? tuple.elements() : (List<?>) value;
                 for (Object item : list) requireSharedMutexPayloadSafe(item, visiting, depth + 1);
                 return;
             }
@@ -5955,7 +5957,8 @@ public final class ActorRuntime implements AutoCloseable {
             if (value instanceof OresEntry entry) {
                 requireOwnedActorRefs(entry.key(), visiting, depth + 1);
                 requireOwnedActorRefs(entry.value(), visiting, depth + 1);
-            } else if (value instanceof List<?> list) {
+            } else if (value instanceof List<?> || value instanceof OresTuple) {
+                List<?> list = value instanceof OresTuple tuple ? tuple.elements() : (List<?>) value;
                 for (Object item : list) requireOwnedActorRefs(item, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
                 for (Object item : set) requireOwnedActorRefs(item, visiting, depth + 1);
@@ -6025,7 +6028,8 @@ public final class ActorRuntime implements AutoCloseable {
             if (value instanceof OresEntry entry) {
                 requireOwnedSharedHandles(entry.key(), visiting, depth + 1);
                 requireOwnedSharedHandles(entry.value(), visiting, depth + 1);
-            } else if (value instanceof List<?> list) {
+            } else if (value instanceof List<?> || value instanceof OresTuple) {
+                List<?> list = value instanceof OresTuple tuple ? tuple.elements() : (List<?>) value;
                 for (Object item : list) requireOwnedSharedHandles(item, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
                 for (Object item : set) requireOwnedSharedHandles(item, visiting, depth + 1);
@@ -6100,7 +6104,8 @@ public final class ActorRuntime implements AutoCloseable {
             if (value instanceof OresEntry entry) {
                 collectSharedMutexes(entry.key(), out, visiting, depth + 1);
                 collectSharedMutexes(entry.value(), out, visiting, depth + 1);
-            } else if (value instanceof List<?> list) {
+            } else if (value instanceof List<?> || value instanceof OresTuple) {
+                List<?> list = value instanceof OresTuple tuple ? tuple.elements() : (List<?>) value;
                 for (Object item : list) collectSharedMutexes(item, out, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
                 for (Object item : set) collectSharedMutexes(item, out, visiting, depth + 1);
@@ -6158,7 +6163,8 @@ public final class ActorRuntime implements AutoCloseable {
             if (value instanceof OresEntry entry) {
                 rejectUntrustedInboundCapabilities(entry.key(), visiting, depth + 1);
                 rejectUntrustedInboundCapabilities(entry.value(), visiting, depth + 1);
-            } else if (value instanceof List<?> list) {
+            } else if (value instanceof List<?> || value instanceof OresTuple) {
+                List<?> list = value instanceof OresTuple tuple ? tuple.elements() : (List<?>) value;
                 for (Object item : list) {
                     rejectUntrustedInboundCapabilities(item, visiting, depth + 1);
                 }
@@ -6216,7 +6222,8 @@ public final class ActorRuntime implements AutoCloseable {
             if (value instanceof OresEntry entry) {
                 rejectSharedMutableHandles(entry.key(), visiting, depth + 1);
                 rejectSharedMutableHandles(entry.value(), visiting, depth + 1);
-            } else if (value instanceof List<?> list) {
+            } else if (value instanceof List<?> || value instanceof OresTuple) {
+                List<?> list = value instanceof OresTuple tuple ? tuple.elements() : (List<?>) value;
                 for (Object item : list) rejectSharedMutableHandles(item, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
                 for (Object item : set) rejectSharedMutableHandles(item, visiting, depth + 1);
@@ -6294,7 +6301,8 @@ public final class ActorRuntime implements AutoCloseable {
                 requireGraphNodeCapacity(nodes[0], 2L);
                 validateMessageGraph(entry.key(), visiting, depth + 1, nodes);
                 validateMessageGraph(entry.value(), visiting, depth + 1, nodes);
-            } else if (value instanceof List<?> list) {
+            } else if (value instanceof List<?> || value instanceof OresTuple) {
+                List<?> list = value instanceof OresTuple tuple ? tuple.elements() : (List<?>) value;
                 requireGraphNodeCapacity(nodes[0], list.size());
                 for (Object item : list) validateMessageGraph(item, visiting, depth + 1, nodes);
             } else if (value instanceof Set<?> set) {
@@ -6370,7 +6378,8 @@ public final class ActorRuntime implements AutoCloseable {
             if (value instanceof OresEntry entry) {
                 rejectDataFreezeCapabilities(entry.key(), visiting, depth + 1);
                 rejectDataFreezeCapabilities(entry.value(), visiting, depth + 1);
-            } else if (value instanceof List<?> list) {
+            } else if (value instanceof List<?> || value instanceof OresTuple) {
+                List<?> list = value instanceof OresTuple tuple ? tuple.elements() : (List<?>) value;
                 for (Object item : list) rejectDataFreezeCapabilities(item, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
                 for (Object item : set) rejectDataFreezeCapabilities(item, visiting, depth + 1);
@@ -6422,7 +6431,8 @@ public final class ActorRuntime implements AutoCloseable {
                 for (Object item : tuple) frozen.add(freeze(item, visiting, depth + 1));
                 return new OresTuple(frozen);
             }
-            if (value instanceof List<?> list) {
+            if (value instanceof List<?> || value instanceof OresTuple) {
+                List<?> list = value instanceof OresTuple tuple ? tuple.elements() : (List<?>) value;
                 List<Object> frozen = new ArrayList<>(list.size());
                 for (Object item : list) frozen.add(freeze(item, visiting, depth + 1));
                 return List.copyOf(frozen);
@@ -6495,7 +6505,8 @@ public final class ActorRuntime implements AutoCloseable {
                 for (Object item : tuple) copy.add(isolateCopy(item, visiting, depth + 1));
                 return new OresTuple(copy);
             }
-            if (value instanceof List<?> list) {
+            if (value instanceof List<?> || value instanceof OresTuple) {
+                List<?> list = value instanceof OresTuple tuple ? tuple.elements() : (List<?>) value;
                 List<Object> copy = new ArrayList<>(list.size());
                 for (Object item : list) copy.add(isolateCopy(item, visiting, depth + 1));
                 return Collections.unmodifiableList(copy);
@@ -6560,7 +6571,8 @@ public final class ActorRuntime implements AutoCloseable {
                         limit);
                 return total;
             }
-            if (value instanceof List<?> list) {
+            if (value instanceof List<?> || value instanceof OresTuple) {
+                List<?> list = value instanceof OresTuple tuple ? tuple.elements() : (List<?>) value;
                 long total = requireWithinLimit(containerBase(24L, 8L, list.size()), limit);
                 for (Object item : list) {
                     total = addWithinLimit(total,
@@ -6631,7 +6643,8 @@ public final class ActorRuntime implements AutoCloseable {
             bytes = Math.addExact(bytes, estimateSharedMailboxBytes(entry.value(), seen, depth + 1));
             return bytes;
         }
-        if (value instanceof List<?> list) {
+        if (value instanceof List<?> || value instanceof OresTuple) {
+                List<?> list = value instanceof OresTuple tuple ? tuple.elements() : (List<?>) value;
             bytes = Math.addExact(bytes, 8L * list.size());
             for (Object item : list) {
                 bytes = Math.addExact(bytes, estimateSharedMailboxBytes(item, seen, depth + 1));
@@ -6695,7 +6708,8 @@ public final class ActorRuntime implements AutoCloseable {
                         limit);
                 return total;
             }
-            if (value instanceof List<?> list) {
+            if (value instanceof List<?> || value instanceof OresTuple) {
+                List<?> list = value instanceof OresTuple tuple ? tuple.elements() : (List<?>) value;
                 long total = requireWithinLimit(containerBase(24L, 8L, list.size()), limit);
                 for (Object item : list) {
                     total = addWithinLimit(total,
@@ -6823,7 +6837,8 @@ public final class ActorRuntime implements AutoCloseable {
             bytes = Math.addExact(bytes, estimateFrozenBytes(entry.value(), seen, depth + 1));
             return bytes;
         }
-        if (value instanceof List<?> list) {
+        if (value instanceof List<?> || value instanceof OresTuple) {
+                List<?> list = value instanceof OresTuple tuple ? tuple.elements() : (List<?>) value;
             bytes = Math.addExact(bytes, 8L * list.size());
             for (Object item : list) bytes = Math.addExact(bytes, estimateFrozenBytes(item, seen, depth + 1));
             return bytes;
