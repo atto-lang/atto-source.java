@@ -41,6 +41,9 @@ public final class OresTaskScope implements AutoCloseable {
      */
     private static final class OwnershipSlot {
         private OresTask<?> task;
+        // Protected by the owning scope gate. A legitimate rejection before
+        // slot insertion must not report a fake cleanup failure.
+        private boolean registered;
     }
 
     // Deliberately non-final only for package/reflection fault-injection tests.
@@ -88,11 +91,15 @@ public final class OresTaskScope implements AutoCloseable {
         AsyncRuntime.TaskAdmission<T> admission = runtime.prepareTaskAdmission();
         OwnershipSlot slot = new OwnershipSlot();
         slot.task = admission.owner;
+        // Only an inserted slot is eligible for later retirement.
+        // For adversarial insert-then-throw collections, contains() detects
+        // the partial registration even if registered was never set.
         // Hook registration happens before the owner becomes executable.
         // Generic Future listeners intentionally isolate thrown callbacks,
         // so slot retirement must run as part of TaskExit itself.
         admission.installRetirement(() -> {
             synchronized (gate) {
+                if (!slot.registered && !tasks.contains(slot)) return;
                 if (!tasks.remove(slot))
                     throw new IllegalStateException(
                             "ordinary Task owner slot missing at physical retirement");
@@ -105,6 +112,7 @@ public final class OresTaskScope implements AutoCloseable {
                     ensureAdmitting();
                     if (!tasks.add(slot))
                         throw new IllegalStateException("duplicate Task ownership slot");
+                    slot.registered = true;
                 }
             }
         } catch (RuntimeException | Error reservationFailure) {
