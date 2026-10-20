@@ -35,7 +35,7 @@ final class ActorSourceTaskMemoryQuiescenceTest {
             AtomicReference<OresFuture<Void>> sourceTask = new AtomicReference<>();
 
             ActorRuntime.BehaviorFactory<String> factory =
-                    () -> (message, context) -> {
+                    factoryContext -> (message, context) -> {
                         OresScheduler.Task<Void> child = new OresScheduler.Task<>() {
                             @Override
                             public OresScheduler.Step<Void> resume(OresScheduler.Resume resume) {
