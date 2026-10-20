@@ -28,6 +28,10 @@ public final class ExecutionPermit<R, A extends ExecutionPermit.AccessSet<A>> {
      * Implementations must be value-like and side-effect free.
      */
     public interface AccessSet<A extends AccessSet<A>> {
+        /**
+         * Implementations must be immutable value objects. The runtime treats
+         * these methods as proof operations, not advisory metadata.
+         */
         boolean overlaps(A other);
         A union(A other);
         boolean sameCoverage(A other);
@@ -128,14 +132,17 @@ public final class ExecutionPermit<R, A extends ExecutionPermit.AccessSet<A>> {
         for (int i = 0; i < copy.size(); i++) {
             A part = Objects.requireNonNull(copy.get(i), "partition");
             for (int j = 0; j < i; j++) {
-                if (part.overlaps(copy.get(j))) {
+                A prior = copy.get(j);
+                if (part.overlaps(prior) || prior.overlaps(part)) {
                     throw new IllegalArgumentException(
                             "permit split partitions overlap at indexes " + j + " and " + i);
                 }
             }
             covered = covered == null ? part : covered.union(part);
         }
-        if (covered == null || !covered.sameCoverage(access)) {
+        if (covered == null
+                || !covered.sameCoverage(access)
+                || !access.sameCoverage(covered)) {
             throw new IllegalArgumentException(
                     "permit split partitions must exactly cover the parent access set");
         }
@@ -236,6 +243,14 @@ public final class ExecutionPermit<R, A extends ExecutionPermit.AccessSet<A>> {
      */
     ExecutionPermit<R, A> rotateGeneration(long nextGeneration, A nextAccess) {
         Objects.requireNonNull(nextAccess, "nextAccess");
+        // Generation rotation is stale-capability invalidation, not an
+        // authority-minting operation. Access coverage may be represented by a
+        // fresh immutable value, but it must denote exactly the same authority.
+        if (!access.sameCoverage(nextAccess)
+                || !nextAccess.sameCoverage(access)) {
+            throw new IllegalArgumentException(
+                    "generation rotation cannot change permit access coverage");
+        }
         synchronized (root) {
             requireLiveLocked("rotate generation");
             if (parentGroup != null) {
