@@ -3,11 +3,14 @@ package dev.oreslang.types;
 import dev.oreslang.ast.Ast;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Compiler-side, conservative loan-footprint verifier for structured child Tasks.
@@ -160,6 +163,14 @@ final class TaskAccessVerifier {
             throw new IllegalArgumentException("empty Task access footprint requires purity proof");
         }
         for (TypedClaim claim : typed) {
+            // Send/Sync is NOT a lifetime/outlives proof. This legacy
+            // resolved-type-only path has no compiler-issued borrow witness.
+            // Reject direct and nested borrows before any region reservation.
+            if (containsUnprovenTaskBorrow(claim.type(),
+                    Collections.newSetFromMap(new IdentityHashMap<>()), 0)) {
+                throw new IllegalArgumentException(
+                        "Task borrow requires compiler-proven scoped lifetime");
+            }
             ThreadSafetyTraits.Trait needed = claim.claim().mode() == Mode.READ
                     ? ThreadSafetyTraits.Trait.SYNC : ThreadSafetyTraits.Trait.SEND;
             if (!ThreadSafetyTraits.has(claim.type(), needed, nominalProof)) {
@@ -167,6 +178,59 @@ final class TaskAccessVerifier {
             }
         }
         return admit(typed.stream().map(TypedClaim::claim).toList());
+    }
+
+    /**
+     * A resolved Send/Sync trait alone cannot authorize borrowing across a
+     * Task's physical lifetime. Recursively check every exposed aggregate
+     * and generic argument. Unsupported, cyclic and over-deep type graphs
+     * deny conservatively; nominal field graphs still need the trusted
+     * resolver callback and a separate lifetime witness.
+     */
+    private static boolean containsUnprovenTaskBorrow(
+            Types.Type type, Set<Types.Type> visiting, int depth) {
+        if (type == null || depth >= 64 || !visiting.add(type)) return true;
+        try {
+            if (type instanceof Types.Borrow) return true;
+            if (type instanceof Types.Named named) {
+                for (Types.Type argument : named.arguments()) {
+                    if (containsUnprovenTaskBorrow(argument, visiting, depth + 1))
+                        return true;
+                }
+                return false;
+            }
+            if (type instanceof Types.ListType list)
+                return containsUnprovenTaskBorrow(list.element(), visiting, depth + 1);
+            if (type instanceof Types.Tuple tuple) {
+                for (Types.Type part : tuple.elements()) {
+                    if (containsUnprovenTaskBorrow(part, visiting, depth + 1))
+                        return true;
+                }
+                return false;
+            }
+            if (type instanceof Types.Record record) {
+                for (Types.Type field : record.members().values()) {
+                    if (containsUnprovenTaskBorrow(field, visiting, depth + 1))
+                        return true;
+                }
+                return false;
+            }
+            if (type instanceof Types.Union union) {
+                for (Types.Type option : union.options()) {
+                    if (containsUnprovenTaskBorrow(option, visiting, depth + 1))
+                        return true;
+                }
+                return false;
+            }
+            if (type instanceof Types.Primitive
+                    || type instanceof Types.StringLiteral
+                    || type instanceof Types.BoolLiteral) return false;
+            // Not/Generic/SelfType/Function/Unknown/ClassNamespace have no
+            // authenticated Task ownership/lifetime representation here.
+            return true;
+        } finally {
+            visiting.remove(type);
+        }
     }
 
     /**

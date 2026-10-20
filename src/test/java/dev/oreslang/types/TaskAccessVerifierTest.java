@@ -546,6 +546,76 @@ final class TaskAccessVerifierTest {
                 ledger.admit(List.of(read(process))));
     }
 
+    @Test void resolvedOnlyTaskAdmissionCannotLaunderDirectBorrowLifetime() {
+        var ledger = new TaskAccessVerifier();
+        var place = TaskAccessVerifier.Place.whole(WORLD);
+        for (boolean mutable : new boolean[]{false, true}) {
+            var borrow = new Types.Borrow(Types.Primitive.INT, mutable);
+            for (TaskAccessVerifier.Mode mode : TaskAccessVerifier.Mode.values()) {
+                var claim = new TaskAccessVerifier.Claim(place, mode);
+                // Send/Sync on &int can pass, but says NOTHING about whether
+                // the referent outlives the child or cancellation cleanup.
+                assertThrows(IllegalArgumentException.class,
+                        () -> ledger.admitTyped(List.of(
+                                new TaskAccessVerifier.TypedClaim(claim, borrow)),
+                                (name, trait) -> true));
+            }
+        }
+        assertEquals(0, ledger.activeChildren());
+        assertNotNull(ledger.admitTyped(List.of(
+                new TaskAccessVerifier.TypedClaim(write(place), Types.Primitive.INT)),
+                (name, trait) -> false));
+    }
+
+    @Test void nestedBorrowsRequireARealLifetimeWitnessBeforeTaskAdmission() {
+        var borrowed = new Types.Borrow(Types.Primitive.INT, false);
+        List<Types.Type> nested = List.of(
+                new Types.ListType(borrowed),
+                new Types.Tuple(List.of(Types.Primitive.INT, borrowed)),
+                new Types.Record(java.util.Map.of("ref", borrowed), true),
+                new Types.Union(List.of(Types.Primitive.STRING, borrowed)),
+                new Types.Named("OrdinaryValue", List.of(borrowed)));
+        for (Types.Type type : nested) {
+            var ledger = new TaskAccessVerifier();
+            var place = TaskAccessVerifier.Place.whole(WORLD);
+            assertThrows(IllegalArgumentException.class,
+                    () -> ledger.admitTyped(List.of(
+                            new TaskAccessVerifier.TypedClaim(write(place), type)),
+                            (name, trait) -> true), type.getClass().getSimpleName());
+            assertEquals(0, ledger.activeChildren());
+        }
+    }
+
+    @Test void rejectedBorrowInMultiClaimIsAtomicAndCannotReserveSibling() {
+        var ledger = new TaskAccessVerifier();
+        var root = TaskAccessVerifier.Place.whole(WORLD);
+        assertThrows(IllegalArgumentException.class, () -> ledger.admitTyped(List.of(
+                new TaskAccessVerifier.TypedClaim(
+                        write(root.field("position", true)), Types.Primitive.INT),
+                new TaskAccessVerifier.TypedClaim(
+                        write(root.field("velocity", true)),
+                        new Types.Borrow(Types.Primitive.INT, true))),
+                (name, trait) -> true));
+        assertEquals(0, ledger.activeChildren());
+        assertNotNull(ledger.admitTyped(List.of(
+                new TaskAccessVerifier.TypedClaim(write(root), Types.Primitive.INT)),
+                (name, trait) -> false));
+    }
+
+    @Test void deeplyNestedResolvedTaskTypesFailClosedWithoutUnboundedTraversal() {
+        Types.Type nested = Types.Primitive.INT;
+        for (int i = 0; i < 512; i++) {
+            nested = new Types.Named("OrdinaryValue", List.of(nested));
+        }
+        final Types.Type rejected = nested;
+        var ledger = new TaskAccessVerifier();
+        var root = TaskAccessVerifier.Place.whole(WORLD);
+        assertThrows(IllegalArgumentException.class, () -> ledger.admitTyped(List.of(
+                new TaskAccessVerifier.TypedClaim(write(root), rejected)),
+                (name, trait) -> true));
+        assertEquals(0, ledger.activeChildren());
+    }
+
     @Test void illegalInputsFailClosed() {
         assertThrows(IllegalArgumentException.class,
                 () -> new TaskAccessVerifier.Root("", 1, 1, true));
