@@ -5033,6 +5033,9 @@ public final class OresEvalRootNode extends RootNode {
                 struct.put(fieldName, value);
                 return value;
             }
+            if (receiver instanceof OresTuple) {
+                throw new IllegalArgumentException("Tuple values are immutable positional products");
+            }
             if (receiver instanceof List<?> raw) {
                 @SuppressWarnings("unchecked")
                 List<Object> list = (List<Object>) raw;
@@ -7795,6 +7798,10 @@ public final class OresEvalRootNode extends RootNode {
                     return new BoundMethod(object, name, env == null ? null : env.accessClass());
                 }
                 throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
+            }
+            if (receiver instanceof OresTuple
+                    && (name.equals("add") || name.equals("set"))) {
+                throw new IllegalArgumentException("Tuple values do not expose mutable List methods");
             }
             if (receiver instanceof List<?> rawList) {
                 return switch (name) {
