@@ -7,6 +7,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -179,6 +180,53 @@ final class OresTaskOrdinaryRetirementTest {
             }
             assertNull(AsyncRuntime.await(admission.owner.getDone()));
             assertTrue(admission.owner.isQuiescent());
+        }
+    }
+
+    @Test
+    void concurrentExecutorRejectionAndShutdownRetirePreparedOwnerOnce()
+            throws Exception {
+        final int rounds = 200;
+        for (int i = 0; i < rounds; i++) {
+            AsyncRuntime runtime = new AsyncRuntime();
+            var admission = runtime.<Integer>prepareTaskAdmission();
+            AtomicInteger releases = new AtomicInteger();
+            AtomicReference<Throwable> admissionError = new AtomicReference<>();
+            AtomicReference<Throwable> shutdownError = new AtomicReference<>();
+            CountDownLatch start = new CountDownLatch(1);
+            admission.installRetirement(releases::incrementAndGet);
+            Thread submitter = Thread.ofVirtual().start(() -> {
+                try {
+                    start.await();
+                    runtime.submitPreparedTask(admission, () -> 1);
+                } catch (RejectedExecutionException acceptedRejection) {
+                    // A close that wins before executor admission may reject.
+                } catch (Throwable failure) {
+                    admissionError.set(failure);
+                }
+            });
+            Thread closer = Thread.ofVirtual().start(() -> {
+                try {
+                    start.await();
+                    runtime.close();
+                } catch (Throwable failure) {
+                    shutdownError.set(failure);
+                }
+            });
+            start.countDown();
+            try {
+                submitter.join(3000);
+                closer.join(3000);
+                assertFalse(submitter.isAlive(), "submitter hung at round " + i);
+                assertFalse(closer.isAlive(), "closer hung at round " + i);
+                assertNull(admissionError.get(), String.valueOf(admissionError.get()));
+                assertNull(shutdownError.get(), String.valueOf(shutdownError.get()));
+                assertNull(AsyncRuntime.await(admission.owner.getDone()));
+                assertEquals(1, releases.get(),
+                        "rejection/cancellation must retire once at round " + i);
+            } finally {
+                runtime.close();
+            }
         }
     }
 
