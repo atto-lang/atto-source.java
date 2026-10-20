@@ -220,6 +220,25 @@ final class V3DefaultArgValsAdmissionTest {
     }
 
     @Test
+    void ownershipAliasAwareOverloadsCannotBypassUnloweredV3Formals() {
+        Ast.Program staged = Parser.parseStagedV3("""
+                @DefaultArgVals(timeout: 5)
+                pub fnc request(int timeout): void { return; }
+                """);
+        // TypeChecker passes the AST-identity-keyed alias witness here.
+        // Both the alias-aware entry point and its delegated overload must
+        // reject an unlowered v3 signature before entering ownership analysis.
+        assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(staged, java.util.Map.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.checkWithImportedClasses(
+                        staged, java.util.Map.of(), java.util.Map.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.checkWithImportedClasses(
+                        staged, java.util.Map.of()));
+    }
+
+    @Test
     void malformedFabricatedAnnotationIsNeverAccepted() {
         assertThrows(IllegalArgumentException.class, () -> new Ast.Annotation(
                 "DefaultArgVals", List.of(Ast.TypeRef.intLiteral("3"))));
