@@ -7,7 +7,7 @@ package dev.oreslang.runtime;
  * so Java arrays are scrubbed/detached and private direct-memory leases are
  * revoked before the actor is physically finalized.</p>
  */
-interface ActorShardBacking {
+sealed interface ActorShardBacking permits ActorShardColumns, ActorDenseIndexColumns {
     void revokeBackingFromLease();
     boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor);
     boolean isPrivateBacked();
