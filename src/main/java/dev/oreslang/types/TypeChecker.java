@@ -230,14 +230,28 @@ public final class TypeChecker {
                         throw new IllegalArgumentException(
                                 "HttpResponse is a sealed transport response type; user classes cannot shadow it");
                     }
+                    if (klass.name().equals("Bytes")) {
+                        throw new IllegalArgumentException(
+                                "Bytes is a sealed compiler-owned value type; user classes cannot shadow it");
+                    }
                     localNames.add(klass.name());
                 }
-                else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
+                else if (declaration instanceof Ast.InterfaceDecl iface) {
+                    if (iface.name().equals("Bytes")) {
+                        throw new IllegalArgumentException(
+                                "Bytes is a sealed compiler-owned value type; interfaces cannot shadow it");
+                    }
+                    localNames.add(iface.name());
+                }
                 else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
                 else if (declaration instanceof Ast.TypeAliasDecl alias) {
                     if (alias.name().equals("HttpResponse")) {
                         throw new IllegalArgumentException(
                                 "HttpResponse is a sealed transport response type; type aliases cannot shadow it");
+                    }
+                    if (alias.name().equals("Bytes")) {
+                        throw new IllegalArgumentException(
+                                "Bytes is a sealed compiler-owned value type; type aliases cannot shadow it");
                     }
                     localNames.add(alias.name());
                 }
