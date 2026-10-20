@@ -84,6 +84,21 @@ final class FutureConstructorsLanguageTest {
     }
 
     @Test
+    void sealedFutureTypeCannotBeShadowedByInterface() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                define module app
+                  define interface Future
+                    fnc run() => void;
+                  end
+                  pub fnc main(): void { return; }
+                end
+                """));
+        assertTrue(error.getMessage().contains("Future is a sealed intrinsic type"),
+                () -> "interface shadowing escaped Future name protection: " + error.getMessage());
+    }
+
+    @Test
     void voidAsyncProviderUsesFutureVoidCompletion() throws Exception {
         String sourceText = """
                 define module app
