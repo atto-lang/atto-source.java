@@ -93,6 +93,13 @@ public final class OresTaskScope {
      * one live scope from disagreeing about the region generation.
      */
     private final Map<Long, RegionReadState> scopedReadRegions = new HashMap<>();
+    /**
+     * Exact child-lease identities. Region/generation membership alone is not
+     * sufficient: one sibling reader must never keep another retired child's
+     * stale ticket valid.
+     */
+    private final Set<ScopedReadClaim> liveScopedReadClaims =
+            Collections.newSetFromMap(new IdentityHashMap<>());
     private int activeScopedReadClaims;
     // Runtime barrier: it is intentionally non-cancellable. Cancelling the
     // barrier itself must never manufacture a false reclamation witness.
@@ -278,12 +285,29 @@ public final class OresTaskScope {
         }
     }
 
-    /** Runtime continuity check used by hidden scoped-read tickets. */
+    /** Aggregate region continuity check used by diagnostics/tests. */
     public boolean hasScopedReadLease(long regionId, long generation) {
         synchronized (lock) {
             RegionReadState region = scopedReadRegions.get(regionId);
             return region != null
                     && region.generation == generation
+                    && region.readers > 0;
+        }
+    }
+
+    /**
+     * Exact runtime continuity check used by hidden scoped-read tickets.
+     *
+     * <p>Identity is deliberate. Structurally equal claims owned by sibling
+     * children are distinct lifetime capabilities.</p>
+     */
+    public boolean hasScopedReadLease(ScopedReadClaim claim) {
+        Objects.requireNonNull(claim, "claim");
+        synchronized (lock) {
+            if (!liveScopedReadClaims.contains(claim)) return false;
+            RegionReadState region = scopedReadRegions.get(claim.regionId());
+            return region != null
+                    && region.generation == claim.generation()
                     && region.readers > 0;
         }
     }
@@ -338,9 +362,21 @@ public final class OresTaskScope {
             Child child, List<ScopedReadClaim> claims) {
         Set<String> bindings = new HashSet<>();
         Map<Long, Long> requestedGenerations = new HashMap<>();
+        Set<ScopedReadClaim> identities =
+                Collections.newSetFromMap(new IdentityHashMap<>());
 
         // Validate the complete claim set before mutating live authority.
         for (ScopedReadClaim claim : claims) {
+            if (!identities.add(claim)) {
+                throw new IllegalArgumentException(
+                        "duplicate scoped read claim identity for binding '"
+                                + claim.bindingName() + "'");
+            }
+            if (liveScopedReadClaims.contains(claim)) {
+                throw new IllegalStateException(
+                        "scoped read claim is already owned by a live child: '"
+                                + claim.bindingName() + "'");
+            }
             if (!bindings.add(claim.bindingName())) {
                 throw new IllegalArgumentException(
                         "duplicate scoped read claim for binding '"
@@ -364,6 +400,10 @@ public final class OresTaskScope {
 
         child.readClaims = claims;
         for (ScopedReadClaim claim : claims) {
+            if (!liveScopedReadClaims.add(claim)) {
+                throw new IllegalStateException(
+                        "scoped read claim identity changed during reservation");
+            }
             RegionReadState region = scopedReadRegions.computeIfAbsent(
                     claim.regionId(),
                     ignored -> new RegionReadState(claim.generation()));
@@ -393,6 +433,13 @@ public final class OresTaskScope {
             throw new IllegalStateException(
                     "structured Task scoped-read claim count underflow");
         }
+        for (ScopedReadClaim claim : child.readClaims) {
+            if (!liveScopedReadClaims.contains(claim)) {
+                throw new IllegalStateException(
+                        "structured Task scoped-read lease identity retired early for '"
+                                + claim.bindingName() + "'");
+            }
+        }
         for (Map.Entry<Long, Integer> release : releases.entrySet()) {
             long regionId = release.getKey();
             RegionReadState region = scopedReadRegions.get(regionId);
@@ -414,7 +461,18 @@ public final class OresTaskScope {
                 scopedReadRegions.remove(regionId);
             }
         }
+        for (ScopedReadClaim claim : child.readClaims) {
+            if (!liveScopedReadClaims.remove(claim)) {
+                throw new IllegalStateException(
+                        "structured Task scoped-read lease identity removal failed for '"
+                                + claim.bindingName() + "'");
+            }
+        }
         activeScopedReadClaims -= child.readClaims.size();
+        if (activeScopedReadClaims != liveScopedReadClaims.size()) {
+            throw new IllegalStateException(
+                    "structured Task scoped-read identity/count accounting diverged");
+        }
         child.readClaimsReleased = true;
     }
 
