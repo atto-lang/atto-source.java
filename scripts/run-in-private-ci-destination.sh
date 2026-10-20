@@ -60,6 +60,9 @@ env = {
     "GH_HOST": "github.com",
     "GH_PROMPT_DISABLED": "1",
     "GH_TOKEN": token,
+    "GIT_NO_REPLACE_OBJECTS": "1",
+    "GIT_NO_LAZY_FETCH": "1",
+    "GIT_TERMINAL_PROMPT": "0",
 }
 try:
     os.execve(python, [python, "-I", "-E", str(publisher), *args], env)
