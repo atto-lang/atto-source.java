@@ -78,6 +78,41 @@ final class GenericHasFutureAwaitTest {
     }
 
     @Test
+    void resolvesQualifiedModuleScopedGenericTrait() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                define module app
+                    define pub trait HasFuture<T> as
+                        get_future(): Future<T>;
+                    end
+                    async fnc value(): int { return 99; }
+                    define pub class Wrapper<U> as
+                        implements HasFuture<U> as
+                        pub val Future<U> pending;
+                        pub get_future(): Future<U> { return self.pending; }
+                    end
+                    fnc read(): int {
+                        val HasFuture<int> wrapped = new Wrapper<int>(value());
+                        return await wrapped;
+                    }
+                end
+                """));
+    }
+
+    @Test
+    void rejectsSuspendingFutureProjection() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define trait HasFuture<T> as
+                            get_future(): Future<T>;
+                        end
+                        async fnc source(): int { return 3; }
+                        define class Invalid implements HasFuture<int> as
+                            pub suspends get_future(): Future<int> { return source(); }
+                        end
+                        """));
+    }
+
+    @Test
     void acceptsExistingHeaderSyntaxAndNativeFuture() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 define trait HasFuture<T> as

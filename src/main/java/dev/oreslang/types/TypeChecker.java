@@ -1537,6 +1537,16 @@ public final class TypeChecker {
             Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
             if (iface.moduleContract()) throw new IllegalArgumentException("module contract '" + interfaceRef.name() + "' cannot be implemented by class '" + klass.name() + "'");
+            if (iface.name().equals("HasFuture")) {
+                ResolvedMethod projection = findMethodTarget(
+                        klass, nominalClassType(klass), "get_future", 0,
+                        new LinkedHashSet<>());
+                if (projection == null || projection.method().async()
+                        || projection.method().suspends() || projection.method().isAbstract()) {
+                    throw new IllegalArgumentException(
+                            "HasFuture.get_future() must be a concrete synchronous zero-argument method");
+                }
+            }
             Type resolvedInterface = resolve(interfaceRef, classGenerics, self);
             if (!(resolvedInterface instanceof Named interfaceType)) throw new IllegalArgumentException("implemented interface must resolve to a named type");
             Record expectedTemplate = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
@@ -8789,10 +8799,9 @@ public final class TypeChecker {
      */
     private Type hasFutureResult(Type candidate, Set<Named> seen) {
         if (!(candidate instanceof Named named) || !seen.add(named)) return null;
-        if (named.name().equals("HasFuture")) {
-            Ast.InterfaceDecl capability = findInterface(named.name());
-            if (capability == null || capability.moduleContract()
-                    || named.arguments().size() != 1) return null;
+        Ast.InterfaceDecl iface = findInterface(named.name());
+        if (iface != null && iface.name().equals("HasFuture")) {
+            if (iface.moduleContract() || named.arguments().size() != 1) return null;
             return named.arguments().getFirst();
         }
         Type result = null;
@@ -8811,7 +8820,6 @@ public final class TypeChecker {
                 result = mergeAwaitResult(result, discovered);
             }
         }
-        Ast.InterfaceDecl iface = findInterface(named.name());
         if (iface != null && !iface.moduleContract()) {
             for (Ast.TypeRef ref : iface.parents()) {
                 Type discovered = hasFutureResult(
