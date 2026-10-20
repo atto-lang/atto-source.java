@@ -29,7 +29,12 @@ final class ActorDenseIndexColumnsTest {
                                     shard.writeIndex(16, 0,
                                             ManagedReferencePolicy.MAX_DENSE_INDEX32);
                                     shard.writeNull(2, 0);
+                                    shard.writeEncodedWord(3, 0, 0x8000_0001);
 
+                                    assertEquals(1, shard.readEncodedWord(0, 0));
+                                    assertEquals(0x8000_0001, shard.readEncodedWord(3, 0));
+                                    assertEquals(0x8000_0000L,
+                                            shard.readIndex(3, 0).orElseThrow());
                                     assertEquals(0, shard.readIndex(0, 0).orElseThrow());
                                     assertEquals(41, shard.readIndex(1, 0).orElseThrow());
                                     assertEquals(ManagedReferencePolicy.MAX_DENSE_INDEX32,
