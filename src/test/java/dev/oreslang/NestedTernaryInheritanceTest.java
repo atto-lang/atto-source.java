@@ -303,6 +303,60 @@ final class NestedTernaryInheritanceTest {
                 """);
     }
 
+    @Test
+    void opaqueNarrowingDoesNotLeakAcrossNearestInheritedFalseArm() {
+        accept("""
+                pub fnc normalize(any v, bool choose): int {
+                    return choose ? (Integer.is_int(v) ? v) : 0;
+                }
+                """);
+        reject("""
+                pub fnc unsafe(any v, bool choose): int {
+                    return choose ? (Integer.is_int(v) ? 0) : v;
+                }
+                """);
+        reject("""
+                pub fnc unsafeDouble(any v, bool choose): float {
+                    return choose ? (Double.is_double(v) ? 0.0) : v;
+                }
+                """);
+    }
+
+    @Test
+    void joinedBranchesMustKeepRuntimeGuardProofAndExactResultTypes() {
+        accept("""
+                pub fnc normalize(any v): int {
+                    return Integer.is_int(v) ? (v > 0 ? v : 0) : 0;
+                }
+                """);
+        accept("""
+                pub fnc normalizeFloat(any v): float {
+                    return Double.is_double(v) ? (v > 0.0 ? v : 0.0) : 0.0;
+                }
+                """);
+        reject("""
+                pub fnc noFalseEdgeProof(any v): int {
+                    return Integer.is_int(v) ? 0 : v;
+                }
+                """);
+        reject("""
+                pub fnc noNegatedProof(any v): int {
+                    return !Integer.is_int(v) ? v : 0;
+                }
+                """);
+    }
+
+    @Test
+    void nestedTernaryBorrowCheckerMatchesTypeCheckerOnGuardedPaths() {
+        var program = Parser.parse("""
+                pub fnc narrow(any v, bool choose): int {
+                    return choose ? (Integer.is_int(v) ? v) : 0;
+                }
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+        assertDoesNotThrow(() -> dev.oreslang.types.OwnershipChecker.check(program));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "nested-ternary.ores")
