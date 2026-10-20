@@ -373,4 +373,115 @@ final class ActorGroupCloseDrainTest {
         }
     }
 
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void reliablePendingWriterRetainsExactDeliveryOwnerAcrossFailedClose()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability join = group.joinCapability();
+            ActorEventBus bus = group.events();
+            bus.defineTopic(
+                    "reliable-retry-close",
+                    ActorEventBus.DeliveryPolicy.RELIABLE,
+                    1);
+
+            var subscribed = new CountDownLatch(1);
+            var subscription =
+                    new java.util.concurrent.atomic.AtomicReference<
+                            ActorEventBus.Subscription<java.util.List<Integer>>>();
+            ActorRuntime.ActorRef<String> actor =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        if ("subscribe".equals(message)) {
+                            join.join();
+                            subscription.set(
+                                    bus.subscribe("reliable-retry-close"));
+                            subscribed.countDown();
+                        }
+                    });
+            actor.send("subscribe");
+            assertTrue(subscribed.await(5, TimeUnit.SECONDS));
+
+            ActorEventBus.PublishReceipt buffered =
+                    bus.publishSystem(
+                            "reliable-retry-close",
+                            new java.util.ArrayList<>(java.util.List.of(1)));
+            assertTrue(buffered.completion().isDone());
+
+            ActorEventBus.PublishReceipt pending =
+                    bus.publishSystem(
+                            "reliable-retry-close",
+                            new java.util.ArrayList<>(java.util.List.of(2)));
+            assertFalse(pending.completion().isDone(),
+                    "capacity-one RELIABLE topic must backpressure second write");
+
+            long reserved = runtime.sharedMemoryBytes();
+            assertTrue(reserved > 0L);
+
+            Object sub = subscription.get();
+            assertNotNull(sub);
+            var ownersField =
+                    sub.getClass().getDeclaredField("reliableDeliveryOwners");
+            var pendingDeliveryField =
+                    sub.getClass().getDeclaredField("closePendingDelivery");
+            var subCompleteField =
+                    sub.getClass().getDeclaredField("closeCleanupComplete");
+            ownersField.setAccessible(true);
+            pendingDeliveryField.setAccessible(true);
+            subCompleteField.setAccessible(true);
+
+            var accountingField =
+                    ActorRuntime.class.getDeclaredField("sharedMemoryBytes");
+            accountingField.setAccessible(true);
+            var accounting =
+                    (java.util.concurrent.atomic.AtomicLong)
+                            accountingField.get(runtime);
+
+            var groupsField =
+                    ActorRuntime.class.getDeclaredField("actorGroups");
+            groupsField.setAccessible(true);
+            var groups =
+                    (java.util.Map<Object, Object>) groupsField.get(runtime);
+
+            // Force the rejected pending writer's final Event reservation debit
+            // to fail from its OresFuture completion callback. OresFuture
+            // consumes runtime waiters even when their callback throws, so the
+            // Subscription must independently retain the exact release owner.
+            accounting.set(0L);
+            var failure =
+                    assertThrows(IllegalStateException.class, group::closeAsync);
+            assertTrue(failure.getMessage().contains(
+                    "shared actor memory accounting underflow"));
+
+            var owners = (java.util.Set<Object>) ownersField.get(sub);
+            assertEquals(1, owners.size(),
+                    "failed pending-write callback must retain one exact owner");
+            assertNull(pendingDeliveryField.get(sub),
+                    "failure occurs before buffered-channel drain begins");
+            assertFalse(subCompleteField.getBoolean(sub));
+            assertTrue(pending.completion().isCompletedExceptionally(),
+                    "channel close still rejects the backpressured write once");
+            assertSame(group, groups.get(group.id()),
+                    "failed nested event cleanup must retain group recovery owner");
+
+            // Restore the exact aggregate debit. Retrying the same group close
+            // first settles the retained pending writer, then drains the
+            // buffered delivery, with no Future result replay.
+            accounting.set(reserved);
+            OresFuture<Void> done = group.closeAsync();
+
+            assertTrue(((java.util.Set<?>) ownersField.get(sub)).isEmpty());
+            assertTrue(subCompleteField.getBoolean(sub));
+            assertEquals(0L, runtime.sharedMemoryBytes());
+            assertNull(groups.get(group.id()));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            try {
+                done.get(5, TimeUnit.SECONDS);
+            } catch (ExecutionException expectedCancellation) {
+                // Structured group close may reject actor.done after cancellation.
+            }
+        }
+    }
+
 }
