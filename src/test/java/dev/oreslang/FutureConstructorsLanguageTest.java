@@ -70,6 +70,20 @@ final class FutureConstructorsLanguageTest {
     }
 
     @Test
+    void sealedFutureTypeCannotBeShadowedByUserClass() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                define module app
+                  define class Future as
+                  end
+                  pub fnc main(): void { return; }
+                end
+                """));
+        assertTrue(error.getMessage().contains("Future is a sealed intrinsic type"),
+                () -> "built-in Future shadowing escaped compiler gate: " + error.getMessage());
+    }
+
+    @Test
     void constructorRejectsSynchronousRun() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 define module app
