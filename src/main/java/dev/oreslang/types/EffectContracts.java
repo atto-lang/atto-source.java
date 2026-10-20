@@ -38,7 +38,9 @@ public final class EffectContracts {
      */
     public record Call(String target, Resolution resolution) {
         public enum Resolution { DIRECT, UNRESOLVED }
-        public Call(String target) { this(target, Resolution.DIRECT); }
+        // The compatibility constructor carries NO compiler proof of a
+        // resolved call target. Default conservatively to unresolved.
+        public Call(String target) { this(target, Resolution.UNRESOLVED); }
         public Call {
             Objects.requireNonNull(target, "target");
             Objects.requireNonNull(resolution, "resolution");
