@@ -20,13 +20,24 @@ final class TaskLoanAdmissionTest {
                         TaskAccessVerifier.Mode.WRITE)));
     }
 
+    private static OresTaskScope.CompilerScopeEpoch epochForTest() {
+        try {
+            var constructor = OresTaskScope.CompilerScopeEpoch.class
+                    .getDeclaredConstructor();
+            constructor.setAccessible(true);
+            return constructor.newInstance();
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError(failure);
+        }
+    }
+
     @Test
     void physicalRetirementRequiresExactRuntimeScopeEpochAndChildIdentity()
             throws Exception {
         TaskAccessVerifier verifier = new TaskAccessVerifier();
         TaskLoanAdmission admission = admission(verifier);
-        Object scopeEpoch = new Object();
-        Object foreignEpoch = new Object();
+        OresTaskScope.CompilerScopeEpoch scopeEpoch = epochForTest();
+        OresTaskScope.CompilerScopeEpoch foreignEpoch = epochForTest();
 
         try (AsyncRuntime runtime = new AsyncRuntime();
              OresTaskScope scope = new OresTaskScope(runtime)) {
@@ -61,7 +72,7 @@ final class TaskLoanAdmissionTest {
     void neverStartedRetirementIsASeparateOneShotLifecycleEdge() {
         TaskAccessVerifier verifier = new TaskAccessVerifier();
         TaskLoanAdmission admission = admission(verifier);
-        Object scopeEpoch = new Object();
+        OresTaskScope.CompilerScopeEpoch scopeEpoch = epochForTest();
 
         admission.bindScope(scopeEpoch);
         assertEquals(1, verifier.activeChildren());
@@ -77,8 +88,8 @@ final class TaskLoanAdmissionTest {
             throws Exception {
         TaskAccessVerifier verifier = new TaskAccessVerifier();
         TaskLoanAdmission admission = admission(verifier);
-        Object firstEpoch = new Object();
-        Object secondEpoch = new Object();
+        OresTaskScope.CompilerScopeEpoch firstEpoch = epochForTest();
+        OresTaskScope.CompilerScopeEpoch secondEpoch = epochForTest();
 
         try (AsyncRuntime runtime = new AsyncRuntime();
              OresTaskScope scope = new OresTaskScope(runtime)) {
