@@ -42,6 +42,15 @@ final class V3ZeroArgumentCallRegressionTest {
     }
 
     @Test
+    void extraPositionalLiteralsAreRejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> V3ScalarDefaultProgramNormalizer.parseNormalizeAndAnalyze("""
+                        pub fnc value(int a): int { return a; }
+                        pub fnc main(): int { return value(1, 2); }
+                        """));
+    }
+
+    @Test
     void requiredParameterCannotBeOmittedByZeroArgumentDirectCall() {
         assertThrows(IllegalArgumentException.class,
                 () -> V3ScalarDefaultProgramNormalizer.parseNormalizeAndAnalyze("""
