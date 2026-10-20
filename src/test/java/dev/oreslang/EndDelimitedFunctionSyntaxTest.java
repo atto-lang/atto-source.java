@@ -25,6 +25,45 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
+    void optionalDoSeparatorNormalizesToSameAst() {
+        var withoutDo = Parser.parse("""
+                fnc identity(int x) -> int
+                    return x
+                end
+                """);
+        var withDo = Parser.parse("""
+                fnc identity(int x) -> int do
+                    return x
+                end
+                """);
+
+        assertEquals(withoutDo, withDo);
+        assertDoesNotThrow(() -> TypeChecker.check(withDo));
+    }
+
+    @Test
+    void doProvidesCompactSameLineBodyBoundary() {
+        var compact = Parser.parse("fnc identity(int x) -> int do return x; end");
+        var multiline = Parser.parse("""
+                fnc identity(int x) -> int
+                    return x
+                end
+                """);
+
+        assertEquals(multiline, compact);
+        assertDoesNotThrow(() -> TypeChecker.check(compact));
+    }
+
+    @Test
+    void doFollowsTheCompleteHigherOrderReturnType() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc callback() -> () => void do
+                    return || -> { return; };
+                end
+                """));
+    }
+
+    @Test
     void explicitVoidMayFallThrough() {
         String source = """
                 fnc noop() -> void
@@ -67,6 +106,9 @@ final class EndDelimitedFunctionSyntaxTest {
 
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("fnc same_line() -> int return 1 end"));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc colon(): int do return 1; end"));
     }
 
     @Test
