@@ -2,6 +2,9 @@ package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
 import java.nio.file.Path;
+import java.nio.file.Files;
+import java.nio.charset.StandardCharsets;
+import javax.tools.ToolProvider;
 import java.net.URLClassLoader;
 import java.lang.reflect.Method;
 import java.util.List;
@@ -22,6 +25,22 @@ public final class RealtimePrimitiveSmoke {
     private static Ast.LiteralExpr num(int value) { return new Ast.LiteralExpr(value); }
     private static Ast.NameExpr name(String name) { return new Ast.NameExpr(name); }
     private static Ast.ReturnStmt ret(Ast.Expr e) { return new Ast.ReturnStmt(e); }
+
+    private static void rejectsClassfile(String label, ThrowingRunnable action) {
+        try {
+            action.run();
+            throw new AssertionError("Accepted forbidden classfile case: " + label);
+        } catch (IllegalArgumentException expected) {
+            if (!expected.getMessage().startsWith("RT-CLASSFILE:")) {
+                throw new AssertionError("Unclassified classfile failure: " + label, expected);
+            }
+        } catch (Exception unexpected) {
+            throw new AssertionError("Unexpected classfile failure: " + label, unexpected);
+        }
+    }
+
+    @FunctionalInterface
+    private interface ThrowingRunnable { void run() throws Exception; }
 
     private static void rejects(String label, Runnable action) {
         try {
@@ -46,9 +65,32 @@ public final class RealtimePrimitiveSmoke {
         var artifact = RealtimePrimitiveCompiler.compile(simple, "tick", 1, budget, out);
         if (!artifact.classFile().toFile().isFile() || artifact.bytecodeSha256().length() != 64
                 || artifact.sourceReport().reachableFunctions() != 2
-                || artifact.sourceReport().maxCallDepth() != 2) {
-            throw new AssertionError("missing classfile, call graph, or fingerprint");
+                || artifact.sourceReport().maxCallDepth() != 2
+                || artifact.classfileReport().verifiedMethods() != 2
+                || !artifact.classfileReport().assurance().contains("CLASSFILE")) {
+            throw new AssertionError("missing classfile, call graph, bytecode audit, or fingerprint");
         }
+
+        Path forbiddenOut = out.resolve("forbidden-classfile");
+        Files.createDirectories(forbiddenOut);
+        Path forbiddenJava = forbiddenOut.resolve(RealtimePrimitiveCompiler.CLASS_NAME + ".java");
+        Files.writeString(forbiddenJava, """
+                final class RtPrimitiveModule {
+                  static int tick(int x) {
+                    Object forbidden = new Object();
+                    return x;
+                  }
+                }
+                """, StandardCharsets.UTF_8);
+        var javac = ToolProvider.getSystemJavaCompiler();
+        if (javac == null || javac.run(null, null, null,
+                "--release", "8", "-g:none", "-proc:none",
+                "-d", forbiddenOut.toString(), forbiddenJava.toString()) != 0) {
+            throw new AssertionError("failed to build adversarial classfile fixture");
+        }
+        rejectsClassfile("heap allocation bytecode", () ->
+                RealtimeClassfileAudit.audit(
+                        forbiddenOut.resolve(RealtimePrimitiveCompiler.CLASS_NAME + ".class")));
         try (URLClassLoader loader = new URLClassLoader(new java.net.URL[] {out.toUri().toURL()})) {
             Class<?> generated = Class.forName(RealtimePrimitiveCompiler.CLASS_NAME, true, loader);
             Method method = generated.getDeclaredMethod("tick", int.class);
@@ -129,6 +171,6 @@ public final class RealtimePrimitiveSmoke {
             RealtimePrimitiveCompiler.analyze(program(fn("many", params, List.of(ret(num(1))))),
                     "many", 33, budget);
         });
-        System.out.println("PASS: primitive compiler, branches, negative cases, and independent admission");
+        System.out.println("PASS: primitive compiler, exact classfile audit, branches, negative cases, and independent admission");
     }
 }
