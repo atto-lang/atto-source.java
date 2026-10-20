@@ -389,6 +389,43 @@ final class GenericHasFutureAwaitTest {
     }
 
     @Test
+    void acceptsDiamondWithTheSameSpecializedFutureType() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                define trait HasFuture<T> as
+                    get_future(): Future<T>;
+                end
+                define trait Left<T> extends HasFuture<T> as
+                end
+                define trait Right<T> extends HasFuture<T> as
+                end
+                async fnc ready(): int { return 3; }
+                define class Diamond implements Left<int>, Right<int> as
+                    pub get_future(): Future<int> { return ready(); }
+                end
+                fnc read(Diamond value): int { return await value; }
+                """));
+    }
+
+    @Test
+    void rejectsDiamondWithConflictingSpecializedFutureTypes() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define trait HasFuture<T> as
+                            get_future(): Future<T>;
+                        end
+                        define trait Left<T> extends HasFuture<T> as
+                        end
+                        define trait Right<T> extends HasFuture<T> as
+                        end
+                        async fnc ready(): int { return 3; }
+                        define class Ambiguous implements Left<int>, Right<string> as
+                            pub get_future(): Future<int> { return ready(); }
+                        end
+                        fnc read(Ambiguous value): int { return await value; }
+                        """));
+    }
+
+    @Test
     void rejectsMalformedHasFutureGenericArity() {
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
