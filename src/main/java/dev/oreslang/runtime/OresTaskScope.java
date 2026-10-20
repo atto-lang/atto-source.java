@@ -41,6 +41,81 @@ public final class OresTaskScope implements AutoCloseable {
      */
     private static final class OwnershipSlot {
         private OresTask<?> task;
+        /**
+         * Compiler-frame physical retirement authority. Null for ordinary
+         * AsyncRuntime Tasks whose own quiescence fence is authoritative.
+         */
+        private PhysicalRetirementOwner physicalRetirement;
+    }
+
+    /**
+     * Retains the exact trusted retirement callback after the scheduler's
+     * guest carrier has physically unwound. A callback failure is NOT turned
+     * into a terminal Future: the scope keeps this owner and a later host
+     * close attempt retries the same release before reporting quiescence.
+     */
+    private static final class PhysicalRetirementOwner {
+        private final Runnable retirement;
+        private final OresFuture<Void> retired = new OresFuture<>();
+        private final CountDownLatch physicalExitObserved = new CountDownLatch(1);
+        private boolean exitObserved;
+        private boolean releaseComplete;
+
+        PhysicalRetirementOwner(Runnable retirement) {
+            this.retirement = Objects.requireNonNull(retirement, "retirement");
+        }
+
+        OresFuture<Void> retiredFence() {
+            return retired;
+        }
+
+        void onPhysicalExit() {
+            synchronized (this) {
+                if (!exitObserved) {
+                    exitObserved = true;
+                    physicalExitObserved.countDown();
+                }
+            }
+            // Scheduler retirement must not throw back through the carrier
+            // callback. A failed release remains owned for host reconciliation.
+            try {
+                retryRetirementAfterExit();
+            } catch (RuntimeException | Error ignored) {
+                // Exact callback + ownership slot remain live.
+            }
+        }
+
+        void awaitExitAndRetire() {
+            boolean interrupted = false;
+            try {
+                for (;;) {
+                    try {
+                        physicalExitObserved.await();
+                        break;
+                    } catch (InterruptedException ignored) {
+                        interrupted = true;
+                    }
+                }
+            } finally {
+                if (interrupted) Thread.currentThread().interrupt();
+            }
+            retryRetirementAfterExit();
+        }
+
+        private void retryRetirementAfterExit() {
+            boolean publish = false;
+            synchronized (this) {
+                if (releaseComplete) return;
+                if (!exitObserved) {
+                    throw new IllegalStateException(
+                            "trusted Task retirement attempted before physical carrier exit");
+                }
+                retirement.run();
+                releaseComplete = true;
+                publish = true;
+            }
+            if (publish) retired.completeFromRuntime(null);
+        }
     }
 
     // Deliberately non-final only for package/reflection fault-injection tests.
@@ -50,9 +125,11 @@ public final class OresTaskScope implements AutoCloseable {
     /** Directed cancellation observers; do not carry lifecycle ownership. */
     private final List<OresCancellationToken.Registration> externalCancellation =
             new ArrayList<>();
-    private final CountDownLatch fullyJoined = new CountDownLatch(1);
     private boolean cancelled;
+    /** True only while one host owns the current close attempt. */
     private boolean joining;
+    /** Published only after a close attempt joins every owned descendant. */
+    private boolean closeComplete;
     private volatile Throwable closeFailure;
 
     public OresTaskScope(AsyncRuntime runtime) {
@@ -173,22 +250,21 @@ public final class OresTaskScope implements AutoCloseable {
             }
 
             OwnershipSlot slot = null;
-            OresFuture<Void> exited = null;
+            PhysicalRetirementOwner retirementOwner = null;
             OresTask<T> child = null;
             try {
                 // Every ownership object and callback registration is created
                 // before scheduler admission. In particular HashSet growth
                 // cannot strand an admitted actor/code-generation pin.
                 slot = new OwnershipSlot();
-                exited = new OresFuture<>();
-                child = new OresTask<>(exited);
+                retirementOwner = new PhysicalRetirementOwner(onPhysicalExit);
+                child = new OresTask<>(retirementOwner.retiredFence());
                 slot.task = child;
+                slot.physicalRetirement = retirementOwner;
                 if (!tasks.add(slot))
                     throw new IllegalStateException("duplicate Task ownership slot");
                 OwnershipSlot owned = slot;
-                exited.whenCompleteRuntime((ignored, failure) -> {
-                    // A failed external generation/resource retirement must
-                    // remain owned so close() reports it instead of pruning it.
+                retirementOwner.retiredFence().whenCompleteRuntime((ignored, failure) -> {
                     if (failure == null) {
                         synchronized (gate) {
                             tasks.remove(owned);
@@ -207,20 +283,11 @@ public final class OresTaskScope implements AutoCloseable {
             }
 
             final OwnershipSlot admittedSlot = slot;
-            final OresFuture<Void> exitFence = exited;
+            final PhysicalRetirementOwner admittedRetirement = retirementOwner;
             final OresTask<T> ownedChild = child;
             final OresFuture<T> completion;
             try {
-                completion = scheduler.start(frame, () -> {
-                    // The scheduler invokes this only after the final guest
-                    // carrier turn has physically unwound.
-                    try {
-                        onPhysicalExit.run();
-                        exitFence.completeFromRuntime(null);
-                    } catch (RuntimeException | Error failure) {
-                        exitFence.failFromRuntime(failure);
-                    }
-                });
+                completion = scheduler.start(frame, admittedRetirement::onPhysicalExit);
             } catch (RuntimeException | Error rejectedBeforeAdmission) {
                 discardUnadmittedSlot(admittedSlot, rejectedBeforeAdmission);
                 try {
@@ -339,6 +406,17 @@ public final class OresTaskScope implements AutoCloseable {
                 throw new IllegalStateException(
                         "TaskScope contains an uncommitted ownership slot");
             owned.add(slot.task);
+        }
+        return owned;
+    }
+
+    private List<OwnershipSlot> snapshotOwnershipSlotsLocked() {
+        List<OwnershipSlot> owned = new ArrayList<>(tasks.size());
+        for (OwnershipSlot slot : tasks) {
+            if (slot.task == null)
+                throw new IllegalStateException(
+                        "TaskScope contains an uncommitted ownership slot");
+            owned.add(slot);
         }
         return owned;
     }
@@ -484,12 +562,12 @@ public final class OresTaskScope implements AutoCloseable {
     private static final class CloseFrame {
         final OresTaskScope scope;
         final List<OresTaskScope> children;
-        final List<OresTask<?>> owned;
+        final List<OwnershipSlot> owned;
         int nextChild;
         Throwable failure;
 
         CloseFrame(OresTaskScope scope, List<OresTaskScope> children,
-                List<OresTask<?>> owned) {
+                List<OwnershipSlot> owned) {
             this.scope = scope;
             this.children = children;
             this.owned = owned;
@@ -503,11 +581,13 @@ public final class OresTaskScope implements AutoCloseable {
 
     private CloseFrame beginClose() {
         synchronized (gate) {
-            if (joining) return null;
+            if (closeComplete || joining) return null;
             // Do not commit joining before allocations: an injected OOME in
-            // either snapshot must not strand later close() on fullyJoined.
+            // either snapshot must not strand later close() behind a phantom
+            // owner. A failed close attempt releases this claim for retry.
             CloseFrame prepared = new CloseFrame(this,
-                    new ArrayList<>(childScopes), snapshotTasksLocked());
+                    new ArrayList<>(childScopes), snapshotOwnershipSlotsLocked());
+            closeFailure = null;
             joining = true;
             return prepared;
         }
@@ -570,17 +650,27 @@ public final class OresTaskScope implements AutoCloseable {
                 continue;
             }
 
-            for (OresTask<?> task : current.owned) {
+            for (OwnershipSlot slot : current.owned) {
                 try {
-                    awaitPhysicalExit(task.getDone());
+                    if (slot.physicalRetirement != null) {
+                        // Wait for the carrier to be physically gone, then
+                        // retry the exact trusted generation/resource release.
+                        slot.physicalRetirement.awaitExitAndRetire();
+                    } else {
+                        awaitPhysicalExit(slot.task.getDone());
+                    }
                 } catch (RuntimeException | Error problem) {
                     current.record(problem);
                 }
             }
 
             OresTaskScope settled = current.scope;
-            settled.closeFailure = current.failure;
-            settled.fullyJoined.countDown();
+            synchronized (settled.gate) {
+                settled.closeFailure = current.failure;
+                settled.joining = false;
+                if (current.failure == null) settled.closeComplete = true;
+                settled.gate.notifyAll();
+            }
             if (current.failure == null && settled.parent != null) {
                 synchronized (settled.parent.gate) {
                     settled.parent.childScopes.remove(settled);
@@ -626,24 +716,22 @@ public final class OresTaskScope implements AutoCloseable {
     }
 
     private void joinExistingClose() {
-        // Every successful close() return is a physical-quiescence barrier,
-        // including when another host thread already claimed this scope's
-        // shutdown. Interruption must not let a concurrent closer escape
-        // before the owning closer has joined every child.
+        // Wait only for the CURRENT close attempt. A failed attempt releases
+        // joining so a later host call can retry retained physical retirement
+        // owners; a one-shot latch would permanently replay the first failure.
         boolean interrupted = false;
-        try {
-            for (;;) {
+        Throwable failure;
+        synchronized (gate) {
+            while (joining) {
                 try {
-                    fullyJoined.await();
-                    break;
+                    gate.wait();
                 } catch (InterruptedException ignored) {
                     interrupted = true;
                 }
             }
-        } finally {
-            if (interrupted) Thread.currentThread().interrupt();
+            failure = closeFailure;
         }
-        Throwable failure = closeFailure;
+        if (interrupted) Thread.currentThread().interrupt();
         if (failure instanceof RuntimeException runtimeFailure) throw runtimeFailure;
         if (failure instanceof Error error) throw error;
     }
