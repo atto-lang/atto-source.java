@@ -243,9 +243,15 @@ public final class AsyncRuntime implements AutoCloseable {
                 }
             });
         } catch (RejectedExecutionException rejected) {
-            exit.state.set(2);
-            exit.markExited();
-            taskExits.remove(completion, exit);
+            // A concurrent runtime close may already have cancelled this
+            // registered Future and claimed pre-entry physical retirement.
+            // Only the winner of 0 -> 2 may release its owner exactly once.
+            // The losing path leaves the live registration to the winner;
+            // it must not publish a second exit or prune the in-flight fence.
+            if (exit.state.compareAndSet(0, 2)) {
+                exit.markExited();
+                taskExits.remove(completion, exit);
+            }
             throw new RejectedExecutionException("async runtime is closed", rejected);
         }
         backing.set(scheduled);
