@@ -53,6 +53,11 @@ CONTROL_PLANE_PATHS = (
 MAX_CONTROL_PLANE_FILE = 512 * 1024
 
 
+class RefCreateRejected(Denied):
+    """GitHub definitively rejected ref creation; this invocation owns no ref."""
+    pass
+
+
 def valid_sha(value, label="invalid SHA"):
     if not isinstance(value, str) or not HEX40.fullmatch(value):
         raise Denied(label)
@@ -570,6 +575,53 @@ def _gh_ref_request(repository, ref_name, method):
     return result
 
 
+def create_handoff_ref(repository, ref_name, commit_sha, expected_repository_id):
+    """Create one exact ref while distinguishing definite rejection from ambiguity."""
+    commit_sha = valid_sha(commit_sha, "invalid handoff commit SHA")
+    if not isinstance(ref_name, str) or not HANDOFF_REF.fullmatch(ref_name):
+        raise Denied("handoff ref target is invalid")
+    repo = legacy.checked_repo(repository)
+    if repo.get("id") != expected_repository_id:
+        raise Denied("carrier repository identity changed during ref creation")
+    argv = [
+        legacy.trusted_github_cli(), "api", "--method", "POST",
+        f"repos/{repository}/git/refs",
+        "--header", "Accept: application/vnd.github+json",
+        "--input", "-",
+    ]
+    payload = json.dumps(
+        {"ref": "refs/heads/" + ref_name, "sha": commit_sha},
+        separators=(",", ":"),
+    )
+    try:
+        result = subprocess.run(
+            argv, input=payload, capture_output=True, text=True,
+            env=legacy.github_api_environment(), timeout=30, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Denied("carrier ref creation outcome is ambiguous") from exc
+    for stream in (result.stdout, result.stderr):
+        if (not isinstance(stream, str)
+                or len(stream) > legacy.MAX_GH_API_RESPONSE_CHARS):
+            raise Denied("carrier ref API response exceeds size limit")
+    if result.returncode != 0:
+        # GitHub REST 422 is a definitive rejected write (for example an
+        # already-existing ref or invalid request), so this invocation must
+        # not roll back a ref owned by somebody else.
+        if "HTTP 422" in result.stderr:
+            raise RefCreateRejected("carrier ref creation was definitively rejected")
+        raise Denied("carrier ref creation outcome is ambiguous")
+    payload = strict_json_loads(
+        result.stdout, "carrier ref creation returned invalid JSON"
+    )
+    if (not isinstance(payload, dict)
+            or payload.get("ref") != "refs/heads/" + ref_name
+            or not isinstance(payload.get("object"), dict)
+            or payload["object"].get("sha") != commit_sha):
+        raise Denied("carrier did not confirm exact ref creation")
+    return payload
+
+
 def live_ref_sha(repository, ref_name, expected_repository_id):
     repo = legacy.checked_repo(repository)
     if repo.get("id") != expected_repository_id:
@@ -905,13 +957,13 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     try:
         auth()
         payload_attempted = True
-        created = legacy.gh_api(
-            f"repos/{repository}/git/refs", method="POST",
-            payload={"ref": "refs/heads/" + branch, "sha": commit_sha},
-        )
-        if (created.get("ref") != "refs/heads/" + branch
-                or created.get("object", {}).get("sha") not in (None, commit_sha)):
-            raise Denied("carrier did not confirm exact-tree CI branch creation")
+        try:
+            create_handoff_ref(
+                repository, branch, commit_sha, contract["repository_id"]
+            )
+        except RefCreateRejected:
+            payload_attempted = False
+            raise
         require_exact_ref(
             repository, branch, commit_sha, contract["repository_id"]
         )
@@ -935,13 +987,13 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
 
         auth()
         authorization_attempted = True
-        approved = legacy.gh_api(
-            f"repos/{repository}/git/refs", method="POST",
-            payload={"ref": "refs/heads/" + authorization, "sha": commit_sha},
-        )
-        if (approved.get("ref") != "refs/heads/" + authorization
-                or approved.get("object", {}).get("sha") not in (None, commit_sha)):
-            raise Denied("carrier did not confirm dispatcher authorization ref")
+        try:
+            create_handoff_ref(
+                repository, authorization, commit_sha, contract["repository_id"]
+            )
+        except RefCreateRejected:
+            authorization_attempted = False
+            raise
 
         # Do not trust create responses alone. Re-read both live refs before
         # reporting a successful handoff.
