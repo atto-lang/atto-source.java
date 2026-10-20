@@ -76,6 +76,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 repo, self.source, branch, self.root,
                 source_selector="pr:1425", source_commit=C, source_tree=D)
 
+    def test_trusted_env_disables_replace_refs_and_lazy_fetch(self):
+        with patch.dict(pub.os.environ, {"GH_TOKEN": "test-token"}, clear=True):
+            env = pub.trusted_env()
+        self.assertEqual(env["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual(env["GIT_NO_LAZY_FETCH"], "1")
+        self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+        self.assertNotIn("GIT_DIR", env)
+        self.assertNotIn("GIT_WORK_TREE", env)
+
     def test_real_preflight_rejects_missing_exact_source_authorization(self):
         self.preflight.stop()
         try:
