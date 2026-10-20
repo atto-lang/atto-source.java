@@ -142,6 +142,33 @@ public final class EffectContracts {
             return Collections.unmodifiableMap(immutable);
         }
 
+        /**
+         * Stronger opt-in gate for code generation or export where every call
+         * must be accounted for. validate() only checks explicit allowances:
+         * an unbounded callable may legitimately have unknown effects for
+         * analysis, but its graph is not closed-world evidence.
+         *
+         * Caller-provided DIRECT edges remain untrusted until produced by a
+         * compiler symbol-resolution pass; this method cannot prove origin.
+         */
+        public Map<String, Set<Effect>> validateClosedWorld() {
+            if (definitions.isEmpty()) {
+                throw new IllegalArgumentException("empty effect graph is not closed-world evidence");
+            }
+            Map<String, Set<Effect>> effects = validate();
+            for (Callable callable : definitions.values()) {
+                Set<Effect> row = effects.get(callable.symbol());
+                if (row.contains(Effect.UNKNOWN_CALL) || row.contains(Effect.FFI_UNKNOWN)) {
+                    Effect first = row.contains(Effect.UNKNOWN_CALL)
+                            ? Effect.UNKNOWN_CALL : Effect.FFI_UNKNOWN;
+                    throw new IllegalArgumentException(
+                            "unverified closed-world effect in " + callable.symbol()
+                            + ": " + first + explainPath(callable.symbol(), first, effects));
+                }
+            }
+            return effects;
+        }
+
         public Map<String, Set<Effect>> validate() {
             Map<String, Set<Effect>> inferred = infer();
             for (Callable def : definitions.values()) {
