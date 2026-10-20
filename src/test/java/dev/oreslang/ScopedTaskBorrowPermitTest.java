@@ -43,6 +43,48 @@ final class ScopedTaskBorrowPermitTest {
         assertEquals("$", proof.accessPath());
     }
 
+
+    @Test
+    void rebindingStorageAdvancesGenerationWithoutChangingRegionIdentity() {
+        Ast.Program program = OresCompiler.parseAndTypeCheck("""
+                pub routine main(): void {
+                    let int value = 40;
+                    nb scope {
+                        val ref = rt borrow value;
+                        let first = nb {
+                            stdio.stdout.write(ref);
+                        };
+                    }
+                    value = 41;
+                    nb scope {
+                        val ref = rt borrow value;
+                        let second = nb {
+                            stdio.stdout.write(ref);
+                        };
+                    }
+                    return;
+                }
+                """);
+
+        Ast.FunctionDecl main = (Ast.FunctionDecl) program.modules()
+                .getFirst().declarations().getFirst();
+        Ast.TaskScopeStmt firstScope = (Ast.TaskScopeStmt) main.body().get(1);
+        Ast.TaskScopeStmt secondScope = (Ast.TaskScopeStmt) main.body().get(3);
+
+        Ast.TaskExpr firstTask = (Ast.TaskExpr) ((Ast.BindingStmt)
+                firstScope.body().get(1)).initializer();
+        Ast.TaskExpr secondTask = (Ast.TaskExpr) ((Ast.BindingStmt)
+                secondScope.body().get(1)).initializer();
+
+        Ast.TaskCaptureProof first = firstTask.captureProofs().getFirst();
+        Ast.TaskCaptureProof second = secondTask.captureProofs().getFirst();
+
+        assertEquals(first.regionId(), second.regionId(),
+                "rebinding reuses the same storage region identity");
+        assertEquals(first.regionGeneration() + 1L, second.regionGeneration(),
+                "rebinding must fence stale permits with a new generation");
+    }
+
     @Test
     void scopedReadBorrowSurvivesChildAwaitAndCarrierMigration() throws Exception {
         String source = """
