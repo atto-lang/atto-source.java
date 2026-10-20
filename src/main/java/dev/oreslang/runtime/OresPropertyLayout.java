@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalInt;
+import java.nio.charset.StandardCharsets;
 
 /**
  * An immutable, closed property layout with a single slot for each tagged key.
@@ -17,6 +18,11 @@ import java.util.OptionalInt;
  * of values, and never turn closed aggregates into dynamic guest Maps.
  */
 public final class OresPropertyLayout {
+    /** Initial bounded compiler-key metadata quotas, not legacy field quotas. */
+    public static final int MAX_FIELDS = 4096;
+    public static final int MAX_ENCODED_KEY_BYTES = 1_048_576;
+    private static final int V1_KEY_FRAME_BYTES = 6;
+
     private final List<OresPropertyKey> keys;
     private final Map<OresPropertyKey, Integer> slotByKey;
 
@@ -24,8 +30,20 @@ public final class OresPropertyLayout {
                                boolean canonicalOrder) {
         Objects.requireNonNull(declaredKeys, "property keys");
         ArrayList<OresPropertyKey> order = new ArrayList<>();
+        long totalEncodedBytes = 0;
+        // Do not rely on Collection.size(): a hostile/unstable host collection
+        // might lie. Enforce limits while taking the independent snapshot.
         for (OresPropertyKey key : declaredKeys) {
-            order.add(Objects.requireNonNull(key, "property key"));
+            Objects.requireNonNull(key, "property key");
+            if (order.size() >= MAX_FIELDS) {
+                throw new IllegalArgumentException("static property layout exceeds 4096 fields");
+            }
+            long entryBytes = V1_KEY_FRAME_BYTES + (long) key.name().getBytes(StandardCharsets.UTF_8).length;
+            if (entryBytes > MAX_ENCODED_KEY_BYTES - totalEncodedBytes) {
+                throw new IllegalArgumentException("static property layout exceeds 1 MiB tagged-key budget");
+            }
+            totalEncodedBytes += entryBytes;
+            order.add(key);
         }
         if (canonicalOrder) order.sort(OresPropertyKey.CANONICAL_ORDER);
         Map<OresPropertyKey, Integer> slots = new HashMap<>();
