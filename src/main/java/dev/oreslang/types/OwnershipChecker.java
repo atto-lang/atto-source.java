@@ -1188,6 +1188,16 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr entryNamespace
+                    && entryNamespace.name().equals("Entry")
+                    && scope.lookup("Entry") == null) {
+                if (member.member().equals("of")) {
+                    throw error(
+                            "Entry.of is a generic factory and is direct-call-only; "
+                                    + "wrap Entry.of(key, value) in an explicit lambda to reify it");
+                }
+                throw error("unknown Entry member '" + member.member() + "'");
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
@@ -1263,6 +1273,13 @@ public final class OwnershipChecker {
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.IndexExpr indexed) {
+            if (indexed.receiver() instanceof Ast.NameExpr entryNamespace
+                    && entryNamespace.name().equals("Entry")
+                    && scope.lookup("Entry") == null) {
+                throw error(
+                        "Entry factory namespace does not support computed property access; "
+                                + "invoke Entry.of(key, value) directly");
+            }
             ValueInfo receiver = checkExpr(indexed.receiver(), scope, false);
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = indexedElementType(indexed, receiver.type, scope);
