@@ -244,6 +244,113 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             check(peerFailure.get() == null);
         }
 
+        // Concurrent host receipt readers must preserve TCP protocol order
+        // through ledger application, not merely through socket consumption.
+        // Each peer response is ACK -> COMMIT; two racing readers may return
+        // in either thread order, but must never apply COMMIT before ACK.
+        byte[] orderedPayload = "ordered concurrent receipts".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var orderedEpoch = envelope(1, "orderedReaders", 3, 4, orderedPayload);
+        peerFailure.set(null);
+        try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress())) {
+            Thread peer = new Thread(() -> {
+                var replayGate = new IpcAuthenticatedSocketTransport.InboundReplayGate();
+                try (Socket accepted = server.accept()) {
+                    accepted.setSoTimeout(5000);
+                    for (int sequence = 1; sequence <= 128; ++sequence) {
+                        var decoded = IpcAuthenticatedSocketTransport.decodeDataFrame(
+                                IpcAuthenticatedSocketTransport.readDataWireFrame(
+                                        accepted.getInputStream()),
+                                orderedEpoch, 12, replayGate, connectionBinding, key);
+                        IpcAuthenticatedSocketTransport.writeWireFrame(
+                                accepted.getOutputStream(),
+                                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                                        decoded.envelope(), 12,
+                                        IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED,
+                                        connectionBinding, key));
+                        IpcAuthenticatedSocketTransport.writeWireFrame(
+                                accepted.getOutputStream(),
+                                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                                        decoded.envelope(), 12,
+                                        IpcReceiptCorrelation.Stage.HANDLER_COMMITTED,
+                                        connectionBinding, key));
+                    }
+                } catch (Throwable failure) {
+                    peerFailure.compareAndSet(null, failure);
+                }
+            }, "ipc-test-peer-concurrent-receipt-order");
+            peer.start();
+
+            ExecutorService cleanup = Executors.newSingleThreadExecutor(
+                    r -> new Thread(r, "ipc-test-cleanup-receipt-order"));
+            try (Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                client.setSoTimeout(5000);
+                var bridge = new IpcReceiptCompletionBridge(2);
+                var transport = new IpcAuthenticatedSocketTransport(
+                        client, bridge, orderedEpoch, 12, 1,
+                        key, connectionBinding, cleanup::execute);
+
+                for (int sequence = 1; sequence <= 128; ++sequence) {
+                    var orderedMessage = envelope(
+                            sequence, "orderedReaders", 3, 4, orderedPayload);
+                    var submission = transport.send(orderedMessage, orderedPayload);
+                    check(!submission.writeAttemptFailed());
+
+                    CountDownLatch fireReaders = new CountDownLatch(1);
+                    AtomicReference<IpcReceiptCorrelation.Stage> firstStage =
+                            new AtomicReference<>();
+                    AtomicReference<IpcReceiptCorrelation.Stage> secondStage =
+                            new AtomicReference<>();
+                    AtomicReference<Throwable> readFailure = new AtomicReference<>();
+
+                    Thread firstReader = new Thread(() -> {
+                        try {
+                            fireReaders.await();
+                            firstStage.set(transport.readVerifiedReceipt());
+                        } catch (Throwable failure) {
+                            readFailure.compareAndSet(null, failure);
+                        }
+                    }, "ipc-test-receipt-reader-a");
+                    Thread secondReader = new Thread(() -> {
+                        try {
+                            fireReaders.await();
+                            secondStage.set(transport.readVerifiedReceipt());
+                        } catch (Throwable failure) {
+                            readFailure.compareAndSet(null, failure);
+                        }
+                    }, "ipc-test-receipt-reader-b");
+
+                    firstReader.start();
+                    secondReader.start();
+                    fireReaders.countDown();
+                    firstReader.join(5000);
+                    secondReader.join(5000);
+
+                    check(!firstReader.isAlive());
+                    check(!secondReader.isAlive());
+                    check(readFailure.get() == null);
+                    var a = firstStage.get();
+                    var b = secondStage.get();
+                    check((a == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED
+                                    && b == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED)
+                            || (b == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED
+                                    && a == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED));
+                    check(submission.outcome().toCompletableFuture().join()
+                            == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+                    check(bridge.invariant());
+                }
+
+                check(transport.requestCloseAndAwait(3000));
+                check(transport.keyCloneZeroized());
+            } finally {
+                cleanup.shutdownNow();
+                cleanup.awaitTermination(2, TimeUnit.SECONDS);
+            }
+            peer.join(5000);
+            check(!peer.isAlive());
+            check(peerFailure.get() == null);
+        }
+
         // Full route/grant epoch must be validated before receipt admission or wire I/O.
         byte[] epochPayload = "epoch".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         var oldEpoch = envelope(1, "reused", 3, 4, epochPayload);
