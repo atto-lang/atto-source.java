@@ -61,7 +61,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": A},
-            "repos/trusted/ci/git/refs": {"ref": "refs/heads/ci/oreslang-test"},
+            "repos/trusted/ci/git/refs": {
+                "ref": "refs/heads/ci/oreslang-test",
+                "object": {"sha": A}},
         }
         if route not in mapping:
             raise AssertionError("unexpected or cross-repository GitHub API route " + route)
@@ -305,6 +307,41 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(writes[2][2]["base_tree"], B)
         self.assertEqual(writes[3][2]["tree"], E)
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
+
+    def test_commit_records_exact_origin_provenance_and_ref_identity(self):
+        self.publish()
+        commit = [payload for method, route, payload in self.route_calls
+                  if method == "POST" and route == "repos/trusted/ci/git/commits"]
+        self.assertEqual(len(commit), 1)
+        trailer = commit[0]["message"]
+        self.assertIn("Oreslang-Source-Repo: "+pub.SOURCE_REPO+"\n", trailer)
+        self.assertIn("Oreslang-Source-Commit: "+A+"\n", trailer)
+        self.assertIn("Oreslang-Source-Tree: "+D+"\n", trailer)
+        self.assertIn("Oreslang-Destination-Prefix: "+pub.PREFIX+"\n", trailer)
+        self.assertEqual(commit[0]["tree"], E)
+
+    def test_ref_attestation_rejects_response_pointing_to_wrong_commit(self):
+        original = self.fake_api
+        def wrong_ref(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/refs":
+                return {"ref": "refs/heads/ci/oreslang-test",
+                        "object": {"sha": B}}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=wrong_ref):
+            with self.assertRaisesRegex(pub.Denied, "new CI branch target"):
+                pub.publish("trusted/ci", self.source,
+                            "ci/oreslang-test", self.root, A)
+
+    def test_ref_attestation_rejects_missing_object_identity(self):
+        original = self.fake_api
+        def missing_ref(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/refs":
+                return {"ref": "refs/heads/ci/oreslang-test"}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=missing_ref):
+            with self.assertRaises(pub.Denied):
+                pub.publish("trusted/ci", self.source,
+                            "ci/oreslang-test", self.root, A)
 
     def test_existing_stale_files_cannot_survive_clean_source_snapshot(self):
         # Assume base_tree contains a stale private-oreslang-source/secret.ores.
