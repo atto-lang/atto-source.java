@@ -341,6 +341,41 @@ final class DynamicSelectPlanTest {
     }
 
     @Test
+    void cachedStaticPlanUsesEachSourceFairTicketWithoutRetargetingPendingWaiters() {
+        var a = new ChannelRuntime.Channel<Integer>(8);
+        var b = new ChannelRuntime.Channel<Integer>(8);
+        var cached = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.read(a), ChannelRuntime.read(b));
+        for (int i = 0; i < 4; i++) {
+            assertTrue(a.tryWrite(i));
+            assertTrue(b.tryWrite(i));
+        }
+        assertEquals(1, cached.tryStaticSelect(ChannelRuntime.SelectPolicy.FAIR, 1)
+                .orElseThrow().index());
+        assertEquals(0, cached.tryStaticSelect(ChannelRuntime.SelectPolicy.FAIR, 0)
+                .orElseThrow().index());
+        assertEquals(1, cached.selectStaticAsync(ChannelRuntime.SelectPolicy.FAIR, 3)
+                .join().index());
+        assertEquals(0, cached.tryStaticSelect(ChannelRuntime.SelectPolicy.FAIR, 4)
+                .orElseThrow().index());
+        assertSame(cached, cached, "source-select descriptor must remain immutable");
+    }
+
+    @Test
+    void cachedStaticPlanCancellationDoesNotCarryWaitersToNextTicket() {
+        var channel = new ChannelRuntime.Channel<Integer>(0);
+        var cached = ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel));
+        for (int ticket = 0; ticket < 512; ticket++) {
+            var pending = cached.selectStaticAsync(ChannelRuntime.SelectPolicy.FAIR, ticket);
+            assertTrue(pending.cancel(false));
+            assertFalse(channel.tryWrite(ticket));
+        }
+        var selected = cached.selectStaticAsync(ChannelRuntime.SelectPolicy.FAIR, 513);
+        assertTrue(channel.tryWrite(41));
+        assertEquals(41, selected.join().value());
+    }
+
+    @Test
     void cancellationVersusRendezvousHasOneTerminalOwner() throws Exception {
         var workers = java.util.concurrent.Executors.newFixedThreadPool(2);
         try {
