@@ -242,8 +242,33 @@ public final class UnaryTransportFrameCheck {
         }
     }
 
+    private static void payloadOwnershipBoundaries() {
+        byte[] ordinarySource = new byte[] {1, 2, 3};
+        var ordinary = new UnaryTransportFrame.Envelope(
+                UnaryTransportFrame.Kind.REPLY, 7, 3, 1, ordinarySource);
+        ordinarySource[0] = 9;
+        check(ordinary.payload()[0] == 1,
+                "ordinary envelope construction must defensively copy payload");
+
+        byte[] exported = ordinary.payload();
+        exported[0] = 8;
+        check(ordinary.payload()[0] == 1,
+                "envelope payload accessor must never expose backing storage");
+
+        byte[] fresh = new byte[] {4, 5, 6};
+        var transferred = UnaryTransportFrame.Envelope.fromFreshPayload(
+                UnaryTransportFrame.Kind.REPLY, 8, 4, 2, fresh);
+        check(transferred.payloadValue().unsignedAt(0) == 4,
+                "fresh envelope transfer must preserve bytes");
+        fresh[0] = 7;
+        check(transferred.payloadValue().unsignedAt(0) == 7,
+                "fresh envelope factory must transfer ownership without cloning");
+        check(transferred.payload()[0] == 7,
+                "transferred envelope accessor must preserve owned value");
+    }
+
     public static void main(String[] args) throws Exception {
-        framing(); peerBudgets(); loopbackTcp(); exactlyOnce();
+        payloadOwnershipBoundaries(); framing(); peerBudgets(); loopbackTcp(); exactlyOnce();
         System.out.println("PASS: strict TCP/WS envelopes, peer byte budgets, split TCP loopback and 1000 cancel/reply races");
     }
 }
