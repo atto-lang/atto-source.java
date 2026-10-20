@@ -63,4 +63,35 @@ final class UnaryOresBytesPrivateActorJUnitTest {
                     reply.get().payloadValue().size() - 1));
         }
     }
+
+    @Test
+    void privateCustomCodecCannotStageOversizedSupervisorBytes() throws Exception {
+        CountDownLatch completed = new CountDownLatch(1);
+        AtomicReference<UnaryTcpSessionAdapter.Reply> reply = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var dispatcher = new UnaryTcpActorDispatcher(
+                    runtime,
+                    ActorRuntime.ActorKind.PRIVATE,
+                    (message, context) -> OresBytes.wrapTrusted(
+                            new byte[UnaryTransportFrame.MAX_PAYLOAD_BYTES + 1]),
+                    value -> assertInstanceOf(OresBytes.class, value));
+
+            var handle = dispatcher.dispatch(new UnaryTcpSessionAdapter.Request(
+                    new UnaryTcpSessionAdapter.PeerIdentity("peer:private-oversized-result"),
+                    53, 11, 1, new byte[0]));
+            handle.whenComplete((value, terminal) -> {
+                reply.set(value);
+                failure.set(terminal);
+                completed.countDown();
+            });
+
+            assertTrue(completed.await(5, TimeUnit.SECONDS));
+            assertNull(reply.get());
+            IllegalArgumentException rejected = assertInstanceOf(
+                    IllegalArgumentException.class, failure.get());
+            assertTrue(rejected.getMessage().contains("protocol byte limit"));
+        }
+    }
 }
