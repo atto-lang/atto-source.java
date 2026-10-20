@@ -90,7 +90,15 @@ pub fnc checked(
 
 pub fnc step(&Chart chart, Symbol active, Symbol event): Symbol {
   validate(&chart); // fail closed even when raw arrays are mutated after checked()
-  let cursor = index_of(chart.states, active);
+  // Resolve active state without consuming this move-sensitive Symbol: it
+  // must remain available for the stutter result on an unhandled event.
+  let cursor = -1;
+  for (let i = 0; i < chart.states.size; i = i + 1) {
+    if chart.states.get(i) eq active {
+      cursor = i;
+      break;
+    } fi
+  }
   if cursor == -1 {
     rt fail("Statechart: active state is undeclared");
   } fi
