@@ -121,12 +121,97 @@ final class V3ScalarDefaultProgramNormalizerTest {
         }
     }
 
+    private static Object executeClosed(String text, String file) throws Exception {
+        Ast.Program normalized =
+                V3ScalarDefaultProgramNormalizer.parseNormalizeAndAnalyze(text);
+        Source source = Source.newBuilder(OresLanguage.ID, text, file)
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build();
+             OresLanguage.PrecheckedProgramScope ignored =
+                     OresLanguage.openPrecheckedProgram(file, text, normalized)) {
+            var result = context.eval(source);
+            return result.isBoolean() ? result.asBoolean() : result.asLong();
+        }
+    }
+
     @Test
-    void rejectsOptionSemanticsUntilNominalRuntimeAdapterIsVerified() {
+    void omittedOptionWithDefaultBuildsSomeAtTheRealInterpreterBoundary() throws Exception {
+        String source = """
+                pub fnc get(@Default(7) Option<int> value): int {
+                    return value.unwrap();
+                }
+                pub fnc main(): int { return get(); }
+                """;
+        assertEquals(7L, executeClosed(source, "option-some.ores"));
+    }
+
+    @Test
+    void omittedOptionWithoutDefaultBuildsTypedNone() throws Exception {
+        String source = """
+                pub fnc empty(Option<int> value?): bool {
+                    return value.is_none();
+                }
+                pub fnc main(): bool { return empty(); }
+                """;
+        assertEquals(true, executeClosed(source, "option-none.ores"));
+    }
+
+    @Test
+    void suppliedScalarIsWrappedIntoSomeAtTheCheckedFormalBoundary() throws Exception {
+        String source = """
+                pub fnc get(Option<int> value?): int {
+                    return value.unwrap();
+                }
+                pub fnc main(): int { return get(value: 12); }
+                """;
+        assertEquals(12L, executeClosed(source, "option-supplied.ores"));
+    }
+
+    @Test
+    void explicitlySuppliedNoneSuppressesOptionDefault() throws Exception {
+        String source = """
+                pub fnc empty(@Default(7) Option<int> value): bool {
+                    return value.is_none();
+                }
+                pub fnc main(): bool { return empty(value: None); }
+                """;
+        assertEquals(true, executeClosed(source, "option-explicit-none.ores"));
+    }
+
+    @Test
+    void defaultNoneStaysNoneAndDoesNotBecomeSomeNone() throws Exception {
+        String source = """
+                pub fnc empty(@Default(None) Option<int> value): bool {
+                    return value.is_none();
+                }
+                pub fnc main(): bool { return empty(); }
+                """;
+        assertEquals(true, executeClosed(source, "option-default-none.ores"));
+    }
+
+    @Test
+    void stagedQuestionTypeAndOmittableNameBuildSingleOptionLayer() throws Exception {
+        String source = """
+                pub fnc empty(int? value?): bool {
+                    return value.is_none();
+                }
+                pub fnc main(): bool { return empty(); }
+                """;
+        assertEquals(true, executeClosed(source, "option-question.ores"));
+    }
+
+    @Test
+    void nestedOptionAndUserDefinedOptionCtorRemainRejected() {
         assertThrows(IllegalArgumentException.class,
                 () -> V3ScalarDefaultProgramNormalizer.parseNormalizeAndAnalyze("""
-                        pub fnc f(Option<int> b?): int { return 1; }
+                        pub fnc f(Option<Option<int>> b?): int { return 1; }
                         pub fnc main(): int { return f(); }
+                        """));
+        assertThrows(IllegalArgumentException.class,
+                () -> V3ScalarDefaultProgramNormalizer.parseNormalizeAndAnalyze("""
+                        pub fnc Some(int value): int { return value; }
+                        pub fnc main(): int { return Some(5); }
                         """));
     }
 
