@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/compiler/V3ScalarDefaultProgramNormalizer.java'
+      - 'src/main/java/dev/oreslang/types/V3ClosedOptionCallLowering.java'
       - 'src/main/java/dev/oreslang/types/V3ScalarDefaultLiteralLowering.java'
       - 'src/main/java/dev/oreslang/types/V3DefaultArgValsPolicy.java'
       - 'src/main/java/dev/oreslang/types/V3CallLoweringPreview.java'
