@@ -459,14 +459,21 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             } catch (IllegalStateException expected) {
                 check(expected.getMessage().contains("all-zero"));
             }
+            var invalidPolicyAuthority =
+                    authority(10, key, connectionBinding);
             try {
                 new IpcAuthenticatedSocketTransport(
-                    client, bridge, configMessage, 2,
-                    authority(10, key, connectionBinding), IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+                        client, bridge, configMessage, 2,
+                        invalidPolicyAuthority,
+                        IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
                 throw new AssertionError("parallel TCP physical writers accepted");
             } catch (IllegalArgumentException expected) {
                 check(expected.getMessage().contains("exactly one"));
+                check(!invalidPolicyAuthority.consumedOrDestroyed());
+            } finally {
+                invalidPolicyAuthority.close();
             }
+            check(invalidPolicyAuthority.consumedOrDestroyed());
             check(!client.isClosed());
         }
 
