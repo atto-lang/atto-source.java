@@ -138,6 +138,53 @@ final class ModelGraphAdmissionTest {
     }
 
 
+
+    @Test
+    void directAstCannotBypassParserNumericValidation() {
+        Ast.ModelDecl parsed = source("define model X(rate: int = 1) as Apply(rate) end");
+        Map<String, Signature> trusted = Map.of("Apply", op("Apply", USD, USD, false));
+        Ast.ModelFormal original = parsed.formals().getFirst();
+
+        Ast.ModelDecl invalid = new Ast.ModelDecl(parsed.name(), parsed.visibility(),
+                List.of(new Ast.ModelFormal(original.name(), original.type(),
+                        new Ast.ModelValue(Ast.ModelValueKind.INTEGER, "1garbage"))),
+                parsed.operations());
+        rejected("MODEL_INVALID_CONST", invalid, trusted, DEFAULT);
+
+        Ast.ModelDecl overflow = new Ast.ModelDecl(parsed.name(), parsed.visibility(),
+                List.of(new Ast.ModelFormal(original.name(), original.type(),
+                        new Ast.ModelValue(Ast.ModelValueKind.INTEGER, "9223372036854775808"))),
+                parsed.operations());
+        rejected("MODEL_CONST_OVERFLOW", overflow, trusted, DEFAULT);
+
+        Ast.ModelDecl invalidOp = new Ast.ModelDecl(parsed.name(), parsed.visibility(),
+                parsed.formals(), List.of(new Ast.ModelOperation("Apply",
+                        List.of(new Ast.ModelArgument(null,
+                                new Ast.ModelValue(Ast.ModelValueKind.INTEGER, "8bogus"))))));
+        rejected("MODEL_INVALID_CONST", invalidOp, trusted, DEFAULT);
+    }
+
+    @Test
+    void forgedAstArgumentsAndUnresolvedNamesFailClosed() {
+        Map<String, Signature> trusted = Map.of("Apply", op("Apply", USD, USD, false));
+        Ast.ModelDecl ordinary = source("define model X as Apply(1) end");
+        var oversized = new java.util.ArrayList<Ast.ModelArgument>();
+        for (int i = 0; i < 17; i++)
+            oversized.add(new Ast.ModelArgument(null,
+                    new Ast.ModelValue(Ast.ModelValueKind.INTEGER, "1")));
+        Ast.ModelDecl forged = new Ast.ModelDecl(ordinary.name(), ordinary.visibility(),
+                ordinary.formals(), List.of(new Ast.ModelOperation("Apply", oversized)));
+        rejected("MODEL_ARGUMENT_BUDGET", forged, trusted, DEFAULT);
+        rejected("MODEL_NAMED_ARGUMENT_UNRESOLVED",
+                source("define model X as Apply(rate: 1) end"), trusted, DEFAULT);
+
+        Ast.ModelDecl longArg = new Ast.ModelDecl(ordinary.name(), ordinary.visibility(),
+                ordinary.formals(), List.of(new Ast.ModelOperation("Apply",
+                        List.of(new Ast.ModelArgument(null, new Ast.ModelValue(
+                                Ast.ModelValueKind.STRING, "\"" + "a".repeat(257) + "\""))))));
+        rejected("MODEL_NONCONSTANT_CONFIG", longArg, trusted, DEFAULT);
+    }
+
     @Test
     void implementationDigestAndProvenanceAreValidatedAndBound() {
         Ast.ModelDecl s = source("define model X as A() end");
