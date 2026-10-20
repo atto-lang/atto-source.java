@@ -696,3 +696,78 @@ repositories; the reviewed destination is only a comment and
 issues #962/#904 remain open. Retain PR DRAFT and production hot
 reload OFF pending test correction, authorized exact-head JDK25/Graal
 Maven execution, and native parity checks.
+
+## Host recovery for failed post-publication physical stop
+
+The next supervisor audit distinguished two different failure modes.
+A retired actor whose `stop()` request **succeeded**, but whose
+physical-finalization notification is still pending, can be handled
+by `reapRetired()` once its terminal barrier publishes. But a
+physical `stop()` that throws **before mutating** the actor's lifecycle
+leaves an executable retired actor that may never finish. Passive
+finalization polling alone cannot make progress, while releasing its
+old code generation or reopening new-route ingress is unsafe.
+
+Production commit `a6ecd23a9f303c8696eb9dc236c812e342ec3df9`
+adds trusted-host `LogicalSourceActorRouterV1.retryRetiredPhysicalStops()`.
+It snapshots previously published retired Routes and **retirement-eligible**
+unpublished Candidates under `routeLock`, explicitly excludes
+the open active route and all staging candidates, and attempts their
+exact `ActorRef.stop()` outside that monitor. An active publication
+transaction rejects retry. Failed independent stops remain registered
+for later recovery; successfully finalized actors are debited through
+the existing close-before-forget retirement ledger. This method
+holds `closeLock` to serialize with router shutdown and retained
+rollback reconciliation. It does not re-publish any route,
+advance proxy epochs, refund message credits or infer physical
+completion from a stop request alone.
+
+Real-runtime JUnit
+`LogicalSourceActorRetiredLeaseRecoveryTest.postPublicationFailedStopCanBeRetriedWithoutRevertingRoute`,
+commit `916e7e3bf3aed54b98a7e785a6bb304023ed6b89`,
+uses a test-only registered actor map that throws a single
+`OutOfMemoryError` when the old physical actor's
+`ActorRuntime.stop` requests its registry entry. The test verifies
+the new route has already committed epoch two, sends remain
+quarantined, passive reaping cannot certify terminal completion,
+an explicit physical stop retry succeeds, the old generation pin
+is debited **once**, quarantine clears, and epoch two remains
+authoritative. This is **committed production Java/JUnit source
+that has NOT executed** because source-owned Actions has no
+recorded executable steps.
+
+Independently authored public protocol model
+`RetiredStopRetryOracle.java` ran on funded Temurin JDK25,
+source-free commit `c349958a21f51702ebc7fb319c0c99cea8c71948`.
+GitHub Actions
+https://github.com/gha-indie-worker/gha-indie-worker-e2e/actions/runs/39354517860
+(job `118406128388`) completed SUCCESS with
+`javac --release 25 -Xlint:all -Werror` and
+```
+PASS source-free retired stop retry checks=210001
+four_worker_races=5000
+passive_reap_negative_control=detected private_source_bytes=0
+```
+This model validates only the abstract recovery protocol and
+does not compile, link, or run private Oreslang code.
+
+On the exact code/test head
+`916e7e3bf3aed54b98a7e785a6bb304023ed6b89`,
+source fast CI `39354397572` and full CI `39354397599`
+failed with `steps:null` and `logs_url:null` for every
+inspected job. Metadata confirms the private repository is
+not archived and the connected GitHub user has admin scope,
+but the available connector does **not** expose organization
+billing or workflow-runner admission controls. The job-step
+endpoint supplies no steps, so there is no evidence Maven/JUnit/
+GraalVM executed, and no proof of minutes exhaustion.
+
+Protected source main still has zero uncommented approved
+private-source CI destinations. The external organization
+listed in policy is review-only and not approved. Security
+issue #962 and merge-review issue #904 remain open;
+NO cross-organization private source mirroring took place.
+The source-free model is supplemental evidence only.
+Keep PR #1367 draft and production hot reload disabled
+until exact-head real JUnit, Graal Native Image, and
+independent security/merge approvals succeed.
