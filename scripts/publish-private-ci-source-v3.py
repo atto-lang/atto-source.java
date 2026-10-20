@@ -136,17 +136,6 @@ def read_local_contract(root):
     return read_local_protected_file(root, CONTRACT_PATH, MAX_CONTRACT)
 
 
-def protected_main_sha():
-    branch = legacy.gh_api(
-        f"repos/{legacy.SOURCE_REPO}/branches/{legacy.SOURCE_PROTECTED_BRANCH}"
-    )
-    if (branch.get("name") != legacy.SOURCE_PROTECTED_BRANCH
-            or branch.get("protected") is not True):
-        raise Denied("source main is not protected")
-    return valid_sha(branch.get("commit", {}).get("sha"),
-                     "source protected-main SHA invalid")
-
-
 def remote_file_at_source_main(path, main_sha, max_bytes):
     item = legacy.gh_api(
         f"repos/{legacy.SOURCE_REPO}/contents/{path}?ref={main_sha}"
