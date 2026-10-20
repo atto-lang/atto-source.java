@@ -1032,10 +1032,6 @@ public final class OwnershipChecker {
                 }
                 boolean mutable = unary.operator().equals("&mut");
                 BorrowPlace place = borrowPlace(unary.operand(), scope);
-                if (containsTypedMapType(place.type())) {
-                    throw error(callable + " argument " + position
-                            + " cannot borrow Map<K,V> across a callable boundary");
-                }
                 if (mutable && !(unary.operand() instanceof Ast.NameExpr)) {
                     throw error("mutable projected borrows need path-exclusive loan tracking");
                 }
@@ -2309,6 +2305,10 @@ public final class OwnershipChecker {
                     throw error(callable + " argument " + position + " requires rt borrow mut");
                 }
                 BorrowPlace place = borrowPlace(unary.operand(), scope);
+                if (containsTypedMapType(place.type())) {
+                    throw error(callable + " argument " + position
+                            + " cannot borrow Map<K,V> across a callable boundary");
+                }
                 if (mutable && !(unary.operand() instanceof Ast.NameExpr)) {
                     throw error("mutable projected borrows need path-exclusive loan tracking");
                 }
