@@ -365,6 +365,10 @@ public final class IpcReceiptCompletionBridgeSelfTest {
 
             releaseCallback.countDown();
             check(callbackReturned.await(2, TimeUnit.SECONDS));
+            // The callback's final latch fires before PreparedDelivery.run()
+            // decrements bridge capacity and returns its global reservation.
+            // Wait for that delivery to drain before expecting re-admission.
+            awaitGlobalBudgetQuiescence();
             var second = transport.admit(secondMessage);
             transport.accept(
                     secondMessage, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
