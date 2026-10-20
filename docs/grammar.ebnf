@@ -121,7 +121,8 @@ contract_decl   = "define" [ "static" ] "contract" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ] contract_body ;
 (* A static contract uses the callable member grammar but v1 rejects field
    members until class static storage exists. Ordinary module contracts retain
-   callable and field requirements. *)
+   callable and field requirements. Static-contract conformance is same-source
+   only in v1; linked contract ABI transport is not enabled yet. *)
 
 interface_decl  = visibility "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
