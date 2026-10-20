@@ -24,7 +24,7 @@ public final class TypedLayoutAccessEvidence {
             String owner, String binding, String iterable,
             List<String> directMemberSelectors,
             boolean supportedDirectBody,
-            boolean wholeBindingEscapes,
+            boolean wholeBindingObserved,
             String limitation) {
         public LoopObservation { directMemberSelectors = List.copyOf(directMemberSelectors); }
     }
@@ -130,7 +130,8 @@ public final class TypedLayoutAccessEvidence {
             if (expression instanceof Ast.MemberExpr member
                     && member.receiver() instanceof Ast.NameExpr name
                     && name.name().equals(forOf.bindingName())) {
-                if (members.size() >= MAX_MEMBERS_PER_LOOP)
+                if (!members.contains(member.member())
+                        && members.size() >= MAX_MEMBERS_PER_LOOP)
                     throw new IllegalArgumentException("layout member access budget exceeded");
                 members.add(member.member());
             } else if (expression instanceof Ast.NameExpr name
