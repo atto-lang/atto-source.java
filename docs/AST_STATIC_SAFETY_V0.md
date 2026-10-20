@@ -29,7 +29,7 @@ Shared reference contract: https://github.com/ores-truffle-oreslang/oreslang-com
 
 The opt-in AST pass also runs `CallbackOrderingAnalyzer`:
 
-- `ORES-ZALGO-001`: a callback captured by an unknown-timing API may emit
+- `ORES-CB-002`: a callback captured by an unknown-timing API may emit
   an event **before** a matching `on` / `once` / `addListener` registration.
 - The analyzer handles direct lambdas, named local lambda bindings,
   straightforward local emitter aliases, constant or dynamic event names,
