@@ -1,6 +1,10 @@
 package dev.oreslang.runtime;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -29,6 +33,59 @@ final class CpuTopologyTest {
         assertEquals(3, topology.localityRank(4, 5));
         assertFalse(topology.hasKnownLocality(4));
         assertEquals(3, CpuTopology.empty().localityRank(4, 5));
+    }
+
+    @Test
+    void sameNumericCacheIdAcrossPackagesOrLevelsIsNotAnLlcProof() {
+        CpuTopology topology = CpuTopology.of(
+                new CpuTopology.Location(0, 7, 0, 3, 0),
+                new CpuTopology.Location(1, 7, 0, 3, 1),
+                new CpuTopology.Location(2, 7, 0, 2, 0),
+                new CpuTopology.Location(3, 7, 0, 3, 0));
+        assertEquals(2, topology.localityRank(0, 1),
+                "same numeric cache id in different packages is not same LLC");
+        assertEquals(2, topology.localityRank(0, 2),
+                "same numeric cache id at different levels is not same LLC");
+        assertEquals(1, topology.localityRank(0, 3));
+        assertThrows(IllegalArgumentException.class,
+                () -> new CpuTopology.Location(4, 7, 0, 3, -1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new CpuTopology.Location(4, 7, 0, 1, 0));
+    }
+
+    @Test
+    void sysfsFixtureRejectsL1DataAndUnknownPackageAsSharedLlc(@TempDir Path root)
+            throws IOException {
+        cpuFixture(root, 0, "0", "Unified", "3", "7", "0");
+        cpuFixture(root, 1, "1", "Unified", "3", "7", "0");
+        cpuFixture(root, 2, "0", "Unified", "2", "7", "0");
+        cpuFixture(root, 3, "0", "Data", "3", "7", "0");
+        cpuFixture(root, 4, "0", "Unified", "3", "7", "0");
+        cpuFixture(root, 5, null, "Unified", "3", "7", "0");
+        CpuTopology topology = CpuTopology.discoverAt(root);
+        assertEquals(2, topology.localityRank(0, 1));
+        assertEquals(2, topology.localityRank(0, 2));
+        assertEquals(2, topology.localityRank(0, 3));
+        assertEquals(1, topology.localityRank(0, 4));
+        assertEquals(2, topology.localityRank(0, 5));
+        assertEquals(3, topology.localityRank(0, 99));
+    }
+
+    private static void cpuFixture(Path root, int cpu, String pkg,
+            String kind, String level, String id, String numa)
+            throws IOException {
+        Path dir = root.resolve("cpu" + cpu);
+        Path cache = dir.resolve("cache/index0");
+        Files.createDirectories(cache);
+        Files.createDirectories(dir.resolve("node" + numa));
+        Files.writeString(cache.resolve("level"), level);
+        Files.writeString(cache.resolve("id"), id);
+        Files.writeString(cache.resolve("type"), kind);
+        if (pkg != null) {
+            Path topology = dir.resolve("topology");
+            Files.createDirectories(topology);
+            Files.writeString(topology.resolve("physical_package_id"), pkg);
+        }
     }
 
     @Test
