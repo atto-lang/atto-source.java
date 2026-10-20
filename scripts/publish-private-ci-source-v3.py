@@ -650,7 +650,8 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         # The payload ref is inert without the authorization ref. Re-run every
         # mutable governance check in that safe window so protection, policy,
         # contract or carrier-base drift cannot be authorized.
-        if legacy.verify_protected_origin(repository, approved_policy) != protected_sha:
+        if legacy.verify_protected_origin(
+                repository, approved_policy, approved_repository_id) != protected_sha:
             raise Denied("source protected main advanced before authorization")
         checked_control_plane(trusted_root, protected_sha)
         checked_contract(
