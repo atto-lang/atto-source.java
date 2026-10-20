@@ -3383,36 +3383,45 @@ public final class OwnershipChecker {
      */
     private Ast.TypeRef hasFutureResult(Ast.TypeRef type, Set<String> seen) {
         if (type == null || type.isBorrow() || type.inferArguments()) return null;
-        if (!seen.add(type.toString())) return null;
-        Ast.InterfaceDecl iface = findInterface(type.name());
-        if (iface != null && iface.name().equals("HasFuture")
-                && !iface.moduleContract() && type.arguments().size() == 1) {
-            return type.arguments().getFirst();
+        // Path-local nominal identities, not instantiated TypeRef.toString().
+        // Otherwise A<T> -> A<Array<T>> evades the recursion guard forever.
+        // Removing names on exit keeps separate diamond edges observable.
+        if (!seen.add(type.name())) {
+            throw error("cyclic HasFuture<T> ownership inheritance involving " + type.name());
         }
-        Ast.TypeRef result = null;
-        if (iface != null && !iface.moduleContract()) {
-            Map<String, Ast.TypeRef> bindings =
-                    genericBindings(iface.genericParameters(), type.arguments());
-            for (Ast.TypeRef parent : iface.parents()) {
-                result = mergeHasFutureOwnershipResult(result,
-                        hasFutureResult(substituteType(parent, bindings), seen));
+        try {
+            Ast.InterfaceDecl iface = findInterface(type.name());
+            if (iface != null && iface.name().equals("HasFuture")
+                    && !iface.moduleContract() && type.arguments().size() == 1) {
+                return type.arguments().getFirst();
             }
+            Ast.TypeRef result = null;
+            if (iface != null && !iface.moduleContract()) {
+                Map<String, Ast.TypeRef> bindings =
+                        genericBindings(iface.genericParameters(), type.arguments());
+                for (Ast.TypeRef parent : iface.parents()) {
+                    result = mergeHasFutureOwnershipResult(result,
+                            hasFutureResult(substituteType(parent, bindings), seen));
+                }
+            }
+            Ast.ClassDecl klass = findClass(type.name());
+            if (klass != null) {
+                Map<String, Ast.TypeRef> bindings =
+                        genericBindings(klass.genericParameters(), type.arguments());
+                for (Ast.TypeRef contract : klass.interfaces()) {
+                    result = mergeHasFutureOwnershipResult(result,
+                            hasFutureResult(substituteType(contract, bindings), seen));
+                }
+                for (Ast.TypeRef parent : klass.parents()) {
+                    if (findClass(parent.name()) == null) continue;
+                    result = mergeHasFutureOwnershipResult(result,
+                            hasFutureResult(substituteType(parent, bindings), seen));
+                }
+            }
+            return result;
+        } finally {
+            seen.remove(type.name());
         }
-        Ast.ClassDecl klass = findClass(type.name());
-        if (klass != null) {
-            Map<String, Ast.TypeRef> bindings =
-                    genericBindings(klass.genericParameters(), type.arguments());
-            for (Ast.TypeRef contract : klass.interfaces()) {
-                result = mergeHasFutureOwnershipResult(result,
-                        hasFutureResult(substituteType(contract, bindings), seen));
-            }
-            for (Ast.TypeRef parent : klass.parents()) {
-                if (findClass(parent.name()) == null) continue;
-                result = mergeHasFutureOwnershipResult(result,
-                        hasFutureResult(substituteType(parent, bindings), seen));
-            }
-        }
-        return result;
     }
 
     private Ast.TypeRef mergeHasFutureOwnershipResult(Ast.TypeRef previous, Ast.TypeRef next) {
