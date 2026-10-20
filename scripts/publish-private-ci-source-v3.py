@@ -17,6 +17,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
+import subprocess
 import sys
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -29,6 +30,9 @@ SPEC.loader.exec_module(legacy)
 
 Denied = legacy.Denied
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+HANDOFF_REF = re.compile(
+    r"^ci/(?:oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}|authorized-[0-9a-f]{40})$"
+)
 CONTRACT_PATH = ".github/private-ci-carrier-contracts.json"
 RECEIPT_PATH = "ci/oreslang-receipt.json"
 RECEIPT_SCHEMA = "ores-private-ci-receipt-v3"
@@ -37,6 +41,13 @@ MAX_CONTRACT = 64 * 1024
 MAX_PLAN = 64 * 1024
 RECEIPT_TTL = dt.timedelta(hours=24)
 SOURCE_REPOSITORY_ID = 1400792274
+CONTROL_PLANE_PATHS = (
+    "scripts/check-private-ci-destination.sh",
+    "scripts/run-in-private-ci-destination.sh",
+    "scripts/publish-private-ci-source.py",
+    "scripts/publish-private-ci-source-v3.py",
+)
+MAX_CONTROL_PLANE_FILE = 512 * 1024
 
 
 def valid_sha(value, label="invalid SHA"):
@@ -81,51 +92,52 @@ def safe_policy_path(value, prefix, suffix):
     return value
 
 
-def read_local_contract(root):
-    """Read the local protected contract through no-follow descriptors."""
+def read_local_protected_file(root, path, max_bytes):
+    """Read one protected control-plane file without following any symlink."""
+    if (not isinstance(path, str) or not isinstance(max_bytes, int)
+            or isinstance(max_bytes, bool) or max_bytes <= 0):
+        raise Denied("invalid protected local file request")
+    parts = PurePosixPath(path).parts
+    if (not parts or path.startswith("/") or "\\" in path
+            or any(part in ("", ".", "..", ".git") for part in parts)):
+        raise Denied("invalid protected local file path")
     if (not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW")
             or not hasattr(os, "O_NONBLOCK")):
-        raise Denied("OS cannot safely read carrier contract")
+        raise Denied("OS cannot safely read protected local files")
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
     root = root.resolve(strict=True)
+    opened = []
     try:
-        root_fd = os.open(root, directory_flags)
+        current = os.open(root, directory_flags)
+        opened.append(current)
+        for component in parts[:-1]:
+            current = os.open(component, directory_flags, dir_fd=current)
+            opened.append(current)
+        file_fd = os.open(parts[-1], file_flags, dir_fd=current)
         try:
-            github_fd = os.open(".github", directory_flags, dir_fd=root_fd)
-            try:
-                file_fd = os.open("private-ci-carrier-contracts.json",
-                                  file_flags, dir_fd=github_fd)
-                try:
-                    stream = os.fdopen(file_fd, "rb")
-                except BaseException:
-                    os.close(file_fd)
-                    raise
-                with stream:
-                    meta = os.fstat(stream.fileno())
-                    if not stat.S_ISREG(meta.st_mode) or meta.st_nlink != 1:
-                        raise Denied("carrier contract is not a regular single-link file")
-                    raw = stream.read(MAX_CONTRACT + 1)
-            finally:
-                os.close(github_fd)
-        finally:
-            os.close(root_fd)
+            stream = os.fdopen(file_fd, "rb")
+        except BaseException:
+            os.close(file_fd)
+            raise
+        with stream:
+            meta = os.fstat(stream.fileno())
+            if not stat.S_ISREG(meta.st_mode) or meta.st_nlink != 1:
+                raise Denied("protected local file is not a regular single-link file")
+            raw = stream.read(max_bytes + 1)
     except OSError as exc:
-        raise Denied("carrier contract cannot be opened safely") from exc
-    if not raw or len(raw) > MAX_CONTRACT:
-        raise Denied("carrier contract missing or exceeds size limit")
+        raise Denied("protected local file cannot be opened safely") from exc
+    finally:
+        for fd in reversed(opened):
+            os.close(fd)
+    if not raw or len(raw) > max_bytes:
+        raise Denied("protected local file missing or oversized")
     return raw
 
 
-def protected_main_sha():
-    branch = legacy.gh_api(
-        f"repos/{legacy.SOURCE_REPO}/branches/{legacy.SOURCE_PROTECTED_BRANCH}"
-    )
-    if (branch.get("name") != legacy.SOURCE_PROTECTED_BRANCH
-            or branch.get("protected") is not True):
-        raise Denied("source main is not protected")
-    return valid_sha(branch.get("commit", {}).get("sha"),
-                     "source protected-main SHA invalid")
+def read_local_contract(root):
+    """Read the local protected contract through no-follow descriptors."""
+    return read_local_protected_file(root, CONTRACT_PATH, MAX_CONTRACT)
 
 
 def remote_file_at_source_main(path, main_sha, max_bytes):
@@ -144,7 +156,10 @@ def remote_file_at_source_main(path, main_sha, max_bytes):
         raise Denied("protected source policy file has invalid base64") from exc
     if not raw or len(raw) > max_bytes:
         raise Denied("protected source policy file missing or oversized")
-    return raw, valid_sha(item.get("sha"), "protected policy blob SHA invalid")
+    blob_sha = valid_sha(item.get("sha"), "protected policy blob SHA invalid")
+    if git_blob_sha(raw) != blob_sha:
+        raise Denied("protected source file blob digest mismatch")
+    return raw, blob_sha
 
 
 def parse_contract(raw, repository, source_pr, test_plan):
@@ -198,6 +213,27 @@ def parse_contract(raw, repository, source_pr, test_plan):
         "test_plan_path": plan_path,
         "test_plan_blob_sha": plan_blob,
     }
+
+
+def require_control_plane_location(root):
+    """Require the executing modules to be the scripts under this trusted root."""
+    root = root.resolve(strict=True)
+    expected_v3 = (root / "scripts" / "publish-private-ci-source-v3.py").resolve(strict=True)
+    expected_legacy = (root / "scripts" / "publish-private-ci-source.py").resolve(strict=True)
+    if (Path(__file__).resolve(strict=True) != expected_v3
+            or LEGACY_PATH.resolve(strict=True) != expected_legacy):
+        raise Denied("executing private CI publisher is outside the trusted control plane")
+
+
+def checked_control_plane(root, main_sha):
+    """Bind the executing security programs byte-for-byte to protected main."""
+    root = root.resolve(strict=True)
+    require_control_plane_location(root)
+    for path in CONTROL_PLANE_PATHS:
+        local = read_local_protected_file(root, path, MAX_CONTROL_PLANE_FILE)
+        remote, _ = remote_file_at_source_main(path, main_sha, MAX_CONTROL_PLANE_FILE)
+        if local != remote:
+            raise Denied("local private CI control plane diverges from protected source main")
 
 
 def checked_contract(root, repository, source_pr, test_plan, main_sha):
@@ -342,6 +378,76 @@ def authorize_write(root, repository, approved_policy, contract):
         raise Denied("carrier identity/state changed during transfer")
 
 
+def _gh_ref_request(repository, ref_name, method):
+    if not isinstance(ref_name, str) or not HANDOFF_REF.fullmatch(ref_name):
+        raise Denied("ref cleanup target is invalid")
+    if method not in ("GET", "DELETE"):
+        raise Denied("ref cleanup method is invalid")
+    encoded = ref_name.replace("/", "%2F")
+    family = "ref" if method == "GET" else "refs"
+    argv = [
+        "gh", "api", "--method", method,
+        f"repos/{repository}/git/{family}/heads/{encoded}",
+        "--header", "Accept: application/vnd.github+json",
+    ]
+    env = dict(os.environ, GH_HOST="github.com", GH_PROMPT_DISABLED="1")
+    try:
+        return subprocess.run(
+            argv, capture_output=True, text=True, env=env,
+            timeout=30, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Denied("carrier ref rollback is unavailable") from exc
+
+
+def live_ref_sha(repository, ref_name, expected_repository_id):
+    repo = legacy.checked_repo(repository)
+    if repo.get("id") != expected_repository_id:
+        raise Denied("carrier repository identity changed during ref verification")
+    result = _gh_ref_request(repository, ref_name, "GET")
+    if result.returncode != 0:
+        if "HTTP 404" in result.stderr:
+            # GitHub can mask private-resource authorization failures as 404.
+            # The numeric carrier identity was just revalidated above, so this
+            # 404 can be treated as evidence that this exact ref is absent.
+            return None
+        raise Denied("carrier ref lookup failed")
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise Denied("carrier ref lookup returned invalid JSON") from exc
+    if (not isinstance(payload, dict)
+            or payload.get("ref") != "refs/heads/" + ref_name
+            or payload.get("object", {}).get("type") != "commit"):
+        raise Denied("carrier ref lookup returned unexpected identity")
+    return valid_sha(
+        payload.get("object", {}).get("sha"),
+        "carrier ref lookup returned invalid SHA",
+    )
+
+
+def require_exact_ref(repository, ref_name, expected_sha, expected_repository_id):
+    actual = live_ref_sha(repository, ref_name, expected_repository_id)
+    if actual != expected_sha:
+        raise Denied("carrier ref does not point to exact handoff commit")
+
+
+def delete_exact_ref(repository, ref_name, expected_sha, expected_repository_id):
+    expected_sha = valid_sha(expected_sha, "invalid rollback commit SHA")
+    actual = live_ref_sha(repository, ref_name, expected_repository_id)
+    if actual is None:
+        return False
+    if actual != expected_sha:
+        raise Denied("carrier ref moved; refusing rollback")
+
+    result = _gh_ref_request(repository, ref_name, "DELETE")
+    if result.returncode != 0 and "HTTP 404" not in result.stderr:
+        raise Denied("carrier ref rollback failed")
+    if live_ref_sha(repository, ref_name, expected_repository_id) is not None:
+        raise Denied("carrier ref still exists after rollback")
+    return True
+
+
 def publish(repository, source, source_commit, source_pr, test_plan, trusted_root, now=None):
     if not legacy.NAME.fullmatch(repository):
         raise Denied("invalid destination repository")
@@ -352,8 +458,8 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     # Authorize before reading private source bytes.
     legacy.require_preflight(repository, trusted_root)
     approved_policy = legacy.checked_policy_fingerprint(trusted_root, repository)
-    legacy.verify_protected_origin(repository, approved_policy)
-    protected_sha = protected_main_sha()
+    protected_sha = legacy.verify_protected_origin(repository, approved_policy)
+    checked_control_plane(trusted_root, protected_sha)
     contract = checked_contract(
         trusted_root, repository, source_pr, test_plan, protected_sha
     )
@@ -477,13 +583,16 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     )
 
     auth()
+    commit_message = (
+        f"ci: exact private Oreslang tree {source_commit} tree {source_tree}\n"
+        f"carrier-base {contract['base_sha']} tree {base_tree}\n"
+        f"connector-authorized source-repository "
+        f"{legacy.SOURCE_REPO} id {source_repo_id}"
+    )
     commit = legacy.gh_api(
         f"repos/{repository}/git/commits", method="POST",
         payload={
-            "message": (
-                "ci: exact private Oreslang PR tree\n\n"
-                "Oreslang-CI-Receipt-SHA256: " + receipt_digest
-            ),
+            "message": commit_message,
             "tree": root_tree_sha,
             "parents": [contract["base_sha"]],
         },
@@ -492,31 +601,96 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
 
     # Recheck both source policy/protection and the immutable carrier contract
     # immediately before making the source-bearing commit executable.
-    legacy.verify_protected_origin(repository, approved_policy)
-    if protected_main_sha() != protected_sha:
+    if legacy.verify_protected_origin(repository, approved_policy) != protected_sha:
         raise Denied("source protected main advanced before publication")
+    checked_control_plane(trusted_root, protected_sha)
     checked_contract(
         trusted_root, repository, source_pr,
         contract["test_plan_path"], protected_sha
     )
     checked_destination(repository, contract)
+    if verify_source_pr(source_pr, source_commit) != source_repo_id:
+        raise Denied("source repository identity changed before publication")
 
     # Create the source-bearing branch first. The carrier workflow fails closed
-    # while it waits for the exact authorization ref below.
-    created = legacy.gh_api(
-        f"repos/{repository}/git/refs", method="POST",
-        payload={"ref": "refs/heads/" + branch, "sha": commit_sha},
-    )
-    if created.get("ref") != "refs/heads/" + branch:
-        raise Denied("carrier did not confirm exact-tree CI branch creation")
-
+    # while it waits for the exact authorization ref below. Treat a create call
+    # as potentially successful before it returns: transport ambiguity must not
+    # strand a source-bearing ref.
     authorization = "ci/authorized-" + commit_sha
-    approved = legacy.gh_api(
-        f"repos/{repository}/git/refs", method="POST",
-        payload={"ref": "refs/heads/" + authorization, "sha": commit_sha},
-    )
-    if approved.get("ref") != "refs/heads/" + authorization:
-        raise Denied("carrier did not confirm dispatcher authorization ref")
+    payload_attempted = False
+    authorization_attempted = False
+    try:
+        auth()
+        payload_attempted = True
+        created = legacy.gh_api(
+            f"repos/{repository}/git/refs", method="POST",
+            payload={"ref": "refs/heads/" + branch, "sha": commit_sha},
+        )
+        if (created.get("ref") != "refs/heads/" + branch
+                or created.get("object", {}).get("sha") not in (None, commit_sha)):
+            raise Denied("carrier did not confirm exact-tree CI branch creation")
+        require_exact_ref(
+            repository, branch, commit_sha, contract["repository_id"]
+        )
+
+        # The payload ref is inert without the authorization ref. Re-run every
+        # mutable governance check in that safe window so protection, policy,
+        # contract or carrier-base drift cannot be authorized.
+        if legacy.verify_protected_origin(repository, approved_policy) != protected_sha:
+            raise Denied("source protected main advanced before authorization")
+        checked_control_plane(trusted_root, protected_sha)
+        checked_contract(
+            trusted_root, repository, source_pr,
+            contract["test_plan_path"], protected_sha
+        )
+        checked_destination(repository, contract)
+
+        # Revalidate the exact open PR head last, immediately before making the
+        # carrier executable.
+        if verify_source_pr(source_pr, source_commit) != source_repo_id:
+            raise Denied("source repository identity changed before authorization")
+
+        auth()
+        authorization_attempted = True
+        approved = legacy.gh_api(
+            f"repos/{repository}/git/refs", method="POST",
+            payload={"ref": "refs/heads/" + authorization, "sha": commit_sha},
+        )
+        if (approved.get("ref") != "refs/heads/" + authorization
+                or approved.get("object", {}).get("sha") not in (None, commit_sha)):
+            raise Denied("carrier did not confirm dispatcher authorization ref")
+
+        # Do not trust create responses alone. Re-read both live refs before
+        # reporting a successful handoff.
+        require_exact_ref(
+            repository, branch, commit_sha, contract["repository_id"]
+        )
+        require_exact_ref(
+            repository, authorization, commit_sha, contract["repository_id"]
+        )
+    except Denied as exc:
+        rollback_error = None
+        if authorization_attempted:
+            try:
+                delete_exact_ref(
+                    repository, authorization, commit_sha,
+                    contract["repository_id"],
+                )
+            except Denied as rollback_exc:
+                rollback_error = rollback_exc
+        if payload_attempted:
+            try:
+                delete_exact_ref(
+                    repository, branch, commit_sha,
+                    contract["repository_id"],
+                )
+            except Denied as rollback_exc:
+                rollback_error = rollback_error or rollback_exc
+        if rollback_error is not None:
+            raise Denied(
+                "private CI handoff failed and carrier ref rollback was incomplete"
+            ) from rollback_error
+        raise exc
 
     return {
         "commit": commit_sha,
@@ -559,3 +733,4 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
+
