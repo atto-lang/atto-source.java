@@ -226,7 +226,50 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3.legacy, "gh_api", side_effect=api),
             patch.object(v3, "gh_api_list", return_value=reviews),
         ):
-            with self.assertRaisesRegex(v3.Denied, "stale or not approved"):
+            with self.assertRaisesRegex(v3.Denied, "stale, late, or not approved"):
+                v3.authorized_main_sha("trusted/ci", policy_digest)
+
+    def test_unprotected_main_rejects_approval_after_merge(self):
+        main_sha = "2" * 40
+        authority_head = "3" * 40
+        policy_bytes = b"trusted/ci\n"
+        policy_digest = hashlib.sha256(policy_bytes).digest()
+
+        def api(route, method="GET", payload=None):
+            if "/branches/" in route:
+                return {
+                    "name": v3.legacy.SOURCE_PROTECTED_BRANCH,
+                    "protected": False,
+                    "commit": {"sha": main_sha},
+                }
+            if route.endswith("/pulls/" + str(v3.REVIEW_AUTHORITY_PR)):
+                return {
+                    "number": v3.REVIEW_AUTHORITY_PR,
+                    "state": "closed",
+                    "merged_at": "2026-10-20T00:01:00Z",
+                    "head": {
+                        "sha": authority_head,
+                        "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                    },
+                    "base": {"ref": v3.legacy.SOURCE_PROTECTED_BRANCH},
+                }
+            raise AssertionError(route)
+
+        reviews = [{
+            "id": 7,
+            "state": "APPROVED",
+            "commit_id": authority_head,
+            "submitted_at": "2026-10-20T00:02:00Z",
+            "user": {
+                "id": v3.REVIEW_AUTHORITY_USER_ID,
+                "login": v3.REVIEW_AUTHORITY_LOGIN,
+            },
+        }]
+        with (
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(v3, "gh_api_list", return_value=reviews),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "stale, late, or not approved"):
                 v3.authorized_main_sha("trusted/ci", policy_digest)
 
     def test_unprotected_main_rejects_governance_drift(self):
