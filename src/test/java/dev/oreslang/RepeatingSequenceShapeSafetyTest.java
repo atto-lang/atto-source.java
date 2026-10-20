@@ -15,6 +15,11 @@ final class RepeatingSequenceShapeSafetyTest {
     private static void rejects(String src) {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(src)));
     }
+    private static void rejectsAtTypecheck(String src) {
+        var parsed = assertDoesNotThrow(() -> Parser.parse(src),
+                "regression must exercise the checker, not just fail parsing");
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(parsed));
+    }
 
     @Test
     void repeatingTypeRetainsOrderAndCannotBeSilentlyErased() {
@@ -192,6 +197,53 @@ final class RepeatingSequenceShapeSafetyTest {
                 pub fnc bad(): void {
                   val xs: Array[...(int, string, bool)] = [1, "one", true];
                   val first: int = xs.get(0);
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void runtimeTypeAliasCannotForgePatternedArrayProof() {
+        rejectsAtTypecheck("""
+                type Repeated = Array[...(int, string, bool)];
+                pub fnc main(): void {
+                  val arbitrary: Array[int | string | bool] = [true, 1, "x"];
+                  val forged: Repeated = arbitrary as Repeated;
+                  return;
+                }
+                """);
+        rejectsAtTypecheck("""
+                type Repeated = Array[...(int, string, bool)];
+                type Hidden = Repeated;
+                pub fnc main(): void {
+                  val arbitrary: Array[int | string | bool] = [true, 1, "x"];
+                  val forged: Hidden = arbitrary as Hidden;
+                  return;
+                }
+                """);
+        // Existing primitive aliases must remain usable by runtime type tests.
+        accepts("""
+                type Flag = bool;
+                pub fnc main(): void {
+                  val yes: bool = true as Flag;
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void nonEmptyPatternedArrayConstructorCannotInventASequence() {
+        rejectsAtTypecheck("""
+                pub fnc main(): void {
+                  val xs: Array[...(int, string, bool)] =
+                      new Array[...(int, string, bool)](3);
+                  return;
+                }
+                """);
+        accepts("""
+                pub fnc main(): void {
+                  val xs: Array[...(int, string, bool)] =
+                      new Array[...(int, string, bool)]();
                   return;
                 }
                 """);
