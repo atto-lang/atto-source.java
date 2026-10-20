@@ -49,6 +49,17 @@ class OresSymbolActorBoundaryTest {
         }
     }
 
+    @Test void untrustedInboundRejectsTypedMapEvenWhenPayloadLooksScalarSafe() {
+        OresKeyedMap<String, Long> map =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
+        map.put("answer", 42L);
+        InvocationTargetException failed = assertThrows(
+                InvocationTargetException.class,
+                () -> checkInbound(List.of(map)));
+        assertInstanceOf(SecurityException.class, failed.getCause());
+        assertTrue(failed.getCause().getMessage().contains("typed Map"));
+    }
+
     @Test void stableUuidSymbolNotAutomaticallyExposedToUntrustedActor() {
         InvocationTargetException failed = assertThrows(InvocationTargetException.class,
                 () -> checkInbound(Map.of(
