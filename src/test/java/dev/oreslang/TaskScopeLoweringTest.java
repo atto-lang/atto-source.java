@@ -113,6 +113,26 @@ final class TaskScopeLoweringTest {
         assertEquals("42", run(source));
     }
 
+
+    @Test
+    void actorScopeIsRejectedStaticallyUntilActorIntegrationIsProven() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        actor fnc worker(): void {
+                            nb scope {
+                                let child = nb {
+                                    return;
+                                };
+                            }
+                            return;
+                        }
+                        """));
+        String message = failure.getMessage().toLowerCase();
+        assertTrue(message.contains("nb scope"));
+        assertTrue(message.contains("actor"));
+    }
+
     @Test
     void borrowedTaskCaptureStillFailsClosedInsideScope() {
         IllegalArgumentException failure = assertThrows(
