@@ -308,10 +308,87 @@ public final class RuntimePermissions {
         }
         if (normalizedHost.isBlank()
                 || normalizedHost.indexOf('[') >= 0
-                || normalizedHost.indexOf(']') >= 0) {
+                || normalizedHost.indexOf(']') >= 0
+                || normalizedHost.startsWith("*.")) {
             throw new IllegalArgumentException("invalid network endpoint host");
         }
+
+        if (normalizedHost.indexOf(':') >= 0) {
+            if (normalizedHost.indexOf('%') >= 0) {
+                throw new IllegalArgumentException(
+                        "scoped IPv6 listener hosts are not supported by NET permissions");
+            }
+            try {
+                java.net.InetAddress literal = java.net.InetAddress.getByName(normalizedHost);
+                if (!(literal instanceof java.net.Inet6Address)) {
+                    throw new IllegalArgumentException("invalid IPv6 network endpoint host");
+                }
+                return literal.getHostAddress().toLowerCase(Locale.ROOT);
+            } catch (java.net.UnknownHostException invalid) {
+                throw new IllegalArgumentException(
+                        "invalid IPv6 network endpoint host '" + host + "'", invalid);
+            }
+        }
+
+        if (isNumericIpv4Candidate(normalizedHost)) {
+            String[] parts = normalizedHost.split("\\.", -1);
+            if (parts.length != 4) {
+                throw new IllegalArgumentException(
+                        "ambiguous IPv4 shorthand is not allowed in NET permissions");
+            }
+            StringBuilder canonical = new StringBuilder();
+            for (int i = 0; i < parts.length; i++) {
+                if (parts[i].isEmpty()) {
+                    throw new IllegalArgumentException("invalid IPv4 network endpoint host");
+                }
+                final int octet;
+                try {
+                    octet = Integer.parseInt(parts[i], 10);
+                } catch (NumberFormatException invalid) {
+                    throw new IllegalArgumentException(
+                            "invalid IPv4 network endpoint host", invalid);
+                }
+                if (octet < 0 || octet > 255) {
+                    throw new IllegalArgumentException("invalid IPv4 network endpoint host");
+                }
+                if (i > 0) canonical.append('.');
+                canonical.append(octet);
+            }
+            return canonical.toString();
+        }
+
+        if (normalizedHost.endsWith(".")) {
+            normalizedHost = normalizedHost.substring(0, normalizedHost.length() - 1);
+        }
+        if (normalizedHost.isBlank()
+                || normalizedHost.startsWith(".")
+                || normalizedHost.endsWith(".")
+                || normalizedHost.contains("..")
+                || normalizedHost.chars().anyMatch(Character::isWhitespace)) {
+            throw new IllegalArgumentException("invalid DNS network endpoint host");
+        }
         return normalizedHost;
+    }
+
+    private static boolean isNumericIpv4Candidate(String host) {
+        if (host.isEmpty()) return false;
+        for (int i = 0; i < host.length(); i++) {
+            char c = host.charAt(i);
+            if ((c < '0' || c > '9') && c != '.') return false;
+        }
+        return true;
+    }
+
+    private static String normalizeNetworkRuleHost(String host) {
+        String value = host.trim().toLowerCase(Locale.ROOT);
+        if (!value.startsWith("*.")) return normalizeNetworkHost(value);
+        String suffix = value.substring(2);
+        String normalizedSuffix = normalizeNetworkHost(suffix);
+        if (normalizedSuffix.indexOf(':') >= 0 || isNumericIpv4Candidate(normalizedSuffix)) {
+            throw new IllegalArgumentException(
+                    "wildcard NET permissions require a DNS suffix");
+        }
+        return "*." + normalizedSuffix;
     }
 
     private static NetworkScope parseNetworkScope(String raw) {
@@ -319,29 +396,35 @@ public final class RuntimePermissions {
         String value = raw.trim().toLowerCase(Locale.ROOT);
         if (value.isEmpty()) return null;
 
-        if (value.startsWith("[")) {
-            int close = value.indexOf(']');
-            if (close <= 1 || value.indexOf('[', 1) >= 0
-                    || value.indexOf(']', close + 1) >= 0) return null;
-            String host = value.substring(1, close);
-            if (close == value.length() - 1) return new NetworkScope(host, null);
-            if (value.charAt(close + 1) != ':' || close + 2 >= value.length()) return null;
-            String port = value.substring(close + 2);
-            return validNetworkPort(port) ? new NetworkScope(host, port) : null;
-        }
-        if (value.indexOf('[') >= 0 || value.indexOf(']') >= 0) return null;
+        try {
+            if (value.startsWith("[")) {
+                int close = value.indexOf(']');
+                if (close <= 1 || value.indexOf('[', 1) >= 0
+                        || value.indexOf(']', close + 1) >= 0) return null;
+                String host = normalizeNetworkHost(value.substring(1, close));
+                if (close == value.length() - 1) return new NetworkScope(host, null);
+                if (value.charAt(close + 1) != ':' || close + 2 >= value.length()) return null;
+                String port = value.substring(close + 2);
+                return validNetworkPort(port) ? new NetworkScope(host, port) : null;
+            }
+            if (value.indexOf('[') >= 0 || value.indexOf(']') >= 0) return null;
 
-        int firstColon = value.indexOf(':');
-        if (firstColon < 0) return new NetworkScope(value, null);
-        int lastColon = value.lastIndexOf(':');
-        if (firstColon != lastColon) {
-            // Unbracketed multi-colon values are IPv6 host-only scopes.
-            return new NetworkScope(value, null);
+            int firstColon = value.indexOf(':');
+            if (firstColon < 0) {
+                return new NetworkScope(normalizeNetworkRuleHost(value), null);
+            }
+            int lastColon = value.lastIndexOf(':');
+            if (firstColon != lastColon) {
+                // Unbracketed multi-colon values are IPv6 host-only scopes.
+                return new NetworkScope(normalizeNetworkHost(value), null);
+            }
+            if (firstColon == 0 || firstColon == value.length() - 1) return null;
+            String host = normalizeNetworkRuleHost(value.substring(0, firstColon));
+            String port = value.substring(firstColon + 1);
+            return validNetworkPort(port) ? new NetworkScope(host, port) : null;
+        } catch (IllegalArgumentException invalid) {
+            return null;
         }
-        if (firstColon == 0 || firstColon == value.length() - 1) return null;
-        String host = value.substring(0, firstColon);
-        String port = value.substring(firstColon + 1);
-        return validNetworkPort(port) ? new NetworkScope(host, port) : null;
     }
 
     private static boolean validNetworkPort(String value) {
