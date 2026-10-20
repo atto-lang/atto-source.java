@@ -340,6 +340,55 @@ final class GenericHasFutureAwaitTest {
     }
 
     @Test
+    void rejectsStaticFutureProjection() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define trait HasFuture<T> as
+                            get_future(): Future<T>;
+                        end
+                        async fnc value(): int { return 7; }
+                        define class StaticProjection implements HasFuture<int> as
+                            pub static fnc get_future(): Future<int> { return value(); }
+                        end
+                        """));
+        assertNotNull(error.getMessage());
+    }
+
+    @Test
+    void rejectsGenericGetterForNominalFutureCapability() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define trait HasFuture<T> as
+                            get_future(): Future<T>;
+                        end
+                        async fnc value(): int { return 7; }
+                        define class GenericProjection implements HasFuture<int> as
+                            pub get_future<U>(): Future<int> { return value(); }
+                        end
+                        """));
+        assertNotNull(error.getMessage());
+    }
+
+    @Test
+    void rejectsPrivateInheritedGetterOverride() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define trait HasFuture<T> as
+                            get_future(): Future<T>;
+                        end
+                        async fnc value(): int { return 7; }
+                        define class Base implements HasFuture<int> as
+                            pub get_future(): Future<int> { return value(); }
+                        end
+                        define class Child extends Base as
+                            private get_future(): Future<int> { return value(); }
+                        end
+                        fnc read(Child child): int { return await child; }
+                        """));
+        assertNotNull(error.getMessage());
+    }
+
+    @Test
     void rejectsMalformedHasFutureGenericArity() {
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
