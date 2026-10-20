@@ -736,6 +736,16 @@ public final class ChannelRuntime {
                     : ordinal - remaining;
         }
 
+        /**
+         * Static source-site tickets control the entire FAIR sequence.
+         * Never mix a static winner into this descriptor's independent
+         * winner-advanced cursor, even when static and ordinary APIs are
+         * invoked against the same immutable descriptor by Java clients.
+         */
+        private void selected(int index) {
+            if (!useStaticTicket) set.selected(index, policy);
+        }
+
         private CaseRegistration caseOrDefault(int index) {
             CaseRegistration registration = registrations[index];
             return registration != null
@@ -1007,8 +1017,8 @@ public final class ChannelRuntime {
 
         reader.selection.decided = true;
         writer.selection.decided = true;
-        reader.selection.set.selected(reader.index, reader.selection.policy);
-        writer.selection.set.selected(writer.index, writer.selection.policy);
+        reader.selection.selected(reader.index);
+        writer.selection.selected(writer.index);
         unregisterLocked(reader.selection);
         unregisterLocked(writer.selection);
 
@@ -1035,7 +1045,7 @@ public final class ChannelRuntime {
         if (selection.decided) return;
 
         selection.decided = true;
-        selection.set.selected(result.index(), selection.policy);
+        selection.selected(result.index());
         unregisterLocked(selection);
         completions.add(() ->
                 selection.future.completeFromRuntime(result));
@@ -1052,7 +1062,7 @@ public final class ChannelRuntime {
         // past it exactly as it does after a successful read/write; otherwise a
         // permanently closed arm can monopolize a reusable SelectSet forever.
         selection.decided = true;
-        selection.set.selected(registration.index, selection.policy);
+        selection.selected(registration.index);
         unregisterLocked(selection);
         completions.add(() ->
                 selection.future.failFromRuntime(failure));
