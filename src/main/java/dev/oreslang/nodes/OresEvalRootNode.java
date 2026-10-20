@@ -10130,6 +10130,16 @@ public final class OresEvalRootNode extends RootNode {
                             if (output.length() >= MAX_CHARS) break;
                         }
                         write("}");
+                    } else if (value instanceof OresTuple tuple) {
+                        write("tuple {");
+                        boolean first = true;
+                        for (Object element : tuple) {
+                            if (!first) write(", ");
+                            first = false;
+                            append(element, depth + 1);
+                            if (output.length() >= MAX_CHARS) break;
+                        }
+                        write("}");
                     } else if (value instanceof List<?> list) {
                         write("[");
                         boolean first = true;
