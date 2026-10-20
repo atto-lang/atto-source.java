@@ -625,11 +625,30 @@ public final class ModelGraphCompiler {
     }
 
     private static Object constantValue(Ast.Expr expression, String where) {
-        if (!(expression instanceof Ast.LiteralExpr literal)) {
+        Object value;
+        if (expression instanceof Ast.LiteralExpr literal) {
+            value = literal.value();
+        } else if (expression instanceof Ast.UnaryExpr unary
+                && unary.operator().equals("-")
+                && unary.operand() instanceof Ast.LiteralExpr literal) {
+            Object raw = literal.value();
+            if (raw instanceof Long number) {
+                if (number == Long.MIN_VALUE) {
+                    fail("MODEL_CONST_OVERFLOW", where + " unary negation overflows i64");
+                }
+                value = -number;
+            } else if (raw instanceof Double number) {
+                value = -number;
+            } else {
+                fail("MODEL_NONCONSTANT_CONFIG",
+                        where + " unary '-' requires a numeric literal");
+                throw new AssertionError();
+            }
+        } else {
             fail("MODEL_NONCONSTANT_CONFIG",
                     where + " must be a bounded literal or a declared model parameter");
+            throw new AssertionError();
         }
-        Object value = literal.value();
         if (value instanceof Double number && !Double.isFinite(number)) {
             fail("MODEL_NONFINITE_CONST", where + " cannot be NaN or Infinity");
         }
