@@ -303,7 +303,7 @@ final class TupleLiteralSyntaxTest {
             context.eval(source);
         }
         assertEquals(
-                "21\\n84\\n42",
+                "21\n84\n42",
                 output.toString(StandardCharsets.UTF_8)
                         .replace("\r\n", "\n")
                         .strip());
