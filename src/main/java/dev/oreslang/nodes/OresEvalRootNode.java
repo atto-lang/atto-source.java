@@ -3981,15 +3981,23 @@ public final class OresEvalRootNode extends RootNode {
                 continuation.accept(task, List.copyOf(values), null);
                 return;
             }
+            Ast.Expr expression = expressions.get(index);
+            Ast.Expr valueExpression = expression instanceof Ast.SpreadExpr spread
+                    ? spread.expression()
+                    : expression;
             evalSuspendableExpr(
                     task,
-                    expressions.get(index),
+                    valueExpression,
                     env,
                     (t, value, failure) -> {
                         if (failure != null) {
                             continuation.accept(t, List.of(), failure);
                         } else {
-                            values.add(value);
+                            if (expression instanceof Ast.SpreadExpr) {
+                                values.addAll(expandArgumentSequence(value, "argument spread"));
+                            } else {
+                                values.add(value);
+                            }
                             evalSuspendableArgumentAt(
                                     t,
                                     expressions,
