@@ -276,6 +276,32 @@ final class ActorTaskTerminationCascadeTest {
     }
 
     @Test
+    void finalizerPreservesFirstResourceFailureAndRecordsEveryLaterFailure() {
+        IllegalStateException first = new IllegalStateException("output teardown");
+        IllegalArgumentException memory = new IllegalArgumentException("slice release");
+        RuntimeException registry = new RuntimeException("deregistration");
+
+        Throwable aggregate = ActorRuntime.appendCleanupFailure(null, first);
+        assertSame(first, aggregate);
+        aggregate = ActorRuntime.appendCleanupFailure(aggregate, memory);
+        aggregate = ActorRuntime.appendCleanupFailure(aggregate, registry);
+        assertSame(first, aggregate,
+                "later cleanup exceptions must not erase the initial error");
+        assertArrayEquals(new Throwable[] { memory, registry },
+                aggregate.getSuppressed(),
+                "teardown should retain independent resource failures");
+    }
+
+    @Test
+    void finalizerNeverSelfSuppressesOrAcceptsNullCleanupFailure() {
+        RuntimeException failure = new RuntimeException("cleanup");
+        assertSame(failure, ActorRuntime.appendCleanupFailure(failure, failure));
+        assertEquals(0, failure.getSuppressed().length);
+        assertThrows(NullPointerException.class,
+                () -> ActorRuntime.appendCleanupFailure(failure, null));
+    }
+
+    @Test
     void actorDoneWaitsForOwnedFutureCancellationCallbacksAfterTaskScopeJoin()
             throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
