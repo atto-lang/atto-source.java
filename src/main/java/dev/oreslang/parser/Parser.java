@@ -491,8 +491,9 @@ public final class Parser {
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
+        boolean slimArrowReturn = check(ARROW);
         Ast.TypeRef returnType = parseReturnType(annotations);
-        List<Ast.Stmt> body = parseBlock();
+        List<Ast.Stmt> body = parseFunctionBody(slimArrowReturn, actorKind);
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs);
     }
@@ -1682,6 +1683,29 @@ public final class Parser {
         StringBuilder name = new StringBuilder(consume(IDENT, "expected name").lexeme());
         while (match(DOT)) name.append('.').append(consume(IDENT, "expected name after '.'").lexeme());
         return name.toString();
+    }
+
+    private List<Ast.Stmt> parseFunctionBody(
+            boolean slimArrowReturn,
+            Ast.ActorKind actorKind) {
+        if (check(LBRACE)) return parseBlock();
+        if (!slimArrowReturn) {
+            throw error(peek(),
+                    "end-delimited free/module callable bodies require an explicit '-> ReturnType'; otherwise use a braced body");
+        }
+        if (actorKind != Ast.ActorKind.NONE) {
+            throw error(peek(),
+                    "end-delimited actor callable bodies are not enabled; use a braced actor body");
+        }
+        if (current == 0 || previous().line() >= peek().line()) {
+            throw error(peek(),
+                    "end-delimited callable body must begin on the line after its '-> ReturnType' header");
+        }
+
+        List<Ast.Stmt> body = new ArrayList<>();
+        while (!check(END) && !check(EOF)) body.add(parseStatement());
+        consume(END, "expected 'end' to close free/module callable");
+        return body;
     }
 
     private List<Ast.Stmt> parseBlock() {
