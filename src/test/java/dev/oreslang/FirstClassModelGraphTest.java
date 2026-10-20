@@ -86,8 +86,10 @@ final class FirstClassModelGraphTest {
         assertEquals(a.graphDigest(), b.graphDigest());
         assertEquals(a.inputType(), b.inputType());
         assertEquals(a.outputType(), b.outputType());
-        assertTrue(a.freestandingEligible());
-        assertTrue(a.noDynamicAllocation());
+        assertFalse(a.freestandingEligible(),
+                "interpreter execution still allocates a ModelInstance; freestanding is an AOT gate");
+        assertFalse(a.noDynamicAllocation(),
+                "the current Java runtime must not claim an allocation-free execution path");
         assertTrue(a.deterministic());
 
         String changedSource = PRICE_MODEL.replace(
