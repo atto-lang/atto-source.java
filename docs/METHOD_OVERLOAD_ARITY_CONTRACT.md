@@ -96,8 +96,11 @@ The `nlex critical |state| -> { ... }` actor-state write-callback form is
 subject to separate actor-state grammar/effect integration; this change does
 not admit or implement that pending construct.
 
-At a call site, select the slot by receiver and syntactic argument count
-before checking argument/return types. In particular, an incompatible
+At a call site, select the slot by the receiver expression and the statically
+expanded caller-visible value-argument count (including statically known tuple
+spreads) before checking argument/return types. The receiver expression is
+bound once, outside that expanded argument vector. Dynamic-length spreads
+cannot silently select among fixed-arity method overloads. In particular, an incompatible
 argument must produce a type error for the selected arity, not trigger
 search for another overload. No implicit conversion ranking, structural
 member-by-member matching, return-type scoring, or runtime reflection
