@@ -6352,45 +6352,197 @@ public final class TypeChecker {
         return value instanceof String key ? key : null;
     }
 
-    private static boolean referencesConstructorSelf(Ast.Expr receiver) {
-        if (receiver instanceof Ast.NameExpr name) return name.name().equals("self");
-        if (receiver instanceof Ast.CastExpr cast) return referencesConstructorSelf(cast.value());
-        if (receiver instanceof Ast.UnaryExpr unary) return referencesConstructorSelf(unary.operand());
-        if (receiver instanceof Ast.MemberExpr member) return referencesConstructorSelf(member.receiver());
-        if (receiver instanceof Ast.IndexExpr nested) return referencesConstructorSelf(nested.receiver());
-        if (receiver instanceof Ast.ConditionalExpr conditional) {
-            return referencesConstructorSelf(conditional.whenTrue())
-                    || referencesConstructorSelf(conditional.whenFalse());
-        }
-        if (receiver instanceof Ast.CallExpr call) {
-            return referencesConstructorSelf(call.callee())
-                    || call.arguments().stream().anyMatch(TypeChecker::referencesConstructorSelf);
-        }
-        // Keep the constructor capability check conservative through value
-        // wrappers and composite expressions: type checking must not depend
-        // on whether a later optimizer rewrites a nested self reference into
-        // the eventual indexed receiver.
-        if (receiver instanceof Ast.TrapExpr trapped) return referencesConstructorSelf(trapped.expression());
-        if (receiver instanceof Ast.SpreadExpr spread) return referencesConstructorSelf(spread.expression());
-        if (receiver instanceof Ast.AssignExpr assignment) {
-            return referencesConstructorSelf(assignment.target())
-                    || referencesConstructorSelf(assignment.value());
-        }
-        if (receiver instanceof Ast.BinaryExpr binary) {
+    /**
+     * Conservative construction-capability traversal for indexed receivers.
+     *
+     * <p>This must remain exhaustive over every expression shape that can
+     * contain another expression. A later optimizer may fold an apparently
+     * unrelated wrapper into the value used as the indexed receiver; missing
+     * one child here would therefore reopen constructor-self reads before
+     * definite class-field initialization is proven.</p>
+     */
+    private static boolean referencesConstructorSelf(Ast.Expr expression) {
+        if (expression == null) return false;
+        if (expression instanceof Ast.LiteralExpr) return false;
+        if (expression instanceof Ast.NameExpr name) return name.name().equals("self");
+        if (expression instanceof Ast.BinaryExpr binary) {
             return referencesConstructorSelf(binary.left())
                     || referencesConstructorSelf(binary.right());
         }
-        if (receiver instanceof Ast.TupleExpr tuple) {
-            return tuple.elements().stream().anyMatch(TypeChecker::referencesConstructorSelf);
+        if (expression instanceof Ast.UnaryExpr unary) {
+            return referencesConstructorSelf(unary.operand());
         }
-        if (receiver instanceof Ast.ListExpr list) {
+        if (expression instanceof Ast.AssignExpr assignment) {
+            return referencesConstructorSelf(assignment.target())
+                    || referencesConstructorSelf(assignment.value());
+        }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            return referencesConstructorSelf(conditional.condition())
+                    || referencesConstructorSelf(conditional.whenTrue())
+                    || referencesConstructorSelf(conditional.whenFalse());
+        }
+        if (expression instanceof Ast.MatchExpr match) {
+            if (referencesConstructorSelf(match.subject())) return true;
+            return match.arms().stream().anyMatch(arm ->
+                    referencesConstructorSelf(arm.guard())
+                            || referencesConstructorSelf(arm.value()));
+        }
+        if (expression instanceof Ast.TypeTestExpr test) {
+            return referencesConstructorSelf(test.value());
+        }
+        if (expression instanceof Ast.PatternTestExpr test) {
+            return referencesConstructorSelf(test.value());
+        }
+        if (expression instanceof Ast.CastExpr cast) {
+            return referencesConstructorSelf(cast.value());
+        }
+        if (expression instanceof Ast.SpreadExpr spread) {
+            return referencesConstructorSelf(spread.expression());
+        }
+        if (expression instanceof Ast.CallExpr call) {
+            return referencesConstructorSelf(call.callee())
+                    || call.arguments().stream().anyMatch(TypeChecker::referencesConstructorSelf);
+        }
+        if (expression instanceof Ast.RuntimeCallExpr call) {
+            return call.arguments().stream().anyMatch(TypeChecker::referencesConstructorSelf);
+        }
+        if (expression instanceof Ast.MemberExpr member) {
+            return referencesConstructorSelf(member.receiver());
+        }
+        if (expression instanceof Ast.IndexExpr indexed) {
+            return referencesConstructorSelf(indexed.receiver())
+                    || referencesConstructorSelf(indexed.index());
+        }
+        if (expression instanceof Ast.NewExpr created) {
+            return created.arguments().stream().anyMatch(TypeChecker::referencesConstructorSelf);
+        }
+        if (expression instanceof Ast.AwaitExpr awaited) {
+            return referencesConstructorSelf(awaited.expression());
+        }
+        if (expression instanceof Ast.TrapExpr trapped) {
+            return referencesConstructorSelf(trapped.expression());
+        }
+        if (expression instanceof Ast.ChannelOpExpr channel) {
+            return referencesConstructorSelf(channel.channel())
+                    || referencesConstructorSelf(channel.value())
+                    || channel.callbackBody().stream()
+                            .anyMatch(TypeChecker::statementReferencesConstructorSelf);
+        }
+        if (expression instanceof Ast.DynamicSelectExpr select) {
+            return referencesConstructorSelf(select.cases());
+        }
+        if (expression instanceof Ast.ListExpr list) {
             return list.elements().stream().anyMatch(TypeChecker::referencesConstructorSelf);
         }
-        if (receiver instanceof Ast.ObjectExpr object) {
+        if (expression instanceof Ast.TupleExpr tuple) {
+            return tuple.elements().stream().anyMatch(TypeChecker::referencesConstructorSelf);
+        }
+        if (expression instanceof Ast.ObjectExpr object) {
             return object.fields().stream()
                     .anyMatch(field -> referencesConstructorSelf(field.value()));
         }
-        return false;
+        if (expression instanceof Ast.LambdaExpr lambda) {
+            return referencesConstructorSelf(lambda.expressionBody())
+                    || (lambda.blockBody() != null && lambda.blockBody().stream()
+                            .anyMatch(TypeChecker::statementReferencesConstructorSelf));
+        }
+        // Expr is sealed. Reaching this branch means a new AST expression was
+        // added without extending this security traversal; fail closed.
+        throw new IllegalStateException(
+                "unhandled expression shape in constructor-self guard: "
+                        + expression.getClass().getName());
+    }
+
+    private static boolean statementReferencesConstructorSelf(Ast.Stmt statement) {
+        if (statement == null) return false;
+        if (statement instanceof Ast.BindingStmt binding) {
+            return referencesConstructorSelf(binding.initializer());
+        }
+        if (statement instanceof Ast.DestructureStmt destructure) {
+            return referencesConstructorSelf(destructure.initializer());
+        }
+        if (statement instanceof Ast.ReturnStmt returned) {
+            return referencesConstructorSelf(returned.value());
+        }
+        if (statement instanceof Ast.YieldStmt yielded) {
+            return referencesConstructorSelf(yielded.value());
+        }
+        if (statement instanceof Ast.ExprStmt expr) {
+            return referencesConstructorSelf(expr.expression());
+        }
+        if (statement instanceof Ast.DeferStmt defer) {
+            return referencesConstructorSelf(defer.expression());
+        }
+        if (statement instanceof Ast.BlockStmt block) {
+            return block.body().stream().anyMatch(TypeChecker::statementReferencesConstructorSelf);
+        }
+        if (statement instanceof Ast.BreakStmt || statement instanceof Ast.ContinueStmt) {
+            return false;
+        }
+        if (statement instanceof Ast.IfStmt conditional) {
+            return conditional.branches().stream().anyMatch(branch ->
+                    referencesConstructorSelf(branch.condition())
+                            || branch.body().stream()
+                                    .anyMatch(TypeChecker::statementReferencesConstructorSelf))
+                    || conditional.elseBody().stream()
+                            .anyMatch(TypeChecker::statementReferencesConstructorSelf);
+        }
+        if (statement instanceof Ast.MatchStmt match) {
+            return referencesConstructorSelf(match.subject())
+                    || match.arms().stream().anyMatch(arm ->
+                            referencesConstructorSelf(arm.guard())
+                                    || arm.body().stream()
+                                            .anyMatch(TypeChecker::statementReferencesConstructorSelf));
+        }
+        if (statement instanceof Ast.SwitchStmt switched) {
+            return referencesConstructorSelf(switched.subject())
+                    || switched.cases().stream().anyMatch(entry ->
+                            entry.constants().stream()
+                                    .anyMatch(TypeChecker::referencesConstructorSelf)
+                                    || entry.body().stream()
+                                            .anyMatch(TypeChecker::statementReferencesConstructorSelf))
+                    || switched.defaultBody().stream()
+                            .anyMatch(TypeChecker::statementReferencesConstructorSelf);
+        }
+        if (statement instanceof Ast.TryStmt attempt) {
+            return attempt.body().stream().anyMatch(TypeChecker::statementReferencesConstructorSelf)
+                    || attempt.catchBody().stream()
+                            .anyMatch(TypeChecker::statementReferencesConstructorSelf)
+                    || attempt.finallyBody().stream()
+                            .anyMatch(TypeChecker::statementReferencesConstructorSelf);
+        }
+        if (statement instanceof Ast.ForOfStmt loop) {
+            return referencesConstructorSelf(loop.iterable())
+                    || loop.body().stream()
+                            .anyMatch(TypeChecker::statementReferencesConstructorSelf);
+        }
+        if (statement instanceof Ast.ForOfDestructureStmt loop) {
+            return referencesConstructorSelf(loop.iterable())
+                    || loop.body().stream()
+                            .anyMatch(TypeChecker::statementReferencesConstructorSelf);
+        }
+        if (statement instanceof Ast.ForStmt loop) {
+            return statementReferencesConstructorSelf(loop.initializer())
+                    || referencesConstructorSelf(loop.condition())
+                    || referencesConstructorSelf(loop.update())
+                    || loop.body().stream()
+                            .anyMatch(TypeChecker::statementReferencesConstructorSelf);
+        }
+        if (statement instanceof Ast.LoopStmt loop) {
+            return loop.body().stream().anyMatch(TypeChecker::statementReferencesConstructorSelf);
+        }
+        if (statement instanceof Ast.SelectStmt select) {
+            return select.arms().stream().anyMatch(arm ->
+                    referencesConstructorSelf(arm.channel())
+                            || referencesConstructorSelf(arm.value())
+                            || arm.body().stream()
+                                    .anyMatch(TypeChecker::statementReferencesConstructorSelf));
+        }
+        // Stmt is sealed. Keep the constructor capability check fail-closed
+        // when new statement forms are introduced.
+        throw new IllegalStateException(
+                "unhandled statement shape in constructor-self guard: "
+                        + statement.getClass().getName());
     }
 
     /** Folds proven integer literals and immutable aliases without guest arithmetic. */
