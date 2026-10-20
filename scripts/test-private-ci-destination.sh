@@ -10,7 +10,7 @@ cp "$original_script_dir/publish-private-ci-source.py" "$work/fixture/scripts/"
 script_dir="$work/fixture/scripts"
 policy="$work/fixture/.github/private-ci-approved-repositories.txt"
 approved_id=1412142815
-approved_workflow=2d4b412ca8480d02fcd122a9cb7ee3a5d7d45227
+approved_workflow=ef7b0caaa1aedb56864f01fad14bfe88321f1ab1
 printf '# Approved for this isolated test only\ntrusted/ci %s %s\n'   "$approved_id" "$approved_workflow" > "$policy"
 
 cat > "$work/gh" <<'MOCK'
@@ -30,7 +30,7 @@ case "$route" in
     printf '%s\t%s\t%s\t%s\t%s%s\n'       "${MOCK_NAME:-trusted/ci}"       "${MOCK_ID:-1412142815}"       "${MOCK_VISIBILITY:-private}"       "${MOCK_PRIVATE_FLAG:-true}"       "${MOCK_DEFAULT_BRANCH:-main}"       "${MOCK_EXTRA_LINE:-}"
     ;;
   'repos/trusted/ci/contents/.github/workflows/private-oreslang-exact-tree.yml?ref=main')
-    printf '%s\t%s%s\n'       "${MOCK_WORKFLOW_TYPE:-file}"       "${MOCK_WORKFLOW_SHA:-2d4b412ca8480d02fcd122a9cb7ee3a5d7d45227}"       "${MOCK_WORKFLOW_EXTRA_LINE:-}"
+    printf '%s\t%s%s\n'       "${MOCK_WORKFLOW_TYPE:-file}"       "${MOCK_WORKFLOW_SHA:-ef7b0caaa1aedb56864f01fad14bfe88321f1ab1}"       "${MOCK_WORKFLOW_EXTRA_LINE:-}"
     ;;
   *) exit 2 ;;
 esac
@@ -112,7 +112,7 @@ expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 unset MOCK_EXTRA_LINE
 
-export MOCK_WORKFLOW_EXTRA_LINE=$'\nfile\t2d4b412ca8480d02fcd122a9cb7ee3a5d7d45227'
+export MOCK_WORKFLOW_EXTRA_LINE=$'\nfile\tef7b0caaa1aedb56864f01fad14bfe88321f1ab1'
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 unset MOCK_WORKFLOW_EXTRA_LINE
