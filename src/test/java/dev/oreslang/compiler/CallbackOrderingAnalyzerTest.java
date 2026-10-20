@@ -29,8 +29,8 @@ final class CallbackOrderingAnalyzerTest {
                     randie.on("done", cb);
                 }
                 """);
-        assertTrue(containsRule(result, "ORES-ZALGO-001"), result.toString());
-        assertTrue(result.stream().filter(f -> f.rule().equals("ORES-ZALGO-001"))
+        assertTrue(containsRule(result, "ORES-CB-002"), result.toString());
+        assertTrue(result.stream().filter(f -> f.rule().equals("ORES-CB-002"))
                 .allMatch(f -> f.confidence().equals("potential")));
     }
 
@@ -45,7 +45,7 @@ final class CallbackOrderingAnalyzerTest {
                     });
                 }
                 """);
-        assertFalse(containsRule(result, "ORES-ZALGO-001"), result.toString());
+        assertFalse(containsRule(result, "ORES-CB-002"), result.toString());
     }
 
     @Test
@@ -58,7 +58,7 @@ final class CallbackOrderingAnalyzerTest {
                     });
                 }
                 """);
-        assertFalse(containsRule(result, "ORES-ZALGO-001"), result.toString());
+        assertFalse(containsRule(result, "ORES-CB-002"), result.toString());
     }
 
     @Test
@@ -70,7 +70,7 @@ final class CallbackOrderingAnalyzerTest {
                     randie.on("done", cb);
                 }
                 """);
-        assertFalse(containsRule(result, "ORES-ZALGO-001"), result.toString());
+        assertFalse(containsRule(result, "ORES-CB-002"), result.toString());
     }
 
     @Test
@@ -83,7 +83,7 @@ final class CallbackOrderingAnalyzerTest {
                     randie.on("done", cb);
                 }
                 """);
-        assertTrue(containsRule(result, "ORES-ZALGO-001"), result.toString());
+        assertTrue(containsRule(result, "ORES-CB-002"), result.toString());
     }
 
     @Test
@@ -96,7 +96,7 @@ final class CallbackOrderingAnalyzerTest {
                     randie.on("done", cb);
                 }
                 """);
-        assertTrue(containsRule(result, "ORES-ZALGO-001"), result.toString());
+        assertTrue(containsRule(result, "ORES-CB-002"), result.toString());
     }
 
     @Test
@@ -110,7 +110,7 @@ final class CallbackOrderingAnalyzerTest {
                     randie.on("done", cb);
                 }
                 """);
-        assertTrue(containsRule(result, "ORES-ZALGO-001"), result.toString());
+        assertTrue(containsRule(result, "ORES-CB-002"), result.toString());
     }
 
     @Test
@@ -122,6 +122,6 @@ final class CallbackOrderingAnalyzerTest {
                     randie.on("done", cb);
                 }
                 """);
-        assertTrue(containsRule(result, "ORES-ZALGO-001"), result.toString());
+        assertTrue(containsRule(result, "ORES-CB-002"), result.toString());
     }
 }
