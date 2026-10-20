@@ -343,7 +343,7 @@ typed_legacy_lambda
 lambda_body     = block | expression ;
 
 tuple_literal   = "tuple" "{" [ argument_list ] "}"
-                | "tuple" "(" [ argument_list ] ")" ; (* legacy form *)
+                | "tuple" "(" [ argument_list ] ")" (* legacy form *)
                 | "(" expression "," expression { "," expression } ")" ;
 array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
 legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
