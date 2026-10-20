@@ -4252,7 +4252,7 @@ public final class TypeChecker {
             List<Type> items = tuple.elements().stream()
                     .map(item -> typeOf(item, env, generics, self))
                     .toList();
-            if (items.stream().anyMatch(this::containsTypedMapType)) {
+            if (items.stream().anyMatch(TypeChecker::containsTypedMapType)) {
                 throw new IllegalArgumentException(
                         "typed Map cannot be stored in a tuple until element-level move tracking is implemented");
             }
@@ -9196,25 +9196,25 @@ public final class TypeChecker {
         return typeAliases.get(name);
     }
 
-    private boolean isTypedMapType(Type type) {
+    private static boolean isTypedMapType(Type type) {
         if (type instanceof Borrow borrow) return isTypedMapType(borrow.target());
         return type instanceof Named named
                 && named.name().equals("$builtin$Map")
                 && named.arguments().size() == 2;
     }
 
-    private boolean containsTypedMapType(Type type) {
+    private static boolean containsTypedMapType(Type type) {
         if (type == null) return false;
         if (isTypedMapType(type)) return true;
         if (type instanceof SelfType selfType) return containsTypedMapType(selfType.bound());
         if (type instanceof Borrow borrow) return containsTypedMapType(borrow.target());
         if (type instanceof ListType list) return containsTypedMapType(list.element());
-        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(this::containsTypedMapType);
-        if (type instanceof Union union) return union.options().stream().anyMatch(this::containsTypedMapType);
-        if (type instanceof Record record) return record.members().values().stream().anyMatch(this::containsTypedMapType);
-        if (type instanceof Named named) return named.arguments().stream().anyMatch(this::containsTypedMapType);
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(TypeChecker::containsTypedMapType);
+        if (type instanceof Union union) return union.options().stream().anyMatch(TypeChecker::containsTypedMapType);
+        if (type instanceof Record record) return record.members().values().stream().anyMatch(TypeChecker::containsTypedMapType);
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(TypeChecker::containsTypedMapType);
         if (type instanceof Function fn) {
-            return fn.parameters().stream().anyMatch(this::containsTypedMapType)
+            return fn.parameters().stream().anyMatch(TypeChecker::containsTypedMapType)
                     || containsTypedMapType(fn.result());
         }
         return false;
