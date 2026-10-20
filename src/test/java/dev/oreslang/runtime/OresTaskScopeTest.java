@@ -503,4 +503,105 @@ final class OresTaskScopeTest {
                 "successful never-started retirement must not strand a child");
     }
 
+
+    @Test
+    void partialCompilerBindFailureUsesExactNeverStartedRollback() {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresTaskScope scope = new OresTaskScope(scheduler);
+            RuntimeException bindFailure =
+                    new RuntimeException("bind failed after accepting child");
+            AtomicReference<OresScheduler.CompilerTaskHandle<?>> accepted =
+                    new AtomicReference<>();
+            AtomicReference<OresScheduler.CompilerTaskHandle<?>> retired =
+                    new AtomicReference<>();
+
+            RuntimeException observed = assertThrows(
+                    RuntimeException.class,
+                    () -> scope.forkCompilerAdmitted(
+                            resume -> OresScheduler.done(1),
+                            new OresScheduler.CompilerTaskRetirement() {
+                                @Override
+                                public void bind(
+                                        OresScheduler.CompilerTaskHandle<?> child) {
+                                    accepted.set(child);
+                                    throw bindFailure;
+                                }
+
+                                @Override
+                                public void retireNeverStarted(
+                                        OresScheduler.CompilerTaskHandle<?> child) {
+                                    retired.set(child);
+                                }
+
+                                @Override
+                                public void retireAfterPhysicalQuiescence(
+                                        OresScheduler.CompilerTaskHandle<?> child) {
+                                    fail("partial bind must never reach physical path");
+                                }
+                            }));
+
+            assertSame(bindFailure, observed);
+            assertNotNull(accepted.get());
+            assertSame(accepted.get(), retired.get(),
+                    "partial bind rollback must use the exact accepted child");
+            assertEquals(0, scope.activeChildren(),
+                    "successful never-started rollback must remove placeholder child");
+            assertTrue(scope.isOpen(),
+                    "successful pre-admission rollback need not poison the scope");
+        }
+    }
+
+    @Test
+    void partialCompilerBindRetirementFailurePoisonsAndPinsScope()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresTaskScope scope = new OresTaskScope(scheduler);
+            RuntimeException bindFailure =
+                    new RuntimeException("bind failed after accepting child");
+            RuntimeException retirementFailure =
+                    new RuntimeException("never-started rollback failed");
+            AtomicReference<OresScheduler.CompilerTaskHandle<?>> accepted =
+                    new AtomicReference<>();
+
+            RuntimeException observed = assertThrows(
+                    RuntimeException.class,
+                    () -> scope.forkCompilerAdmitted(
+                            resume -> OresScheduler.done(1),
+                            new OresScheduler.CompilerTaskRetirement() {
+                                @Override
+                                public void bind(
+                                        OresScheduler.CompilerTaskHandle<?> child) {
+                                    accepted.set(child);
+                                    throw bindFailure;
+                                }
+
+                                @Override
+                                public void retireNeverStarted(
+                                        OresScheduler.CompilerTaskHandle<?> child) {
+                                    assertSame(accepted.get(), child);
+                                    throw retirementFailure;
+                                }
+
+                                @Override
+                                public void retireAfterPhysicalQuiescence(
+                                        OresScheduler.CompilerTaskHandle<?> child) {
+                                    fail("partial bind must never reach physical path");
+                                }
+                            }));
+
+            assertSame(bindFailure, observed);
+            assertFalse(scope.isOpen(),
+                    "failed never-started rollback must seal the scope");
+            assertEquals(1, scope.activeChildren(),
+                    "failed exact authority must remain pinned by child identity");
+
+            java.util.concurrent.ExecutionException drainFailure =
+                    assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> scope.quiesce().get(5, TimeUnit.SECONDS));
+            assertSame(retirementFailure, drainFailure.getCause(),
+                    "scope drain must expose failed authority retirement");
+        }
+    }
+
 }
