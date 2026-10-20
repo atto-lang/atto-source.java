@@ -584,4 +584,59 @@ final class ActorPhysicalFinalizationPublicationTest {
             }
         }
     }
+    @Test
+    @SuppressWarnings("unchecked")
+    void finalizationFaultBeforeUnregisterRemainsRetryable() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+
+            var registryField = ActorRuntime.class.getDeclaredField("actors");
+            registryField.setAccessible(true);
+            var registry = (java.util.Map<Object, Object>)
+                    registryField.get(runtime);
+            Object cell = registry.get(actor.id());
+            assertNotNull(cell);
+
+            var faultField = cell.getClass().getDeclaredField(
+                    "finalizationFaultForTesting");
+            var activeField = cell.getClass().getDeclaredField(
+                    "finalizationActive");
+            var finalizedField = cell.getClass().getDeclaredField("finalized");
+            faultField.setAccessible(true);
+            activeField.setAccessible(true);
+            finalizedField.setAccessible(true);
+
+            var attempts = new AtomicInteger();
+            faultField.set(cell, (Runnable) () -> {
+                if (attempts.incrementAndGet() == 1) {
+                    throw new OutOfMemoryError(
+                            "injected before actor unregister publication");
+                }
+            });
+
+            var failure = assertThrows(OutOfMemoryError.class, actor::stop);
+            assertTrue(failure.getMessage().contains("injected before actor unregister"));
+            assertSame(cell, registry.get(actor.id()),
+                    "failed finalization must keep the exact physical owner discoverable");
+            assertFalse(runtime.physicallyFinalizedForHotUpgrade(actor));
+            assertFalse(actor.awaitTermination(0, TimeUnit.NANOSECONDS));
+            assertFalse(activeField.getBoolean(cell),
+                    "failed finalization must release its exclusive retry claim");
+            assertFalse(finalizedField.getBoolean(cell),
+                    "internal finalized state cannot publish before teardown completes");
+
+            actor.stop();
+            assertEquals(2, attempts.get(),
+                    "retry must re-enter the same physical-finalization boundary");
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(runtime.physicallyFinalizedForHotUpgrade(actor));
+            assertTrue(finalizedField.getBoolean(cell));
+            assertFalse(activeField.getBoolean(cell));
+            assertNull(registry.get(actor.id()));
+        }
+    }
+
+
 }
