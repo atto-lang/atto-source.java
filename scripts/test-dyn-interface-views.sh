@@ -20,7 +20,7 @@ mvn -version
 
 # All named tests must run; Surefire's -Dtest selection fails if no tests match.
 mvn -B -ntp -Dores.runtime.carriers=native \
-  -Dtest=DynInterfaceViewTest,DynInheritedObjectSafetyTest,DynNominalWitnessTest \
+  -Dtest=DynInterfaceViewTest,DynInheritedObjectSafetyTest,DynNominalWitnessTest,DynSendSyncConvergenceTest \
   test
 
 # Optional full coverage for a funded, authorized worker.

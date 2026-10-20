@@ -4945,6 +4945,43 @@ public final class TypeChecker {
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
     }
 
+    /**
+     * Send is necessary for a movable Task payload, but actor Sendable,
+     * scoped borrow lifetime, and scheduler/allocator admission are separate.
+     * Use the same resolved-type trait proof engine as Send/Sync PR #1439.
+     * Detached async boundaries need an owned Send proof; a Send shared or
+     * mutable borrow by itself does not establish an outlives guarantee.
+     */
+    private boolean isThreadSend(Type type) {
+        // One shared budget covers every nominal callback made by this top-level
+        // transfer proof. Otherwise N nominal nodes could each start a fresh
+        // 100k shared-safety walk and multiply attacker-controlled compiler work.
+        int[] nominalSharedSafetyBudget = new int[] {100_000};
+        return ThreadSafetyTraits.isOwnedSend(type,
+                new ThreadSafetyTraits.NominalProof() {
+                    @Override
+                    public boolean has(Named nominal, ThreadSafetyTraits.Trait trait) {
+                        return trait == ThreadSafetyTraits.Trait.SEND
+                                && isSharedSafe(
+                                        nominal, new LinkedHashSet<>(), Map.of(),
+                                        0, nominalSharedSafetyBudget);
+                    }
+
+                    @Override
+                    public boolean trustedIntrinsic(Named named) {
+                        // Resolve the actual declaration before trusting a built-in
+                        // type constructor. Guest classes, interfaces and aliases
+                        // may not impersonate Option/Result/Channel by spelling.
+                        if (!Set.of("Option", "Result", "Channel",
+                                "OptionUnwrapError", "IteratorResult")
+                                .contains(named.name())) return false;
+                        return findClass(named.name()) == null
+                                && findInterface(named.name()) == null
+                                && findTypeAlias(named.name()) == null;
+                    }
+                });
+    }
+
     private void validateAsyncBoundaryType(
             Type type,
             boolean returnPosition,
@@ -4956,14 +4993,59 @@ public final class TypeChecker {
         // their stricter rule and continue to reject Channel<T> entirely.
         if (type instanceof Named named && named.name().equals("Channel")
                 && named.arguments().size() == 1
-                && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
+                && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())
+                && isThreadSend(type)) {
             return;
         }
         if (type == Primitive.VOID
+                || !isThreadSend(type)
                 || !isSharedSafe(type, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
                     where + " must be concrete owned task-safe data; borrows, futures, mutexes, functions, actor values, host capabilities, and unresolved generics cannot cross an async task boundary");
         }
+    }
+
+    /**
+     * Actor callable completions use ActorRuntime.freeze(), not the separate
+     * capability-aware mailbox transport. Live routing/shared-memory handles
+     * must never masquerade as ordinary frozen completion data.
+     */
+    private void rejectLiveActorCallableResult(
+            Type type, String where, int depth, int[] budget) {
+        if (depth > 256 || --budget[0] < 0) {
+            throw new IllegalArgumentException(
+                    where + " exceeds actor result type nesting budget (depth or proof work)");
+        }
+        if (type instanceof Named named) {
+            if (named.name().equals("ActorRef") || named.name().equals("SharedMutex")) {
+                throw new IllegalArgumentException(
+                        where + " cannot return live " + named.name()
+                                + " through data-only actor completion; use explicit mailbox transport");
+            }
+            for (Type argument : named.arguments()) {
+                rejectLiveActorCallableResult(argument, where, depth + 1, budget);
+            }
+        } else if (type instanceof ListType list) {
+            rejectLiveActorCallableResult(list.element(), where, depth + 1, budget);
+        } else if (type instanceof Tuple tuple) {
+            for (Type item : tuple.elements()) {
+                rejectLiveActorCallableResult(item, where, depth + 1, budget);
+            }
+        } else if (type instanceof Union union) {
+            for (Type item : union.options()) {
+                rejectLiveActorCallableResult(item, where, depth + 1, budget);
+            }
+        } else if (type instanceof Record record) {
+            for (Type item : record.members().values()) {
+                rejectLiveActorCallableResult(item, where, depth + 1, budget);
+            }
+        }
+    }
+
+    private boolean isUnshadowedCompilerBuiltin(String name) {
+        return findClass(name) == null
+                && findInterface(name) == null
+                && findTypeAlias(name) == null;
     }
 
     private void validateActorCallableBoundaryType(
@@ -4971,176 +5053,273 @@ public final class TypeChecker {
             Ast.ActorKind actorKind,
             boolean returnPosition,
             String where) {
+        validateActorCallableBoundaryType(
+                type, actorKind, returnPosition, where, 0, new int[] {100_000});
+    }
+
+    private void validateActorCallableBoundaryType(
+            Type type,
+            Ast.ActorKind actorKind,
+            boolean returnPosition,
+            String where,
+            int depth,
+            int[] budget) {
+        if (depth > 256 || --budget[0] < 0) {
+            throw new IllegalArgumentException(
+                    where + " exceeds actor transport type nesting budget (depth or proof work)");
+        }
         if (returnPosition && type == Primitive.VOID) return;
+        if (returnPosition) {
+            rejectLiveActorCallableResult(type, where, 0, budget);
+        }
         if (type == Primitive.VOID) {
             throw new IllegalArgumentException(where + " cannot be void");
         }
         if (type == Unknown.INSTANCE || type instanceof Generic || type instanceof Dyn
-                || type instanceof SelfType || type instanceof Borrow || type instanceof Function
-                || type instanceof ClassNamespace) {
+                || type instanceof SelfType || type instanceof Borrow
+                || type instanceof Function || type instanceof ClassNamespace) {
             throw new IllegalArgumentException(
-                    where + " must be a concrete owned/sendable data type; dyn views, borrows, functions, and unresolved types cannot cross an actor boundary");
+                    where + " must be a concrete owned/sendable data type; dyn views, "
+                            + "borrows, functions, and unresolved types cannot cross an actor boundary");
         }
-        if (type instanceof Primitive || type instanceof StringLiteral) return;
+        if (type instanceof Primitive || type instanceof StringLiteral
+                || type instanceof BoolLiteral) return;
         if (type instanceof ListType list) {
-            validateActorCallableBoundaryType(list.element(), actorKind, false, where + " element");
+            validateActorCallableBoundaryType(
+                    list.element(), actorKind, false, where + " element", depth + 1, budget);
             return;
         }
         if (type instanceof Tuple tuple) {
             for (int i = 0; i < tuple.elements().size(); i++) {
-                validateActorCallableBoundaryType(tuple.elements().get(i), actorKind, false, where + " tuple element " + i);
+                validateActorCallableBoundaryType(
+                        tuple.elements().get(i), actorKind, false,
+                        where + " tuple element " + i, depth + 1, budget);
             }
             return;
         }
         if (type instanceof Union union) {
             for (Type option : union.options()) {
-                validateActorCallableBoundaryType(option, actorKind, false, where + " union member");
+                validateActorCallableBoundaryType(
+                        option, actorKind, false, where + " union member", depth + 1, budget);
             }
             return;
         }
         if (type instanceof Record record) {
             for (Map.Entry<String, Type> member : record.members().entrySet()) {
-                validateActorCallableBoundaryType(member.getValue(), actorKind, false, where + " field '" + member.getKey() + "'");
+                validateActorCallableBoundaryType(
+                        member.getValue(), actorKind, false,
+                        where + " field '" + member.getKey() + "'", depth + 1, budget);
             }
             return;
         }
         if (!(type instanceof Named named)) {
-            throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
+            throw new IllegalArgumentException(
+                    where + " is not actor-boundary sendable: " + type);
         }
 
-        if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
-                || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
-                || named.name().equals("Channel") || named.name().equals("SelectCase")
-                || named.name().equals("SelectSet") || named.name().equals("SelectResult")
-                || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
+        String name = named.name();
+        if (name.equals("TcpConnection") || name.equals("HttpExchange")
+                || name.equals("HttpServer") || name.equals("HttpHandler")
+                || name.equals("Mutex") || name.equals("MutexGuard")
+                || name.equals("Future") || name.equals("Channel")
+                || name.equals("SelectCase") || name.equals("SelectSet")
+                || name.equals("SelectResult") || name.equals("Iterator")
+                || name.equals("AsyncIterator")) {
             throw new IllegalArgumentException(
-                    where + " cannot use " + named.name()
+                    where + " cannot use " + name
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
         }
-        if (named.name().equals("SharedMutex")) {
+
+        if (name.equals("ActorRef")) {
+            if (!isUnshadowedCompilerBuiltin(name)) {
+                throw new IllegalArgumentException(
+                        where + " cannot transport guest-shadowed ActorRef");
+            }
+            if (actorKind == Ast.ActorKind.UNTRUSTED) {
+                throw new IllegalArgumentException(
+                        where + " cannot transport ActorRef to an untrusted actor; "
+                                + "untrusted mailboxes are data-only");
+            }
+            actorClassForRef(named);
+            return;
+        }
+
+        if (name.equals("SharedMutex")) {
+            if (!isUnshadowedCompilerBuiltin(name)) {
+                throw new IllegalArgumentException(
+                        where + " cannot transport guest-shadowed SharedMutex");
+            }
             if (actorKind == Ast.ActorKind.PRIVATE || actorKind == Ast.ActorKind.UNTRUSTED) {
                 throw new IllegalArgumentException(
-                        where + " cannot use SharedMutex<T> with isoactor/private actors");
+                        where + " cannot use SharedMutex<T> with private/untrusted actors");
+            }
+            if (currentActorKind == Ast.ActorKind.PRIVATE
+                    || currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                throw new IllegalArgumentException(
+                        where + " cannot send SharedMutex<T> from a private/untrusted actor");
             }
             if (named.arguments().size() != 1
-                    || !isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
+                    || !isSharedSafe(
+                            named.arguments().getFirst(),
+                            new LinkedHashSet<>(), Map.of())
+                    || !isThreadSend(named.arguments().getFirst())) {
                 throw new IllegalArgumentException(
-                        where + " requires SharedMutex<T> to contain shared-safe owned data");
+                        where + " requires SharedMutex<T> to contain shared-safe, Send owned data");
             }
             return;
         }
 
         for (Type argument : named.arguments()) {
-            validateActorCallableBoundaryType(argument, actorKind, false, where + " type argument");
+            validateActorCallableBoundaryType(
+                    argument, actorKind, false, where + " type argument", depth + 1, budget);
         }
 
-        // Built-in sum/container values are data-only when their arguments pass.
-        if (named.name().equals("Option") || named.name().equals("Result")
-                || named.name().equals("OptionUnwrapError")) {
+        if (name.equals("Option") || name.equals("Result")
+                || name.equals("OptionUnwrapError")) {
+            if (!isUnshadowedCompilerBuiltin(name)) {
+                throw new IllegalArgumentException(
+                        where + " cannot transport guest-shadowed compiler builtin '" + name + "'");
+            }
             return;
         }
 
-        Ast.ClassDecl klass = findClass(named.name());
+        Ast.ClassDecl klass = findClass(name);
         if (klass == null) {
-            // Runtime capability types (for example ActorId/ActorRef) are
-            // validated again by transport. Do not silently admit known
-            // mutable/suspending primitives above, but avoid rejecting opaque
-            // capability types solely because they have no source class body.
-            return;
+            if (named.arguments().isEmpty()
+                    && (name.equals("ActorId") || name.equals("ActorKind"))
+                    && isUnshadowedCompilerBuiltin(name)) {
+                return;
+            }
+            throw new IllegalArgumentException(
+                    where + " cannot transport unknown nominal type '" + name
+                            + "'; only compiler-recognized actor metadata and data-only values are supported");
         }
         if (klass.actorKind() != Ast.ActorKind.NONE) {
             throw new IllegalArgumentException(
-                    where + " cannot transport an actor instance by value; pass an actor capability/reference");
+                    where + " cannot transport an actor instance by value; "
+                            + "pass an actor capability/reference");
         }
 
-        /*
-         * Ordinary class instances are mutable identity-bearing objects. The
-         * runtime transport deliberately rejects OresObject/unknown host
-         * objects instead of sharing their identity or inventing an implicit
-         * deep copy. Keep the compiler aligned with that fail-closed runtime
-         * rule. A future explicit serializer/copy trait may opt a class in;
-         * until then actor mail/output must use data-only records/tuples/lists,
-         * scalars or explicit capabilities.
-         */
         throw new IllegalArgumentException(
                 where + " cannot transport class instance '" + klass.name()
                         + "' by value; actor boundaries require data-only values "
                         + "or an explicit serialization/copy contract");
     }
 
-    private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
-        if (type == Unknown.INSTANCE || type instanceof Dyn || type instanceof SelfType || type instanceof Borrow
-                || type instanceof Function || type instanceof ClassNamespace) return false;
+    private boolean isSharedSafe(
+            Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
+        return isSharedSafe(type, seen, genericBindings, 0, new int[] {100_000});
+    }
+
+    private boolean isSharedSafe(
+            Type type,
+            Set<Ast.ClassDecl> seen,
+            Map<String, Type> genericBindings,
+            int depth,
+            int[] budget) {
+        if (depth > 256 || --budget[0] < 0) return false;
+        if (type == Unknown.INSTANCE || type instanceof Dyn || type instanceof SelfType
+                || type instanceof Borrow || type instanceof Function
+                || type instanceof ClassNamespace) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
-        if (type instanceof StringLiteral) return true;
+        if (type instanceof StringLiteral || type instanceof BoolLiteral) return true;
         if (type instanceof Generic generic) {
             Type bound = genericBindings.get(generic.name());
-            return bound != null && bound != type && isSharedSafe(bound, seen, genericBindings);
+            return bound != null && bound != type
+                    && isSharedSafe(bound, seen, genericBindings, depth + 1, budget);
         }
-        if (type instanceof ListType list) return isSharedSafe(list.element(), seen, genericBindings);
+        if (type instanceof ListType list) {
+            return isSharedSafe(list.element(), seen, genericBindings, depth + 1, budget);
+        }
         if (type instanceof Union union) {
-            for (Type option : union.options()) if (!isSharedSafe(option, seen, genericBindings)) return false;
+            for (Type option : union.options()) {
+                if (!isSharedSafe(option, seen, genericBindings, depth + 1, budget)) return false;
+            }
             return true;
         }
         if (type instanceof Tuple tuple) {
-            for (Type element : tuple.elements()) if (!isSharedSafe(element, seen, genericBindings)) return false;
+            for (Type element : tuple.elements()) {
+                if (!isSharedSafe(element, seen, genericBindings, depth + 1, budget)) return false;
+            }
             return true;
         }
         if (type instanceof Record record) {
-            for (Type member : record.members().values()) if (!isSharedSafe(member, seen, genericBindings)) return false;
+            // readOnly is only a view capability. It may still alias writable
+            // backing storage left in another execution context, so it is not
+            // shared-safe without a separate frozen/exclusive provenance proof.
+            if (record.readOnly()) return false;
+            for (Type member : record.members().values()) {
+                if (!isSharedSafe(member, seen, genericBindings, depth + 1, budget)) return false;
+            }
             return true;
         }
         if (!(type instanceof Named named)) return false;
 
-        if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
-                || named.name().equals("Future") || named.name().equals("Iterator")
-                || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
-        if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
-        if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
-            return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
+        String name = named.name();
+        if (name.equals("Mutex") || name.equals("MutexGuard")
+                || name.equals("Future") || name.equals("Iterator")
+                || name.equals("AsyncIterator") || name.equals("SharedMutex")) {
+            return false;
         }
-        if (named.name().equals("Result")) {
-            return named.arguments().size() == 2
-                    && isSharedSafe(named.arguments().get(0), seen, genericBindings)
-                    && isSharedSafe(named.arguments().get(1), seen, genericBindings);
+        if (name.equals("OptionUnwrapError")) {
+            return named.arguments().isEmpty() && isUnshadowedCompilerBuiltin(name);
+        }
+        if (name.equals("Option") || name.equals("IteratorResult")) {
+            return isUnshadowedCompilerBuiltin(name)
+                    && named.arguments().size() == 1
+                    && isSharedSafe(
+                            named.arguments().getFirst(),
+                            seen, genericBindings, depth + 1, budget);
+        }
+        if (name.equals("Result")) {
+            return isUnshadowedCompilerBuiltin(name)
+                    && named.arguments().size() == 2
+                    && isSharedSafe(
+                            named.arguments().get(0),
+                            seen, genericBindings, depth + 1, budget)
+                    && isSharedSafe(
+                            named.arguments().get(1),
+                            seen, genericBindings, depth + 1, budget);
         }
 
         for (Type argument : named.arguments()) {
-            if (!isSharedSafe(argument, seen, genericBindings)) return false;
+            if (!isSharedSafe(argument, seen, genericBindings, depth + 1, budget)) return false;
         }
 
-        Ast.ClassDecl klass = findClass(named.name());
-        if (klass == null) return false;
-        if (klass.actorKind() != Ast.ActorKind.NONE) return false;
-        if (!seen.add(klass)) return true;
+        Ast.ClassDecl klass = findClass(name);
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE) return false;
+        // Repeated nominal storage is not automatically a positive fixed-point
+        // proof. Reject cycles until explicit recursive-layout/indirection
+        // semantics can establish ownership and aliasing.
+        if (!seen.add(klass)) return false;
 
         try {
             Map<String, Type> classBindings = new HashMap<>(genericBindings);
             if (named.arguments().size() != klass.genericParameters().size()) return false;
             for (int i = 0; i < klass.genericParameters().size(); i++) {
-                classBindings.put(klass.genericParameters().get(i),
+                classBindings.put(
+                        klass.genericParameters().get(i),
                         resolveSharedGeneric(named.arguments().get(i), genericBindings));
             }
 
             Type nominal = nominalClassType(klass);
             Set<String> classGenerics = Set.copyOf(klass.genericParameters());
 
-            // Check only fields declared by this class under this class's own
-            // generic environment. Flattening inherited fields here is unsafe:
-            // a parent T must never be resolved as an unrelated child T.
             for (Ast.FieldDecl field : klass.fields()) {
                 Type fieldType = resolveSharedGeneric(
                         resolve(field.type(), classGenerics, nominal),
                         classBindings);
-                if (!isSharedSafe(fieldType, seen, classBindings)) return false;
+                if (!isSharedSafe(
+                        fieldType, seen, classBindings, depth + 1, budget)) return false;
             }
 
-            // Recurse into each parent after substituting the child's generic
-            // bindings into the parent's concrete type arguments.
             for (Ast.TypeRef parentRef : klass.parents()) {
-                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
-                Type parentType = resolveSharedGeneric(resolve(parentRef, classGenerics, nominal), classBindings);
-                if (!isSharedSafe(parentType, seen, classBindings)) return false;
+                if (parentRef.name().equals("Object")
+                        || parentRef.name().equals("List")) continue;
+                Type parentType = resolveSharedGeneric(
+                        resolve(parentRef, classGenerics, nominal), classBindings);
+                if (!isSharedSafe(
+                        parentType, seen, classBindings, depth + 1, budget)) return false;
             }
 
             return true;
@@ -8225,6 +8404,8 @@ public final class TypeChecker {
                 }
                 yield new Named(ref.name(), List.of(payload));
             }
+            case "OptionUnwrapError" -> throw new IllegalArgumentException(
+                    "OptionUnwrapError is compiler-internal and cannot be named in source declarations");
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self, true);
