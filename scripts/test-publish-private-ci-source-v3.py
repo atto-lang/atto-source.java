@@ -56,6 +56,70 @@ def contract():
 
 
 class PrivateCiV3Test(unittest.TestCase):
+    def test_remote_protected_file_rejects_blob_sha_mismatch(self):
+        raw = b"reviewed-bytes\n"
+        encoded = base64.b64encode(raw).decode("ascii")
+
+        with patch.object(
+            v3.legacy,
+            "gh_api",
+            return_value={
+                "path": "scripts/publish-private-ci-source-v3.py",
+                "type": "file",
+                "encoding": "base64",
+                "content": encoded,
+                "sha": "0" * 40,
+            },
+        ):
+            with self.assertRaisesRegex(v3.Denied, "blob digest mismatch"):
+                v3.remote_file_at_source_main(
+                    "scripts/publish-private-ci-source-v3.py",
+                    PROTECTED,
+                    4096,
+                )
+
+    def test_control_plane_rejects_local_runtime_divergence(self):
+        with (
+            patch.object(v3, "require_control_plane_location"),
+            patch.object(
+                v3,
+                "read_local_protected_file",
+                return_value=b"modified-local-code\n",
+            ),
+            patch.object(
+                v3,
+                "remote_file_at_source_main",
+                return_value=(b"reviewed-protected-code\n", "1" * 40),
+            ),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "control plane diverges"):
+                v3.checked_control_plane(Path("."), PROTECTED)
+
+    def test_control_plane_requires_executing_modules_under_trusted_root(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            v3_path = scripts / "publish-private-ci-source-v3.py"
+            legacy_path = scripts / "publish-private-ci-source.py"
+            v3_path.write_text("# reviewed v3\n")
+            legacy_path.write_text("# reviewed legacy\n")
+
+            with (
+                patch.object(v3, "__file__", str(v3_path)),
+                patch.object(v3, "LEGACY_PATH", legacy_path),
+            ):
+                v3.require_control_plane_location(root)
+
+            outside = root / "modified-copy.py"
+            outside.write_text("# modified\n")
+            with (
+                patch.object(v3, "__file__", str(outside)),
+                patch.object(v3, "LEGACY_PATH", legacy_path),
+            ):
+                with self.assertRaisesRegex(v3.Denied, "outside the trusted control plane"):
+                    v3.require_control_plane_location(root)
+
     def test_parse_contract_requires_exact_pr_and_pinned_fields(self):
         raw = json.dumps(
             {
@@ -235,14 +299,16 @@ class PrivateCiV3Test(unittest.TestCase):
             with (
                 patch.object(v3.legacy, "require_preflight"),
                 patch.object(v3.legacy, "checked_policy_fingerprint", return_value=POLICY),
-                patch.object(v3.legacy, "verify_protected_origin"),
-                patch.object(v3, "protected_main_sha", return_value=PROTECTED),
-                patch.object(v3, "checked_contract", return_value=carrier),
+                patch.object(
+                    v3.legacy, "verify_protected_origin", return_value=PROTECTED
+                ) as verify_origin,
+                patch.object(v3, "checked_control_plane") as control_plane,
+                patch.object(v3, "checked_contract", return_value=carrier) as checked_contract,
                 patch.object(
                     v3,
                     "verify_source_pr",
                     return_value=v3.SOURCE_REPOSITORY_ID,
-                ),
+                ) as verify_pr,
                 patch.object(
                     v3,
                     "checked_destination",
@@ -255,7 +321,7 @@ class PrivateCiV3Test(unittest.TestCase):
                         "3" * 40,
                         PLAN,
                     ),
-                ),
+                ) as checked_destination,
                 patch.object(
                     v3.legacy,
                     "collect_source",
@@ -266,7 +332,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     "verified_exact_source_tree",
                     return_value=SOURCE_TREE,
                 ),
-                patch.object(v3, "authorize_write"),
+                patch.object(v3, "authorize_write") as authorize_write,
                 patch.object(v3.legacy, "gh_api", side_effect=api),
             ):
                 result = v3.publish(
@@ -278,6 +344,13 @@ class PrivateCiV3Test(unittest.TestCase):
                     root,
                     now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                 )
+
+        self.assertEqual(verify_origin.call_count, 2)
+        self.assertEqual(control_plane.call_count, 2)
+        self.assertEqual(checked_contract.call_count, 2)
+        self.assertEqual(checked_destination.call_count, 2)
+        self.assertEqual(verify_pr.call_count, 2)
+        self.assertEqual(authorize_write.call_count, 7)
 
         self.assertEqual(result["branch"], "ci/oreslang-" + SOURCE_TREE)
         self.assertEqual(

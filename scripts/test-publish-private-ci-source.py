@@ -101,6 +101,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return self.fake_api(route, method, payload)
         return fake, routes
 
+    def test_origin_verification_returns_the_authenticated_main_commit(self):
+        api, _ = self.verified_origin_api(protected=True)
+        digest = hashlib.sha256(b"trusted/ci\n").digest()
+        with patch.object(pub, "gh_api", side_effect=api):
+            self.assertEqual(
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest),
+                A,
+            )
+
     def test_origin_main_must_be_protected_before_export(self):
         api, routes = self.verified_origin_api(protected=False)
         with patch.object(pub, "verify_protected_origin",

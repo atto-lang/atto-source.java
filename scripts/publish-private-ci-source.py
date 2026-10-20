@@ -220,6 +220,7 @@ def verify_protected_origin(repository, expected_policy_digest):
             approved = True
     if not approved:
         raise Denied("destination absent from protected origin allowlist")
+    return commit_sha
 
 
 def collect_source(root, trusted_root):

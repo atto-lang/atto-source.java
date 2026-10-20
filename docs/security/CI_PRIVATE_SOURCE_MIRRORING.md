@@ -29,7 +29,12 @@ true. Force pushes and branch deletions must be explicitly disabled, and any
 pull-request review bypass allowances are rejected. Missing or unreadable rules fail
 closed, even if GitHub reports `protected: true`. The publisher pins the
 policy read to that branch's Git commit and compares its policy bytes
-with the local checkout policy.
+with the local checkout policy. V3 also binds the executing destination guard,
+launcher, legacy publisher, and V3 publisher byte-for-byte to that same
+protected-`main` commit, and requires the executing Python modules to be the
+exact files beneath the supplied trusted checkout. A copied or locally modified
+dispatcher therefore cannot borrow authorization from genuine protected policy
+bytes.
 It repeats these checks immediately before publishing the new CI ref. Merely
 adding the allowlist line to an unreviewed checkout does not authorize export,
 and a CODEOWNERS file without enforced branch protection is not sufficient.
@@ -66,7 +71,10 @@ scripts/run-in-private-ci-destination.sh opto-sync-test/go-java-validation \
 The caller does not choose the executable carrier branch. After proving the
 complete source Git tree, the dispatcher derives exactly
 `ci/oreslang-<SOURCE_ROOT_TREE_SHA>`. The exact source commit must also be
-the current head of the named open PR against source `main`.
+the current head of the named open PR against source `main`. V3 validates
+that relationship both before reading/uploading the source and again immediately
+before creating executable carrier refs, so a PR that advances or closes during
+the transfer fails closed.
 
 The checked-in policy file must explicitly list the destination. The
 publisher checks the live GitHub identity and `visibility=private` /
