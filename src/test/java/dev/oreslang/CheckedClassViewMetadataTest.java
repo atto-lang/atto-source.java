@@ -22,5 +22,11 @@ final class CheckedClassViewMetadataTest {
         assertThrows(
                 IllegalStateException.class,
                 () -> Ast.CheckedClassView.record(first, "Child"));
+
+        Ast.RuntimeCallExpr rewritten =
+                new Ast.RuntimeCallExpr("borrow", java.util.List.of(structurallyEqual));
+        Ast.CheckedClassView.copy(first, rewritten);
+        assertEquals("Parent", Ast.CheckedClassView.lookup(rewritten));
+        assertNull(Ast.CheckedClassView.lookup(structurallyEqual));
     }
 }
