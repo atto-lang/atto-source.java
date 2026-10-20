@@ -443,9 +443,10 @@ sealed image. Untrusted build stdout/stderr is discarded and every nonzero
 private build exit is normalized to one generic failure result rather than
 publishing the exact exit code.
 
-Source-free carrier head `88c353fe5b56f50c76baae1809f6c7fb7f11599e`
-passed **52/52** deterministic tests plus the real hosted Docker isolation
-probe in run `39346307005`. That probe verified the sandbox contract using
+Source-free carrier head `0a4b4c79d9121d3113585b583b77f1a53856f852`
+passed **54/54** deterministic tests, including explicit NUL-byte rejection
+for both pinned carrier policy blobs, plus the real hosted Docker isolation
+probe in run `39346656825`. That probe verified the sandbox contract using
 synthetic bytes only. It does **not** prove the dedicated self-hosted runner's
 egress controls and does not authorize private-source transfer while protected
 main/ruleset/review gates remain unavailable.
