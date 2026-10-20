@@ -781,8 +781,12 @@ final class OresTaskScopeTest {
             java.util.concurrent.ExecutionException poisoned = assertThrows(
                     java.util.concurrent.ExecutionException.class,
                     () -> drained.get(5, TimeUnit.SECONDS));
-            assertNotNull(poisoned.getCause());
+            assertInstanceOf(
+                    StructuredTaskScopePoisonException.class,
+                    poisoned.getCause());
             assertTrue(poisoned.getCause().getMessage().contains("accounting"));
+            assertNotNull(poisoned.getCause().getCause(),
+                    "poison must preserve the original accounting failure");
             assertTrue(scope.isPoisoned());
             assertEquals(1, scope.activeChildren(),
                     "corrupt retirement must pin the child in the join set");
@@ -850,8 +854,12 @@ final class OresTaskScopeTest {
             java.util.concurrent.ExecutionException poisoned = assertThrows(
                     java.util.concurrent.ExecutionException.class,
                     () -> drained.get(5, TimeUnit.SECONDS));
-            assertNotNull(poisoned.getCause());
+            assertInstanceOf(
+                    StructuredTaskScopePoisonException.class,
+                    poisoned.getCause());
             assertTrue(poisoned.getCause().getMessage().contains("accounting"));
+            assertNotNull(poisoned.getCause().getCause(),
+                    "poison must preserve the original accounting failure");
             assertTrue(ownerDeregistered.get(),
                     "poisoned scope may deregister only after every child carrier exits");
             assertEquals(2, scope.activeChildren(),
