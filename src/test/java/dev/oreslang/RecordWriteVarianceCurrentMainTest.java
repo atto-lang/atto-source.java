@@ -1,6 +1,8 @@
 package dev.oreslang;
 
 import dev.oreslang.types.Types;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.Types.Record;
 import org.junit.jupiter.api.Test;
 import java.util.Map;
@@ -70,4 +72,35 @@ final class RecordWriteVarianceCurrentMainTest {
         assertFalse(Types.isAssignable(struct,fewer));
         assertTrue(Types.isAssignable(struct,struct));
     }
+    @Test void structuralParameterIsNotAWriteAuthorityInGuestSource() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface Position
+                          value: int;
+                        end
+                        fnc bad(structural Position p): void {
+                          p.value = 3;
+                          return;
+                        }
+                        """)));
+    }
+
+    @Test void sourceStructuralParameterRetainsReadOnlyWidthSubtyping() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define interface Position
+                  value: int;
+                end
+                define class Point as
+                  pub val int value = 3;
+                  pub val int other = 5;
+                end
+                fnc inspect(structural Position p): int {
+                  return p.value;
+                }
+                fnc ok(): int {
+                  return inspect(new Point());
+                }
+                """)));
+    }
+
 }
