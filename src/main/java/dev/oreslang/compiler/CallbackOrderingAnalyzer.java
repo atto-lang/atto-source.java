@@ -151,6 +151,7 @@ public final class CallbackOrderingAnalyzer {
                                     event.emitter() + ".on(" + event.event() + ")")));
                 }
             }
+            state.pending.entrySet().removeIf(entry -> matches(entry.getKey(), event));
             state.registered.add(event);
         }
 
@@ -223,13 +224,20 @@ public final class CallbackOrderingAnalyzer {
                 else if (call.callee() instanceof Ast.MemberExpr m)
                     invoker = m.member();
 
+                boolean isSubscription = call.callee() instanceof Ast.MemberExpr member
+                        && listener(member.member());
                 for (Ast.Expr arg : call.arguments()) {
                     Ast.LambdaExpr lambda = null;
                     if (arg instanceof Ast.LambdaExpr direct) lambda = direct;
                     else if (arg instanceof Ast.NameExpr named) lambda = state.lambdas.get(named.name());
                     if (lambda != null) {
-                        for (Event event : eventsFromLambda(lambda, state))
-                            publish(event, invoker, state);
+                        // Event registration stores a listener; it is not an
+                        // arbitrary callback invocation. The library still
+                        // must certify its install semantics before strict admission.
+                        if (!isSubscription) {
+                            for (Event event : eventsFromLambda(lambda, state))
+                                publish(event, invoker, state);
+                        }
                     } else inspect(arg, state);
                 }
 
