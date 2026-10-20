@@ -88,4 +88,46 @@ mv "$work/fixture/.github" "$work/approved-policy-directory"
 ln -s "$work/approved-policy-directory" "$work/fixture/.github"
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
-printf 'PASS: private identity, symlink directory and multiline API rejection, child not executed\n'
+# Source-free launcher trust-boundary test: replace the publisher with a stub
+# and prove caller PATH/PYTHONPATH/shell startup hooks cannot intercept execution.
+mv "$script_dir/publish-private-ci-source-v3.py" "$work/publisher-v3-original.py"
+cat > "$script_dir/publish-private-ci-source-v3.py" <<'PY'
+import os
+import sys
+assert sys.flags.isolated == 1
+assert sys.dont_write_bytecode
+assert sys.executable == "/usr/bin/python3"
+assert os.environ["PATH"] == "/usr/bin:/bin"
+assert "/tmp/poison-python" not in sys.path
+assert len(sys.argv) == 10
+print("SOURCE_FREE_V3_LAUNCHER_OK")
+PY
+mkdir -p "$work/poison-path" "$work/poison-python"
+for executable in python3 dirname bash sh; do
+  cat > "$work/poison-path/$executable" <<'FAKE'
+#!/bin/sh
+printf 'unsafe executable invoked\n' >> "$LAUNCHER_UNSAFE_MARKER"
+exit 90
+FAKE
+  chmod +x "$work/poison-path/$executable"
+done
+cat > "$work/poison-python/sitecustomize.py" <<'PY'
+import os
+open(os.environ["LAUNCHER_UNSAFE_MARKER"], "a").write("sitecustomize executed\n")
+PY
+printf '%s\n' 'printf "shell startup hook executed\n" >> "$LAUNCHER_UNSAFE_MARKER"' > "$work/startup-hook"
+rm -f "$work/launcher-unsafe"
+PATH="$work/poison-path:$PATH" \
+PYTHONPATH="$work/poison-python" \
+BASH_ENV="$work/startup-hook" ENV="$work/startup-hook" \
+LAUNCHER_UNSAFE_MARKER="$work/launcher-unsafe" \
+  /bin/sh "$script_dir/run-in-private-ci-destination.sh" \
+  trusted/ci --source-dir "$work/fixture/source" \
+  --source-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --source-pr 7 --test-plan ci/test-plans/synthetic.json \
+  > "$work/out" 2>&1 || { cat "$work/out" >&2; exit 1; }
+grep -Fxq 'SOURCE_FREE_V3_LAUNCHER_OK' "$work/out"
+test ! -e "$work/launcher-unsafe"
+mv "$work/publisher-v3-original.py" "$script_dir/publish-private-ci-source-v3.py"
+
+printf 'PASS: private identity, symlink directory, multiline API, and launcher injection rejection\n'
