@@ -29,6 +29,7 @@ public final class ModelGraphCompiler {
     private ModelGraphCompiler() { }
 
     public static final String MODEL_TYPE_PREFIX = "$model$";
+    public static final String PORTABLE_PROFILE_I64_V1 = "model-core-i64-v1";
     private static final int MAX_MODELS = 1024;
     private static final int MAX_NODES = 4096;
     private static final int MAX_CONFIG_PARAMS = 64;
@@ -94,12 +95,18 @@ public final class ModelGraphCompiler {
             Ast.TypeRef inputType,
             Ast.TypeRef outputType,
             String graphDigest,
+            Set<String> portableProfiles,
             boolean freestandingEligible,
             boolean noDynamicAllocation,
             boolean deterministic) {
         public CompiledModel {
             parameters = List.copyOf(parameters);
             nodes = List.copyOf(nodes);
+            portableProfiles = Set.copyOf(portableProfiles);
+        }
+
+        public boolean supportsPortableProfile(String profile) {
+            return portableProfiles.contains(profile);
         }
 
         public String modelTypeName() { return MODEL_TYPE_PREFIX + qualifiedName; }
@@ -512,6 +519,9 @@ public final class ModelGraphCompiler {
                 inputType,
                 outputType,
                 graphDigest,
+                portableI64V1(parameters, nodes)
+                        ? Set.of(PORTABLE_PROFILE_I64_V1)
+                        : Set.of(),
                 false,
                 false,
                 true);
@@ -629,6 +639,56 @@ public final class ModelGraphCompiler {
         return false;
     }
 
+    private static boolean portableI64V1(
+            List<Parameter> parameters,
+            List<Node> nodes) {
+        for (Parameter parameter : parameters) {
+            if (!canonicalType(parameter.type()).equals("int")) return false;
+            if (parameter.hasDefault() && !(parameter.defaultValue() instanceof Long)) return false;
+        }
+        for (Node node : nodes) {
+            if (!canonicalType(node.inputType()).equals("int")
+                    || !canonicalType(node.outputType()).equals("int")) {
+                return false;
+            }
+            for (StaticArg argument : node.staticArguments()) {
+                if (!canonicalType(argument.type()).equals("int")) return false;
+                if (!argument.parameterReference() && !(argument.literal() instanceof Long)) return false;
+            }
+            LinkedHashSet<String> parameterNames = new LinkedHashSet<>();
+            for (Ast.Param parameter : node.operation().parameters()) {
+                if (!canonicalType(parameter.type()).equals("int")) return false;
+                parameterNames.add(parameter.name());
+            }
+            if (!canonicalType(node.operation().returnType()).equals("int")) return false;
+            Ast.ReturnStmt returned =
+                    (Ast.ReturnStmt) node.operation().body().getFirst();
+            if (!portableI64Expression(returned.value(), parameterNames)) return false;
+        }
+        return true;
+    }
+
+    private static boolean portableI64Expression(
+            Ast.Expr expression,
+            Set<String> parameters) {
+        if (expression instanceof Ast.LiteralExpr literal) {
+            return literal.value() instanceof Long;
+        }
+        if (expression instanceof Ast.NameExpr name) {
+            return parameters.contains(name.name());
+        }
+        if (expression instanceof Ast.UnaryExpr unary) {
+            return unary.operator().equals("-")
+                    && portableI64Expression(unary.operand(), parameters);
+        }
+        if (expression instanceof Ast.BinaryExpr binary) {
+            return Set.of("+", "-", "*").contains(binary.operator())
+                    && portableI64Expression(binary.left(), parameters)
+                    && portableI64Expression(binary.right(), parameters);
+        }
+        return false;
+    }
+
     private static Object constantValue(Ast.Expr expression, String where) {
         Object value;
         if (expression instanceof Ast.LiteralExpr literal) {
@@ -742,8 +802,13 @@ public final class ModelGraphCompiler {
 
     private static String implementationDigest(Ast.FunctionDecl operation) {
         Ast.ReturnStmt returned = (Ast.ReturnStmt) operation.body().getFirst();
+        LinkedHashMap<String, Integer> parameterIndexes = new LinkedHashMap<>();
+        for (int i = 0; i < operation.parameters().size(); i++) {
+            parameterIndexes.put(operation.parameters().get(i).name(), i);
+        }
         StringBuilder canonical = new StringBuilder(operationAbi(operation));
-        canonical.append("|return=").append(canonicalExpression(returned.value()));
+        canonical.append("|return=")
+                .append(canonicalExpression(returned.value(), parameterIndexes));
         return sha256(canonical.toString());
     }
 
@@ -775,24 +840,33 @@ public final class ModelGraphCompiler {
         return sha256(canonical.toString());
     }
 
-    private static String canonicalExpression(Ast.Expr expression) {
+    private static String canonicalExpression(
+            Ast.Expr expression,
+            Map<String, Integer> parameterIndexes) {
         if (expression instanceof Ast.LiteralExpr literal) {
             return canonicalConstant(literal.value());
         }
-        if (expression instanceof Ast.NameExpr name) return "name:" + name.name();
+        if (expression instanceof Ast.NameExpr name) {
+            Integer index = parameterIndexes.get(name.name());
+            if (index == null) {
+                fail("MODEL_EFFECTFUL_BODY",
+                        "verified operation reads non-parameter '" + name.name() + "'");
+            }
+            return "arg:" + index;
+        }
         if (expression instanceof Ast.UnaryExpr unary) {
             return "unary:" + unary.operator() + "("
-                    + canonicalExpression(unary.operand()) + ")";
+                    + canonicalExpression(unary.operand(), parameterIndexes) + ")";
         }
         if (expression instanceof Ast.BinaryExpr binary) {
             return "binary:" + binary.operator() + "("
-                    + canonicalExpression(binary.left()) + ","
-                    + canonicalExpression(binary.right()) + ")";
+                    + canonicalExpression(binary.left(), parameterIndexes) + ","
+                    + canonicalExpression(binary.right(), parameterIndexes) + ")";
         }
         if (expression instanceof Ast.ConditionalExpr conditional) {
-            return "cond(" + canonicalExpression(conditional.condition()) + ","
-                    + canonicalExpression(conditional.whenTrue()) + ","
-                    + canonicalExpression(conditional.whenFalse()) + ")";
+            return "cond(" + canonicalExpression(conditional.condition(), parameterIndexes) + ","
+                    + canonicalExpression(conditional.whenTrue(), parameterIndexes) + ","
+                    + canonicalExpression(conditional.whenFalse(), parameterIndexes) + ")";
         }
         fail("MODEL_EFFECTFUL_BODY", "unsupported expression in verified operation");
         throw new AssertionError();
