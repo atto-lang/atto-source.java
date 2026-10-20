@@ -511,6 +511,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
     private final Object memoryBudgetLock = new Object();
     private final Object runtimeLifecycleLock = new Object();
+    // Package/reflection fault injection after resource invalidation, before
+    // runtime-wide physical-termination proof publishes aggregate cleanup.
+    private Runnable runtimeCloseBeforeTerminationProofFaultForTesting;
     private final Set<SyncCell<?>> syncCells = ConcurrentHashMap.newKeySet();
     private final Set<Shared<?>> sharedValues = ConcurrentHashMap.newKeySet();
     /** Read-only parent-observable streams retained until drained/runtime close. */
@@ -8250,7 +8253,15 @@ public final class ActorRuntime implements AutoCloseable {
         syncCells.clear();
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
         sharedValues.clear();
-        sharedMemoryBytes.set(0L);
+
+        // Keep the runtime-wide aggregate as a conservative shutdown owner
+        // until physical actor/carrier termination is proven. Per-owner shared
+        // releases intentionally stop mutating this counter after closed=true,
+        // so zeroing it before the final proof could falsely report no retained
+        // shared memory while executable actors/resources are still alive.
+        Runnable closeProofFault =
+                runtimeCloseBeforeTerminationProofFaultForTesting;
+        if (closeProofFault != null) closeProofFault.run();
 
         if (interrupted) Thread.currentThread().interrupt();
         if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
@@ -8268,6 +8279,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
         actors.clear();
         actorCount.set(0);
+        // Physical termination and all runtime-owned resource invalidation are
+        // now certified. The closed runtime owns the final aggregate reset.
+        sharedMemoryBytes.set(0L);
     }
 
     private ExecutorService dispatcherFor(ActorKind kind) {
