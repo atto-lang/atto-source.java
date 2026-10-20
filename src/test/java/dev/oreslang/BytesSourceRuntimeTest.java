@@ -128,6 +128,28 @@ final class BytesSourceRuntimeTest {
                 run(program, "bytes-optional-cast.ores"));
     }
 
+    @Test
+    void sourceBytesNameCannotBeShadowedByClassOrAlias() {
+        for (String source : java.util.List.of(
+                """
+                define class Bytes as
+                end
+                pub fnc main(): void { return; }
+                """,
+                """
+                define type Bytes = int;
+                pub fnc main(): void { return; }
+                """)) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source));
+            assertTrue(
+                    failure.getMessage().contains("Bytes")
+                            && failure.getMessage().contains("cannot shadow"),
+                    failure.getMessage());
+        }
+    }
+
     private static String run(String sourceText, String name) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, sourceText, name)
