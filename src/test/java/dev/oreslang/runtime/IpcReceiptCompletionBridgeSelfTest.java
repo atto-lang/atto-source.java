@@ -2,8 +2,8 @@ package dev.oreslang.runtime;
 
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /** Host completion protocol self-test; not Oreslang guest Future lowering. */
@@ -11,397 +11,349 @@ public final class IpcReceiptCompletionBridgeSelfTest {
     private IpcReceiptCompletionBridgeSelfTest() { }
     private static int checks;
 
+    private record BoundBridge(
+            IpcReceiptCompletionBridge bridge,
+            Object owner,
+            IpcReceiptCorrelation.Envelope epoch,
+            long generation) {
+        CompletionStage<IpcReceiptCorrelation.Stage> admit(
+                IpcReceiptCorrelation.Envelope message) {
+            return bridge.admitAndCommit(owner, message, generation);
+        }
+
+        void accept(
+                IpcReceiptCorrelation.Envelope message,
+                IpcReceiptCorrelation.Stage stage) {
+            bridge.acceptVerified(owner, message, generation, stage);
+        }
+
+        int lost() {
+            return bridge.transportLost(owner, epoch, generation);
+        }
+    }
+
     private static IpcReceiptCorrelation.Envelope env(long seq, String session) {
         return new IpcReceiptCorrelation.Envelope(
                 "tenant", "sender", "worker", session, "a".repeat(64),
                 1, 2, 3, 4, seq, seq);
     }
+
+    private static BoundBridge bound(
+            int capacity,
+            IpcReceiptCorrelation.Envelope epoch,
+            long generation) {
+        var bridge = new IpcReceiptCompletionBridge(capacity);
+        Object owner = new Object();
+        bridge.claimPhysicalTransport(owner, epoch, generation);
+        return new BoundBridge(bridge, owner, epoch, generation);
+    }
+
     private static void check(boolean truth) {
         ++checks;
-        if (!truth) throw new AssertionError("host completion correlation violated");
+        if (!truth) {
+            throw new AssertionError("host completion correlation violated");
+        }
     }
+
     private static void denied(Runnable attempt) {
-        try { attempt.run(); }
-        catch (IllegalArgumentException | IllegalStateException expected) {
+        try {
+            attempt.run();
+        } catch (IllegalArgumentException | IllegalStateException expected) {
             ++checks;
             return;
         }
         throw new AssertionError("invalid receipt transition succeeded");
     }
+
     private static IpcReceiptCorrelation.Stage result(
             CompletionStage<IpcReceiptCorrelation.Stage> stage) {
         return stage.toCompletableFuture().join();
     }
 
     public static void main(String[] args) throws InterruptedException {
-        // The bridge is host-side state. Actor carriers cannot enter any
-        // operation that may contend on its gate, including diagnostic reads.
-        var carrierBridge = new IpcReceiptCompletionBridge(2);
-        var carrierEnvelope = env(1, "carrier-bridge");
-        var carrierFuture = carrierBridge.admit(carrierEnvelope);
-        var carrierBindingBridge = new IpcReceiptCompletionBridge(1);
-        var carrierBindingEnvelope = env(1, "carrier-binding");
-        Object carrierOwner = new Object();
-        RuntimeBlockingGuard.enterActorCarrier();
-        try {
-            denied(() -> carrierBridge.admit(env(2, "carrier-bridge")));
-            denied(() -> carrierBridge.commitDispatch(carrierEnvelope));
-            denied(() -> carrierBridge.acceptVerified(
-                    carrierEnvelope, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED));
-            denied(() -> carrierBridge.rejectBeforeRemote(carrierEnvelope));
-            denied(() -> carrierBridge.transportLost(carrierEnvelope));
-            denied(carrierBridge::counters);
-            denied(carrierBridge::invariant);
-            denied(() -> carrierBindingBridge.claimPhysicalTransport(
-                    carrierOwner, carrierBindingEnvelope, 77));
-        } finally {
-            RuntimeBlockingGuard.exitActorCarrier();
+        // The bridge is host-only from initial physical binding onward.
+        {
+            var bridge = new IpcReceiptCompletionBridge(2);
+            var epoch = env(1, "carrier-bridge");
+            Object owner = new Object();
+            RuntimeBlockingGuard.enterActorCarrier();
+            try {
+                denied(() -> bridge.claimPhysicalTransport(owner, epoch, 77));
+                denied(bridge::counters);
+                denied(bridge::invariant);
+            } finally {
+                RuntimeBlockingGuard.exitActorCarrier();
+            }
+
+            bridge.claimPhysicalTransport(owner, epoch, 77);
+            RuntimeBlockingGuard.enterActorCarrier();
+            try {
+                denied(() -> bridge.admitAndCommit(owner, epoch, 77));
+                denied(() -> bridge.acceptVerified(
+                        owner, epoch, 77,
+                        IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED));
+                denied(() -> bridge.transportLost(owner, epoch, 77));
+                denied(bridge::counters);
+                denied(bridge::invariant);
+            } finally {
+                RuntimeBlockingGuard.exitActorCarrier();
+            }
+            check(bridge.counters().equals(
+                    new IpcReceiptCorrelation.Counters(0, 0)));
+            check(bridge.invariant());
         }
-        check(!carrierFuture.toCompletableFuture().isDone());
-        check(carrierBridge.counters().equals(
-                new IpcReceiptCorrelation.Counters(1, 1)));
-        carrierBridge.rejectBeforeRemote(carrierEnvelope);
-        check(result(carrierFuture)
-                == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
-        carrierBindingBridge.claimPhysicalTransport(
-                carrierOwner, carrierBindingEnvelope, 77);
-        check(carrierBridge.invariant());
 
-        var gate = new IpcReceiptCompletionBridge(3);
-        var one = env(1, "old");
-        var two = env(2, "new");
-        var first = gate.admit(one);
-        var second = gate.admit(two);
-        check(!first.toCompletableFuture().isDone());
-        denied(() -> gate.acceptVerified(
-                one, IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
-        check(!first.toCompletableFuture().isDone());
-        denied(() -> gate.acceptVerified(one, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED));
-        check(!first.toCompletableFuture().isDone());
-        gate.commitDispatch(one);
-        denied(() -> gate.commitDispatch(one));
-        denied(() -> gate.rejectBeforeRemote(one));
-        gate.acceptVerified(one, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
-        denied(() -> gate.acceptVerified(
-                one, IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
-        check(!first.toCompletableFuture().isDone());
-        check(gate.invariant());
-        denied(() -> gate.acceptVerified(two,
-                IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE));
-        check(!second.toCompletableFuture().isDone());
-        gate.rejectBeforeRemote(two);
-        check(result(second) == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
-        denied(() -> gate.rejectBeforeRemote(one));
-        check(!first.toCompletableFuture().isDone());
-        check(gate.transportLost(one) == 1);
-        check(result(first) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
-        check(gate.transportLost(one) == 0);
-        check(gate.invariant());
-        denied(() -> gate.acceptVerified(one, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED));
+        // Physical binding is irreversible and exact over owner identity,
+        // logical epoch and physical generation.
+        {
+            var epoch = env(1, "bound");
+            var bridge = new IpcReceiptCompletionBridge(2);
+            Object owner = new Object();
+            Object foreignOwner = new Object();
+            bridge.claimPhysicalTransport(owner, epoch, 33);
+            denied(() -> bridge.claimPhysicalTransport(
+                    foreignOwner, epoch, 34));
 
-        // Transport loss before dispatch commitment is definitive: the
-        // publication fence never opened, so this message was never sent.
-        var preDispatchLoss = new IpcReceiptCompletionBridge(1);
-        var preDispatchEnvelope = env(1, "pre-dispatch-loss");
-        var preDispatchFuture = preDispatchLoss.admit(preDispatchEnvelope);
-        check(preDispatchLoss.transportLost(preDispatchEnvelope) == 1);
-        check(result(preDispatchFuture)
-                == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
-        check(preDispatchLoss.invariant());
+            var wrongEpoch = new IpcReceiptCorrelation.Envelope(
+                    "tenant", "sender", "worker", "bound", "a".repeat(64),
+                    1, 2, 4, 5, 1, 1);
+            denied(() -> bridge.admitAndCommit(foreignOwner, epoch, 33));
+            denied(() -> bridge.admitAndCommit(owner, epoch, 32));
+            denied(() -> bridge.admitAndCommit(owner, wrongEpoch, 33));
 
-        // A production-bound bridge is irreversibly scoped to one opaque
-        // physical owner + full logical epoch + physical generation. Bound
-        // publication is atomic: there is no split admit/commit/reject window.
-        var boundBridge = new IpcReceiptCompletionBridge(2);
-        var boundEpoch = env(1, "bound");
-        Object boundOwner = new Object();
-        Object foreignOwner = new Object();
-        boundBridge.claimPhysicalTransport(boundOwner, boundEpoch, 33);
-        denied(() -> boundBridge.claimPhysicalTransport(
-                foreignOwner, boundEpoch, 34));
-        denied(() -> boundBridge.admit(boundEpoch));
-        var wrongBoundEpoch = new IpcReceiptCorrelation.Envelope(
-                "tenant", "sender", "worker", "bound", "a".repeat(64),
-                1, 2, 4, 5, 1, 1);
-        denied(() -> boundBridge.admitAndCommit(
-                foreignOwner, boundEpoch, 33));
-        denied(() -> boundBridge.admitAndCommit(
-                boundOwner, boundEpoch, 32));
-        denied(() -> boundBridge.admitAndCommit(
-                boundOwner, wrongBoundEpoch, 33));
-        var boundFuture = boundBridge.admitAndCommit(
-                boundOwner, boundEpoch, 33);
-        denied(() -> boundBridge.commitDispatch(boundEpoch));
-        denied(() -> boundBridge.acceptVerified(
-                boundEpoch, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED));
-        denied(() -> boundBridge.acceptVerified(
-                foreignOwner, boundEpoch, 33,
-                IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED));
-        boundBridge.acceptVerified(
-                boundOwner, boundEpoch, 33,
-                IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
-        boundBridge.acceptVerified(
-                boundOwner, boundEpoch, 33,
-                IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
-        check(result(boundFuture) == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
-        check(boundBridge.invariant());
+            var future = bridge.admitAndCommit(owner, epoch, 33);
+            denied(() -> bridge.admitAndCommit(owner, epoch, 33));
+            denied(() -> bridge.acceptVerified(
+                    foreignOwner, epoch, 33,
+                    IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED));
+            denied(() -> bridge.acceptVerified(
+                    owner, epoch, 32,
+                    IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED));
+            denied(() -> bridge.acceptVerified(
+                    owner, wrongEpoch, 33,
+                    IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED));
+            denied(() -> bridge.acceptVerified(
+                    owner, epoch, 33,
+                    IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
+            check(!future.toCompletableFuture().isDone());
 
-        var boundLost = new IpcReceiptCompletionBridge(1);
-        var lostEpoch = env(1, "bound-loss");
-        Object lostOwner = new Object();
-        boundLost.claimPhysicalTransport(lostOwner, lostEpoch, 44);
-        var lostFuture = boundLost.admitAndCommit(lostOwner, lostEpoch, 44);
-        denied(() -> boundLost.transportLost(lostEpoch));
-        denied(() -> boundLost.transportLost(new Object(), lostEpoch, 44));
-        denied(() -> boundLost.transportLost(lostOwner, lostEpoch, 45));
-        check(boundLost.transportLost(lostOwner, lostEpoch, 44) == 1);
-        check(result(lostFuture) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
-        check(boundLost.invariant());
+            bridge.acceptVerified(
+                    owner, epoch, 33,
+                    IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+            bridge.acceptVerified(
+                    owner, epoch, 33,
+                    IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(result(future)
+                    == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(bridge.invariant());
+        }
 
-        // Trusted pre-remote rejection is terminal exactly once and all
-        // dependent callbacks run outside the internal host correlation gate.
-        var localDenial = new IpcReceiptCompletionBridge(1);
-        var deniedEnvelope = env(1, "local");
-        var rejected = localDenial.admit(deniedEnvelope);
-        AtomicReference<Throwable> localCallbackFailure = new AtomicReference<>();
-        AtomicInteger localCallbackCount = new AtomicInteger();
-        rejected.thenAccept(stage -> {
-            CountDownLatch reentered = new CountDownLatch(1);
-            Thread probe = new Thread(() -> {
+        // Bounded admission is still enforced after atomic dispatch commitment.
+        {
+            var firstMessage = env(1, "capacity");
+            var secondMessage = env(2, "capacity");
+            var transport = bound(1, firstMessage, 40);
+            var first = transport.admit(firstMessage);
+            denied(() -> transport.admit(secondMessage));
+            check(!first.toCompletableFuture().isDone());
+            check(transport.lost() == 1);
+            check(result(first) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(transport.bridge().counters().equals(
+                    new IpcReceiptCorrelation.Counters(0, 0)));
+            check(transport.bridge().invariant());
+        }
+
+        // Completion callbacks execute outside the bridge gate and may safely
+        // re-enter host diagnostics from another thread.
+        {
+            var message = env(1, "terminal-callback");
+            var transport = bound(1, message, 50);
+            var future = transport.admit(message);
+            AtomicInteger observed = new AtomicInteger();
+            AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+            future.thenAccept(stage -> {
+                CountDownLatch probeDone = new CountDownLatch(1);
+                Thread probe = new Thread(() -> {
+                    try {
+                        if (stage == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED
+                                && transport.bridge().invariant()) {
+                            observed.incrementAndGet();
+                        }
+                    } catch (Throwable failure) {
+                        callbackFailure.compareAndSet(null, failure);
+                    } finally {
+                        probeDone.countDown();
+                    }
+                }, "ipc-completion-reentry-probe");
+                probe.start();
                 try {
-                    if (stage == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE
-                            && localDenial.invariant()) localCallbackCount.incrementAndGet();
-                } catch (Throwable error) {
-                    localCallbackFailure.compareAndSet(null, error);
-                } finally {
-                    reentered.countDown();
+                    if (!probeDone.await(2, TimeUnit.SECONDS)) {
+                        callbackFailure.compareAndSet(
+                                null,
+                                new AssertionError(
+                                        "terminal callback held receipt bridge gate"));
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    callbackFailure.compareAndSet(null, interrupted);
                 }
             });
-            probe.start();
-            try {
-                if (!reentered.await(2, TimeUnit.SECONDS)) {
-                    localCallbackFailure.compareAndSet(null,
-                            new AssertionError("local rejection callback held bridge gate"));
-                }
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                localCallbackFailure.compareAndSet(null, interrupted);
-            }
-        });
-        denied(() -> localDenial.acceptVerified(deniedEnvelope,
-                IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE));
-        check(!rejected.toCompletableFuture().isDone());
-        localDenial.rejectBeforeRemote(deniedEnvelope);
-        check(result(rejected) == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
-        check(localCallbackFailure.get() == null);
-        check(localCallbackCount.get() == 1);
-        check(localDenial.invariant());
-        denied(() -> localDenial.rejectBeforeRemote(deniedEnvelope));
-        denied(() -> localDenial.acceptVerified(deniedEnvelope,
-                IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED));
-        check(localDenial.transportLost(deniedEnvelope) == 0);
 
-        // Same textual transport session is not sufficient authority:
-        // delayed EOF for the old route must leave the new epoch's pending
-        // future and one transport credit untouched.
-        var reusedBridge = new IpcReceiptCompletionBridge(2);
-        var previousEpoch = env(1, "reused");
-        var latestEpoch = new IpcReceiptCorrelation.Envelope(
-                "tenant", "sender", "worker", "reused", "a".repeat(64),
-                1, 2, 4, 5, 2, 2);
-        var previousFuture = reusedBridge.admit(previousEpoch);
-        var latestFuture = reusedBridge.admit(latestEpoch);
-        reusedBridge.commitDispatch(previousEpoch);
-        reusedBridge.commitDispatch(latestEpoch);
-        check(reusedBridge.transportLost(previousEpoch) == 1);
-        check(result(previousFuture) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
-        check(!latestFuture.toCompletableFuture().isDone());
-        check(reusedBridge.counters().equals(new IpcReceiptCorrelation.Counters(1, 1)));
-        check(reusedBridge.transportLost(previousEpoch) == 0);
-        reusedBridge.acceptVerified(latestEpoch, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
-        reusedBridge.acceptVerified(latestEpoch, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
-        check(result(latestFuture) == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
-        check(reusedBridge.invariant());
+            transport.accept(
+                    message, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+            transport.accept(
+                    message, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(result(future)
+                    == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(callbackFailure.get() == null);
+            check(observed.get() == 1);
+            check(transport.bridge().invariant());
+        }
 
-        var onTerminal = new IpcReceiptCompletionBridge(1);
-        var three = env(1, "session");
-        var completion = onTerminal.admit(three);
-        AtomicInteger observed = new AtomicInteger();
-        AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
-        completion.thenAccept(state -> {
-            // If CompletableFuture.complete() runs inside the correlation
-            // monitor, the probe thread cannot re-enter before the callback
-            // returns. Ensure a separate carrier actually observes readiness.
-            CountDownLatch probeDone = new CountDownLatch(1);
-            Thread probe = new Thread(() -> {
-                try {
-                    if (state == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED
-                            && onTerminal.invariant()) observed.incrementAndGet();
-                } catch (Throwable error) {
-                    callbackFailure.compareAndSet(null, error);
-                } finally {
-                    probeDone.countDown();
-                }
-            });
-            probe.start();
-            try {
-                if (!probeDone.await(2, TimeUnit.SECONDS)) {
-                    callbackFailure.compareAndSet(null,
-                            new AssertionError("callback blocked on correlation lock"));
-                }
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                callbackFailure.compareAndSet(null, interrupted);
-            }
-        });
-        onTerminal.commitDispatch(three);
-        onTerminal.acceptVerified(three, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
-        onTerminal.acceptVerified(three, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
-        check(result(completion) == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
-        check(callbackFailure.get() == null);
-        check(observed.get() == 1);
-        check(onTerminal.invariant());
+        // Transport loss after atomic dispatch commitment is always uncertain;
+        // there is no longer an exposed LOCAL_ADMITTED/pre-dispatch bridge state.
+        {
+            var message = env(1, "loss");
+            var transport = bound(1, message, 60);
+            var future = transport.admit(message);
+            denied(() -> transport.bridge().transportLost(
+                    new Object(), message, 60));
+            denied(() -> transport.bridge().transportLost(
+                    transport.owner(), message, 61));
+            check(transport.lost() == 1);
+            check(result(future) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(transport.lost() == 0);
+            check(transport.bridge().invariant());
+        }
 
-        // A failure after the irreversible dispatch claim has uncertain
-        // remote visibility; it must never complete as "never sent".
-        var afterClaim = new IpcReceiptCompletionBridge(1);
-        var claimedMessage = env(1, "claim");
-        var uncertain = afterClaim.admit(claimedMessage);
-        afterClaim.commitDispatch(claimedMessage);
-        denied(() -> afterClaim.rejectBeforeRemote(claimedMessage));
-        denied(() -> afterClaim.acceptVerified(claimedMessage,
-                IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN));
-        check(!uncertain.toCompletableFuture().isDone());
-        check(afterClaim.counters().transportCredits() == 1);
-        check(afterClaim.transportLost(claimedMessage) == 1);
-        check(result(uncertain) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
-        check(afterClaim.counters().pending() == 0);
-        check(afterClaim.counters().transportCredits() == 0);
+        // Textual session reuse is not authority. A route/capability upgrade
+        // requires a fresh bridge/owner; the old physical bridge rejects it.
+        {
+            var previous = env(1, "reused");
+            var latest = new IpcReceiptCorrelation.Envelope(
+                    "tenant", "sender", "worker", "reused", "a".repeat(64),
+                    1, 2, 4, 5, 2, 2);
 
-        // A local session loss must fence a dispatch claim, not merely
-        // remove the future while allowing a late writer to reopen it.
-        for (int trial = 0; trial < 256; ++trial) {
-            var closing = new IpcReceiptCompletionBridge(1);
-            var message = env(1, "closed");
-            var future = closing.admit(message);
+            var oldTransport = bound(1, previous, 70);
+            var oldFuture = oldTransport.admit(previous);
+            denied(() -> oldTransport.admit(latest));
+            check(oldTransport.lost() == 1);
+            check(result(oldFuture)
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+
+            var newTransport = bound(1, latest, 70);
+            var newFuture = newTransport.admit(latest);
+            newTransport.accept(
+                    latest, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+            newTransport.accept(
+                    latest, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(result(newFuture)
+                    == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(oldTransport.bridge().invariant());
+            check(newTransport.bridge().invariant());
+        }
+
+        // ACK and physical loss race: loss is authoritative terminal state.
+        for (int trial = 0; trial < 512; ++trial) {
+            var message = env(1, "ack-loss-" + trial);
+            var transport = bound(1, message, trial + 100L);
+            var future = transport.admit(message);
             CountDownLatch fire = new CountDownLatch(1);
-            AtomicInteger commits = new AtomicInteger();
             AtomicInteger losses = new AtomicInteger();
             AtomicReference<Throwable> problem = new AtomicReference<>();
-            Thread publisher = new Thread(() -> {
-                try {
-                    fire.await();
-                    closing.commitDispatch(message);
-                    commits.incrementAndGet();
-                } catch (IllegalArgumentException expectedRetired) {
-                    // EOF won the correlation ledger.
-                } catch (Throwable failure) { problem.compareAndSet(null, failure); }
-            });
-            Thread eof = new Thread(() -> {
-                try {
-                    fire.await();
-                    losses.addAndGet(closing.transportLost(message));
-                } catch (Throwable failure) { problem.compareAndSet(null, failure); }
-            });
-            publisher.start();
-            eof.start();
-            fire.countDown();
-            publisher.join();
-            eof.join();
-            check(problem.get() == null);
-            check(commits.get() == 0 || commits.get() == 1);
-            check(losses.get() == 1);
-            check(result(future) == (commits.get() == 1
-                    ? IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN
-                    : IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE));
-            check(closing.counters().pending() == 0);
-            check(closing.counters().transportCredits() == 0);
-            check(closing.invariant());
-        }
 
-        // Physical transmission must begin only after commitDispatch,
-        // which races atomically with local never-sent rejection. Regardless
-        // of which wins, there is exactly one terminal host completion.
-        for (int trial = 0; trial < 512; ++trial) {
-            var competing = new IpcReceiptCompletionBridge(1);
-            var message = env(1, "raced");
-            var future = competing.admit(message);
-            CountDownLatch fire = new CountDownLatch(1);
-            AtomicInteger committed = new AtomicInteger();
-            AtomicInteger preRejected = new AtomicInteger();
-            AtomicReference<Throwable> problem = new AtomicReference<>();
-            Thread publisher = new Thread(() -> {
-                try {
-                    fire.await();
-                    competing.commitDispatch(message);
-                    committed.incrementAndGet();
-                } catch (IllegalArgumentException expectedLost) {
-                    // Reject-before-publish won the gate.
-                } catch (Throwable failure) { problem.compareAndSet(null, failure); }
-            });
-            Thread deny = new Thread(() -> {
-                try {
-                    fire.await();
-                    competing.rejectBeforeRemote(message);
-                    preRejected.incrementAndGet();
-                } catch (IllegalArgumentException expectedCommitted) {
-                    // The dispatch fence already won.
-                } catch (Throwable failure) { problem.compareAndSet(null, failure); }
-            });
-            publisher.start();
-            deny.start();
-            fire.countDown();
-            publisher.join();
-            deny.join();
-            check(problem.get() == null);
-            check(committed.get() + preRejected.get() == 1);
-            check(competing.invariant());
-            if (committed.get() == 1) {
-                check(!future.toCompletableFuture().isDone());
-                check(competing.counters().transportCredits() == 1);
-                check(competing.transportLost(message) == 1);
-                check(result(future) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
-            } else {
-                check(result(future) == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
-                denied(() -> competing.commitDispatch(message));
-                check(competing.transportLost(message) == 0);
-            }
-            check(competing.invariant());
-            check(competing.counters().pending() == 0);
-            check(competing.counters().transportCredits() == 0);
-        }
-
-        for (int trial = 0; trial < 512; ++trial) {
-            var racing = new IpcReceiptCompletionBridge(1);
-            var message = env(1, "session");
-            var future = racing.admit(message);
-            racing.commitDispatch(message);
-            CountDownLatch start = new CountDownLatch(1);
-            AtomicInteger lost = new AtomicInteger();
-            AtomicReference<Throwable> problem = new AtomicReference<>();
             Thread ack = new Thread(() -> {
                 try {
-                    start.await();
-                    racing.acceptVerified(message, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
-                } catch (IllegalArgumentException expectedStale) {
-                    // EOF won the race.
-                } catch (Throwable e) { problem.compareAndSet(null, e); }
-            });
-            Thread eof = new Thread(() -> {
+                    fire.await();
+                    transport.accept(
+                            message, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+                } catch (IllegalArgumentException expectedRetired) {
+                    // Physical loss won.
+                } catch (Throwable failure) {
+                    problem.compareAndSet(null, failure);
+                }
+            }, "ipc-ack-racer");
+            Thread loss = new Thread(() -> {
                 try {
-                    start.await();
-                    lost.addAndGet(racing.transportLost(message));
-                } catch (Throwable e) { problem.compareAndSet(null, e); }
-            });
-            ack.start(); eof.start(); start.countDown();
-            ack.join(); eof.join();
+                    fire.await();
+                    losses.addAndGet(transport.lost());
+                } catch (Throwable failure) {
+                    problem.compareAndSet(null, failure);
+                }
+            }, "ipc-loss-racer");
+
+            ack.start();
+            loss.start();
+            fire.countDown();
+            ack.join();
+            loss.join();
+
             check(problem.get() == null);
-            check(lost.get() == 1);
-            check(result(future) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
-            check(racing.invariant());
-            check(racing.counters().pending() == 0);
+            check(losses.get() == 1);
+            check(result(future)
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(transport.bridge().counters().equals(
+                    new IpcReceiptCorrelation.Counters(0, 0)));
+            check(transport.bridge().invariant());
         }
+
+        // Terminal receipt and physical loss race: exactly one terminal result
+        // wins, and the completion table/receipt table remain in parity.
+        for (int trial = 0; trial < 512; ++trial) {
+            var message = env(1, "terminal-loss-" + trial);
+            var transport = bound(1, message, trial + 1000L);
+            var future = transport.admit(message);
+            transport.accept(
+                    message, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+
+            CountDownLatch fire = new CountDownLatch(1);
+            AtomicInteger terminalWins = new AtomicInteger();
+            AtomicInteger lossWins = new AtomicInteger();
+            AtomicReference<Throwable> problem = new AtomicReference<>();
+
+            Thread terminal = new Thread(() -> {
+                try {
+                    fire.await();
+                    transport.accept(
+                            message,
+                            IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+                    terminalWins.incrementAndGet();
+                } catch (IllegalArgumentException expectedRetired) {
+                    // Loss won.
+                } catch (Throwable failure) {
+                    problem.compareAndSet(null, failure);
+                }
+            }, "ipc-terminal-racer");
+            Thread loss = new Thread(() -> {
+                try {
+                    fire.await();
+                    if (transport.lost() == 1) {
+                        lossWins.incrementAndGet();
+                    }
+                } catch (Throwable failure) {
+                    problem.compareAndSet(null, failure);
+                }
+            }, "ipc-terminal-loss-racer");
+
+            terminal.start();
+            loss.start();
+            fire.countDown();
+            terminal.join();
+            loss.join();
+
+            check(problem.get() == null);
+            check(terminalWins.get() + lossWins.get() == 1);
+            var outcome = result(future);
+            check(outcome == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED
+                    || outcome == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check((outcome == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED)
+                    == (terminalWins.get() == 1));
+            check(transport.bridge().counters().equals(
+                    new IpcReceiptCorrelation.Counters(0, 0)));
+            check(transport.bridge().invariant());
+        }
+
         System.out.println("JAVA_IPC_HOST_COMPLETIONS_PASS assertions=" + checks
-                + " races=512");
+                + " races=1024");
     }
 }
