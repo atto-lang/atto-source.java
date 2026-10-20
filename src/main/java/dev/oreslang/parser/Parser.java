@@ -2481,6 +2481,9 @@ public final class Parser {
             }
             if (match(STRUCT)) {
                 initializer = parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
+            } else if (matchContextualIdentifier("record")) {
+                // Explicit alias capture remains available for structural records.
+                initializer = parseObjectLiteral(Ast.ObjectKind.INFERRED_RECORD, List.of());
             } else if (matchContextualKeyword("tuple")) {
                 consume(LPAREN, "expected '(' after infer<T> tuple");
                 List<Ast.Expr> items = parseArgumentsUntil(RPAREN);
@@ -2490,7 +2493,7 @@ public final class Parser {
                 }
                 initializer = new Ast.TupleExpr(items);
             } else {
-                throw error(peek(), "infer<T> requires a struct {...} or tuple (...) literal");
+                throw error(peek(), "infer<T> requires a struct {...}, record {...}, or tuple (...) literal");
             }
         } else {
             initializer = parseExpression();
@@ -3622,10 +3625,20 @@ public final class Parser {
                 && reservedCallableNameFollowedByInvocation(current)) {
             return new Ast.NameExpr(advance().lexeme());
         }
-        if (isContextualIdentifier("infer") && checkNext(STRUCT)) {
+        if (isContextualIdentifier("infer")
+                && (checkNext(STRUCT)
+                    || (checkNext(IDENT) && current + 1 < tokens.size()
+                        && tokens.get(current + 1).lexeme().equals("record")))) {
             advance(); // contextual infer
-            consume(STRUCT, "expected 'struct' after infer");
-            return parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
+            if (match(STRUCT)) {
+                return parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
+            }
+            consumeContextualIdentifier("record", "expected 'record' after infer");
+            return parseObjectLiteral(Ast.ObjectKind.INFERRED_RECORD, List.of());
+        }
+        if (isContextualIdentifier("record") && checkNext(LBRACE)) {
+            advance(); // contextual record
+            return parseObjectLiteral(Ast.ObjectKind.RECORD, List.of());
         }
         if (isContextualIdentifier("tuple") && checkNext(LPAREN)) {
             advance();
@@ -3723,10 +3736,14 @@ public final class Parser {
     private Ast.ObjectExpr parseObjectLiteral(
             Ast.ObjectKind kind,
             List<Ast.StructFieldSpec> declaredFields) {
+        boolean plainRecord = kind == Ast.ObjectKind.RECORD;
         boolean inferredStruct = kind == Ast.ObjectKind.INFERRED_STRUCT;
+        boolean inferredRecord = kind == Ast.ObjectKind.INFERRED_RECORD;
         boolean explicitStruct = kind == Ast.ObjectKind.EXPLICIT_STRUCT;
-        consume(LBRACE, inferredStruct
-                ? "expected '{' after infer struct"
+        consume(LBRACE, plainRecord
+                ? "expected '{' after record"
+                : inferredStruct ? "expected '{' after infer struct"
+                : inferredRecord ? "expected '{' after infer record"
                 : "expected '{' after explicit struct shape");
         List<Ast.ObjectField> fields = new ArrayList<>();
         if (!check(RBRACE)) {
@@ -3743,6 +3760,7 @@ public final class Parser {
         }
         consume(RBRACE, explicitStruct
                 ? "expected '}' after explicit struct initializer"
+                : inferredRecord ? "expected '}' after infer record literal"
                 : "expected '}' after infer struct literal");
         return new Ast.ObjectExpr(fields, kind, declaredFields);
     }

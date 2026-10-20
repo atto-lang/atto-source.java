@@ -10,6 +10,8 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicIntegerArray;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.IntFunction;
 
 /** Stable actor lanes. CPU binding, when requested, is mandatory rather than a hint. */
@@ -18,6 +20,9 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     private final int[] cpus;
     private final Semaphore queueSlots;
     private final int queueCapacity;
+    private final AtomicIntegerArray queuedByLane;
+    private final int softSpillThreshold;
+    private final AtomicLong spills = new AtomicLong();
     private final AtomicInteger nextLane = new AtomicInteger();
     private final AtomicInteger nextHostLane = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -29,6 +34,8 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         for (int cpu : cpus) NativeCarrierExecutor.requireAllowedCpu(cpu);
         this.queueCapacity = capacity;
         this.queueSlots = new Semaphore(capacity);
+        this.queuedByLane = new AtomicIntegerArray(parallelism);
+        this.softSpillThreshold = Math.max(1, capacity / parallelism);
         var created = new ArrayList<ExecutorService>();
         try {
             for (int i = 0; i < parallelism; i++) created.add(Objects.requireNonNull(factory.apply(i)));
@@ -126,6 +133,29 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     }
     int cpuForLane(int lane) { return cpus.length == 0 ? -1 : cpus[lane % cpus.length]; }
     boolean nativeCarriers() { return lanes.stream().allMatch(NativeCarrierExecutor.class::isInstance); }
+    long softSpills() { return spills.get(); }
+
+    private int selectLane(int preferred) {
+        if (preferred < 0 || preferred >= lanes.size()) {
+            throw new IllegalArgumentException("invalid actor dispatch lane");
+        }
+        // Explicit CPU binding is strict, not a best-effort migration hint.
+        if (cpus.length != 0 || queuedByLane.get(preferred) < softSpillThreshold) {
+            return preferred;
+        }
+        int best = preferred;
+        int minimum = queuedByLane.get(preferred);
+        for (int i = 0; i < lanes.size(); i++) {
+            int queued = queuedByLane.get(i);
+            if (queued < minimum) {
+                minimum = queued;
+                best = i;
+            }
+        }
+        return best;
+    }
+
+
     int startedCarrierCount() {
         int count = 0;
         for (var lane : lanes) {
@@ -180,36 +210,67 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
             throw new IllegalArgumentException("actor lane outside configured range");
         if (closed.get() || !queueSlots.tryAcquire())
             throw new RejectedExecutionException("actor lane queue unavailable");
-        QueuedTurn task = new QueuedTurn(command);
+        final int target;
+        try {
+            // An authenticated warm-lane NIO notification is not actor
+            // placement and MUST NOT soft-spill into a cold worker, because
+            // selector admission may never start a native carrier.
+            target = noBootstrap ? lane : selectLane(lane);
+        } catch (RuntimeException | Error failure) {
+            queueSlots.release();
+            throw failure;
+        }
+        QueuedTurn task = new QueuedTurn(command, target);
+        queuedByLane.incrementAndGet(target);
         try {
             if (closed.get()) throw new RejectedExecutionException("actor lanes closed");
-            ExecutorService executor = lanes.get(lane);
+            ExecutorService executor = lanes.get(target);
             if (noBootstrap && executor instanceof NativeCarrierExecutor nativeLane)
                 nativeLane.executeWithoutBootstrap(task);
             else if (noBootstrap && executor instanceof AdaptiveCarrierExecutor javaLane)
                 javaLane.executeWithoutCarrierGrowth(task);
             else if (noBootstrap && NioReadinessGroup.onReactorThread())
-                // A generic ExecutorService (including a regular
-                // ThreadPoolExecutor) cannot prove that execute() will not
-                // synchronously invoke ThreadFactory/Thread.start or run
-                // callbacks inline. An unverified host lane is not a legal
-                // selector submission destination.
+                // Generic executors cannot prove the absence of Thread.start
+                // or inline callback execution from a selector lane.
                 throw new RejectedExecutionException(
                         "reactor completion requires a verified no-bootstrap carrier lane");
             else
                 executor.execute(task);
+            if (target != lane) spills.incrementAndGet();
         } catch (RuntimeException | Error failure) {
-            task.releaseSlot();
+            task.rejectAdmission();
             throw failure;
         }
     }
 
     private final class QueuedTurn implements Runnable {
         private final Runnable command;
+        private final int assignedLane;
         private final AtomicBoolean released = new AtomicBoolean();
-        private QueuedTurn(Runnable command) { this.command = command; }
-        private void releaseSlot() { if (released.compareAndSet(false, true)) queueSlots.release(); }
+        // 0=pending, 1=entered, 2=rejected. The task itself is the lock:
+        // no additional per-dispatch claim allocation in the actor hot path.
+        private int claim;
+        private QueuedTurn(Runnable command, int assignedLane) {
+            this.command = command;
+            this.assignedLane = assignedLane;
+        }
+        private void releaseSlot() {
+            if (released.compareAndSet(false, true)) {
+                queuedByLane.decrementAndGet(assignedLane);
+                queueSlots.release();
+            }
+        }
+        private void rejectAdmission() {
+            synchronized (this) {
+                if (claim == 0) claim = 2;
+            }
+            releaseSlot();
+        }
         @Override public void run() {
+            synchronized (this) {
+                if (claim != 0) return;
+                claim = 1;
+            }
             releaseSlot();
             command.run();
         }
@@ -222,7 +283,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         var abandoned = new ArrayList<Runnable>();
         for (var lane : lanes) for (var pending : lane.shutdownNow()) {
             QueuedTurn task = (QueuedTurn) pending;
-            task.releaseSlot();
+            task.rejectAdmission();
             abandoned.add(task.command);
         }
         return List.copyOf(abandoned);

@@ -42,6 +42,8 @@ public final class OwnershipChecker {
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    /** Only bindings admitted as new short aliases by the type checker. */
+    private final Map<Ast.BindingStmt, String> validatedShortAliases;
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -49,11 +51,25 @@ public final class OwnershipChecker {
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
 
     private OwnershipChecker(Ast.Program program) {
+        this(program, Map.of());
+    }
+
+    private OwnershipChecker(
+            Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
+        // Preserve AST declaration identity: equality-based maps can merge
+        // separate bindings with identical syntax in different scopes.
+        this.validatedShortAliases = new IdentityHashMap<>(validatedShortAliases);
         index(program);
     }
 
     public static Ast.Program check(Ast.Program program) {
-        OwnershipChecker checker = new OwnershipChecker(program);
+        return check(program, Map.of());
+    }
+
+    /** Called only after TypeChecker has proved which short forms create aliases. */
+    public static Ast.Program check(
+            Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
+        OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
         checker.validate(program);
         return program;
     }
@@ -61,10 +77,16 @@ public final class OwnershipChecker {
     /** Reuse only public, explicitly linked class layouts for cross-file loans. */
     public static Ast.Program checkWithImportedClasses(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses) {
+        return checkWithImportedClasses(program, linkedClasses, Map.of());
+    }
+
+    public static Ast.Program checkWithImportedClasses(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<Ast.BindingStmt, String> validatedShortAliases) {
         if (linkedClasses == null) {
             throw new IllegalArgumentException("linked public classes cannot be null");
         }
-        OwnershipChecker checker = new OwnershipChecker(program);
+        OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
             String name = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
@@ -819,19 +841,48 @@ public final class OwnershipChecker {
 
         boolean readonlyRecord = value.type.isReadonlyRecordType();
         if (readonlyRecord && binding.mutableReferent()) {
-            throw error("infer struct values are closed and readonly; mutable bindings and mutable aliases are forbidden");
+            throw error("readonly structural records cannot gain mutable bindings or aliases");
+        }
+
+        // A whole move-only owner may transfer from a read-only binding into a
+        // new mutable owner. A field/index projection is different: ordinary
+        // projection is an aliasing read and does not invalidate the containing
+        // owner. Therefore a mutable projected alias needs mutable authority at
+        // the projection's receiver/root or it would launder write access
+        // through an immutable alias.
+        if (binding.mutableReferent() && value.kind != ValueKind.COPY) {
+            if (binding.initializer() instanceof Ast.MemberExpr member) {
+                ensureMutableReceiver(member.receiver(), scope, "mutable projected alias");
+            } else if (binding.initializer() instanceof Ast.IndexExpr indexed) {
+                ensureMutableReceiver(indexed.receiver(), scope, "mutable projected alias");
+            }
         }
 
         value = retainBorrowForBinding(value);
         Ast.TypeRef storedType = binding.declaredType() == null ? value.type : binding.declaredType();
-        if (binding.inferredTypeName() != null) {
-            // The fresh type name does not exist at runtime. Preserve the concrete
-            // closed/readonly record or finite tuple for ownership and actor checks.
-            if (value.type.name().equals("$infer$")) {
-                throw error("cannot bind inferred alias '" + binding.inferredTypeName()
-                        + "' to an unknown ownership type");
+        String shortAlias = validatedShortAliases.get(binding);
+        String inferredAlias = binding.inferredTypeName() == null
+                ? shortAlias : binding.inferredTypeName();
+        if (inferredAlias != null) {
+            // The typechecker proves that short syntax creates a fresh alias;
+            // the ownership checker must not reinterpret opaque nominal names
+            // or trust a guess based only on capitalization.
+            if (shortAlias != null
+                    && (binding.inferredTypeName() != null
+                        || binding.kind() != Ast.BindingKind.CONST
+                        || binding.mutableReferent()
+                        || binding.declaredType() == null
+                        || !binding.declaredType().name().equals(shortAlias)
+                        || !(binding.initializer() instanceof Ast.ObjectExpr object
+                             && object.inferredAggregate()))) {
+                throw error("invalid validated short inferred type alias");
             }
-            scope.defineInferredType(binding.inferredTypeName(), value.type);
+            if (value.type.name().equals("$infer$")
+                    || shortAlias != null && !value.type.isClosedAggregateType()) {
+                throw error("cannot bind inferred alias '" + inferredAlias
+                        + "' to an unknown or non-aggregate ownership type");
+            }
+            scope.defineInferredType(inferredAlias, value.type);
             storedType = value.type;
         } else if (binding.declaredType() != null) {
             Ast.TypeRef scoped = scope.lookupInferredType(binding.declaredType().name());
@@ -853,6 +904,12 @@ public final class OwnershipChecker {
                 Origin.LOCAL);
         state.borrowSource = value.borrowSource;
         state.borrowLease = value.borrowLease;
+        if (binding.kind() == Ast.BindingKind.CONST) {
+            Object directSelector = directComputedIndexConstant(binding);
+            state.computedIndexConstant = directSelector != null
+                    ? directSelector
+                    : computedIndexConstant(binding.initializer(), scope);
+        }
         scope.define(binding.name(), state);
     }
 
@@ -993,6 +1050,9 @@ public final class OwnershipChecker {
                             ownershipRoot(place.owner()));
                 }
                 case "take" -> {
+                    if (argument instanceof Ast.IndexExpr) {
+                        throw error("rt take cannot move an indexed projection until projection-level move tracking is available; move the containing owner or use a read/borrow");
+                    }
                     if (argument instanceof Ast.MemberExpr member) {
                         Ast.ClassDecl ownerClass = classOfReceiver(member.receiver(), scope);
                         if (ownerClass != null) {
@@ -1040,7 +1100,16 @@ public final class OwnershipChecker {
             };
         }
         if (expr instanceof Ast.AssignExpr assignment) {
-            checkAssignmentTarget(assignment.target(), scope);
+            boolean directRebind = assignment.target() instanceof Ast.NameExpr;
+            // Runtime assignment is RHS-first. A projection target therefore
+            // must be validated after the RHS: the RHS may move or borrow the
+            // receiver, and a subsequent field/index write must see that state.
+            // Direct name rebinding is the exception because replacing a moved
+            // owner is legal; validate that target before checking the RHS, then
+            // restore usability only after a valid owned replacement exists.
+            if (directRebind) {
+                checkAssignmentTarget(assignment.target(), scope);
+            }
             ValueInfo assigned = checkExpr(assignment.value(), scope, true);
             if (containsMutexGuardType(assigned.type)) {
                 throw error("guard-bearing values cannot be assigned or overwritten; bind them once with val");
@@ -1048,9 +1117,9 @@ public final class OwnershipChecker {
             if (isBorrowValue(assigned)) {
                 throw error("borrowed references cannot be assigned into longer-lived storage; create a fresh lexical borrow binding instead");
             }
-            // The RHS must be checked while a transferred owner is still
-            // marked moved. Only after a valid owned replacement exists may a
-            // rebindable local become usable again.
+            if (!directRebind) {
+                checkAssignmentTarget(assignment.target(), scope);
+            }
             if (assignment.target() instanceof Ast.NameExpr name) {
                 ownershipRoot(requireState(scope, name.name())).moved = false;
             }
@@ -1145,8 +1214,8 @@ public final class OwnershipChecker {
             if (concreteReceiver != null && concreteReceiver.isBorrow()) {
                 concreteReceiver = concreteReceiver.borrowedTarget();
             }
-            if (concreteReceiver != null && concreteReceiver.isRecordType()) {
-                Ast.TypeRef valueType = concreteReceiver.recordMembers().get(member.member());
+            if (concreteReceiver != null && concreteReceiver.isClosedAggregateType()) {
+                Ast.TypeRef valueType = concreteReceiver.aggregateMembers().get(member.member());
                 if (valueType == null) {
                     throw error("unknown record field '" + member.member() + "'");
                 }
@@ -1178,11 +1247,16 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.IndexExpr indexed) {
             ValueInfo receiver = checkExpr(indexed.receiver(), scope, false);
             checkExpr(indexed.index(), scope, false);
-            Ast.TypeRef elementType = collectionElementType(receiver.type);
+            Ast.TypeRef elementType = indexedElementType(indexed, receiver.type, scope);
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
-            if (consuming && isRootedAtActorSelf(indexed.receiver(), scope) && elementKind != ValueKind.COPY) {
+            if (consuming && elementKind != ValueKind.COPY
+                    && isRootedAtActorSelf(indexed.receiver(), scope)) {
                 throw error("cannot move actor-owned indexed state out of its mailbox turn");
             }
+            // Ordinary projection is an aliasing read, not an implicit partial
+            // move. Explicit ownership transfer remains spelled rt take; indexed
+            // rt take stays fail-closed below until projection-level move
+            // tracking can invalidate exactly the selected slot.
             return new ValueInfo(elementType, elementKind, null);
         }
         if (expr instanceof Ast.NewExpr created) {
@@ -1326,9 +1400,10 @@ public final class OwnershipChecker {
                 }
                 if (!object.explicitStruct()) members.put(field.name(), info.type);
             }
-            Ast.TypeRef type = object.inferredStruct()
-                    ? Ast.TypeRef.readonlyRecordType(members)
-                    : Ast.TypeRef.recordType(members);
+            Ast.TypeRef type;
+            if (object.structuralRecord()) type = Ast.TypeRef.readonlyRecordType(members);
+            else if (object.inferredStruct() || object.explicitStruct()) type = Ast.TypeRef.structType(members);
+            else throw error("unknown anonymous aggregate kind " + object.kind());
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
@@ -1462,6 +1537,8 @@ public final class OwnershipChecker {
         if (call.callee() instanceof Ast.MemberExpr member) {
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
+            ValueInfo stringCall = checkBuiltinStringCall(member, call.arguments(), scope);
+            if (stringCall != null) return stringCall;
             // Native collection mutations are effects on the receiver, not
             // harmless reads. TypeChecker validates method availability/arity.
             // A const/let read-only view must not gain mutation via .add/.set.
@@ -1792,6 +1869,63 @@ public final class OwnershipChecker {
         return stdout.receiver() instanceof Ast.NameExpr stdio
                 && stdio.name().equals("stdio")
                 && scope.lookup("stdio") == null;
+    }
+
+    /**
+     * Ownership-side mirror of TypeChecker's built-in String signatures.
+     *
+     * Keep this deliberately narrow: it exists so copy-safe results such as
+     * split_literal(...): List<String> retain their element ownership type.
+     * Unknown/dynamic member calls remain conservative and move-only.
+     */
+    private ValueInfo checkBuiltinStringCall(
+            Ast.MemberExpr member,
+            List<Ast.Expr> arguments,
+            Scope scope) {
+        Ast.TypeRef receiver = receiverType(member.receiver(), scope);
+        if (receiver == null
+                || !(receiver.name().equals("string") || receiver.name().equals("String"))) {
+            return null;
+        }
+
+        int arity;
+        Ast.TypeRef result;
+        switch (member.member()) {
+            case "replace_literal" -> {
+                arity = 2;
+                result = Ast.TypeRef.simple("String");
+            }
+            case "split_literal" -> {
+                arity = 1;
+                result = new Ast.TypeRef(
+                        "List", List.of(Ast.TypeRef.simple("String")), false);
+            }
+            case "trim" -> {
+                arity = 0;
+                result = Ast.TypeRef.simple("String");
+            }
+            case "is_identifier", "is_route_segment" -> {
+                arity = 0;
+                result = Ast.TypeRef.simple("bool");
+            }
+            case "starts_with", "ends_with", "contains_literal" -> {
+                arity = 1;
+                result = Ast.TypeRef.simple("bool");
+            }
+            default -> {
+                return null;
+            }
+        }
+        if (arguments.size() != arity) {
+            throw error("built-in String." + member.member()
+                    + " expects " + arity + " argument(s), got " + arguments.size());
+        }
+
+        checkExpr(member.receiver(), scope, false);
+        for (Ast.Expr argument : arguments) {
+            checkExpr(argument, scope, false);
+        }
+        return new ValueInfo(result, kindOfType(result), null);
     }
 
     private ValueInfo checkBuiltinSumCall(Ast.MemberExpr member, List<Ast.Expr> arguments, Scope scope) {
@@ -2191,8 +2325,7 @@ public final class OwnershipChecker {
             VarState state = requireState(scope, name.name());
             requireUsable(state, name.name(), true);
             if (state.type.isReadonlyRecordType()) {
-                throw error("cannot mutate infer struct value '" + name.name()
-                        + "'; inferred structs are closed and readonly");
+                throw error("cannot mutate readonly structural record '" + name.name() + "'");
             }
             if (isMutexGuardType(state.type)) return;
             boolean mutableBorrow = state.kind == ValueKind.MUT_BORROW || (state.type.isBorrow() && state.type.mutableBorrow());
@@ -2253,8 +2386,8 @@ public final class OwnershipChecker {
             Ast.TypeRef type = receiver.type();
             if (type.isBorrow()) type = type.borrowedTarget();
             Ast.TypeRef fieldType = null;
-            if (type.isRecordType()) {
-                fieldType = type.recordMembers().get(member.member());
+            if (type.isClosedAggregateType()) {
+                fieldType = type.aggregateMembers().get(member.member());
             } else {
                 Ast.ClassDecl klass = findClass(type.name());
                 if (klass != null) {
@@ -2312,8 +2445,7 @@ public final class OwnershipChecker {
         if (root.moved) throw error("cannot borrow moved value '" + owner.debugName + "'");
         if (mutable) {
             if (owner.type.isReadonlyRecordType()) {
-                throw error("cannot mutably borrow infer struct value '" + owner.debugName
-                        + "'; inferred structs are permanently readonly");
+                throw error("cannot mutably borrow readonly structural record '" + owner.debugName + "'");
             }
             if (owner.kind == ValueKind.IMM_BORROW)
                 throw error("cannot mutably reborrow a shared borrow '" + owner.debugName + "'");
@@ -2435,12 +2567,18 @@ public final class OwnershipChecker {
                 if (!source.mutable && !source.rebindable) throw error("closure cannot write read-only capture '" + capture.name + "'");
                 if (source.immutableBorrows > 0 || source.mutableBorrowed) throw error("closure cannot capture '" + capture.name + "' mutably while borrowed");
                 if (!deferredCleanup) move(source, capture.name);
-                closure.define(capture.name, new VarState(source.type, source.mutable, source.rebindable, source.kind, Origin.CAPTURE));
+                closure.define(
+                        capture.name,
+                        capturedState(source, source.mutable, source.rebindable, source.kind));
             } else if (source.kind == ValueKind.MOVE_ONLY) {
                 if (!deferredCleanup) move(source, capture.name);
-                closure.define(capture.name, new VarState(source.type, false, ValueKind.MOVE_ONLY, Origin.CAPTURE));
+                closure.define(
+                        capture.name,
+                        capturedState(source, false, false, ValueKind.MOVE_ONLY));
             } else {
-                closure.define(capture.name, new VarState(source.type, false, ValueKind.COPY, Origin.CAPTURE));
+                closure.define(
+                        capture.name,
+                        capturedState(source, false, false, ValueKind.COPY));
             }
         }
 
@@ -2800,10 +2938,11 @@ public final class OwnershipChecker {
             return overlayReadonlyCapabilities(source.borrowedTarget(), target);
         }
 
-        if (source.isRecordType() && target.isRecordType()) {
-            Map<String, Ast.TypeRef> sourceMembers = source.recordMembers();
+        if (source.isClosedAggregateType() && target.isClosedAggregateType()) {
+            if (source.isStructType() != target.isStructType()) return target;
+            Map<String, Ast.TypeRef> sourceMembers = source.aggregateMembers();
             Map<String, Ast.TypeRef> members = new LinkedHashMap<>();
-            for (Map.Entry<String, Ast.TypeRef> entry : target.recordMembers().entrySet()) {
+            for (Map.Entry<String, Ast.TypeRef> entry : target.aggregateMembers().entrySet()) {
                 Ast.TypeRef sourceMember = sourceMembers.get(entry.getKey());
                 members.put(
                         entry.getKey(),
@@ -2811,6 +2950,7 @@ public final class OwnershipChecker {
                                 ? entry.getValue()
                                 : overlayReadonlyCapabilities(sourceMember, entry.getValue()));
             }
+            if (target.isStructType()) return Ast.TypeRef.structType(members);
             return source.isReadonlyRecordType() || target.isReadonlyRecordType()
                     ? Ast.TypeRef.readonlyRecordType(members)
                     : Ast.TypeRef.recordType(members);
@@ -2932,7 +3072,7 @@ public final class OwnershipChecker {
         for (int i = 0; i < Math.min(argumentTypes.size(), fields.size()); i++) {
             ResolvedField target = fields.get(i);
             Ast.TypeRef fieldPattern = substituteType(
-                    target.field().type(),
+                    ownershipFieldType(target.field()),
                     genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
             inferGenericBindings(fieldPattern, argumentTypes.get(i), genericNames, bindings, Set.of());
         }
@@ -3449,14 +3589,87 @@ public final class OwnershipChecker {
 
             continuation.define(
                     capture.name,
-                    new VarState(
-                            source.type,
+                    capturedState(
+                            source,
                             capture.write && source.mutable,
                             capture.write && source.rebindable,
-                            source.kind,
-                            Origin.CAPTURE));
+                            source.kind));
         }
         return continuation;
+    }
+
+    /**
+     * Captured const selectors keep the same compile-time proof as their lexical
+     * source. Only CONST bindings ever carry this metadata, so copying it cannot
+     * make a writable/rebindable selector stale.
+     */
+    private VarState capturedState(
+            VarState source,
+            boolean mutable,
+            boolean rebindable,
+            ValueKind kind) {
+        VarState captured = new VarState(
+                source.type, mutable, rebindable, kind, Origin.CAPTURE);
+        captured.computedIndexConstant = source.computedIndexConstant;
+        return captured;
+    }
+
+    private Ast.TypeRef indexedElementType(
+            Ast.IndexExpr indexed, Ast.TypeRef receiverType, Scope scope) {
+        if (receiverType == null) return Ast.TypeRef.inferred();
+        Ast.TypeRef concrete = receiverType.isBorrow()
+                ? receiverType.borrowedTarget() : receiverType;
+
+        Object constantIndex = computedIndexConstant(indexed.index(), scope);
+
+        if (concrete.isClosedAggregateType()) {
+            Map<String, Ast.TypeRef> members = concrete.aggregateMembers();
+            if (constantIndex instanceof String key) {
+                return members.getOrDefault(key, Ast.TypeRef.inferred());
+            }
+            if (members.isEmpty()) return Ast.TypeRef.inferred();
+            return Ast.TypeRef.union(new ArrayList<>(members.values()));
+        }
+
+        if (concrete.isTupleType()) {
+            if (constantIndex instanceof Long raw
+                    && raw >= 0 && raw < concrete.arguments().size()) {
+                return concrete.arguments().get(raw.intValue());
+            }
+            if (concrete.arguments().isEmpty()) return Ast.TypeRef.inferred();
+            return Ast.TypeRef.union(concrete.arguments());
+        }
+
+        if ((concrete.name().equals("Array") || concrete.name().equals("List"))
+                && concrete.arguments().size() == 1) {
+            return concrete.arguments().getFirst();
+        }
+
+        Ast.ClassDecl klass = findClass(concrete.name());
+        if (klass != null) {
+            if (constantIndex instanceof String key) {
+                ResolvedField target = findFieldTarget(
+                        klass, concrete, key, new LinkedHashSet<>());
+                if (target == null) return Ast.TypeRef.inferred();
+                return substituteType(
+                        ownershipFieldType(target.field()),
+                        genericBindings(
+                                target.owner().genericParameters(),
+                                target.ownerType().arguments()));
+            }
+            List<Ast.TypeRef> fields = new ArrayList<>();
+            for (ResolvedField field : effectiveFieldTargets(
+                    klass, concrete, new LinkedHashSet<>())) {
+                fields.add(substituteType(
+                        ownershipFieldType(field.field()),
+                        genericBindings(
+                                field.owner().genericParameters(),
+                                field.ownerType().arguments())));
+            }
+            return fields.isEmpty() ? Ast.TypeRef.inferred() : Ast.TypeRef.union(fields);
+        }
+
+        return collectionElementType(concrete);
     }
 
     private Ast.TypeRef collectionElementType(Ast.TypeRef type) {
@@ -3566,21 +3779,23 @@ public final class OwnershipChecker {
 
     private Ast.TypeRef objectRestBindingType(Ast.TypeRef source, List<Ast.DestructureBinding> bindings) {
         Ast.TypeRef concrete = source.isBorrow() ? source.borrowedTarget() : source;
-        if (!concrete.isRecordType()) return Ast.TypeRef.inferred();
+        if (!concrete.isClosedAggregateType()) return Ast.TypeRef.inferred();
 
-        Map<String, Ast.TypeRef> remainder = new LinkedHashMap<>(concrete.recordMembers());
+        Map<String, Ast.TypeRef> remainder = new LinkedHashMap<>(concrete.aggregateMembers());
         for (Ast.DestructureBinding binding : bindings) {
             if (!binding.rest() && !binding.isDiscard()) remainder.remove(binding.name());
         }
-        return concrete.isReadonlyRecordType()
+        // Removing fields from a concrete struct no longer denotes that exact
+        // struct type. The rest projection is therefore a structural record.
+        return concrete.isReadonlyRecordType() || concrete.isStructType()
                 ? Ast.TypeRef.readonlyRecordType(remainder)
                 : Ast.TypeRef.recordType(remainder);
     }
 
     private Ast.TypeRef objectMemberBindingType(Ast.TypeRef concrete, String name) {
         if (concrete.isBorrow()) concrete = concrete.borrowedTarget();
-        if (concrete.isRecordType()) {
-            Ast.TypeRef member = concrete.recordMembers().get(name);
+        if (concrete.isClosedAggregateType()) {
+            Ast.TypeRef member = concrete.aggregateMembers().get(name);
             if (member != null) return member;
         }
         Ast.ClassDecl klass = findClass(concrete.name());
@@ -3588,7 +3803,7 @@ public final class OwnershipChecker {
             ResolvedField target = findFieldTarget(klass, concrete, name, new LinkedHashSet<>());
             if (target != null && target.field().visibility() == Ast.Visibility.PUBLIC) {
                 return substituteType(
-                        target.field().type(),
+                        ownershipFieldType(target.field()),
                         genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
             }
         }
@@ -3724,6 +3939,46 @@ public final class OwnershipChecker {
         return Ast.TypeRef.inferred();
     }
 
+    /**
+     * Match TypeChecker's exact computed-index proofs without evaluating guest code.
+     * A CONST binding with a direct integer/string literal initializer is a stable
+     * selector even when its declared scalar type is wider than that literal.
+     */
+    private Object directComputedIndexConstant(Ast.BindingStmt binding) {
+        Ast.Expr initializer = binding.initializer();
+        if (initializer instanceof Ast.LiteralExpr literal) {
+            if (literal.value() instanceof Long value) return value;
+            if (literal.value() instanceof String value) return value;
+        }
+        if (initializer instanceof Ast.UnaryExpr unary
+                && unary.operator().equals("-")
+                && unary.operand() instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long value
+                && value != Long.MIN_VALUE) {
+            return -value;
+        }
+        return null;
+    }
+
+    private Object computedIndexConstant(Ast.Expr expression, Scope scope) {
+        if (expression instanceof Ast.LiteralExpr literal
+                && (literal.value() instanceof String || literal.value() instanceof Long)) {
+            return literal.value();
+        }
+        if (expression instanceof Ast.UnaryExpr unary
+                && unary.operator().equals("-")
+                && unary.operand() instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long value
+                && value != Long.MIN_VALUE) {
+            return -value;
+        }
+        if (expression instanceof Ast.NameExpr name) {
+            VarState state = scope.lookup(name.name());
+            return state == null ? null : state.computedIndexConstant;
+        }
+        return null;
+    }
+
     private IllegalArgumentException error(String message) {
         return new IllegalArgumentException("Oreslang ownership error: " + message);
     }
@@ -3763,6 +4018,8 @@ public final class OwnershipChecker {
         /** Synthetic aggregate aliases, currently used by the implicit arguments tuple. */
         private List<VarState> aggregateSources = List.of();
         private String debugName = "<value>";
+        /** Literal key/index proven constant by the frontend ownership pass. */
+        private Object computedIndexConstant;
 
         private VarState(Ast.TypeRef type, boolean mutable, ValueKind kind, Origin origin) {
             this(type, mutable, mutable, kind, origin);
