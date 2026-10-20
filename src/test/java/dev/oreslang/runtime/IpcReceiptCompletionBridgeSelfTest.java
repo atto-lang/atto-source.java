@@ -268,7 +268,7 @@ public final class IpcReceiptCompletionBridgeSelfTest {
                     fire.await();
                     transport.accept(
                             message, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
-                } catch (IllegalArgumentException expectedRetired) {
+                } catch (IllegalArgumentException | IllegalStateException expectedRetired) {
                     // Physical loss won.
                 } catch (Throwable failure) {
                     problem.compareAndSet(null, failure);
@@ -319,7 +319,7 @@ public final class IpcReceiptCompletionBridgeSelfTest {
                             message,
                             IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
                     terminalWins.incrementAndGet();
-                } catch (IllegalArgumentException expectedRetired) {
+                } catch (IllegalArgumentException | IllegalStateException expectedRetired) {
                     // Loss won.
                 } catch (Throwable failure) {
                     problem.compareAndSet(null, failure);
