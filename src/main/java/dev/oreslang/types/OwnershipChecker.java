@@ -846,6 +846,9 @@ public final class OwnershipChecker {
         }
 
         ValueInfo value;
+        boolean directBorrowBinding = false;
+        boolean borrowProjected = false;
+        String borrowAccessPath = "";
         if (binding.initializer() instanceof Ast.RuntimeCallExpr runtime
                 && runtime.operation().equals("borrow")) {
             if (runtime.arguments().size() != 1) {
@@ -853,6 +856,9 @@ public final class OwnershipChecker {
             }
             BorrowPlace place = borrowPlace(runtime.arguments().getFirst(), scope);
             beginPersistentBorrow(place.owner(), false);
+            directBorrowBinding = true;
+            borrowProjected = place.projected();
+            borrowAccessPath = place.accessPath();
             value = new ValueInfo(
                     Ast.TypeRef.borrowed(place.type(), false),
                     ValueKind.IMM_BORROW,
@@ -862,6 +868,9 @@ public final class OwnershipChecker {
             // Legacy compatibility only. Canonical source uses rt borrow.
             boolean mutableBorrow = unary.operator().equals("&mut");
             BorrowPlace place = borrowPlace(unary.operand(), scope);
+            directBorrowBinding = true;
+            borrowProjected = place.projected();
+            borrowAccessPath = place.accessPath();
             if (mutableBorrow && !(unary.operand() instanceof Ast.NameExpr)) {
                 throw error("mutable projected borrows need path-exclusive loan tracking");
             }
@@ -920,6 +929,10 @@ public final class OwnershipChecker {
                 Origin.LOCAL);
         state.borrowSource = value.borrowSource;
         state.borrowLease = value.borrowLease;
+        if (directBorrowBinding) {
+            state.borrowProjected = borrowProjected;
+            state.borrowAccessPath = borrowAccessPath;
+        }
         scope.define(binding.name(), state);
     }
 
@@ -2336,12 +2349,16 @@ public final class OwnershipChecker {
      * invocations, side-effecting indexes, or unresolved/dynamic field types.
      * Mutable projections stay fail-closed until path-exclusive loans land.
      */
-    private record BorrowPlace(VarState owner, Ast.TypeRef type) { }
+    private record BorrowPlace(
+            VarState owner,
+            Ast.TypeRef type,
+            String accessPath,
+            boolean projected) { }
 
     private BorrowPlace borrowPlace(Ast.Expr operand, Scope scope) {
         if (operand instanceof Ast.NameExpr name) {
             VarState owner = borrowOwner(operand, scope);
-            return new BorrowPlace(owner, owner.type);
+            return new BorrowPlace(owner, owner.type, "$", false);
         }
         if (operand instanceof Ast.MemberExpr member) {
             BorrowPlace receiver = borrowPlace(member.receiver(), scope);
@@ -2366,7 +2383,11 @@ public final class OwnershipChecker {
                 throw error("projected borrow requires a known owned field type for '"
                         + member.member() + "'");
             }
-            return new BorrowPlace(receiver.owner(), fieldType);
+            return new BorrowPlace(
+                    receiver.owner(),
+                    fieldType,
+                    receiver.accessPath() + "." + member.member(),
+                    true);
         }
         if (operand instanceof Ast.IndexExpr indexed) {
             BorrowPlace receiver = borrowPlace(indexed.receiver(), scope);
@@ -2387,7 +2408,11 @@ public final class OwnershipChecker {
             if (element.name().equals("$infer$") || element.isBorrow()) {
                 throw error("projected borrow index requires a known owned element type");
             }
-            return new BorrowPlace(receiver.owner(), element);
+            return new BorrowPlace(
+                    receiver.owner(),
+                    element,
+                    receiver.accessPath() + "[*]",
+                    true);
         }
         throw error("borrow requires a named owner or stable field/index projection of one");
     }
@@ -3923,6 +3948,17 @@ public final class OwnershipChecker {
         /** Synthetic aggregate aliases, currently used by the implicit arguments tuple. */
         private List<VarState> aggregateSources = List.of();
         private String debugName = "<value>";
+        /** Opaque compiler region identity for this storage root. */
+        private final long regionId = NEXT_REGION_ID.incrementAndGet();
+        /** Storage lifetime generation; advanced on future reuse/reinitialization. */
+        private long regionGeneration;
+        /** Direct borrow provenance used by scoped Task capture proofs. */
+        private boolean borrowProjected;
+        private String borrowAccessPath = "";
+        /** True only on a child Task capture backed by compiler-issued read authority. */
+        private boolean scopedTaskReadPermit;
+        private long scopedPermitRegionId;
+        private long scopedPermitGeneration;
 
         private VarState(Ast.TypeRef type, boolean mutable, ValueKind kind, Origin origin) {
             this(type, mutable, mutable, kind, origin);
@@ -4010,6 +4046,11 @@ public final class OwnershipChecker {
                 }
             }
         }
+    }
+
+    private static final class StructuredBorrowContext {
+        private final Set<VarState> readRegions =
+                java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     }
 
     private record StateSnapshot(boolean moved, int immutableBorrows, boolean mutableBorrowed) { }
