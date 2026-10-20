@@ -25,6 +25,9 @@ import java.util.Set;
 public final class ReachabilityManifest {
     public static final String FORMAT = "ores-reachability/1";
 
+    private static final Comparator<String> CODE_POINT_ORDER =
+            ReachabilityManifest::compareCodePointOrder;
+
     private final String buildKind;
     private final List<String> roots;
     private final List<String> retainedSymbols;
@@ -58,11 +61,18 @@ public final class ReachabilityManifest {
         List<String> roots = options.preservePublicApi()
                 ? libraryRoots(result.program(), result.retainedSymbols())
                 : executableRoots(options.entryPoints(), result.retainedSymbols());
+        for (String root : roots) {
+            if (!result.retainedSymbols().contains(root)) {
+                throw new IllegalArgumentException(
+                        "reachability root is not retained: " + root);
+            }
+        }
 
         LinkedHashMap<String, Object> constants = new LinkedHashMap<>();
         result.compileTimeConstants().entrySet().stream()
-                .sorted(Map.Entry.comparingByKey())
+                .sorted((left, right) -> CODE_POINT_ORDER.compare(left.getKey(), right.getKey()))
                 .forEach(entry -> {
+                    validateUnicode("compile-time constant name", entry.getKey());
                     validateConstant(entry.getKey(), entry.getValue());
                     constants.put(entry.getKey(), entry.getValue());
                 });
@@ -133,6 +143,7 @@ public final class ReachabilityManifest {
     private static List<String> executableRoots(Set<String> requested, Set<String> retained) {
         ArrayList<String> roots = new ArrayList<>();
         for (String entryPoint : requested) {
+            validateUnicode("entry point", entryPoint);
             String resolved = resolveRetainedEntryPoint(entryPoint, retained);
             if (resolved == null) {
                 throw new IllegalArgumentException(
@@ -140,7 +151,7 @@ public final class ReachabilityManifest {
             }
             roots.add(resolved);
         }
-        roots.sort(Comparator.naturalOrder());
+        roots.sort(CODE_POINT_ORDER);
         return List.copyOf(roots);
     }
 
@@ -175,7 +186,7 @@ public final class ReachabilityManifest {
                 if (retained.contains(symbol)) roots.add(symbol);
             }
         }
-        roots.sort(Comparator.naturalOrder());
+        roots.sort(CODE_POINT_ORDER);
         return List.copyOf(roots);
     }
 
@@ -205,11 +216,51 @@ public final class ReachabilityManifest {
     }
 
     private static List<String> sorted(Set<String> values) {
-        return values.stream().sorted().toList();
+        ArrayList<String> sorted = new ArrayList<>(values.size());
+        for (String value : values) {
+            validateUnicode("symbol", value);
+            sorted.add(value);
+        }
+        sorted.sort(CODE_POINT_ORDER);
+        return List.copyOf(sorted);
+    }
+
+    private static int compareCodePointOrder(String left, String right) {
+        int li = 0;
+        int ri = 0;
+        while (li < left.length() && ri < right.length()) {
+            int lcp = left.codePointAt(li);
+            int rcp = right.codePointAt(ri);
+            if (lcp != rcp) return Integer.compare(lcp, rcp);
+            li += Character.charCount(lcp);
+            ri += Character.charCount(rcp);
+        }
+        return Integer.compare(left.length() - li, right.length() - ri);
+    }
+
+    private static void validateUnicode(String label, String value) {
+        if (value == null) {
+            throw new IllegalArgumentException(label + " cannot be null");
+        }
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (Character.isHighSurrogate(ch)) {
+                if (i + 1 >= value.length() || !Character.isLowSurrogate(value.charAt(i + 1))) {
+                    throw new IllegalArgumentException(label + " contains an unpaired UTF-16 surrogate");
+                }
+                i++;
+            } else if (Character.isLowSurrogate(ch)) {
+                throw new IllegalArgumentException(label + " contains an unpaired UTF-16 surrogate");
+            }
+        }
     }
 
     private static void validateConstant(String name, Object value) {
-        if (value == null || value instanceof String || value instanceof Boolean) return;
+        if (value == null || value instanceof Boolean) return;
+        if (value instanceof String text) {
+            validateUnicode("compile-time constant '" + name + "'", text);
+            return;
+        }
         if (value instanceof Byte || value instanceof Short
                 || value instanceof Integer || value instanceof Long) return;
         if (value instanceof Float number && Float.isFinite(number)) return;
@@ -237,14 +288,56 @@ public final class ReachabilityManifest {
             out.append("null");
         } else if (value instanceof String text) {
             quote(out, text);
-        } else if (value instanceof Boolean || value instanceof Number) {
+        } else if (value instanceof Boolean) {
             out.append(value);
+        } else if (value instanceof Number number) {
+            out.append(canonicalNumber(number));
         } else {
             throw new IllegalArgumentException("unsupported JSON value " + value.getClass().getName());
         }
     }
 
+    private static String canonicalNumber(Number number) {
+        if (number instanceof Byte || number instanceof Short
+                || number instanceof Integer || number instanceof Long) {
+            return Long.toString(number.longValue());
+        }
+        if (number instanceof Float value) {
+            if (!Float.isFinite(value)) {
+                throw new IllegalArgumentException("non-finite float is not valid canonical JSON");
+            }
+            return normalizeFloatingSyntax(Float.toString(value));
+        }
+        if (number instanceof Double value) {
+            if (!Double.isFinite(value)) {
+                throw new IllegalArgumentException("non-finite double is not valid canonical JSON");
+            }
+            return normalizeFloatingSyntax(Double.toString(value));
+        }
+        throw new IllegalArgumentException(
+                "unsupported canonical numeric type " + number.getClass().getName());
+    }
+
+    private static String normalizeFloatingSyntax(String raw) {
+        if (raw.equals("-0.0")) return "0.0";
+        int exponent = Math.max(raw.indexOf('e'), raw.indexOf('E'));
+        if (exponent < 0) return raw;
+
+        String mantissa = raw.substring(0, exponent);
+        String power = raw.substring(exponent + 1);
+        boolean negative = power.startsWith("-");
+        if (negative || power.startsWith("+")) power = power.substring(1);
+
+        int firstNonZero = 0;
+        while (firstNonZero + 1 < power.length() && power.charAt(firstNonZero) == '0') {
+            firstNonZero++;
+        }
+        power = power.substring(firstNonZero);
+        return mantissa + "e" + (negative ? "-" : "") + power;
+    }
+
     private static StringBuilder quote(StringBuilder out, String value) {
+        validateUnicode("JSON string", value);
         out.append('"');
         for (int i = 0; i < value.length(); i++) {
             char ch = value.charAt(i);
@@ -258,7 +351,9 @@ public final class ReachabilityManifest {
                 case '\t' -> out.append("\\t");
                 default -> {
                     if (ch < 0x20) {
-                        out.append(String.format("\\u%04x", (int) ch));
+                        out.append("\\u00");
+                        out.append(Character.forDigit((ch >>> 4) & 0xf, 16));
+                        out.append(Character.forDigit(ch & 0xf, 16));
                     } else {
                         out.append(ch);
                     }
