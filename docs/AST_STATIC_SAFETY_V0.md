@@ -66,3 +66,25 @@ is a **future compiler feature**, not implemented by the current lexical pass.
 
 Canonical cross-backend design:
 https://github.com/ores-truffle-oreslang/oreslang-common-source/blob/feat/static-analysis-contract-v0/docs/CALLBACK_TIMING_ZALGO_ANALYSIS_V0.md
+
+
+### Source-derived callback may-effects (experimental)
+
+`CallbackParameterEffects.infer(program)` examines local callback
+parameters in parsed Oreslang ASTs, recording positive evidence for direct
+inline invocation, possible capture/forwarding/escape, and potential
+suspension/deferred use. It is also exposed through the ownership-admitted
+`OresCompiler.analyzeCallbackEffects(source)` API.
+
+These summaries enrich the `ORES-CB-002` witness text. They are **not**
+trusted timing guarantees: methods, imported/dynamic/FFI calls, nominal
+overloads without resolved identity, async functions, `await`, callback
+retention, aliases, hot reload and unknown call targets must not be
+classified as guaranteed inline-only or safe after-turn. Mixed/unknown
+effects will eventually join across the resolved generic call graph.
+
+This is a staging interface for integration with `OwnershipChecker`.
+The existing ownership checker already performs loan/capture safety checks,
+but it does not yet enforce listener-installation typestate or carry
+compiler-authenticated callback effect proofs. Do not enable an AOT or
+security admission gate based on the presence of a source-derived summary.
