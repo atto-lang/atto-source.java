@@ -3954,11 +3954,11 @@ public final class TypeChecker {
                         resolve(target.method().returnType(),
                                 Set.copyOf(owner.genericParameters()), nominalClassType(owner)),
                         classGenericBindings(owner, ownerType));
-                if (containsUnknown(runResult)
-                        || containsUnknown(futureType.arguments().getFirst())) {
+                if (containsUnresolvedFutureConstructorType(runResult)
+                        || containsUnresolvedFutureConstructorType(futureType.arguments().getFirst())) {
                     throw new IllegalArgumentException(
                             "Future<T> provider and result types must be concrete, "
-                                    + "including nested generic arguments");
+                                    + "including nested Any/Unknown and unresolved generics");
                 }
                 // The evaluator returns the provider method's OresFuture<T>
                 // directly. It does not construct a mapper or coerce payloads.
@@ -8032,6 +8032,50 @@ public final class TypeChecker {
             return new Record(members, record.readOnly(), record.kind());
         }
         return type;
+    }
+
+    /**
+     * A constructor that reuses its provider's Future<T> directly must not
+     * advertise a dynamically erased completion type. The ordinary Unknown
+     * sentinel is not enough: source Any/Unknown can resolve to nominal
+     * Named types, including inside a container or function signature.
+     */
+    private boolean containsUnresolvedFutureConstructorType(Type type) {
+        if (type == Unknown.INSTANCE || type instanceof Generic) return true;
+        if (type instanceof SelfType receiverSelf) {
+            return containsUnresolvedFutureConstructorType(receiverSelf.bound());
+        }
+        if (type instanceof Borrow borrow) {
+            return containsUnresolvedFutureConstructorType(borrow.target());
+        }
+        if (type instanceof ListType list) {
+            return containsUnresolvedFutureConstructorType(list.element());
+        }
+        if (type instanceof Tuple tuple) {
+            return tuple.elements().stream()
+                    .anyMatch(this::containsUnresolvedFutureConstructorType);
+        }
+        if (type instanceof Union union) {
+            return union.options().stream()
+                    .anyMatch(this::containsUnresolvedFutureConstructorType);
+        }
+        if (type instanceof Types.Not not) {
+            return containsUnresolvedFutureConstructorType(not.excluded());
+        }
+        if (type instanceof Named named) {
+            if (named.name().equals("Any") || named.name().equals("Unknown")) return true;
+            return named.arguments().stream()
+                    .anyMatch(this::containsUnresolvedFutureConstructorType);
+        }
+        if (type instanceof Function fn) {
+            return fn.parameters().stream().anyMatch(this::containsUnresolvedFutureConstructorType)
+                    || containsUnresolvedFutureConstructorType(fn.result());
+        }
+        if (type instanceof Record record) {
+            return record.members().values().stream()
+                    .anyMatch(this::containsUnresolvedFutureConstructorType);
+        }
+        return false;
     }
 
     private boolean containsUnknown(Type type) {
