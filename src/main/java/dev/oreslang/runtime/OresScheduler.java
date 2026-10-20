@@ -604,6 +604,15 @@ public final class OresScheduler implements AutoCloseable {
                 }
             }
         } catch (RuntimeException | Error admissionFailure) {
+            if (handle.admissionState() == CompilerAdmissionState.BOUND) {
+                try {
+                    handle.markNeverRegistered();
+                } catch (RuntimeException | Error stateFailure) {
+                    if (stateFailure != admissionFailure) {
+                        admissionFailure.addSuppressed(stateFailure);
+                    }
+                }
+            }
             throw admissionFailure;
         }
 
