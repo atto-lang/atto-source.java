@@ -744,4 +744,5 @@ final class OresObservableTest {
         assertTrue(subscription.next().join().isComplete());
         assertEquals(0, iterators.get(),
                 "take(0) must short-circuit without subscribing to the iterable");
+    }
 }
