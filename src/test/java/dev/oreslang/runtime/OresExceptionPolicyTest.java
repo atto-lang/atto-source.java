@@ -110,4 +110,29 @@ final class OresExceptionPolicyTest {
         assertSame(same, OresExceptionPolicy.combine(same, same));
         assertEquals(0, same.getSuppressed().length);
     }
+    @Test
+    void checkedHostThrowableCannotBecomeGuestCatchableIllegalState() {
+        Exception checked = new Exception("unexpected FFI checked failure");
+        AssertionError hostFatal = assertThrows(AssertionError.class,
+                () -> OresExceptionPolicy.rethrow(checked));
+        assertSame(checked, hostFatal.getCause());
+        assertTrue(hostFatal.getMessage().contains("host failure"));
+        // A guest catch(Exception) or trap of RuntimeException cannot consume
+        // the host-error carrier. An ordinary guest throw remains unchanged.
+        IllegalStateException ordinary = new IllegalStateException("source");
+        assertSame(ordinary, assertThrows(IllegalStateException.class,
+                () -> OresExceptionPolicy.rethrow(ordinary)));
+        assertDoesNotThrow(() -> OresExceptionPolicy.rethrow(null));
+    }
+
+    @Test
+    void checkedHostCauseDoesNotErasePriorityOfExistingCancellation() {
+        CancellationException cancelled = new CancellationException("cancel");
+        AssertionError fromBoundary = assertThrows(AssertionError.class,
+                () -> OresExceptionPolicy.rethrow(new Exception("checked host")));
+        Throwable dominant = OresExceptionPolicy.combine(cancelled, fromBoundary);
+        assertSame(fromBoundary, dominant);
+        assertArrayEquals(new Throwable[]{cancelled}, fromBoundary.getSuppressed());
+    }
+
 }
