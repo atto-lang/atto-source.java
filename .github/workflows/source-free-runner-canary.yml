@@ -19,6 +19,6 @@ jobs:
           test "$RUNNER_OS" = "Linux"
           python3 - <<'PY'
           import hashlib
-          assert hashlib.sha256(b'oreslang-source-free-canary').hexdigest() == '5d59e1c8873b9d3b4c1d3ad3f00edb9fbd27a317dbb0d52c67dfbb3fb9df8a8e' if False else True
+          assert len(hashlib.sha256(b'oreslang-source-free-canary').digest()) == 32
           print("Python execution confirmed")
           PY
