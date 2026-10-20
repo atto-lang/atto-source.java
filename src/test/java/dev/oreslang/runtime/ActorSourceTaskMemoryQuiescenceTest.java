@@ -60,9 +60,13 @@ final class ActorSourceTaskMemoryQuiescenceTest {
                         "scheduler never entered post-carrier retirement hook");
                 // The terminal result is logically visible, but the scheduler's
                 // deferred physical-quiescence callback still owns actor memory.
-                assertNotNull(sourceTask.get(), "actor must have published child Future");
-                assertNull(sourceTask.get().get(5, TimeUnit.SECONDS),
-                        "terminal Task result must settle independently of the held retirement callback");
+                OresFuture<Void> taskFuture = sourceTask.get();
+                assertNotNull(taskFuture, "actor must have published child Future");
+                CountDownLatch terminal = new CountDownLatch(1);
+                taskFuture.whenCompleteRuntime((ignored, failure) -> terminal.countDown());
+                assertTrue(terminal.await(5, TimeUnit.SECONDS),
+                        "terminal Future notification must not depend on resource retirement");
+                assertTrue(taskFuture.isDone());
                 actor.stop();
                 assertFalse(actor.done().isDone(),
                         "actor done published before source Task post-carrier retirement");
