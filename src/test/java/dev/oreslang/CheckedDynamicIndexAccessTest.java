@@ -358,6 +358,54 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void constructorSelfValueCaptureGuardIsExhaustiveOverCurrentExpressionShapes() throws Exception {
+        java.lang.reflect.Method guard = TypeChecker.class.getDeclaredMethod(
+                "capturesConstructorSelfValue", Ast.Expr.class);
+        guard.setAccessible(true);
+        Ast.Expr self = new Ast.NameExpr("self");
+        Ast.MatchValueArm matchArm = new Ast.MatchValueArm(
+                new Ast.WildcardPattern(), null, self);
+        for (Ast.Expr expression : java.util.List.of(
+                new Ast.BinaryExpr("==", self, new Ast.NameExpr("other")),
+                new Ast.UnaryExpr("&", self),
+                new Ast.AssignExpr(new Ast.NameExpr("other"), self),
+                new Ast.ConditionalExpr(
+                        new Ast.LiteralExpr(true), self, new Ast.NameExpr("other")),
+                new Ast.MatchExpr(
+                        new Ast.LiteralExpr(0L), java.util.List.of(matchArm)),
+                new Ast.TypeTestExpr(self, Ast.TypeRef.simple("Box"), null),
+                new Ast.PatternTestExpr(self, new Ast.WildcardPattern()),
+                new Ast.CastExpr(self, Ast.TypeRef.simple("Box"), Ast.CastMode.CHECKED),
+                new Ast.SpreadExpr(self),
+                new Ast.CallExpr(
+                        new Ast.NameExpr("identity"),
+                        java.util.List.of(),
+                        false,
+                        java.util.List.of(self)),
+                new Ast.RuntimeCallExpr("copy", java.util.List.of(self)),
+                new Ast.IndexExpr(self, new Ast.LiteralExpr("value")),
+                new Ast.NewExpr(Ast.TypeRef.simple("Holder"), java.util.List.of(self)),
+                new Ast.AwaitExpr(self),
+                new Ast.TrapExpr(self),
+                new Ast.ChannelOpExpr(
+                        Ast.ChannelOperation.READ, Ast.WaitMode.BLOCKING, self, null),
+                new Ast.DynamicSelectExpr(
+                        Ast.WaitMode.BLOCKING, Ast.SelectPolicy.FAIR, self),
+                new Ast.ListExpr(java.util.List.of(self)),
+                new Ast.TupleExpr(java.util.List.of(self)),
+                new Ast.ObjectExpr(java.util.List.of(Ast.ObjectField.named("value", self))),
+                new Ast.LambdaExpr(java.util.List.of(), self, null))) {
+            assertEquals(true, guard.invoke(null, expression));
+        }
+
+        assertEquals(false, guard.invoke(null, new Ast.LiteralExpr(1L)));
+        assertEquals(false, guard.invoke(null, new Ast.NameExpr("other")));
+        assertEquals(false, guard.invoke(null,
+                new Ast.MemberExpr(self, "value")),
+                "member-derived values are not aliases of constructor self");
+    }
+
+    @Test
     void constructorLambdaCannotDeferIndexedSelfRead() {
         IllegalArgumentException inferred = assertThrows(
                 IllegalArgumentException.class,
