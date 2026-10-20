@@ -6269,6 +6269,13 @@ public final class TypeChecker {
         // parameters. Reified generic payload predicates are not assumed.
         if (source instanceof ListType && target instanceof ListType) return true;
         if (source instanceof Named left && target instanceof Named right) {
+            if (left.name().equals("Entry") && right.name().equals("Entry")
+                    && left.arguments().size() == 2 && right.arguments().size() == 2) {
+                return runtimeValueTypeCovered(
+                                left.arguments().get(0), right.arguments().get(0), depth + 1)
+                        && runtimeValueTypeCovered(
+                                left.arguments().get(1), right.arguments().get(1), depth + 1);
+            }
             if (left.name().equals(right.name())) return true;
             // A proven nominal subtype is also a runtime subtype; unrelated
             // nominal values cannot be certified from structural assignability.
@@ -6303,6 +6310,11 @@ public final class TypeChecker {
         }
 
         if (a instanceof Named an && b instanceof Named bn) {
+            if (an.name().equals("Entry") && bn.name().equals("Entry")
+                    && an.arguments().size() == 2 && bn.arguments().size() == 2) {
+                return typesMayOverlap(an.arguments().get(0), bn.arguments().get(0))
+                        && typesMayOverlap(an.arguments().get(1), bn.arguments().get(1));
+            }
             boolean aNominal = findClass(an.name()) != null || findInterface(an.name()) != null;
             boolean bNominal = findClass(bn.name()) != null || findInterface(bn.name()) != null;
             if (aNominal && bNominal) {
@@ -6351,7 +6363,7 @@ public final class TypeChecker {
                 "int", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "uint", "bigint",
                 "float", "f32", "f64", "decimal", "bool", "Bool", "string", "String",
                 "Symbol", "complex", "complex64", "complex128",
-                "Option", "Result", "Array", "List", "Generator", "Iterator",
+                "Option", "Result", "Entry", "Array", "List", "Generator", "Iterator",
                 "AsyncGenerator", "AsyncIterator", "IteratorResult").contains(name)
                 || findClass(name) != null || findInterface(name) != null) {
             return;
@@ -6389,6 +6401,15 @@ public final class TypeChecker {
                 || ref.name().equals("Fnc") || ref.name().equals("Function")) {
             throw new IllegalArgumentException(
                     operator + " requires a nominal/runtime-reifiable type; use 'matches' for structural patterns");
+        }
+        if (ref.name().equals("Entry")) {
+            if (ref.inferArguments() || ref.arguments().size() != 2) {
+                throw new IllegalArgumentException(
+                        operator + " requires Entry<K,V> with two explicit reifiable component types");
+            }
+            requireRuntimeReifiableType(ref.arguments().get(0), operator + " Entry key");
+            requireRuntimeReifiableType(ref.arguments().get(1), operator + " Entry value");
+            return;
         }
         if (ref.inferArguments() || !ref.arguments().isEmpty()) {
             throw new IllegalArgumentException(
