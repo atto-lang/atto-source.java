@@ -335,7 +335,6 @@ final class IpcReceiptCompletionBridge {
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(trustedEpoch, "trustedEpoch");
         RetiredCompletions terminal = new RetiredCompletions();
-        Map<Long, PreparedDelivery> prepared = new HashMap<>();
         boolean committed = false;
         try {
             synchronized (gate) {
@@ -351,6 +350,11 @@ final class IpcReceiptCompletionBridge {
                             "host transport-loss completion parity violated");
                 }
 
+                // Reserve all list storage before starting any delivery carrier.
+                // From this point until receipt retirement, the preflight loop
+                // performs no container growth: if resource reservation fails,
+                // no parked worker has been published and the ledger is intact.
+                terminal.deliveries.ensureCapacity(preview.size());
                 for (var loss : preview) {
                     long sequence = loss.envelope().messageSequence();
                     var completion = completions.get(sequence);
@@ -359,11 +363,6 @@ final class IpcReceiptCompletionBridge {
                                 "missing preflight lost completion");
                     }
                     PreparedDelivery delivery = new PreparedDelivery(completion);
-                    if (prepared.put(sequence, delivery) != null) {
-                        delivery.cancel();
-                        throw new IllegalStateException(
-                                "duplicate preflight lost completion");
-                    }
                     terminal.deliveries.add(delivery);
                 }
 
@@ -378,12 +377,12 @@ final class IpcReceiptCompletionBridge {
                             "IPC transport-loss preview changed under bridge gate");
                 }
 
-                for (var loss : losses) {
+                for (int i = 0; i < losses.size(); ++i) {
+                    var loss = losses.get(i);
                     long sequence = loss.envelope().messageSequence();
                     var completion = completions.remove(sequence);
-                    PreparedDelivery delivery = prepared.remove(sequence);
-                    if (completion == null || delivery == null
-                            || !delivery.owns(completion)) {
+                    PreparedDelivery delivery = terminal.deliveries.get(i);
+                    if (completion == null || !delivery.owns(completion)) {
                         throw new IllegalStateException(
                                 "lost completion identity changed under receipt gate");
                     }
@@ -395,7 +394,7 @@ final class IpcReceiptCompletionBridge {
                     ++deliveriesInFlight;
                     delivery.arm(terminalStage);
                 }
-                if (!prepared.isEmpty() || !completions.isEmpty()) {
+                if (!completions.isEmpty()) {
                     throw new IllegalStateException(
                             "host transport-loss completion residue");
                 }
