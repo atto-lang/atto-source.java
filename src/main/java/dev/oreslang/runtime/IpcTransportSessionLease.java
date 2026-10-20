@@ -341,6 +341,11 @@ final class IpcTransportSessionLease {
     }
 
     private void finalizePhysicalClose(long attempt) {
+        // The scheduler callback itself may have been misrouted onto an actor
+        // carrier. Reject before touching this monitor: checking only after
+        // synchronized(this) could park the actor behind a host lifecycle lock.
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport cleanup worker");
         synchronized (this) {
             if (phase != Phase.FINALIZING || cleanupAttempt != attempt
                     || cleanupExecuting) return;
@@ -348,13 +353,6 @@ final class IpcTransportSessionLease {
                 closeFailure = new IllegalStateException(
                         "cleanup scheduler executed inline on requesting carrier");
                 enqueueCaller = null;
-                phase = Phase.QUARANTINED;
-                notifyAll();
-                return;
-            }
-            if (RuntimeBlockingGuard.actorCarrierMarked()) {
-                closeFailure = new IllegalStateException(
-                        "cleanup scheduler executed on an actor carrier");
                 phase = Phase.QUARANTINED;
                 notifyAll();
                 return;
