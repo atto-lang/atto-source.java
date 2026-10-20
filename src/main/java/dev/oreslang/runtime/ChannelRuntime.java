@@ -1083,10 +1083,10 @@ public final class ChannelRuntime {
         }
 
         private CaseRegistration caseOrDefault(int index) {
-            for (CaseRegistration registration : registrations) {
-                if (registration.index == index) return registration;
-            }
-            return new CaseRegistration(this, index, set.cases.get(index));
+            CaseRegistration registered = registeredByIndex[index];
+            return registered != null
+                    ? registered
+                    : new CaseRegistration(this, index, set.cases.get(index));
         }
     }
 
@@ -1141,8 +1141,10 @@ public final class ChannelRuntime {
             throw new IllegalStateException("select arm registration accounting underflow");
         }
         activeArmRegistrations -= selection.registrations.size();
-        for (CaseRegistration registration :
-                List.copyOf(selection.registrations)) {
+        // COORDINATOR owns registrations throughout this cleanup; removing
+        // waiters from channels cannot change selection.registrations.
+        // Avoid copying the arm list merely to detach a completed selection.
+        for (CaseRegistration registration : selection.registrations) {
             selection.registeredByIndex[registration.index] = null;
             if (registration.selectCase instanceof ReadCase<?>
                     || registration.selectCase instanceof WriteCase<?>) {
