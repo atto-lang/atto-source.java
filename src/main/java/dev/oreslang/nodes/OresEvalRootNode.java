@@ -4113,6 +4113,12 @@ public final class OresEvalRootNode extends RootNode {
             Object result = object.owner.invoke(
                     object.owner.prepareBoundMethodInvocation(
                             object, "get_future", List.of(), env.accessClass()));
+            // The projection may change ambient state. Do not let a new guard
+            // slip past the preflight even when the future is already resolved.
+            if (env.hasLiveMutexGuards()) {
+                throw new IllegalStateException(
+                        "HasFuture projection retained a live MutexGuard across await");
+            }
             if (!(result instanceof OresFuture<?> future)) {
                 throw new IllegalStateException(
                         "HasFuture.get_future() must return a native Future<T>");
