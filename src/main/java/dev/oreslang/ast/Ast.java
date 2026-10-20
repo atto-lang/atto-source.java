@@ -575,7 +575,7 @@ public final class Ast {
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
             BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
-            ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
+            ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt { }
 
     /**
      * Binding rebinding and mutable access to the referent are independent capabilities.
@@ -819,6 +819,13 @@ public final class Ast {
 
     public record ForStmt(Stmt initializer, Expr condition, Expr update, List<Stmt> body) implements Stmt {
         public ForStmt { body = List.copyOf(body); }
+    }
+
+    public record DoWhileStmt(List<Stmt> body, Expr condition) implements Stmt {
+        public DoWhileStmt {
+            body = List.copyOf(body);
+            if (condition == null) throw new IllegalArgumentException("do-while condition cannot be null");
+        }
     }
 
     public record LoopStmt(List<Stmt> body) implements Stmt {
