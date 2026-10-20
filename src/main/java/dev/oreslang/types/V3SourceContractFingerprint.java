@@ -1,0 +1,95 @@
+package dev.oreslang.types;
+
+import dev.oreslang.ast.Ast;
+
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.DigestOutputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Objects;
+
+/**
+ * Versioned, deterministic V3 SOURCE-CONTRACT fingerprint for tooling.
+ *
+ * This hash records parameter name, declaration order, raw type syntax,
+ * mutability, structural classification, name-? syntax, effective omission,
+ * and normalized closed defaults. It deliberately does not resolve
+ * imported types, prove intrinsic Option identity, establish an ABI, or
+ * authorize guest execution. A hot-reload loader must ALSO verify owner,
+ * version, resolved nominal types and the executable backend ABI.
+ *
+ * Both @DefaultArgVals and per-formal @Default normalize to the same bytes.
+ * All variable-width fields are UTF-8 length-prefixed; no delimiter or
+ * Java toString() representation contributes to the canonical encoding.
+ */
+public final class V3SourceContractFingerprint {
+    private V3SourceContractFingerprint() { }
+
+    private static final String DOMAIN = "oreslang/v3/parameter-source-contract-preview";
+    private static final int VERSION = 1;
+    private static final int MAX_TYPE_DEPTH = 64;
+
+    public static String sha256Hex(List<Ast.Param> parameters, List<Ast.Annotation> annotations) {
+        Objects.requireNonNull(parameters, "parameters");
+        Objects.requireNonNull(annotations, "annotations");
+        List<V3DefaultArgValsPolicy.FormalPreview> checked =
+                V3DefaultArgValsPolicy.validateDeclaration(parameters, annotations);
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            try (DataOutputStream out = new DataOutputStream(
+                    new DigestOutputStream(OutputStream.nullOutputStream(), digest))) {
+                string(out, DOMAIN);
+                out.writeInt(VERSION);
+                out.writeInt(parameters.size());
+                for (int i = 0; i < parameters.size(); i++) {
+                    Ast.Param param = parameters.get(i);
+                    V3DefaultArgValsPolicy.FormalPreview formal = checked.get(i);
+                    string(out, param.name());
+                    type(out, param.type(), 0); // RAW staged syntax; no nominal identity assumption
+                    out.writeBoolean(param.structural());
+                    out.writeBoolean(param.mutable());
+                    out.writeBoolean(param.argumentOmittable()); // preserve explicit name suffix
+                    out.writeBoolean(formal.omittable()); // annotation can imply omission
+                    out.writeBoolean(formal.optionTyped()); // unverified preview classification
+                    DefaultArgumentPolicy.Literal value = formal.defaultValue();
+                    out.writeBoolean(value != null);
+                    if (value != null) {
+                        out.writeByte(value.kind().ordinal());
+                        switch (value.kind()) {
+                            case INT -> out.writeLong((Long) value.value());
+                            case BOOL -> out.writeBoolean((Boolean) value.value());
+                            case STRING -> string(out, (String) value.value());
+                            case NONE -> { } // None is not an absent default
+                        }
+                    }
+                }
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException | IOException e) {
+            throw new IllegalStateException("cannot compute v3 source preview fingerprint", e);
+        }
+    }
+
+    private static void type(DataOutputStream out, Ast.TypeRef type, int depth) throws IOException {
+        if (depth > MAX_TYPE_DEPTH) {
+            throw new IllegalArgumentException("v3 type nesting exceeds fingerprint safety limit");
+        }
+        string(out, type.name());
+        out.writeBoolean(type.inferArguments());
+        out.writeInt(type.arguments().size());
+        for (Ast.TypeRef nested : type.arguments()) {
+            type(out, nested, depth + 1);
+        }
+    }
+
+    private static void string(DataOutputStream out, String value) throws IOException {
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        out.writeInt(bytes.length);
+        out.write(bytes);
+    }
+}
