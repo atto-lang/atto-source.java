@@ -144,21 +144,44 @@ final class InlineSelfReceiverArityTest {
 
     @Test
     void inlineMutableReceiverRetainsExclusiveArgumentLoanChecks() {
-        // Receiver mutability is NOT included in overload arity, but it
-        // must be checked for aliases across all ordinary value arguments.
-        assertThrows(IllegalArgumentException.class, () ->
-                TypeChecker.check(Parser.parse("""
-                        define class Counter as
-                          pub let int count = 0;
-                          pub borrow_and_read(mut self, borrow mut Counter other): int {
-                            return other.count;
-                          }
-                        end
-                        fnc unsafe_alias(): int {
-                          val Counter counter = new Counter();
-                          return counter.borrow_and_read(rt borrow mut counter);
-                        }
-                        """)));
+        // First prove that the inline syntax parses; a parser failure must
+        // NOT accidentally count as evidence that ownership rejected a loan.
+        Ast.Program parsed = Parser.parse("""
+                define class Counter as
+                  pub let int count = 0;
+                  pub borrow_and_read(mut self, borrow mut Counter other): int {
+                    return other.count;
+                  }
+                end
+                fnc unsafe_alias(): int {
+                  val Counter counter = new Counter();
+                  return counter.borrow_and_read(rt borrow mut counter);
+                }
+                """);
+        IllegalArgumentException error =
+                assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(parsed));
+        assertFalse(error.getMessage().isBlank(), "ownership rejection needs a diagnostic");
+    }
+
+    @Test
+    void inlineMutableReceiverAcceptsBorrowFromDifferentOwner() {
+        // Matched positive control: the receiver's exclusive loan may coexist
+        // with an independent mutable argument. This guards against making
+        // every inline-mut-self call fail and calling that 'safety'.
+        Ast.Program parsed = Parser.parse("""
+                define class Counter as
+                  pub let int count = 0;
+                  pub borrow_and_read(mut self, borrow mut Counter other): int {
+                    return other.count;
+                  }
+                end
+                fnc valid(): int {
+                  val Counter counter = new Counter();
+                  val Counter other = new Counter();
+                  return counter.borrow_and_read(rt borrow mut other);
+                }
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(parsed));
     }
 
     @Test
