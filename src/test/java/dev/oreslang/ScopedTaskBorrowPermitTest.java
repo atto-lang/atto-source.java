@@ -45,7 +45,7 @@ final class ScopedTaskBorrowPermitTest {
 
 
     @Test
-    void rebindingStorageAdvancesGenerationWithoutChangingRegionIdentity() {
+    void rebindingValueKeepsTheSameLexicalStorageRegionGeneration() {
         Ast.Program program = OresCompiler.parseAndTypeCheck("""
                 pub routine main(): void {
                     let int value = 40;
@@ -80,9 +80,10 @@ final class ScopedTaskBorrowPermitTest {
         Ast.TaskCaptureProof second = secondTask.captureProofs().getFirst();
 
         assertEquals(first.regionId(), second.regionId(),
-                "rebinding reuses the same storage region identity");
-        assertEquals(first.regionGeneration() + 1L, second.regionGeneration(),
-                "rebinding must fence stale permits with a new generation");
+                "rebinding a value does not replace its lexical storage region");
+        assertEquals(first.regionGeneration(), second.regionGeneration(),
+                "generation changes only when the underlying region is actually reused");
+        assertEquals(0L, first.regionGeneration());
     }
 
     @Test
