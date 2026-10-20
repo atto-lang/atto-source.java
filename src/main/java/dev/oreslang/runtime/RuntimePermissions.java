@@ -245,8 +245,28 @@ public final class RuntimePermissions {
     private record NetworkScope(String host, String port) { }
 
     static String networkEndpoint(String host, int port) {
-        if (host == null || host.isBlank() || port < 0 || port > 65535)
+        if (port < 0 || port > 65535)
             throw new IllegalArgumentException("invalid network endpoint");
+        String normalizedHost = normalizeNetworkHost(host);
+        return normalizedHost.indexOf(':') >= 0
+                ? "[" + normalizedHost + "]:" + port
+                : normalizedHost + ":" + port;
+    }
+
+    /**
+     * Listener permission resource. Port zero asks the OS to choose an
+     * arbitrary ephemeral port, so it requires host-wide bind authority rather
+     * than pretending the unknown final endpoint is literally host:0.
+     */
+    static String networkBindResource(String host, int port) {
+        if (port < 0 || port > 65535)
+            throw new IllegalArgumentException("invalid network endpoint");
+        return port == 0 ? normalizeNetworkHost(host) : networkEndpoint(host, port);
+    }
+
+    private static String normalizeNetworkHost(String host) {
+        if (host == null || host.isBlank())
+            throw new IllegalArgumentException("invalid network endpoint host");
         String normalizedHost = host.trim().toLowerCase(Locale.ROOT);
         if (normalizedHost.startsWith("[") && normalizedHost.endsWith("]")) {
             normalizedHost = normalizedHost.substring(1, normalizedHost.length() - 1);
@@ -256,9 +276,7 @@ public final class RuntimePermissions {
                 || normalizedHost.indexOf(']') >= 0) {
             throw new IllegalArgumentException("invalid network endpoint host");
         }
-        return normalizedHost.indexOf(':') >= 0
-                ? "[" + normalizedHost + "]:" + port
-                : normalizedHost + ":" + port;
+        return normalizedHost;
     }
 
     private static NetworkScope parseNetworkScope(String raw) {
