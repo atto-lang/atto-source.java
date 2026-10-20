@@ -8023,6 +8023,21 @@ public final class TypeChecker {
             return;
         }
         if (pattern instanceof ListType p && actual instanceof ListType a) {
+            // An ordered repeating unit is a type-level product, not merely a
+            // union of its possible element types. Infer each generic against
+            // its corresponding proven slot. Inferring T from the joined
+            // element alone loses positional information and can produce an
+            // arbitrary union where a specific slot type is required.
+            if (p.patterned()) {
+                if (!a.patterned() || a.repeatUnit().size() != p.repeatUnit().size()) {
+                    return; // assignability will reject missing/mismatched shape proofs
+                }
+                for (int i = 0; i < p.repeatUnit().size(); i++) {
+                    inferGenericBindings(p.repeatUnit().get(i), a.repeatUnit().get(i),
+                            bindings, fixedBindings, label + " repeating slot " + i);
+                }
+                return;
+            }
             inferGenericBindings(p.element(), a.element(), bindings, fixedBindings, label);
             return;
         }
