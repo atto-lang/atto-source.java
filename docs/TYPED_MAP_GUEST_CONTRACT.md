@@ -39,6 +39,8 @@ Until explicit container moves and non-lexical Map loans are implemented:
 - Maps cannot be captured by closures;
 - Maps cannot be passed as ordinary call arguments;
 - Maps cannot be stored in arrays/lists, tuples, structs/records, class/actor fields, or module/global state;
+- `Channel<Map<...>>`, async-task Map boundaries, and actor/message Map payload types are rejected;
+- `rt copy`, `rt take`, and `rt share` are rejected for Maps until explicit Map transfer/copy/share semantics exist;
 - Map allocation inside actor code is rejected;
 - actor transport remains rejected by the runtime foundation.
 
