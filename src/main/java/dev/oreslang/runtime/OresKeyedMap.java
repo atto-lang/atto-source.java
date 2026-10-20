@@ -179,29 +179,30 @@ public final class OresKeyedMap<K, V> {
     }
 
     /**
-     * Snapshot contents under this map's monitor, then perform value
-     * equality/hash outside the monitor. Guest values may implement nontrivial
-     * equality; never invoke that code while one or two mutable Map monitors
-     * are held.
+     * Mutable typed Map storage is identity-bearing at the Java host boundary.
+     *
+     * <p>Guest Map equality, if exposed later, must be a checked Oreslang
+     * operation with explicit value semantics. Delegating Java equals/hashCode
+     * to mutable nested values would permit arbitrary host callbacks, make hash
+     * identity unstable after mutation, and accidentally define guest behavior.
      */
-    private synchronized LinkedHashMap<K, V> equalitySnapshot() {
-        return new LinkedHashMap<>(entries);
-    }
-
     @Override
     public boolean equals(Object other) {
-        if (this == other) return true;
-        if (!(other instanceof OresKeyedMap<?, ?> that)) return false;
-        if (domain != that.domain || valueDomain != that.valueDomain) return false;
-        return equalitySnapshot().equals(that.equalitySnapshot());
+        return this == other;
     }
 
     @Override
     public int hashCode() {
-        LinkedHashMap<K, V> snapshot = equalitySnapshot();
-        int result = domain.hashCode();
-        result = 31 * result + valueDomain.hashCode();
-        return 31 * result + snapshot.hashCode();
+        return System.identityHashCode(this);
+    }
+
+    /**
+     * Never render keys or values through host toString callbacks. Diagnostics
+     * should report typed metadata separately without exposing stored payloads.
+     */
+    @Override
+    public String toString() {
+        return "OresKeyedMap<opaque>";
     }
 
     public synchronized int size() {
@@ -355,27 +356,38 @@ public final class OresKeyedMap<K, V> {
             throw new IllegalArgumentException("typed Map batch exceeds maximum key count");
         }
         List<Map.Entry<K, V>> prepared = new ArrayList<>(reportedSize);
+        // Snapshot the hostile host collection before invoking any entry
+        // validator. A custom Map may lie about size() or change cardinality
+        // while iterating; such an input must not trigger validator side
+        // effects for a batch that is rejected before semantic admission.
+        for (Map.Entry<? extends K, ? extends V> entry : values.entrySet()) {
+            if (prepared.size() >= MAX_ENTRIES) {
+                throw new IllegalArgumentException("typed Map batch exceeds maximum key count");
+            }
+            Map.Entry<? extends K, ? extends V> source =
+                    Objects.requireNonNull(entry, "map entry");
+            prepared.add(new java.util.AbstractMap.SimpleImmutableEntry<>(
+                    source.getKey(), source.getValue()));
+        }
+        if (prepared.size() != reportedSize) {
+            throw new IllegalArgumentException("host Map size changed during batch snapshot");
+        }
+
         // A caller may supply IdentityHashMap or a custom Map whose equality
         // differs from the guest Map's nominal String/Symbol equality. Reject
         // duplicate *logical* keys before any writes rather than letting
         // iteration order silently determine the winning value.
         Set<K> incomingKeys = new HashSet<>();
-        for (Map.Entry<? extends K, ? extends V> entry : values.entrySet()) {
-            if (prepared.size() >= MAX_ENTRIES) {
-                throw new IllegalArgumentException("typed Map batch exceeds maximum key count");
-            }
-            K key = Objects.requireNonNull(entry, "map entry").getKey();
+        for (Map.Entry<K, V> entry : prepared) {
+            K key = entry.getKey();
             V value = entry.getValue();
             checkKey(key);
             checkValue(key, value);
             if (!incomingKeys.add(key)) {
                 throw new IllegalArgumentException("duplicate logical key in Map batch");
             }
-            prepared.add(Map.entry(key, value));
         }
-        if (prepared.size() != reportedSize) {
-            throw new IllegalArgumentException("host Map size changed during batch snapshot");
-        }
+
         Set<K> additions = new HashSet<>();
         long additionalKeyWireBytes = 0L;
         for (Map.Entry<K, V> entry : prepared) {
