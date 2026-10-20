@@ -6242,6 +6242,40 @@ public final class ActorRuntime implements AutoCloseable {
             schedule();
         }
 
+        @FunctionalInterface
+        private interface CausalAction {
+            void run() throws Exception;
+        }
+
+        /** Install only for the owning turn; always restore the pooled carrier's prior trace. */
+        private void withCausalTrace(OresAsyncTrace.Trace trace, CausalAction action)
+                throws Exception {
+            if (trace == null) {
+                action.run();
+                return;
+            }
+            try (OresAsyncTrace.Scope ignored = OresAsyncTrace.install(trace)) {
+                try {
+                    action.run();
+                } catch (ActorTurnSuspendedSignal suspended) {
+                    // Scheduler control transfer is not an exception or guest failure.
+                    throw suspended;
+                } catch (Exception | Error failure) {
+                    if (!(failure instanceof VirtualMachineError)
+                            && !(failure instanceof ThreadDeath)
+                            && !(failure instanceof LinkageError)) {
+                        OresAsyncTrace.attach(failure, trace);
+                    }
+                    throw failure;
+                }
+            }
+        }
+
+        private OresAsyncTrace.Trace forkDeferredTrace() {
+            OresAsyncTrace.Trace current = OresAsyncTrace.current();
+            return current == null ? null : current.fork();
+        }
+
         private void suspendOn(OresFuture<?> awaited, ActorContinuation continuation) {
             Objects.requireNonNull(awaited, "awaited");
             Objects.requireNonNull(continuation, "continuation");
@@ -6253,6 +6287,8 @@ public final class ActorRuntime implements AutoCloseable {
                         "actor turn is already suspended; compiler emitted overlapping await state");
             }
 
+            // Capture at suspension, not on an arbitrary Future-completion thread.
+            OresAsyncTrace.Trace suspendedTrace = OresAsyncTrace.current();
             logicalTurnSuspended = true;
             try {
                 OresFuture.RuntimeWaiterRegistration registration =
@@ -6261,7 +6297,8 @@ public final class ActorRuntime implements AutoCloseable {
                                 new ContinuationEnvelope(
                                         continuation,
                                         value,
-                                        unwrapCompletionFailure(failure)),
+                                        unwrapCompletionFailure(failure),
+                                        suspendedTrace),
                                 "resume"));
 
                 OresFuture.RuntimeWaiterRegistration previous =
@@ -6290,7 +6327,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             enqueueContinuation(
                     nextTickContinuations,
-                    new ContinuationEnvelope(continuation, null, null),
+                    new ContinuationEnvelope(continuation, null, null, forkDeferredTrace()),
                     "next_tick");
         }
 
@@ -6302,13 +6339,14 @@ public final class ActorRuntime implements AutoCloseable {
             }
             if (delay.isNegative()) throw new IllegalArgumentException("actor timer delay cannot be negative");
 
+            OresAsyncTrace.Trace deferredTrace = forkDeferredTrace();
             AtomicReference<ActorTimerWheel.Handle> holder = new AtomicReference<>();
             ActorTimerWheel.Handle delegate = actorTimerWheel.schedule(delay, () -> {
                 ActorTimerWheel.Handle handle = holder.get();
                 if (handle != null) timers.remove(handle);
                 enqueueContinuation(
                         readyContinuations,
-                        new ContinuationEnvelope(continuation, null, null),
+                        new ContinuationEnvelope(continuation, null, null, deferredTrace),
                         "timer");
             });
             holder.set(delegate);
