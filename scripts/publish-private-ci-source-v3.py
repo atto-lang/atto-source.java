@@ -595,13 +595,79 @@ def validate_test_plan(plan_bytes, source_pr):
             or plan.get("schema") != "ores-private-ci-test-plan-v1"
             or plan.get("source_repo") != legacy.SOURCE_REPO):
         raise Denied("reviewed test plan source/schema mismatch")
+    allowed_fields = {
+        "schema", "source_repo", "allowed_prs", "commands",
+        "required_source_blobs",
+    }
+    if not set(plan).issubset(allowed_fields):
+        raise Denied("reviewed test plan has unexpected fields")
     allowed = plan.get("allowed_prs")
-    if (not isinstance(allowed, list)
+    if (not isinstance(allowed, list) or not allowed
             or source_pr not in allowed
             or any(not isinstance(x, int) or isinstance(x, bool) or x <= 0
-                   for x in allowed)):
+                   for x in allowed)
+            or len(set(allowed)) != len(allowed)):
         raise Denied("reviewed test plan does not authorize source PR")
-    return hashlib.sha256(plan_bytes).hexdigest()
+
+    required = plan.get("required_source_blobs", {})
+    if not isinstance(required, dict):
+        raise Denied("reviewed test plan required source blobs invalid")
+    checked_required = {}
+    for source_path, source_sha in required.items():
+        if (not isinstance(source_path, str) or not source_path
+                or source_path.startswith("/") or "\\" in source_path
+                or ".." in PurePosixPath(source_path).parts
+                or ".git" in PurePosixPath(source_path).parts):
+            raise Denied("reviewed test plan has unsafe required source path")
+        checked_required[source_path] = valid_sha(
+            source_sha, "reviewed test plan required source blob invalid"
+        )
+
+    commands = plan.get("commands")
+    if not isinstance(commands, list) or not 1 <= len(commands) <= 16:
+        raise Denied("reviewed test plan commands missing or excessive")
+    uses_maven = False
+    for command in commands:
+        if (not isinstance(command, dict)
+                or set(command) != {"argv", "cwd", "timeout_seconds"}):
+            raise Denied("reviewed test plan command shape invalid")
+        argv = command.get("argv")
+        cwd = command.get("cwd")
+        timeout = command.get("timeout_seconds")
+        if (not isinstance(argv, list) or not argv or len(argv) > 32
+                or any(not isinstance(arg, str) or not arg or len(arg) > 512
+                       for arg in argv)
+                or not isinstance(cwd, str) or not cwd
+                or cwd.startswith("/") or "\\" in cwd
+                or ".." in PurePosixPath(cwd).parts
+                or not isinstance(timeout, int) or isinstance(timeout, bool)
+                or not 1 <= timeout <= 3600):
+            raise Denied("reviewed test plan command invalid")
+        if argv[0] == "mvn":
+            uses_maven = True
+            if "-o" not in argv and "--offline" not in argv:
+                raise Denied("Maven carrier commands must run offline")
+
+    if uses_maven and "pom.xml" not in checked_required:
+        raise Denied("Maven test plan must bind exact pom.xml blob")
+
+    return {
+        "sha256": hashlib.sha256(plan_bytes).hexdigest(),
+        "required_source_blobs": checked_required,
+        "uses_maven": uses_maven,
+    }
+
+
+def verify_required_source_blobs(files, required):
+    if not isinstance(required, dict):
+        raise Denied("required source blob contract invalid")
+    actual = {path: git_blob_sha(data) for path, data, _mode in files}
+    for source_path, expected_sha in required.items():
+        if actual.get(source_path) != expected_sha:
+            raise Denied(
+                "exact source tree differs from reviewed required blob: "
+                + source_path
+            )
 
 
 def manifest(files):
@@ -735,7 +801,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         )
     source_repo_id = verify_source_pr(source_pr, source_commit)
     destination, base_tree, plan_bytes = checked_destination(repository, contract)
-    plan_sha256 = validate_test_plan(plan_bytes, source_pr)
+    plan_meta = validate_test_plan(plan_bytes, source_pr)
 
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
@@ -744,6 +810,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     except ValueError as exc:
         raise Denied("source directory escapes trusted checkout") from exc
     files = legacy.collect_source(source, trusted_root)
+    verify_required_source_blobs(files, plan_meta["required_source_blobs"])
     source_tree = legacy.verified_exact_source_tree(files, source_commit)
     rows, manifest_sha256 = manifest(files)
     branch = "ci/oreslang-" + source_tree
@@ -807,7 +874,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         },
         "test_plan": {
             "path": contract["test_plan_path"],
-            "sha256": plan_sha256,
+            "sha256": plan_meta["sha256"],
         },
     }
     receipt_bytes = canonical_bytes(receipt) + b"\n"
