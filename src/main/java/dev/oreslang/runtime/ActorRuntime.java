@@ -913,7 +913,15 @@ public final class ActorRuntime implements AutoCloseable {
         private final long limitBytes;
         private final AtomicLong usedBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
+        /**
+         * Sealing allocation is not the same as completing teardown. Direct
+         * block invalidation and aggregate quota release can fail under OOME
+         * and must remain retryable after sliceClosed becomes visible.
+         */
+        private final AtomicBoolean sliceCleanupComplete = new AtomicBoolean();
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
+        // Package-runtime fault injection at the post-seal/pre-cleanup boundary.
+        private Runnable closeAfterSealFaultForTesting;
 
         private ActorMemorySlice(ActorId owner, long limitBytes) {
             this.owner = Objects.requireNonNull(owner);
@@ -942,9 +950,12 @@ public final class ActorRuntime implements AutoCloseable {
          * compiler-lowered private actor state a genuinely unshared backing
          * region while actors remain multiplexed over carrier threads.
          */
-        public PrivateMemoryBlock allocatePrivateBytes(int bytes) {
+        public synchronized PrivateMemoryBlock allocatePrivateBytes(int bytes) {
             requireCurrentOwner();
             if (bytes < 0) throw new IllegalArgumentException("private memory block size cannot be negative");
+            // Keep reserve -> block publication atomic against close(). Without
+            // the shared monitor, close could seal and drain blocks after the
+            // quota reservation but before the new direct block is published.
             MemoryReservation reservation = reserve(bytes, "private actor direct heap");
             try {
                 PrivateMemoryBlock block = new PrivateMemoryBlock(this, reservation, bytes);
@@ -1007,25 +1018,33 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override
         public synchronized void close() {
-            // Closing the slice is a two-part transition: revoke guest access
-            // once, then settle the runtime-wide debit. The debit itself is a
-            // retryable finalization boundary. Never zero usedBytes before the
-            // aggregate release succeeds; otherwise an accounting failure
-            // would leave a closed slice with no remaining refund authority.
-            boolean firstClose = sliceClosed.compareAndSet(false, true);
-            if (firstClose) {
-                for (PrivateMemoryBlock block : List.copyOf(blocks)) {
-                    block.invalidateFromSlice();
-                }
-                blocks.clear();
+            // Seal first so no actor turn can allocate new state while teardown
+            // is in progress. Do NOT use this bit as a cleanup-complete witness:
+            // every operation below may fail under resource exhaustion.
+            sliceClosed.set(true);
+            if (sliceCleanupComplete.get()) return;
+
+            Runnable injected = closeAfterSealFaultForTesting;
+            if (injected != null) injected.run();
+
+            // allocatePrivateBytes() shares this monitor, so once sealed no new
+            // direct block can appear after this traversal. Avoid List.copyOf():
+            // teardown must not require an O(n) allocation merely to make
+            // progress while recovering from memory pressure.
+            for (PrivateMemoryBlock block : blocks) {
+                block.invalidateFromSlice();
             }
+            blocks.clear();
+
+            // Keep local debit ownership until the aggregate release succeeds.
+            // If release throws, a later physical-finalization retry resumes
+            // from the same usedBytes value.
             long bytes = usedBytes.get();
             if (bytes != 0) {
                 releasePrivateRuntimeBytes(bytes, owner);
-                // No fallible work follows the aggregate release. A failed
-                // release leaves the exact debit visible for supervisor retry.
                 usedBytes.set(0);
             }
+            sliceCleanupComplete.set(true);
         }
 
         private void unregister(PrivateMemoryBlock block) {
@@ -1045,6 +1064,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final int capacity;
         private volatile ByteBuffer memory;
         private final AtomicBoolean blockClosed = new AtomicBoolean();
+        /** Guarded by this: explicit close can fail after sealing and must resume. */
+        private boolean blockCleanupComplete;
 
         private PrivateMemoryBlock(
                 ActorMemorySlice slice,
@@ -1133,18 +1154,28 @@ public final class ActorRuntime implements AutoCloseable {
             memory = null;
         }
 
-        private void invalidateFromSlice() {
-            if (!blockClosed.compareAndSet(false, true)) return;
+        private synchronized void invalidateFromSlice() {
+            if (blockCleanupComplete) return;
+            // Seal access before zeroing, but do not mistake the seal for proof
+            // that zero/detach completed. If zeroing throws, slice close retains
+            // this exact block and retries it.
+            blockClosed.set(true);
             zeroAndDetachMemory();
         }
 
         @Override
-        public void close() {
-            openMemory(); // owner + liveness check before invalidation
-            if (!blockClosed.compareAndSet(false, true)) return;
+        public synchronized void close() {
+            if (blockCleanupComplete) return;
+            if (!blockClosed.get()) {
+                openMemory(); // owner + liveness check before first invalidation
+                blockClosed.set(true);
+            }
+            // Each step is idempotent. A failure after zero/detach but before
+            // reservation.close() must leave the quota owner retryable.
             zeroAndDetachMemory();
             slice.unregister(this);
             reservation.close();
+            blockCleanupComplete = true;
         }
     }
 
