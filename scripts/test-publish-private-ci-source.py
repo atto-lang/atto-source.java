@@ -603,6 +603,38 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "LC_ALL": "C.UTF-8",
         })
 
+    def test_github_api_output_limit_rejects_oversize_before_json_decode(self):
+        from unittest.mock import Mock
+        # Deliberately use valid JSON: rejection must be due to the byte
+        # budget and must happen before the response can authorize a write.
+        data = '{"content":"' + "x" * 200 + '"}'
+        with patch.object(pub, "MAX_GH_API_RESPONSE_CHARS", 120):
+            with patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"):
+                with patch.dict(pub.os.environ, {"GH_TOKEN": "fixture"}, clear=True):
+                    with patch.object(pub.subprocess, "run", return_value=Mock(
+                            returncode=0, stdout=data)) as invoked:
+                        with self.assertRaisesRegex(pub.Denied, "exceeds size limit"):
+                            pub.gh_api("repos/trusted/ci")
+        self.assertEqual(invoked.call_count, 1)
+
+    def test_github_api_output_limit_allows_small_valid_json(self):
+        from unittest.mock import Mock
+        with patch.object(pub, "MAX_GH_API_RESPONSE_CHARS", 64):
+            with patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"):
+                with patch.dict(pub.os.environ, {"GH_TOKEN": "fixture"}, clear=True):
+                    with patch.object(pub.subprocess, "run", return_value=Mock(
+                            returncode=0, stdout='{"ok":true}')):
+                        self.assertTrue(pub.gh_api("repos/trusted/ci")["ok"])
+
+    def test_github_api_rejects_nontext_response_without_parser_execution(self):
+        from unittest.mock import Mock
+        with patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"):
+            with patch.dict(pub.os.environ, {"GH_TOKEN": "fixture"}, clear=True):
+                with patch.object(pub.subprocess, "run", return_value=Mock(
+                        returncode=0, stdout=None)):
+                    with self.assertRaisesRegex(pub.Denied, "exceeds size limit"):
+                        pub.gh_api("repos/trusted/ci")
+
     def test_github_api_denies_missing_binary_without_spawning(self):
         with patch.object(pub.os, "lstat", side_effect=FileNotFoundError):
             with patch.object(pub.subprocess, "run", side_effect=AssertionError(
