@@ -440,34 +440,50 @@ authorized** unless separately reviewed.
 A private repository token is not the only exfiltration channel. Even with no
 `GITHUB_TOKEN`, `GH_TOKEN` or repository secrets, code under test can send
 its own private bytes over ordinary outbound network access or encode them into
-logs/artifacts. Therefore an approved mirror is still **not executable** on a
-normal GitHub-hosted runner or directly on the carrier host.
+logs/artifacts. Therefore carrier admission binds the **actual reviewed
+execution implementation**, not an aspirational sandbox design.
 
-The reviewed carrier design requires source-bearing build jobs to run only on a
-disposable runner labeled `self-hosted, linux, x64, oreslang-private-ephemeral,
-oreslang-egress-locked`. The source itself executes only inside a preloaded,
-content-addressed Docker image approved on pinned carrier `main` as exact
-`sha256:<64hex>` IDs for the Java 21 and Java 25 roles. The source publisher
-requires both image IDs before reading/uploading private source and revalidates
-the exact pinned policy before each destination write.
+The funded carrier currently uses execution profile
+`bwrap-offline-maven-v1`. Protected carrier `main` must contain
+`.github/oreslang-private-execution-profile.txt`, whose exact Git blob is
+pinned by the reviewed carrier tree. The profile binds:
 
-The production sandbox uses `--pull=never`, `--network=none`,
-`--ipc=none`, `--log-driver=none`, a read-only container root and read-only
-source bind, dropped capabilities, `no-new-privileges`, non-root UID 65532,
-private bind propagation, tmpfs work/scratch, bounded PIDs/memory/CPU, swap
-disabled, and a minimal environment. Maven executes with `-o` offline mode;
-all required toolchains/plugins/dependencies must already exist in the reviewed
-sealed image. Untrusted build stdout/stderr is discarded and every nonzero
-private build exit is normalized to one generic failure result rather than
-publishing the exact exit code.
+- the exact `.github/workflows/private-oreslang-exact-tree.yml` Git blob;
+- trusted root `pom.xml` blob
+  `2fbedd1086357c7c6385ba439c42f4315f050974`; and
+- the `bwrap-offline-maven-v1` execution model.
 
-Source-free carrier head `0a4b4c79d9121d3113585b583b77f1a53856f852`
-passed **54/54** deterministic tests, including explicit NUL-byte rejection
-for both pinned carrier policy blobs, plus the real hosted Docker isolation
-probe in run `39346656825`. That probe verified the sandbox contract using
-synthetic bytes only. It does **not** prove the dedicated self-hosted runner's
-egress controls and does not authorize private-source transfer while protected
-main/ruleset/review gates remain unavailable.
+Source-side admission independently proves that the authorized source root tree
+contains exactly that trusted `pom.xml` blob before private source bytes are
+read. It also verifies the complete carrier workflow manifest and the profile's
+workflow SHA against the same pinned carrier tree. A changed POM, workflow,
+execution profile, or workflow surface requires new protected carrier/source
+approval.
+
+The carrier downloads Maven dependencies only during a trusted pre-execution
+phase, reconstructs the exact approved source Git tree, and executes source
+commands with Maven offline inside Bubblewrap. Private execution unshares
+network, user, PID, UTS and IPC namespaces, clears inherited environment,
+drops capabilities and uses isolated source/Maven/temp mounts. The workflow
+forbids Actions artifact/cache persistence of private source, does not expose
+repository secrets to source execution, and purges source-bearing runner
+workspace/log state in `if: always()` cleanup steps.
+
+Private-source checkout is additionally two-phase. The immutable payload ref
+must exist first, then an independently verified
+`ci/authorized-<payload-commit>` handoff ref must bind the same payload
+commit. **Before the first source checkout**, carrier CI proves both refs are
+covered by the same active, repository-owned, no-bypass ruleset that forbids
+update and deletion. Payload and handoff refs are intentionally retained
+immutable after validation; deleting their names would permit authorization
+replay. Runner cleanup is therefore separate from Git-ref retention, and
+immutable retention is not described as cryptographic erasure.
+
+The earlier sealed-Docker-image design remains historical test evidence only;
+it is not the admission contract for the funded dummy carrier. Source-free
+carrier tests must validate the Bubblewrap/offline-Maven profile actually used
+by that repository.
+
 
 ### Exact production-module verification — 2026-10-19
 
