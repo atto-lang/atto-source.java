@@ -134,7 +134,10 @@ public final class OresEvalRootNode extends RootNode {
         if (current != null) return current;
         synchronized (this) {
             current = evaluator;
-            if (current == null) evaluator = current = new Evaluator(program, context, codeUnitId);
+            if (current == null) {
+                evaluator = current = new Evaluator(
+                        program, context, codeUnitId, taskAdmissions);
+            }
             return current;
         }
     }
@@ -148,6 +151,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Ast.Program program;
         private final OresContext context;
         private final String codeUnitId;
+        private final TaskBoundaryAdmissions taskAdmissions;
         // Actor carriers may enter the same evaluator concurrently. The
         // identity map only retains call nodes already owned by this program.
         private final Map<Ast.CallExpr, Integer> optionDepthCache =
@@ -232,10 +236,17 @@ public final class OresEvalRootNode extends RootNode {
         }
 
 
-        private Evaluator(Ast.Program program, OresContext context, String codeUnitId) {
+        private Evaluator(
+                Ast.Program program,
+                OresContext context,
+                String codeUnitId,
+                TaskBoundaryAdmissions taskAdmissions) {
             this.program = program;
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
+            this.taskAdmissions =
+                    Objects.requireNonNull(taskAdmissions, "taskAdmissions");
+            this.taskAdmissions.requireProgramIdentity(program);
             indexImports();
             indexDeclarations();
             indexCallableSlots();
@@ -3165,10 +3176,18 @@ public final class OresEvalRootNode extends RootNode {
                             throw new SecurityException(
                                     "guest scalar task must execute in VM root main");
                         }
-                        // Only the frontend-approved immediate scalar await
-                        // may enter the guest Task execution path. Never
-                        // snapshot the Env or execute guest AST on the child.
-                        Ast.Expr capturedExpression = ScalarTaskPlan.returnedScalar(scalarTask);
+                        // Executable authority comes from the sealed compiler
+                        // proof for this exact checked Program and TaskExpr.
+                        // Structural shape remains defense-in-depth only.
+                        TaskBoundaryAdmissions.ScalarAdmission scalarAdmission =
+                                taskAdmissions.requireScalar(program, scalarTask);
+                        Ast.Expr capturedExpression =
+                                scalarAdmission.returnedExpression();
+                        if (ScalarTaskPlan.returnedScalar(scalarTask)
+                                != capturedExpression) {
+                            throw new SecurityException(
+                                    "scalar Task admission lost exact expression identity");
+                        }
                         if (env.hasLiveMutexGuards()) {
                             throw new IllegalStateException(
                                     "scalar Task cannot launch while a MutexGuard is live");
