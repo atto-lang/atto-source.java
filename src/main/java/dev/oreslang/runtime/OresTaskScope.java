@@ -287,8 +287,11 @@ public final class OresTaskScope {
         }
     }
 
-    /** Aggregate region continuity check used by diagnostics/tests. */
-    public boolean hasScopedReadLease(long regionId, long generation) {
+    /**
+     * Aggregate region continuity check for runtime-package diagnostics/tests.
+     * Cross-package execution code must use exact claim identity instead.
+     */
+    boolean hasScopedReadLease(long regionId, long generation) {
         synchronized (lock) {
             RegionReadState region = scopedReadRegions.get(regionId);
             return region != null
