@@ -46,9 +46,12 @@ public final class OwnershipChecker {
     private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Map<String, Ast.EnumDecl> enums = new HashMap<>();
+    private final IdentityHashMap<Ast.EnumDecl, String> enumOwners = new IdentityHashMap<>();
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    private final Set<String> ambiguousEnums = new HashSet<>();
     private int mutexCriticalSectionDepth;
     private int actorStateLoanDepth;
     private final java.util.ArrayDeque<String> actorStateLoanNames =
@@ -76,7 +79,12 @@ public final class OwnershipChecker {
                                 + "' is reserved by the sealed actor scalar publication API");
                     }
                     index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
-                } else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                } else if (decl instanceof Ast.ClassDecl klass) {
+                    index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                } else if (decl instanceof Ast.EnumDecl enumeration) {
+                    index(enums, ambiguousEnums, module.name(), enumeration.name(), enumeration);
+                    enumOwners.put(enumeration, module.name());
+                }
             }
         }
     }
@@ -1287,6 +1295,49 @@ public final class OwnershipChecker {
                     throw error("publish_scalar_publication requires a compiler-issued scalar publication");
                 }
                 return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+            }
+        }
+
+        if (call.callee() instanceof Ast.MemberExpr enumCall
+                && enumCall.receiver() instanceof Ast.NameExpr enumName
+                && scope.lookup(enumName.name()) == null) {
+            Ast.EnumDecl enumeration = findEnum(enumName.name());
+            if (enumeration != null) {
+                Ast.EnumCase variant = enumCase(enumeration, enumCall.member());
+                if (variant == null) {
+                    throw error("unknown enum case "
+                            + enumName.name() + "." + enumCall.member());
+                }
+                int expected = variant.payload() == null ? 0 : 1;
+                if (call.arguments().size() != expected) {
+                    throw error("enum constructor "
+                            + enumName.name() + "." + enumCall.member()
+                            + " expects " + expected + " argument(s)");
+                }
+                ValueKind kind = ValueKind.COPY;
+                if (expected == 1) {
+                    ValueInfo payload = checkExpr(
+                            call.arguments().getFirst(), scope, true);
+                    if (containsMlScalarCapabilityType(payload.type)) {
+                        throw error("enum payload cannot retain actor scalar "
+                                + "snapshot/publication capabilities");
+                    }
+                    if (payload.kind == ValueKind.IMM_BORROW
+                            || payload.kind == ValueKind.MUT_BORROW
+                            || (payload.type != null && payload.type.isBorrow())) {
+                        throw error("enum payload cannot store a borrow");
+                    }
+                    if (containsMutexGuardType(payload.type)) {
+                        throw error("enum payload cannot store MutexGuard");
+                    }
+                    kind = payload.kind == ValueKind.COPY
+                            ? ValueKind.COPY
+                            : ValueKind.MOVE_ONLY;
+                }
+                return new ValueInfo(
+                        Ast.TypeRef.simple(qualifiedEnumName(enumeration)),
+                        kind,
+                        null);
             }
         }
 
@@ -2812,6 +2863,27 @@ public final class OwnershipChecker {
     private Ast.ClassDecl findClass(String name) {
         if (ambiguousClasses.contains(name)) return null;
         return classes.get(name);
+    }
+
+    private Ast.EnumDecl findEnum(String name) {
+        if (ambiguousEnums.contains(name)) {
+            throw error("ambiguous enum '" + name + "'; qualify it with its module");
+        }
+        return enums.get(name);
+    }
+
+    private String qualifiedEnumName(Ast.EnumDecl enumeration) {
+        String owner = enumOwners.get(enumeration);
+        return owner == null || owner.equals(Parser.ROOT_MODULE)
+                ? enumeration.name()
+                : owner + "." + enumeration.name();
+    }
+
+    private Ast.EnumCase enumCase(Ast.EnumDecl enumeration, String name) {
+        for (Ast.EnumCase variant : enumeration.cases()) {
+            if (variant.name().equals(name)) return variant;
+        }
+        return null;
     }
 
     private VarState ownershipRoot(VarState state) {
