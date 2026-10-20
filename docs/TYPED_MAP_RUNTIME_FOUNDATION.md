@@ -37,7 +37,8 @@ Unicode-normalized into a different key.
 - lookup and take represent absence explicitly and do not flatten a stored
   Option-like value;
 - exported snapshots are detached and unmodifiable;
-- entry validators cannot re-enter mutation of the Map being validated and are required to be deterministic/side-effect free;
+- entry validators are runtime-package-private compiler policy hooks, cannot be installed by arbitrary external hosts, cannot re-enter mutation of the Map being validated, and are required to be deterministic/side-effect free;
+- Symbol names reject control, bidi-format, Unicode line-separator and paragraph-separator characters so diagnostic/source rendering cannot become multiline or directionally ambiguous;
 - `take` validates its key-byte refund before mutating live storage, so accounting corruption fails closed;
 - mutable typed Maps fail closed at actor and untrusted boundaries.
 
