@@ -981,6 +981,17 @@ def delete_exact_ref(repository, ref_name, expected_sha, expected_repository_id)
     return True
 
 
+def fresh_handoff_nonce():
+    """Generate one 128-bit handoff identity; never use a caller-supplied ID."""
+    try:
+        value = secrets.token_hex(16)
+    except (OSError, RuntimeError) as exc:
+        raise Denied("private CI handoff entropy unavailable") from exc
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{32}", value):
+        raise Denied("private CI handoff entropy invalid")
+    return value
+
+
 def create_handoff_ref(repository, ref_name, commit_sha, expected_repository_id):
     """POST one ref, accepting only an exact create response.
 
@@ -998,6 +1009,7 @@ def create_handoff_ref(repository, ref_name, commit_sha, expected_repository_id)
     if (not isinstance(result, dict)
             or result.get("ref") != "refs/heads/" + ref_name
             or not isinstance(result.get("object"), dict)
+            or result["object"].get("type") != "commit"
             or result["object"].get("sha") != commit_sha):
         raise Denied("carrier did not confirm exact handoff ref creation")
     return result
@@ -1318,13 +1330,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     # An independent writer exporting the same tree must produce a different
     # commit identity, so a failed CREATE cannot confuse ordinary collisions.
     # This is not an atomic compare-and-delete guarantee.
-    try:
-        handoff_nonce = secrets.token_hex(16)
-    except (OSError, RuntimeError) as exc:
-        raise Denied("private CI handoff entropy unavailable") from exc
-    if not isinstance(handoff_nonce, str) or not re.fullmatch(
-            r"[0-9a-f]{32}", handoff_nonce):
-        raise Denied("private CI handoff entropy invalid")
+    handoff_nonce = fresh_handoff_nonce()
     commit_message = (
         f"ci: exact private Oreslang tree {source_commit} tree {source_tree}\n"
         f"carrier-base {contract['base_sha']} tree {base_tree}\n"
