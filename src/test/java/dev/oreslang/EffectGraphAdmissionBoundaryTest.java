@@ -96,4 +96,17 @@ final class EffectGraphAdmissionBoundaryTest {
         assertThrows(NullPointerException.class,
                 () -> new EffectContracts.Call("target", null));
     }
+
+    @Test void declaredUnknownEffectCannotBecomeAnEscapeHatch() {
+        var graph = new EffectContracts.Graph();
+        graph.add(new EffectContracts.Callable("entry", Set.of(),
+                List.of(EffectContracts.Call.unresolved("dynamic")),
+                Set.of(UNKNOWN_CALL)));
+        var rejected = assertThrows(IllegalArgumentException.class, graph::validate);
+        assertTrue(rejected.getMessage().contains("unverifiable effect allowance"));
+        var foreign = new EffectContracts.Graph();
+        foreign.add(new EffectContracts.Callable("entry", Set.of(FFI_UNKNOWN),
+                List.of(), Set.of(FFI_UNKNOWN)));
+        assertThrows(IllegalArgumentException.class, foreign::validate);
+    }
 }
