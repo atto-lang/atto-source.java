@@ -43,13 +43,15 @@ jobs:
       - name: Assert private CI guard fail-closed behavior
         run: |
           set -euo pipefail
-          bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
-          python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py scripts/publish-private-ci-source-v3.py scripts/test-publish-private-ci-source-v3.py
-          bash scripts/test-private-ci-destination.sh
-          bash -n tools/verify-exact-source-tree.sh tools/test-verify-exact-source-tree.sh
-          bash tools/test-verify-exact-source-tree.sh
+          clean_bash=(/usr/bin/env -i PATH=/usr/bin:/bin HOME=/ /bin/bash --noprofile --norc)
+          clean_python=(/usr/bin/env -i PATH=/usr/bin:/bin HOME=/ /usr/bin/python3 -I -B)
+          "${clean_bash[@]}" -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
+          "${clean_python[@]}" -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py scripts/publish-private-ci-source-v3.py scripts/test-publish-private-ci-source-v3.py
+          "${clean_bash[@]}" scripts/test-private-ci-destination.sh
+          "${clean_bash[@]}" -n tools/verify-exact-source-tree.sh tools/test-verify-exact-source-tree.sh
+          "${clean_bash[@]}" tools/test-verify-exact-source-tree.sh
           for attempt in 1 2 3; do
             echo "Private publisher adversarial pass ${attempt}/3"
-            python3 scripts/test-publish-private-ci-source.py
-            python3 scripts/test-publish-private-ci-source-v3.py
+            "${clean_python[@]}" scripts/test-publish-private-ci-source.py
+            "${clean_python[@]}" scripts/test-publish-private-ci-source-v3.py
           done
