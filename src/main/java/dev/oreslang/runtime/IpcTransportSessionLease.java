@@ -84,6 +84,10 @@ final class IpcTransportSessionLease {
     private boolean physicalCloseExecuting;
     private boolean physicalCloseConfirmed;
     private boolean receiptsRetired;
+    // Once an actual descriptor-close invocation fails, that ambiguity is the
+    // authoritative shutdown failure for this generation. Scheduler, timeout,
+    // or receipt-retirement diagnostics must never overwrite it.
+    private boolean physicalCloseFailureRecorded;
     private Throwable closeFailure;
     private long cleanupAttempt;
     private boolean cleanupExecuting;
@@ -221,6 +225,21 @@ final class IpcTransportSessionLease {
         }
     }
 
+    /** Only called while holding this monitor. */
+    private void recordLifecycleFailureLocked(Throwable failure) {
+        Objects.requireNonNull(failure, "failure");
+        if (!physicalCloseFailureRecorded) {
+            closeFailure = failure;
+        }
+    }
+
+    /** Only called while holding this monitor after entering descriptor close. */
+    private void recordPhysicalCloseFailureLocked(Throwable failure) {
+        Objects.requireNonNull(failure, "failure");
+        physicalCloseFailureRecorded = true;
+        closeFailure = failure;
+    }
+
     /**
      * Fail closed when a trusted abort task cannot be admitted or when the
      * write pins do not drain by a supervisor deadline. Never marks an
@@ -234,10 +253,12 @@ final class IpcTransportSessionLease {
             absorbDeferredSchedulerFailureLocked();
             if (phase == Phase.RETIRED || phase == Phase.QUARANTINED) return false;
             if (phase == Phase.FINALIZING && cleanupExecuting) {
-                if (closeFailure == null) closeFailure = failure;
+                if (closeFailure == null && !physicalCloseFailureRecorded) {
+                    closeFailure = failure;
+                }
                 return false;
             }
-            closeFailure = failure;
+            recordLifecycleFailureLocked(failure);
             phase = Phase.QUARANTINED;
             notifyAll();
             return true;
@@ -311,7 +332,7 @@ final class IpcTransportSessionLease {
                 // The descriptor-close result outranks an earlier scheduling
                 // or timeout diagnostic: this is the failure that determines
                 // whether physical reuse can ever be considered safe.
-                closeFailure = failure;
+                recordPhysicalCloseFailureLocked(failure);
                 phase = Phase.QUARANTINED;
                 notifyAll();
                 return;
@@ -370,7 +391,8 @@ final class IpcTransportSessionLease {
             absorbDeferredSchedulerFailureLocked();
             if (phase != Phase.FINALIZING) return;
             if (cleanupAttempt == Long.MAX_VALUE) {
-                closeFailure = new IllegalStateException("cleanup attempt overflow");
+                recordLifecycleFailureLocked(
+                        new IllegalStateException("cleanup attempt overflow"));
                 phase = Phase.QUARANTINED;
                 notifyAll();
                 return;
@@ -388,7 +410,7 @@ final class IpcTransportSessionLease {
             synchronized (this) {
                 if (phase == Phase.FINALIZING && cleanupAttempt == attempt
                         && !cleanupExecuting) {
-                    closeFailure = failure;
+                    recordLifecycleFailureLocked(failure);
                     phase = Phase.QUARANTINED;
                     notifyAll();
                 }
@@ -415,8 +437,8 @@ final class IpcTransportSessionLease {
             if (phase != Phase.FINALIZING || cleanupAttempt != attempt
                     || cleanupExecuting) return;
             if (enqueueAttempt == attempt && enqueueCaller == Thread.currentThread()) {
-                closeFailure = new IllegalStateException(
-                        "cleanup scheduler executed inline on requesting carrier");
+                recordLifecycleFailureLocked(new IllegalStateException(
+                        "cleanup scheduler executed inline on requesting carrier"));
                 enqueueCaller = null;
                 phase = Phase.QUARANTINED;
                 notifyAll();
@@ -427,16 +449,16 @@ final class IpcTransportSessionLease {
             closeNeeded = !physicalCloseConfirmed;
             if (closeNeeded) {
                 if (physicalCloseExecuting) {
-                    closeFailure = new IllegalStateException(
-                            "physical close already executing");
+                    recordLifecycleFailureLocked(new IllegalStateException(
+                            "physical close already executing"));
                     cleanupExecuting = false;
                     phase = Phase.QUARANTINED;
                     notifyAll();
                     return;
                 }
                 if (physicalCloseAttempted) {
-                    closeFailure = new IllegalStateException(
-                            "physical close attempt unconfirmed; descriptor reuse unsafe");
+                    recordLifecycleFailureLocked(new IllegalStateException(
+                            "physical close attempt unconfirmed; descriptor reuse unsafe"));
                     cleanupExecuting = false;
                     phase = Phase.QUARANTINED;
                     notifyAll();
@@ -452,7 +474,7 @@ final class IpcTransportSessionLease {
         } catch (Exception | Error failure) {
             synchronized (this) {
                 physicalCloseExecuting = false;
-                closeFailure = failure;
+                recordPhysicalCloseFailureLocked(failure);
                 cleanupExecuting = false;
                 phase = Phase.QUARANTINED;
                 notifyAll();
@@ -472,7 +494,7 @@ final class IpcTransportSessionLease {
                     physicalOwner, trustedEpoch, generation);
         } catch (RuntimeException | Error failure) {
             synchronized (this) {
-                closeFailure = failure;
+                recordLifecycleFailureLocked(failure);
                 cleanupExecuting = false;
                 phase = Phase.QUARANTINED;
                 notifyAll();
@@ -531,7 +553,9 @@ final class IpcTransportSessionLease {
                 && deferred.cleanupAttempt() != cleanupAttempt) {
             return; // stale scheduler callback from an older cleanup attempt
         }
-        if (closeFailure == null) closeFailure = deferred.failure();
+        if (closeFailure == null && !physicalCloseFailureRecorded) {
+            closeFailure = deferred.failure();
+        }
         cleanupExecuting = false;
         phase = Phase.QUARANTINED;
         notifyAll();
