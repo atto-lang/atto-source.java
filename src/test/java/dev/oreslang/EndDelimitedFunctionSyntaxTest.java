@@ -42,6 +42,40 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
+    void newlineDoSelectRemainsARealFirstBodyStatement() {
+        var endDelimited = Parser.parse("""
+                fnc consume(Channel<int> incoming) -> void
+                    do select {
+                        case readch incoming: val number {
+                            return;
+                        }
+                    }
+                end
+                """);
+        var braced = Parser.parse("""
+                fnc consume(Channel<int> incoming) -> void {
+                    do select {
+                        case readch incoming: val number {
+                            return;
+                        }
+                    }
+                }
+                """);
+
+        assertEquals(braced, endDelimited);
+    }
+
+    @Test
+    void standaloneNextLineDoIsNotAcceptedAsTheCallableSeparator() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc identity(int x) -> int
+                    do
+                    return x
+                end
+                """));
+    }
+
+    @Test
     void doProvidesCompactSameLineBodyBoundary() {
         var compact = Parser.parse("fnc identity(int x) -> int do return x; end");
         var multiline = Parser.parse("""
