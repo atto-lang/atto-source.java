@@ -128,7 +128,7 @@ public final class Parser {
                     continue;
                 }
                 if (matchContextualKeyword("model")) {
-                    validateOnlyVisibilityModifiers(modifiers, "models");
+                    validateModelModifiers(modifiers);
                     rejectDiscardedDeclarationAnnotations(annotations, "model declarations");
                     rootDeclarations.add(parseModelDecl(modifiers.visibility));
                     continue;
@@ -317,7 +317,7 @@ public final class Parser {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
             if (matchContextualKeyword("model")) {
-                validateOnlyVisibilityModifiers(modifiers, "models");
+                validateModelModifiers(modifiers);
                 rejectDiscardedDeclarationAnnotations(annotations, "model declarations");
                 return parseModelDecl(modifiers.visibility);
             }
@@ -364,6 +364,13 @@ public final class Parser {
      * VJPs are NOT trusted or resolved here. TypeChecker rejects execution until
      * the typed model graph and CPU backend exist.
      */
+    private void validateModelModifiers(Modifiers modifiers) {
+        validateOnlyVisibilityModifiers(modifiers, "models");
+        if (modifiers.suspends || modifiers.trapped) {
+            throw error(previous(), "MODEL_EFFECTFUL_BODY: models cannot be suspending or trapped");
+        }
+    }
+
     private Ast.ModelDecl parseModelDecl(Ast.Visibility visibility) {
         String name = consume(IDENT, "expected nominal model name").lexeme();
         if (check(DOT)) throw error(peek(), "models cannot use dotted declaration names");
