@@ -210,6 +210,8 @@ final class EcsAccessPlannerTest {
         assertThrows(IllegalArgumentException.class, () -> write(new Object(), 8, 7));
         assertThrows(NullPointerException.class, () -> new Access(new Object(), 0, 1, null));
         assertThrows(IllegalArgumentException.class, () -> sys(""));
+        assertThrows(IllegalArgumentException.class,
+                () -> sys("x".repeat(EcsAccessPlanner.MAX_SYSTEM_NAME_CHARS + 1)));
         assertThrows(NullPointerException.class, () -> EcsAccessPlanner.plan(null));
         assertEquals(List.of(), EcsAccessPlanner.plan(List.of()));
     }
