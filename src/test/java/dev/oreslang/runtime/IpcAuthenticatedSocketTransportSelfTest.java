@@ -119,6 +119,38 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         }
     }
 
+    private static final class ConstructionFailureSocket extends Socket {
+        private final boolean failOutput;
+        private final boolean failClose;
+        private final ByteArrayInputStream input =
+                new ByteArrayInputStream(new byte[0]);
+        private final ByteArrayOutputStream output = new ByteArrayOutputStream();
+        private final AtomicInteger closes = new AtomicInteger();
+
+        ConstructionFailureSocket(boolean failOutput, boolean failClose) {
+            this.failOutput = failOutput;
+            this.failClose = failClose;
+        }
+
+        @Override public InputStream getInputStream() { return input; }
+
+        @Override
+        public OutputStream getOutputStream() throws IOException {
+            if (failOutput) throw new IOException("construction output acquisition failed");
+            return output;
+        }
+
+        @Override
+        public void close() {
+            closes.incrementAndGet();
+            if (failClose) {
+                throw new IllegalStateException("construction close failed");
+            }
+        }
+
+        int closeCount() { return closes.get(); }
+    }
+
     private static final class BlockingAbortOutputStream extends OutputStream {
         private final CountDownLatch writeEntered;
         private final CountDownLatch abortWrite;
@@ -310,6 +342,58 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         check(goldenDecoded.envelope().equals(goldenEnvelope));
         check(Arrays.equals(goldenDecoded.payload(), goldenPayload));
 
+        // Constructor preparation is reversible until the final one-shot
+        // receipt-bridge claim. A stream acquisition failure must close the
+        // socket and leave the bridge available for a later legitimate owner.
+        byte[] constructionPayload = "construction".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var constructionEpoch = envelope(
+                1, "constructionTxn", 3, 4, constructionPayload);
+        var constructionBridge = new IpcReceiptCompletionBridge(1);
+        var streamFailureSocket = new ConstructionFailureSocket(true, false);
+        try {
+            new IpcAuthenticatedSocketTransport(
+                    streamFailureSocket, constructionBridge,
+                    constructionEpoch, 901, 1, key, connectionBinding,
+                    IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+            throw new AssertionError("constructor stream failure was swallowed");
+        } catch (IOException expected) {
+            check(expected.getMessage().contains("output acquisition"));
+        }
+        check(streamFailureSocket.closeCount() == 1);
+        Object laterOwner = new Object();
+        constructionBridge.claimPhysicalTransport(
+                laterOwner, constructionEpoch, 901);
+        check(constructionBridge.transportLost(
+                laterOwner, constructionEpoch, 901) == 0);
+        check(constructionBridge.invariant());
+
+        // The final irreversible claim may itself fail (for example because
+        // another physical transport already owns the bridge). Cleanup must
+        // close the socket, preserve that original binding failure, and attach
+        // any unchecked close failure only as suppressed diagnostics.
+        var occupiedBridge = new IpcReceiptCompletionBridge(1);
+        Object occupiedOwner = new Object();
+        occupiedBridge.claimPhysicalTransport(
+                occupiedOwner, constructionEpoch, 902);
+        var claimFailureSocket = new ConstructionFailureSocket(false, true);
+        try {
+            new IpcAuthenticatedSocketTransport(
+                    claimFailureSocket, occupiedBridge,
+                    constructionEpoch, 902, 1, key, connectionBinding,
+                    IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+            throw new AssertionError("duplicate physical bridge claim succeeded");
+        } catch (IllegalStateException expected) {
+            check(expected.getMessage().contains("already bound"));
+            check(expected.getSuppressed().length == 1);
+            check(expected.getSuppressed()[0].getMessage().contains(
+                    "construction close failed"));
+        }
+        check(claimFailureSocket.closeCount() == 1);
+        check(occupiedBridge.transportLost(
+                occupiedOwner, constructionEpoch, 902) == 0);
+        check(occupiedBridge.invariant());
+
         // TCP stream publication is single-file. Physical write concurrency
         // greater than one is rejected; outstanding receipt lifetimes are a
         // separate bridge/correlation concern.
@@ -432,6 +516,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 awaitPhase(transport, IpcTransportSessionLease.Phase.RETIRED);
                 check(transport.snapshot().activeWrites() == 0);
                 check(transport.keyCloneZeroized());
+                check(transport.connectionBindingCloneZeroized());
             } finally {
                 cleanup.shutdownNow();
                 cleanup.awaitTermination(2, TimeUnit.SECONDS);
