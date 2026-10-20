@@ -8955,10 +8955,20 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean isStructuralValueCarrier(Object value) {
-            return value instanceof Map<?, ?>
+            // Structural matching must never call host Map.containsKey/get on
+            // an arbitrary java.util.Map implementation. A malicious Map can
+            // execute callbacks even for a field-only or empty shape probe.
+            return isTrustedStructuralRecordMap(value)
                     || value instanceof OresEntry
                     || (value instanceof OresObject object
                             && object.klass.actorKind() == Ast.ActorKind.NONE);
+        }
+
+        private boolean isTrustedStructuralRecordMap(Object value) {
+            return value instanceof ReadonlyRecordValue
+                    || value instanceof MutableStructValue
+                    || value instanceof ActorRuntime.FrozenGuestMap
+                    || (value != null && value.getClass() == LinkedHashMap.class);
         }
 
         private Object publicStructuralMember(Object value, String name) {
@@ -8969,7 +8979,8 @@ public final class OresEvalRootNode extends RootNode {
                     default -> Env.MISSING;
                 };
             }
-            if (value instanceof Map<?, ?> map) {
+            if (isTrustedStructuralRecordMap(value)) {
+                Map<?, ?> map = (Map<?, ?>) value;
                 return map.containsKey(name) ? map.get(name) : Env.MISSING;
             }
             if (value instanceof OresObject object) {
