@@ -67,8 +67,9 @@ actor_method_decl
 
 class_decl      = visibility "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
-                  [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
+                  [ ( "implements" | "impl" ) implemented_target { "," implemented_target } ]
                   "as" { class_member } "end" ;
+implemented_target = [ "static" ] type_ref ;
 
 class_member    = field_decl
                 | type_first_class_field_decl
@@ -104,8 +105,8 @@ static_function_decl
                 = { annotation } visibility "static" { "async" | "structural" } "fnc" callable_name [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 
-contract_decl   = "define" "contract" IDENT [ generic_params ]
-                  [ "extends" type_ref { "," type_ref } ] interface_body ;
+contract_decl   = "define" [ "static" ] "contract" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ] contract_body ;
 
 interface_decl  = visibility "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
@@ -113,6 +114,12 @@ interface_decl  = visibility "interface" IDENT [ generic_params ]
                 | "define" "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   interface_body ;
+
+contract_body   = "{" { contract_member } "}"
+                | { contract_member } "end" ;
+contract_member = { annotation } [ "structural" ] "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" contract_return_spec member_terminator
+                | IDENT ":" type_ref member_terminator
+                | [ binding_kind ] type_ref IDENT member_terminator ;
 
 interface_body  = "{" { interface_member } "}"
                 | { interface_member } "end" ;
@@ -127,6 +134,7 @@ annotation      = "@" IDENT [ "<" [ annotation_args ] ">" | "(" [ annotation_arg
 annotation_args = annotation_arg { "," annotation_arg } ;
 annotation_arg  = named_type_param | meta_value | type_ref ;
 return_spec     = [ ( ":" | "->" ) type_ref ] ;
+contract_return_spec = [ ( "=>" | ":" | "->" ) type_ref ] ;
 type_return_spec= [ "=>" type_ref ] ;
 generic_params  = "<" IDENT { "," IDENT } ">" ;
 param_list      = param { "," param } ;
@@ -364,7 +372,10 @@ type_atom       = borrow_type
                 | "null" ;
 
 borrow_type     = "&" [ "mut" ] type_atom ;
-tuple_type      = "[" [ type_ref { "," type_ref } ] "]" ;
+tuple_type      = "[" [ type_ref { "," type_ref } ] "]"
+                | "tuple" "(" [ type_ref { "," type_ref } ] ")" ;
+(* The contextual tuple(...) type spelling normalizes to the existing finite
+   positional tuple TypeRef and is bounded to 64 slots by parser admission. *)
 record_type     = "{" [ record_type_field { "," record_type_field } ] "}" ;
 record_type_field
                 = ( IDENT | STRING_LITERAL ) ":" type_ref ;
