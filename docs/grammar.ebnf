@@ -72,8 +72,12 @@ actor_method_decl
 
 class_decl      = visibility "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
-                  [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
+                  [ ( "implements" | "impl" ) implemented_target { "," implemented_target } ]
                   "as" { class_member } "end" ;
+implemented_target = [ "static" ] type_ref ;
+(* "implements static Contract" constrains the class static namespace. In v1
+   only public local static fnc slots satisfy this domain; class static fields
+   and inherited-static satisfaction remain fail-closed. *)
 
 class_member    = field_decl
                 | type_first_class_field_decl
@@ -109,8 +113,11 @@ static_function_decl
                 = { annotation } visibility "static" { "async" | "structural" } "fnc" callable_name [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 
-contract_decl   = "define" "contract" IDENT [ generic_params ]
+contract_decl   = "define" [ "static" ] "contract" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ] contract_body ;
+(* A static contract uses the callable member grammar but v1 rejects field
+   members until class static storage exists. Ordinary module contracts retain
+   callable and field requirements. *)
 
 interface_decl  = visibility "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
