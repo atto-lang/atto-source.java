@@ -666,14 +666,23 @@ public final class OresTaskScope {
         try {
             onClosed.accept(this);
         } catch (RuntimeException | Error failure) {
-            // The drain Future is a lifetime/reclamation witness. Never report
-            // successful quiescence if the owning TaskRunner failed to
-            // deregister/finalize this scope. Surface the owner failure to the
-            // waiter and keep success fail-closed.
-            if (!drained.failFromRuntime(failure)) {
+            // Owner deregistration is trusted lifetime bookkeeping. Guest code
+            // must not catch/trap it and continue as though the structured
+            // scope were cleanly retired.
+            StructuredTaskScopePoisonException poison =
+                    failure instanceof StructuredTaskScopePoisonException existing
+                            ? existing
+                            : new StructuredTaskScopePoisonException(
+                                    "structured Task scope owner finalization poisoned",
+                                    failure);
+            synchronized (lock) {
+                poisonScopeLocked(poison);
+                poisonFinalized = true;
+            }
+            if (!drained.failFromRuntime(poison)) {
                 throw new IllegalStateException(
                         "Task scope drain was already settled before owner failure",
-                        failure);
+                        poison);
             }
             return;
         }
