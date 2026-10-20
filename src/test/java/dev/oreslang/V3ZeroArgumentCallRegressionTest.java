@@ -42,6 +42,20 @@ final class V3ZeroArgumentCallRegressionTest {
     }
 
     @Test
+    void trailingDefaultReceivesRemainingPositionalArg() {
+        var p = V3ScalarDefaultProgramNormalizer.parseNormalizeAndAnalyze("""
+                pub fnc add(int a, @Default(5) int b): int { return a + b; }
+                pub fnc main(): int { return add(8); }
+                """);
+        var fn = (dev.oreslang.ast.Ast.FunctionDecl)p.modules().getFirst().declarations().get(1);
+        var call = (dev.oreslang.ast.Ast.CallExpr)
+                ((dev.oreslang.ast.Ast.ReturnStmt)fn.body().getFirst()).value();
+        assertEquals(2, call.arguments().size());
+        assertEquals(8L, ((dev.oreslang.ast.Ast.LiteralExpr)call.arguments().get(0)).value());
+        assertEquals(5L, ((dev.oreslang.ast.Ast.LiteralExpr)call.arguments().get(1)).value());
+    }
+
+    @Test
     void extraPositionalLiteralsAreRejected() {
         assertThrows(IllegalArgumentException.class,
                 () -> V3ScalarDefaultProgramNormalizer.parseNormalizeAndAnalyze("""
