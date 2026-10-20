@@ -76,6 +76,47 @@ final class ActorCausalEnvelopeTest {
     }
 
     @Test
+    void alreadyCompletedAwaitResumesOnActorCarrierWithOriginalCausalHistory()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> leaf = runtime.spawnPrivateTrusted(
+                    ignored -> (message, context) -> {
+                        throw new IllegalStateException("resumed leaf failed");
+                    });
+            ActorRuntime.ActorRef<String> parent = runtime.spawnPrivateTrusted(
+                    ignored -> (message, context) -> context.suspendOn(
+                            OresFuture.completed(17),
+                            (value, failure, resumed) -> {
+                                assertNull(failure);
+                                assertEquals(17, value);
+                                leaf.send("continuation");
+                            }));
+            parent.send("await");
+            String result = traceText(leaf);
+            assertTrue(result.contains(parent.id().value().toString()), result);
+            assertTrue(result.contains(leaf.id().value().toString()), result);
+        }
+    }
+
+    @Test
+    void nextTickForkRetainsParentCausalityWithoutBorrowingMessageTurn()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> leaf = runtime.spawnPrivateTrusted(
+                    ignored -> (message, context) -> {
+                        throw new IllegalStateException("next-tick leaf failed");
+                    });
+            ActorRuntime.ActorRef<String> parent = runtime.spawnPrivateTrusted(
+                    ignored -> (message, context) -> context.nextTick(
+                            (value, failure, resumed) -> leaf.send("tick")));
+            parent.send("start");
+            String result = traceText(leaf);
+            assertTrue(result.contains(parent.id().value().toString()), result);
+            assertTrue(result.contains(leaf.id().value().toString()), result);
+        }
+    }
+
+    @Test
     void hostSendCreatesFreshLineageRatherThanReusingLastMailTurn() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorRef<String> first = runtime.spawnPrivateTrusted(
