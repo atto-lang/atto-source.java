@@ -129,7 +129,7 @@ final class ModelGraphAdmissionTest {
                 source("define model X(rate: float = 0.20) as Apply(rate) end"),
                 trusted, DEFAULT);
         assertNotEquals(defaultA, defaultB);
-        assertNotEquals(defaultA.formals(), defaultB.formals());
+        assertNotEquals(defaultA.formalConfig(), defaultB.formalConfig());
     }
 
 
