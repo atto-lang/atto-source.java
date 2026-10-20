@@ -218,4 +218,61 @@ final class LinkedPublicClassFieldTypesTest {
                 () -> new IncrementalCompiler().compile(files));
     }
 
+
+    @Test
+    void linkedAsyncCallMustPassExactSemanticOwnershipJoin() {
+        Map<String, String> files = new LinkedHashMap<>();
+        files.put("src/model.ores", """
+                pub define class ImportedBox as
+                  pub let int value = 1;
+                end
+                """);
+        files.put("src/use.ores", """
+                import class ImportedBox from './model';
+
+                async fnc consume(ImportedBox box): int {
+                  return box.value;
+                }
+
+                pub fnc main(): void {
+                  let box = new ImportedBox();
+                  val pending = consume(box);
+                  return;
+                }
+                """);
+
+        assertDoesNotThrow(() -> new IncrementalCompiler().compile(files));
+    }
+
+    @Test
+    void linkedFirstClassAsyncCallFailsClosedWithoutOwnershipMetadata() {
+        Map<String, String> files = new LinkedHashMap<>();
+        files.put("src/model.ores", """
+                pub define class ImportedBox as
+                  pub let int value = 1;
+                end
+                """);
+        files.put("src/use.ores", """
+                import class ImportedBox from './model';
+
+                async fnc consume(ImportedBox box): int {
+                  return box.value;
+                }
+
+                pub fnc main(): void {
+                  let box = new ImportedBox();
+                  val action = consume;
+                  val pending = action(box);
+                  return;
+                }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(files));
+        assertTrue(
+                failure.getMessage().contains("async lowering admission"),
+                failure::getMessage);
+    }
+
 }
