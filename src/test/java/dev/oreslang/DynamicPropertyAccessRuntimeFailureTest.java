@@ -247,4 +247,31 @@ final class DynamicPropertyAccessRuntimeFailureTest {
                 "dynamic-structural-class-hidden-field.ores",
                 "structural computed field key outside checked domain: hidden");
     }
+
+    @Test
+    void structuralInterfaceDynamicAccessCannotExposeWiderPublicField() {
+        runtimeRejected("""
+                define interface PointLike
+                    x: int;
+                    y: int;
+                end
+
+                define class Point3d as
+                    pub val int x = 1;
+                    pub val int y = 2;
+                    pub val int z = 3;
+                end
+
+                fnc read(structural PointLike value, string key): int {
+                    return value[key];
+                }
+
+                pub fnc main(): void {
+                    stdio.println(read(new Point3d(), "z"));
+                    return;
+                }
+                """,
+                "dynamic-structural-interface-extra-field.ores",
+                "structural computed field key outside checked domain: z");
+    }
 }
