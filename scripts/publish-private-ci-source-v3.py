@@ -717,8 +717,13 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     if not isinstance(source_pr, int) or isinstance(source_pr, bool) or source_pr <= 0:
         raise Denied("invalid source PR number")
 
-    # Authorize before reading private source bytes.
-    legacy.require_preflight(repository, trusted_root)
+    # All early admission must be data-only. The former require_preflight()
+    # launched a checkout-provided shell script before the V3 control plane
+    # had been matched to reviewed Git objects. A poisoned checkout could
+    # execute with publisher credentials even if authorization later denied.
+    # checked_policy_approval() reads the bounded local policy through
+    # no-follow file descriptors; authorized_main_sha() independently
+    # establishes reviewed origin governance before source traversal/writes.
     approved_policy, approved_repository_id = legacy.checked_policy_approval(
         trusted_root, repository
     )
