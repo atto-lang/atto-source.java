@@ -186,6 +186,44 @@ define module db_pool as
     }
   end
 
+  // Runtime-issued receipts must be tracked by a trusted single owner.
+  // This state machine prevents duplicate settlement and stale generations.
+  // IDs are metadata, never credentials or proof of authorization.
+  pub define class RequestReceipt as
+    pub val int generation;
+    pub val int request_id;
+    pub val int reserved_bytes;
+    let mut bool settled = false;
+
+    pub constructor(int generation, int request_id, int reserved_bytes) {
+      if generation < 1 || request_id < 1 ||
+         reserved_bytes < 1 || reserved_bytes > 1073741824; do
+        rt fail("db_pool: invalid request receipt");
+      fi
+      self.generation = generation;
+      self.request_id = request_id;
+      self.reserved_bytes = reserved_bytes;
+    }
+
+    pub settle(mut self)(int generation, int request_id): bool {
+      if self.settled || generation != self.generation ||
+         request_id != self.request_id; do
+        return false;
+      fi
+      self.settled = true;
+      return true;
+    }
+
+    pub is_settled(): bool {
+      return self.settled;
+    }
+  end
+
+  pub fnc request_receipt(int generation, int request_id,
+                          int reserved_bytes): RequestReceipt {
+    return new RequestReceipt(generation, request_id, reserved_bytes);
+  }
+
   pub fnc session_gate(int depth): SessionGate {
     return new SessionGate(depth);
   }
