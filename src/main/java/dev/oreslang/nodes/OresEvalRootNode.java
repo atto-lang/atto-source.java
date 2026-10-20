@@ -14,10 +14,13 @@ import dev.oreslang.runtime.ProcessExitSignal;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.NativeIo;
+import dev.oreslang.runtime.NativeNioFutureReactor;
+import dev.oreslang.runtime.VmNioTcpListener;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.ActorFailure;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
@@ -7972,7 +7975,7 @@ public final class OresEvalRootNode extends RootNode {
                 case "is_none" -> (Invokable) args -> { requireZero(args, "Option.is_none"); return !option.present(); };
                 case "unwrap" -> (Invokable) args -> {
                     requireZero(args, "Option.unwrap");
-                    if (!option.present()) throw new OresPanic("called Option::unwrap() on a None value");
+                    if (!option.present()) throw new ActorFailure.Panic("called Option::unwrap() on a None value");
                     return option.value();
                 };
                 case "unwrap_all" -> (Invokable) args -> {
