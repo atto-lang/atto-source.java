@@ -1241,7 +1241,6 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "require_handoff_refs_absent") as absent_guard,
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
-                patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
                 with self.assertRaisesRegex(v3.Denied, "protection revoked"):
                     v3.publish(
@@ -1250,7 +1249,6 @@ class PrivateCiV3Test(unittest.TestCase):
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
 
-        delete_ref.assert_not_called()
 
     def test_publish_leaves_nonce_payload_inert_if_pr_head_moves_before_authorization(self):
         carrier = contract()
@@ -1309,7 +1307,6 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "require_handoff_refs_absent") as absent_guard,
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
-                patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
                 with self.assertRaisesRegex(v3.Denied, "PR head moved"):
                     v3.publish(
@@ -1318,7 +1315,6 @@ class PrivateCiV3Test(unittest.TestCase):
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
 
-        delete_ref.assert_not_called()
         ref_posts = [
             payload["ref"]
             for method, route, payload in writes
@@ -1386,7 +1382,6 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "require_handoff_refs_absent") as absent_guard,
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
-                patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
                 with self.assertRaisesRegex(v3.Denied, "authorization creation failed"):
                     v3.publish(
@@ -1395,7 +1390,6 @@ class PrivateCiV3Test(unittest.TestCase):
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
 
-        delete_ref.assert_not_called()
 
     def test_publish_does_not_delete_refs_on_keyboard_interrupt(self):
         carrier = contract()
@@ -1453,7 +1447,6 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "require_handoff_refs_absent") as absent_guard,
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
-                patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
                 with self.assertRaisesRegex(KeyboardInterrupt, "synthetic interrupted write"):
                     v3.publish(
@@ -1462,7 +1455,6 @@ class PrivateCiV3Test(unittest.TestCase):
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
 
-        delete_ref.assert_not_called()
 
     def test_publish_does_not_delete_refs_on_authorization_confirmation_mismatch(self):
         carrier = contract()
@@ -1520,7 +1512,6 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "require_handoff_refs_absent") as absent_guard,
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
-                patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
                 with self.assertRaisesRegex(v3.Denied, "dispatcher authorization ref"):
                     v3.publish(
@@ -1529,11 +1520,11 @@ class PrivateCiV3Test(unittest.TestCase):
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
 
-        delete_ref.assert_not_called()
 
     def test_publisher_failure_path_never_calls_destructive_ref_delete(self):
         source = v3.publish.__code__.co_names
         self.assertNotIn("delete_exact_ref", source)
+        self.assertFalse(hasattr(v3, "delete_exact_ref"))
 
     def test_ref_request_accepts_exact_authorization_ref_and_uses_get_route(self):
         response = type(
@@ -1559,29 +1550,12 @@ class PrivateCiV3Test(unittest.TestCase):
             argv,
         )
 
-    def test_ref_request_uses_plural_delete_route(self):
-        response = type(
-            "Result", (),
-            {"returncode": 0, "stderr": "", "stdout": ""},
-        )()
+    def test_ref_request_rejects_delete_method_without_subprocess(self):
         ref_name = "ci/authorized-" + COMMIT + "-" + NONCE
-        with (
-            patch.object(v3.legacy, "trusted_github_cli", return_value="/usr/bin/gh"),
-            patch.object(
-                v3.legacy, "github_api_environment",
-                return_value={"GH_TOKEN": "synthetic"},
-            ),
-            patch.object(v3.subprocess, "run", return_value=response) as run,
-        ):
-            self.assertIs(
-                v3._gh_ref_request("trusted/ci", ref_name, "DELETE"),
-                response,
-            )
-        argv = run.call_args.args[0]
-        self.assertIn(
-            "repos/trusted/ci/git/refs/heads/ci%2Fauthorized-" + COMMIT,
-            argv,
-        )
+        with patch.object(v3.subprocess, "run") as run:
+            with self.assertRaisesRegex(v3.Denied, "lookup method"):
+                v3._gh_ref_request("trusted/ci", ref_name, "DELETE")
+        run.assert_not_called()
 
     def test_ref_request_rejects_unrelated_ci_namespace(self):
         with self.assertRaisesRegex(v3.Denied, "target is invalid"):
@@ -1682,14 +1656,12 @@ class PrivateCiV3Test(unittest.TestCase):
             with (
                 patch.object(v3, "live_ref_sha", side_effect=result_sequence) as read,
                 patch.object(v3, "create_handoff_ref") as create,
-                patch.object(v3, "delete_exact_ref") as delete,
             ):
                 with self.assertRaisesRegex(v3.Denied, "already exists"):
                     v3.require_handoff_refs_absent(
                         "trusted/ci", branches[0], branches[1], 1323598177
                     )
                 create.assert_not_called()
-                delete.assert_not_called()
                 self.assertEqual(read.call_count, len(result_sequence))
         with patch.object(v3, "live_ref_sha", side_effect=[None, None]) as read:
             v3.require_handoff_refs_absent(
@@ -1766,59 +1738,6 @@ class PrivateCiV3Test(unittest.TestCase):
                     v3.create_handoff_ref(
                         "trusted/ci", ref, COMMIT, 1323598177
                     )
-
-    def test_rollback_refuses_a_competing_writers_sha(self):
-        with (
-            patch.object(v3, "live_ref_sha", return_value="9" * 40),
-            patch.object(v3, "_gh_ref_request") as request,
-        ):
-            with self.assertRaisesRegex(v3.Denied, "moved"):
-                v3.delete_exact_ref(
-                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE,
-                    COMMIT, 1323598177
-                )
-        request.assert_not_called()
-
-    def test_delete_exact_ref_missing_is_idempotent(self):
-        with patch.object(v3, "live_ref_sha", return_value=None):
-            self.assertFalse(
-                v3.delete_exact_ref(
-                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE, COMMIT, 1323598177
-                )
-            )
-
-    def test_delete_exact_ref_refuses_moved_ref(self):
-        with patch.object(v3, "live_ref_sha", return_value="9" * 40):
-            with self.assertRaisesRegex(v3.Denied, "moved"):
-                v3.delete_exact_ref(
-                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE, COMMIT, 1323598177
-                )
-
-    def test_delete_exact_ref_verifies_absence_after_delete(self):
-        response = type("Result", (), {"returncode": 0, "stderr": ""})()
-        with (
-            patch.object(v3, "live_ref_sha", side_effect=[COMMIT, None]),
-            patch.object(v3, "_gh_ref_request", return_value=response) as request,
-        ):
-            self.assertTrue(
-                v3.delete_exact_ref(
-                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE, COMMIT, 1323598177
-                )
-            )
-        request.assert_called_once_with(
-            "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE, "DELETE"
-        )
-
-    def test_delete_exact_ref_rejects_still_present_after_delete(self):
-        response = type("Result", (), {"returncode": 0, "stderr": ""})()
-        with (
-            patch.object(v3, "live_ref_sha", side_effect=[COMMIT, COMMIT]),
-            patch.object(v3, "_gh_ref_request", return_value=response),
-        ):
-            with self.assertRaisesRegex(v3.Denied, "still exists"):
-                v3.delete_exact_ref(
-                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE, COMMIT, 1323598177
-                )
 
     def test_manifest_matches_carrier_row_shape(self):
         rows, digest = v3.manifest(
