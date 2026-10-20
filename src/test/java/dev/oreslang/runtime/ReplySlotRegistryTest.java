@@ -73,7 +73,7 @@ final class ReplySlotRegistryTest {
             assertFalse(registry.complete(ORIGIN, handle, CHILD, "sha256:int-v4", "wrong-type"));
             assertFalse(pending.future().isDone(), "forgery must not poison the real request");
             assertTrue(registry.complete(ORIGIN, handle, CHILD, "sha256:int-v4", 42));
-            assertEquals(42, pending.future().get(1, TimeUnit.SECONDS));
+            assertEquals(Integer.valueOf(42), pending.future().get(1, TimeUnit.SECONDS));
             assertFalse(registry.complete(ORIGIN, handle, CHILD, "sha256:int-v4", 45));
         }
     }
@@ -152,7 +152,7 @@ final class ReplySlotRegistryTest {
                         ORIGIN, calls.get(i).handle(), CHILD, "sha256:int-v4", i));
             }
             for (int i = 0; i < 100; i++) {
-                assertEquals(i, calls.get(i).future().get(1, TimeUnit.SECONDS));
+                assertEquals(Integer.valueOf(i), calls.get(i).future().get(1, TimeUnit.SECONDS));
             }
             assertEquals(0, registry.pendingCount());
         }
