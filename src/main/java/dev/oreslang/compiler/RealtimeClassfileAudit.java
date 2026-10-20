@@ -220,11 +220,13 @@ public final class RealtimeClassfileAudit {
 
     private static String requireOwnStaticCall(Cp[] cp, int index, String ownClass) {
         Cp item = cpAt(cp, index);
-        if (!(item instanceof MethodRefCp ref)) deny("invokestatic does not reference a method");
+        if (!(item instanceof MethodRefCp)) deny("invokestatic does not reference a method");
+        MethodRefCp ref = (MethodRefCp) item;
         String owner = className(cp, ref.classIndex());
         if (!ownClass.equals(owner)) deny("external static call is forbidden: " + owner);
         Cp ntItem = cpAt(cp, ref.nameAndTypeIndex());
-        if (!(ntItem instanceof NameAndTypeCp nt)) deny("invalid method name/type");
+        if (!(ntItem instanceof NameAndTypeCp)) deny("invalid method name/type");
+        NameAndTypeCp nt = (NameAndTypeCp) ntItem;
         String name = utf8(cp, nt.nameIndex());
         if (name.startsWith("<")) deny("special method call is forbidden");
         String descriptor = utf8(cp, nt.descriptorIndex());
@@ -318,13 +320,15 @@ public final class RealtimeClassfileAudit {
 
     private static String className(Cp[] cp, int index) {
         Cp item = cpAt(cp, index);
-        if (!(item instanceof ClassCp cls)) deny("invalid class constant");
+        if (!(item instanceof ClassCp)) deny("invalid class constant");
+        ClassCp cls = (ClassCp) item;
         return utf8(cp, cls.nameIndex()).replace('/', '.');
     }
 
     private static String utf8(Cp[] cp, int index) {
         Cp item = cpAt(cp, index);
-        if (!(item instanceof Utf8Cp text)) deny("invalid UTF8 constant");
+        if (!(item instanceof Utf8Cp)) deny("invalid UTF8 constant");
+        Utf8Cp text = (Utf8Cp) item;
         return text.value();
     }
 
