@@ -24,7 +24,7 @@ public final class NativeBuildMode {
     private static ManagedReferenceMode imageManagedReferenceMode() {
         return parseManagedReferenceMode(
                 ImageInfo.inImageBuildtimeCode(),
-                System.getProperty("ores.native.ref-mode", "compressed32"));
+                System.getProperty("ores.native.ref-mode"));
     }
 
     static ManagedReferenceMode parseManagedReferenceMode(boolean nativeImageBuild, String selected) {
