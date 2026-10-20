@@ -80,12 +80,16 @@ final class CheckedDynamicIndexAccessTest {
                   return point[key];
                 }
                 pub routine main(): void {
-                  const point = struct{x: int, secret: string}{
+                  const first = struct{x: int, secret: string}{
                     x: 7, secret: "hidden"
                   };
-                  stdio.stdout.write(read(point, "x"));
-                  // Same checked IndexExpr now has a warmed evaluator plan.
-                  stdio.stdout.write(read(point, "secret"));
+                  const second = struct{x: int, secret: string}{
+                    x: 8, secret: "still-hidden"
+                  };
+                  stdio.stdout.write(read(first, "x"));
+                  // Same checked IndexExpr now has a warmed evaluator plan,
+                  // but use a fresh aggregate so ownership is not the variable.
+                  stdio.stdout.write(read(second, "secret"));
                   return;
                 }
                 """;
@@ -730,11 +734,11 @@ final class CheckedDynamicIndexAccessTest {
     void buildOptimizerRetainsCheckedReceiverWhenFoldingConditionals() {
         TreeShaker.Result result = OresCompiler.compileForBuild("""
                 pub const bool first = true;
-                pub fnc select(string key): int {
+                pub fnc pick(string key): int {
                   return (first ? infer struct{x: 7} : infer struct{x: 9})[key];
                 }
                 pub routine main(): void {
-                  stdio.stdout.write(select("x"));
+                  stdio.stdout.write(pick("x"));
                   return;
                 }
                 """, BuildOptions.executable(java.util.Map.of("first", "true")));
@@ -742,7 +746,7 @@ final class CheckedDynamicIndexAccessTest {
                 .flatMap(module -> module.declarations().stream())
                 .filter(Ast.FunctionDecl.class::isInstance)
                 .map(Ast.FunctionDecl.class::cast)
-                .filter(fn -> fn.name().equals("select"))
+                .filter(fn -> fn.name().equals("pick"))
                 .findFirst().orElseThrow();
         Ast.ReturnStmt returned = (Ast.ReturnStmt) select.body().getFirst();
         Ast.IndexExpr indexed = (Ast.IndexExpr) returned.value();
@@ -755,12 +759,12 @@ final class CheckedDynamicIndexAccessTest {
     void buildOptimizerRetainsCheckedSelectorWhenConstantFoldingWouldReplaceIt() {
         TreeShaker.Result result = OresCompiler.compileForBuild("""
                 pub const string chosen = "x";
-                pub fnc select(): int {
+                pub fnc pick(): int {
                   const point = infer struct{x: 7};
                   return point[chosen];
                 }
                 pub routine main(): void {
-                  stdio.stdout.write(select());
+                  stdio.stdout.write(pick());
                   return;
                 }
                 """, BuildOptions.executable(java.util.Map.of()));
@@ -768,7 +772,7 @@ final class CheckedDynamicIndexAccessTest {
                 .flatMap(module -> module.declarations().stream())
                 .filter(Ast.FunctionDecl.class::isInstance)
                 .map(Ast.FunctionDecl.class::cast)
-                .filter(fn -> fn.name().equals("select"))
+                .filter(fn -> fn.name().equals("pick"))
                 .findFirst().orElseThrow();
         Ast.ReturnStmt returned = (Ast.ReturnStmt) select.body().get(1);
         Ast.IndexExpr indexed = (Ast.IndexExpr) returned.value();
