@@ -1752,6 +1752,8 @@ public final class OresEvalRootNode extends RootNode {
                     || stmt instanceof Ast.ForOfDestructureStmt) return true;
             if (stmt instanceof Ast.BlockStmt block)
                 return block.body().stream().anyMatch(this::containsSourceLoop);
+            if (stmt instanceof Ast.TaskScopeStmt taskScope)
+                return taskScope.body().stream().anyMatch(this::containsSourceLoop);
             if (stmt instanceof Ast.IfStmt conditional)
                 return conditional.branches().stream().anyMatch(
                         branch -> branch.body().stream().anyMatch(this::containsSourceLoop))
