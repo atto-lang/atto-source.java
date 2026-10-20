@@ -2197,7 +2197,51 @@ public final class ActorRuntime implements AutoCloseable {
             }
             release(true); // idempotent; no second budget decrement
         }
-        private void revokeFromActorStop() { release(false); }
+
+        /*
+         * Finalization differs from explicit owner close: capability revocation
+         * must complete even if host accounting is already inconsistent. Fence
+         * access and detach the backing first, then record/refund best-effort
+         * accounting failures instead of stranding the ActorCell half-finalized.
+         * Private bytes are reclaimed by ActorMemorySlice.close() below.
+         */
+        private Throwable revokeFromActorStop(Throwable firstFatal) {
+            synchronized (cell.lifecycleLock) {
+                if (!revoked.compareAndSet(false, true)) return firstFatal;
+
+                ActorShardColumns shard = attachedShard;
+                attachedShard = null;
+                cell.shardLeases.remove(this);
+
+                if (shard != null) {
+                    try {
+                        shard.revokeBackingFromLease();
+                    } catch (Throwable failure) {
+                        firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+                    }
+                }
+
+                final long charged = privateBlock != null
+                        ? privateBlock.capacity() : sharedBytes;
+                if (privateBlock == null) {
+                    try {
+                        releaseSharedRuntimeBytes(sharedBytes);
+                    } catch (Throwable failure) {
+                        firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+                    }
+                }
+
+                if (cell.shardReservedBytes >= charged) {
+                    cell.shardReservedBytes -= charged;
+                } else {
+                    // The capability is already revoked and its backing detached.
+                    // Do not let a corrupt per-cell counter retain a live actor.
+                    lifecyclePublicationFailures.incrementAndGet();
+                    cell.shardReservedBytes = 0;
+                }
+                return firstFatal;
+            }
+        }
     }
 
     ActorShardLease reserveActorShard(int bytes) {
@@ -2307,7 +2351,41 @@ public final class ActorRuntime implements AutoCloseable {
             checkCaller();
             revoke();
         }
-        private void revokeFromActorStop() { revoke(); }
+
+        /*
+         * Stop-time revocation is fail-closed on capability access but
+         * fail-progressing on accounting: the retained handle is invalidated
+         * and detached before zeroization/refund can report a host failure.
+         */
+        private Throwable revokeFromActorStop(Throwable firstFatal) {
+            synchronized (cell.lifecycleLock) {
+                if (revoked) return firstFatal;
+                revoked = true;
+                double[] old = values;
+                values = null;
+                cell.shardSnapshotLeases.remove(this);
+
+                try {
+                    if (old != null) java.util.Arrays.fill(old, 0.0);
+                } catch (Throwable failure) {
+                    firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+                }
+
+                try {
+                    releaseSharedRuntimeBytes(bytes);
+                } catch (Throwable failure) {
+                    firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+                }
+
+                if (cell.shardReservedBytes >= bytes) {
+                    cell.shardReservedBytes -= bytes;
+                } else {
+                    lifecyclePublicationFailures.incrementAndGet();
+                    cell.shardReservedBytes = 0;
+                }
+                return firstFatal;
+            }
+        }
     }
 
     ActorShardSnapshotLease reserveActorShardSnapshot(int rows) {
@@ -8714,25 +8792,36 @@ public final class ActorRuntime implements AutoCloseable {
                 firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
             }
 
-            // Mainline actor-owned SoA/snapshot leases must be revoked BEFORE
-            // the physical heap and public DONE/observer publication. If a
-            // trusted host revocation cannot complete, fail closed rather
-            // than publish a terminal receipt while a backing lease is live.
-            // Each lease authenticates/revokes under its actor lifecycle lock.
+            // Revoke actor-owned SoA/snapshot capabilities BEFORE the physical
+            // heap and public DONE/observer publication. Stop-time revocation
+            // fences access/detaches backing before any fallible accounting,
+            // so a quota anomaly is telemetry rather than permission to wedge
+            // finalization or publish DONE while a capability remains usable.
             for (ActorShardLease lease : List.copyOf(shardLeases)) {
-                lease.revokeFromActorStop();
+                firstFatal = lease.revokeFromActorStop(firstFatal);
             }
-            shardLeases.clear();
             for (ActorShardSnapshotLease snapshot : List.copyOf(shardSnapshotLeases)) {
-                snapshot.revokeFromActorStop();
+                firstFatal = snapshot.revokeFromActorStop(firstFatal);
             }
-            shardSnapshotLeases.clear();
 
             if (memorySlice != null) {
                 try {
                     memorySlice.close();
                 } catch (Throwable failure) {
                     firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+                }
+            }
+
+            synchronized (lifecycleLock) {
+                if (!shardLeases.isEmpty()
+                        || !shardSnapshotLeases.isEmpty()
+                        || (memorySlice != null && !memorySlice.closed())) {
+                    throw new IllegalStateException(
+                            "actor finalization reached terminal publication with live heap capability");
+                }
+                if (shardReservedBytes != 0) {
+                    lifecyclePublicationFailures.incrementAndGet();
+                    shardReservedBytes = 0;
                 }
             }
 

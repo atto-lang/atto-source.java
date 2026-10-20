@@ -90,9 +90,9 @@ public final class ActorShardColumns implements AutoCloseable {
      */
     void revokeBackingFromLease() {
         double[] old = storage;
+        storage = null; // detach first: a retained shard cannot pin usable backing
         if (old != null) {
             java.util.Arrays.fill(old, 0.0);
-            storage = null;
         }
     }
 
@@ -115,8 +115,9 @@ public final class ActorShardColumns implements AutoCloseable {
         // safe; post-close data access is rejected by the lease.
         if (storage != null) {
             reservation.requireOwner();
-            java.util.Arrays.fill(storage, 0.0);
+            double[] old = storage;
             storage = null;
+            java.util.Arrays.fill(old, 0.0);
         }
         reservation.close();
     }
