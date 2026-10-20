@@ -67,6 +67,20 @@ public sealed interface OresPropertyKey
     record StringKey(String name) implements OresPropertyKey {
         public StringKey {
             Objects.requireNonNull(name, "String member key");
+            // Compiler-known keys must sort by distinct UTF-8 bytes. Java's
+            // replacement encoder would collapse different ill-formed UTF-16
+            // strings into the same bytes, so reject lone surrogates here.
+            for (int i = 0; i < name.length(); i++) {
+                char c = name.charAt(i);
+                if (Character.isHighSurrogate(c)) {
+                    if (i + 1 == name.length() || !Character.isLowSurrogate(name.charAt(i + 1))) {
+                        throw new IllegalArgumentException("unpaired surrogate in String member key");
+                    }
+                    i++;
+                } else if (Character.isLowSurrogate(c)) {
+                    throw new IllegalArgumentException("unpaired surrogate in String member key");
+                }
+            }
         }
 
         @Override public Domain domain() { return Domain.STRING; }
