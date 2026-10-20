@@ -266,9 +266,22 @@ public final class Types {
             // therefore name the exact generated struct shape.
             if (source.kind() == AggregateKind.STRUCT
                     && source.members().size() != target.members().size()) return false;
+            // Readonly structural views may covariantly read fields, but
+            // writable destinations cannot widen even one member type:
+            // such an alias could later write a FLOAT/Unknown into an INT slot.
+            if (!target.readOnly() && source.readOnly()) return false;
             for (Map.Entry<String, Type> required : target.members().entrySet()) {
                 Type actual = source.members().get(required.getKey());
-                if (actual == null || !isAssignable(actual, required.getValue())) return false;
+                if (actual == null) return false;
+                if (target.readOnly()) {
+                    // Unknown/Generic are inference holes, not evidence that
+                    // a concrete readable field exists under an alias.
+                    if (!actual.equals(required.getValue())
+                            && (containsUncertainType(actual)
+                                    || !isAssignable(actual, required.getValue()))) return false;
+                } else if (!actual.equals(required.getValue())) {
+                    return false;
+                }
             }
             return true;
         }
