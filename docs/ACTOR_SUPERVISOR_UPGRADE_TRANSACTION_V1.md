@@ -628,3 +628,71 @@ protected source main remains comment-only; security #962 and
 independent protected review #904 remain open. No private source
 was transferred to another organization. Keep PR #1367 DRAFT and
 production hot reload disabled pending full exact-head certification.
+
+## Failed proxy freeze rollback — persistent ticket owner and retry (October 20)
+
+The SHARED upgrade finalizer previously attempted
+`txn.proxyTicket.rollback()` and, on an exception, only attached the
+failure to the original exception. It could subsequently abandon the
+supervisor transaction without retaining an explicit durable retry
+handle for the mailbox freeze. A freeze-ticket rollback can fail
+before thaw if the bounded proxy detects an accounting/structural
+invariant error; that is NOT evidence the old physical route is safe
+to reopen.
+
+Commit `4e25209047874888871addca162111f4f6078334` adds the
+exact `pendingProxyRollbackTicket` to the supervisor's
+`routeLock`-protected recovery state. A failed explicit rollback:
+- retains the original, unconsumed mailbox freeze ticket;
+- marks `retirementQuarantined=true` **before** the active
+  transaction releases publication authority;
+- prevents the reaper from clearing quarantine while that ticket
+  remains outstanding, even if all old routes/candidates are gone;
+- prevents `close()` from abandoning the frozen mailbox; and
+- exposes a host-only `reconcileFailedProxyRollback()` that retries
+  the same ticket under `closeLock`/`routeLock` after pending
+  source-transfer rollback, old-route retirement and candidate
+  physical retirement are reconciled.
+
+The host recovery API does **not** commit a new route epoch, reconstruct
+a different ticket, or infer a thaw from a missing registry entry.
+Only a successful explicit `ticket.rollback()` consumes this owner,
+after which the normal reaper can clear quarantine.
+
+New production-source JUnit
+`LogicalSourceActorProxyRollbackRecoveryTest` includes
+an injected corrupt-mailbox retry test and a test that refuses thaw
+while a live unpublished candidate is still in its retirement
+ledger. A third, end-to-end candidate-timeout test was authored but
+its retry loop needs a correction: `reconcileFailedUpgradeRollback()`
+may legitimately return false when the *separate* proxy rollback
+ticket is still pending, and therefore its boolean result cannot
+gate a later `reconcileFailedProxyRollback()` call. Attempts to
+commit that specific test correction were blocked by the GitHub
+connector's write safety check. **Treat this test as not yet ready for
+release/merge, and do not represent it as passing JUnit.**
+The real full-source Java/Graal CI has not executed any test steps.
+
+Independent source-free JDK25 evidence:
+`gha-indie-worker/gha-indie-worker-e2e` source-free branch
+`tmp/oreslang-hot-upgrade-oracle-20261019`, workflow commit
+`f879fbfc35acc69abe520f0f3f521d0326be61e7`, GitHub
+Actions [run #39352270458](https://github.com/gha-indie-worker/gha-indie-worker-e2e/actions/runs/39352270458),
+job `118398945710`, finished SUCCESS. The logged exact output is:
+```
+PASS source-free proxy rollback assertions=225001
+races=5000 workers=4 negative_control=missing_ticket_unsafe
+private_source_bytes=0
+```
+The independent model compiled with Temurin JDK25 under
+`javac --release 25 -Xlint:all -Werror`, along with previously
+established source-free hot-upgrade, admission and candidate-quarantine
+oracles. These checks do NOT compile the private Oreslang compiler,
+`ActorRuntime`, proxy mailbox, Graal runtime or Native Image.
+
+Cross-org private-source mirroring remains prohibited while the source
+`main` approved-destination file has no uncommented approved
+repositories; the reviewed destination is only a comment and
+issues #962/#904 remain open. Retain PR DRAFT and production hot
+reload OFF pending test correction, authorized exact-head JDK25/Graal
+Maven execution, and native parity checks.
