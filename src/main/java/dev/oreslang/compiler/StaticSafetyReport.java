@@ -12,6 +12,8 @@ public final class StaticSafetyReport {
     private StaticSafetyReport() { }
 
     private static final int MAX_FINDINGS = 10_000;
+    private static final int MAX_FIELD_CHARS = 16_384;
+    private static final int MAX_REPORT_CHARS = 8 * 1024 * 1024;
 
     public static String render(List<StaticSafetyAnalyzer.Finding> findings) {
         Objects.requireNonNull(findings, "findings");
@@ -45,12 +47,16 @@ public final class StaticSafetyReport {
                 quote(output, witness);
             }
             output.append("]}");
+            if (output.length() > MAX_REPORT_CHARS)
+                throw new IllegalArgumentException("static safety report byte budget exceeded");
         }
         return output.append("]}").toString();
     }
 
     private static void quote(StringBuilder output, String value) {
         Objects.requireNonNull(value, "diagnostic string");
+        if (value.length() > MAX_FIELD_CHARS)
+            throw new IllegalArgumentException("static safety diagnostic field budget exceeded");
         output.append('"');
         for (int i = 0; i < value.length(); i++) {
             char ch = value.charAt(i);
