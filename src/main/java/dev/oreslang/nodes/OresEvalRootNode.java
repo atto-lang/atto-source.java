@@ -1286,8 +1286,7 @@ public final class OresEvalRootNode extends RootNode {
             // boundary. Project just those names into fresh independent slots:
             // normal lambda Env.snapshot() intentionally shares its Slot
             // instances and MUST NOT be used directly for cross-Task moves.
-            Env captured = caller.taskProjection(
-                    proofs.stream().map(Ast.TaskCaptureProof::name).toList());
+            Env captured = caller.taskProjection(proofs);
             return startSourceBlockTask(task.body(), captured);
         }
 
@@ -9212,17 +9211,50 @@ public final class OresEvalRootNode extends RootNode {
          * Copy-safe scalars are isolated by slot; owned heap references are
          * transferred only after the compiler has consumed their owners.
          */
-        private Env taskProjection(List<String> captureNames) {
+        private Env taskProjection(List<Ast.TaskCaptureProof> proofs) {
             Env cp = new Env(null, descendantsNonLexical, accessClass,
                     null, lexicalModule, lexicalContainerClass);
             cp.structuredTaskScope = structuredTaskScope;
-            for (String name : captureNames) {
+            for (Ast.TaskCaptureProof proof : proofs) {
+                String name = proof.name();
                 Slot slot = findTaskCapture(name);
                 if (slot == null || slot.value == MISSING) {
                     throw new IllegalStateException(
                             "Task capture '" + name + "' missing at spawn");
                 }
-                cp.slots.put(name, new Slot(slot.value, slot.kind));
+
+                ScopedReadTicket ticket = slot.scopedReadTicket;
+                if (proof.mode() == Ast.TaskCaptureMode.SCOPED_READ_BORROW) {
+                    if (structuredTaskScope == null) {
+                        throw new IllegalStateException(
+                                "scoped read capture '" + name
+                                        + "' lost its structured Task scope");
+                    }
+                    if (ticket != null
+                            && (ticket.regionId() != proof.regionId()
+                                || ticket.generation() != proof.regionGeneration())) {
+                        throw new IllegalStateException(
+                                "scoped read capture '" + name
+                                        + "' changed region identity/generation");
+                    }
+                    // First projection mints a hidden runtime continuity ticket
+                    // from compiler proof metadata. Nested projections must
+                    // preserve the same region/generation. The current lexical
+                    // scope is recorded so debugging/audits can distinguish
+                    // reticketing into a nested structured scope.
+                    ticket = new ScopedReadTicket(
+                            proof.regionId(),
+                            proof.regionGeneration(),
+                            structuredTaskScope);
+                } else if (ticket != null) {
+                    throw new IllegalStateException(
+                            "owned Task capture '" + name
+                                    + "' cannot erase scoped read authority");
+                }
+
+                cp.slots.put(
+                        name,
+                        new Slot(slot.value, slot.kind, ticket));
             }
             return cp;
         }
@@ -9363,10 +9395,44 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
 
+    /**
+     * Runtime-only continuity marker for a scoped immutable Task capture.
+     * It is metadata on an Env slot, never a guest-visible Oreslang value.
+     *
+     * <p>This does not replace the future arena/region registry. It prevents
+     * nested Task projections from silently changing or erasing the compiler
+     * region/generation proof while the structured lifetime is active.</p>
+     */
+    private record ScopedReadTicket(
+            long regionId,
+            long generation,
+            OresTaskScope lexicalScope) {
+        private ScopedReadTicket {
+            if (regionId <= 0L || generation < 0L) {
+                throw new IllegalArgumentException(
+                        "invalid scoped read runtime ticket");
+            }
+            Objects.requireNonNull(lexicalScope, "lexicalScope");
+        }
+    }
+
     private static final class Slot {
         private Object value;
         private final Ast.BindingKind kind;
-        private Slot(Object value, Ast.BindingKind kind) { this.value=value; this.kind=kind; }
+        private final ScopedReadTicket scopedReadTicket;
+
+        private Slot(Object value, Ast.BindingKind kind) {
+            this(value, kind, null);
+        }
+
+        private Slot(
+                Object value,
+                Ast.BindingKind kind,
+                ScopedReadTicket scopedReadTicket) {
+            this.value = value;
+            this.kind = kind;
+            this.scopedReadTicket = scopedReadTicket;
+        }
     }
 
     private static final class ReturnSignal extends RuntimeException {
