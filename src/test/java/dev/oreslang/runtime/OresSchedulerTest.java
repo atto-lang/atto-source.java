@@ -182,32 +182,32 @@ final class OresSchedulerTest {
     }
 
     @Test
-    void cooperateResumesSameTaskAtFreshDispatchWithoutReplay() throws Exception {
+    void cooperateAlwaysCreatesFreshDispatchWithoutAllocatingFuture() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             AtomicInteger pc = new AtomicInteger();
-            AtomicInteger completedSideEffects = new AtomicInteger();
+            AtomicReference<Thread> firstCarrier = new AtomicReference<>();
             AtomicLong firstDispatch = new AtomicLong();
-            AtomicReference<Object> taskDomain = new AtomicReference<>();
+            AtomicReference<Object> firstTaskDomain = new AtomicReference<>();
 
             OresFuture<Integer> result = scheduler.start(resume -> {
                 int step = pc.getAndIncrement();
                 if (step == 0) {
                     assertTrue(resume.initial());
-                    completedSideEffects.incrementAndGet();
+                    firstCarrier.set(Thread.currentThread());
                     firstDispatch.set(OresScheduler.currentDispatchId());
-                    taskDomain.set(OresScheduler.currentTaskDomain());
+                    firstTaskDomain.set(OresScheduler.currentTaskDomain());
                     return OresScheduler.cooperate();
                 }
 
                 assertFalse(resume.initial());
                 assertNull(resume.value());
                 assertNull(resume.failure());
-                assertEquals(1, completedSideEffects.get(),
-                        "completed code before the safepoint must never replay");
+                assertSame(firstCarrier.get(), Thread.currentThread(),
+                        "one-carrier scheduler may reuse the same physical carrier");
                 assertNotEquals(firstDispatch.get(), OresScheduler.currentDispatchId(),
-                        "cooperate must re-enter through a fresh scheduler dispatch");
-                assertSame(taskDomain.get(), OresScheduler.currentTaskDomain(),
-                        "physical dispatch may change but logical task identity must not");
+                        "cooperate must resume through a fresh logical dispatch");
+                assertSame(firstTaskDomain.get(), OresScheduler.currentTaskDomain(),
+                        "cooperate must preserve logical task identity");
                 return OresScheduler.done(42);
             });
 
@@ -217,7 +217,7 @@ final class OresSchedulerTest {
     }
 
     @Test
-    void manyCooperatesRemainStackless() throws Exception {
+    void manyCooperatesRemainStacklessAndMakeProgress() throws Exception {
         final int cooperates = 1024;
         try (OresScheduler scheduler = new OresScheduler(1)) {
             AtomicInteger pc = new AtomicInteger();
@@ -242,7 +242,7 @@ final class OresSchedulerTest {
     }
 
     @Test
-    void cooperateQueuesBehindAlreadyRunnablePeerWork() throws Exception {
+    void defaultCooperateQueuesBehindAlreadyRunnablePeerWork() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             java.util.List<String> order =
                     java.util.Collections.synchronizedList(new java.util.ArrayList<>());
@@ -270,7 +270,8 @@ final class OresSchedulerTest {
 
             a.get(5, TimeUnit.SECONDS);
             b.get(5, TimeUnit.SECONDS);
-            assertEquals(java.util.List.of("a1", "b", "a2"), order);
+            assertEquals(java.util.List.of("a1", "b", "a2"), order,
+                    "default cooperate must requeue behind already-runnable work");
         }
     }
 
