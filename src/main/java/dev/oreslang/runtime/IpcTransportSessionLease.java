@@ -87,7 +87,8 @@ final class IpcTransportSessionLease {
         this.generation = generation;
         this.limit = limit;
         this.receipts = Objects.requireNonNull(receipts, "receipts");
-        this.physicalOwner = physicalOwner;
+        this.physicalOwner = Objects.requireNonNull(
+                physicalOwner, "physicalOwner");
         this.writer = Objects.requireNonNull(writer, "writer");
         this.closer = Objects.requireNonNull(closer, "closer");
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
@@ -125,10 +126,6 @@ final class IpcTransportSessionLease {
                     || !sameTrustedEpoch(message) || activeWrites >= limit) {
                 throw new PreDispatchRejectedException(
                         "closed/stale/bounded IPC transport");
-            }
-            if (physicalOwner == null) {
-                throw new IllegalStateException(
-                        "atomic IPC admission requires bound physical owner");
             }
             outcome = receipts.admitAndCommit(
                     physicalOwner, message, generation);
@@ -319,11 +316,8 @@ final class IpcTransportSessionLease {
         synchronized (this) { physicalCloseConfirmed = true; }
         try {
             // Arbitrary dependent user callbacks can run: no session lock held.
-            if (physicalOwner == null) {
-                receipts.transportLost(trustedEpoch);
-            } else {
-                receipts.transportLost(physicalOwner, trustedEpoch, generation);
-            }
+            receipts.transportLost(
+                    physicalOwner, trustedEpoch, generation);
         } catch (RuntimeException | Error failure) {
             synchronized (this) {
                 closeFailure = failure;
