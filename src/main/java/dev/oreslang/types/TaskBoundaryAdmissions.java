@@ -82,7 +82,12 @@ public final class TaskBoundaryAdmissions {
                 Objects.requireNonNull(programIdentity, "programIdentity");
     }
 
-    static TaskBoundaryAdmissions rejectAll(Ast.Program programIdentity) {
+    /**
+     * Empty sealed ledger for manually constructed/interpreter-test roots.
+     * It grants no Task execution authority.
+     */
+    public static TaskBoundaryAdmissions rejectAll(
+            Ast.Program programIdentity) {
         return new TaskBoundaryAdmissions(programIdentity).seal();
     }
 
