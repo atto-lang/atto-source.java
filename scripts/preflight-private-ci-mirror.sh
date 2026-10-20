@@ -126,8 +126,10 @@ actual_tree="$(git -C "$source_root" rev-parse --verify HEAD^{tree})" \
   || die "source commit mismatch"
 [[ "$actual_tree" == "$expected_tree" ]] \
   || die "source tree mismatch"
-[[ -z "$(git -C "$source_root" status --porcelain=v1 --untracked-files=all --ignored)" ]] \
-  || die "dirty tracked, untracked or ignored source checkout"
+# Do not run worktree-scanning Git commands such as `git status` in the
+# untrusted source checkout. Repository-local fsmonitor configuration can
+# execute a helper. The publisher instead performs bounded fd-relative source
+# collection and exact Git-tree reconstruction before the first destination write.
 
 source_pr=""
 case "$source_selector" in
