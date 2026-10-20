@@ -140,8 +140,24 @@ def gh_api(route, method="GET", payload=None):
     if (not isinstance(p.stdout, str)
             or len(p.stdout) > MAX_GH_API_RESPONSE_CHARS):
         raise Denied("authenticated GitHub API response exceeds size limit")
+    # Security decisions depend on fields such as id, sha, protected and
+    # review state. Python's default JSON decoder silently keeps the *last*
+    # duplicate field and admits NaN/Infinity (not valid JSON). Reject both,
+    # including inside nested metadata and review lists, before any decision.
+    def unique_fields(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise Denied("authenticated GitHub API JSON contains duplicate fields")
+            result[key] = value
+        return result
+
+    def reject_constant(value):
+        raise Denied("authenticated GitHub API JSON contains a nonfinite constant")
+
     try:
-        data = json.loads(p.stdout)
+        data = json.loads(p.stdout, object_pairs_hook=unique_fields,
+                          parse_constant=reject_constant)
     except json.JSONDecodeError as exc:
         raise Denied("invalid GitHub API JSON response") from exc
     # The documented PR reviews endpoint returns a list, not a JSON object.
