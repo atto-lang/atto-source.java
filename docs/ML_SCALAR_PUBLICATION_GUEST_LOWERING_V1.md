@@ -48,9 +48,12 @@ private step(): bool with state.read, state.write, alloc {
 
 `state_snapshot` is valid only inside the currently active lexical
 `self.handle_state` callback and its first argument must be that exact state
-loan parameter. The version key must be an `int`. Captured keys must exist in
-the actor's closed state schema, must be immutable scalar runtime types
-(`int`, `bool`, or `String` in this milestone), and cannot be duplicated.
+loan parameter. The version key must be an `int`. A snapshot must capture
+at least one non-version scalar; the version field cannot be redundantly
+captured as an ordinary scalar. Captured keys must exist in the actor's closed
+state schema, must be immutable scalar runtime types (`int`, `bool`, or
+`String` in this milestone), and cannot be duplicated. The Java runtime
+enforces the same shape independently of compiler admission.
 
 The resulting snapshot type is compiler-internal. Source cannot name or
 construct it. Snapshot accessors require a literal captured field and an exact
@@ -76,12 +79,23 @@ borrowed through generic `rt` ownership operations, passed through ordinary
 call boundaries, compared with generic binary operators, or observed through
 stdio formatting. Snapshots are usable only by the sealed snapshot accessors
 and detached preparation; publications are consumable only by the immediate
-sealed critical-write publication callback. Runtime stdout also rejects the
-opaque Java capability objects defensively if semantic verification is
-bypassed.
+sealed critical-write publication callback. Runtime ownership intrinsics,
+equality/identity comparison, generic print/display, and stdout also reject
+direct or nested opaque capability objects defensively if semantic verification
+is bypassed. Nested detection is cycle-safe across Option/Result, lists/arrays,
+maps, and guest object fields.
 
 The intrinsic names cannot be shadowed by imports, parameters, locals,
 destructuring/loop bindings, state-loan binders, or module functions.
+
+## Actor lifecycle barrier compatibility
+
+The executable fixture uses the canonical zero-argument lifecycle barriers
+`await worker.get_ready()` and `await worker.get_done()`. This stacked
+compiler branch now lowers those calls to the existing ActorRef ready/done
+futures and rejects arguments. Legacy `.ready`/`.done` property access is
+left intact temporarily on this stack to avoid unrelated compatibility churn;
+removal belongs to the broader actor lifecycle convergence work.
 
 ## Runtime lowering
 
@@ -135,7 +149,10 @@ effect/ownership + Graal guest gate and compiler-negative cases for:
 - non-publication payload;
 - module/import/local/parameter/state-loan intrinsic-name spoofing;
 - capability laundering through `Option`/`Result`;
-- generic `rt copy`, stdio observation, and equality/operator use.
+- generic `rt copy`, stdio observation, and equality/operator use;
+- version-only and duplicate-version snapshot shapes;
+- nonzero-arity `ActorRef.get_ready/get_done` calls;
+- Java host/foreign-actor publication preparation and post-retirement snapshot use.
 
 ## Current verification boundary — 2026-10-19
 
@@ -149,12 +166,13 @@ failing Java tests.
 
 An independently authored source-free model in
 `ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra#29`
-executed on funded hosted capacity. Run `39329160038` completed successfully
-with **12/12 tests passed**, including 20,000 seeded snapshot/TOCTOU schedules,
-retirement interleavings, lowering admission, namespace reservation, and the
-closed capability-operation model. It contains no Oreslang private source and
-is supporting design evidence only; it does **not** certify this Java tree,
-Graal execution, Native Image, LLVM, or the guest fixture.
+executed on funded hosted capacity. Run `39346666583` completed successfully
+with **15/15 tests passed**, including 20,000 seeded snapshot/TOCTOU schedules,
+retirement interleavings, lowering admission, namespace reservation, strict
+snapshot shape, canonical lifecycle arity, the closed capability-operation
+model, and recursive runtime observation denial. It contains no Oreslang private
+source and is supporting design evidence only; it does **not** certify this Java
+tree, Graal execution, Native Image, LLVM, or the guest fixture.
 
 Exact-head Maven/JUnit/GraalVM execution remains a release gate. A GitHub job
 that terminates with no recorded steps is infrastructure evidence, not compiler
