@@ -88,6 +88,9 @@ public final class LatentEffectRows {
         /** map/bind/flatMap preserve both callback and original latent effects. */
         public Descriptor compose(Descriptor next, Kind resultKind) {
             Objects.requireNonNull(next, "next");
+            if (capture != Capture.OWNED || next.capture != Capture.OWNED) {
+                throw new IllegalArgumentException("deferred composition needs owned captures");
+            }
             EnumSet<Effect> union = EnumSet.noneOf(Effect.class);
             union.addAll(latent);
             union.addAll(next.latent);
@@ -102,6 +105,9 @@ public final class LatentEffectRows {
 
         /** Change the deferred container without discarding latent effects. */
         public Descriptor as(Kind resultKind) {
+            if (capture != Capture.OWNED) {
+                throw new IllegalArgumentException("repackaging non-owned callable is forbidden");
+            }
             return new Descriptor(resultKind, latent, capture, compilerProven);
         }
     }
