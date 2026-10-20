@@ -211,8 +211,9 @@ final class OresAsyncTraceTest {
 
         assertEquals(1, parent.actorVisits().size());
         assertEquals(2, sibling.actorVisits().size());
-        assertEquals(2, parent.events().size());
+        assertEquals(3, parent.events().size());
         assertEquals(3, sibling.events().size());
+        assertNotEquals(parent.events(), sibling.events());
     }
 
     @Test
