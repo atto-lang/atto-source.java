@@ -17,7 +17,6 @@ import java.util.HexFormat;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -66,8 +65,10 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     // Opaque host identity used only to bind one receipt bridge to this exact
     // physical connection object. It is never serialized or guest-visible.
     private final Object physicalOwner = new Object();
-    private final AtomicBoolean abortScheduled = new AtomicBoolean();
-    private final AtomicLong abortAttempt = new AtomicLong();
+    // 0 = no abort callback owns this connection; >0 = queued attempt;
+    // <0 = that attempt atomically claimed physical close execution.
+    private final AtomicLong abortState = new AtomicLong();
+    private final AtomicLong abortSequence = new AtomicLong();
     private final Object sendGate = new Object();
     private final Object readGate = new Object();
     private final Object writeGate = new Object();
@@ -291,36 +292,64 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     }
 
     private void schedulePhysicalAbort() {
-        if (!abortScheduled.compareAndSet(false, true)) return;
-        long attempt = abortAttempt.incrementAndGet();
-        if (attempt <= 0) {
-            abortScheduled.set(false);
-            sessionLease.quarantineIfUnsettled(new IllegalStateException(
-                    "IPC abort scheduler attempt overflow"));
+        final long attempt;
+        try {
+            attempt = nextAbortAttempt();
+        } catch (IllegalStateException overflow) {
+            sessionLease.quarantineIfUnsettled(overflow);
             return;
         }
+        if (!abortState.compareAndSet(0, attempt)) return;
+
         Thread caller = Thread.currentThread();
         try {
             cleanupScheduler.enqueue(() -> {
-                if (abortAttempt.get() != attempt) return;
                 if (Thread.currentThread() == caller) {
-                    sessionLease.quarantineIfUnsettled(new IllegalStateException(
-                            "IPC abort scheduler executed inline on requesting carrier"));
+                    if (abortState.compareAndSet(attempt, 0)) {
+                        sessionLease.quarantineIfUnsettled(new IllegalStateException(
+                                "IPC abort scheduler executed inline on requesting carrier"));
+                    }
                     return;
                 }
                 if (RuntimeBlockingGuard.actorCarrierMarked()) {
-                    sessionLease.deferExternalSchedulerFailure(new IllegalStateException(
-                            "IPC abort scheduler executed on an actor carrier"));
+                    if (abortState.compareAndSet(attempt, 0)) {
+                        sessionLease.deferExternalSchedulerFailure(
+                                new IllegalStateException(
+                                        "IPC abort scheduler executed on an actor carrier"));
+                    }
                     return;
                 }
+
+                // Claim this exact queued attempt before touching the socket.
+                // A retry can invalidate a positive queued token, but once
+                // negative the physical close is already executing and retry
+                // must not race a second close attempt against it.
+                if (!abortState.compareAndSet(attempt, -attempt)) return;
                 try {
                     socket.close();
                 } catch (IOException abortFailure) {
                     sessionLease.quarantineIfUnsettled(abortFailure);
+                } finally {
+                    abortState.compareAndSet(-attempt, 0);
                 }
             });
         } catch (RuntimeException | Error schedulingFailure) {
+            // If enqueue partially published the callback and it has already
+            // claimed execution, leave the negative state intact. Otherwise
+            // invalidate the queued token so a late callback is inert.
+            abortState.compareAndSet(attempt, 0);
             sessionLease.quarantineIfUnsettled(schedulingFailure);
+        }
+    }
+
+    private long nextAbortAttempt() {
+        for (;;) {
+            long current = abortSequence.get();
+            if (current == Long.MAX_VALUE) {
+                throw new IllegalStateException("IPC abort scheduler attempt overflow");
+            }
+            long next = current + 1;
+            if (abortSequence.compareAndSet(current, next)) return next;
         }
     }
 
@@ -339,7 +368,18 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             throw new IllegalStateException(
                     "transport has no quarantined active write to abort");
         }
-        abortScheduled.set(false);
+
+        // Atomically invalidate a merely queued stale attempt. If an old
+        // callback has already claimed physical close (negative state), do not
+        // pretend a new retry can supersede an executing descriptor operation.
+        for (;;) {
+            long state = abortState.get();
+            if (state < 0) {
+                throw new IllegalStateException(
+                        "IPC physical abort is already executing");
+            }
+            if (state == 0 || abortState.compareAndSet(state, 0)) break;
+        }
         schedulePhysicalAbort();
     }
 
