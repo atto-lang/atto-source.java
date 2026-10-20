@@ -9098,22 +9098,34 @@ public final class OresEvalRootNode extends RootNode {
                     || actual.parameters().size() != requiredParameters.size()) {
                 return false;
             }
+            Map<String, Ast.TypeRef> requiredBindings = new LinkedHashMap<>(bindings);
+            Map<String, Ast.TypeRef> candidateBindings = new LinkedHashMap<>();
+            // Generic methods are alpha-equivalent: binders match by index,
+            // not by their source-language spelling.
+            for (int i = 0; i < requiredGenerics.size(); i++) {
+                Ast.TypeRef canonical = new Ast.TypeRef("$callable" + i, List.of(), false);
+                requiredBindings.put(requiredGenerics.get(i), canonical);
+                candidateBindings.put(actual.genericParameters().get(i), canonical);
+            }
             for (int i = 0; i < requiredParameters.size(); i++) {
                 Ast.Param required = requiredParameters.get(i);
                 Ast.Param candidate = actual.parameters().get(i);
                 if (required.mutable() != candidate.mutable()) return false;
                 Ast.TypeRef requiredType =
-                        substituteStructuralType(required.type(), bindings);
-                // Function parameters are contravariant: every value admitted
-                // by the contract must also be admitted by the candidate.
-                if (!runtimeDeclarationTypeAssignable(requiredType, candidate.type())) {
+                        substituteStructuralType(required.type(), requiredBindings);
+                Ast.TypeRef candidateType =
+                        substituteStructuralType(candidate.type(), candidateBindings);
+                // Contravariant parameters preserve the callable contract.
+                if (!runtimeDeclarationTypeAssignable(requiredType, candidateType)) {
                     return false;
                 }
             }
             Ast.TypeRef expectedReturn =
-                    substituteStructuralType(requiredReturn, bindings);
-            // Results are covariant.
-            return runtimeDeclarationTypeAssignable(actual.returnType(), expectedReturn);
+                    substituteStructuralType(requiredReturn, requiredBindings);
+            Ast.TypeRef actualReturn =
+                    substituteStructuralType(actual.returnType(), candidateBindings);
+            // Covariant results preserve the callable contract.
+            return runtimeDeclarationTypeAssignable(actualReturn, expectedReturn);
         }
 
         private boolean runtimeDeclarationTypeAssignable(
