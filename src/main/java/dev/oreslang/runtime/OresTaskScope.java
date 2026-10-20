@@ -309,7 +309,9 @@ public final class OresTaskScope {
     public boolean hasScopedReadLease(ScopedReadClaim claim) {
         Objects.requireNonNull(claim, "claim");
         synchronized (lock) {
-            if (!liveScopedReadClaims.contains(claim)) return false;
+            if (!claim.issued() || !liveScopedReadClaims.contains(claim)) {
+                return false;
+            }
             RegionReadState region = scopedReadRegions.get(claim.regionId());
             return region != null
                     && region.generation == claim.generation()
