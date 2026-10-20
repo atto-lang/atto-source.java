@@ -22,7 +22,10 @@ public final class EffectContracts {
     public enum Effect {
         AMBIENT_READ, EXTERNAL_WRITE, IO, ENVIRONMENT, CLOCK, RANDOM,
         ACTOR, SCHEDULER, SYNCHRONIZATION, FFI_UNKNOWN, UNKNOWN_CALL,
-        THROW, RAISE, PANIC, CANCELLATION
+        THROW, RAISE, PANIC, CANCELLATION,
+        // Canonical backend effect vocabulary; keep original Java labels
+        // distinct rather than silently assuming they are equivalent.
+        STATE_READ, STATE_WRITE, SUSPEND, BLOCK, ALLOC, FFI
     }
 
     /** Pure is an observational guarantee, not a no-throw/no-panic guarantee. */
