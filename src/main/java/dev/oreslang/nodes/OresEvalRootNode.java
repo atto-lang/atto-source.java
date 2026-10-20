@@ -1,5 +1,6 @@
 package dev.oreslang.nodes;
 
+import dev.oreslang.types.TaskAdmissionProof;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.interop.InteropLibrary;
@@ -23,6 +24,7 @@ import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
+import dev.oreslang.runtime.OresTaskScope;
 import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
@@ -132,6 +134,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Ast.Program program;
         private final OresContext context;
         private final String codeUnitId;
+        private final TaskAdmissionProof taskAdmissions;
         // Actor carriers may enter the same evaluator concurrently. The
         // identity map only retains call nodes already owned by this program.
         private final Map<Ast.CallExpr, Integer> optionDepthCache =
@@ -1600,6 +1603,11 @@ public final class OresEvalRootNode extends RootNode {
                 return expressionContainsPotentialSuspension(
                         defer.expression(), seen);
             }
+            if (stmt instanceof Ast.TaskScopeStmt) {
+                // Scope exit always awaits physical child quiescence even when
+                // the body itself contains no explicit await.
+                return true;
+            }
             if (stmt instanceof Ast.BlockStmt block) {
                 return block.body().stream().anyMatch(
                         nested -> statementContainsPotentialSuspension(nested, seen));
@@ -1867,6 +1875,8 @@ public final class OresEvalRootNode extends RootNode {
                     || stmt instanceof Ast.ForOfDestructureStmt) return true;
             if (stmt instanceof Ast.BlockStmt block)
                 return block.body().stream().anyMatch(this::containsSourceLoop);
+            if (stmt instanceof Ast.TaskScopeStmt taskScope)
+                return taskScope.body().stream().anyMatch(this::containsSourceLoop);
             if (stmt instanceof Ast.IfStmt conditional)
                 return conditional.branches().stream().anyMatch(
                         branch -> branch.body().stream().anyMatch(this::containsSourceLoop))
@@ -2229,6 +2239,56 @@ public final class OresEvalRootNode extends RootNode {
                             block.body(),
                             env,
                             continuation);
+                    return;
+                }
+
+                if (stmt instanceof Ast.TaskScopeStmt taskScope) {
+                    if (ActorRuntime.inActorExecution()) {
+                        continuation.accept(
+                                task,
+                                SourceFlow.throwing(new IllegalStateException(
+                                        "nb scope inside actor execution is not enabled until actor quota/hot-reload integration is proven")));
+                        return;
+                    }
+
+                    final OresTaskScope runtimeScope;
+                    try {
+                        runtimeScope = OresTaskScope.openCurrent();
+                    } catch (RuntimeException | Error failure) {
+                        continuation.accept(task, SourceFlow.throwing(failure));
+                        return;
+                    }
+
+                    Env scopedEnv = env.withStructuredTaskScope(runtimeScope);
+                    runBlock(
+                            task,
+                            taskScope.body(),
+                            scopedEnv,
+                            (t, flow) -> {
+                                final OresFuture<Void> drained;
+                                try {
+                                    drained = flow.kind() == SourceFlowKind.THROW
+                                            ? runtimeScope.cancelAndQuiesce()
+                                            : runtimeScope.quiesce();
+                                } catch (RuntimeException | Error failure) {
+                                    continuation.accept(
+                                            t,
+                                            mergeCleanupFailure(flow, failure));
+                                    return;
+                                }
+
+                                t.suspend(
+                                        drained,
+                                        (resumed, ignored, failure) -> {
+                                            if (failure != null) {
+                                                continuation.accept(
+                                                        resumed,
+                                                        mergeCleanupFailure(flow, failure));
+                                            } else {
+                                                continuation.accept(resumed, flow);
+                                            }
+                                        });
+                            });
                     return;
                 }
 
@@ -5594,6 +5654,10 @@ public final class OresEvalRootNode extends RootNode {
                         inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
                 return;
             }
+            if (stmt instanceof Ast.TaskScopeStmt) {
+                throw new IllegalStateException(
+                        "nb scope reached synchronous source execution; suspension scan/lowering invariant violated");
+            }
             if (stmt instanceof Ast.BreakStmt) throw new BreakSignal();
             if (stmt instanceof Ast.ContinueStmt) throw new ContinueSignal();
             if (stmt instanceof Ast.IfStmt ifStmt) {
@@ -6528,6 +6592,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.TaskExpr task) {
+                return startSourceBlockTask(task, env);
+            }
             if (expr instanceof Ast.MatchExpr valueMatch) {
                 Object subject = eval(valueMatch.subject(), env);
                 for (Ast.MatchValueArm arm : valueMatch.arms()) {
@@ -9445,6 +9512,9 @@ public final class OresEvalRootNode extends RootNode {
         private final String lexicalModule;
         private final OresObject constructingObject;
         private final Map<String, Slot> slots = new HashMap<>();
+        // Heap-owned lexical structured scope. This follows source continuation
+        // state across carrier migration and is never a ThreadLocal identity.
+        private OresTaskScope structuredTaskScope;
         private Env(Env parent) {
             this(
                     parent,
@@ -9496,6 +9566,8 @@ public final class OresEvalRootNode extends RootNode {
             this.lexicalContainerClass = lexicalContainerClass;
             this.lexicalModule = lexicalModule;
             this.constructingObject = constructingObject;
+            this.structuredTaskScope =
+                    parent == null ? null : parent.structuredTaskScope;
         }
 
         private Env lexicalBoundaryOnly() {
@@ -9551,6 +9623,63 @@ public final class OresEvalRootNode extends RootNode {
             if (parent != null) { parent.assign(name, value); return; }
             throw new IllegalArgumentException("unknown binding " + name);
         }
+        /**
+         * Cross-Task lexical projection. Unlike ordinary closure snapshot(),
+         * this intentionally creates new Slot objects and no parent Env.
+         * Copy-safe scalars are isolated by slot; owned heap references are
+         * transferred only after the compiler has consumed their owners.
+         */
+        private Env taskProjection(
+                List<TaskAdmissionProof.AdmittedTransfer> transfers) {
+            Objects.requireNonNull(transfers, "Task transfers");
+
+            // Validate the entire exact proof before mutating any source slot.
+            // That keeps projection failure atomic while making the runtime
+            // enforce the compiler's affine move rather than merely trusting
+            // later guest code not to observe the old binding.
+            ArrayList<Slot> sources = new ArrayList<>(transfers.size());
+            ArrayList<Object> values = new ArrayList<>(transfers.size());
+            java.util.HashSet<String> seen = new java.util.HashSet<>();
+            for (TaskAdmissionProof.AdmittedTransfer transfer : transfers) {
+                String name = transfer.name();
+                if (!seen.add(name)) {
+                    throw new IllegalStateException(
+                            "duplicate Task capture '" + name + "' in joined proof");
+                }
+                Slot slot = findTaskCapture(name);
+                if (slot == null || slot.value == MISSING) {
+                    throw new IllegalStateException(
+                            "Task capture '" + name + "' missing at spawn");
+                }
+                sources.add(slot);
+                values.add(slot.value);
+            }
+
+            Env cp = new Env(null, descendantsNonLexical, accessClass,
+                    null, lexicalModule, lexicalContainerClass);
+            cp.structuredTaskScope = structuredTaskScope;
+            for (int i = 0; i < transfers.size(); i++) {
+                TaskAdmissionProof.AdmittedTransfer transfer = transfers.get(i);
+                Slot source = sources.get(i);
+                cp.slots.put(
+                        transfer.name(),
+                        new Slot(values.get(i), source.kind));
+            }
+            for (int i = 0; i < transfers.size(); i++) {
+                if (transfers.get(i).ownership()
+                        != dev.oreslang.types.TaskTransferProvenance
+                                .TransferKind.COPY) {
+                    sources.get(i).value = MISSING;
+                }
+            }
+            return cp;
+        }
+
+        private Slot findTaskCapture(String name) {
+            Slot local = slots.get(name);
+            return local != null ? local : parent == null ? null : parent.findTaskCapture(name);
+        }
+
         private Env snapshot() {
             Env cp = new Env(
                     parent == null ? null : parent.snapshot(),
@@ -9558,6 +9687,7 @@ public final class OresEvalRootNode extends RootNode {
                     accessClass,
                     null,
                     lexicalModule);
+            cp.structuredTaskScope = structuredTaskScope;
             cp.slots.putAll(slots);
             return cp;
         }
