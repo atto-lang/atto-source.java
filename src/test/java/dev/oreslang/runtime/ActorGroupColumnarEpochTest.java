@@ -166,4 +166,50 @@ final class ActorGroupColumnarEpochTest {
             assertTrue(next.completion().isCompletedExceptionally());
         }
     }
+    @Test
+    void rejectsOversizeMembersBeforeTouchingCallerListOrAllocatingBuffers() {
+        var oversized = new java.util.AbstractList<ActorRuntime.ActorId>() {
+            @Override public int size() { return 262_145; }
+            @Override public ActorRuntime.ActorId get(int index) {
+                throw new AssertionError("invalid list must not be accessed");
+            }
+        };
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorGroupColumnarEpoch(1, oversized, List.of("score")));
+    }
+
+    @Test
+    void rejectsMalformedUtf8AndOversizeColumnNamesBeforeAllocation() {
+        var id = ActorRuntime.ActorId.create();
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorGroupColumnarEpoch(1, List.of(id), List.of("bad\uD800")));
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorGroupColumnarEpoch(1, List.of(id), List.of("x".repeat(257))));
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorGroupColumnarEpoch(1, List.of(id), List.of("a\u0000b")));
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorGroupColumnarEpoch(1, List.of(id), List.of("score", "score")));
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorGroupColumnarEpoch(1, List.of(id, id), List.of("score")));
+    }
+
+    @Test
+    void publishedRowsAreIndependentOfSubsequentCallerArrayChanges() {
+        var first = ActorRuntime.ActorId.create();
+        var second = ActorRuntime.ActorId.create();
+        var epoch = new ActorGroupColumnarEpoch(1, List.of(first, second),
+                List.of("position", "velocity"));
+        double[] input = {7.5, -0.0};
+        assertNull(epoch.publish(first, input));
+        input[0] = -999;
+        input[1] = 22;
+        var result = epoch.publish(second, new double[]{8.5, 9.5});
+        assertNotNull(result);
+        assertEquals(7.5, result.value(0, 0));
+        assertEquals(Double.doubleToRawLongBits(-0.0d),
+                Double.doubleToRawLongBits(result.value(0, 1)));
+        assertEquals(8.5, result.value(1, 0));
+        assertEquals(9.5, result.value(1, 1));
+    }
+
 }
