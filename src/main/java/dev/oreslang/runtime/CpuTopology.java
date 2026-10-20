@@ -90,7 +90,12 @@ final class CpuTopology {
         String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
         if (!os.contains("linux")) return empty();
 
-        Path cpuRoot = Path.of("/sys/devices/system/cpu");
+        return discoverAt(Path.of("/sys/devices/system/cpu"));
+    }
+
+    /** Testable bounded sysfs ingestion; never called from an actor turn. */
+    static CpuTopology discoverAt(Path cpuRoot) {
+        Objects.requireNonNull(cpuRoot, "cpuRoot");
         if (!Files.isDirectory(cpuRoot)) return empty();
 
         Map<Integer, Location> discovered = new HashMap<>();
