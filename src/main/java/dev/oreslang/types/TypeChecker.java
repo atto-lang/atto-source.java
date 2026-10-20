@@ -6396,31 +6396,78 @@ public final class TypeChecker {
     private static boolean capturesConstructorSelfValue(Ast.Expr expression) {
         if (expression == null || expression instanceof Ast.LiteralExpr) return false;
         if (expression instanceof Ast.NameExpr name) return name.name().equals("self");
-        if (expression instanceof Ast.CastExpr cast) {
-            return capturesConstructorSelfValue(cast.value());
+        if (expression instanceof Ast.BinaryExpr binary) {
+            return capturesConstructorSelfValue(binary.left())
+                    || capturesConstructorSelfValue(binary.right());
+        }
+        if (expression instanceof Ast.UnaryExpr unary) {
+            return capturesConstructorSelfValue(unary.operand());
+        }
+        if (expression instanceof Ast.AssignExpr assignment) {
+            return capturesConstructorSelfValue(assignment.target())
+                    || capturesConstructorSelfValue(assignment.value());
         }
         if (expression instanceof Ast.ConditionalExpr conditional) {
-            return capturesConstructorSelfValue(conditional.whenTrue())
+            return capturesConstructorSelfValue(conditional.condition())
+                    || capturesConstructorSelfValue(conditional.whenTrue())
                     || capturesConstructorSelfValue(conditional.whenFalse());
         }
         if (expression instanceof Ast.MatchExpr match) {
-            return match.arms().stream()
-                    .anyMatch(arm -> capturesConstructorSelfValue(arm.value()));
+            return capturesConstructorSelfValue(match.subject())
+                    || match.arms().stream().anyMatch(arm ->
+                            capturesConstructorSelfValue(arm.guard())
+                                    || capturesConstructorSelfValue(arm.value()));
+        }
+        if (expression instanceof Ast.TypeTestExpr test) {
+            return capturesConstructorSelfValue(test.value());
+        }
+        if (expression instanceof Ast.PatternTestExpr test) {
+            return capturesConstructorSelfValue(test.value());
+        }
+        if (expression instanceof Ast.CastExpr cast) {
+            return capturesConstructorSelfValue(cast.value());
+        }
+        if (expression instanceof Ast.SpreadExpr spread) {
+            return capturesConstructorSelfValue(spread.expression());
+        }
+        if (expression instanceof Ast.CallExpr call) {
+            return capturesConstructorSelfValue(call.callee())
+                    || call.arguments().stream()
+                            .anyMatch(TypeChecker::capturesConstructorSelfValue);
+        }
+        if (expression instanceof Ast.RuntimeCallExpr runtime) {
+            return runtime.arguments().stream()
+                    .anyMatch(TypeChecker::capturesConstructorSelfValue);
+        }
+        // A named field/method selection is a derived capability boundary.
+        // Reading self.value after that field is definitely initialized does
+        // not alias self itself; method-call safety is enforced separately.
+        if (expression instanceof Ast.MemberExpr) return false;
+        if (expression instanceof Ast.IndexExpr indexed) {
+            // Dynamic self indexing has its own stricter admission gate, but
+            // treat direct self anywhere in the projection as capture here too
+            // so a binding cannot get a weaker diagnostic/path.
+            return capturesConstructorSelfValue(indexed.receiver())
+                    || capturesConstructorSelfValue(indexed.index());
+        }
+        if (expression instanceof Ast.NewExpr created) {
+            return created.arguments().stream()
+                    .anyMatch(TypeChecker::capturesConstructorSelfValue);
+        }
+        if (expression instanceof Ast.AwaitExpr awaited) {
+            return capturesConstructorSelfValue(awaited.expression());
         }
         if (expression instanceof Ast.TrapExpr trapped) {
             return capturesConstructorSelfValue(trapped.expression());
         }
-        if (expression instanceof Ast.UnaryExpr unary
-                && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
-            return capturesConstructorSelfValue(unary.operand());
+        if (expression instanceof Ast.ChannelOpExpr channel) {
+            return capturesConstructorSelfValue(channel.channel())
+                    || capturesConstructorSelfValue(channel.value())
+                    || channel.callbackBody().stream()
+                            .anyMatch(TypeChecker::statementReferencesConstructorSelf);
         }
-        if (expression instanceof Ast.RuntimeCallExpr runtime
-                && (runtime.operation().equals("borrow")
-                        || runtime.operation().equals("copy")
-                        || runtime.operation().equals("take")
-                        || runtime.operation().equals("share"))) {
-            return runtime.arguments().stream()
-                    .anyMatch(TypeChecker::capturesConstructorSelfValue);
+        if (expression instanceof Ast.DynamicSelectExpr select) {
+            return capturesConstructorSelfValue(select.cases());
         }
         if (expression instanceof Ast.ListExpr list) {
             return list.elements().stream()
@@ -6434,7 +6481,17 @@ public final class TypeChecker {
             return object.fields().stream()
                     .anyMatch(field -> capturesConstructorSelfValue(field.value()));
         }
-        return false;
+        if (expression instanceof Ast.LambdaExpr lambda) {
+            return referencesConstructorSelf(lambda.expressionBody())
+                    || (lambda.blockBody() != null && lambda.blockBody().stream()
+                            .anyMatch(TypeChecker::statementReferencesConstructorSelf));
+        }
+        // Expr is sealed. New expression forms must make an explicit
+        // construction-capability decision before they can participate in a
+        // constructor-local binding/destructure.
+        throw new IllegalStateException(
+                "unhandled expression shape in constructor-self value-capture guard: "
+                        + expression.getClass().getName());
     }
 
     /**
