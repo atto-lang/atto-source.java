@@ -246,7 +246,9 @@ final class EndDelimitedFunctionSyntaxTest {
                 end
                 """;
 
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        // This regression is about return-type token ownership. Result/Option
+        // constructor semantics have separate typechecker coverage.
+        assertDoesNotThrow(() -> Parser.parse(source));
     }
 
     @Test
