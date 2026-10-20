@@ -133,6 +133,105 @@ public final class TypeChecker {
     }
 
     /**
+     * Expands compiler annotations and applies structural cleanup checks for
+     * proof-only Task transfer analysis. This does not enable Task lowering
+     * and deliberately does not suppress the ordinary execution gate.
+     */
+    public static Ast.Program prepareTaskAdmissionProgram(Ast.Program program) {
+        program = AnnotationExpander.expand(program);
+        ReturnCleanupChecker.check(program);
+        TypeChecker checker = new TypeChecker();
+        checker.validateImports(program);
+        checker.collect(program);
+        return program;
+    }
+
+    /**
+     * Resolve the exact transfer TypeRefs already minted by OwnershipChecker
+     * and apply the canonical detached Task semantic gate.
+     *
+     * <p>The same exact AST instance must be supplied: both ledgers are
+     * identity-bound. This method does not type-check Task bodies or enable
+     * execution; it is the semantic half of a future lowering admission
+     * bundle.</p>
+     */
+    public static TaskSemanticAdmission checkTaskTransferProvenance(
+            Ast.Program program,
+            TaskTransferProvenance provenance) {
+        if (program == null || provenance == null || !provenance.sealed()) {
+            throw new IllegalArgumentException(
+                    "Task semantic admission requires a program and sealed ownership provenance");
+        }
+        if (provenance.programIdentity() != program) {
+            throw new IllegalArgumentException(
+                    "Task ownership provenance belongs to a different program instance");
+        }
+        TypeChecker checker = new TypeChecker();
+        checker.validateImports(program);
+        checker.collect(program);
+
+        TaskSemanticAdmission semantic =
+                new TaskSemanticAdmission(program);
+        provenance.forEachBoundary((boundary, transfers) -> {
+            TaskTransferProvenance.LexicalTypeContext lexicalContext =
+                    provenance.lexicalContextForIdentity(boundary);
+            if (lexicalContext == null) {
+                throw new IllegalStateException(
+                        "Task ownership provenance has no lexical context");
+            }
+            Set<String> lexicalGenerics =
+                    Set.copyOf(lexicalContext.genericParameters());
+            Type lexicalSelf = null;
+            if (lexicalContext.selfMode()
+                    != TaskTransferProvenance.SelfMode.NONE) {
+                Ast.ClassDecl ownerClass =
+                        lexicalContext.ownerClass();
+                boolean exactCollectedOwner = checker.classes.values()
+                        .stream()
+                        .anyMatch(candidate ->
+                                candidate == ownerClass);
+                if (!exactCollectedOwner) {
+                    throw new IllegalArgumentException(
+                            "Task lexical self context belongs to a class "
+                                    + "outside the exact program instance");
+                }
+                Type nominalSelf =
+                        checker.nominalClassType(ownerClass);
+                lexicalSelf = lexicalContext.selfMode()
+                                == TaskTransferProvenance.SelfMode
+                                        .RECEIVER_POLYMORPHIC
+                        ? new SelfType(nominalSelf)
+                        : nominalSelf;
+            }
+
+            ArrayList<TaskSemanticAdmission.Entry> entries =
+                    new ArrayList<>(transfers.size());
+            for (TaskTransferProvenance.Transfer transfer : transfers) {
+                Type resolved;
+                try {
+                    resolved = checker.resolve(
+                            transfer.type(),
+                            lexicalGenerics,
+                            lexicalSelf);
+                } catch (IllegalArgumentException failure) {
+                    throw new IllegalArgumentException(
+                            "Task transfer '" + transfer.name()
+                                    + "' cannot be resolved for semantic admission: "
+                                    + failure.getMessage(),
+                            failure);
+                }
+                checker.validateDetachedTaskType(
+                        resolved,
+                        "Task transfer '" + transfer.name() + "'");
+                entries.add(new TaskSemanticAdmission.Entry(
+                        transfer.name(), resolved));
+            }
+            semantic.record(boundary, entries);
+        });
+        return semantic.seal();
+    }
+
+    /**
      * Checked, public, explicitly imported class declarations supply field
      * signatures to this compilation unit without importing foreign bodies.
      * A missing linked signature must remain Unknown (and fail on arithmetic)
@@ -1675,8 +1774,15 @@ public final class TypeChecker {
     }
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
-        if (stmt instanceof Ast.TaskBlockStmt
-                || (stmt instanceof Ast.BindingStmt binding && binding.initializer() instanceof Ast.TaskExpr)) {
+        if (stmt instanceof Ast.TaskBlockStmt task) {
+            validateDetachedTaskBodyCaptures(
+                    task.body(), env, "fire-and-continue Task capture");
+            throw new IllegalArgumentException("nb Task blocks require ownership-safe capture and scheduler lowering; source execution is not enabled");
+        }
+        if (stmt instanceof Ast.BindingStmt binding
+                && binding.initializer() instanceof Ast.TaskExpr task) {
+            validateDetachedTaskBodyCaptures(
+                    task.body(), env, "Task expression capture");
             throw new IllegalArgumentException("nb Task blocks require ownership-safe capture and scheduler lowering; source execution is not enabled");
         }
         if (stmt instanceof Ast.BindingStmt binding) {
@@ -2072,13 +2178,21 @@ public final class TypeChecker {
         if (expr instanceof Ast.SuspendsLambdaExpr) {
             throw new IllegalArgumentException("suspends lambda requires suspension-effect callable typing and continuation lowering; this callable does not create a Task or Future");
         }
-        if (expr instanceof Ast.TaskLambdaExpr) {
+        if (expr instanceof Ast.TaskLambdaExpr taskLambda) {
+            validateScheduledLambdaBoundary(
+                    taskLambda.lambda(), null, env, generics, self,
+                    "async task lambda");
             throw new IllegalArgumentException("async task lambda requires Task<T> return inference, owned argument captures, and scheduled continuation lowering; executable source is not enabled");
         }
-        if (expr instanceof Ast.AsyncLambdaExpr) {
+        if (expr instanceof Ast.AsyncLambdaExpr asyncLambda) {
+            validateScheduledLambdaBoundary(
+                    asyncLambda.lambda(), null, env, generics, self,
+                    "async lambda");
             throw new IllegalArgumentException("async lambda requires Future<T> lowering; returning nb Task<T> would produce Future<Task<T>> without implicit flattening");
         }
-        if (expr instanceof Ast.TaskExpr) {
+        if (expr instanceof Ast.TaskExpr task) {
+            validateDetachedTaskBodyCaptures(
+                    task.body(), env, "Task expression capture");
             throw new IllegalArgumentException("nb Task blocks require ownership-safe capture and scheduler lowering; source execution is not enabled");
         }
         if (expr instanceof Ast.LiteralExpr literal) {
@@ -2415,6 +2529,20 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.TaskLambdaExpr taskLambda) {
+                validateScheduledLambdaBoundary(
+                        taskLambda.lambda(), call.arguments(), env, generics, self,
+                        "invoked async task lambda");
+                throw new IllegalArgumentException(
+                        "async task lambda requires Task<T> return inference, owned argument captures, and scheduled continuation lowering; executable source is not enabled");
+            }
+            if (call.callee() instanceof Ast.AsyncLambdaExpr asyncLambda) {
+                validateScheduledLambdaBoundary(
+                        asyncLambda.lambda(), call.arguments(), env, generics, self,
+                        "invoked async lambda");
+                throw new IllegalArgumentException(
+                        "async lambda requires Future<T> lowering; returning nb Task<T> would produce Future<Task<T>> without implicit flattening");
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
@@ -4991,6 +5119,132 @@ public final class TypeChecker {
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
     }
 
+    /**
+     * Canonical resolved-type Send authority for detached work. OwnershipChecker
+     * still proves affine move/exclusivity; this method only answers whether the
+     * resolved semantic type is eligible for owned transfer.
+     */
+    private boolean isThreadSend(Type type) {
+        // One shared budget covers all nominal layout checks triggered by this
+        // top-level Send proof. Otherwise a wide type containing many distinct
+        // nominal nodes could restart a fresh 100k isSharedSafe walk per node
+        // and amplify attacker-controlled compiler work beyond the query cap.
+        int[] nominalSharedSafetyBudget = new int[] {100_000};
+        return ThreadSafetyTraits.isOwnedSend(
+                type,
+                new ThreadSafetyTraits.NominalProof() {
+                    @Override
+                    public boolean has(
+                            Named nominal,
+                            ThreadSafetyTraits.Trait trait) {
+                        return trait == ThreadSafetyTraits.Trait.SEND
+                                && isSharedSafe(
+                                        nominal,
+                                        new LinkedHashSet<>(),
+                                        Map.of(),
+                                        0,
+                                        nominalSharedSafetyBudget);
+                    }
+
+                    @Override
+                    public boolean trustedIntrinsic(Named named) {
+                        if (!Set.of(
+                                "Option", "Result", "Channel",
+                                "OptionUnwrapError", "IteratorResult")
+                                .contains(named.name())) {
+                            return false;
+                        }
+                        return findClass(named.name()) == null
+                                && findInterface(named.name()) == null
+                                && findTypeAlias(named.name()) == null;
+                    }
+                });
+    }
+
+    private void validateDetachedTaskType(Type type, String where) {
+        if (type instanceof Named named
+                && named.name().equals("Channel")
+                && named.arguments().size() == 1
+                && isSharedSafe(
+                        named.arguments().getFirst(),
+                        new LinkedHashSet<>(),
+                        Map.of())
+                && isThreadSend(type)) {
+            return;
+        }
+        if (type == Primitive.VOID
+                || !isThreadSend(type)
+                || !isSharedSafe(type, new LinkedHashSet<>(), Map.of())) {
+            throw new IllegalArgumentException(
+                    where + " must resolve to concrete owned Send data; "
+                            + "borrows, futures, mutexes, functions, actor values, "
+                            + "host capabilities, readonly aliases, and unresolved "
+                            + "generics cannot cross a detached Task boundary");
+        }
+    }
+
+    private void validateDetachedTaskBodyCaptures(
+            List<Ast.Stmt> body, Env env, String where) {
+        for (TaskCaptureAnalysis.Use use :
+                TaskCaptureAnalysis.taskBody(body)) {
+            Env.Binding binding = env.lookup(use.name());
+            if (binding != null) {
+                validateDetachedTaskType(
+                        binding.type(),
+                        where + " '" + use.name() + "'");
+            } else if (importedValues.contains(use.name())) {
+                throw new IllegalArgumentException(
+                        where + " '" + use.name()
+                                + "' is an opaque imported runtime value; "
+                                + "detached Task admission requires linked "
+                                + "semantic type and ownership metadata");
+            }
+        }
+    }
+
+    private void validateScheduledLambdaBoundary(
+            Ast.LambdaExpr lambda,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> generics,
+            Type self,
+            String where) {
+        if (!lambda.nonLexical()) {
+            for (TaskCaptureAnalysis.Use use :
+                    TaskCaptureAnalysis.lambda(lambda, null)) {
+                Env.Binding binding = env.lookup(use.name());
+                if (binding != null) {
+                    validateDetachedTaskType(
+                            binding.type(),
+                            where + " capture '" + use.name() + "'");
+                } else if (importedValues.contains(use.name())) {
+                    throw new IllegalArgumentException(
+                            where + " capture '" + use.name()
+                                    + "' is an opaque imported runtime value; "
+                                    + "detached Task admission requires linked "
+                                    + "semantic type and ownership metadata");
+                }
+            }
+        }
+
+        for (Ast.Param parameter : lambda.parameters()) {
+            Type parameterType = resolve(parameter.type(), generics, self);
+            validateDetachedTaskType(
+                    parameterType,
+                    where + " parameter '" + parameter.name() + "'");
+        }
+
+        if (arguments != null) {
+            for (int i = 0; i < arguments.size(); i++) {
+                Type argumentType =
+                        typeOf(arguments.get(i), env, generics, self);
+                validateDetachedTaskType(
+                        argumentType,
+                        where + " argument " + i);
+            }
+        }
+    }
+
     private void validateAsyncBoundaryType(
             Type type,
             boolean returnPosition,
@@ -5002,10 +5256,12 @@ public final class TypeChecker {
         // their stricter rule and continue to reject Channel<T> entirely.
         if (type instanceof Named named && named.name().equals("Channel")
                 && named.arguments().size() == 1
-                && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
+                && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())
+                && isThreadSend(type)) {
             return;
         }
         if (type == Primitive.VOID
+                || !isThreadSend(type)
                 || !isSharedSafe(type, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
                     where + " must be concrete owned task-safe data; borrows, futures, mutexes, functions, actor values, host capabilities, and unresolved generics cannot cross an async task boundary");
@@ -5113,81 +5369,154 @@ public final class TypeChecker {
                         + "or an explicit serialization/copy contract");
     }
 
-    private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
-        if (type == Unknown.INSTANCE || type instanceof SelfType || type instanceof Borrow
-                || type instanceof Function || type instanceof ClassNamespace) return false;
+    private boolean isUnshadowedCompilerBuiltin(String name) {
+        return findClass(name) == null
+                && findInterface(name) == null
+                && findTypeAlias(name) == null;
+    }
+
+    private boolean isSharedSafe(
+            Type type,
+            Set<Ast.ClassDecl> seen,
+            Map<String, Type> genericBindings) {
+        return isSharedSafe(type, seen, genericBindings, 0, new int[] {100_000});
+    }
+
+    private boolean isSharedSafe(
+            Type type,
+            Set<Ast.ClassDecl> seen,
+            Map<String, Type> genericBindings,
+            int depth,
+            int[] budget) {
+        if (depth > 256 || --budget[0] < 0) return false;
+        if (type == Unknown.INSTANCE || type instanceof SelfType
+                || type instanceof Borrow || type instanceof Function
+                || type instanceof ClassNamespace) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
-        if (type instanceof StringLiteral) return true;
+        if (type instanceof StringLiteral || type instanceof Types.BoolLiteral) return true;
         if (type instanceof Generic generic) {
             Type bound = genericBindings.get(generic.name());
-            return bound != null && bound != type && isSharedSafe(bound, seen, genericBindings);
+            return bound != null && bound != type
+                    && isSharedSafe(
+                            bound, seen, genericBindings, depth + 1, budget);
         }
-        if (type instanceof ListType list) return isSharedSafe(list.element(), seen, genericBindings);
+        if (type instanceof ListType list) {
+            return isSharedSafe(
+                    list.element(), seen, genericBindings, depth + 1, budget);
+        }
         if (type instanceof Union union) {
-            for (Type option : union.options()) if (!isSharedSafe(option, seen, genericBindings)) return false;
+            for (Type option : union.options()) {
+                if (!isSharedSafe(
+                        option, seen, genericBindings, depth + 1, budget)) {
+                    return false;
+                }
+            }
             return true;
         }
         if (type instanceof Tuple tuple) {
-            for (Type element : tuple.elements()) if (!isSharedSafe(element, seen, genericBindings)) return false;
+            for (Type element : tuple.elements()) {
+                if (!isSharedSafe(
+                        element, seen, genericBindings, depth + 1, budget)) {
+                    return false;
+                }
+            }
             return true;
         }
         if (type instanceof Record record) {
-            for (Type member : record.members().values()) if (!isSharedSafe(member, seen, genericBindings)) return false;
+            // readOnly is a view capability, not proof that the backing
+            // allocation is frozen or uniquely owned.
+            if (record.readOnly()) return false;
+            for (Type member : record.members().values()) {
+                if (!isSharedSafe(
+                        member, seen, genericBindings, depth + 1, budget)) {
+                    return false;
+                }
+            }
             return true;
         }
         if (!(type instanceof Named named)) return false;
 
-        if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
-                || named.name().equals("Future") || named.name().equals("Iterator")
-                || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
-        if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
-        if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
-            return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
+        String name = named.name();
+        if (name.equals("Mutex") || name.equals("MutexGuard")
+                || name.equals("Future") || name.equals("Iterator")
+                || name.equals("AsyncIterator") || name.equals("SharedMutex")) {
+            return false;
         }
-        if (named.name().equals("Result")) {
-            return named.arguments().size() == 2
-                    && isSharedSafe(named.arguments().get(0), seen, genericBindings)
-                    && isSharedSafe(named.arguments().get(1), seen, genericBindings);
+        if (name.equals("OptionUnwrapError")) {
+            return named.arguments().isEmpty()
+                    && isUnshadowedCompilerBuiltin(name);
+        }
+        if (name.equals("Option") || name.equals("IteratorResult")) {
+            return isUnshadowedCompilerBuiltin(name)
+                    && named.arguments().size() == 1
+                    && isSharedSafe(
+                            named.arguments().getFirst(),
+                            seen, genericBindings, depth + 1, budget);
+        }
+        if (name.equals("Result")) {
+            return isUnshadowedCompilerBuiltin(name)
+                    && named.arguments().size() == 2
+                    && isSharedSafe(
+                            named.arguments().get(0),
+                            seen, genericBindings, depth + 1, budget)
+                    && isSharedSafe(
+                            named.arguments().get(1),
+                            seen, genericBindings, depth + 1, budget);
         }
 
         for (Type argument : named.arguments()) {
-            if (!isSharedSafe(argument, seen, genericBindings)) return false;
+            if (!isSharedSafe(
+                    argument, seen, genericBindings, depth + 1, budget)) {
+                return false;
+            }
         }
 
-        Ast.ClassDecl klass = findClass(named.name());
-        if (klass == null) return false;
-        if (klass.actorKind() != Ast.ActorKind.NONE) return false;
-        if (!seen.add(klass)) return true;
+        Ast.ClassDecl klass = findClass(name);
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE) return false;
+
+        // Recursive nominal storage is not a positive fixed point. Until an
+        // explicit indirection/layout proof exists, a class cycle fails closed.
+        if (!seen.add(klass)) return false;
 
         try {
             Map<String, Type> classBindings = new HashMap<>(genericBindings);
-            if (named.arguments().size() != klass.genericParameters().size()) return false;
+            if (named.arguments().size() != klass.genericParameters().size()) {
+                return false;
+            }
             for (int i = 0; i < klass.genericParameters().size(); i++) {
-                classBindings.put(klass.genericParameters().get(i),
-                        resolveSharedGeneric(named.arguments().get(i), genericBindings));
+                classBindings.put(
+                        klass.genericParameters().get(i),
+                        resolveSharedGeneric(
+                                named.arguments().get(i), genericBindings));
             }
 
             Type nominal = nominalClassType(klass);
-            Set<String> classGenerics = Set.copyOf(klass.genericParameters());
+            Set<String> classGenerics =
+                    Set.copyOf(klass.genericParameters());
 
-            // Check only fields declared by this class under this class's own
-            // generic environment. Flattening inherited fields here is unsafe:
-            // a parent T must never be resolved as an unrelated child T.
             for (Ast.FieldDecl field : klass.fields()) {
                 Type fieldType = resolveSharedGeneric(
                         resolve(field.type(), classGenerics, nominal),
                         classBindings);
-                if (!isSharedSafe(fieldType, seen, classBindings)) return false;
+                if (!isSharedSafe(
+                        fieldType, seen, classBindings, depth + 1, budget)) {
+                    return false;
+                }
             }
 
-            // Recurse into each parent after substituting the child's generic
-            // bindings into the parent's concrete type arguments.
             for (Ast.TypeRef parentRef : klass.parents()) {
-                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
-                Type parentType = resolveSharedGeneric(resolve(parentRef, classGenerics, nominal), classBindings);
-                if (!isSharedSafe(parentType, seen, classBindings)) return false;
+                if (parentRef.name().equals("Object")
+                        || parentRef.name().equals("List")) {
+                    continue;
+                }
+                Type parentType = resolveSharedGeneric(
+                        resolve(parentRef, classGenerics, nominal),
+                        classBindings);
+                if (!isSharedSafe(
+                        parentType, seen, classBindings, depth + 1, budget)) {
+                    return false;
+                }
             }
-
             return true;
         } finally {
             seen.remove(klass);
@@ -8148,6 +8477,8 @@ public final class TypeChecker {
                 }
                 yield new Named(ref.name(), List.of(payload));
             }
+            case "OptionUnwrapError" -> throw new IllegalArgumentException(
+                    "OptionUnwrapError is compiler-internal and cannot be named in source declarations");
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self, true);

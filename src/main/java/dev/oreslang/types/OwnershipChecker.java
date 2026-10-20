@@ -37,11 +37,59 @@ public final class OwnershipChecker {
     // Must retain every (module, name, arity) slot. A name-only map loses
     // one overload and can silently skip/misapply its move/borrow effects.
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
+    private enum ReturnOwnershipKind {
+        UNKNOWN,
+        FRESH,
+        MOVES_PARAMETER
+    }
+
+    private record ReturnOwnershipSummary(
+            ReturnOwnershipKind kind,
+            int parameterIndex) {
+        private static final ReturnOwnershipSummary UNKNOWN =
+                new ReturnOwnershipSummary(
+                        ReturnOwnershipKind.UNKNOWN, -1);
+        private static final ReturnOwnershipSummary FRESH =
+                new ReturnOwnershipSummary(
+                        ReturnOwnershipKind.FRESH, -1);
+
+        private static ReturnOwnershipSummary movesParameter(
+                int parameterIndex) {
+            if (parameterIndex < 0) {
+                throw new IllegalArgumentException(
+                        "negative moved parameter index");
+            }
+            return new ReturnOwnershipSummary(
+                    ReturnOwnershipKind.MOVES_PARAMETER,
+                    parameterIndex);
+        }
+    }
+
+    private final IdentityHashMap<Ast.FunctionDecl, ReturnOwnershipSummary>
+            returnOwnershipSummaries = new IdentityHashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    /**
+     * AST-only deny preflight, independent of actor transport.
+     * A positive result is NOT permission to schedule: after semantic resolution,
+     * ThreadSafetyTraits must make the authoritative Send/owned-transfer decision.
+     * Mutable Array/List captures are moved, never Sync-shared. InvertedArray,
+     * Arc, ThreadBound and unlowered synchronization remain untrusted here.
+     * This preflight does not enable guest Task execution.
+     */
+    private final SendSyncTraits taskSendSyntaxPreflight;
+    /**
+     * Ownership-only proof ledger. Type-level Send remains exclusively owned by
+     * ThreadSafetyTraits; this ledger records only successfully checked
+     * copy/unique-transfer provenance for the exact scheduled AST boundary.
+     */
+    private final TaskTransferProvenance taskTransferProvenance;
+    private TaskTransferProvenance.LexicalTypeContext
+            currentTaskTypeContext =
+                    TaskTransferProvenance.LexicalTypeContext.none();
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -49,17 +97,53 @@ public final class OwnershipChecker {
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
 
     private OwnershipChecker(Ast.Program program) {
+        taskTransferProvenance =
+                new TaskTransferProvenance(
+                        java.util.Objects.requireNonNull(program, "program"));
+        // Array/List have checked unique ownership moves in this syntax pass.
+        // This is deny-only preflight, not a semantic Send grant or runtime
+        // worker-scheduler/actor authority.
+        taskSendSyntaxPreflight = new SendSyncTraits(
+                program, Set.of("Array", "List", "Option", "Result"));
         index(program);
     }
 
+    public record CheckResult(
+            Ast.Program program,
+            TaskTransferProvenance taskTransfers) { }
+
     public static Ast.Program check(Ast.Program program) {
+        return checkWithTaskTransferProvenance(program).program();
+    }
+
+    /**
+     * Full ownership admission plus compiler-minted Task transfer provenance.
+     * The returned ledger is sealed and can only describe boundaries from this
+     * exact checked AST instance. It is not a Send/Sync proof.
+     */
+    public static CheckResult checkWithTaskTransferProvenance(
+            Ast.Program program) {
         OwnershipChecker checker = new OwnershipChecker(program);
         checker.validate(program);
-        return program;
+        return new CheckResult(
+                program,
+                checker.taskTransferProvenance.seal());
     }
 
     /** Reuse only public, explicitly linked class layouts for cross-file loans. */
     public static Ast.Program checkWithImportedClasses(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses) {
+        return checkWithImportedClassesAndTaskTransferProvenance(
+                program, linkedClasses).program();
+    }
+
+    /**
+     * Linked-class ownership admission with the same sealed Task transfer
+     * provenance returned by the ordinary checker. Future lowering must not
+     * silently lose provenance merely because a field layout came from an
+     * explicitly linked compilation unit.
+     */
+    public static CheckResult checkWithImportedClassesAndTaskTransferProvenance(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses) {
         if (linkedClasses == null) {
             throw new IllegalArgumentException("linked public classes cannot be null");
@@ -83,7 +167,9 @@ public final class OwnershipChecker {
             checker.classes.put(name, declaration);
         }
         checker.validate(program);
-        return program;
+        return new CheckResult(
+                program,
+                checker.taskTransferProvenance.seal());
     }
 
     private void index(Ast.Program program) {
@@ -97,6 +183,8 @@ public final class OwnershipChecker {
     }
 
     private void indexFunction(String module, Ast.FunctionDecl fn) {
+        returnOwnershipSummaries.put(
+                fn, summarizeReturnOwnership(fn));
         String qualified = module + "." + fn.name();
         putFunctionSlot(qualified, fn);
         String owner = unqualifiedFunctionOwners.putIfAbsent(fn.name(), module);
@@ -143,11 +231,19 @@ public final class OwnershipChecker {
         }
         defineImplicitArguments(scope, fn.parameters());
         boolean previousAsyncGenerator = currentAsyncGenerator;
+        TaskTransferProvenance.LexicalTypeContext
+                previousTaskTypeContext = currentTaskTypeContext;
         currentAsyncGenerator = fn.generator() && fn.async();
+        currentTaskTypeContext =
+                new TaskTransferProvenance.LexicalTypeContext(
+                        fn.genericParameters(),
+                        null,
+                        TaskTransferProvenance.SelfMode.NONE);
         try {
             checkBlock(fn.body(), scope, fn.returnType());
         } finally {
             currentAsyncGenerator = previousAsyncGenerator;
+            currentTaskTypeContext = previousTaskTypeContext;
             scope.close();
         }
     }
@@ -190,6 +286,13 @@ public final class OwnershipChecker {
                     }
                 }
             }
+            TaskTransferProvenance.LexicalTypeContext
+                    previousTaskTypeContext = currentTaskTypeContext;
+            currentTaskTypeContext =
+                    new TaskTransferProvenance.LexicalTypeContext(
+                            klass.genericParameters(),
+                            null,
+                            TaskTransferProvenance.SelfMode.NONE);
             try {
                 for (Ast.FieldDecl field : klass.fields()) {
                     if (field.initializer() == null) continue;
@@ -204,6 +307,7 @@ public final class OwnershipChecker {
                     }
                 }
             } finally {
+                currentTaskTypeContext = previousTaskTypeContext;
                 initializerScope.close();
             }
         }
@@ -222,13 +326,21 @@ public final class OwnershipChecker {
             defineImplicitArguments(scope, constructor.parameters());
             Ast.ClassDecl previousInitializingClass = initializingClass;
             Set<String> previousFixedWrites = constructorFixedFieldWrites;
+            TaskTransferProvenance.LexicalTypeContext
+                    previousTaskTypeContext = currentTaskTypeContext;
             initializingClass = klass;
             constructorFixedFieldWrites = new HashSet<>();
+            currentTaskTypeContext =
+                    new TaskTransferProvenance.LexicalTypeContext(
+                            klass.genericParameters(),
+                            klass,
+                            TaskTransferProvenance.SelfMode.CLASS_NOMINAL);
             try {
                 checkBlock(constructor.body(), scope, Ast.TypeRef.simple("void"));
             } finally {
                 initializingClass = previousInitializingClass;
                 constructorFixedFieldWrites = previousFixedWrites;
+                currentTaskTypeContext = previousTaskTypeContext;
             }
             scope.close();
         }
@@ -275,10 +387,31 @@ public final class OwnershipChecker {
                     }
                 }
             }
-            for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
+            for (Ast.Param param : method.parameters()) {
+                scope.define(param.name(), stateForParam(param));
+            }
             defineImplicitArguments(scope, method.parameters());
-            checkBlock(method.body(), scope, method.returnType());
-            scope.close();
+            ArrayList<String> taskGenerics = new ArrayList<>();
+            if (!method.isStatic()) {
+                taskGenerics.addAll(klass.genericParameters());
+            }
+            taskGenerics.addAll(method.genericParameters());
+            TaskTransferProvenance.LexicalTypeContext
+                    previousTaskTypeContext = currentTaskTypeContext;
+            currentTaskTypeContext =
+                    new TaskTransferProvenance.LexicalTypeContext(
+                            taskGenerics,
+                            method.isStatic() ? null : klass,
+                            method.isStatic()
+                                    ? TaskTransferProvenance.SelfMode.NONE
+                                    : TaskTransferProvenance.SelfMode
+                                            .RECEIVER_POLYMORPHIC);
+            try {
+                checkBlock(method.body(), scope, method.returnType());
+            } finally {
+                currentTaskTypeContext = previousTaskTypeContext;
+                scope.close();
+            }
         }
     }
 
@@ -384,7 +517,7 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.TaskBlockStmt task) {
-            checkTaskBody(task.body(), scope);
+            checkTaskBody(task, task.body(), scope);
             return;
         }
         if (stmt instanceof Ast.BlockStmt block) {
@@ -1340,7 +1473,9 @@ public final class OwnershipChecker {
                     : Ast.TypeRef.recordType(members);
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
-        if (expr instanceof Ast.TaskExpr task) return checkTaskBody(task.body(), scope);
+        if (expr instanceof Ast.TaskExpr task) {
+            return checkTaskBody(task, task.body(), scope);
+        }
         if (expr instanceof Ast.SuspendsLambdaExpr) {
             // No callable-effect type, typed continuation re-entry point or
             // lifetime proof exists yet for a first-class suspends closure.
@@ -1365,10 +1500,12 @@ public final class OwnershipChecker {
         // arguments at the spawn boundary. Treating these as dynamic calls
         // would silently admit borrowed operands and actor-private aliases.
         if (call.callee() instanceof Ast.TaskLambdaExpr task) {
-            return checkScheduledLambdaCall(task.lambda(), call.arguments(), scope, true);
+            return checkScheduledLambdaCall(
+                    call, task.lambda(), call.arguments(), scope, true);
         }
         if (call.callee() instanceof Ast.AsyncLambdaExpr async) {
-            return checkScheduledLambdaCall(async.lambda(), call.arguments(), scope, false);
+            return checkScheduledLambdaCall(
+                    call, async.lambda(), call.arguments(), scope, false);
         }
         // A constructor owns an unpublished, incompletely initialized object.
         // Calling any instance method on self can transitively read absent
@@ -1812,16 +1949,32 @@ public final class OwnershipChecker {
      * the exact generic Task<T>/Future<T> inference and source execution gate.
      */
     private ValueInfo checkScheduledLambdaCall(
-            Ast.LambdaExpr lambda, List<Ast.Expr> arguments, Scope scope,
+            Ast.CallExpr boundary,
+            Ast.LambdaExpr lambda,
+            List<Ast.Expr> arguments,
+            Scope scope,
             boolean task) {
         if (lambda.parameters().size() != arguments.size()) {
             throw error("async/Task lambda expected " + lambda.parameters().size()
                     + " arguments but received " + arguments.size());
         }
         rejectBorrowedScheduledParameters(lambda);
+        CaptureSet captures = validateScheduledCaptures(lambda, scope);
+        // Scheduled lambda parameters also move into a worker-owned activation.
+        // This AST pass can only reject obvious non-candidates. A later resolved
+        // ThreadSafetyTraits check must authorize the actual transfer.
+        for (Ast.Param parameter : lambda.parameters()) {
+            if (!taskSendSyntaxPreflight.mayBeSendAfterResolution(parameter.type())) {
+                throw error("scheduled lambda parameter '" + parameter.name()
+                        + "' fails conservative Task Send preflight; resolved ThreadSafetyTraits remains authoritative");
+            }
+        }
         checkLambda(lambda, scope, null);
+        ArrayList<TaskTransferProvenance.Transfer> transfers =
+                scheduledCaptureTransfers(captures);
         for (int i = 0; i < arguments.size(); i++) {
-            ValueInfo value = checkExpr(arguments.get(i), scope, true);
+            Ast.Expr argument = arguments.get(i);
+            ValueInfo value = checkExpr(argument, scope, true);
             if (isBorrowValue(value) || containsBorrowType(value.type)) {
                 throw error("async/Task argument " + i
                         + " cannot be borrowed; move/copy/share an owned value");
@@ -1830,7 +1983,20 @@ public final class OwnershipChecker {
                 throw error("async/Task argument " + i
                         + " cannot transfer a MutexGuard into scheduled work");
             }
+            if (!taskSendSyntaxPreflight.mayBeSendAfterResolution(value.type)) {
+                throw error("scheduled lambda argument " + i
+                        + " fails conservative Task Send preflight for owned transfer; resolved ThreadSafetyTraits remains authoritative");
+            }
+            if (value.kind == ValueKind.MOVE_ONLY
+                    && containsUntrackedProjection(argument)) {
+                throw error("scheduled lambda argument " + i
+                        + " cannot transfer a move-only value derived from a field/index projection until projection-level move tracking exists; move it into a named local first");
+            }
+            transfers.add(scheduledArgumentTransfer(
+                    i, argument, value, scope));
         }
+        taskTransferProvenance.record(
+                boundary, transfers, currentTaskTypeContext);
         Ast.TypeRef result = Ast.TypeRef.inferred();
         // A lambda whose body explicitly returns a Task creates a genuine
         // nested Task, whether its own scheduling layer is async Future or
@@ -2472,16 +2638,430 @@ public final class OwnershipChecker {
      * an escaping zero-argument closure before Task submission: this moves
      * affine captures now and rejects borrows, actor self and MutexGuards.
      */
-    private ValueInfo checkTaskBody(List<Ast.Stmt> body, Scope outer) {
+    private ValueInfo checkTaskBody(
+            Object boundary, List<Ast.Stmt> body, Scope outer) {
         if (initializingClass != null) {
             throw error("Task cannot launch from a partially initialized constructor");
         }
         if (mutexCriticalSectionDepth > 0 || outer.hasLiveMutexGuard()) {
             throw error("Task cannot launch while a MutexGuard/critical section is live");
         }
-        checkLambda(new Ast.LambdaExpr(List.of(), null, body), outer, null);
+        Ast.LambdaExpr block = new Ast.LambdaExpr(List.of(), null, body);
+        CaptureSet captures = validateScheduledCaptures(block, outer);
+        checkLambda(block, outer, null);
+        taskTransferProvenance.record(
+                boundary,
+                scheduledCaptureTransfers(captures),
+                currentTaskTypeContext);
         return new ValueInfo(new Ast.TypeRef(
                 "Task", List.of(Ast.TypeRef.inferred()), false), ValueKind.MOVE_ONLY, null);
+    }
+
+    /**
+     * Spawn-time Send eligibility is checked BEFORE checkLambda transfers
+     * affine captures. This is a deny-only syntax preflight; it does not replace
+     * resolved ThreadSafetyTraits, lifetime/actor/guard checks, nor mint runtime
+     * execution/actor sharing permissions.
+     */
+    private CaptureSet validateScheduledCaptures(
+            Ast.LambdaExpr lambda, Scope outer) {
+        if (lambda.nonLexical() || outer.descendantsNonLexical()) {
+            return new CaptureSet();
+        }
+        CaptureSet captures = collectCaptures(lambda, outer, null);
+        for (Capture capture : captures.values.values()) {
+            Ast.TypeRef type = capture.source.type;
+            if (!taskSendSyntaxPreflight.mayBeSendAfterResolution(type)) {
+                throw error("scheduled Task capture '" + capture.name
+                        + "' fails conservative Task Send preflight for owned transfer; type is "
+                        + type + " (resolved ThreadSafetyTraits remains authoritative; Task source execution remains disabled)");
+            }
+        }
+        return captures;
+    }
+
+    private ArrayList<TaskTransferProvenance.Transfer>
+            scheduledCaptureTransfers(CaptureSet captures) {
+        ArrayList<TaskTransferProvenance.Transfer> transfers =
+                new ArrayList<>(captures.values.size());
+        for (Capture capture : captures.values.values()) {
+            VarState source = capture.source;
+            VarState root = ownershipRoot(source);
+            boolean uniqueMove =
+                    capture.write || source.kind == ValueKind.MOVE_ONLY;
+            TaskTransferProvenance.TransferKind kind;
+            if (uniqueMove) {
+                if (!root.moved
+                        || root.immutableBorrows > 0
+                        || root.mutableBorrowed) {
+                    throw new IllegalStateException(
+                            "Oreslang compiler invariant violated: Task "
+                                    + "transfer proof minted without completed "
+                                    + "exclusive move for '" + capture.name + "'");
+                }
+                kind = TaskTransferProvenance.TransferKind.UNIQUE_MOVE;
+            } else {
+                if (source.kind != ValueKind.COPY
+                        || containsBorrowType(source.type)) {
+                    throw new IllegalStateException(
+                            "Oreslang compiler invariant violated: Task copy "
+                                    + "proof minted for non-copy capture '"
+                                    + capture.name + "'");
+                }
+                kind = TaskTransferProvenance.TransferKind.COPY;
+            }
+            transfers.add(new TaskTransferProvenance.Transfer(
+                    capture.name, source.type, kind));
+        }
+        return transfers;
+    }
+
+    /**
+     * Projection-level affine state does not exist yet. For a scheduled
+     * move-only argument, fail closed if any ownership-carrying expression
+     * underneath it reads a field/index place. This deliberately follows
+     * wrappers and aggregate constructors so a cast, rt take, tuple/object,
+     * call argument, conditional or match cannot launder an untracked place
+     * into an OWNED_RVALUE provenance proof.
+     */
+    private static boolean containsUntrackedProjection(Ast.Expr expression) {
+        if (expression == null) return false;
+        if (expression instanceof Ast.MemberExpr
+                || expression instanceof Ast.IndexExpr) return true;
+        if (expression instanceof Ast.CastExpr cast) {
+            return containsUntrackedProjection(cast.value());
+        }
+        if (expression instanceof Ast.SpreadExpr spread) {
+            return containsUntrackedProjection(spread.expression());
+        }
+        if (expression instanceof Ast.TrapExpr trapped) {
+            return containsUntrackedProjection(trapped.expression());
+        }
+        if (expression instanceof Ast.AwaitExpr awaited) {
+            return containsUntrackedProjection(awaited.expression());
+        }
+        if (expression instanceof Ast.UnaryExpr unary) {
+            return containsUntrackedProjection(unary.operand());
+        }
+        if (expression instanceof Ast.BinaryExpr binary) {
+            return containsUntrackedProjection(binary.left())
+                    || containsUntrackedProjection(binary.right());
+        }
+        if (expression instanceof Ast.AssignExpr assignment) {
+            return containsUntrackedProjection(assignment.target())
+                    || containsUntrackedProjection(assignment.value());
+        }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            return containsUntrackedProjection(conditional.condition())
+                    || containsUntrackedProjection(conditional.whenTrue())
+                    || containsUntrackedProjection(conditional.whenFalse());
+        }
+        if (expression instanceof Ast.MatchExpr match) {
+            if (containsUntrackedProjection(match.subject())) return true;
+            for (Ast.MatchValueArm arm : match.arms()) {
+                if (containsUntrackedProjection(arm.guard())
+                        || containsUntrackedProjection(arm.value())) return true;
+            }
+            return false;
+        }
+        if (expression instanceof Ast.TypeTestExpr test) {
+            return containsUntrackedProjection(test.value());
+        }
+        if (expression instanceof Ast.PatternTestExpr test) {
+            return containsUntrackedProjection(test.value());
+        }
+        if (expression instanceof Ast.CallExpr call) {
+            // Member syntax in callee position selects a callable; it is not
+            // itself an affine field extraction. Only ownership-bearing call
+            // arguments can hide an untracked projection here. The ordinary
+            // call checker separately validates receiver/member effects.
+            for (Ast.Expr argument : call.arguments()) {
+                if (containsUntrackedProjection(argument)) return true;
+            }
+            return false;
+        }
+        if (expression instanceof Ast.RuntimeCallExpr runtime) {
+            for (Ast.Expr argument : runtime.arguments()) {
+                if (containsUntrackedProjection(argument)) return true;
+            }
+            return false;
+        }
+        if (expression instanceof Ast.NewExpr created) {
+            for (Ast.Expr argument : created.arguments()) {
+                if (containsUntrackedProjection(argument)) return true;
+            }
+            return false;
+        }
+        if (expression instanceof Ast.ChannelOpExpr channel) {
+            return containsUntrackedProjection(channel.channel())
+                    || containsUntrackedProjection(channel.value());
+        }
+        if (expression instanceof Ast.DynamicSelectExpr selected) {
+            return containsUntrackedProjection(selected.cases());
+        }
+        if (expression instanceof Ast.ListExpr list) {
+            for (Ast.Expr element : list.elements()) {
+                if (containsUntrackedProjection(element)) return true;
+            }
+            return false;
+        }
+        if (expression instanceof Ast.TupleExpr tuple) {
+            for (Ast.Expr element : tuple.elements()) {
+                if (containsUntrackedProjection(element)) return true;
+            }
+            return false;
+        }
+        if (expression instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) {
+                if (containsUntrackedProjection(field.value())) return true;
+            }
+            return false;
+        }
+        return false;
+    }
+
+    private ReturnOwnershipSummary summarizeReturnOwnership(
+            Ast.FunctionDecl function) {
+        if (function.kind() != Ast.CallableKind.FNC
+                || function.async()
+                || function.suspends()
+                || function.generator()
+                || function.trapped()
+                || function.actorKind() != Ast.ActorKind.NONE
+                || function.body().size() != 1
+                || !(function.body().getFirst()
+                        instanceof Ast.ReturnStmt returned)
+                || returned.value() == null) {
+            return ReturnOwnershipSummary.UNKNOWN;
+        }
+        if (isStaticallyFreshReturn(returned.value())) {
+            return ReturnOwnershipSummary.FRESH;
+        }
+        if (returned.value() instanceof Ast.NameExpr name) {
+            for (int i = 0; i < function.parameters().size(); i++) {
+                Ast.Param parameter = function.parameters().get(i);
+                if (parameter.name().equals(name.name())
+                        && !parameter.structural()
+                        && !parameter.type().isBorrow()) {
+                    return ReturnOwnershipSummary.movesParameter(i);
+                }
+            }
+        }
+        return ReturnOwnershipSummary.UNKNOWN;
+    }
+
+    /**
+     * Deliberately narrow compiler-minted return ownership summary.
+     *
+     * <p>No names, borrows, calls, projections, runtime ownership operators or
+     * multi-path bodies are accepted. This proves only that the returned
+     * backing value is constructed inside the callee from recursively fresh
+     * constituents. The full ownership checker still validates the function
+     * body independently.</p>
+     */
+    private static boolean isStaticallyFreshReturn(Ast.Expr expression) {
+        if (expression == null) return false;
+        if (expression instanceof Ast.LiteralExpr) return true;
+        if (expression instanceof Ast.CastExpr cast) {
+            return isStaticallyFreshReturn(cast.value());
+        }
+        if (expression instanceof Ast.SpreadExpr spread) {
+            return isStaticallyFreshReturn(spread.expression());
+        }
+        if (expression instanceof Ast.TrapExpr trapped) {
+            return isStaticallyFreshReturn(trapped.expression());
+        }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            return isStaticallyFreshReturn(conditional.whenTrue())
+                    && isStaticallyFreshReturn(conditional.whenFalse());
+        }
+        if (expression instanceof Ast.ListExpr list) {
+            for (Ast.Expr item : list.elements()) {
+                if (!isStaticallyFreshReturn(item)) return false;
+            }
+            return true;
+        }
+        if (expression instanceof Ast.TupleExpr tuple) {
+            for (Ast.Expr item : tuple.elements()) {
+                if (!isStaticallyFreshReturn(item)) return false;
+            }
+            return true;
+        }
+        if (expression instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) {
+                if (!isStaticallyFreshReturn(field.value())) return false;
+            }
+            return true;
+        }
+        if (expression instanceof Ast.NewExpr created) {
+            for (Ast.Expr argument : created.arguments()) {
+                if (!isStaticallyFreshReturn(argument)) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private ReturnOwnershipSummary returnOwnershipSummary(
+            Ast.CallExpr call, Scope scope) {
+        Ast.FunctionDecl function = null;
+        if (call.callee() instanceof Ast.NameExpr name
+                && scope.lookup(name.name()) == null) {
+            function = findFunction(
+                    name.name(),
+                    syntacticCallArgumentTypes(
+                            call.arguments(), scope).size());
+        } else if (call.callee() instanceof Ast.MemberExpr qualified
+                && qualified.receiver() instanceof Ast.NameExpr namespace
+                && scope.lookup(namespace.name()) == null) {
+            function = findFunction(
+                    namespace.name() + "." + qualified.member(),
+                    syntacticCallArgumentTypes(
+                            call.arguments(), scope).size());
+        }
+        return function == null
+                ? ReturnOwnershipSummary.UNKNOWN
+                : returnOwnershipSummaries.getOrDefault(
+                        function, ReturnOwnershipSummary.UNKNOWN);
+    }
+
+    private boolean isProvenTaskOwnedRvalue(
+            Ast.Expr expression, Scope scope) {
+        if (expression == null) return false;
+        if (expression instanceof Ast.LiteralExpr) return true;
+        if (expression instanceof Ast.NameExpr name) {
+            VarState state = scope.lookup(name.name());
+            if (state == null) return false;
+            VarState root = ownershipRoot(state);
+            if (state.kind == ValueKind.COPY) return true;
+            return root.moved
+                    && root.immutableBorrows == 0
+                    && !root.mutableBorrowed;
+        }
+        if (expression instanceof Ast.CastExpr cast) {
+            return isProvenTaskOwnedRvalue(cast.value(), scope);
+        }
+        if (expression instanceof Ast.SpreadExpr spread) {
+            return isProvenTaskOwnedRvalue(spread.expression(), scope);
+        }
+        if (expression instanceof Ast.TrapExpr trapped) {
+            return isProvenTaskOwnedRvalue(trapped.expression(), scope);
+        }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            // The condition selects a branch but does not contribute ownership
+            // to the expression result.
+            return isProvenTaskOwnedRvalue(conditional.whenTrue(), scope)
+                    && isProvenTaskOwnedRvalue(
+                            conditional.whenFalse(), scope);
+        }
+        if (expression instanceof Ast.MatchExpr match) {
+            for (Ast.MatchValueArm arm : match.arms()) {
+                if (!isProvenTaskOwnedRvalue(arm.value(), scope)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (expression instanceof Ast.RuntimeCallExpr runtime) {
+            if (!runtime.operation().equals("take")
+                    || runtime.arguments().size() != 1
+                    || !(runtime.arguments().getFirst()
+                            instanceof Ast.NameExpr name)) {
+                return false;
+            }
+            VarState state = scope.lookup(name.name());
+            if (state == null) return false;
+            VarState root = ownershipRoot(state);
+            return root.moved
+                    && root.immutableBorrows == 0
+                    && !root.mutableBorrowed;
+        }
+        if (expression instanceof Ast.NewExpr created) {
+            for (Ast.Expr argument : created.arguments()) {
+                if (!isProvenTaskOwnedRvalue(argument, scope)) return false;
+            }
+            return true;
+        }
+        if (expression instanceof Ast.ListExpr list) {
+            for (Ast.Expr element : list.elements()) {
+                if (!isProvenTaskOwnedRvalue(element, scope)) return false;
+            }
+            return true;
+        }
+        if (expression instanceof Ast.TupleExpr tuple) {
+            for (Ast.Expr element : tuple.elements()) {
+                if (!isProvenTaskOwnedRvalue(element, scope)) return false;
+            }
+            return true;
+        }
+        if (expression instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) {
+                if (!isProvenTaskOwnedRvalue(field.value(), scope)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (expression instanceof Ast.CallExpr call) {
+            // Callee spelling is never enough. Only an exact indexed,
+            // synchronous guest function with a compiler-minted return
+            // ownership summary can admit a move-only call result.
+            ReturnOwnershipSummary summary =
+                    returnOwnershipSummary(call, scope);
+            if (summary.kind() == ReturnOwnershipKind.FRESH) {
+                return true;
+            }
+            if (summary.kind()
+                    == ReturnOwnershipKind.MOVES_PARAMETER) {
+                if (call.arguments().stream()
+                        .anyMatch(Ast.SpreadExpr.class::isInstance)) {
+                    return false;
+                }
+                int parameterIndex = summary.parameterIndex();
+                return parameterIndex >= 0
+                        && parameterIndex < call.arguments().size()
+                        && isProvenTaskOwnedRvalue(
+                                call.arguments().get(parameterIndex),
+                                scope);
+            }
+            return false;
+        }
+        return false;
+    }
+
+    private TaskTransferProvenance.Transfer scheduledArgumentTransfer(
+            int index,
+            Ast.Expr argument,
+            ValueInfo value,
+            Scope scope) {
+        TaskTransferProvenance.TransferKind kind;
+        if (value.kind == ValueKind.COPY) {
+            kind = TaskTransferProvenance.TransferKind.COPY;
+        } else if (argument instanceof Ast.NameExpr name) {
+            VarState state = requireState(scope, name.name());
+            VarState root = ownershipRoot(state);
+            if (!root.moved
+                    || root.immutableBorrows > 0
+                    || root.mutableBorrowed) {
+                throw new IllegalStateException(
+                        "Oreslang compiler invariant violated: scheduled "
+                                + "argument move proof was not exclusive");
+            }
+            kind = TaskTransferProvenance.TransferKind.UNIQUE_MOVE;
+        } else {
+            // Syntax alone does not prove that an arbitrary call result owns
+            // fresh/exclusive backing storage. Restrict OWNED_RVALUE to forms
+            // whose ownership transfer is observable in this pass.
+            if (!isProvenTaskOwnedRvalue(argument, scope)) {
+                throw error("scheduled lambda argument " + index
+                        + " has move-only rvalue provenance that cannot be "
+                        + "proven exclusive; bind a compiler-proven fresh "
+                        + "value or move a named owner before scheduling");
+            }
+            kind = TaskTransferProvenance.TransferKind.OWNED_RVALUE;
+        }
+        return new TaskTransferProvenance.Transfer(
+                "$arg" + index, value.type, kind);
     }
 
     private static boolean containsBorrowType(Ast.TypeRef type) {
@@ -2603,13 +3183,10 @@ public final class OwnershipChecker {
 
     private CaptureSet collectCaptures(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
         CaptureSet captures = new CaptureSet();
-        Set<String> locals = new HashSet<>();
-        for (Ast.Param param : lambda.parameters()) locals.add(param.name());
-        locals.add("arguments");
-        if (lambda.expressionBody() != null) {
-            scanExpr(lambda.expressionBody(), locals, outer, recursiveBinding, captures, false);
-        } else {
-            scanStatements(lambda.blockBody(), locals, outer, recursiveBinding, captures);
+        for (TaskCaptureAnalysis.Use use :
+                TaskCaptureAnalysis.lambda(lambda, recursiveBinding)) {
+            VarState source = outer.lookup(use.name());
+            if (source != null) captures.add(use.name(), source, use.write());
         }
         return captures;
     }

@@ -1,0 +1,561 @@
+# Task spawn Send admission — implementation/audit slice
+
+Status: **draft compiler ownership pass; guest Task execution disabled** (2026-10-18).
+
+This branch stacks on the Java Task syntax/ownership parser PR #1377, not main.
+It carries an AST-level `SendSyncTraits` **deny-only syntax preflight** derived
+from #1447. It may reject obviously unsafe captures before affine moves, but a
+positive result is explicitly **not a Send permission**. The authoritative
+decision must later be made by `ThreadSafetyTraits` over resolved
+`Types.Type`, including owned-transfer provenance/lifetime checks. The public
+AST helper API is therefore named `mayBeSendAfterResolution` /
+`mayBeSyncAfterResolution` rather than `isSend` / `isSync`.
+
+## Implemented source-phase admission
+
+- An `nb { ... }`, `task { ... }`, `do nb`, or `do task` captures outer
+  values as an independent escaping activation. Before `checkLambda` can
+  consume any affine value, `OwnershipChecker.validateScheduledCaptures`
+  collects transitive capture names and runs the conservative AST Send preflight.
+  Passing that preflight does not authorize scheduling.
+- Immediately invoked `async task |...|` and `async |...|` reject unproved
+  non-Send closure captures, scheduled parameters and owned arguments.
+  The original lexical borrow, actor-state, mutex-guard, constructor, move,
+  cancellation and suspension restrictions remain active.
+- `Array<T>` / `List<T>` are explicitly treated as **owned moves only**
+  when T is recursively Send. Neither receives Sync, actor transport or
+  shared-domain authority. Built-in `Option<T>` / `Result<T,E>` are permitted
+  only when every payload type is recursively Send. User-shadowed types with
+  those names cannot impersonate the compiler intrinsic.
+  Future runtime ABI changes must re-audit these compiler-specific
+  trusted-intrinsic decisions before source execution.
+- The AST shape walker is bounded at 64 levels / 4,096 nodes before recursive
+  derivation, so deep or very wide unresolved capture types fail closed without
+  poisoning subsequent checks.
+- No automatic admission for `Arc`, `Shared`, `Mutex`, `RwLock`,
+  `InvertedArray`, `Future`, `Task`, `Channel`, `ActorRef`,
+  `ExecutionPermit`, `ThreadBound`, native pointers or unknown nominal
+  types. Even an apparently harmless guest class named `ActorRef` cannot
+  spoof a built-in capability whose Send proof is not implemented.
+- A shared borrow is not an owned Send capture. Scoped child borrows are
+  **not** yet enabled: they require verified canonical region identity,
+  TaskScope scope/outlives, quiescent Task completion and structural fencing.
+
+## Testing / limitations
+
+`src/test/java/dev/oreslang/TaskSpawnSendAdmissionTest.java` adds
+real Parser + OwnershipChecker regression cases for:
+
+- actor-free scalar and owned-array captures;
+- use-after-move denial for an owned captured array;
+- raw pointers, native/FFI handles, ActorRef and transitive Option/Array
+  capability rejection;
+- owned `Option<int>`/`Result<int,string>` positive captures;
+- immediate async/task lambda parameter/capture safety;
+- deep/wide AST type-bomb rejection with a healthy post-budget query;
+- preservation of the `OresCompiler.parseAndTypeCheck` failure for unlowered
+  `nb` Task execution.
+
+**The new JUnit suite is committed but not proven to pass under a full
+Maven/GraalVM build.** The existing source-organization GitHub Actions
+infrastructure has recently reported zero executed job steps. Do not
+relabel syntax/ownership acceptance as actual runtime scheduling.
+
+## Integration gates (not implemented)
+
+1. Complete removal of AST `SendSyncTraits` as a positive permission engine.
+   It is now deny-only preflight on this branch. After type resolution, every
+   Task capture/parameter/argument must call canonical `ThreadSafetyTraits`
+   (including `isOwnedSend`/transfer provenance). A conversion of an
+   unresolved AST nominal to a resolved Type must never upgrade rejected syntax
+   to permission, and AST acceptance must never bypass the resolved authority.
+2. Wire real Task AST captures, typed `Task<T>`/await and permitted
+   region loans to #1448's `TaskAccessVerifier`; mint root ownership
+   provenance only from verified compiler allocation/alias identity.
+3. Integrate #1407's tracked TaskScope and `getDone` non-cancellable
+   physical-quiescence barrier; cancellation requests do not drop loans.
+4. Connect typed `InvertedArray` and ECS columns to LLVM #661's
+   hardened range borrowing, without creating an incompatible duplicate
+   storage layout.
+5. Run exact-source JDK25/GraalVM JUnit, LLVM native/guest positive and
+   compile-negative source tests, full CI, ASan/UBSan/TSan, actor-domain
+   isolation cases and benchmark allocation/cache effects before promotion.
+
+Cross references:
+- Java #1377 https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1377
+- Java #1439 https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1439
+- Java #1447 https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1447
+- Java #1448 https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1448
+- LLVM #661 https://github.com/ores-truffle-oreslang/oreslang-source.llvm/pull/661
+
+## Cross-branch exact implementation checkpoint
+
+The Task branch originated from #1447's bounded AST trait walker, but its
+current role has been deliberately narrowed to deny-only preflight. The latest
+copy also restores #1447's 64-depth / 4,096-node hostile-shape bound. Current
+`SendSyncTraits.java` blob is `6dcdb577037d6c1e38cbc02ad3c1b92ec9b1ae22`;
+it is **not** an authoritative semantic trait engine and must not be compared as
+permanent parity with #1439/#1467.
+The canonical PR may advance independently; recheck its latest head before
+merging, rather than assuming permanent branch parity. #1447 now includes an
+additional test showing that source classes named `ActorRef`, `Task`,
+`Channel`, or `ThreadBound` cannot manufacture a Send or Sync proof.
+This is code alignment, not proof that the two PRs can yet be merged without
+reviewing their distinct base branches and compiler type representations.
+
+
+## Resolved semantic authority bridge — 2026-10-19
+
+The Task branch now has a real second-stage semantic gate in `TypeChecker`,
+rather than relying only on the AST preflight:
+
+`TaskCaptureAnalysis -> canonical Types.Type -> ThreadSafetyTraits.isOwnedSend -> isSharedSafe`
+
+- `TaskCaptureAnalysis` is shared by `OwnershipChecker` and `TypeChecker`, so
+  the affine move pass and semantic permission pass consume the same free-variable
+  set.
+- Expression-form `match` is now traversed. Previously, a value referenced only
+  from a value-match arm could be omitted from the private ownership capture
+  scanner.
+- Task-block captures, Task/async-lambda captures, declared scheduled parameters,
+  and immediately-invoked scheduled arguments are checked using resolved
+  `Types.Type` before the existing execution-disabled diagnostic.
+- A positive semantic Send result still does not enable Task execution.
+- Recursive nominal storage now fails closed instead of using the old
+  `if (!seen.add(klass)) return true` positive fixed point.
+- Shared-safety traversal is bounded to depth 256 / 100,000 proof steps and
+  rejects readonly record views as shared-safe backing.
+- `OptionUnwrapError` is source-unnameable and remains compiler-internal.
+
+Current exact blobs:
+- `TaskCaptureAnalysis.java`: `88da2bd75bd52decdb5ba9f22e914d0e6cfd75ec`
+- `ThreadSafetyTraits.java`: `c1340d77a38b2a0ad5236e1d1a894ccfe1adaba5`
+- `TypeChecker.java`: `eb0099240519261cae1d083e711b7ccdf8f25a7e`
+- `OwnershipChecker.java`: `dcf3e9c41c3d85886ed957a6035ad713af3a8de3`
+- `TaskSpawnSendAdmissionTest.java`: `c07d7159ff44cac63a2f6223d3395847a885245d`
+- `ResolvedTaskSendAuthorityTest.java`: `08dd36257672de0398a7cbae3b3f84ceb85d7ab9`
+- `TaskCaptureAnalysisTest.java`: `5df21d3a9b12cac6403fc695aa8de3ba5d10a043`
+
+Committed targeted test methods in these three suites: **23** (13 + 5 + 5).
+
+### Proof-work amplification hardening — 2026-10-19
+
+The resolved Task bridge originally called the bounded `isSharedSafe` walker
+from the canonical `ThreadSafetyTraits` nominal callback using a fresh
+100,000-step budget for every distinct nominal node. A sufficiently wide type
+could therefore multiply the intended compiler-work bound even though each
+individual traversal was bounded.
+
+`isThreadSend` now allocates one query-local 100,000-step nominal
+shared-safety budget and passes that same budget through every nominal callback.
+`ResolvedTaskSendAuthorityTest` adds a wide nominal-storage adversarial case:
+the direct shared-safety traversal and owned-Send query must both fail closed
+at the same global budget, and a subsequent primitive query must remain healthy.
+
+Current exact blobs:
+- `TypeChecker.java`: `e870b9d27c03e5377116fb2c27cf5f9371e6acee`
+- `ResolvedTaskSendAuthorityTest.java`: `30e0926f957e1e699ca677e2c069997511d22f6d`
+
+Current exact branch head: `3dd8590fdd9537aa6b34fcc8e61390991e115c29`.
+Latest source-org fast-ci #39318279186 / job #118285359818 and
+concurrency-contract #39318279228 / job #118285360290 again completed with
+**zero recorded steps**. They are infrastructure failures, not compiler/test
+results. No Maven/JUnit/GraalVM pass is claimed for this head.
+
+
+## Compiler-minted transfer provenance — 2026-10-19
+
+The ownership pass now produces a sealed, identity-bound
+`TaskTransferProvenance` ledger in addition to ordinary accept/reject
+diagnostics.
+
+This is deliberately an **ownership/provenance half-proof only**:
+`ThreadSafetyTraits` remains the sole resolved semantic Send/Sync authority.
+
+New invariants:
+
+- provenance is keyed by the exact checked Task AST node using identity, so an
+  equal-looking/reconstructed node cannot claim an existing proof;
+- a capture receives `UNIQUE_MOVE` only after the affine owner is actually
+  marked moved and has no live immutable or mutable borrow;
+- copy captures receive `COPY` and leave the original owner usable;
+- fresh/returned consuming arguments may receive `OWNED_RVALUE`;
+- a move-only member/index projection is rejected for scheduled arguments
+  until projection-level move tracking exists; callers must first move the
+  value into a named local;
+- that rejection follows ownership-bearing wrappers (including `rt take`,
+  casts, aggregates, calls' arguments, conditional/match values) so an
+  untracked projection cannot be laundered into `OWNED_RVALUE`;
+- callable selection itself is not treated as field extraction: a safe fresh
+  move-only result such as `optional.unwrap()` remains eligible for ordinary
+  ownership/provenance checking;
+- the ledger is sealed before it leaves `OwnershipChecker`;
+- both ordinary and explicitly linked-class ownership entrypoints can return
+  the same sealed provenance result;
+- no provenance result is returned when ownership checking fails.
+
+New exact files/blobs at this audit point:
+
+- `OwnershipChecker.java`: `c72d42845b688b498ed83c0a9ec913c25bab3fe5`
+- `TaskTransferProvenance.java`: `4f9e8a9b346eb2835ea3f05ae55bcda05c983d76`
+- `TaskTransferProvenanceTest.java`: `736a7b172c70337fc34c36e542a60541b60484df` (5 JUnit methods)
+- `TaskTransferProvenanceSmoke.java`: `8294f90a653bbb71ad0ba87fa57636ef1e499d23`
+- dependency-free Task smoke script: `87730f7739e2bffb5f8271d69cbc82f716fbd756`
+
+The targeted Task branch now has **28 committed JUnit methods** across
+Task-spawn admission (13), resolved semantic authority (5), shared capture
+analysis (5), and transfer provenance (5).
+
+The ownership proof is not yet sufficient to enable source Tasks. The next
+front-end integration must return, for the same exact AST boundary, both:
+
+1. resolved semantic eligibility from `ThreadSafetyTraits.isOwnedSend`; and
+2. the sealed `TaskTransferProvenance` ownership proof.
+
+A lowering-specific front-end result should combine those without inventing a
+second type resolver. It must then bind the admitted lifetime to #1407's
+physical `TaskScope.getDone()`/descendant-quiescence barrier. Cancellation
+request or result-Future settlement alone is never a release witness.
+
+Latest audited branch head: `3717ac52717ca2eb7d153b47a79e5a3ab621624a`.
+Source-org fast-ci #39324361246 / job #118306236723 and
+concurrency-contract #39324362365 / job #118306241700 again failed with
+**zero recorded steps**. No Maven/JUnit/GraalVM pass is claimed. The
+authorized cross-org exact-tree path remains blocked until #1430 is
+independently approved and merged into protected `main`.
+
+
+### Opaque-import and projection-selection hardening
+
+A further audit closed two admission edges:
+
+1. **Opaque imported runtime captures fail closed.** A Task capture that is not
+   a local `Env` binding but is present in the TypeChecker's runtime-value
+   import namespace can no longer be silently skipped. Detached blocks and
+   scheduled lambdas reject it until linked semantic type **and** ownership
+   metadata are available. Compile-time namespaces remain distinct from this
+   rule.
+2. **Callable member selection is not a moved field.** The recursive
+   projection-laundering guard follows ownership-bearing call arguments but
+   does not treat the `MemberExpr` used to select a method as an extracted
+   affine field. A fresh move-only return such as `optional.unwrap()` can
+   therefore be admitted normally, while direct `nested[0]` and wrapped
+   `rt take nested[0]` scheduled transfers still fail closed.
+
+Current exact head before this documentation commit:
+`71feabe479ebc3b3d5b3510fd0eaac3500eecd32`.
+
+Current exact compiler/test blobs:
+- `TypeChecker.java`: `1e3e40d96b36f37d6379d382dfafc3d3a565c2fa`
+- `OwnershipChecker.java`: `c72d42845b688b498ed83c0a9ec913c25bab3fe5`
+- `TaskTransferProvenance.java`: `4f9e8a9b346eb2835ea3f05ae55bcda05c983d76`
+- `ResolvedTaskSendAuthorityTest.java`: `c863c079f3324d214031dc8ca8e3e4ba94386755` (7 tests)
+- `TaskTransferProvenanceTest.java`: `736a7b172c70337fc34c36e542a60541b60484df` (5 tests)
+
+Targeted Task admission inventory is now **30 JUnit methods**
+(13 spawn/preflight + 7 resolved semantic authority + 5 capture analysis +
+5 transfer provenance).
+
+Latest source-org fast-ci #39324842529 / job #118307863719 and
+concurrency-contract #39324842366 / job #118307861781 both completed with
+**zero recorded steps**. They are runner/admission failures, not compiler or
+JUnit results. No exact-source pass is claimed.
+
+
+## Fail-closed owned-rvalue provenance — 2026-10-19
+
+A further audit found that syntactic rvalue shape was being treated as ownership
+evidence. The initial provenance bridge assigned `OWNED_RVALUE` to any
+move-only scheduled argument that was neither a named binding nor a rejected
+field/index projection. That was too broad: an arbitrary function or method
+can return move-only data without any current return-provenance/effect summary
+proving that its backing storage is fresh or exclusively transferred.
+
+The ownership checker now requires an explicit compiler-observable proof before
+minting `OWNED_RVALUE`:
+
+- named values are accepted only when they are Copy or their affine root is
+  actually marked moved with no live borrow;
+- `rt take` is accepted only for a named owner whose completed move is visible
+  in the ownership ledger;
+- fresh `new`, list, tuple and struct/object construction is accepted only
+  when every ownership-bearing constituent independently proves;
+- `Some`/`Ok`/`Err` construction follows the same constituent rule;
+- compiler-known consuming Option/Result extraction such as `unwrap` is
+  accepted only when its named receiver's transfer is visible in the affine
+  ledger;
+- casts/spreads/trap and branch-result wrappers preserve rather than manufacture
+  provenance;
+- arbitrary function/method call results fail closed until callable
+  return-provenance/effect summaries exist;
+- an arbitrary call hidden inside an aggregate cannot launder itself into a
+  fresh ownership proof.
+
+A broader attempt to change ordinary projection semantics was explicitly
+reverted: existing Oreslang behavior intentionally treats ordinary class,
+record and indexed projections as aliasing reads. The hardening belongs at the
+detached Task transfer boundary, not in general expression semantics.
+
+Exact code head: `ff9251ed6bb4daf9145cf527ecd7d1d2fbb82f46`.
+
+Exact blobs:
+- `OwnershipChecker.java`: `ba03781754ba2c3bde4b648b81259499ec1c19b6`
+- `TypeChecker.java`: `1e3e40d96b36f37d6379d382dfafc3d3a565c2fa`
+- `TaskTransferProvenance.java`: `4f9e8a9b346eb2835ea3f05ae55bcda05c983d76`
+- `TaskTransferProvenanceTest.java`: `c77c4249c7a5ffab864be622ed87208a6a7e58b0` (7 tests)
+
+The targeted Task-admission inventory is now **32 committed JUnit methods**:
+13 spawn/preflight + 7 resolved semantic authority + 5 capture analysis +
+7 transfer provenance.
+
+Exact-source CI remains unavailable at this head. Sampled jobs all completed
+without recorded steps, including fast-ci #39326370055 / job #118313176154
+and concurrency-contract #39326369920 / job #118313175357. These runs are
+neither passing nor failing compiler evidence.
+
+A funded private carrier executed an independent **source-free** model of the
+same trust boundary at carrier commit
+`379723831dd0a6bc2fdd0aa9c065da7c56c05d3f`:
+Actions run #39326862908 / job #118314849481 completed successfully with
+**16/16 contract tests passing** and the shell-syntax step passing. The final
+two contracts specifically reject arbitrary rvalue-call ownership and
+projection laundering. This run contains no Oreslang private source and is
+therefore supporting model/runner evidence only, not exact-source compiler,
+JUnit, Maven or GraalVM evidence.
+
+
+### Callee-spelling provenance forgery + ledger resource bounds — 2026-10-19
+
+A later audit found that `isProvenTaskOwnedRvalue` was granting
+`OWNED_RVALUE` based on call spelling alone for names such as
+`Some`, `Ok`, `Err`, `unwrap`, `flatten`, and related members.
+That is not an ownership proof: guest code may define a function or method
+with the same spelling. Until semantic lowering carries an exact resolved
+callee/intrinsic return-ownership witness, **all call results now fail closed**
+for detached-Task `OWNED_RVALUE` minting. Call results can still be passed
+after first binding/moving through an ownership-tracked local once the ordinary
+ownership rules establish the move.
+
+The provenance ledger is also bounded against hostile source:
+- at most 4,096 Task boundaries;
+- at most 4,096 transfers per boundary;
+- at most 65,536 total transfers;
+- transfer labels are 1..256 nonblank characters;
+- capacity/duplicate rejection is atomic and does not partially mutate the
+  ledger.
+
+Current exact code/test blobs before this documentation commit:
+- `OwnershipChecker.java`: `251046bf4ef912813380d43aea9cde7e48cd601a`
+- `TaskTransferProvenance.java`: `83d306357241f3ad00954d17e7b47d4e5cf074c2`
+- `TaskTransferProvenanceTest.java`: `e27029914848ef5d704440e1d618c4cedc10c3dc`
+
+Source-org exact-head fast-ci #39327841115 / job #118318170411 and
+concurrency-contract #39327840968 / job #118318168389 again had **zero
+recorded steps**, so they provide no compiler/JUnit result.
+
+The funded carrier
+`ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra`
+was rechecked without transferring source. Source-free canary run
+#39303220290 was re-run; attempt job #118317869431 completed successfully
+with setup, destination-local checkout, authorization/tree oracle, evidence
+boundary, and completion steps all executed. This proves current Actions
+capacity there, but protected `main` still has an empty private-CI allowlist
+and #1430 has no independent approval, so no private source mirror is
+authorized.
+
+
+## Combined Task admission proof + fresh return summaries — 2026-10-19
+
+The compiler now has one proof-only join for detached Task transfers:
+
+`OwnershipChecker → TaskTransferProvenance → TypeChecker.checkTaskTransferProvenance → TaskSemanticAdmission → TaskAdmissionProof`
+
+`OresCompiler.proveTaskTransfers(program)` is the only front-end helper that
+joins those halves. It does **not** enable Task lowering or execution.
+
+### Joined proof invariants
+
+- ownership and semantic ledgers are sealed before joining;
+- both ledgers are bound to the exact same expanded `Ast.Program` instance;
+- every Task boundary remains identity-keyed;
+- transfer cardinality and transfer names must match exactly;
+- TypeChecker rejects cross-program provenance before doing semantic
+  resolution;
+- the resolved half uses the canonical
+  `ThreadSafetyTraits.isOwnedSend` / shared-safety gate;
+- semantic admission is globally capped at 4,096 transferred values per proof
+  bundle to bound resolved proof work;
+- every joined proof carries the mandatory release barrier
+  `PHYSICAL_TASK_SCOPE_DONE`, matching #1407's physical
+  `TaskScope.getDone()` quiescence contract;
+- ordinary `OresCompiler.analyze` still rejects Task source execution.
+
+### Compiler-minted fresh return provenance
+
+The ownership checker now indexes a deliberately narrow
+`ReturnOwnershipSummary.FRESH` for direct guest functions only when the body
+is exactly one return statement and the returned expression is recursively
+fresh-owned from literals / fresh list, tuple, struct/object or `new`
+construction (plus ownership-preserving cast/spread/trap/conditional wrappers).
+
+Names, borrows, runtime ownership calls, field/index projections, arbitrary
+calls, methods, async/generator functions, and multi-statement/multi-path
+bodies do not receive a fresh summary.
+
+This permits helpers such as:
+
+`make(): Array<int> { return arr[1, 2, 3]; }`
+
+to cross a detached Task boundary as `OWNED_RVALUE`, while
+`return value` and `return arr[otherCall()]` remain fail-closed.
+
+### Exact source state
+
+Current head before this documentation commit:
+`4166277a265b5b21df2c6c36ca136cca3a8e9cde`.
+
+Exact blobs:
+- `OwnershipChecker.java`: `a7d777595971b88d302cf6b6da7fde8f8fb888e2`
+- `TypeChecker.java`: `d45e812b169ba09ad0a43390f7bb66690061d798`
+- `TaskTransferProvenance.java`: `a859a5ca00272f00c10bcc50710150eaf984b059`
+- `TaskSemanticAdmission.java`: `c3df724cfcbcb8b01923eef4257a40187e789a47`
+- `TaskAdmissionProof.java`: `05e8f7b2c864015adbd02c33a76b01228c943144`
+- `OresCompiler.java`: `a9f86c91967a16bb986786f67de5a09e2407c444`
+- `TaskTransferProvenanceTest.java`: `ed96ab9769bc571d296a9551145bc0e8d0cddf4b` (9 tests)
+- `TaskAdmissionProofTest.java`: `5078b9f94cfd472d3c92768a759f4b52ccf57743` (4 tests)
+- `TaskAdmissionProofSmoke.java`: `bc0c4d587fb843fe8759e52672f67b5b4a24029e`
+- dependency-free Task smoke script:
+  `47e3289889d77296c30282bd4113d94e096b88b2`
+
+Targeted Task-admission inventory is now **38 committed JUnit methods**:
+13 spawn/preflight + 7 resolved authority + 5 capture analysis +
+9 transfer provenance + 4 combined-admission tests.
+
+Latest source-org fast-ci #39329957198 / job #118325332305 and
+concurrency-contract #39329957262 / job #118325332109 again reported
+**zero recorded steps**. No exact-source Maven/JUnit/GraalVM result is claimed.
+
+### Funded carrier evidence
+
+A private funded carrier executed an independent source-free model at
+`9e63bcc57c6e42eb48ad4c981d8d341a2e5df4e7`:
+run #39329867643 / job #118325046449 completed **SUCCESS** with
+**19/19 contracts PASS**, 0 failures/skips/cancellations, plus shell syntax
+PASS.
+
+The newest source-free contracts cover:
+- semantic + ownership join by exact Task boundary;
+- rejection of cross-program proof mixing;
+- narrow compiler-minted fresh-return summaries.
+
+This remains model/runner evidence only. No private Oreslang source was copied
+to the carrier.
+
+Exact-tree execution remains blocked until #1430 receives independent review
+and its allowlist lands on protected `main`.
+
+
+## Lexical transfer context + moved-parameter returns — 2026-10-19
+
+Substantive compiler head before this documentation commit:
+`0d0720329dd244e61fbee8663fb2968c50aaf8d2`.
+
+### Exact lexical semantic resolution
+
+`TaskTransferProvenance` now binds a compiler-only
+`LexicalTypeContext` to each exact Task AST boundary alongside its transfer
+ledger. The context is immutable and carries:
+
+- the exact lexical generic parameter names;
+- one of `NONE`, `CLASS_NOMINAL`, or `RECEIVER_POLYMORPHIC`;
+- the exact owning `Ast.ClassDecl` identity when a `self` context exists.
+
+`OwnershipChecker` mints that context while checking free functions, class
+initializers, constructors, instance methods and static methods. The semantic
+half consumes it only by the same boundary object identity.
+
+`TypeChecker.checkTaskTransferProvenance` no longer resolves every transfer
+with `Set.of(), null`. It resolves the original `Ast.TypeRef` under the exact
+lexical generic/`self` context. A receiver owner must also be the exact
+collected class object from the same expanded `Ast.Program`; a structurally
+identical/lookalike class is rejected.
+
+This is resolution context, **not thread-safety authority**. Unconstrained
+`Generic` and receiver-polymorphic `SelfType` remain fail-closed under the
+canonical `ThreadSafetyTraits.isOwnedSend` / shared-safety gate. Carrying the
+right lexical context cannot manufacture `Send`.
+
+### `MOVES_PARAMETER(n)` return ownership summaries
+
+Compiler-minted return provenance is now:
+
+- `UNKNOWN`;
+- `FRESH`;
+- `MOVES_PARAMETER(n)`.
+
+The summary remains intentionally narrow. It is minted only for an ordinary
+synchronous guest `fnc` that is not suspending, async, generator, trapped or
+actor-qualified and whose body is exactly one return statement.
+
+`MOVES_PARAMETER(n)` is minted only when that return is the exact name of a
+by-value, non-structural parameter. At the detached Task boundary, the call
+result is accepted only if the corresponding actual argument independently
+proves owned-rvalue provenance **after** normal call checking consumed it.
+Spread calls fail closed. Arbitrary/dynamic calls, methods, projections,
+borrowed parameters and aliases through local variables do not acquire this
+summary.
+
+The compiler therefore accepts a narrow helper such as:
+
+`moveThrough(Array<int> value): Array<int> { return value; }`
+
+when the actual argument has really been moved, without treating arbitrary
+call syntax as an ownership witness.
+
+### Regression inventory and execution boundary
+
+Targeted Task-admission JUnit inventory at the substantive head is **44
+committed methods**:
+
+- 13 spawn/preflight;
+- 7 resolved authority;
+- 5 capture analysis;
+- 14 transfer provenance;
+- 5 combined admission.
+
+New tests cover moved-parameter admission, exact boundary lexical-context
+binding, generic-context resolution before the concrete-Send denial,
+receiver-`self` resolution, foreign/lookalike class identity rejection and the
+combined admission proof for a moved return parameter.
+
+Source-org Actions at this head again produced zero-step jobs. Examples:
+
+- fast-ci run `39346596015`, job `118380571298`: **0 steps**;
+- concurrency-contract run `39346595801`, job `118380570182`: **0 steps**;
+- main CI test job `118380570328`: **0 steps**.
+
+These are runner/admission failures and provide no compiler evidence.
+
+The funded private carrier was updated only with an **independently authored,
+source-free model**. No Oreslang source/tree crossed repositories. Carrier head
+`7682fd7a045b8ad1e875e5b5ad59a906f20c0174`, run
+`39346685977`, job `118380867651`: **21/21 PASS**, zero failures,
+cancellations or skips; shell syntax PASS. The newest model checks narrow
+moved-parameter summaries and exact boundary/class lexical-context identity.
+
+This remains supporting model evidence, not Maven/JUnit/GraalVM evidence for
+the private Oreslang source.
+
+### Runtime convergence status
+
+The proof continues to require
+`TaskAdmissionProof.ReleaseBarrier.PHYSICAL_TASK_SCOPE_DONE`. The old #1407
+runtime branch is no longer the only live integration surface: later stacks
+(#1534, #1550, #1555) have strengthened physical-quiescence and structured
+Task-scope mechanics. Do not bolt a second release path onto #1452.
+
+The next integration must carry the **exact joined proof/boundary identity**
+into the current lowering stack and retain each transferred owner until that
+specific child has reached scheduler-confirmed physical quiescence. Logical
+result settlement, cancellation request, scope sealing, and ordinary Future
+subscriber delivery remain insufficient release witnesses.
