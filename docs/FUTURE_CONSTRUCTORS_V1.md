@@ -134,6 +134,14 @@ The Java reference adapter provides three distinct entry points:
   registration, completion after registration, cancellation races and
   the case in which registration fails before returning its detach action.
 
+The cancellable variant stages early/synchronous callback signals until
+`register()` returns a non-null detach action. Thus registration failure,
+including a null detach action after `cb.resolve(value)`, rejects the future
+rather than publishing an uncleanupable early success. This stricter,
+transactional registration admission applies to the cancellable variant;
+the original immediate `fromRunCallback` retains callback-first settlement
+semantics.
+
 A detach callback is trusted runtime code only: **no guest execution, no
 blocking and no throws**. A registrar throwing after partial listener
 installation MUST itself roll back the partial installation. Missing or null
@@ -163,6 +171,12 @@ A `do task` spawned by the registrar must have a scope/quiescence owner.
   Therefore, under `docs/security/CI_PRIVATE_SOURCE_MIRRORING.md`,
   **no cross-organization private source mirror is authorized**. Merely
   finding an organization with free Actions minutes cannot override this.
+- A local **isolated adapter compile** with JDK 21 and minimal Future/scheduler
+  test doubles passed eight checks and 1,000 callback completion/cancellation
+  races after disabling an environment-specific full-tier JVM JIT hang. This
+  verifies the copied adapter's Java 21 syntax and focused cleanup algorithm
+  only; it does NOT execute the repository's real `OresFuture`, JUnit tests,
+  Truffle guest compiler or LLVM backend.
 - The local environment may permit only isolated Java 21 verification.
   Successful local adapter compilation or a synthetic test double cannot
   replace exact-tree JDK 25, full Maven, Graal native, or LLVM guest evidence.
