@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Timeout;
 import java.lang.reflect.Field;
 import java.util.HashSet;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -52,4 +53,49 @@ final class OresTaskScopeFailedSlotCleanupTest {
             assertTrue(scope.physicallyQuiescent());
         }
     }
+
+    @Test
+    void failedPostExitRetirementRemainsOwnedAndCloseCanRetry()
+            throws Exception {
+        try (var scheduler = new OresScheduler(1)) {
+            var scope = OresTaskScope.compilerOwned();
+            var releaseAttempts = new AtomicInteger();
+
+            var task = scope.startCompilerFrame(
+                    scheduler,
+                    resume -> OresScheduler.done(17),
+                    () -> {
+                        int attempt = releaseAttempts.incrementAndGet();
+                        if (attempt <= 2) {
+                            throw new IllegalStateException(
+                                    "injected retryable generation release " + attempt);
+                        }
+                    });
+
+            assertEquals(17, task.getAwaited().get(5, TimeUnit.SECONDS));
+
+            // Scheduler physical exit performs the first retirement attempt.
+            // The first close owns the retained slot and performs the second.
+            var first = assertThrows(IllegalStateException.class, scope::close);
+            assertTrue(first.getMessage().contains(
+                    "injected retryable generation release 2"));
+            assertEquals(2, releaseAttempts.get());
+            assertFalse(scope.physicallyQuiescent(),
+                    "failed trusted retirement must retain exact scope ownership");
+            assertFalse(task.getDone().isDone(),
+                    "physical carrier exit alone cannot forge resource retirement");
+
+            // A later host cleanup attempt must reacquire close ownership and
+            // retry the same callback. No Task result/cancellation is replayed.
+            scope.close();
+
+            assertEquals(3, releaseAttempts.get());
+            assertTrue(scope.physicallyQuiescent());
+            assertTrue(task.getDone().get(5, TimeUnit.SECONDS) == null);
+            // Successful close is idempotent and cannot release again.
+            scope.close();
+            assertEquals(3, releaseAttempts.get());
+        }
+    }
+
 }
