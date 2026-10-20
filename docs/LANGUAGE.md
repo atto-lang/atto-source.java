@@ -158,7 +158,7 @@ end
 ```
 
 The end-delimited form never infers its return type: `-> ReturnType` is
-mandatory. Without `do`, the first body token must begin on a later source
+mandatory. Without `as`, the first body token must begin on a later source
 line. An optional semantics-free separator `as` is recognized only when it is
 on the same physical source line as the completed return type; when present it
 also permits compact/minified same-line bodies, for example
