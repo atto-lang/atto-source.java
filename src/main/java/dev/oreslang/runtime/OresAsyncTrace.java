@@ -173,6 +173,20 @@ public final class OresAsyncTrace {
             addBounded(new CallEvent(parent.current, child, callSite));
         }
 
+        /**
+         * Fork a task/message continuation without adding a fabricated source call.
+         * Each fork has its own mutable event/ring storage and carrier lease.
+         */
+        public Trace fork() {
+            Trace copy = new Trace(current, maxEvents);
+            copy.history.addAll(history);
+            copy.actorVisits.addAll(actorVisits);
+            copy.elidedEvents = elidedEvents;
+            copy.elidedActorVisits = elidedActorVisits;
+            copy.revision = revision;
+            return copy;
+        }
+
         public Frame currentFrame() {
             return current;
         }
