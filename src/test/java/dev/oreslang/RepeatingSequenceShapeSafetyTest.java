@@ -37,6 +37,7 @@ final class RepeatingSequenceShapeSafetyTest {
         assertFalse(Types.isAssignable(shape, reversed));
         assertFalse(Types.isAssignable(reversed, shape));
         assertFalse(Types.isAssignable(Types.Unknown.INSTANCE, shape));
+        assertFalse(Types.isAssignable(new Types.Generic("Unbound"), shape));
     }
 
     @Test
