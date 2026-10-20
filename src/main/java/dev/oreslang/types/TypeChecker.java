@@ -3918,7 +3918,7 @@ public final class TypeChecker {
                 }
                 Type producerType = typeOf(created.arguments().getFirst(), env, generics, self);
                 if (!(producerType instanceof Named producer)
-                        || producer.arguments().stream().anyMatch(t -> t == Unknown.INSTANCE)) {
+                        || producer.arguments().stream().anyMatch(this::containsUnknown)) {
                     throw new IllegalArgumentException(
                             "Future<T> constructor requires an owned nominal async provider");
                 }
