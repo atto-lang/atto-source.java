@@ -290,6 +290,41 @@ final class DynamicSelectPlanTest {
     }
 
     @Test
+    void cachedDynamicSnapshotCanSelectWithoutTakingThePlanMonitor() throws Exception {
+        var ready = new ChannelRuntime.Channel<Integer>(1);
+        var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+        plan.put("ready", ChannelRuntime.read(ready));
+        assertSame(plan.selectSetSnapshot(), plan.selectSetSnapshot());
+        assertTrue(ready.tryWrite(42));
+
+        var monitorHeld = new java.util.concurrent.CountDownLatch(1);
+        var releaseMonitor = new java.util.concurrent.CountDownLatch(1);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var holder = pool.submit(() -> {
+                synchronized (plan) {
+                    monitorHeld.countDown();
+                    if (!releaseMonitor.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        throw new AssertionError("monitor was not released");
+                    }
+                }
+                return true;
+            });
+            assertTrue(monitorHeld.await(2, java.util.concurrent.TimeUnit.SECONDS));
+            var selector = pool.submit(() -> plan
+                    .trySelectKeyed(ChannelRuntime.SelectPolicy.FAIR)
+                    .orElseThrow().selection().value());
+            assertEquals(42, selector.get(2, java.util.concurrent.TimeUnit.SECONDS),
+                    "hot-plan select must not reacquire mutable-plan monitor");
+            releaseMonitor.countDown();
+            assertTrue(holder.get(2, java.util.concurrent.TimeUnit.SECONDS));
+        } finally {
+            releaseMonitor.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
     void repeatedlyCancelledPlanSelectionsDoNotKeepStaleRegistrations() {
         var channel = new ChannelRuntime.Channel<Integer>(0);
         var plan = ChannelRuntime.SelectPlan.of(ChannelRuntime.read(channel));
