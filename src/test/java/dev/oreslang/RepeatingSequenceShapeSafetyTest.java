@@ -258,6 +258,16 @@ final class RepeatingSequenceShapeSafetyTest {
         assertThrows(IllegalArgumentException.class, () ->
                 new Types.ListType(Types.Primitive.INT,
                         List.of(Types.Unknown.INSTANCE)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Types.ListType(Types.Primitive.INT,
+                        List.of(new Types.Generic("T"))));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Types.ListType(new Types.Generic("T"),
+                        List.of(Types.Primitive.INT)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Types.ListType(
+                        Types.unionOf(List.of(new Types.Generic("T"), Types.Primitive.INT)),
+                        List.of(new Types.Generic("S"))));
         // A compile-time generic slot remains a typed placeholder, not Unknown.
         assertDoesNotThrow(() ->
                 new Types.ListType(Types.unionOf(List.of(
