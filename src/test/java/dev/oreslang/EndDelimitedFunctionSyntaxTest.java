@@ -64,6 +64,37 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
+    void nestedFunctionReturnTypesAssociateRightWithOptionalDo() {
+        var inferredGrouping = Parser.parse("""
+                fnc higher_order() -> (int) => (string) => bool do
+                    return missing_callback
+                end
+                """);
+        var explicitGrouping = Parser.parse("""
+                fnc higher_order() -> (int) => ((string) => bool) do
+                    return missing_callback
+                end
+                """);
+        assertEquals(explicitGrouping, inferredGrouping);
+    }
+
+    @Test
+    void misplacedDoOrMissingReturnTypeCannotStartAFunctionBody() {
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc malformed() -> do return 1; end"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc malformed() do return 1; end"));
+    }
+
+    @Test
+    void optionalDoDoesNotPermitImplicitNonVoidReturnOrMissingFi() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("fnc f() -> int do 42; end")));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc f(int x) -> int do if x > 0 then return 1; end"));
+    }
+
+    @Test
     void explicitVoidMayFallThrough() {
         String source = """
                 fnc noop() -> void
