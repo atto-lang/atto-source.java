@@ -47,11 +47,13 @@ callable_decl   = { annotation } visibility { callable_modifier } callable_kind 
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
 (* The end-delimited form is admitted only for ordinary free/module callables.
    It requires an explicit slim-arrow return type. Without the optional "do"
-   separator, the first body token begins on the next source line; with "do",
-   compact same-line bodies are also unambiguous. A trailing ";" belongs only
-   to bodyless signature grammar in declaration contexts; it never starts a
-   free/module executable body. Actor callables and class instance/static
-   methods remain brace-bodied. *)
+   separator, the first body token begins on the next source line. Separator
+   "do" is recognized only on the same physical source line as the completed
+   return type; this keeps a next-line body statement such as "do select { ... }"
+   from being consumed as header syntax. With same-line "do", compact bodies are
+   unambiguous. A trailing ";" belongs only to bodyless signature grammar in
+   declaration contexts; it never starts a free/module executable body. Actor
+   callables and class instance/static methods remain brace-bodied. *)
 callable_kind   = "fnc" | "routine" ;
 
 actor_callable_decl
