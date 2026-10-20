@@ -25,7 +25,7 @@ public final class TaskLoanAdmission
     private final TaskAccessVerifier verifier;
     private final TaskAccessVerifier.Ticket ticket;
     private State state = State.MINTED;
-    private Object runtimeScopeEpoch;
+    private OresTaskScope.CompilerScopeEpoch runtimeScopeEpoch;
     private OresTask<?> runtimeChild;
 
     TaskLoanAdmission(
@@ -36,7 +36,8 @@ public final class TaskLoanAdmission
     }
 
     @Override
-    public synchronized void bindScope(Object scopeEpoch) {
+    public synchronized void bindScope(
+            OresTaskScope.CompilerScopeEpoch scopeEpoch) {
         Objects.requireNonNull(scopeEpoch, "runtime scope epoch");
         if (state != State.MINTED) {
             throw new IllegalStateException(
@@ -48,7 +49,7 @@ public final class TaskLoanAdmission
 
     @Override
     public synchronized void bindChild(
-            Object scopeEpoch, OresTask<?> child) {
+            OresTaskScope.CompilerScopeEpoch scopeEpoch, OresTask<?> child) {
         requireScope(scopeEpoch);
         Objects.requireNonNull(child, "runtime child");
         if (state != State.SCOPE_BOUND) {
@@ -60,7 +61,8 @@ public final class TaskLoanAdmission
     }
 
     @Override
-    public synchronized void retireNeverStarted(Object scopeEpoch) {
+    public synchronized void retireNeverStarted(
+            OresTaskScope.CompilerScopeEpoch scopeEpoch) {
         requireScope(scopeEpoch);
         if (state != State.SCOPE_BOUND && state != State.CHILD_BOUND) {
             throw new IllegalStateException(
@@ -73,7 +75,7 @@ public final class TaskLoanAdmission
 
     @Override
     public synchronized void retireAfterPhysicalQuiescence(
-            Object scopeEpoch, OresTask<?> child) {
+            OresTaskScope.CompilerScopeEpoch scopeEpoch, OresTask<?> child) {
         requireScope(scopeEpoch);
         Objects.requireNonNull(child, "runtime child");
         if (state != State.CHILD_BOUND || runtimeChild != child) {
@@ -89,7 +91,8 @@ public final class TaskLoanAdmission
         return state == State.RETIRED;
     }
 
-    private void requireScope(Object scopeEpoch) {
+    private void requireScope(
+            OresTaskScope.CompilerScopeEpoch scopeEpoch) {
         Objects.requireNonNull(scopeEpoch, "runtime scope epoch");
         if (runtimeScopeEpoch != scopeEpoch) {
             throw new IllegalArgumentException(
