@@ -32,8 +32,8 @@ BUILD_TEST = re.compile(
 # Preparation can mention "test" or "build" without executing either.
 # Conservative precedence prevents dependency/bootstrap failures being called tests.
 PREPARATION = re.compile(
-    r"^(?:run\\s+)?(?:install|restore|download|fetch|prepare|bootstrap|"
-    r"configure|initialize|set\\s?up|provision|cache)\\b", re.I,
+    r"^(?:run\s+)?(?:install|restore|download|fetch|prepare|bootstrap|"
+    r"configure|initialize|set\s?up|provision|cache)\b", re.I,
 )
 OTHER_CONCLUSIONS = {"cancelled", "skipped", "timed_out", "neutral", "action_required", "stale"}
 PENDING_STATES = {"queued", "in_progress", "waiting", "pending", "requested"}
