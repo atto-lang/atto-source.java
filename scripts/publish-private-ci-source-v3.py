@@ -367,9 +367,15 @@ def authorize_write(root, repository, approved_policy, contract):
     are the state that can change between individual writes, so those are
     rechecked immediately before every write.
     """
-    if legacy.checked_policy_fingerprint(root, repository) != approved_policy:
-        raise Denied("private CI destination approval policy changed during transfer")
-    repo = legacy.checked_repo(repository)
+    current_policy, current_repository_id = legacy.checked_policy_approval(
+        root, repository
+    )
+    if (current_policy != approved_policy
+            or current_repository_id != contract["repository_id"]):
+        raise Denied(
+            "private CI destination approval or repository identity changed during transfer"
+        )
+    repo = legacy.checked_repo(repository, contract["repository_id"])
     if (repo.get("id") != contract["repository_id"]
             or repo.get("archived") is not False
             or repo.get("disabled") is not False
