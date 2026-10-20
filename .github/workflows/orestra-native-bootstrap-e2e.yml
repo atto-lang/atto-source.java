@@ -1,0 +1,25 @@
+name: Orestra native bootstrap GraalVM integration
+on:
+  pull_request:
+    paths:
+      - 'src/test/java/dev/oreslang/runtime/OrestraBootstrapNativeHttpTest.java'
+      - 'src/test/resources/orestra/native-bootstrap.ores'
+      - '.github/workflows/orestra-native-bootstrap-e2e.yml'
+permissions: {contents: read}
+jobs:
+  graal-http:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Execute real guest source with bounded loopback HTTP requests
+        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=OrestraBootstrapNativeHttpTest test
