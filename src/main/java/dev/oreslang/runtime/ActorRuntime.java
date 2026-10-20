@@ -1690,14 +1690,25 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        if (cell.kind != ActorKind.UNTRUSTED)
-            return cell.sourceScheduler().start(task, onQuiescent);
+        // Preserve actor-owned memory until the FINAL post-carrier callback
+        // (including descendant quiescence) has finished. Future cancellation
+        // and scheduler.close() are not memory-reclamation witnesses.
+        Runnable actorRetirement = cell.sourceTaskLifetime(onQuiescent);
+        if (cell.kind != ActorKind.UNTRUSTED) {
+            try {
+                return cell.sourceScheduler().start(task, actorRetirement);
+            } catch (RuntimeException | Error admissionFailure) {
+                actorRetirement.run();
+                throw admissionFailure;
+            }
+        }
         // Do not mint multiple independent root budgets from one physical
         // mailbox turn. While one source-task cohort is live, its nested
         // tasks share the same quota; a second top-level task fails closed.
         // Separate actor messages cannot defeat this rule while a source task
         // is still suspended.
         UntrustedLogicalQuota inheritedQuota = CURRENT_UNTRUSTED_QUOTA.get();
+        try {
         synchronized (cell.lifecycleLock) {
             // Unlike the physical-cohort count, this remains charged while a
             // terminal Future subscriber is blocked AFTER guest quiescence.
@@ -1740,6 +1751,10 @@ public final class ActorRuntime implements AutoCloseable {
             cell.activeUntrustedSourceTaskCount++;
             cell.activeUntrustedTimedAdmissions++;
         }
+        } catch (RuntimeException | Error admissionFailure) {
+            actorRetirement.run();
+            throw admissionFailure;
+        }
 
         UntrustedLogicalQuota quota = inheritedQuota;
         AtomicBoolean physicalQuiescenceConfirmed = new AtomicBoolean();
@@ -1774,7 +1789,7 @@ public final class ActorRuntime implements AutoCloseable {
                     try {
                         releaseTimedWhenSafe.run();
                     } finally {
-                        onQuiescent.run();
+                        actorRetirement.run();
                     }
                 }
             }
@@ -6832,6 +6847,9 @@ public final class ActorRuntime implements AutoCloseable {
         private int activeUntrustedSourceTaskCount;
         /** Timed admission persists until both guest quiescence and terminal drain. */
         private int activeUntrustedTimedAdmissions;
+        /** Includes Tasks whose Futures have settled but whose guest carrier,
+         * descendants or runtime quiescence callback have not yet retired. */
+        private int activeSourceTaskLeases;
         private Behavior<M> behavior;
 
         private ActorCell(
@@ -7107,6 +7125,36 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private Runnable sourceTaskLifetime(Runnable onQuiescent) {
+            Objects.requireNonNull(onQuiescent, "onQuiescent");
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized || closed.get()) {
+                    throw new RejectedExecutionException(
+                            "actor " + ref.id() + " cannot admit a source Task during shutdown");
+                }
+                if (activeSourceTaskLeases == Integer.MAX_VALUE) {
+                    throw new RejectedExecutionException("actor source Task lease capacity exceeded");
+                }
+                activeSourceTaskLeases++;
+            }
+            AtomicBoolean released = new AtomicBoolean();
+            return () -> {
+                if (!released.compareAndSet(false, true)) return;
+                try {
+                    onQuiescent.run();
+                } finally {
+                    synchronized (lifecycleLock) {
+                        if (activeSourceTaskLeases <= 0) {
+                            throw new IllegalStateException("actor source Task lease underflow");
+                        }
+                        activeSourceTaskLeases--;
+                        if (stopped.get()) finalizeStopLocked();
+                        lifecycleLock.notifyAll();
+                    }
+                }
+            };
+        }
+
         private void finalizeStopLocked() {
             // External termination is not observable until the dispatcher has
             // fully crossed back out of the TurnExecutor boundary. For
@@ -7115,6 +7163,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
+                    || activeSourceTaskLeases != 0
                     || !children.isEmpty()) return;
             finalized = true;
             OresScheduler scheduler = sourceScheduler;
