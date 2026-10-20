@@ -483,9 +483,11 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 failedInitialSpawns.add(ownership);
                 registered = true;
             }
+            FailedInitialSpawn reservedOwner = ownership;
             ActorRuntime.ActorRef<Object> physical =
                     view.runtime().spawnCodeActor(
-                            kind, view.policy(), view.executor(), actorTypeName);
+                            kind, view.policy(), view.executor(), actorTypeName,
+                            ref -> reservedOwner.physical = ref);
             // Reference assignment is nonallocating. It precedes readiness
             // blocking so stop timeout always retains a retriable owner.
             ownership.physical = physical;
