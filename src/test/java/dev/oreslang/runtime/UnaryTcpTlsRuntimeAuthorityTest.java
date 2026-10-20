@@ -187,7 +187,9 @@ final class UnaryTcpTlsRuntimeAuthorityTest {
             var actor = runtime.<String>spawnShared(() -> (message, context) -> {
                 try {
                     UnaryTcpTlsRuntime.bind(
-                            null, null, "127.0.0.1", 0, 1,
+                            (OresContext) null,
+                            (SSLContext) null,
+                            "127.0.0.1", 0, 1,
                             null, null, null);
                     failure.set(new AssertionError(
                             "actor turn reached unary TLS bind path"));
