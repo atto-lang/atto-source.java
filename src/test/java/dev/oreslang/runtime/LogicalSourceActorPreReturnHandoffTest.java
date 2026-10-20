@@ -220,6 +220,7 @@ final class LogicalSourceActorPreReturnHandoffTest {
 
             try (var router = LogicalSourceActorRouterV1.spawn(
                     first, ActorRuntime.ActorKind.SHARED, "Counter", WAIT)) {
+                var priorPhysical = router.physicalRefForTesting();
                 registryField.set(candidateRuntime, registry);
                 var failure = new java.util.concurrent.FutureTask<Boolean>(() -> {
                     assertThrows(OutOfMemoryError.class,
@@ -253,8 +254,8 @@ final class LogicalSourceActorPreReturnHandoffTest {
                                 "stagedCandidate").get(transfer),
                                 "transfer must own exact preallocated physical candidate");
                     }
-                    assertEquals(1L, router.physicalRefForTesting().generation(),
-                            "old physical actor remains the original incarnation");
+                    assertSame(priorPhysical, router.physicalRefForTesting(),
+                            "old physical actor must remain authoritative until rollback");
                 } finally {
                     permitPhysicalRemoval.countDown();
                     upgrading.join(10_000);
