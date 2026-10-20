@@ -68,6 +68,14 @@ public final class GenerationalReplyRegistry implements AutoCloseable {
             future.completeExceptionally(failure);
             return true;
         }
+        /** Mailbox admission failure: caller may fail its own outstanding call,
+         * but cannot fabricate success or invoke privileged supervisor CONTROL. */
+        boolean failAdmission(Endpoint requester, Throwable failure) {
+            Objects.requireNonNull(failure, "admission failure");
+            if (!owner.claim(this, requester, false, State.REJECTED)) return false;
+            future.completeExceptionally(failure);
+            return true;
+        }
         boolean cancel(Endpoint requester) {
             if (!owner.claim(this, requester, false, State.CANCELLED)) return false;
             future.completeExceptionally(new CancellationException("actor call cancelled"));
