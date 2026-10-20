@@ -90,4 +90,34 @@ final class TypeAutoTraitsTest {
         assertTrue(ref.sync());
         assertTrue(ref.share());
     }
+
+    @Test
+    void nominalEntryCapabilitiesFollowBothPayloads() {
+        var integer = Types.Primitive.INT;
+        var scalar = TypeAutoTraits.inferClosed(
+                new Types.Named("Entry", List.of(integer, Types.Primitive.STRING)));
+        assertTrue(scalar.send());
+        assertTrue(scalar.sync());
+        assertTrue(scalar.share());
+
+        var mutableValue = TypeAutoTraits.inferClosed(
+                new Types.Named("Entry", List.of(
+                        integer, new Types.ListType(integer))));
+        assertTrue(mutableValue.send());
+        assertFalse(mutableValue.sync());
+        assertFalse(mutableValue.share());
+
+        var nonSend = TypeAutoTraits.inferClosed(
+                new Types.Named("Entry", List.of(
+                        integer, new Types.Named("Rc", List.of(integer)))));
+        assertFalse(nonSend.send());
+        assertFalse(nonSend.sync());
+        assertFalse(nonSend.share());
+
+        var malformed = TypeAutoTraits.inferClosed(
+                new Types.Named("Entry", List.of(integer)));
+        assertFalse(malformed.send());
+        assertFalse(malformed.sync());
+        assertFalse(malformed.share());
+    }
 }

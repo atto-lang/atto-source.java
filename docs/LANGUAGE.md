@@ -622,17 +622,33 @@ val first = values[0];
 
 `arr[...]` is the canonical inline-array spelling. The original bare `[...]` literal remains accepted for source compatibility and destructuring migration.
 
-Tuples preserve per-position static types. Parenthesized tuple literals and
-list-backed values returned against a finite tuple type both retain the declared
-positional types. Bare finite tuple syntax remains the compact form; the named
-`Tuple<...>[...]` form is used when storage metadata is needed.
+Tuples preserve per-position static types. They have a dedicated immutable
+runtime kind: an Array/List must not become a Tuple merely because it has the
+same size and element types. `tuple {x, y}` is the explicit positional tuple literal;
+`(x, y)` is its compact equivalent. `()` and `tuple {}` are empty tuples;
+`(x,)` and `tuple {x}` are singleton tuples. By contrast, `(x)` is grouping,
+not a tuple, and `tuple(x)` is an ordinary callable invocation (subject to the
+legacy direct-call compatibility builtin when no user callable named `tuple`
+exists). The named `Tuple<...>[...]` form is used when storage metadata is needed.
+
+Tuple match patterns mirror the literal forms: `tuple {a, b}` or `(a, b)`;
+the singleton requires `(a,)` when using parentheses. Both `()` and
+`tuple {}` match only a zero-arity tuple. Tuple patterns are statically
+restricted to tuples and must not silently match Array/List or nominal Entry
+values. Parenthesized groupings remain unaffected.
+
+A zero-arity tuple has no element type. Until the compiler supports an explicit
+bottom/`Never` type for zero-iteration loops, `for ... of ()` and
+`for ... of tuple {}` are rejected at type checking rather than exposing a
+permissive `Unknown` element binding. Use an explicitly typed empty Array/List
+when an iterable of known element type is required.
 
 ```ores
 val pair = (1, "one");
 [const number, let label] = pair;
 
 fnc result(): [int, bool, string] {
-  return [3, true, "yes"];
+  return tuple {3, true, "yes"};
 }
 
 const [num, ok, answer] = result();
@@ -642,6 +658,15 @@ val aligned: Tuple<align=64, size=2>[int, string] = (1, "one");
 @NamedParams<align=64, size=2>
 val sameShape: [int, string] = (1, "one");
 ```
+
+Unlike the earlier list-backed return shaping, callable return boundaries now
+require a nominal Tuple runtime value for a declared tuple type. In particular,
+`return [1, 2]` cannot silently satisfy a tuple return type: use
+`return tuple {1, 2}` or `return (1, 2)`. Array-return boundaries similarly
+reject Tuple values. Java host `List` equality never defines tuple identity.
+Tuple values preserve their runtime kind across async detachment, actor freeze,
+and private actor transport. Backend parity is separate: unsupported LLVM
+tuple lowering must fail closed.
 
 A tuple is a product value, not a growable array. Its `size` metadata is
 redundant by design but useful as an ABI/layout assertion; a mismatch with the

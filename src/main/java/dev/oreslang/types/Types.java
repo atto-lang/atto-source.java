@@ -177,8 +177,7 @@ public final class Types {
         if (first instanceof Primitive a && second instanceof Primitive b) {
             // Numeric widening makes primitive numeric domains potentially overlap.
             return a != b && !(isNumeric(a) && isNumeric(b));
-        }
-        if (first instanceof Record a && second instanceof Record b) {
+        }        if (first instanceof Record a && second instanceof Record b) {
             if (!compatibleAggregateKinds(a.kind(), b.kind())) return true;
             // Only conflicting *known* fields prove disjointness. Missing keys do not.
             for (var entry : a.members().entrySet()) {
@@ -258,7 +257,6 @@ public final class Types {
             }
             return true;
         }
-
         if (from instanceof Record source && to instanceof Record target) {
             if (!compatibleAggregateKinds(source.kind(), target.kind())) return false;
             // Structs are closed concrete shapes: unlike records/contracts, they do not

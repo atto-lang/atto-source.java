@@ -94,7 +94,7 @@ public final class TypeAutoTraits {
                     Optional.of(named.arguments().size() == 1
                             ? nested.apply(named.arguments().getFirst())
                             : NONE);
-            case "Result" ->
+            case "Result", "Entry" ->
                     Optional.of(named.arguments().size() == 2
                             ? combine(named.arguments(), nested)
                             : NONE);

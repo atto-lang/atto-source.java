@@ -2452,15 +2452,20 @@ public final class Parser {
                 // Explicit alias capture remains available for structural records.
                 initializer = parseObjectLiteral(Ast.ObjectKind.INFERRED_RECORD, List.of());
             } else if (matchContextualKeyword("tuple")) {
-                consume(LPAREN, "expected '(' after infer<T> tuple");
-                List<Ast.Expr> items = parseArgumentsUntil(RPAREN);
-                consume(RPAREN, "expected ')' after inferred tuple");
+                Token.Type close;
+                if (match(LBRACE)) close = RBRACE;
+                else if (match(LPAREN)) close = RPAREN; // legacy named-inference spelling
+                else throw error(peek(), "expected '{' after infer<T> tuple");
+                List<Ast.Expr> items = parseTupleItemsUntil(close);
+                consume(close, close == RBRACE
+                        ? "expected '}' after inferred tuple"
+                        : "expected ')' after inferred tuple");
                 if (items.isEmpty()) {
                     throw error(previous(), "infer<T> tuple requires at least one element");
                 }
                 initializer = new Ast.TupleExpr(items);
             } else {
-                throw error(peek(), "infer<T> requires a struct {...}, record {...}, or tuple (...) literal");
+                throw error(peek(), "infer<T> requires a struct {...}, record {...}, or tuple {...} literal");
             }
         } else {
             initializer = parseExpression();
@@ -2959,11 +2964,22 @@ public final class Parser {
             return new Ast.TypePattern(target, binding);
         }
 
+        // A tuple pattern uses the same finite arity as a tuple literal.
+        // Braces are explicit; parentheses require a comma except for ().
+        if (isContextualIdentifier("tuple") && checkNext(LBRACE)) {
+            advance();
+            consume(LBRACE, "expected '{' after tuple pattern");
+            List<Ast.Pattern> elements = parseTuplePatternItemsUntil(RBRACE);
+            consume(RBRACE, "expected '}' after tuple pattern");
+            return new Ast.TuplePattern(elements);
+        }
         if (match(LPAREN)) {
+            if (match(RPAREN)) return new Ast.TuplePattern(List.of());
+            Ast.Pattern first = parsePattern();
+            consume(COMMA, "parenthesized tuple patterns require a comma; use (x,) for a singleton");
             List<Ast.Pattern> elements = new ArrayList<>();
-            elements.add(parsePattern());
-            consume(COMMA, "tuple match patterns require at least two elements");
-            do elements.add(parsePattern()); while (match(COMMA));
+            elements.add(first);
+            if (!check(RPAREN)) elements.addAll(parseTuplePatternItemsUntil(RPAREN));
             consume(RPAREN, "expected ')' after tuple match pattern");
             return new Ast.TuplePattern(elements);
         }
@@ -3607,11 +3623,11 @@ public final class Parser {
             advance(); // contextual record
             return parseObjectLiteral(Ast.ObjectKind.RECORD, List.of());
         }
-        if (isContextualIdentifier("tuple") && checkNext(LPAREN)) {
-            advance();
-            consume(LPAREN, "expected '(' after tuple");
-            List<Ast.Expr> items = parseArgumentsUntil(RPAREN);
-            consume(RPAREN, "expected ')' after explicit tuple");
+        if (isContextualIdentifier("tuple") && checkNext(LBRACE)) {
+            advance(); // contextual tuple literal; tuple(...) remains an ordinary call
+            consume(LBRACE, "expected '{' after tuple");
+            List<Ast.Expr> items = parseTupleItemsUntil(RBRACE);
+            consume(RBRACE, "expected '}' after explicit tuple");
             return new Ast.TupleExpr(items);
         }
         if (match(IDENT, SHARED, UNTRUSTED)) {
@@ -3660,11 +3676,17 @@ public final class Parser {
         if (check(PIPE)) return parsePipeLambda(false);
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
         if (match(LPAREN)) {
+            // In expression position () is the zero-element tuple. Lambda
+            // lookahead above still owns () -> ... before this fallback.
+            if (match(RPAREN)) return new Ast.TupleExpr(List.of());
             Ast.Expr first = parseExpression();
             if (match(COMMA)) {
                 List<Ast.Expr> items = new ArrayList<>();
                 items.add(first);
-                do items.add(parseExpression()); while (match(COMMA));
+                while (!check(RPAREN)) {
+                    items.add(parseExpression());
+                    if (!match(COMMA)) break;
+                }
                 consume(RPAREN, "expected ')' after tuple");
                 return new Ast.TupleExpr(items);
             }
@@ -3712,23 +3734,25 @@ public final class Parser {
                 : inferredStruct ? "expected '{' after infer struct"
                 : inferredRecord ? "expected '{' after infer record"
                 : "expected '{' after explicit struct shape");
+        String aggregateName = plainRecord ? "record"
+                : inferredRecord ? "infer record"
+                : inferredStruct ? "infer struct"
+                : "explicit struct";
         List<Ast.ObjectField> fields = new ArrayList<>();
         if (!check(RBRACE)) {
             do {
                 if (check(BACKTICK)) {
                     throw error(peek(),
-                            "struct fields must be statically named for AOT compilation; "
+                            aggregateName + " fields must be statically named for AOT compilation; "
                                     + "computed/backtick field names are not supported");
                 }
-                String name = consumeStaticObjectKeyName("expected struct field name");
-                consume(COLON, "expected ':' after struct field name");
+                String name = consumeStaticObjectKeyName(
+                        "expected " + aggregateName + " field name");
+                consume(COLON, "expected ':' after " + aggregateName + " field name");
                 fields.add(Ast.ObjectField.named(name, parseExpression()));
             } while (match(COMMA));
         }
-        consume(RBRACE, explicitStruct
-                ? "expected '}' after explicit struct initializer"
-                : inferredRecord ? "expected '}' after infer record literal"
-                : "expected '}' after infer struct literal");
+        consume(RBRACE, "expected '}' after " + aggregateName + " literal");
         return new Ast.ObjectExpr(fields, kind, declaredFields);
     }
 
@@ -3826,6 +3850,28 @@ public final class Parser {
         List<Ast.Expr> args = new ArrayList<>();
         do args.add(parseExpression()); while (match(COMMA));
         return args;
+    }
+
+    /** Tuple bodies admit a trailing comma, including the compact singleton form (x,). */
+    private List<Ast.Expr> parseTupleItemsUntil(Token.Type terminator) {
+        if (check(terminator)) return List.of();
+        List<Ast.Expr> items = new ArrayList<>();
+        while (true) {
+            items.add(parseExpression());
+            if (!match(COMMA) || check(terminator)) break;
+        }
+        return items;
+    }
+
+    /** Tuple patterns admit zero elements, singletons, and trailing commas. */
+    private List<Ast.Pattern> parseTuplePatternItemsUntil(Token.Type terminator) {
+        if (check(terminator)) return List.of();
+        List<Ast.Pattern> items = new ArrayList<>();
+        while (true) {
+            items.add(parsePattern());
+            if (!match(COMMA) || check(terminator)) break;
+        }
+        return items;
     }
 
     private void consumeMemberTerminator(Token.Type structuralTerminator, String message) {
