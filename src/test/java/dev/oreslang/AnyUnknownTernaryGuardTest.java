@@ -1040,4 +1040,31 @@ final class AnyUnknownTernaryGuardTest {
         }
         return output.toString(StandardCharsets.UTF_8);
     }
+    @Test
+    void internalInferenceSentinelCannotBeLaunderedThroughUnionToOpaqueTop() {
+        var inferenceHole = dev.oreslang.types.Types.Unknown.INSTANCE;
+        var sourceUnknown = dev.oreslang.types.Types.UnknownValue.INSTANCE;
+        var verifiedAny = dev.oreslang.types.Types.Any.INSTANCE;
+        var scalar = dev.oreslang.types.Types.Primitive.INT;
+
+        assertThrows(IllegalArgumentException.class, () ->
+                new dev.oreslang.types.Types.Union(
+                        java.util.List.of(inferenceHole, scalar)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new dev.oreslang.types.Types.Union(
+                        java.util.List.of(verifiedAny, inferenceHole)));
+        assertSame(inferenceHole,
+                dev.oreslang.types.Types.unionOf(
+                        java.util.List.of(inferenceHole, verifiedAny)));
+        assertSame(inferenceHole,
+                dev.oreslang.types.Types.unionOf(
+                        java.util.List.of(sourceUnknown, inferenceHole)));
+        // The source-level unknown is a value type, NOT a missing compiler
+        // inference result and must remain distinct in every type join.
+        assertNotEquals(inferenceHole, sourceUnknown);
+        assertSame(sourceUnknown,
+                dev.oreslang.types.Types.unionOf(
+                        java.util.List.of(sourceUnknown, verifiedAny)));
+    }
+
 }
