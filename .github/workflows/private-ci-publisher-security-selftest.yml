@@ -1,0 +1,26 @@
+name: private-ci publisher security self-test
+
+on:
+  push:
+    branches:
+      - security/private-ci-fail-closed-current-main-20261020
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publisher-security-selftest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact branch commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Show Python version
+        run: python3 --version
+      - name: Run focused fail-closed authorization tests
+        run: python3 scripts/test-publish-private-ci-source.py -k real_gate
+      - name: Run full publisher adversarial suite
+        run: python3 scripts/test-publish-private-ci-source.py
