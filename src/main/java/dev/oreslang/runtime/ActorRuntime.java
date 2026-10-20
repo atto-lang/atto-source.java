@@ -7008,9 +7008,14 @@ public final class ActorRuntime implements AutoCloseable {
         long bytes() { return bytes; }
 
         @Override
-        public void close() {
-            ActorRuntime runtime = owner.getAndSet(null);
-            if (runtime != null) runtime.releaseSharedRuntimeBytes(bytes);
+        public synchronized void close() {
+            ActorRuntime runtime = owner.get();
+            if (runtime == null) return;
+            // Keep the exact accounting owner until the debit succeeds.
+            // An underflow/corruption failure may be repaired by the trusted
+            // supervisor and retried through the retained Event/Subscription.
+            runtime.releaseSharedRuntimeBytes(bytes);
+            owner.set(null);
         }
     }
 
