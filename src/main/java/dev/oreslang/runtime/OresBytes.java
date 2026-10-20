@@ -48,6 +48,11 @@ public final class OresBytes {
         return bytes.clone();
     }
 
+    /** One-copy actor-local duplicate for PRIVATE/ISOLATED message transport. */
+    OresBytes isolatedCopy() {
+        return new OresBytes(bytes, true);
+    }
+
     @Override
     public boolean equals(Object other) {
         return this == other
