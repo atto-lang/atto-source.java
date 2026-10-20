@@ -56,6 +56,209 @@ def contract():
 
 
 class PrivateCiV3Test(unittest.TestCase):
+    def review_governance_fixture(self, policy=b"trusted/ci 246810\n"):
+        codeowners = (
+            "\n".join(
+                path + " " + v3.legacy.SECURITY_CODEOWNER
+                for path in v3.legacy.SECURITY_CODEOWNER_PATHS
+            )
+            + "\n"
+        ).encode("utf-8")
+        blobs = {}
+        for path in v3.REVIEWED_GOVERNANCE_PATHS:
+            if path == v3.legacy.POLICY_PATH:
+                raw = policy
+            elif path == v3.legacy.CODEOWNERS_PATH:
+                raw = codeowners
+            else:
+                raw = (path + "\n").encode("utf-8")
+            blobs[path] = (raw, v3.git_blob_sha(raw))
+        tree = {
+            path: ("100644", "blob", blob)
+            for path, (_raw, blob) in blobs.items()
+        }
+        return blobs, tree
+
+    def review_authority_api(self, main_sha="2"*40, head_sha="3"*40,
+                             author_id=424242, protected=False):
+        def api(route, method="GET", payload=None):
+            if route == "repos/" + v3.legacy.SOURCE_REPO:
+                return {
+                    "id": v3.SOURCE_REPOSITORY_ID,
+                    "full_name": v3.legacy.SOURCE_REPO,
+                    "private": True,
+                    "visibility": "private",
+                }
+            if route == (
+                    "repos/" + v3.legacy.SOURCE_REPO
+                    + "/branches/" + v3.legacy.SOURCE_PROTECTED_BRANCH):
+                return {
+                    "name": v3.legacy.SOURCE_PROTECTED_BRANCH,
+                    "protected": protected,
+                    "commit": {"sha": main_sha},
+                }
+            if route == (
+                    "repos/" + v3.legacy.SOURCE_REPO
+                    + "/pulls/" + str(v3.REVIEW_AUTHORITY_PR)):
+                return {
+                    "number": v3.REVIEW_AUTHORITY_PR,
+                    "state": "closed",
+                    "merged_at": "2026-10-20T18:00:00Z",
+                    "user": {"id": author_id, "login": "authority-author"},
+                    "head": {
+                        "sha": head_sha,
+                        "repo": {
+                            "full_name": v3.legacy.SOURCE_REPO,
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                        },
+                    },
+                    "base": {
+                        "ref": v3.legacy.SOURCE_PROTECTED_BRANCH,
+                        "repo": {
+                            "full_name": v3.legacy.SOURCE_REPO,
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                        },
+                    },
+                }
+            raise AssertionError((method, route))
+        return api
+
+    def approved_authority_review(self, head_sha="3"*40, review_id=7,
+                                  state="APPROVED",
+                                  submitted="2026-10-20T17:59:00Z"):
+        return {
+            "id": review_id,
+            "state": state,
+            "commit_id": head_sha,
+            "submitted_at": submitted,
+            "user": {
+                "id": v3.REVIEW_AUTHORITY_USER_ID,
+                "login": v3.REVIEW_AUTHORITY_LOGIN,
+            },
+        }
+
+    def test_unprotected_main_accepts_exact_independent_review_attestation(self):
+        policy = b"trusted/ci 246810\n"
+        blobs, tree = self.review_governance_fixture(policy)
+        api = self.review_authority_api()
+        with (
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(
+                v3, "gh_api_list",
+                return_value=[self.approved_authority_review()],
+            ),
+            patch.object(v3, "governance_tree_entries", return_value=tree),
+            patch.object(
+                v3, "remote_file_at_source_main",
+                side_effect=lambda path, _ref, _limit: blobs[path],
+            ),
+        ):
+            self.assertEqual(
+                v3.review_attested_main_sha(
+                    "trusted/ci", hashlib.sha256(policy).digest(), 246810
+                ),
+                "2" * 40,
+            )
+
+    def test_review_attestation_rejects_author_as_security_reviewer(self):
+        policy = b"trusted/ci 246810\n"
+        api = self.review_authority_api(
+            author_id=v3.REVIEW_AUTHORITY_USER_ID
+        )
+        with patch.object(v3.legacy, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(v3.Denied, "independent merged"):
+                v3.review_attested_main_sha(
+                    "trusted/ci", hashlib.sha256(policy).digest(), 246810
+                )
+
+    def test_review_attestation_rejects_latest_revocation(self):
+        policy = b"trusted/ci 246810\n"
+        api = self.review_authority_api()
+        reviews = [
+            self.approved_authority_review(review_id=7),
+            self.approved_authority_review(
+                review_id=8, state="CHANGES_REQUESTED",
+                submitted="2026-10-20T17:59:30Z",
+            ),
+        ]
+        with (
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(v3, "gh_api_list", return_value=reviews),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "stale, late, or not approved"):
+                v3.review_attested_main_sha(
+                    "trusted/ci", hashlib.sha256(policy).digest(), 246810
+                )
+
+    def test_review_attestation_rejects_destination_repository_id_mismatch(self):
+        policy = b"trusted/ci 246810\n"
+        blobs, tree = self.review_governance_fixture(policy)
+        api = self.review_authority_api()
+        with (
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(
+                v3, "gh_api_list",
+                return_value=[self.approved_authority_review()],
+            ),
+            patch.object(v3, "governance_tree_entries", return_value=tree),
+            patch.object(
+                v3, "remote_file_at_source_main",
+                side_effect=lambda path, _ref, _limit: blobs[path],
+            ),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "repository ID"):
+                v3.review_attested_main_sha(
+                    "trusted/ci", hashlib.sha256(policy).digest(), 246811
+                )
+
+    def test_review_attestation_rejects_governance_git_entry_drift(self):
+        policy = b"trusted/ci 246810\n"
+        blobs, reviewed = self.review_governance_fixture(policy)
+        current = dict(reviewed)
+        target = "scripts/publish-private-ci-source-v3.py"
+        current[target] = ("100755", "blob", reviewed[target][2])
+        api = self.review_authority_api()
+        with (
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(
+                v3, "gh_api_list",
+                return_value=[self.approved_authority_review()],
+            ),
+            patch.object(
+                v3, "governance_tree_entries",
+                side_effect=[reviewed, current],
+            ),
+            patch.object(
+                v3, "remote_file_at_source_main",
+                side_effect=lambda path, _ref, _limit: blobs[path],
+            ),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "Git entry drifted"):
+                v3.review_attested_main_sha(
+                    "trusted/ci", hashlib.sha256(policy).digest(), 246810
+                )
+
+    def test_authorized_main_prefers_classic_protection_when_available(self):
+        branch = {
+            "name": v3.legacy.SOURCE_PROTECTED_BRANCH,
+            "protected": True,
+            "commit": {"sha": PROTECTED},
+        }
+        with (
+            patch.object(v3.legacy, "gh_api", return_value=branch),
+            patch.object(
+                v3.legacy, "verify_protected_origin",
+                return_value=PROTECTED,
+            ) as protected,
+            patch.object(v3, "review_attested_main_sha") as fallback,
+        ):
+            self.assertEqual(
+                v3.authorized_main_sha("trusted/ci", POLICY, 246810),
+                PROTECTED,
+            )
+            protected.assert_called_once_with("trusted/ci", POLICY, 246810)
+            fallback.assert_not_called()
+
     def test_remote_protected_file_rejects_blob_sha_mismatch(self):
         raw = b"reviewed-bytes\n"
         encoded = base64.b64encode(raw).decode("ascii")
