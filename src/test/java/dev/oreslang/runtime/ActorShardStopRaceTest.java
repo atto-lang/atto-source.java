@@ -68,6 +68,8 @@ final class ActorShardStopRaceTest {
                 }
             }
         }
+    }
+
     @Test
     void accountingCorruptionCannotStrandFinalizationAfterShardRevocation() throws Exception {
         Field backing = ActorShardColumns.class.getDeclaredField("storage");
@@ -112,7 +114,5 @@ final class ActorShardStopRaceTest {
             assertTrue(runtime.runtimeStats().lifecyclePublicationFailures() > failuresBefore,
                     "accounting corruption must remain observable");
         }
-    }
-
     }
 }
