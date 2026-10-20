@@ -57,6 +57,15 @@ final class IpcTransportSessionLease {
     record Snapshot(long generation, Phase phase, int activeWrites,
                     boolean physicalCloseConfirmed, boolean receiptsRetired) { }
 
+    private record DeferredSchedulerFailure(long cleanupAttempt, Throwable failure) {
+        DeferredSchedulerFailure {
+            if (cleanupAttempt < 0) {
+                throw new IllegalArgumentException("invalid deferred cleanup attempt");
+            }
+            Objects.requireNonNull(failure, "failure");
+        }
+    }
+
     private final IpcReceiptCorrelation.Envelope trustedEpoch;
     private final long generation;
     private final int limit;
@@ -77,7 +86,7 @@ final class IpcTransportSessionLease {
     // Misrouted cleanup callbacks must be able to report failure without
     // acquiring this monitor. A trusted host observation folds the deferred
     // violation into QUARANTINED under the normal session lock.
-    private final AtomicReference<Throwable> deferredSchedulerFailure =
+    private final AtomicReference<DeferredSchedulerFailure> deferredSchedulerFailure =
             new AtomicReference<>();
 
     IpcTransportSessionLease(IpcReceiptCorrelation.Envelope trustedEpoch,
@@ -274,18 +283,22 @@ final class IpcTransportSessionLease {
      * write pins do not drain by a supervisor deadline. Never marks an
      * executing physical close as retired or interrupts its cleanup worker.
      */
-    synchronized boolean quarantineIfUnsettled(Throwable failure) {
+    boolean quarantineIfUnsettled(Throwable failure) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport quarantine");
         Objects.requireNonNull(failure, "failure");
-        absorbDeferredSchedulerFailureLocked();
-        if (phase == Phase.RETIRED || phase == Phase.QUARANTINED) return false;
-        if (phase == Phase.FINALIZING && cleanupExecuting) {
-            if (closeFailure == null) closeFailure = failure;
-            return false;
+        synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
+            if (phase == Phase.RETIRED || phase == Phase.QUARANTINED) return false;
+            if (phase == Phase.FINALIZING && cleanupExecuting) {
+                if (closeFailure == null) closeFailure = failure;
+                return false;
+            }
+            closeFailure = failure;
+            phase = Phase.QUARANTINED;
+            notifyAll();
+            return true;
         }
-        closeFailure = failure;
-        phase = Phase.QUARANTINED;
-        notifyAll();
-        return true;
     }
 
     /** An explicit supervisor retry never reopens a quarantined session. */
@@ -362,7 +375,7 @@ final class IpcTransportSessionLease {
 
     private void finalizePhysicalClose(long attempt) {
         if (RuntimeBlockingGuard.actorCarrierMarked()) {
-            deferSchedulerFailure(new IllegalStateException(
+            deferSchedulerFailure(attempt, new IllegalStateException(
                     "cleanup scheduler executed on an actor carrier"));
             return;
         }
@@ -421,20 +434,46 @@ final class IpcTransportSessionLease {
      * Misrouted actor-carrier callbacks report through this lock-free path so
      * they can never park behind a host lifecycle monitor.
      */
-    void deferSchedulerFailure(Throwable failure) {
+    void deferSchedulerFailure(long expectedCleanupAttempt, Throwable failure) {
+        if (expectedCleanupAttempt <= 0) {
+            throw new IllegalArgumentException("invalid cleanup attempt");
+        }
+        deferSchedulerFailureInternal(expectedCleanupAttempt, failure);
+    }
+
+    void deferExternalSchedulerFailure(Throwable failure) {
+        deferSchedulerFailureInternal(0, failure);
+    }
+
+    private void deferSchedulerFailureInternal(long expectedCleanupAttempt, Throwable failure) {
         Objects.requireNonNull(failure, "failure");
         if (!RuntimeBlockingGuard.actorCarrierMarked()) {
             throw new IllegalStateException(
                     "deferred scheduler failure requires an actor carrier");
         }
-        deferredSchedulerFailure.compareAndSet(null, failure);
+        var next = new DeferredSchedulerFailure(expectedCleanupAttempt, failure);
+        deferredSchedulerFailure.getAndUpdate(current -> {
+            if (current == null) return next;
+            // External transport-abort scheduler failure is not tied to the
+            // close-attempt counter and must not be displaced by stale cleanup.
+            if (current.cleanupAttempt() == 0) return current;
+            if (next.cleanupAttempt() == 0) return next;
+            // Retain the newest cleanup attempt so an old callback cannot
+            // poison an explicit retry.
+            return next.cleanupAttempt() >= current.cleanupAttempt()
+                    ? next : current;
+        });
     }
 
     /** Only called while holding this monitor on a trusted host thread. */
     private void absorbDeferredSchedulerFailureLocked() {
-        Throwable failure = deferredSchedulerFailure.getAndSet(null);
-        if (failure == null || phase == Phase.RETIRED || phase == Phase.QUARANTINED) return;
-        if (closeFailure == null) closeFailure = failure;
+        DeferredSchedulerFailure deferred = deferredSchedulerFailure.getAndSet(null);
+        if (deferred == null || phase == Phase.RETIRED || phase == Phase.QUARANTINED) return;
+        if (deferred.cleanupAttempt() != 0
+                && deferred.cleanupAttempt() != cleanupAttempt) {
+            return; // stale scheduler callback from an older cleanup attempt
+        }
+        if (closeFailure == null) closeFailure = deferred.failure();
         cleanupExecuting = false;
         phase = Phase.QUARANTINED;
         notifyAll();
