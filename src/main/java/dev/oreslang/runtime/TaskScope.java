@@ -185,9 +185,18 @@ public final class TaskScope {
 
             boolean cancel;
             synchronized (this) {
-                if (attached || notified) {
+                if (attached) {
                     throw new IllegalStateException(
-                            "Task scope ticket already attached or retired");
+                            "Task scope ticket already attached");
+                }
+                if (notified) {
+                    // A tiny child may publish terminal authority and physical
+                    // quiescence before start(...) returns its Future to the
+                    // lowering site. Accept that late bind only when the exact
+                    // same Future already supplied the terminal witness.
+                    if (terminalFuture == future) return;
+                    throw new IllegalStateException(
+                            "retired Task scope ticket cannot attach a different Future");
                 }
                 if (terminalFuture != null && terminalFuture != future) {
                     throw new IllegalStateException(
