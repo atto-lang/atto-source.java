@@ -96,7 +96,7 @@ public final class EtsTable<K, V> implements AutoCloseable {
                 StoredEntry entry = entries.get(frozenKey.value());
                 return entry == null
                         ? Optional.empty()
-                        : Optional.of((V) entry.value.value());
+                        : Optional.of((V) runtime.materializeEtsValue(entry.value.value()));
             } finally {
                 lock.unlock();
             }
@@ -269,7 +269,9 @@ public final class EtsTable<K, V> implements AutoCloseable {
             requireOpen();
             LinkedHashMap<K, V> copy = new LinkedHashMap<>(entries.size());
             for (StoredEntry entry : entries.values()) {
-                copy.put((K) entry.key.value(), (V) entry.value.value());
+                copy.put(
+                        (K) runtime.materializeEtsValue(entry.key.value()),
+                        (V) runtime.materializeEtsValue(entry.value.value()));
             }
             return Map.copyOf(copy);
         } finally {
