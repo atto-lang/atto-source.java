@@ -22,6 +22,9 @@ NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 # This closes name reuse between security review and the first transfer.
 POLICY_ENTRY = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*) ([1-9][0-9]{0,19})$")
 BRANCH = re.compile(r"^ci/oreslang-([a-f0-9]{40})-([a-f0-9]{40})$")
+IMMUTABLE_CARRIER_BRANCH = re.compile(
+    r"^(?:ci/oreslang-[a-f0-9]{40}-[a-f0-9]{40}|ci/authorized-[a-f0-9]{40})$"
+)
 SHA = re.compile(r"^[a-f0-9]{40}$")
 MAX_FILES = 1024
 MAX_BYTES = 40 * 1024 * 1024
@@ -717,7 +720,10 @@ def require_carrier_source_ruleset(repository, ruleset_id):
     conditions = ruleset.get("conditions")
     ref_name = conditions.get("ref_name") if isinstance(conditions, dict) else None
     if (not isinstance(ref_name, dict)
-            or ref_name.get("include") != ["refs/heads/ci/oreslang-*"]
+            or ref_name.get("include") != [
+                "refs/heads/ci/authorized-*",
+                "refs/heads/ci/oreslang-*",
+            ]
             or ref_name.get("exclude") != []):
         raise Denied("private carrier ruleset does not exclusively target Oreslang CI refs")
     rules = ruleset.get("rules")
@@ -738,7 +744,7 @@ def require_carrier_source_ruleset(repository, ruleset_id):
 
 def require_effective_carrier_source_rules(repository, branch, ruleset_id):
     """Prove GitHub applies the reviewed immutable ruleset to this exact CI ref."""
-    if not isinstance(branch, str) or BRANCH.fullmatch(branch) is None:
+    if not isinstance(branch, str) or IMMUTABLE_CARRIER_BRANCH.fullmatch(branch) is None:
         raise Denied("private carrier effective-rules branch is invalid")
     if type(ruleset_id) is not int or ruleset_id <= 0:
         raise Denied("private carrier source ruleset ID is invalid")
@@ -788,7 +794,7 @@ def require_effective_carrier_source_rules(repository, branch, ruleset_id):
 
 def require_absent_carrier_source_ref(repository, branch):
     """Reject a pre-existing or prefix-colliding CI ref before private writes."""
-    if not isinstance(branch, str) or BRANCH.fullmatch(branch) is None:
+    if not isinstance(branch, str) or IMMUTABLE_CARRIER_BRANCH.fullmatch(branch) is None:
         raise Denied("private carrier source-ref branch is invalid")
     matches = gh_api(
         f"repos/{repository}/git/matching-refs/heads/{branch}?per_page=1&page=1")
@@ -1504,7 +1510,8 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
                            "sha": isolated_sha}]})
     new_tree_sha = valid_sha(new_tree.get("sha"))
     authorize_write()
-    provenance_message = "\n".join([
+    provenance_message = "
+".join([
         f"ci: exact private Oreslang tree {expected_source_commit} tree {expected_source_tree}",
         f"carrier-base {base_sha} tree {base_tree}",
         f"source-approval-blob {reviewed_snapshot_sha}",
@@ -1558,10 +1565,44 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
                        for item in tree_items)):
         raise Denied("committed CI source subtree differs from pinned source SHA")
     # Readback may take time: check protected-main approval, destination
-    # repository identity and private visibility again before success. The ref
-    # must exist now, so retain every other authorization check but skip the
-    # pre-write absence assertion.
+    # repository identity and private visibility again before success. The
+    # payload ref must exist now, so retain every other authorization check
+    # but skip only its pre-write absence assertion.
     authorize_write(require_absent_ref=False)
+
+    # Carrier CI performs no source checkout until this second, non-triggering
+    # handoff ref exists. The same no-bypass immutable ruleset must govern it,
+    # and the name is uniquely bound to the already-read-back payload commit.
+    authorization_branch = "ci/authorized-" + commit_sha
+    require_effective_carrier_source_rules(
+        repository, authorization_branch, carrier_ruleset_id)
+    require_absent_carrier_source_ref(repository, authorization_branch)
+    # Recheck all protected source/carrier approvals immediately before the
+    # handoff write. The payload is already immutable; no further source Git
+    # objects are created after this point.
+    authorize_write(require_absent_ref=False)
+    require_effective_carrier_source_rules(
+        repository, authorization_branch, carrier_ruleset_id)
+    require_absent_carrier_source_ref(repository, authorization_branch)
+    authorized = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
+        "ref": "refs/heads/" + authorization_branch, "sha": commit_sha
+    })
+    if authorized.get("ref") != "refs/heads/" + authorization_branch:
+        raise Denied("GitHub did not confirm creation of private CI authorization ref")
+    if nested_sha(authorized, "object") != commit_sha:
+        raise Denied("private CI authorization ref does not reference payload commit")
+    authorization_readback = gh_api(
+        f"repos/{repository}/git/ref/heads/{authorization_branch}")
+    if (authorization_readback.get("ref") != "refs/heads/" + authorization_branch
+            or authorization_readback.get("object", {}).get("type") != "commit"
+            or nested_sha(authorization_readback, "object") != commit_sha):
+        raise Denied("private CI authorization ref readback is invalid")
+    # One final full authorization pass proves no protected approval moved
+    # during the handoff itself. Neither payload nor handoff ref is deleted:
+    # immutable retention prevents name reuse/replay.
+    authorize_write(require_absent_ref=False)
+    require_effective_carrier_source_rules(
+        repository, authorization_branch, carrier_ruleset_id)
     return commit_sha, len(files)
 
 
