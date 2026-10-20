@@ -386,6 +386,35 @@ final class ScopedTaskBorrowPermitTest {
         assertEquals("42", run(source));
     }
 
+
+    @Test
+    void scopedReadLeaseCanFlowThroughNestedLexicalTaskScope() throws Exception {
+        String source = """
+                async fnc suffix(): int {
+                    return 2;
+                }
+
+                pub routine main(): void {
+                    let int value = 40;
+                    val ref = rt borrow value;
+                    nb scope {
+                        let outer = nb {
+                            nb scope {
+                                let inner = nb {
+                                    let int tail = await suffix();
+                                    stdio.stdout.write(ref + tail);
+                                };
+                            }
+                        };
+                    }
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("42", run(source));
+    }
+
     @Test
     void scopedReadCaptureCannotBeReborrowedIntoDerivativeAuthority() {
         IllegalArgumentException failure = assertThrows(
