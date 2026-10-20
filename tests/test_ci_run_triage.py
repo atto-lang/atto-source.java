@@ -51,7 +51,8 @@ class ClassifierTests(unittest.TestCase):
         with mock.patch.object(m.subprocess, "run", return_value=reply) as runner:
             self.assertEqual(m.get_json("repos/org/repo/actions/runs/42"), {"status": "ok"})
             args, kwargs = runner.call_args
-            self.assertEqual(args[0], ["gh", "api", "--method", "GET",
+            self.assertEqual(args[0], ["gh", "api", "--hostname", "github.com",
+                                       "--method", "GET",
                                        "repos/org/repo/actions/runs/42"])
             self.assertTrue(kwargs["capture_output"])
             self.assertFalse(kwargs["check"])
