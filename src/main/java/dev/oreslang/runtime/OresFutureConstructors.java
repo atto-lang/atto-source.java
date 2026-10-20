@@ -84,6 +84,67 @@ public final class OresFutureConstructors {
     }
 
     /**
+     * Buffer terminal callbacks until the registrar has returned a valid
+     * detach action. A foreign API is permitted to call its completion
+     * callback synchronously inside register(), but that must not commit a
+     * result before registration has become cleanup-safe.
+     */
+    private static final class StagedCallback<T> implements OresFuture.Callback<T> {
+        private record Outcome<T>(T value, Throwable error, boolean cancelled) { }
+
+        private final OresFuture.Callback<T> target;
+        private final AtomicReference<Outcome<T>> pending = new AtomicReference<>();
+        private final AtomicBoolean armed = new AtomicBoolean();
+        private final AtomicBoolean delivered = new AtomicBoolean();
+
+        private StagedCallback(OresFuture.Callback<T> target) {
+            this.target = target;
+        }
+
+        @Override
+        public void resolve(T value) {
+            claim(new Outcome<>(value, null, false));
+        }
+
+        @Override
+        public void reject(Throwable failure) {
+            claim(new Outcome<>(null, Objects.requireNonNull(failure, "failure"), false));
+        }
+
+        @Override
+        public void cancel() {
+            claim(new Outcome<>(null, null, true));
+        }
+
+        @Override
+        public boolean isDone() {
+            return pending.get() != null || target.isDone();
+        }
+
+        private void claim(Outcome<T> outcome) {
+            if (!pending.compareAndSet(null, outcome)) {
+                throw new OresFuture.AlreadySettledException(
+                        "callback Future already settled; duplicate completion");
+            }
+            deliverIfReady();
+        }
+
+        private void arm() {
+            armed.set(true);
+            deliverIfReady();
+        }
+
+        private void deliverIfReady() {
+            if (!armed.get()) return;
+            Outcome<T> outcome = pending.get();
+            if (outcome == null || !delivered.compareAndSet(false, true)) return;
+            if (outcome.cancelled()) target.cancel();
+            else if (outcome.error() != null) target.reject(outcome.error());
+            else target.resolve(outcome.value());
+        }
+    }
+
+    /**
      * Wrap an external subscription that can be released at terminal state.
      * Cleanup runs exactly once for resolution, failure or cancellation,
      * including synchronous completion during register and concurrent
@@ -103,9 +164,13 @@ public final class OresFutureConstructors {
         AtomicBoolean terminal = new AtomicBoolean();
 
         OresFuture<T> future = OresFuture.fromCallback(callback -> {
-            Runnable action = Objects.requireNonNull(operation.register(callback),
+            StagedCallback<T> staged = new StagedCallback<>(callback);
+            Runnable action = Objects.requireNonNull(operation.register(staged),
                     "callback registrar must provide a detach action");
             detachAction.set(action);
+            // Only after a valid detach action exists can synchronous
+            // registration callbacks publish completion.
+            staged.arm();
             if (terminal.get()) {
                 Runnable late = detachAction.getAndSet(null);
                 if (late != null) late.run();
