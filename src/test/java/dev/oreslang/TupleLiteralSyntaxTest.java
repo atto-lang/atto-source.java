@@ -113,4 +113,25 @@ final class TupleLiteralSyntaxTest {
                 }
                 """)));
     }
+    @Test
+    void legacyTupleCallIsParsedAsOrdinaryCallAndFallsBackToBuiltinCallable() {
+        Ast.Program parsed = Parser.parse("""
+                fnc main(): int {
+                  const values = tuple(1, 2, 3);
+                  return values[1];
+                }
+                """);
+
+        Ast.FunctionDecl main = assertInstanceOf(
+                Ast.FunctionDecl.class,
+                parsed.modules().getFirst().declarations().getFirst());
+        Ast.BindingStmt binding = assertInstanceOf(
+                Ast.BindingStmt.class, main.body().getFirst());
+        Ast.CallExpr call = assertInstanceOf(
+                Ast.CallExpr.class, binding.initializer());
+        assertEquals("tuple",
+                assertInstanceOf(Ast.NameExpr.class, call.callee()).name());
+        assertDoesNotThrow(() -> TypeChecker.check(parsed));
+    }
+
 }
