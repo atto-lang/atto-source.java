@@ -45,6 +45,7 @@ public final class StaticSafetyAnalyzer {
         private String module;
         private int loopDepth;
         private int visited;
+        private int terminationVisits;
 
         Scanner(Ast.Program program) { this.program = java.util.Objects.requireNonNull(program); }
 
@@ -131,6 +132,11 @@ public final class StaticSafetyAnalyzer {
          * This is a minimal syntactic exemption, NOT a general ranking proof.
          */
         private boolean guaranteedImmediateExit(List<Ast.Stmt> body) {
+            return guaranteedImmediateExit(body, 0);
+        }
+
+        private boolean guaranteedImmediateExit(List<Ast.Stmt> body, int depth) {
+            terminationBudget(depth);
             if (body.isEmpty()) return false;
             Ast.Stmt first = body.get(0);
             if (first instanceof Ast.BreakStmt) return true;
@@ -140,31 +146,43 @@ public final class StaticSafetyAnalyzer {
                 // exempt from the advisory loop-termination warning.
                 return r.value() == null || r.value() instanceof Ast.LiteralExpr;
             }
-            return first instanceof Ast.BlockStmt b && guaranteedImmediateExit(b.body());
+            return first instanceof Ast.BlockStmt b && guaranteedImmediateExit(b.body(), depth + 1);
         }
 
         /** Presence of a reachable-looking exit is never proof of termination. */
+        private void terminationBudget(int depth) {
+            if (depth > 256 || ++terminationVisits > MAX_NODES)
+                throw new IllegalArgumentException("termination scan depth/work budget exceeded");
+        }
+
         private boolean hasEscape(List<Ast.Stmt> body) {
+            return hasEscape(body, 0);
+        }
+
+        private boolean hasEscape(List<Ast.Stmt> body, int depth) {
+            terminationBudget(depth);
             for (Ast.Stmt stmt : body) {
+                terminationBudget(depth);
                 if (stmt instanceof Ast.BreakStmt || stmt instanceof Ast.ReturnStmt) return true;
-                if (stmt instanceof Ast.BlockStmt block && hasEscape(block.body())) return true;
+                if (stmt instanceof Ast.BlockStmt block && hasEscape(block.body(), depth + 1)) return true;
                 if (stmt instanceof Ast.IfStmt conditional) {
                     boolean alwaysTaken = false;
                     for (Ast.IfBranch arm : conditional.branches()) {
                         // Constant false branches cannot establish an exit.
                         if (arm.condition() instanceof Ast.LiteralExpr lit
                                 && Boolean.FALSE.equals(lit.value())) continue;
-                        if (hasEscape(arm.body())) return true;
+                        if (hasEscape(arm.body(), depth + 1)) return true;
                         if (arm.condition() instanceof Ast.LiteralExpr lit
                                 && Boolean.TRUE.equals(lit.value())) {
                             alwaysTaken = true;
                             break;
                         }
                     }
-                    if (!alwaysTaken && hasEscape(conditional.elseBody())) return true;
+                    if (!alwaysTaken && hasEscape(conditional.elseBody(), depth + 1)) return true;
                 }
                 if (stmt instanceof Ast.TryStmt t
-                        && (hasEscape(t.body()) || hasEscape(t.catchBody()) || hasEscape(t.finallyBody()))) return true;
+                        && (hasEscape(t.body(), depth + 1) || hasEscape(t.catchBody(), depth + 1)
+                            || hasEscape(t.finallyBody(), depth + 1))) return true;
             }
             return false;
         }
