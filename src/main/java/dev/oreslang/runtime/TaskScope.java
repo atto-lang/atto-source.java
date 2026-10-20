@@ -129,7 +129,7 @@ public final class TaskScope implements AutoCloseable {
             // quiescence plus descendant retirement. Do not move this hook to
             // result(), cancel(), or cancellation-token retirement.
             try {
-                retireAfterPhysicalQuiescence.run();
+                retirementHook.retireAfterPhysicalQuiescence(this, child);
             } catch (RuntimeException | Error retirementError) {
                 poisonAfterRetirementFailure(retirementError);
                 return;
