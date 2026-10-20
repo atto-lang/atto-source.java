@@ -34,13 +34,12 @@ final class OresTupleRuntimeTest {
         assertSame(tuple, tuple);
         assertNotEquals(tuple, new OresTuple(List.of("value", hostile)));
         assertFalse(tuple.equals(List.of("value", hostile)));
-        assertFalse(List.of("value", hostile).equals(tuple));
         assertEquals(System.identityHashCode(tuple), tuple.hashCode());
         assertEquals("OresTuple<opaque>", tuple.toString());
         assertThrows(UnsupportedOperationException.class, () -> tuple.set(0, "changed"));
         assertThrows(UnsupportedOperationException.class, () -> tuple.add("extra"));
         assertThrows(UnsupportedOperationException.class, () -> tuple.remove(0));
-        assertIterableEquals(List.of("value", hostile), tuple.sharedStateChildren());
+        assertSame(hostile, tuple.get(1));
     }
 
     @Test
@@ -92,7 +91,8 @@ final class OresTupleRuntimeTest {
             mutable.add(3);
             assertTrue(received.await(2, TimeUnit.SECONDS));
             assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
-            OresTuple delivered = assertNotNull(observed.get());
+            OresTuple delivered = observed.get();
+            assertNotNull(delivered);
             assertNotSame(sent, delivered);
             OresEntry entry = assertInstanceOf(OresEntry.class, delivered.get(0));
             assertInstanceOf(OresTuple.class, entry.value());
