@@ -148,7 +148,11 @@ public final class TypeChecker {
 
     public static Ast.Program check(Ast.Program program) {
         TypeCheckResult checked = checkTypesWithDiagnostics(program);
-        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        OwnershipChecker.CheckResult owned =
+                OwnershipChecker.checkWithAsyncTransferProvenance(
+                        checked.program(), checked.shortInferredAliases());
+        AsyncSemanticProvenance.requireExactOwnershipJoin(
+                checked.asyncSemantic(), owned.asyncTransfers());
         return checked.program();
     }
 
