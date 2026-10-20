@@ -181,6 +181,9 @@ public final class Ast {
         public boolean isUnion() { return name.equals("$union$"); }
 
         public static TypeRef tupleType(List<TypeRef> elements) {
+            if (elements.size() > 64) {
+                throw new IllegalArgumentException("finite tuple type exceeds 64 elements");
+            }
             return new TypeRef("$tuple$", List.copyOf(elements), false);
         }
         public boolean isTupleType() { return name.equals("$tuple$"); }
