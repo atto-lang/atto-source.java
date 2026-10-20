@@ -269,9 +269,12 @@ public final class OresTaskScope implements AutoCloseable {
                         preparationFailure.addSuppressed(failure);
                 }
             }
+            // External/code cleanup must succeed before returning borrowed
+            // memory authority. If cleanup fails, keep the compiler loan live
+            // even though no executable child was admitted.
             Throwable releaseFailure = null;
             try {
-                loanRetirement.retireNeverStarted(compilerScopeEpoch);
+                onPhysicalExit.run();
             } catch (RuntimeException | Error failure) {
                 releaseFailure = failure;
                 if (failure != preparationFailure)
@@ -279,7 +282,7 @@ public final class OresTaskScope implements AutoCloseable {
             }
             if (releaseFailure == null) {
                 try {
-                    onPhysicalExit.run();
+                    loanRetirement.retireNeverStarted(compilerScopeEpoch);
                 } catch (RuntimeException | Error failure) {
                     releaseFailure = failure;
                     if (failure != preparationFailure)
@@ -313,17 +316,21 @@ public final class OresTaskScope implements AutoCloseable {
                 // Do not discard a failed pin. Prune owner bookkeeping
                 // before completing the quiescence Future, because generic
                 // Future observers swallow callback exceptions.
+                // The memory loan is the LAST external authority returned
+                // after guest exit. Code/FFI/resource cleanup may still rely on
+                // the borrowed allocation, and a failed cleanup must preserve
+                // both the loan and the owner slot as reclamation pins.
+                try {
+                    onPhysicalExit.run();
+                } catch (RuntimeException | Error releaseFailure) {
+                    exitFence.failFromRuntime(releaseFailure);
+                    return;
+                }
                 try {
                     loanRetirement.retireAfterPhysicalQuiescence(
                             compilerScopeEpoch, ownedChild);
                 } catch (RuntimeException | Error loanFailure) {
                     exitFence.failFromRuntime(loanFailure);
-                    return;
-                }
-                try {
-                    onPhysicalExit.run();
-                } catch (RuntimeException | Error releaseFailure) {
-                    exitFence.failFromRuntime(releaseFailure);
                     return;
                 }
                 try {
@@ -343,7 +350,7 @@ public final class OresTaskScope implements AutoCloseable {
             // a failed remove is reported both to the caller and joiners.
             Throwable releaseFailure = null;
             try {
-                loanRetirement.retireNeverStarted(compilerScopeEpoch);
+                onPhysicalExit.run();
             } catch (RuntimeException | Error failure) {
                 releaseFailure = failure;
                 if (failure != rejectedBeforeDispatch)
@@ -351,7 +358,7 @@ public final class OresTaskScope implements AutoCloseable {
             }
             if (releaseFailure == null) {
                 try {
-                    onPhysicalExit.run();
+                    loanRetirement.retireNeverStarted(compilerScopeEpoch);
                 } catch (RuntimeException | Error failure) {
                     releaseFailure = failure;
                     if (failure != rejectedBeforeDispatch)
