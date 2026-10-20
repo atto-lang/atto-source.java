@@ -159,6 +159,65 @@ public final class IpcTransportSessionLeaseSelfTest {
             deny(() -> transport.send(frame));
         }
 
+        // Adversarial terminal callback: a dependent host consumer blocks
+        // after receipt retirement. That must not postpone physical RETIRED,
+        // keep cleanupExecuting pinned, or prevent the supervisor wait.
+        {
+            var frame = message(1, "blockedTerminalCallback");
+            CountDownLatch callbackEntered = new CountDownLatch(1);
+            CountDownLatch releaseCallback = new CountDownLatch(1);
+            CountDownLatch callbackFinished = new CountDownLatch(1);
+            AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+            AtomicReference<Thread> cleanupThread = new AtomicReference<>();
+            var transport = boundLease(
+                    frame, 812, 1, 1,
+                    (value, preparedFrame) -> { },
+                    () -> { },
+                    cleanup -> {
+                        Thread worker = new Thread(
+                                cleanup, "ipc-test-blocked-completion-cleanup");
+                        worker.setDaemon(true);
+                        cleanupThread.set(worker);
+                        worker.start();
+                    });
+            var attempt = transport.send(frame);
+            attempt.outcome().thenAccept(stage -> {
+                callbackEntered.countDown();
+                try {
+                    if (!releaseCallback.await(5, TimeUnit.SECONDS)) {
+                        callbackFailure.compareAndSet(null,
+                                new AssertionError("blocked receipt callback timed out"));
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    callbackFailure.compareAndSet(null, interrupted);
+                } finally {
+                    callbackFinished.countDown();
+                }
+            });
+            transport.lease().requestClose();
+            try {
+                check(callbackEntered.await(3, TimeUnit.SECONDS));
+                check(callbackFinished.getCount() == 1);
+                check(transport.lease().awaitTerminal(1000));
+                check(transport.lease().snapshot().phase()
+                        == IpcTransportSessionLease.Phase.RETIRED);
+                check(transport.lease().invariant());
+                check(transport.bridge().counters().pending() == 0);
+                deny(() -> transport.send(frame));
+            } finally {
+                releaseCallback.countDown();
+            }
+            check(callbackFinished.await(3, TimeUnit.SECONDS));
+            Thread worker = cleanupThread.get();
+            check(worker != null);
+            worker.join(3000);
+            check(!worker.isAlive());
+            check(callbackFailure.get() == null);
+            check(attempt.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+        }
+
         // Stale physical generation is rejected before correlation admission.
         {
             var rejectMessage = message(1, "reject");
