@@ -95,6 +95,49 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
+    void compactDoSupportsNestedKeywordControlFlowAndMatchesMultilineAst() {
+        var compact = Parser.parse(
+                "fnc classify(int x) -> int do if x > 0 then return 1; else return 0; fi end");
+        var multiline = Parser.parse("""
+                fnc classify(int x) -> int
+                    if x > 0 then
+                        return 1
+                    else
+                        return 0
+                    fi
+                end
+                """);
+
+        assertEquals(multiline, compact);
+        assertDoesNotThrow(() -> TypeChecker.check(compact));
+    }
+
+    @Test
+    void semicolonAfterReturnTypeIsNeverAFreeFunctionBodyBoundary() {
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc declared_only(int x) -> int;"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc malformed(int x) -> int; return x; end"));
+    }
+
+    @Test
+    void contractSignaturesMayReturnFunctionTypesButDoCannotStartAContractBody() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                define contract CallbackFactory as
+                    fnc make() -> () => void;
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define contract CallbackFactory as
+                    fnc make() -> () => void do
+                        return || -> { return; };
+                    end
+                end
+                """));
+    }
+
+    @Test
     void explicitVoidMayFallThrough() {
         String source = """
                 fnc noop() -> void
@@ -180,6 +223,14 @@ final class EndDelimitedFunctionSyntaxTest {
                     static fnc run(int x) -> int
                         return x
                     end
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("actor fnc work(int x) -> int do return x; end"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class Example as
+                    static fnc run(int x) -> int do return x; end
                 end
                 """));
     }
