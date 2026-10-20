@@ -94,6 +94,56 @@ final class SourceBoundaryTruncationTest {
     }
 
     @Test
+    void hostFatalFailuresDoNotAllocateSourceTraceMarkers() {
+        for (Error fatal : new Error[] {
+                new OutOfMemoryError("OOM"),
+                new StackOverflowError("stack exhausted"),
+                new InternalError("VM broken"),
+                new LinkageError("class loader invalid"),
+                new ThreadDeath()
+        }) {
+            assertSame(fatal, SourceBoundaryTrace.record(
+                    fatal, "private.ores", "critical", "resumed source task"));
+            assertEquals(0, fatal.getSuppressed().length,
+                    "Do not allocate extra source metadata during a host-fatal failure");
+        }
+        // Ordinary guest panic markers remain traceable; only fatal *host*
+        // failures take the nonallocating emergency path.
+        var guestPanic = new GuestPanic();
+        assertSame(guestPanic, SourceBoundaryTrace.record(
+                guestPanic, "guest.ores", "critical", "source task"));
+        assertEquals(1, guestPanic.getSuppressed().length);
+        assertFalse(TrapFailurePolicy.isTrappable(guestPanic, GuestPanic.class));
+    }
+
+    @Test
+    void diagnosticAnnotationsDoNotChangeOriginalEffectClassification() {
+        for (int markers : new int[] {0, 1, 62, 63, 64, 1000}) {
+            for (int outcome = 0; outcome < 5; outcome++) {
+                RuntimeException failure = switch (outcome) {
+                    case 0 -> new IllegalStateException("ordinary");
+                    case 1 -> new SecurityException("denied");
+                    case 2 -> new java.util.concurrent.CompletionException(
+                            new IllegalArgumentException("wrapped ordinary"));
+                    case 3 -> new java.util.concurrent.CompletionException(
+                            new CancellationException("wrapped cancellation"));
+                    default -> new GuestPanic();
+                };
+                boolean beforeTrap = TrapFailurePolicy.isTrappable(failure, GuestPanic.class);
+                boolean beforeCatch = TrapFailurePolicy.isGuestCatchable(failure, GuestPanic.class);
+                for (int i = 0; i < markers; i++) {
+                    SourceBoundaryTrace.record(failure, "source.ores", "entry", "await");
+                }
+                assertEquals(beforeTrap, TrapFailurePolicy.isTrappable(
+                        failure, GuestPanic.class), "trap classification changed with markers=" + markers);
+                assertEquals(beforeCatch, TrapFailurePolicy.isGuestCatchable(
+                        failure, GuestPanic.class), "catch classification changed with markers=" + markers);
+                assertTrue(failure.getSuppressed().length <= 64);
+            }
+        }
+    }
+
+    @Test
     void existingCleanupFailureRemainsVisible() {
         var failure = new IllegalStateException("primary");
         failure.addSuppressed(new IllegalArgumentException("cleanup"));
