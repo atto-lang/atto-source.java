@@ -73,10 +73,10 @@ public final class OresTaskScope {
      * Start one child Task owned by this scope.
      *
      * <p>A child retires from the scope only after both of these independent
-     * conditions hold: the scheduler reports physical quiescence, and the child
-     * Future's terminal notification is observable. The latter matters because
-     * OresScheduler intentionally invokes onQuiescent immediately before
-     * publishing the terminal Future outcome.</p>
+     * conditions hold: the scheduler reports physical quiescence, and terminal
+     * authority is irrevocably established (including cancellation revocation).
+     * Ordinary Future subscriber delivery is deliberately outside this lifetime
+     * proof and may finish later.</p>
      */
     public <T> OresFuture<T> fork(OresScheduler.Task<T> task) {
         Objects.requireNonNull(task, "task");
@@ -170,26 +170,25 @@ public final class OresTaskScope {
             cancellation.revoke();
         }
         if (!claimed.isEmpty()) {
-            List<OresFuture.RuntimeCancellation<?>> publish = List.copyOf(claimed);
+            List<OresFuture.RuntimeCancellation<?>> fallback = new ArrayList<>();
             // Ordinary Future subscribers are not part of the structured
-            // lifetime proof. Publish them off-carrier only after every child
-            // has been revoked, so a blocking host callback cannot pin the
-            // parent source Task inside scope cleanup.
-            try {
-                Thread.ofVirtual()
-                        .name("ores-task-scope-cancel-publish")
-                        .start(() -> {
-                            for (OresFuture.RuntimeCancellation<?> cancellation : publish) {
-                                cancellation.publish();
-                            }
-                        });
-            } catch (RuntimeException | Error unavailable) {
-                // Revocation has already completed for every child, so the
-                // safety invariant is established. Preserve notification
-                // delivery even on a runtime without virtual-thread admission.
-                for (OresFuture.RuntimeCancellation<?> cancellation : publish) {
-                    cancellation.publish();
+            // lifetime proof. After every child is revoked, publish each
+            // Future independently so a blocking subscriber on child A cannot
+            // pin the parent carrier or starve notifications for child B.
+            for (OresFuture.RuntimeCancellation<?> cancellation : claimed) {
+                try {
+                    Thread.ofVirtual()
+                            .name("ores-task-scope-cancel-publish")
+                            .start(cancellation::publish);
+                } catch (RuntimeException | Error unavailable) {
+                    fallback.add(cancellation);
                 }
+            }
+            // Attempt every asynchronous publication before a synchronous
+            // fallback can block. Revocation is already complete for all
+            // children, so this path cannot weaken the reclamation invariant.
+            for (OresFuture.RuntimeCancellation<?> cancellation : fallback) {
+                cancellation.publish();
             }
         }
 
