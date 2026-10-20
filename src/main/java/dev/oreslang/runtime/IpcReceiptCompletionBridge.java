@@ -319,7 +319,6 @@ final class IpcReceiptCompletionBridge {
         try {
             synchronized (gate) {
                 requirePhysicalTransport(owner, trustedEpoch, generation);
-                transportLossClaimed = true;
                 if (completions.size() != correlations.counters().pending()) {
                     throw new IllegalStateException("host correlation parity violated");
                 }
@@ -349,6 +348,10 @@ final class IpcReceiptCompletionBridge {
 
                 List<IpcReceiptCorrelation.LostCorrelation> losses =
                         correlations.retireTransportLost(trustedEpoch);
+                // No bridge caller can interleave while gate is held. Claim
+                // physical loss only after retirement has completed, so a
+                // pre-mutation allocation/start failure remains retryable.
+                transportLossClaimed = true;
                 if (!losses.equals(preview)) {
                     throw new IllegalStateException(
                             "IPC transport-loss preview changed under bridge gate");
