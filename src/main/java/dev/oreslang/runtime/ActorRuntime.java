@@ -6854,6 +6854,12 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                         cell.pendingPhysicalReceipts.put(receiptKey, trackedReceipt);
                     }
+                    // All SharedMutex invariant checks happen before the
+                    // irreversible physical mailbox write. The post-admission
+                    // commit below is intentionally primitive/no-validation.
+                    validateSharedMutexBindingsForCommit(
+                            sharedMutexReservations);
+
                     boolean wrote = false;
                     try {
                         if (!cell.mailbox.tryWrite(envelope)) {
@@ -6869,7 +6875,8 @@ public final class ActorRuntime implements AutoCloseable {
                     cell.nextUserMessageSequence = nextSequence;
                     mailboxSlotTransferred = true;
                     admitted = true;
-                    commitSharedMutexBindings(sharedMutexReservations);
+                    commitSharedMutexBindingsAfterAdmission(
+                            sharedMutexReservations);
                 }
             }
         } finally {
@@ -7572,16 +7579,34 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private void commitSharedMutexBindings(List<OresMutex.Shared<?>> reservations) {
+    private void validateSharedMutexBindingsForCommit(
+            List<OresMutex.Shared<?>> reservations) {
         for (OresMutex.Shared<?> mutex : reservations) {
-            mutex.commitRuntimePublication(this);
+            mutex.validateRuntimePublicationCommit(this);
+        }
+    }
+
+    private void commitSharedMutexBindingsAfterAdmission(
+            List<OresMutex.Shared<?>> reservations) {
+        // No fallible validation or allocation is permitted here. Physical
+        // mailbox acceptance has already occurred under runtimeLifecycleLock.
+        for (OresMutex.Shared<?> mutex : reservations) {
+            mutex.commitRuntimePublicationAfterAdmission();
         }
     }
 
     private void abortSharedMutexBindings(List<OresMutex.Shared<?>> reservations) {
+        Throwable firstFailure = null;
         for (int i = reservations.size() - 1; i >= 0; i--) {
-            reservations.get(i).abortRuntimePublication(this);
+            try {
+                reservations.get(i).abortRuntimePublication(this);
+            } catch (RuntimeException | Error failure) {
+                if (firstFailure == null) firstFailure = failure;
+                else if (firstFailure != failure) firstFailure.addSuppressed(failure);
+            }
         }
+        if (firstFailure instanceof RuntimeException failure) throw failure;
+        if (firstFailure instanceof Error failure) throw failure;
     }
 
     private static void rejectUntrustedInboundCapabilities(
