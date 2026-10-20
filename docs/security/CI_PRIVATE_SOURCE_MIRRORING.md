@@ -51,9 +51,13 @@ the result as untrusted.
 ## Destination-bound source snapshot publisher
 
 The only supported transfer entry point is **not an arbitrary command
-launcher**. V3 accepts an approved destination, a bounded local source
-directory, the exact open source PR head, and one test plan already pinned by
-the protected carrier contract:
+launcher**. The legacy `publish-private-ci-source.py` executable entry point
+is deliberately disabled; that module remains only as the audited helper
+substrate imported by v3. Operators must enter through
+`scripts/run-in-private-ci-destination.sh`, which always dispatches to v3.
+V3 accepts an approved destination, a bounded local source directory, the
+exact open source PR head, and one test plan already pinned by the protected
+carrier contract:
 
 ```bash
 scripts/run-in-private-ci-destination.sh opto-sync-test/go-java-validation \
@@ -86,6 +90,14 @@ bound into the carrier commit message. It then creates a **new**
 `ci/oreslang-<SOURCE_ROOT_TREE_SHA>` ref and the exact
 `ci/authorized-<CARRIER_COMMIT_SHA>` dispatcher authorization ref required
 by the carrier. Existing branches, including `main`, are never updated.
+Because GitHub ref creation is not atomic, v3 treats every attempted
+source-bearing ref write as potentially live. If either publication step
+fails or returns an untrusted response, it attempts to delete both refs in
+reverse order and continues cleanup even if one deletion fails. An incomplete
+rollback is surfaced as a hard denial rather than being mistaken for a safe
+failed publication. The carrier independently refuses source checkout until
+the exact authorization ref exists, so partial publication is fail-closed for
+execution as well as best-effort cleaned for retention.
 
 The reviewed carrier base must itself be source-free: neither
 `private-oreslang-source/` nor `ci/oreslang-receipt.json` may already be
@@ -116,7 +128,9 @@ destination policy has not changed
 before every API write, in addition to rechecking the destination's live
 private visibility. It does not print source contents in API failures.
 API failure before ref creation can leave unreferenced Git objects in
-the private destination; a follow-up retention policy is still needed.
+the private destination; a follow-up retention policy is still needed. Ref
+rollback likewise cannot make already-uploaded unreachable Git objects vanish,
+so private carrier retention remains an independent operational requirement.
 
 It does **not** intercept arbitrary connector/API tool writes, cannot
 completely prevent visibility changes between API checks, and cannot
@@ -135,9 +149,12 @@ python3 scripts/test-publish-private-ci-source-v3.py
 The Bash test uses a temporary policy checkout; Python tests mock all GitHub
 API operations. V3 tests additionally prove protected carrier-contract parsing,
 source-free base enforcement, exact open-PR binding, receipt construction,
-tree-derived branch naming, and dispatcher-authorization ref creation. The
-real allowlist remains empty and **no destination is authorized** unless
-separately reviewed and protected-main enforcement is active.
+tree-derived branch naming, dispatcher-authorization ref creation, rollback
+of partial/uncertain ref publication, and continued cleanup when one ref
+deletion fails. Legacy tests also prove the old publisher CLI remains
+non-executable. The real allowlist remains empty and **no destination is
+authorized** unless separately reviewed and protected-main enforcement is
+active.
 
 ## Active disclosure incident
 
