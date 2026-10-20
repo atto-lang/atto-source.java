@@ -1,0 +1,66 @@
+// Oreslang-native process-group policy for OTP-style pg discovery.
+//
+// FIRST EXECUTABLE SOURCE SLICE ONLY.
+//
+// This module does NOT own membership storage, send messages, supervise actors,
+// provide consensus, or mint capabilities. The privileged runtime provider must
+// back membership with ActorGroup so admission, actor retirement, incarnation
+// fencing, and bounded quotas have one authority. Distributed scopes may later
+// converge eventually, but must advertise that policy explicitly.
+define module OtpPg as
+
+  // Descriptive, runtime-validated membership metadata. Constructing this value
+  // does NOT join a group and the integer incarnation is not authority.
+  pub define class Member<TargetRef> as
+    pub val TargetRef actor_ref;
+    pub val int incarnation;
+  end
+
+  pub fnc member<TargetRef>(
+    TargetRef actor_ref,
+    int incarnation
+  ): Result<Member<TargetRef>, String> {
+    if incarnation <= 0; do
+      return Err("pg actor incarnation must be positive");
+    fi
+    return Ok(new Member<TargetRef>(actor_ref, incarnation));
+  }
+
+  // Pure preflight only. The ActorGroup provider performs the atomic bounded
+  // admission. Duplicate joins of the same live actor incarnation are
+  // idempotent and therefore do not consume a second membership slot.
+  pub fnc membership_capacity_allows(
+    int members,
+    int capacity
+  ): Result<bool, String> {
+    if members < 0; do
+      return Err("pg member count cannot be negative");
+    fi
+    if capacity < 1 || capacity > 65536; do
+      return Err("pg membership capacity must be 1..65536");
+    fi
+    if members > capacity; do
+      return Err("pg member count exceeds configured capacity");
+    fi
+    return Ok(members < capacity);
+  }
+
+  // Named/scoped group cardinality is independently bounded so attackers
+  // cannot create an unbounded number of empty names.
+  pub fnc group_capacity_allows(
+    int groups,
+    int capacity
+  ): Result<bool, String> {
+    if groups < 0; do
+      return Err("pg group count cannot be negative");
+    fi
+    if capacity < 1 || capacity > 65536; do
+      return Err("pg group capacity must be 1..65536");
+    fi
+    if groups > capacity; do
+      return Err("pg group count exceeds configured capacity");
+    fi
+    return Ok(groups < capacity);
+  }
+
+end
