@@ -268,8 +268,21 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            if (module.name().equals("Entry")) {
+                throw new IllegalArgumentException(
+                        "Entry is a built-in key/value product namespace and cannot be shadowed by a module");
+            }
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
+                String reservedName = decl instanceof Ast.FunctionDecl fn ? fn.name()
+                        : decl instanceof Ast.ClassDecl klass ? klass.name()
+                        : decl instanceof Ast.InterfaceDecl iface ? iface.name()
+                        : decl instanceof Ast.TypeAliasDecl alias ? alias.name()
+                        : null;
+                if ("Entry".equals(reservedName)) {
+                    throw new IllegalArgumentException(
+                            "Entry is a built-in key/value product namespace and cannot be shadowed");
+                }
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
@@ -2257,6 +2270,10 @@ public final class TypeChecker {
                 }
                 return trapFunctionType(fn, Set.of(), null);
             }
+            if (name.name().equals("tuple")) {
+                throw new IllegalArgumentException(
+                        "builtin tuple(...) is direct-call-only; use an explicit lambda to reify tuple construction");
+            }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
         if (expr instanceof Ast.AssignExpr assignment) {
@@ -2683,6 +2700,21 @@ public final class TypeChecker {
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
+            if (call.callee() instanceof Ast.NameExpr tupleName
+                    && tupleName.name().equals("tuple")
+                    && env.lookup("tuple") == null) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "builtin tuple(...) does not accept call-site type arguments");
+                }
+                List<ExpandedCallArgument> items = expandFixedCallArguments(
+                        call.arguments(), env, generics, self, "tuple");
+                return new Tuple(items.stream()
+                        .map(item -> item.expression() == null
+                                ? item.staticType()
+                                : typeOf(item.expression(), env, generics, self))
+                        .toList());
+            }
             String booleanIntrinsic = booleanIntrinsicName(call, env);
             if (booleanIntrinsic != null) {
                 return typeBooleanIntrinsicCall(booleanIntrinsic, call, env, generics, self);
@@ -2824,6 +2856,7 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.MemberExpr entryCall
                     && entryCall.receiver() instanceof Ast.NameExpr entryFactory
                     && entryFactory.name().equals("Entry")
+                    && env.lookup("Entry") == null
                     && entryCall.member().equals("of")) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException(
@@ -8911,7 +8944,13 @@ public final class TypeChecker {
 
     private Set<String> uniqueGenerics(List<String> names, String owner) {
         Set<String> result = new HashSet<>();
-        for (String name : names) if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+        for (String name : names) {
+            if (name.equals("Entry")) {
+                throw new IllegalArgumentException(
+                        "generic parameter 'Entry' cannot shadow the built-in Entry<K,V> type");
+            }
+            if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+        }
         return result;
     }
 
