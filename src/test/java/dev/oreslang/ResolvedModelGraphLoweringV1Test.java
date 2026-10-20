@@ -44,6 +44,21 @@ final class ResolvedModelGraphLoweringV1Test {
     }
 
     @Test
+    void typedPortMismatchCannotEscapeResolvedLowering() {
+        Map<String, Signature> wrong = new java.util.HashMap<>(registry());
+        wrong.put("ApplyTaxBps", new Signature(
+                List.of(new NominalPort("finance.Weight@v1", 16)), PRICE,
+                "pure", false, 0, "ores.model.op.v1", "2".repeat(64),
+                "verified-ores", List.of("i64"), PROFILE));
+        Ast.ModelDecl model = source(
+                "define model PriceEstimate as PriceInput() ApplyTaxBps(1500) RoundCents() end");
+        assertEquals("MODEL_PORT_TYPE_MISMATCH",
+                assertThrows(IllegalArgumentException.class,
+                        () -> ResolvedModelGraphLoweringV1.lower(
+                                model, "finance.PriceEstimate@v1", wrong, Map.of())).getMessage());
+    }
+
+    @Test
     void defaultsAndOverridesResolveBeforeHashing() {
         Ast.ModelDecl model = source(
                 "define model PriceEstimate(tax_bps: int = 1500) as PriceInput() ApplyTaxBps(tax_bps) RoundCents() end");
