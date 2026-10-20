@@ -109,6 +109,31 @@ public final class VerifyEffectClosure {
         require(trapDynamic.infer().get("caller").equals(
             Set.of(EffectContracts.Effect.UNKNOWN_CALL)),
             "trap must not hide unknown callback effects");
+        // Explicit effect ABI v1 parity with the native 10-bit mask.
+        for (int mask = 0; mask <= dev.oreslang.types.EffectAbiV1.KNOWN_MASK; ++mask) {
+            var row = dev.oreslang.types.EffectAbiV1.decode(mask);
+            require(dev.oreslang.types.EffectAbiV1.encode(row) == mask,
+                "effect ABI roundtrip failed at mask " + mask);
+        }
+        try {
+            dev.oreslang.types.EffectAbiV1.decode(Integer.MIN_VALUE);
+            throw new AssertionError("native unresolved marker must fail closed");
+        } catch (IllegalArgumentException expected) {
+            // not a source-declarable permission
+        }
+        for (var kind : dev.oreslang.types.LatentEffectRows.Kind.values()) {
+            var unknown = dev.oreslang.types.LatentEffectRows.unresolved(kind);
+            require(unknown.deferredConstructionEffects().isEmpty(),
+                "constructing deferred action must not execute latent effects");
+            require(unknown.latentEffects().contains(EffectContracts.Effect.UNKNOWN_CALL),
+                "unproven deferred action must retain UNKNOWN_CALL");
+            try {
+                unknown.requireInvocationWithin(Set.of(EffectContracts.Effect.IO));
+                throw new AssertionError("unverified action must not execute");
+            } catch (IllegalArgumentException expected) {
+                // absence of an effect proof is not purity.
+            }
+        }
         System.out.println("PASS " + checked
             + " effect-closure roots + trap/FFI negative control (bounded model only)");
     }
