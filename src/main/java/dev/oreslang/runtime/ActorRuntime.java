@@ -6585,6 +6585,18 @@ public final class ActorRuntime implements AutoCloseable {
                         limit);
                 return total;
             }
+            if (value instanceof OresTuple tuple) {
+                // OresTuple has its own nominal wrapper in addition to immutable
+                // element storage. Charge both so tuple-heavy messages cannot
+                // evade actor-memory quotas by being treated as raw Lists.
+                long total = requireWithinLimit(containerBase(48L, 8L, tuple.size()), limit);
+                for (Object item : tuple) {
+                    total = addWithinLimit(total,
+                            estimateSharedTransportBytes(item, visiting, depth + 1, limit - total),
+                            limit);
+                }
+                return total;
+            }
             if (value instanceof List<?> list) {
                 long total = requireWithinLimit(containerBase(24L, 8L, list.size()), limit);
                 for (Object item : list) {
@@ -6656,6 +6668,13 @@ public final class ActorRuntime implements AutoCloseable {
             bytes = Math.addExact(bytes, estimateSharedMailboxBytes(entry.value(), seen, depth + 1));
             return bytes;
         }
+        if (value instanceof OresTuple tuple) {
+            bytes = Math.addExact(48L, 8L * tuple.size());
+            for (Object item : tuple) {
+                bytes = Math.addExact(bytes, estimateSharedMailboxBytes(item, seen, depth + 1));
+            }
+            return bytes;
+        }
         if (value instanceof List<?> list) {
             bytes = Math.addExact(bytes, 8L * list.size());
             for (Object item : list) {
@@ -6718,6 +6737,15 @@ public final class ActorRuntime implements AutoCloseable {
                 total = addWithinLimit(total,
                         estimatePrivateTransportBytes(entry.value(), visiting, depth + 1, limit - total),
                         limit);
+                return total;
+            }
+            if (value instanceof OresTuple tuple) {
+                long total = requireWithinLimit(containerBase(48L, 8L, tuple.size()), limit);
+                for (Object item : tuple) {
+                    total = addWithinLimit(total,
+                            estimatePrivateTransportBytes(item, visiting, depth + 1, limit - total),
+                            limit);
+                }
                 return total;
             }
             if (value instanceof List<?> list) {
@@ -6846,6 +6874,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof OresEntry entry) {
             bytes = Math.addExact(40L, estimateFrozenBytes(entry.key(), seen, depth + 1));
             bytes = Math.addExact(bytes, estimateFrozenBytes(entry.value(), seen, depth + 1));
+            return bytes;
+        }
+        if (value instanceof OresTuple tuple) {
+            bytes = Math.addExact(48L, 8L * tuple.size());
+            for (Object item : tuple) bytes = Math.addExact(bytes, estimateFrozenBytes(item, seen, depth + 1));
             return bytes;
         }
         if (value instanceof List<?> list) {
