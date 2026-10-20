@@ -155,4 +155,44 @@ final class AggregateComputedAccessTest {
                 """);
         assertThrows(IllegalArgumentException.class, () -> OwnershipChecker.check(constStruct));
     }
+    @Test
+    void heterogeneousTupleDynamicIndexIsAUnionAndCannotNarrowImplicitly() {
+        Ast.Program accepted = typed("""
+                fnc good(int index): int | string {
+                  const pair = tuple {7, "seven"};
+                  const int | string value = pair[index];
+                  return value;
+                }
+                """);
+        assertDoesNotThrow(() -> OwnershipChecker.check(accepted));
+
+        IllegalArgumentException narrowed = assertThrows(
+                IllegalArgumentException.class,
+                () -> typed("""
+                        fnc bad(int index): int {
+                          const pair = tuple {7, "seven"};
+                          const int value = pair[index];
+                          return value;
+                        }
+                        """));
+        assertTrue(
+                narrowed.getMessage().contains("expected int")
+                        || narrowed.getMessage().contains("type"),
+                narrowed.getMessage());
+    }
+
+    @Test
+    void constantTupleIndexOutsideArityIsRejectedBeforeRuntime() {
+        IllegalArgumentException invalid = assertThrows(
+                IllegalArgumentException.class,
+                () -> typed("""
+                        fnc bad(): int {
+                          const pair = tuple {1, 2};
+                          return pair[2];
+                        }
+                        """));
+        assertTrue(invalid.getMessage().contains("outside arity"),
+                invalid.getMessage());
+    }
+
 }
