@@ -1297,7 +1297,8 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.MemberExpr enumMember
-                && enumMember.receiver() instanceof Ast.NameExpr enumName) {
+                && enumMember.receiver() instanceof Ast.NameExpr enumName
+                && scope.lookup(enumName.name()) == null) {
             Ast.EnumDecl enumeration = findEnum(enumName.name());
             if (enumeration != null) {
                 Ast.EnumCase enumCase = findEnumCase(enumeration, enumMember.member());
