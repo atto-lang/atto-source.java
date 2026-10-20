@@ -1,7 +1,8 @@
 # Private CI destinations explicitly approved for source transfers.
 # No repositories are approved by default.
 # Changes must be reviewed by maintainers and security owners on a protected branch.
-# Format: exact owner/repo, one ASCII space, immutable numeric repository ID,
-# one ASCII space, reviewed destination exact-tree workflow Git blob SHA.
-# No wildcards, aliases, redirects, slug-only approvals, or floating workflow refs.
-ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra 1412142815 ef7b0caaa1aedb56864f01fad14bfe88321f1ab1
+# Format: exact owner/repo, immutable numeric repository ID, reviewed carrier base commit,
+# reviewed carrier base tree, reviewed destination exact-tree workflow Git blob SHA.
+# Fields use exactly one ASCII space. No wildcards, aliases, redirects, slug-only
+# approvals, floating workflow refs, or unreviewed carrier control-plane files.
+ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra 1412142815 0e494bc70fde8fd74204475ca223a3886d1fe7a3 46b9c0b186edf6a2e509fceb9e6dc2fde107249a d1a9083d33cf674c61d6346065c9f65ce119a86f
