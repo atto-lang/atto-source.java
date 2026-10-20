@@ -42,7 +42,7 @@ public final class TypeChecker {
             "int", "uint", "bigint", "f32", "f64", "float",
             "decimal", "complex64", "complex128", "complex",
             "bool", "Bool", "string", "String", "void", "null",
-            "Symbol", "Array", "List", "Vector", "Slice",
+            "Symbol", "Map", "Array", "List", "Vector", "Slice",
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Box", "Arc", "Weak",
@@ -217,7 +217,7 @@ public final class TypeChecker {
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Box", "Arc", "Weak", "Rc", "RefCell", "Mutex", "RwLock",
                 "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult",
-                "Object", "List", "Option", "Result", "Future",
+                "Object", "List", "Map", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
@@ -270,17 +270,29 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            if (module.name().equals("Map")) {
+                throw new IllegalArgumentException("Map is a reserved built-in collection type");
+            }
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    if (klass.name().equals("Map")) {
+                        throw new IllegalArgumentException("Map is a reserved built-in collection type");
+                    }
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    if (iface.name().equals("Map")) {
+                        throw new IllegalArgumentException("Map is a reserved built-in collection type");
+                    }
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    if (alias.name().equals("Map")) {
+                        throw new IllegalArgumentException("Map is a reserved built-in collection type");
+                    }
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                     typeAliasOwners.put(alias, module.name());
                 }
@@ -645,6 +657,10 @@ public final class TypeChecker {
         List<Type> argumentTypes = new ArrayList<>(fn.parameters().size());
         for (Ast.Param param : fn.parameters()) {
             Type parameterType = resolveParam(param, generics, null);
+            if (containsTypedMapType(parameterType)) {
+                throw new IllegalArgumentException(
+                        "Map<K,V> parameters are not enabled in the closed v1 surface; keep the mutable Map local until transfer/borrow ABI rules are implemented");
+            }
             argumentTypes.add(parameterType);
             if (param.structural() && fn.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
@@ -684,6 +700,10 @@ public final class TypeChecker {
         Type returns = fn.generator()
                 ? generatorYieldType(fn.async(), declaredReturn)
                 : declaredReturn;
+        if (containsTypedMapType(returns)) {
+            throw new IllegalArgumentException(
+                    "Map<K,V> return/yield types are not enabled in the closed v1 surface; mutable Map ownership cannot escape a callable yet");
+        }
         if (returns == Primitive.VOID && fn.generator()) {
             throw new IllegalArgumentException(
                     "generator '" + module + "." + fn.name() + "' must declare a non-void yielded element type");
@@ -1239,6 +1259,10 @@ public final class TypeChecker {
                         + "' cannot be public; expose state through mailbox-dispatched methods");
             }
             Type fieldType = classFieldType(klass, field);
+            if (containsTypedMapType(fieldType)) {
+                throw new IllegalArgumentException(
+                        "Map<K,V> cannot be stored in class or actor fields in the closed v1 surface");
+            }
             if (field.initializer() != null && field.type() != null) {
                 Ast.ClassDecl previousClassOwner = currentClassOwner;
                 Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
@@ -1639,6 +1663,11 @@ public final class TypeChecker {
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
+        if (containsTypedMapType(actual)
+                || field.type() != null && containsTypedMapType(resolve(field.type(), Set.of(), null))) {
+            throw new IllegalArgumentException(
+                    "Map<K,V> cannot be stored in module/global state in the closed v1 surface");
+        }
         requireMutableReferentCompatible(
                 actual,
                 field.mutableReferent(),
@@ -1813,7 +1842,7 @@ public final class TypeChecker {
                                 "complex64", "complex128", "complex", "bool", "Bool",
                                 "boolean", "string", "String", "void", "null", "self",
                                 "Tuple", "Array", "List", "Vector", "Slice",
-                                "FixedArray", "FixedList", "DynamicStruct", "Option",
+                                "FixedArray", "FixedList", "DynamicStruct", "Map", "Option",
                                 "Result", "Future", "ActorId", "ActorKind",
                                 "ActorMail", "ActorOutput", "ActorOutputStream",
                                 "MutexGuard", "Mutex", "SharedMutex", "Channel",
@@ -1843,6 +1872,16 @@ public final class TypeChecker {
                     ? actual
                     : overlayReadonlyCapabilities(actual, declaredAhead);
             requireAssignable(actual, declared, "initializer for " + binding.name());
+            if (containsTypedMapType(actual)) {
+                if (!isTypedMapType(actual)) {
+                    throw new IllegalArgumentException(
+                            "nested Map<K,V> values are not enabled in the closed v1 surface");
+                }
+                if (!isFreshTypedMapConstruction(binding.initializer())) {
+                    throw new IllegalArgumentException(
+                            "Map<K,V> bindings must own a fresh new Map<K,V>() value; aliases and transfers are not enabled yet");
+                }
+            }
 
             // Resolve CONST selector metadata before defining the new binding so
             // an initializer alias refers to the lexical source, not to the just-
@@ -1855,7 +1894,7 @@ public final class TypeChecker {
             }
 
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
-            else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
+            else env.define(binding.name(), declared, binding.kind(), missingExplicitFields, binding.mutableReferent());
             if (binding.kind() == Ast.BindingKind.CONST) {
                 if (constantInteger != null) {
                     env.defineConstantInteger(binding.name(), constantInteger);
@@ -1922,6 +1961,10 @@ public final class TypeChecker {
             Type actual = ret.value() == null
                     ? Primitive.VOID
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
+            if (containsTypedMapType(actual)) {
+                throw new IllegalArgumentException(
+                        "Map<K,V> cannot escape through return in the closed v1 surface");
+            }
             requireReadonlyCapabilityPreserved(actual, expectedReturn, "return value");
             requireAssignable(actual, expectedReturn, "return value");
             return;
@@ -2269,6 +2312,10 @@ public final class TypeChecker {
                 Env.Binding binding = env.lookup(name.name());
                 if (binding == null) throw new IllegalArgumentException("cannot assign unknown name '" + name.name() + "'");
                 if (binding.kind() != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + binding.kind().name().toLowerCase() + " binding '" + name.name() + "'");
+                if (isTypedMapType(binding.type())) {
+                    throw new IllegalArgumentException(
+                            "Map<K,V> rebinding is disabled until exclusive move transfer is implemented");
+                }
                 targetType = binding.type();
                 where = name.name();
             } else if (assignment.target() instanceof Ast.MemberExpr member) {
@@ -2301,7 +2348,19 @@ public final class TypeChecker {
                 }
                 Type receiver = receiverDispatchType(deref(receiverSource));
                 Type index = typeOf(indexed.index(), env, generics, self);
-                if (receiver instanceof Record record) {
+                if (isTypedMapType(receiver)) {
+                    if (!(indexed.receiver() instanceof Ast.NameExpr ownerName)) {
+                        throw new IllegalArgumentException(
+                                "Map<K,V> indexed mutation requires a directly owned local binding");
+                    }
+                    Env.Binding owner = env.lookup(ownerName.name());
+                    if (owner == null || !owner.mutableReferent()) {
+                        throw new IllegalArgumentException(
+                                "Map<K,V> indexed mutation requires mutable referent authority (val or explicit mut binding)");
+                    }
+                    requireAssignable(index, typedMapKeyType(receiver), "Map key");
+                    targetType = typedMapValueType(receiver);
+                } else if (receiver instanceof Record record) {
                     requireAssignable(index, Primitive.STRING, "record/struct field key");
                     Map<String, Type> indexableMembers = indexableRecordMembers(record);
                     if (record.kind() == AggregateKind.CONTRACT) {
@@ -2398,7 +2457,7 @@ public final class TypeChecker {
                         }
                     } else {
                         throw new IllegalArgumentException(
-                                "indexed assignment requires a mutable array/list/fixed collection, mutable struct, or class field");
+                                "indexed assignment requires a mutable Map, array/list/fixed collection, mutable struct, or class field");
                     }
                 }
                 where = "index";
@@ -3808,6 +3867,10 @@ public final class TypeChecker {
             String constantKey = constantStringKey(indexed.index(), env);
             Env.Binding indexedOwner = indexed.receiver() instanceof Ast.NameExpr ownerName
                     ? env.lookup(ownerName.name()) : null;
+            if (isTypedMapType(receiver)) {
+                requireAssignable(index, typedMapKeyType(receiver), "Map key");
+                return typedMapValueType(receiver);
+            }
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "record/struct field key");
                 Map<String, Type> indexableMembers = indexableRecordMembers(record);
@@ -3902,9 +3965,20 @@ public final class TypeChecker {
                 return indexedElementUnion(tuple.elements());
             }
             throw new IllegalArgumentException(
-                    "indexing requires an array/list, tuple, record/struct, or class instance field");
+                    "indexing requires a Map, array/list, tuple, record/struct, or class instance field");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("Map") && findClass("Map") == null) {
+                if (!created.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "new Map<K,V>() takes no constructor arguments");
+                }
+                if (currentActorKind != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "Map<K,V> allocation inside actors is disabled until actor-owned Map accounting/transport is implemented");
+                }
+                return resolve(created.type(), generics, self);
+            }
             if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
                 if (created.type().inferArguments() || !created.type().arguments().isEmpty()
                         || created.arguments().size() > 1) {
@@ -8619,6 +8693,23 @@ public final class TypeChecker {
                 yield new Named("$builtin$Symbol", List.of());
             }
             case "void" -> Primitive.VOID;
+            case "Map" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 2) {
+                    throw new IllegalArgumentException(
+                            "Map<K,V> requires exactly two explicit type arguments");
+                }
+                Type key = resolve(ref.arguments().get(0), generics, self);
+                Type value = resolve(ref.arguments().get(1), generics, self);
+                if (!isSupportedTypedMapKey(key)) {
+                    throw new IllegalArgumentException(
+                            "Map<K,V> key type must be String, Symbol, or String | Symbol");
+                }
+                if (!isSupportedTypedMapValue(value)) {
+                    throw new IllegalArgumentException(
+                            "closed Map<K,V> v1 values must be int, string, bool, or Symbol");
+                }
+                yield new Named("Map", List.of(key, value));
+            }
             case "Array", "List", "Vector", "Slice", "Tuple", "FixedArray", "FixedList" -> {
                 Ast.ClassDecl declared = findClass(ref.name());
                 if (!Set.of("Array", "List").contains(ref.name()) && declared != null
@@ -8796,6 +8887,94 @@ public final class TypeChecker {
     private String qualifiedInterfaceName(Ast.InterfaceDecl iface) {
         String owner = interfaceOwners.get(iface);
         return owner == null || owner.equals("__root__") ? iface.name() : owner + "." + iface.name();
+    }
+
+    private boolean isTypedMapType(Type type) {
+        Type concrete = deref(type);
+        return concrete instanceof Named named
+                && named.name().equals("Map")
+                && named.arguments().size() == 2;
+    }
+
+    private boolean containsTypedMapType(Type type) {
+        if (type == null) return false;
+        if (isTypedMapType(type)) return true;
+        if (type instanceof Borrow borrow) return containsTypedMapType(borrow.target());
+        if (type instanceof ListType list) return containsTypedMapType(list.element());
+        if (type instanceof Tuple tuple) {
+            return tuple.elements().stream().anyMatch(this::containsTypedMapType);
+        }
+        if (type instanceof Union union) {
+            return union.options().stream().anyMatch(this::containsTypedMapType);
+        }
+        if (type instanceof Record record) {
+            return record.members().values().stream().anyMatch(this::containsTypedMapType);
+        }
+        if (type instanceof Function fn) {
+            return fn.parameters().stream().anyMatch(this::containsTypedMapType)
+                    || containsTypedMapType(fn.result());
+        }
+        if (type instanceof Named named) {
+            return named.arguments().stream().anyMatch(this::containsTypedMapType);
+        }
+        return false;
+    }
+
+    private Type typedMapKeyType(Type type) {
+        Type concrete = deref(type);
+        if (!(concrete instanceof Named named)
+                || !named.name().equals("Map")
+                || named.arguments().size() != 2) {
+            throw new IllegalArgumentException("expected Map<K,V> type");
+        }
+        return named.arguments().get(0);
+    }
+
+    private Type typedMapValueType(Type type) {
+        Type concrete = deref(type);
+        if (!(concrete instanceof Named named)
+                || !named.name().equals("Map")
+                || named.arguments().size() != 2) {
+            throw new IllegalArgumentException("expected Map<K,V> type");
+        }
+        return named.arguments().get(1);
+    }
+
+    private boolean isSupportedTypedMapKey(Type key) {
+        Type concrete = deref(key);
+        if (concrete == Primitive.STRING) return true;
+        if (concrete instanceof Named named
+                && named.name().equals("$builtin$Symbol")
+                && named.arguments().isEmpty()) return true;
+        if (concrete instanceof Union union && union.options().size() == 2) {
+            boolean string = union.options().stream()
+                    .anyMatch(option -> deref(option) == Primitive.STRING);
+            boolean symbol = union.options().stream()
+                    .map(this::deref)
+                    .anyMatch(option -> option instanceof Named named
+                            && named.name().equals("$builtin$Symbol")
+                            && named.arguments().isEmpty());
+            return string && symbol;
+        }
+        return false;
+    }
+
+    private boolean isSupportedTypedMapValue(Type value) {
+        Type concrete = deref(value);
+        if (concrete == Primitive.INT
+                || concrete == Primitive.STRING
+                || concrete == Primitive.BOOL) return true;
+        return concrete instanceof Named named
+                && named.name().equals("$builtin$Symbol")
+                && named.arguments().isEmpty();
+    }
+
+    private boolean isFreshTypedMapConstruction(Ast.Expr expression) {
+        return expression instanceof Ast.NewExpr created
+                && created.type().name().equals("Map")
+                && !created.type().inferArguments()
+                && created.type().arguments().size() == 2
+                && created.arguments().isEmpty();
     }
 
     private boolean assignable(Type actual, Type expected) {
@@ -9225,14 +9404,24 @@ public final class TypeChecker {
         }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
         private void define(String name, Type type, Ast.BindingKind kind) {
-            define(name, type, kind, Set.of());
+            define(name, type, kind, Set.of(), kind == Ast.BindingKind.VAL);
         }
         private void define(
                 String name,
                 Type type,
                 Ast.BindingKind kind,
                 Set<String> uninitializedFields) {
-            if (bindings.putIfAbsent(name, new Binding(type, kind, uninitializedFields)) != null) {
+            define(name, type, kind, uninitializedFields, kind == Ast.BindingKind.VAL);
+        }
+        private void define(
+                String name,
+                Type type,
+                Ast.BindingKind kind,
+                Set<String> uninitializedFields,
+                boolean mutableReferent) {
+            if (bindings.putIfAbsent(
+                    name,
+                    new Binding(type, kind, uninitializedFields, mutableReferent)) != null) {
                 throw new IllegalArgumentException("duplicate binding '" + name + "'");
             }
         }
@@ -9274,7 +9463,7 @@ public final class TypeChecker {
         }
         private void replace(String name, Type type, Ast.BindingKind kind) {
             if (!bindings.containsKey(name)) throw new IllegalArgumentException("unknown binding '" + name + "'");
-            bindings.put(name, new Binding(type, kind, Set.of()));
+            bindings.put(name, new Binding(type, kind, Set.of(), kind == Ast.BindingKind.VAL));
             constantIntegers.remove(name);
             constantStrings.remove(name);
         }
@@ -9318,14 +9507,21 @@ public final class TypeChecker {
             private final Type type;
             private final Ast.BindingKind kind;
             private final Set<String> uninitializedFields;
+            private final boolean mutableReferent;
 
-            private Binding(Type type, Ast.BindingKind kind, Set<String> uninitializedFields) {
+            private Binding(
+                    Type type,
+                    Ast.BindingKind kind,
+                    Set<String> uninitializedFields,
+                    boolean mutableReferent) {
                 this.type = type;
                 this.kind = kind;
                 this.uninitializedFields = new LinkedHashSet<>(uninitializedFields);
+                this.mutableReferent = mutableReferent;
             }
             private Type type() { return type; }
             private Ast.BindingKind kind() { return kind; }
+            private boolean mutableReferent() { return mutableReferent; }
             private boolean hasUninitializedFields() { return !uninitializedFields.isEmpty(); }
             private boolean isUninitialized(String field) { return uninitializedFields.contains(field); }
             private Set<String> uninitializedFields() {
