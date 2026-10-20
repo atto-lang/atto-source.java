@@ -3607,6 +3607,13 @@ public final class Parser {
             advance(); // contextual record
             return parseObjectLiteral(Ast.ObjectKind.RECORD, List.of());
         }
+        if (isContextualIdentifier("tuple") && checkNext(LBRACE)) {
+            advance(); // explicit tuple literal; tuple(...) remains legacy-compatible
+            consume(LBRACE, "expected '{' after tuple");
+            List<Ast.Expr> items = parseArgumentsUntil(RBRACE);
+            consume(RBRACE, "expected '}' after explicit tuple");
+            return new Ast.TupleExpr(items);
+        }
         if (isContextualIdentifier("tuple") && checkNext(LPAREN)) {
             advance();
             consume(LPAREN, "expected '(' after tuple");
