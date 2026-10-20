@@ -113,6 +113,56 @@ final class GenericHasFutureAwaitTest {
     }
 
     @Test
+    void rejectsInheritedSuspendingOverride() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define trait HasFuture<T> as
+                            get_future(): Future<T>;
+                        end
+                        async fnc value(): int { return 17; }
+                        define class Base implements HasFuture<int> as
+                            pub get_future(): Future<int> { return value(); }
+                        end
+                        define class Child extends Base as
+                            pub async get_future(): Future<int> { return value(); }
+                        end
+                        fnc read(Child child): int { return await child; }
+                        """));
+    }
+
+    @Test
+    void callsProjectionOncePerAwaitOccurrence() throws Exception {
+        String source = """
+                define trait HasFuture<T> as
+                    get_future(): Future<T>;
+                end
+                async fnc value(): int { return 9; }
+                define class Counter implements HasFuture<int> as
+                    pub let int calls = 0;
+                    pub get_future(): Future<int> {
+                        self.calls = self.calls + 1;
+                        return value();
+                    }
+                end
+                pub fnc main(): void {
+                    let Counter counter = new Counter();
+                    val int result = await counter;
+                    stdio.stdout.write(result);
+                    stdio.stdout.write(counter.calls);
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(stdout).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, "hasfuture-once.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("91", stdout.toString(StandardCharsets.UTF_8).trim());
+    }
+
+    @Test
     void acceptsExistingHeaderSyntaxAndNativeFuture() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 define trait HasFuture<T> as
