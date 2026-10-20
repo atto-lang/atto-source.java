@@ -454,6 +454,33 @@ final class TaskTransferProvenanceTest {
     }
 
     @Test
+    void hostileFreshReturnShapeFailsClosedAtProofBudget() {
+        String deep = "arr[1]";
+        for (int i = 0; i < 140; i++) {
+            deep = "(" + deep + " as Array<int>)";
+        }
+        String source = """
+            pub fnc make(): Array<int> {
+                return %s;
+            }
+            pub fnc main(): void {
+                let Task<int> result =
+                    (async task |Array<int> value| -> {
+                        return 1;
+                    })(make());
+                return;
+            }
+            """.formatted(deep);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(source)));
+        assertTrue(
+                failure.getMessage().contains("rvalue provenance"),
+                failure::getMessage);
+    }
+
+    @Test
     void provenanceLedgerCapacityAndLabelsFailClosedAtomically() {
         assertThrows(
                 IllegalArgumentException.class,
