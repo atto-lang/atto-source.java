@@ -169,8 +169,28 @@ public final class OresTaskScope {
         for (OresFuture.RuntimeCancellation<?> cancellation : claimed) {
             cancellation.revoke();
         }
-        for (OresFuture.RuntimeCancellation<?> cancellation : claimed) {
-            cancellation.publish();
+        if (!claimed.isEmpty()) {
+            List<OresFuture.RuntimeCancellation<?>> publish = List.copyOf(claimed);
+            // Ordinary Future subscribers are not part of the structured
+            // lifetime proof. Publish them off-carrier only after every child
+            // has been revoked, so a blocking host callback cannot pin the
+            // parent source Task inside scope cleanup.
+            try {
+                Thread.ofVirtual()
+                        .name("ores-task-scope-cancel-publish")
+                        .start(() -> {
+                            for (OresFuture.RuntimeCancellation<?> cancellation : publish) {
+                                cancellation.publish();
+                            }
+                        });
+            } catch (RuntimeException | Error unavailable) {
+                // Revocation has already completed for every child, so the
+                // safety invariant is established. Preserve notification
+                // delivery even on a runtime without virtual-thread admission.
+                for (OresFuture.RuntimeCancellation<?> cancellation : publish) {
+                    cancellation.publish();
+                }
+            }
         }
 
         if (complete) completeDrain();
