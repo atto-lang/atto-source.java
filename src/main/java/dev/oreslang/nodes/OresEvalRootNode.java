@@ -15,6 +15,7 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
+import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
@@ -4585,6 +4586,12 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.NewExpr created,
                 List<Object> args,
                 Env env) {
+            if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
+                if (created.type().inferArguments() || !created.type().arguments().isEmpty() || args.size() > 1)
+                    throw new IllegalArgumentException("HttpResponse requires zero or one string body");
+                return args.isEmpty() ? HttpResponseDraft.empty()
+                        : HttpResponseDraft.text(requireString(args.getFirst(), "HttpResponse body"));
+            }
             if (created.type().name().equals("Array")
                     || created.type().name().equals("List")) {
                 if (!args.isEmpty()) {
@@ -6409,6 +6416,10 @@ public final class OresEvalRootNode extends RootNode {
                 return indexValue(eval(indexed.receiver(), env), eval(indexed.index(), env));
             }
             if (expr instanceof Ast.NewExpr created) {
+                if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
+                    List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
+                    return instantiateEvaluated(created, args, env);
+                }
                 if (created.type().name().equals("Array")
                         || created.type().name().equals("List")) {
                     if (!created.arguments().isEmpty()) {
@@ -6824,6 +6835,11 @@ public final class OresEvalRootNode extends RootNode {
                         return exchange.respondBytes(((Number) args.get(0)).intValue(), requireString(args.get(1), "content type"), bytes);
                     };
                     case "body_text" -> (Invokable) args -> { requireZero(args, "body_text"); return exchange.bodyText(); };
+                    case "respond_response" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.get(0) instanceof HttpResponseDraft response))
+                            throw new IllegalArgumentException("respond_response requires exactly one owned HttpResponseDraft");
+                        return exchange.respond(response);
+                    };
                     case "respond" -> (Invokable) args -> {
                         if (args.size() != 3) throw new IllegalArgumentException("respond requires status, content type, body");
                         return exchange.respond(((Number) args.get(0)).intValue(), requireString(args.get(1), "content type"), requireString(args.get(2), "body"));
@@ -6856,6 +6872,25 @@ public final class OresEvalRootNode extends RootNode {
                             ((Number) args.get(3)).intValue(), ((Number) args.get(4)).intValue());
                     };
                     case "claim" -> (Invokable) args -> context.http().claim(requireStringArg(args, "http.claim"));
+                    case "response_empty" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.get(0) instanceof Number status) || !isIntegral(status))
+                            throw new IllegalArgumentException("http.response_empty requires one integral status");
+                        long code = status.longValue();
+                        if (code < 200 || code > 599)
+                            throw new IllegalArgumentException("HTTP status must be in 200..599");
+                        return HttpResponseDraft.empty((int) code, List.of());
+                    };
+                    case "response" -> (Invokable) args -> {
+                        if (args.size() != 3 || !(args.get(0) instanceof Number status) || !isIntegral(status))
+                            throw new IllegalArgumentException("http.response requires status, content-type and text body");
+                        long code = status.longValue();
+                        if (code < 200 || code > 599)
+                            throw new IllegalArgumentException("HTTP status must be in 200..599");
+                        String contentType = requireString(args.get(1), "content type");
+                        String body = requireString(args.get(2), "body");
+                        return HttpResponseDraft.text(body, (int) code,
+                                List.of(Map.entry("Content-Type", contentType)));
+                    };
                     case "get_text" -> (Invokable) http::getText;
                     case "get_text_async" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);

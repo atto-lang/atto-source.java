@@ -188,7 +188,7 @@ public final class TypeChecker {
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
-                "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
+                "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
@@ -198,10 +198,22 @@ public final class TypeChecker {
             if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) localNames.add(fn.name());
-                else if (declaration instanceof Ast.ClassDecl klass) localNames.add(klass.name());
+                else if (declaration instanceof Ast.ClassDecl klass) {
+                    if (klass.name().equals("HttpResponse")) {
+                        throw new IllegalArgumentException(
+                                "HttpResponse is a sealed transport response type; user classes cannot shadow it");
+                    }
+                    localNames.add(klass.name());
+                }
                 else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
                 else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
-                else if (declaration instanceof Ast.TypeAliasDecl alias) localNames.add(alias.name());
+                else if (declaration instanceof Ast.TypeAliasDecl alias) {
+                    if (alias.name().equals("HttpResponse")) {
+                        throw new IllegalArgumentException(
+                                "HttpResponse is a sealed transport response type; type aliases cannot shadow it");
+                    }
+                    localNames.add(alias.name());
+                }
             }
         }
 
@@ -3593,6 +3605,19 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
+                if (created.type().inferArguments() || !created.type().arguments().isEmpty()
+                        || created.arguments().size() > 1) {
+                    throw new IllegalArgumentException(
+                            "HttpResponse constructor currently accepts zero or one string body; "
+                            + "status/headers/streams need the checked Fetch response initializer");
+                }
+                if (!created.arguments().isEmpty()) {
+                    requireAssignable(typeOf(created.arguments().getFirst(), env, generics, self),
+                            Primitive.STRING, "HttpResponse body");
+                }
+                return new Named("HttpResponse", List.of());
+            }
             // Guest Symbols are immutable keys, not fresh reference capabilities.
             // Do not silently reinterpret the historical STABLE constructor.
             if (created.type().name().equals("Symbol") && findClass("Symbol") == null) {
@@ -4828,6 +4853,8 @@ public final class TypeChecker {
                 case "handler" -> new Function(List.of(Primitive.STRING), new Named("HttpHandler", List.of()));
                 case "listen" -> new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT, Primitive.INT, Primitive.INT), server);
                 case "claim" -> new Function(List.of(Primitive.STRING), exchange);
+                case "response" -> new Function(List.of(Primitive.INT, Primitive.STRING, Primitive.STRING), new Named("HttpResponse", List.of()));
+                case "response_empty" -> new Function(List.of(Primitive.INT), new Named("HttpResponse", List.of()));
                 default -> null;
             };
             case "HttpHandler" -> switch (name) {
@@ -4861,6 +4888,7 @@ public final class TypeChecker {
                 case "respond_bytes" -> new Function(List.of(Primitive.INT, Primitive.STRING, new ListType(Primitive.INT)), voidFuture);
                 case "body_text" -> new Function(List.of(), new Named("Future", List.of(Primitive.STRING)));
                 case "respond" -> new Function(List.of(Primitive.INT, Primitive.STRING, Primitive.STRING), voidFuture);
+                case "respond_response" -> new Function(List.of(new Named("HttpResponse", List.of())), voidFuture);
                 case "start" -> new Function(List.of(Primitive.INT, Primitive.STRING), voidFuture);
                 case "write" -> new Function(List.of(Primitive.STRING), voidFuture);
                 case "finish" -> new Function(List.of(), voidFuture);
@@ -5004,7 +5032,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
-        if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
+        if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
