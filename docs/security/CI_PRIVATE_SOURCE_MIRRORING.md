@@ -57,9 +57,10 @@ runs `preflight-private-ci-mirror.sh` from the trusted main control-plane checko
 destination identity. It also resolves the reviewed destination carrier
 directly by its immutable Git commit SHA and requires that commit's tree to
 equal the reviewed carrier tree embedded in the authoritative exporter.
-Movement of the destination's mutable default branch is not an authorization
-input; changing the reviewed carrier commit/tree still requires a new reviewed
-policy/exporter revision. The checked-in policy must explicitly list
+Connector authorization additionally requires the reviewed carrier commit to
+remain the destination's live `main`. Any movement of destination `main`
+invalidates the handoff and requires a new reviewed carrier pin plus fresh
+approval payload; an older green carrier cannot be replayed. The checked-in policy must explicitly list
 `owner/repo@numeric-id`.
 
 The publisher then checks the live GitHub repository ID, full name and
@@ -76,25 +77,31 @@ root tree based on the immutable reviewed carrier tree that replaces the
 **entire** `private-oreslang-source/` directory. This removes stale private
 files while preserving only the workflows/files present in that reviewed
 carrier object. Finally, it creates a commit whose parent is the reviewed
-carrier commit and the **new, approval-bound** `ci/oreslang-*` ref. Existing
-branches, including `main`, are never updated. A later change to destination
-`main` neither grants nor revokes approval for an already reviewed immutable
-carrier.
+carrier commit and whose third provenance line binds the exact source
+repository name and numeric ID. It creates the **new, approval-bound**
+`ci/oreslang-*` payload ref, verifies its exact commit readback, then creates
+the non-triggering `ci/authorized-<payload-sha>` handoff ref to that same
+commit and verifies both refs again. Existing branches, including `main`, are
+never updated. The carrier refuses checkout until the exact authorization ref
+exists, and any later movement of destination `main` invalidates connector
+authorization.
 
 ## Reviewed destination execution containment
 
 The reviewed carrier is immutable Git commit
-`c5f5155259aa37b808f4e96dbe09cddded4c04ed`, tree
-`15fcb558350a2965d9edf1f503d45a6d8e7f98df`. Authorization binds those Git
-objects directly; movement of destination `main` is not an authorization
-input. The preflight also resolves
+`cd99139738c4a94b226c10b18b92adafb650eda0`, tree
+`a149a45a540db82b19f202ef697c099767e96db9`. Connector authorization binds
+those Git objects directly **and** requires that exact commit to remain live
+destination `main`. The preflight also resolves
 `.github/workflows/private-oreslang-exact-tree.yml` from that immutable
 carrier commit and requires reviewed blob
-`ef7b0caaa1aedb56864f01fad14bfe88321f1ab1`; it never trusts a cleanup
-workflow fetched from mutable destination `main`.
+`3107feea0215ae9874ff35a2249c69ab6b9e7ffe`; it never substitutes a workflow
+from a different carrier generation.
 
 Every published carrier commit carries a second, machine-checked provenance line
-binding the reviewed carrier base commit and tree. The workflow fetches exactly
+binding the reviewed carrier base commit and tree and, for connector handoff,
+a third line binding source repository `ores-truffle-oreslang/oreslang-source.java`
+and immutable repository ID `1400792274`. The workflow fetches exactly
 one parent, requires that parent to equal the declared carrier base, verifies
 the parent tree, reconstructs the permitted root as the reviewed carrier tree
 plus the exact `private-oreslang-source` subtree, and requires that reconstructed
