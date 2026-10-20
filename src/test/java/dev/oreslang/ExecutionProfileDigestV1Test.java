@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.compiler.ExecutionProfileDigestV1;
 import dev.oreslang.compiler.ExecutionProfileDigestV1.Profile;
+import dev.oreslang.compiler.ModelRunFencing;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -19,8 +20,12 @@ final class ExecutionProfileDigestV1Test {
     void matchesSharedProfileVectors() {
         Profile p=base();
         assertEquals(127, ExecutionProfileDigestV1.canonicalBytes(p).length);
+        String profileDigest=ExecutionProfileDigestV1.digest(p);
         assertEquals("8440c7b53174d2d0dc6a6ff6e1fda662e409f4e21f6ce647eea38b87b3ff9695",
-                ExecutionProfileDigestV1.digest(p));
+                profileDigest);
+        String graphDigest="e4b3337bd3e8b71d8f062afc7fcad5646fa8ad567bfe009e3d02f599b3ee833c";
+        assertEquals("ores-model-plan-v1:"+graphDigest+":"+profileDigest,
+                ModelRunFencing.planCacheKey(graphDigest,profileDigest));
 
         Profile ieee=new Profile(1,p.backendId(),p.backendSemanticVersion(),p.compilerSemanticVersion(),
                 p.targetTriple(),p.dataLayout(),p.runtimeAbi(),"ieee",true,
