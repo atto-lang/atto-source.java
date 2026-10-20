@@ -62,11 +62,12 @@ public final class RealtimeProfile {
     /**
      * Evidence produced outside this scalar admission check.
      *
-     * schedulabilityProven is for this exact Budget/scheduler/deployment;
-     * peakMemoryBytes is the proven reachable critical-path peak, not a
-     * caller-selected allocation target.
+     * Package-internal by design: external callers cannot mint proof by
+     * asserting booleans. A future compiler/runtime bridge must construct this
+     * only after verifying this exact Budget/scheduler/deployment. peakMemoryBytes
+     * is the proven reachable critical-path peak, not an allocation target.
      */
-    public record Proof(
+    record Proof(
             boolean schedulabilityProven,
             boolean peakMemoryProven,
             long peakMemoryBytes) {
@@ -111,7 +112,7 @@ public final class RealtimeProfile {
         return admitJavaHardRt(effects, budget, new Proof(false, false, 0));
     }
 
-    public static Result admitJavaHardRt(Effects effects, Budget budget, Proof proof) {
+    static Result admitJavaHardRt(Effects effects, Budget budget, Proof proof) {
         Objects.requireNonNull(effects, "effects");
         Objects.requireNonNull(budget, "budget");
         Objects.requireNonNull(proof, "proof");
