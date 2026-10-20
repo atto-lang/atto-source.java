@@ -250,9 +250,13 @@ public final class OresEvalRootNode extends RootNode {
 
         private void indexHostImport(Ast.ImportDecl imported) {
             String className = ImportRules.javaClassName(imported.path());
+            // Imports and cyclic link discovery are inert. A host class may
+            // perform <clinit> through symbol discovery, so do not even look
+            // it up until an explicitly capability-checked guest operation.
             HostClassFacade symbol = hostSymbols.computeIfAbsent(
                     className,
-                    ignored -> new HostClassFacade(className, context.lookupHostSymbol(className), true));
+                    ignored -> new HostClassFacade(
+                            className, new LazyHostSymbol(context, className), true));
 
             if (imported.kind() == Ast.ImportKind.CLASS) {
                 String sourceName = imported.names().getFirst();
@@ -261,23 +265,27 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (imported.kind() == Ast.ImportKind.FUNCTION && imported.wildcard()) {
-                putHostClass(imported.namespace(), new HostClassFacade(className, symbol.symbol(), false));
+                putHostClass(imported.namespace(), new HostClassFacade(className, symbol.reference(), false));
                 return;
             }
 
             if (imported.kind() == Ast.ImportKind.FUNCTION) {
-                InteropLibrary interop = InteropLibrary.getUncached(symbol.symbol());
                 for (String sourceName : imported.names()) {
-                    if (!interop.isMemberInvocable(symbol.symbol(), sourceName)) {
-                        throw new IllegalArgumentException("Java host class '" + className
-                                + "' does not export invocable static member '" + sourceName + "'");
-                    }
                     String localName = ImportRules.localName(imported, sourceName);
                     putHostFunction(localName, args -> {
                         context.requireCapability(
                                 IsolatePolicy.Capability.JAVA_INTEROP,
                                 "Java host method " + className + "." + sourceName);
-                        return invokeHostMember(symbol.symbol(), sourceName, args);
+                        // Member reflection is also execution-time only. A
+                        // missing method fails the first explicit call, not
+                        // during a side-effect-free import or link pass.
+                        Object resolved = symbol.symbol();
+                        InteropLibrary interop = InteropLibrary.getUncached(resolved);
+                        if (!interop.isMemberInvocable(resolved, sourceName)) {
+                            throw new IllegalArgumentException("Java host class '" + className
+                                    + "' does not export invocable static member '" + sourceName + "'");
+                        }
+                        return invokeHostMember(resolved, sourceName, args);
                     });
                 }
                 return;
@@ -9089,7 +9097,44 @@ public final class OresEvalRootNode extends RootNode {
     private record ImportedNamespace(Evaluator owner, Ast.ImportKind kind) { }
     private record ModuleFacade(Evaluator owner, Ast.ModuleDecl module) { }
     private record ClassFacade(Evaluator owner, Ast.ClassDecl klass) { }
-    private record HostClassFacade(String className, Object symbol, boolean constructible) { }
+    private record HostClassFacade(
+            String className, LazyHostSymbol reference, boolean constructible) {
+        Object symbol() { return reference.resolve(); }
+    }
+
+    /**
+     * One host symbol per Graal context/class pair, never initialized by an
+     * import constructor or a source link. Runtime context capability is
+     * checked even when a namespace façade indirectly resolves this holder.
+     */
+    private static final class LazyHostSymbol {
+        private final OresContext context;
+        private final String className;
+        private volatile Object resolved;
+
+        private LazyHostSymbol(OresContext context, String className) {
+            this.context = Objects.requireNonNull(context, "host context");
+            this.className = Objects.requireNonNull(className, "host class name");
+        }
+
+        private Object resolve() {
+            context.requireCapability(
+                    IsolatePolicy.Capability.JAVA_INTEROP,
+                    "Java host symbol " + className);
+            Object value = resolved;
+            if (value != null) return value;
+            synchronized (this) {
+                value = resolved;
+                if (value == null) {
+                    value = Objects.requireNonNull(
+                            context.lookupHostSymbol(className),
+                            "allowlisted host symbol unavailable: " + className);
+                    resolved = value;
+                }
+                return value;
+            }
+        }
+    }
     private record HostObjectFacade(Object value) {
         @Override public String toString() { return String.valueOf(value); }
     }
