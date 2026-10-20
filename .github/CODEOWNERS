@@ -9,6 +9,9 @@
 /docs/security/CI_PRIVATE_SOURCE_MIRRORING.md @ORESoftware
 /scripts/publish-private-ci-source.py @ORESoftware
 /scripts/test-publish-private-ci-source.py @ORESoftware
+/scripts/private_ci_v3_contract.py @ORESoftware
+/tests/test_private_ci_v3_contract.py @ORESoftware
+/docs/security/PRIVATE_CI_V3_CONTRACT.md @ORESoftware
 # Critical build and CI control plane. Broad ownership complements the
 # security-specific entries above; enforcement still requires repository policy.
 /.github/workflows/ @ORESoftware
