@@ -38,6 +38,16 @@ class OresPropertyKeyLayoutTest {
         assertEquals(2, OresPropertyLayout.declared(List.of(process, stable)).size());
     }
 
+    @Test void stringKeysKeepTheirExactSpellingButRejectMalformedUnicode() {
+        var decomposed = OresPropertyKey.string("cafe\u0301");
+        var composed = OresPropertyKey.string("caf\u00e9");
+        assertNotEquals(decomposed, composed);
+        assertEquals(2, OresPropertyLayout.canonical(List.of(decomposed, composed)).size());
+        assertThrows(IllegalArgumentException.class, () -> OresPropertyKey.string("\ud800"));
+        assertThrows(IllegalArgumentException.class, () -> OresPropertyKey.string("\udc00"));
+        assertThrows(IllegalArgumentException.class, () -> OresPropertyKey.string("\ud800A"));
+    }
+
     @Test void canonicalLayoutIsDeterministicAcrossInputOrders() {
         var a = OresPropertyKey.string("z");
         var b = OresPropertyKey.string("a");
