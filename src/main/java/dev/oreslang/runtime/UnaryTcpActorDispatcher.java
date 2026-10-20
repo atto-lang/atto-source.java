@@ -217,7 +217,7 @@ final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher
                         codec.encode(value),
                         "unary TCP result codec returned null");
                 completion.completeFromRuntime(
-                        UnaryTcpSessionAdapter.Reply.success(bytes));
+                        UnaryTcpSessionAdapter.Reply.successFresh(bytes));
             } catch (Error fatal) {
                 completion.failFromRuntime(fatal);
                 throw fatal;
