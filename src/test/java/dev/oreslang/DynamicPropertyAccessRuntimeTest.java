@@ -568,4 +568,46 @@ final class DynamicPropertyAccessRuntimeTest {
                 "2\n",
                 output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
     }
+
+    @Test
+    void structuralInterfaceDynamicAccessNarrowsStructAndRecordValues() {
+        String source = """
+                define interface PointLike
+                    x: int;
+                    y: int;
+                end
+
+                fnc read(structural PointLike value, string key): int {
+                    return value[key];
+                }
+
+                pub fnc main(): void {
+                    val point = infer struct{x: 1, y: 2, z: 3};
+                    const row = record{x: 4, y: 5, z: 6};
+                    stdio.println(read(point, "y"));
+                    stdio.println(read(row, "x"));
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(OresLanguage.ID, source, "dynamic-structural-data-domain.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(output)
+                    .build()) {
+                context.eval(program);
+            }
+        });
+
+        assertEquals(
+                "2\n4\n",
+                output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
+    }
 }
