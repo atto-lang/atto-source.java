@@ -633,8 +633,8 @@ public final class ModelGraphCompiler {
         if (value instanceof Double number && !Double.isFinite(number)) {
             fail("MODEL_NONFINITE_CONST", where + " cannot be NaN or Infinity");
         }
-        if (value instanceof String text && text.length() > 256) {
-            fail("MODEL_INVALID_CONST", where + " string exceeds 256 UTF-16 code units");
+        if (value instanceof String text) {
+            canonicalUtf8(text, where + " string");
         }
         if (!(value instanceof Long || value instanceof Double
                 || value instanceof Boolean || value instanceof String
@@ -787,14 +787,38 @@ public final class ModelGraphCompiler {
         }
         if (value instanceof Boolean bool) return "bool:" + bool;
         if (value instanceof String text) {
-            return "string:" + text.length() + ":" + text;
+            byte[] utf8 = canonicalUtf8(text, "model string constant");
+            return "string:utf8:" + HexFormat.of().formatHex(utf8);
         }
         if (value instanceof dev.oreslang.runtime.OresSymbol symbol) {
             String text = String.valueOf(symbol);
-            return "symbol:" + text.length() + ":" + text;
+            byte[] utf8 = canonicalUtf8(text, "model symbol constant");
+            return "symbol:utf8:" + HexFormat.of().formatHex(utf8);
         }
         fail("MODEL_INVALID_CONST", "unsupported model constant");
         throw new AssertionError();
+    }
+
+    private static byte[] canonicalUtf8(String text, String where) {
+        if (text.indexOf('\0') >= 0) {
+            fail("MODEL_INVALID_CONST", where + " cannot contain NUL");
+        }
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (Character.isHighSurrogate(ch)) {
+                if (i + 1 >= text.length() || !Character.isLowSurrogate(text.charAt(i + 1))) {
+                    fail("MODEL_INVALID_CONST", where + " contains an unpaired UTF-16 surrogate");
+                }
+                i++;
+            } else if (Character.isLowSurrogate(ch)) {
+                fail("MODEL_INVALID_CONST", where + " contains an unpaired UTF-16 surrogate");
+            }
+        }
+        byte[] utf8 = text.getBytes(StandardCharsets.UTF_8);
+        if (utf8.length > 256) {
+            fail("MODEL_INVALID_CONST", where + " exceeds 256 UTF-8 bytes");
+        }
+        return utf8;
     }
 
     private static String sha256(String value) {
