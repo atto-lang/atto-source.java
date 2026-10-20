@@ -68,7 +68,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with (
             patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"),
             patch.dict(pub.os.environ, hostile, clear=True),
-            patch.object(pub.subprocess, "run", return_value=response) as run,
+            patch.object(pub, "run_bounded_gh", return_value=response) as run,
         ):
             self.assertTrue(pub.gh_api("repos/trusted/ci")["ok"])
         argv = run.call_args.args[0]
@@ -88,7 +88,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with (
             patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"),
             patch.dict(pub.os.environ, {"GH_TOKEN": "fixture"}, clear=True),
-            patch.object(pub.subprocess, "run", return_value=response),
+            patch.object(pub, "run_bounded_gh", return_value=response),
         ):
             with self.assertRaises(pub.GitHubWriteRejected):
                 pub.gh_api(
@@ -116,7 +116,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             for message in ambiguous:
                 with self.subTest(message=message):
                     response = Mock(returncode=1, stdout="", stderr=message)
-                    with patch.object(pub.subprocess, "run", return_value=response):
+                    with patch.object(pub, "run_bounded_gh", return_value=response):
                         with self.assertRaisesRegex(pub.Denied, "request failed") as raised:
                             pub.gh_api(
                                 "repos/trusted/ci/git/refs", method="POST",
@@ -143,7 +143,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         ):
             for response in responses:
                 with self.subTest(stdout=response.stdout, stderr=response.stderr):
-                    with patch.object(pub.subprocess, "run", return_value=response):
+                    with patch.object(pub, "run_bounded_gh", return_value=response):
                         with self.assertRaisesRegex(pub.Denied, "exceeds size limit") as raised:
                             pub.gh_api(
                                 "repos/trusted/ci/git/refs", method="POST",
@@ -159,7 +159,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             for env in ({}, {"GH_TOKEN": "a", "GITHUB_TOKEN": "b"}):
                 with self.subTest(env=env):
                     with patch.dict(pub.os.environ, env, clear=True):
-                        with patch.object(pub.subprocess, "run") as run:
+                        with patch.object(pub, "run_bounded_gh") as run:
                             with self.assertRaisesRegex(pub.Denied, "exactly one"):
                                 pub.gh_api("repos/trusted/ci")
                             run.assert_not_called()
@@ -180,7 +180,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             for payload in payloads:
                 with self.subTest(payload=payload):
                     response = Mock(returncode=0, stdout=payload, stderr="")
-                    with patch.object(pub.subprocess, "run", return_value=response):
+                    with patch.object(pub, "run_bounded_gh", return_value=response):
                         with self.assertRaises(pub.Denied):
                             pub.gh_api("repos/trusted/ci")
 
@@ -196,7 +196,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with (
             patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"),
             patch.dict(pub.os.environ, {"GH_TOKEN": "fixture"}, clear=True),
-            patch.object(pub.subprocess, "run", return_value=response),
+            patch.object(pub, "run_bounded_gh", return_value=response),
         ):
             reviews = pub.gh_api(route)["reviews"]
             self.assertEqual(reviews[0]["id"], 1)
@@ -211,7 +211,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 "private": True,
             }),
             patch.object(
-                pub.subprocess, "run",
+                pub, "run_bounded_gh",
                 side_effect=AssertionError("preflight executed checkout code"),
             ),
         ):
