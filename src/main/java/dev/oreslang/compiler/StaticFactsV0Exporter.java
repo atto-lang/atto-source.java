@@ -55,6 +55,7 @@ public final class StaticFactsV0Exporter {
         private final Set<String> functionNames = new HashSet<>();
         private int totalLoops;
         private int traversalDepth;
+        private int loopNesting;
 
         Exporter(String source, Ast.Program checked) {
             this.source = source;
@@ -172,16 +173,31 @@ public final class StaticFactsV0Exporter {
                         if (loop.initializer() != null) {
                             visitStatements(List.of(loop.initializer()), caller, loops);
                         }
-                        visitExpr(loop.condition(), caller);
-                        visitExpr(loop.update(), caller);
-                        visitStatements(loop.body(), caller, loops);
+                        loopNesting++;
+                        try {
+                            visitExpr(loop.condition(), caller);
+                            visitExpr(loop.update(), caller);
+                            visitStatements(loop.body(), caller, loops);
+                        } finally {
+                            loopNesting--;
+                        }
                     } else if (stmt instanceof Ast.DoWhileStmt loop) {
                         addLoop(loops);
-                        visitStatements(loop.body(), caller, loops);
-                        visitExpr(loop.condition(), caller);
+                        loopNesting++;
+                        try {
+                            visitStatements(loop.body(), caller, loops);
+                            visitExpr(loop.condition(), caller);
+                        } finally {
+                            loopNesting--;
+                        }
                     } else if (stmt instanceof Ast.LoopStmt loop) {
                         addLoop(loops);
-                        visitStatements(loop.body(), caller, loops);
+                        loopNesting++;
+                        try {
+                            visitStatements(loop.body(), caller, loops);
+                        } finally {
+                            loopNesting--;
+                        }
                     } else if (!(stmt instanceof Ast.BreakStmt || stmt instanceof Ast.ContinueStmt)) {
                         throw unsupported("statement " + stmt.getClass().getSimpleName());
                     }
@@ -225,6 +241,9 @@ public final class StaticFactsV0Exporter {
                     visitExpr(conditional.whenTrue(), caller);
                     visitExpr(conditional.whenFalse(), caller);
                 } else if (expr instanceof Ast.CallExpr call) {
+                    if (loopNesting > 0) {
+                        throw unsupported("loop-associated calls require enclosing-loop effect facts");
+                    }
                     if (!(call.callee() instanceof Ast.NameExpr target) || call.typeArgumentsPresent()) {
                         throw unsupported("indirect, member or generic call");
                     }
