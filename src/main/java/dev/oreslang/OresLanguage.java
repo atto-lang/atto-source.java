@@ -93,6 +93,11 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         java.util.Objects.requireNonNull(codeUnitId, "code unit id");
         java.util.Objects.requireNonNull(sourceText, "source text");
         java.util.Objects.requireNonNull(checkedProgram, "prechecked program proof");
+        if (!java.util.Objects.equals(checkedProgram.codeUnitId(), codeUnitId)
+                || !checkedProgram.sourceText().equals(sourceText)) {
+            throw new IllegalArgumentException(
+                    "prechecked program proof does not bind requested source identity/content");
+        }
         if (codeUnitId.isBlank()) {
             throw new IllegalArgumentException("prechecked code unit id cannot be blank");
         }
