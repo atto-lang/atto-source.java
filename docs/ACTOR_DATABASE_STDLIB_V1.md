@@ -87,6 +87,19 @@ snapshot, and command/outbox-based durable-before-reply. Cache replicas and
 supervisor mirrors are not independent concurrent writers unless an explicit
 merge/conflict contract is supplied.
 
+## Non-durable supervisor and cache mirrors
+
+`actor_persistence.ReplicaCursor` records the last applied *replica*
+revision, not the durable database watermark. A complete immutable snapshot
+can advance the version across skipped revisions; a delta is accepted only if
+its revision is exactly the successor to the replica's current version.
+Mismatched actor generations, replayed messages and delta gaps are rejected
+without modifying progress. A new generation requires a newly authenticated
+replica cursor. This class only checks ordering metadata: the receiver must
+authenticate the sender/actor identity, verify payload integrity, and apply
+the state update atomically with the watermark. Never use replica progress
+to acknowledge durable PostgreSQL writes.
+
 ## Missing implementation and acceptance gates
 
 - Introduce an opaque generational resource table for TCP/TLS connections.
