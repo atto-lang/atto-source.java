@@ -210,4 +210,79 @@ final class CallbackOrderingAnalyzerTest {
         assertTrue(containsRule(result, "ORES-CB-006"),
                 "retained registration remains syntactic, not a proven lease");
     }
+
+    @Test
+    void onceSubscriptionConsumedBeforeCallbackPublicationIsNotReady() {
+        var result = scan("""
+                pub fnc foo(Callback cb): void {
+                    let randie = bar();
+                    randie.once("done", cb);
+                    randie.emit("done", true);
+                    doMore(|| -> { randie.emit("done", true); });
+                    randie.on("done", cb);
+                }
+                """);
+        assertTrue(containsRule(result, "ORES-CB-002"),
+                "a consumed once listener must not satisfy future callback publication");
+    }
+
+    @Test
+    void potentialInlineCallbackConsumesOneShotReadinessConservatively() {
+        var result = scan("""
+                pub fnc foo(Callback cb): void {
+                    let randie = bar();
+                    randie.once("done", cb);
+                    doMore(|| -> { randie.emit("done", true); });
+                    doMore(|| -> { randie.emit("done", true); });
+                    randie.on("done", cb);
+                }
+                """);
+        assertTrue(containsRule(result, "ORES-CB-002"),
+                "first unknown-timing callback may consume a one-shot listener");
+    }
+
+    @Test
+    void durableListenerSurvivesOneShotEmission() {
+        var result = scan("""
+                pub fnc foo(Callback cb): void {
+                    let randie = bar();
+                    randie.on("done", cb);
+                    randie.once("done", cb);
+                    randie.emit("done", true);
+                    doMore(|| -> { randie.emit("done", true); });
+                }
+                """);
+        assertFalse(containsRule(result, "ORES-CB-002"), result.toString());
+        assertTrue(containsRule(result, "ORES-CB-006"),
+                "source-level durable subscription still lacks a verified installation lease");
+    }
+
+    @Test
+    void onceUnknownEventConsumesMatchingKnownEvent() {
+        var result = scan("""
+                pub fnc foo(Callback cb, string evt): void {
+                    let randie = bar();
+                    randie.once("done", cb);
+                    randie.emit(evt, true);
+                    doMore(|| -> { randie.emit("done", true); });
+                    randie.on("done", cb);
+                }
+                """);
+        assertTrue(containsRule(result, "ORES-CB-002"),
+                "dynamic emit may match and consume once registration");
+    }
+
+    @Test
+    void onceDetachedBeforePublicationIsNotReady() {
+        var result = scan("""
+                pub fnc foo(Callback cb): void {
+                    let randie = bar();
+                    randie.once("done", cb);
+                    randie.off("done", cb);
+                    doMore(|| -> { randie.emit("done", true); });
+                    randie.on("done", cb);
+                }
+                """);
+        assertTrue(containsRule(result, "ORES-CB-002"), result.toString());
+    }
 }
