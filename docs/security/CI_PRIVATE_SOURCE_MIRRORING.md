@@ -108,7 +108,11 @@ plus the exact `private-oreslang-source` subtree, and requires that reconstructe
 root to equal `HEAD^{tree}`. This prevents a matching source subtree on an
 unreviewed carrier from producing acceptable evidence.
 
-Carrier contract run `39348566012` also passed the source-free adversarial sandbox contract on the reviewed carrier commit, including masked mount roots, cleared token environment, network isolation, dropped capabilities, and host-write denial.
+Carrier contract run `39356916621` passed the reconciled carrier tree
+`a149a45a540db82b19f202ef697c099767e96db9`, including shell syntax,
+detached/connector authorization adversarial tests, and the source-free sandbox
+contract. Historical run `39348566012` remains evidence for the earlier
+`c5f51552...` carrier generation only.
 
 The carrier treats the mirrored source and every source-owned build/test
 program as untrusted. For a real private source run it first requires the
@@ -133,20 +137,22 @@ canary bound to both a fixed fake source commit and the fixed synthetic canary
 tree; that fixture also asserts that GitHub/ACTIONS credential variables are
 absent, runner-private paths are hidden, and outbound TCP is unavailable.
 
-Source-free provenance run `39328694706` validates the pinned carrier:
-exact-tree and concurrency, JDK 25/GraalVM verification, Native Image
-AOT/hybrid, and the approval-bound inline cleanup job all completed
-successfully. Its commit declared the actual reviewed carrier parent/tree, and
-all three source-executing jobs independently accepted that provenance before
-compiler work. Cleanup deleted the exact tested ref, which was independently
-verified absent afterward.
+Source-free exact-parent provenance run `39357167006` validates the pinned
+carrier commit `cd99139738c4a94b226c10b18b92adafb650eda0` directly. Canary
+commit `089716e3b14519ea26999e537d15a39b97e542e7` declared that carrier as its
+single parent and embedded synthetic source tree
+`4df1d1da1195070b797553eb2db50d59a0102718`. Precheckout authorization,
+carrier verification, exact-tree/concurrency, the computed-access gate, full
+Maven JDK 25/GraalVM verification, Native Image AOT, hybrid execution, and
+inline cleanup all completed successfully. After cleanup, both
+`ci/oreslang-canary-cd991397` and
+`ci/authorized-089716e3b14519ea26999e537d15a39b97e542e7` independently
+returned GitHub HTTP 404.
 
-Negative source-free run `39328782255` used the same synthetic source tree
-but deliberately declared the previous carrier base. All three source-executing
-jobs rejected it at the provenance gate before compiler work; the cleanup job
-still succeeded, and that test ref was also independently verified absent.
-These runs are containment/harness evidence only, not evidence that private
-Oreslang source passed compiler tests.
+Runs `39328694706`, `39329301744`, and negative run `39328782255` are
+historical evidence for earlier carrier generations only. These source-free
+runs are containment/harness evidence, not evidence that private Oreslang source
+passed compiler tests.
 
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
 per file, requires the source directory to remain **inside the trusted
