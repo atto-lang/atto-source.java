@@ -53,6 +53,64 @@ final class FirstClassModelGraphTest {
     }
 
     @Test
+    void vendoredSharedCorpusDrivesJavaAdmissionAndDiagnostics() throws Exception {
+        SharedCorpus corpus = sharedCorpus();
+        assertEquals(SHARED_EXECUTABLE_CORPUS_REVISION, corpus.revision());
+        assertEquals(ModelGraphCompiler.PORTABLE_PROFILE_I64_V1, corpus.profile());
+        assertTrue(corpus.cases().size() >= 15);
+
+        for (SharedCase item : corpus.cases()) {
+            if (item.javaMode().equals("reject")) {
+                assertThrowsMessage(item.diagnostic(), () ->
+                        ModelGraphCompiler.compile(
+                                OresCompiler.parseAndTypeCheck(item.source())));
+                continue;
+            }
+
+            ModelGraphCompiler.Catalog catalog =
+                    ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(item.source()));
+            assertFalse(catalog.isEmpty(), item.id());
+            ModelGraphCompiler.CompiledModel model = catalog.models().getFirst();
+            assertTrue(model.supportsPortableProfile(ModelGraphCompiler.PORTABLE_PROFILE_I64_V1),
+                    item.id());
+            if (item.graphDigest() != null) {
+                assertEquals(item.graphDigest(), model.graphDigest(), item.id());
+            }
+            if (item.configuredDigest() != null) {
+                assertEquals(item.configuredDigest(),
+                        model.configuredGraphDigest(model.bindConfiguration(java.util.List.of())),
+                        item.id());
+            }
+        }
+    }
+
+    @Test
+    void vendoredSharedIdentityCasesDriveJavaGraphIdentity() throws Exception {
+        SharedCorpus corpus = sharedCorpus();
+        for (SharedIdentity item : corpus.identities()) {
+            ModelGraphCompiler.CompiledModel baseline =
+                    ModelGraphCompiler.compile(
+                            OresCompiler.parseAndTypeCheck(item.baselineSource()))
+                            .models().getFirst();
+            ModelGraphCompiler.CompiledModel variant =
+                    ModelGraphCompiler.compile(
+                            OresCompiler.parseAndTypeCheck(item.variantSource()))
+                            .models().getFirst();
+            if (item.expectSame()) {
+                assertEquals(baseline.graphDigest(), variant.graphDigest(), item.id());
+                if (item.expectedGraphDigest() != null) {
+                    assertEquals(item.expectedGraphDigest(), baseline.graphDigest(), item.id());
+                }
+            } else {
+                assertNotEquals(baseline.graphDigest(), variant.graphDigest(), item.id());
+                if (item.variantGraphDigest() != null) {
+                    assertEquals(item.variantGraphDigest(), variant.graphDigest(), item.id());
+                }
+            }
+        }
+    }
+
+    @Test
     void parserKeepsModelContextualAndBuildsDedicatedAst() {
         Ast.Program program = Parser.parse(PRICE_MODEL + """
                 fnc model(int value): int {
@@ -738,6 +796,90 @@ final class FirstClassModelGraphTest {
         assertTrue(result.rebuilt("pricing.ores"));
         assertTrue(result.rebuilt("consumer.ores"),
                 "a public model graph semantic change must invalidate importers even when operation signatures are unchanged");
+    }
+
+    private record SharedCase(
+            String id,
+            String expect,
+            String javaMode,
+            String llvmMode,
+            String diagnostic,
+            String llvmDiagnostic,
+            String graphDigest,
+            String configuredDigest,
+            String semanticResult,
+            String source) { }
+
+    private record SharedIdentity(
+            String id,
+            boolean expectSame,
+            String expectedGraphDigest,
+            String variantOperationDigest,
+            String variantGraphDigest,
+            String baselineSource,
+            String variantSource) { }
+
+    private record SharedCorpus(
+            String revision,
+            String profile,
+            java.util.List<SharedCase> cases,
+            java.util.List<SharedIdentity> identities) { }
+
+    private static SharedCorpus sharedCorpus() throws Exception {
+        try (var stream = FirstClassModelGraphTest.class.getResourceAsStream(
+                "/model-executable-v1-conformance.cases")) {
+            assertNotNull(stream, "vendored shared executable corpus");
+            String text = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+            String revision = null;
+            String profile = null;
+            java.util.ArrayList<SharedCase> cases = new java.util.ArrayList<>();
+            java.util.ArrayList<SharedIdentity> identities = new java.util.ArrayList<>();
+            String[] lines = text.split("\\R");
+            assertEquals("ORESLANG_MODEL_EXECUTABLE_CASES_V1", lines[0]);
+            for (int i = 1; i < lines.length; i++) {
+                if (lines[i].isEmpty()) continue;
+                String[] parts = lines[i].split("\\|", -1);
+                switch (parts[0]) {
+                    case "revision" -> revision = parts[1];
+                    case "profile" -> profile = parts[1];
+                    case "case" -> {
+                        assertEquals(11, parts.length, lines[i]);
+                        cases.add(new SharedCase(
+                                parts[1], parts[2], parts[3], parts[4],
+                                dashNull(parts[5]), dashNull(parts[6]),
+                                dashNull(parts[7]), dashNull(parts[8]),
+                                dashNull(parts[9]), decodeHexAscii(parts[10])));
+                    }
+                    case "identity" -> {
+                        assertEquals(8, parts.length, lines[i]);
+                        identities.add(new SharedIdentity(
+                                parts[1], Boolean.parseBoolean(parts[2]),
+                                dashNull(parts[3]), dashNull(parts[4]),
+                                dashNull(parts[5]), decodeHexAscii(parts[6]),
+                                decodeHexAscii(parts[7])));
+                    }
+                    default -> fail("unknown shared corpus record: " + parts[0]);
+                }
+            }
+            assertNotNull(revision);
+            assertNotNull(profile);
+            return new SharedCorpus(
+                    revision, profile, java.util.List.copyOf(cases),
+                    java.util.List.copyOf(identities));
+        }
+    }
+
+    private static String dashNull(String value) {
+        return value.equals("-") ? null : value;
+    }
+
+    private static String decodeHexAscii(String hex) {
+        if ((hex.length() & 1) != 0) fail("odd shared corpus hex length");
+        byte[] bytes = new byte[hex.length() / 2];
+        for (int i = 0; i < bytes.length; i++) {
+            bytes[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+        }
+        return new String(bytes, StandardCharsets.US_ASCII);
     }
 
     private static void assertThrowsMessage(String expected, org.junit.jupiter.api.function.Executable executable) {
