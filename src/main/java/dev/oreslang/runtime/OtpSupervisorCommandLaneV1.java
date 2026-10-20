@@ -87,6 +87,17 @@ final class OtpSupervisorCommandLaneV1 {
     private long quarantined;
     private boolean sealed;
 
+    // Audit counters are observations, never authority. Saturate instead
+    // of silently wrapping into negative values after long service lifetimes.
+    private static long incrementMetric(long current) {
+        return current == Long.MAX_VALUE ? current : current + 1L;
+    }
+    private static long addMetric(long current, int increment) {
+        if (increment < 0) throw new IllegalArgumentException("negative metric");
+        return current > Long.MAX_VALUE - increment
+                ? Long.MAX_VALUE : current + increment;
+    }
+
     OtpSupervisorCommandLaneV1(int capacity) {
         if (capacity <= 0 || capacity > 1_000_000)
             throw new IllegalArgumentException("CONTROL command capacity must be 1..1000000");
@@ -104,11 +115,11 @@ final class OtpSupervisorCommandLaneV1 {
         Objects.requireNonNull(kind, "kind");
         if (sealed) throw new IllegalStateException("actor CONTROL command lane terminated");
         if (outstanding.containsKey(target)) {
-            duplicateTargetRejected++;
+            duplicateTargetRejected = incrementMetric(duplicateTargetRejected);
             throw new IllegalStateException("CONTROL command already outstanding for target incarnation");
         }
         if (outstanding.size() >= capacity) {
-            admissionRejected++;
+            admissionRejected = incrementMetric(admissionRejected);
             throw new RejectedExecutionException("supervisor command capacity exhausted");
         }
         // Check allocation/serialization before consuming a sequence or slot.
@@ -124,7 +135,7 @@ final class OtpSupervisorCommandLaneV1 {
         }
         slot.queued = true;
         nextSequence++;
-        sent++;
+        sent = incrementMetric(sent);
         return command;
     }
 
@@ -154,7 +165,7 @@ final class OtpSupervisorCommandLaneV1 {
         if (ack) {
             if (!outstanding.remove(slot.command.target(), slot))
                 throw new IllegalStateException("CONTROL missing target index");
-            acknowledged++;
+            acknowledged = incrementMetric(acknowledged);
         } else {
             // Retry does not consume a new credit or mint a new command ID.
             // Requeue at the back: a failing upgrade of actor A must not
@@ -162,7 +173,7 @@ final class OtpSupervisorCommandLaneV1 {
             // One outstanding per target preserves each actor's own order.
             queue.addLast(slot);
             slot.queued = true;
-            retried++;
+            retried = incrementMetric(retried);
         }
         lease.settled = true;
         slot.activeLease = null;
@@ -190,7 +201,7 @@ final class OtpSupervisorCommandLaneV1 {
         if (!outstanding.remove(target, slot))
             throw new IllegalStateException("CONTROL target missing on abort");
         slot.queued = false;
-        aborted++;
+        aborted = incrementMetric(aborted);
         return Optional.of(slot.command);
     }
 
@@ -214,7 +225,7 @@ final class OtpSupervisorCommandLaneV1 {
         queue.clear();
         outstanding.clear();
         inFlight = null;
-        quarantined += count;
+        quarantined = addMetric(quarantined, count);
         return count;
     }
 
