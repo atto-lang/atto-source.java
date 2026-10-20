@@ -85,8 +85,8 @@ final class InlineSelfReceiverArityTest {
                         {declarations[i], declarations[j]},
                         {declarations[j], declarations[i]}
                 }) {
-                    String program = "define class Foo as\\n"
-                            + order[0] + "\\n" + order[1] + "\\nend";
+                    String program = "define class Foo as\n"
+                            + order[0] + "\n" + order[1] + "\nend";
                     IllegalArgumentException error = assertThrows(
                             IllegalArgumentException.class,
                             () -> TypeChecker.check(Parser.parse(program)),
@@ -109,7 +109,7 @@ final class InlineSelfReceiverArityTest {
                 {"pub foo(self, self other): int { return 2; }",
                  "pub foo(self other): int { return 1; }"}
         }) {
-            Ast.Program first = Parser.parse("define class Foo as\\n" + order[0] + "\\nend");
+            Ast.Program first = Parser.parse("define class Foo as\n" + order[0] + "\nend");
             Ast.ClassDecl owner = (Ast.ClassDecl) first.modules().getFirst().declarations().getFirst();
             Ast.MethodDecl decl = owner.methods().getFirst();
             assertEquals(1, decl.arity());
@@ -117,8 +117,8 @@ final class InlineSelfReceiverArityTest {
             assertEquals("self", decl.parameters().getFirst().type().name());
 
             IllegalArgumentException duplicate = assertThrows(IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse("define class Foo as\\n"
-                            + order[0] + "\\n" + order[1] + "\\nend")));
+                    () -> TypeChecker.check(Parser.parse("define class Foo as\n"
+                            + order[0] + "\n" + order[1] + "\nend")));
             assertTrue(duplicate.getMessage().contains("already has arity 1"),
                     duplicate::getMessage);
         }
@@ -132,8 +132,8 @@ final class InlineSelfReceiverArityTest {
                 {"tick(self): void { return; }", "tick(mut self): void { return; }"}
         }) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse("define actor A as\\n"
-                            + order[0] + "\\n" + order[1] + "\\nend")));
+                    () -> TypeChecker.check(Parser.parse("define actor A as\n"
+                            + order[0] + "\n" + order[1] + "\nend")));
             assertTrue(error.getMessage().contains("already has arity 0"),
                     error::getMessage);
         }
