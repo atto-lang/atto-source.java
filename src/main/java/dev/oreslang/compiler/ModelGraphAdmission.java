@@ -2,6 +2,10 @@ package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -49,7 +53,7 @@ public final class ModelGraphAdmission {
 
     public record Node(int id, String op, String abi, String implDigest,
                        String provenance, List<String> config,
-                       Port input, Port output, boolean vjp) {
+                       Port input, Port output, long scratchBytes, boolean vjp) {
         public Node { config = List.copyOf(config); }
     }
     public record ModelGraph(String name, Port input, Port output,
@@ -124,7 +128,7 @@ public final class ModelGraphAdmission {
                 throw new IllegalArgumentException("MODEL_DUPLICATE_FORMAL");
             validDefault(formal);
             String d = formal.defaultValue() == null ? "none"
-                    : formal.defaultValue().kind().name() + ":" + formal.defaultValue().source();
+                    : formal.defaultValue().source();
             formalConfig.add(formal.name().length() + ":" + formal.name() + "|"
                     + formal.type().name().length() + ":" + formal.type().name() + "|" + d);
         }
@@ -157,9 +161,10 @@ public final class ModelGraphAdmission {
                     throw new IllegalArgumentException("MODEL_UNKNOWN_FORMAL");
                 String label = argument.label() == null ? "" : argument.label();
                 String value = argument.value().source();
+                String kind = argument.value().kind() == Ast.ModelValueKind.FORMAL
+                        ? "FORMAL" : "LITERAL";
                 config.add(label.length() + ":" + label + "|"
-                        + argument.value().kind().name() + "|"
-                        + value.length() + ":" + value);
+                        + kind + "|" + value.length() + ":" + value);
             }
             long outputBytes = bytes(signature.output());
             if (signature.input() != null) bytes(signature.input());
@@ -188,9 +193,75 @@ public final class ModelGraphAdmission {
                 throw new IllegalArgumentException("MODEL_MEMORY_BUDGET");
             nodes.add(new Node(nodes.size(), op.name(), signature.abi(),
                     signature.implDigest(), signature.provenance(), config,
-                    signature.input(), signature.output(), signature.vjp()));
+                    signature.input(), signature.output(), signature.scratchBytes(),
+                    signature.vjp()));
             prior = signature.output();
         }
         return new ModelGraph(source.name(), input, prior, formalConfig, nodes, used);
+    }
+
+    private static void field(ByteArrayOutputStream out, String value) {
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        out.writeBytes(Integer.toString(bytes.length).getBytes(StandardCharsets.US_ASCII));
+        out.write(':');
+        out.writeBytes(bytes);
+    }
+
+    private static void portDescriptor(ByteArrayOutputStream out, Port port) {
+        field(out, port == null ? "0" : "1");
+        if (port == null) return;
+        field(out, port.dtype());
+        field(out, Integer.toString(port.shape().size()));
+        for (long d : port.shape()) field(out, Long.toString(d));
+        field(out, port.unit());
+    }
+
+    /**
+     * Portable v1 descriptor. modelTypeId must be a compiler-owned nominal ID,
+     * not merely the unqualified declaration name.
+     */
+    public static byte[] canonicalDescriptor(ModelGraph graph, String modelTypeId) {
+        Objects.requireNonNull(graph);
+        Objects.requireNonNull(modelTypeId);
+        if (modelTypeId.isBlank()) throw new IllegalArgumentException("MODEL_INVALID_TYPE_ID");
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        field(out, "ores-model-descriptor-v1");
+        field(out, modelTypeId);
+        field(out, graph.name());
+        field(out, Integer.toString(graph.formalConfig().size()));
+        for (String formal : graph.formalConfig()) field(out, formal);
+        field(out, Integer.toString(graph.nodes().size()));
+        for (Node node : graph.nodes()) {
+            field(out, Integer.toString(node.id()));
+            field(out, node.op());
+            field(out, node.abi());
+            field(out, node.implDigest());
+            field(out, node.provenance());
+            field(out, Integer.toString(node.config().size()));
+            for (String config : node.config()) field(out, config);
+            portDescriptor(out, node.input());
+            portDescriptor(out, node.output());
+            field(out, Long.toString(node.scratchBytes()));
+            field(out, node.vjp() ? "1" : "0");
+        }
+        field(out, Long.toString(graph.upperBoundBytes()));
+        return out.toByteArray();
+    }
+
+    public static String graphDigest(ModelGraph graph, String modelTypeId) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(canonicalDescriptor(graph, modelTypeId));
+            char[] hex = new char[digest.length * 2];
+            final char[] alphabet = "0123456789abcdef".toCharArray();
+            for (int i = 0; i < digest.length; i++) {
+                int b = digest[i] & 0xff;
+                hex[i * 2] = alphabet[b >>> 4];
+                hex[i * 2 + 1] = alphabet[b & 0x0f];
+            }
+            return new String(hex);
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 unavailable", impossible);
+        }
     }
 }
