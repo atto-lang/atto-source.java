@@ -54,6 +54,9 @@ final class SealedActorMlScalarPublicationTest {
                             () -> snapshot.version());
                     assertThrows(SecurityException.class,
                             () -> snapshot.revision());
+                    assertThrows(SecurityException.class,
+                            () -> snapshot.preparePublication(
+                                    Map.of("version", 2L, "weight", 4L)));
                 } catch (Throwable thrown) {
                     failure.compareAndSet(null, thrown);
                 } finally {
@@ -67,10 +70,21 @@ final class SealedActorMlScalarPublicationTest {
             assertNotNull(snapshot);
             assertThrows(SecurityException.class, () -> snapshot.scalar("weight"),
                     "host thread must not inspect actor snapshot");
+            assertThrows(SecurityException.class,
+                    () -> snapshot.preparePublication(
+                            Map.of("version", 2L, "weight", 4L)),
+                    "host thread must not prepare actor publication");
             foreign.send(1);
             assertTrue(foreignChecked.await(5, TimeUnit.SECONDS));
             owner.send(2);
             assertTrue(retired.await(5, TimeUnit.SECONDS));
+            assertThrows(IllegalStateException.class,
+                    () -> snapshot.scalar("weight"),
+                    "retired snapshots must remain permanently revoked");
+            assertThrows(IllegalStateException.class,
+                    () -> snapshot.preparePublication(
+                            Map.of("version", 2L, "weight", 4L)),
+                    "retired snapshots must never mint publications");
             if (failure.get() != null) fail(failure.get());
         }
     }
