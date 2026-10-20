@@ -587,8 +587,20 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
             raise Denied("carrier did not confirm exact-tree CI branch creation")
         require_exact_ref(repository, branch, commit_sha)
 
-        # Revalidate the exact open PR head after payload-ref creation and
-        # immediately before making the carrier executable.
+        # The payload ref is inert without the authorization ref. Re-run every
+        # mutable governance check in that safe window so protection, policy,
+        # contract or carrier-base drift cannot be authorized.
+        legacy.verify_protected_origin(repository, approved_policy)
+        if protected_main_sha() != protected_sha:
+            raise Denied("source protected main advanced before authorization")
+        checked_contract(
+            trusted_root, repository, source_pr,
+            contract["test_plan_path"], protected_sha
+        )
+        checked_destination(repository, contract)
+
+        # Revalidate the exact open PR head last, immediately before making the
+        # carrier executable.
         if verify_source_pr(source_pr, source_commit) != source_repo_id:
             raise Denied("source repository identity changed before authorization")
 
