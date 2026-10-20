@@ -2891,10 +2891,7 @@ public final class TypeChecker {
                 Type key = entry.arguments().get(0);
                 Type value = entry.arguments().get(1);
                 requireMapKeyType(key, "Map.from_entries key");
-                if (value == Primitive.VOID) {
-                    throw new IllegalArgumentException(
-                            "Map.from_entries cannot construct Map<K,void>");
-                }
+                requireMapValueType(value, "Map.from_entries value");
                 Type map = new Named("$builtin$Map", List.of(key, value));
                 Type duplicate = new Named("DuplicateKey", List.of(key));
                 return new Named("Result", List.of(map, duplicate));
@@ -6650,6 +6647,49 @@ public final class TypeChecker {
                 where + " requires int, String, or Symbol key type; got " + key);
     }
 
+    private void requireMapValueType(Type value, String where) {
+        if (!isMapV1CopyValue(value, new LinkedHashSet<>())) {
+            throw new IllegalArgumentException(
+                    where + " requires recursively copy-safe data in typed Map v1; got " + value);
+        }
+    }
+
+    private boolean isMapV1CopyValue(Type value, Set<Type> seen) {
+        value = deref(value);
+        if (!seen.add(value)) return true;
+        try {
+            if (value instanceof Primitive primitive) return primitive != Primitive.VOID;
+            if (value instanceof StringLiteral || value instanceof BoolLiteral) return true;
+            if (value instanceof Tuple tuple) {
+                return tuple.elements().stream().allMatch(
+                        element -> isMapV1CopyValue(element, seen));
+            }
+            if (value instanceof Union union) {
+                return union.options().stream().allMatch(
+                        option -> isMapV1CopyValue(option, seen));
+            }
+            if (!(value instanceof Named named)) return false;
+            if (named.name().equals("$builtin$Symbol")) return named.arguments().isEmpty();
+            if (named.name().equals("Entry") && named.arguments().size() == 2) {
+                return isMapV1CopyValue(named.arguments().get(0), seen)
+                        && isMapV1CopyValue(named.arguments().get(1), seen);
+            }
+            if (named.name().equals("Option") && named.arguments().size() == 1) {
+                return isMapV1CopyValue(named.arguments().getFirst(), seen);
+            }
+            if (named.name().equals("Result") && named.arguments().size() == 2) {
+                return isMapV1CopyValue(named.arguments().get(0), seen)
+                        && isMapV1CopyValue(named.arguments().get(1), seen);
+            }
+            if (named.name().equals("DuplicateKey") && named.arguments().size() == 1) {
+                return isMapV1CopyValue(named.arguments().getFirst(), seen);
+            }
+            return false;
+        } finally {
+            seen.remove(value);
+        }
+    }
+
     private Named entryProductType(Type key, Type value) {
         return new Named(
                 "Entry",
@@ -8725,9 +8765,7 @@ public final class TypeChecker {
                 Type key = resolve(ref.arguments().get(0), generics, self, allowNullMarker);
                 Type value = resolve(ref.arguments().get(1), generics, self, allowNullMarker);
                 requireMapKeyType(key, "Map<K,V>");
-                if (value == Primitive.VOID) {
-                    throw new IllegalArgumentException("Map<K,void> is invalid");
-                }
+                requireMapValueType(value, "Map<K,V>");
                 yield new Named("$builtin$Map", List.of(key, value));
             }
             case "DuplicateKey" -> {
