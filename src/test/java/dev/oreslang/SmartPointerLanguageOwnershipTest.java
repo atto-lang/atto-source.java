@@ -94,7 +94,7 @@ final class SmartPointerLanguageOwnershipTest {
                 define class Box<T> as
                   pub val T value;
 
-                  static fnc new(T value): Box<T> {
+                  static new(T value): Box<T> {
                     return new Box<T>(value);
                   }
 
