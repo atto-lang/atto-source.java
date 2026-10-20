@@ -158,6 +158,47 @@ final class FirstClassModelGraphTest {
     }
 
     @Test
+    void signedI64MinimumHasCanonicalCrossBackendIdentity() throws Exception {
+        String source = """
+                fnc Identity(int input): int {
+                  return input;
+                }
+
+                fnc AddDelta(int delta, int input): int {
+                  return input + delta;
+                }
+
+                pub define model LimitAdjust(delta: int = -9223372036854775808) as
+                  Identity()
+                  AddDelta(delta)
+                end
+                """;
+
+        ModelGraphCompiler.CompiledModel model =
+                ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(source))
+                        .find("LimitAdjust");
+        assertNotNull(model);
+        // This model name intentionally differs from the PriceAdjust shared
+        // golden, so verify endpoint acceptance/execution here; the canonical
+        // endpoint bytes are also covered by configured digest determinism.
+        Map<String, Object> configuration = model.bindConfiguration(java.util.List.of());
+        assertEquals(Long.MIN_VALUE, configuration.get("delta"));
+        assertEquals(
+                model.configuredGraphDigest(configuration),
+                ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(source))
+                        .find("LimitAdjust")
+                        .configuredGraphDigest(configuration));
+
+        String output = run(source + """
+                pub routine main(): void {
+                  stdio.stdout.write(LimitAdjust().run(0));
+                  return;
+                }
+                """);
+        assertEquals("-9223372036854775808", output);
+    }
+
+    @Test
     void negativeLiteralStaticArgumentsAreAdmittedButExpressionsRemainClosed() throws Exception {
         String output = run("""
                 fnc AddDelta(int delta, int input): int {
