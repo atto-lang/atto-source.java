@@ -85,6 +85,9 @@ final class ModelDeclarationParserSliceTest {
 
     @Test
     void rejectsMalformedDeclarationsAndBudgets() {
+        invalid("define suspends model Wrong as Op() end", "MODEL_EFFECTFUL_BODY");
+        invalid("define trap model Wrong as Op() end", "MODEL_EFFECTFUL_BODY");
+        invalid("define async model Wrong as Op() end", "models accept only");
         invalid("define model Empty as end", "MODEL_EMPTY_BODY");
         invalid("define model M(x: int, x: int) as Dense(x) end", "MODEL_DUPLICATE_FORMAL");
         invalid("define model M(x: int = foo) as Dense(x) end", "MODEL_DYNAMIC_ARGUMENT");
