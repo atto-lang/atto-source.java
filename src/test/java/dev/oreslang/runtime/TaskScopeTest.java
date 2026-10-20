@@ -74,6 +74,60 @@ public class TaskScopeTest {
         }
     }
 
+    @Test void loanRetirementHookWaitsForPhysicalTaskDone() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicInteger retired = new AtomicInteger();
+
+            TaskHandle<Integer> child = scope.startTask(resume -> {
+                entered.countDown();
+                awaitUninterruptibly(release);
+                return OresScheduler.done(7);
+            }, retired::incrementAndGet);
+
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertTrue(child.cancel("stop"));
+            assertEquals(0, retired.get(),
+                    "cancellation request must not retire scoped loans");
+            assertFalse(child.getDone().isDone(),
+                    "physical completion witness must stay pending while guest turn runs");
+
+            release.countDown();
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    child.getDone().get(3, TimeUnit.SECONDS));
+            assertEquals(1, retired.get(),
+                    "loan retirement hook must fire exactly once from getDone");
+
+            scope.seal();
+            assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
+            assertEquals(1, retired.get());
+        }
+    }
+
+    @Test void failedLoanRetirementHookPoisonsScopeAndKeepsJoinPending()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            IllegalStateException retirementFailure =
+                    new IllegalStateException("loan retirement failed");
+            TaskHandle<Integer> child = scope.startTask(
+                    resume -> OresScheduler.done(3),
+                    () -> { throw retirementFailure; });
+
+            assertEquals(new TaskHandle.Success<>(3),
+                    child.getDone().get(3, TimeUnit.SECONDS));
+            assertSame(retirementFailure, scope.retirementFailure());
+            assertTrue(scope.isCancellationRequested(),
+                    "poisoned scope must revoke sibling admission/execution authority");
+            assertThrows(RejectedExecutionException.class,
+                    () -> scope.startTask(resume -> OresScheduler.done(4)));
+            assertFalse(scope.getDone().isDone(),
+                    "scope must fail closed if trusted retirement cannot complete");
+        }
+    }
+
     @Test void scopeCancelCannotPretendRunningChildExited() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(2)) {
             TaskScope scope = scheduler.newTaskScope();
@@ -281,14 +335,48 @@ public class TaskScopeTest {
         }
     }
 
-    @Test void schedulerRejectionDoesNotLeakScopeJoinSlots() throws Exception {
+    @Test void schedulerRejectionRetiresNeverStartedLoanExactlyOnce()
+            throws Exception {
         OresScheduler scheduler = new OresScheduler(1);
         TaskScope scope = scheduler.newTaskScope();
+        AtomicInteger retired = new AtomicInteger();
         scheduler.close();
+
         assertThrows(RejectedExecutionException.class,
-                () -> scope.startTask(r -> OresScheduler.done(4)));
+                () -> scope.startTask(
+                        r -> OresScheduler.done(4),
+                        retired::incrementAndGet));
+
+        assertEquals(1, retired.get(),
+                "never-started child must retire its pre-admitted loan once");
+        assertNull(scope.retirementFailure());
         scope.seal();
         scope.getDone().get(3, TimeUnit.SECONDS);
+        assertEquals(1, retired.get());
+    }
+
+    @Test void failedNeverStartedLoanRetirementPoisonsScope()
+            throws Exception {
+        OresScheduler scheduler = new OresScheduler(1);
+        TaskScope scope = scheduler.newTaskScope();
+        IllegalStateException retirementFailure =
+                new IllegalStateException("never-started retirement failed");
+        scheduler.close();
+
+        RejectedExecutionException admission = assertThrows(
+                RejectedExecutionException.class,
+                () -> scope.startTask(
+                        r -> OresScheduler.done(4),
+                        () -> { throw retirementFailure; }));
+
+        assertSame(retirementFailure, scope.retirementFailure());
+        assertTrue(java.util.Arrays.asList(admission.getSuppressed())
+                .contains(retirementFailure));
+        assertTrue(scope.isCancellationRequested());
+        assertFalse(scope.getDone().isDone(),
+                "failed retirement must keep the reserved join slot live");
+        assertThrows(RejectedExecutionException.class,
+                () -> scope.startTask(r -> OresScheduler.done(5)));
     }
     @Test void alreadyTerminalChildNeverPublishesScopeDoneUnderAdmissionLock()
             throws Exception {
