@@ -126,6 +126,60 @@ final class ProcessGroupRegistryTest {
     }
 
     @Test
+    void actorCannotDeleteOrCloseRegistryAndCannotCrossRuntimeBoundary() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             ActorRuntime other = new ActorRuntime();
+             ProcessGroupRegistry pg = new ProcessGroupRegistry(runtime, 4)) {
+            ActorRuntime.ActorRef<Integer> member =
+                    runtime.spawnSharedTrusted(factory -> (message, context) -> { });
+            pg.join("local", "managed", member);
+
+            CountDownLatch localDone = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> localAttacker = runtime.spawnSharedTrusted(
+                    factory -> (message, context) -> {
+                        try {
+                            assertThrows(
+                                    SecurityException.class,
+                                    () -> pg.delete("local", "managed"));
+                            assertThrows(SecurityException.class, pg::close);
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            localDone.countDown();
+                        }
+                    });
+            localAttacker.send(1);
+            assertTrue(localDone.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertEquals(1, pg.memberCount("local", "managed"));
+
+            CountDownLatch remoteDone = new CountDownLatch(1);
+            ActorRuntime.ActorRef<Integer> remoteAttacker = other.spawnSharedTrusted(
+                    factory -> (message, context) -> {
+                        try {
+                            assertThrows(SecurityException.class, pg::groupCount);
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            remoteDone.countDown();
+                        }
+                    });
+            remoteAttacker.send(1);
+            assertTrue(remoteDone.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+
+            pg.delete("local", "managed");
+            member.stop();
+            localAttacker.stop();
+            remoteAttacker.stop();
+            assertTrue(member.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(localAttacker.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(remoteAttacker.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void actorCannotEnumerateGroupItDidNotJoin() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime();
              ProcessGroupRegistry pg = new ProcessGroupRegistry(runtime, 4)) {
