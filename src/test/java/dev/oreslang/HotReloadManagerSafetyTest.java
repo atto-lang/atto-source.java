@@ -237,4 +237,43 @@ final class HotReloadManagerSafetyTest {
         }
     }
 
+
+    @Test
+    void directCloseFailureUnpublishesRouteButRetainsCleanupRegistry()
+            throws Exception {
+        var manager =
+                new HotReloadManager(
+                        IsolatePolicy.developer(), PROFILE);
+        try {
+            var generation = manager.load("direct-close-retry.ores", GOOD);
+            var faultField =
+                    generation.getClass().getDeclaredField(
+                            "closeAfterSealFaultForTesting");
+            faultField.setAccessible(true);
+            var attempts = new java.util.concurrent.atomic.AtomicInteger();
+            faultField.set(generation, (Runnable) () -> {
+                if (attempts.incrementAndGet() == 1) {
+                    throw new OutOfMemoryError(
+                            "injected direct close after seal");
+                }
+            });
+
+            assertThrows(OutOfMemoryError.class, generation::close);
+
+            assertTrue(generation.closed());
+            assertNull(manager.active("direct-close-retry.ores"),
+                    "sealed generation must be removed from active routing");
+            assertNull(manager.active());
+            assertEquals(1, manager.liveGenerations(),
+                    "failed direct close must retain cleanup registration");
+
+            generation.close();
+
+            assertEquals(2, attempts.get());
+            assertEquals(0, manager.liveGenerations());
+        } finally {
+            manager.close();
+        }
+    }
+
 }
