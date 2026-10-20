@@ -2683,6 +2683,12 @@ public final class Parser {
 
         if (check(IDENT)) {
             String name = advance().lexeme();
+            if (match(DOT)) {
+                name += "." + consume(IDENT, "expected enum case after '.' in match pattern").lexeme();
+                if (match(AS)) {
+                    return new Ast.ConstructorPattern(name, List.of(parsePattern()));
+                }
+            }
             if (match(LPAREN)) {
                 List<Ast.Pattern> args = new ArrayList<>();
                 if (!check(RPAREN)) {
