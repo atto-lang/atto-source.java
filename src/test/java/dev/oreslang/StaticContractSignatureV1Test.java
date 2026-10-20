@@ -2,9 +2,12 @@ package dev.oreslang;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
+
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -304,6 +307,57 @@ final class StaticContractSignatureV1Test {
 
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void addingStaticContractToPublicClassInvalidatesImportingUnitAbi() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+
+        String factoryV1 = """
+                define static contract Factory as
+                    fnc create(int id) -> int;
+                end
+
+                define pub class Widget as
+                    pub static fnc create(int id) -> int {
+                        return id;
+                    }
+                end
+                """;
+        String factoryV2 = """
+                define static contract Factory as
+                    fnc create(int id) -> int;
+                end
+
+                define pub class Widget implements static Factory as
+                    pub static fnc create(int id) -> int {
+                        return id;
+                    }
+                end
+                """;
+        String consumer = """
+                import class Widget from "./factory.ores";
+
+                fnc main(): int {
+                    return 0;
+                }
+                """;
+
+        var first = compiler.compile(Map.of(
+                "factory.ores", factoryV1,
+                "consumer.ores", consumer));
+        assertTrue(first.rebuilt("factory.ores"));
+        assertTrue(first.rebuilt("consumer.ores"));
+
+        var second = compiler.compile(Map.of(
+                "factory.ores", factoryV2,
+                "consumer.ores", consumer));
+        assertTrue(second.rebuilt("factory.ores"));
+        assertTrue(second.rebuilt("consumer.ores"),
+                "public implements-static ABI change must invalidate class importers");
+        assertNotEquals(
+                first.units().get("factory.ores").abiDigest(),
+                second.units().get("factory.ores").abiDigest());
     }
 
     @Test
