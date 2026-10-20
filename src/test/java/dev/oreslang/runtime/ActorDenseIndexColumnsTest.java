@@ -63,6 +63,33 @@ final class ActorDenseIndexColumnsTest {
     }
 
     @Test
+    void sharedActorFinalizationDetachesIndexBacking() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<ActorDenseIndexColumns> confined = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnSharedTrusted(
+                    factory -> {
+                        ActorDenseIndexColumns shard = new ActorDenseIndexColumns(
+                                ActorShardColumns.Layout.SOA, 8, 1, 1);
+                        confined.set(shard);
+                        return (message, turn) -> shard.writeIndex(0, 0, 7);
+                    });
+            actor.send(1);
+            actor.drain().get(5, TimeUnit.SECONDS);
+            assertThrows(SecurityException.class,
+                    () -> confined.get().readEncodedWord(0, 0));
+            actor.gracefulStop().get(5, TimeUnit.SECONDS);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+
+            java.lang.reflect.Field storageField =
+                    ActorDenseIndexColumns.class.getDeclaredField("storage");
+            storageField.setAccessible(true);
+            assertNull(storageField.get(confined.get()));
+            assertThrows(SecurityException.class,
+                    () -> confined.get().readEncodedWord(0, 0));
+        }
+    }
+
+    @Test
     void privateActorStoresIndicesInOwnerCheckedDirectMemory() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorRef<Integer> actor = runtime.spawnPrivate(
