@@ -1,14 +1,15 @@
 package dev.oreslang.runtime;
 
 /**
- * Package-private lifecycle hook for actor-owned DOD shard storage.
+ * Package-private lifecycle base for actor-owned DOD shard storage.
  *
- * <p>The runtime invokes this before returning the shard's allocation budget,
- * so Java arrays are scrubbed/detached and private direct-memory leases are
- * revoked before the actor is physically finalized.</p>
+ * <p>The runtime invokes these hooks while holding the owning lease lifecycle.
+ * Callers outside the runtime package must not be able to detach backing
+ * independently of lease accounting.</p>
  */
-sealed interface ActorShardBacking permits ActorShardColumns, ActorDenseIndexColumns {
-    void revokeBackingFromLease();
-    boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor);
-    boolean isPrivateBacked();
+abstract sealed class ActorShardBacking
+        permits ActorShardColumns, ActorDenseIndexColumns {
+    abstract void revokeBackingFromLease();
+    abstract boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor);
+    abstract boolean isPrivateBacked();
 }
