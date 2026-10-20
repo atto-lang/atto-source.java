@@ -3913,7 +3913,11 @@ public final class TypeChecker {
             // Stage one of source Future construction: a nominal owned class
             // with a public, non-generic async run(): T is a one-shot producer.
             // Do not admit untyped host callables or callback registrars here.
-            if (created.type().name().equals("Future") && findClass("Future") == null) {
+            if (created.type().name().equals("Future")) {
+                if (findClass("Future") != null) {
+                    throw new IllegalArgumentException(
+                            "Future is a sealed intrinsic type and cannot be shadowed by a linked class");
+                }
                 Type constructed = resolve(created.type(), generics, self);
                 if (!(constructed instanceof Named futureType)
                         || futureType.arguments().size() != 1) {
