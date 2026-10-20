@@ -2412,6 +2412,8 @@ public final class TypeChecker {
                 } else {
                     requireAssignable(index, Primitive.INT, "array/list/tuple index");
                     if (receiver instanceof ListType list) {
+                        if (list.patterned()) throw new IllegalArgumentException(
+                                "indexed mutation of repeating-pattern collection requires a positional proof");
                         targetType = list.element();
                     } else if (receiver instanceof Tuple tuple) {
                         if (tuple.kind() == TupleKind.TUPLE) {
@@ -4126,7 +4128,20 @@ public final class TypeChecker {
                                 + "struct{field: Type,...}{...}, or an explicit Map<K,V> collection");
             }
             Ast.ClassDecl klass = findClass(created.type().name());
-            if (klass == null) return resolve(created.type(), generics, self);
+            if (klass == null) {
+                Type constructed = resolve(created.type(), generics, self);
+                if (constructed instanceof ListType list && list.patterned()
+                        && !created.arguments().isEmpty()) {
+                    // A runtime-extent repeating sequence can be constructed
+                    // empty; arbitrary length/fill constructors do not prove
+                    // the complete unit or per-slot types. Do not grant a
+                    // typed repeating shape merely from a generic new target.
+                    throw new IllegalArgumentException(
+                            "patterned collection constructor requires empty initialization; "
+                                    + "initialize a checked complete-group literal instead");
+                }
+                return constructed;
+            }
             rejectUnimportedClassNamespace(klass);
             if (klass.isAbstract()) {
                 throw new IllegalArgumentException("cannot instantiate abstract class '" + klass.name() + "'");
@@ -4523,7 +4538,9 @@ public final class TypeChecker {
             return containsChannelCallable(borrow.target(), seen, genericBindings);
         }
         if (type instanceof ListType list) {
-            return containsChannelCallable(list.element(), seen, genericBindings);
+            if (containsChannelCallable(list.element(), seen, genericBindings)) return true;
+            return list.repeatUnit().stream()
+                    .anyMatch(slot -> containsChannelCallable(slot, seen, genericBindings));
         }
         if (type instanceof Tuple tuple) {
             return tuple.elements().stream()
@@ -4595,7 +4612,9 @@ public final class TypeChecker {
             return containsChannelBorrow(receiverSelf.bound(), seen, genericBindings);
         }
         if (type instanceof ListType list) {
-            return containsChannelBorrow(list.element(), seen, genericBindings);
+            if (containsChannelBorrow(list.element(), seen, genericBindings)) return true;
+            return list.repeatUnit().stream()
+                    .anyMatch(slot -> containsChannelBorrow(slot, seen, genericBindings));
         }
         if (type instanceof Tuple tuple) {
             return tuple.elements().stream()
@@ -4733,6 +4752,27 @@ public final class TypeChecker {
             if (contextual != null) return contextual;
         }
         if (expr instanceof Ast.ListExpr list) {
+            if (expected instanceof ListType patterned && patterned.patterned()) {
+                List<Type> unit = patterned.repeatUnit();
+                if (list.elements().size() % unit.size() != 0) {
+                    throw new IllegalArgumentException(
+                            "list literal does not complete repeating sequence group of "
+                                    + unit.size() + " element(s)");
+                }
+                for (int i = 0; i < list.elements().size(); i++) {
+                    Type actual = typeOf(list.elements().get(i), env, generics, self);
+                    Type slot = unit.get(i % unit.size());
+                    if (containsUnknown(actual)) {
+                        throw new IllegalArgumentException(
+                                "cannot prove repeating sequence element " + i
+                                        + " from an unresolved type");
+                    }
+                    requireReadonlyCapabilityPreserved(actual, slot,
+                            "repeating sequence element " + i);
+                    requireAssignable(actual, slot, "repeating sequence element " + i);
+                }
+                return patterned;
+            }
             if (expected instanceof Tuple tupleExpected) {
                 return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList(),
                         tupleExpected.kind());
@@ -4834,7 +4874,18 @@ public final class TypeChecker {
                     targetRecord.kind());
         }
         if (source instanceof ListType sourceList && target instanceof ListType targetList) {
-            return new ListType(overlayReadonlyCapabilities(sourceList.element(), targetList.element()));
+            List<Type> slots = targetList.repeatUnit();
+            if (sourceList.patterned() && targetList.patterned()
+                    && sourceList.repeatUnit().size() == slots.size()) {
+                List<Type> overlay = new ArrayList<>(slots.size());
+                for (int i = 0; i < slots.size(); i++) {
+                    overlay.add(overlayReadonlyCapabilities(
+                            sourceList.repeatUnit().get(i), slots.get(i)));
+                }
+                slots = List.copyOf(overlay);
+            }
+            return new ListType(overlayReadonlyCapabilities(sourceList.element(), targetList.element()),
+                    slots);
         }
         if (source instanceof Tuple sourceTuple && target instanceof Tuple targetTuple
                 && sourceTuple.kind() == targetTuple.kind()
@@ -4901,7 +4952,15 @@ public final class TypeChecker {
             return false;
         }
         if (source instanceof ListType sourceList && target instanceof ListType targetList) {
-            return readonlyCapabilityErased(sourceList.element(), targetList.element());
+            if (readonlyCapabilityErased(sourceList.element(), targetList.element())) return true;
+            if (sourceList.patterned() && targetList.patterned()
+                    && sourceList.repeatUnit().size() == targetList.repeatUnit().size()) {
+                for (int i = 0; i < sourceList.repeatUnit().size(); i++) {
+                    if (readonlyCapabilityErased(
+                            sourceList.repeatUnit().get(i), targetList.repeatUnit().get(i))) return true;
+                }
+            }
+            return false;
         }
         if (source instanceof Tuple sourceTuple && target instanceof Tuple targetTuple
                 && sourceTuple.kind() == targetTuple.kind()
@@ -5000,6 +5059,12 @@ public final class TypeChecker {
         }
 
         if (source instanceof ListType list) {
+            // A rest binding could share mutable backing storage with its
+            // patterned owner; fail closed until copy-vs-view is proven.
+            if (list.patterned() && restIndex >= 0) {
+                throw new IllegalArgumentException(
+                        "rest destructuring a repeating-pattern collection requires an ownership-safe projection");
+            }
             List<Type> result = new ArrayList<>(bindings.size());
             for (int i = 0; i < fixedArity; i++) result.add(list.element());
             if (restIndex >= 0) result.add(new ListType(list.element()));
@@ -5229,7 +5294,8 @@ public final class TypeChecker {
     private Type bindReceiverSelf(Type type, Type receiver) {
         if (type instanceof SelfType) return receiver;
         if (type instanceof Borrow borrow) return new Borrow(bindReceiverSelf(borrow.target(), receiver), borrow.mutable());
-        if (type instanceof ListType list) return new ListType(bindReceiverSelf(list.element(), receiver));
+        if (type instanceof ListType list) return new ListType(bindReceiverSelf(list.element(), receiver),
+                list.repeatUnit().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
         if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> bindReceiverSelf(t, receiver)).toList(), tuple.kind());
         if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
         if (type instanceof Named named) return new Named(
@@ -5569,6 +5635,10 @@ public final class TypeChecker {
         if (type instanceof Primitive || type instanceof StringLiteral) return;
         if (type instanceof ListType list) {
             validateActorCallableBoundaryType(list.element(), actorKind, false, where + " element");
+            for (int i = 0; i < list.repeatUnit().size(); i++) {
+                validateActorCallableBoundaryType(list.repeatUnit().get(i),
+                        actorKind, false, where + " repeated slot " + i);
+            }
             return;
         }
         if (type instanceof Tuple tuple) {
@@ -5664,7 +5734,11 @@ public final class TypeChecker {
             Type bound = genericBindings.get(generic.name());
             return bound != null && bound != type && isSharedSafe(bound, seen, genericBindings);
         }
-        if (type instanceof ListType list) return isSharedSafe(list.element(), seen, genericBindings);
+        if (type instanceof ListType list) {
+            if (!isSharedSafe(list.element(), seen, genericBindings)) return false;
+            return list.repeatUnit().stream()
+                    .allMatch(slot -> isSharedSafe(slot, seen, genericBindings));
+        }
         if (type instanceof Union union) {
             for (Type option : union.options()) if (!isSharedSafe(option, seen, genericBindings)) return false;
             return true;
@@ -6536,13 +6610,23 @@ public final class TypeChecker {
     }
 
     private void requireRuntimeReifiableType(Ast.TypeRef ref, String operator) {
+        requireRuntimeReifiableType(ref, operator, new LinkedHashSet<>());
+    }
+
+    /** Runtime predicates check their EXPANDED aliases, not just the alias name.
+     * Otherwise an 'as Alias' could forge a non-reifiable repeating-array shape.
+     */
+    private void requireRuntimeReifiableType(
+            Ast.TypeRef ref, String operator, Set<String> aliasPath) {
         if (ref == null) throw new IllegalArgumentException(operator + " requires a runtime-reifiable type");
         if (ref.isComplement()) {
-            requireRuntimeReifiableType(ref.complementedType(), operator);
+            requireRuntimeReifiableType(ref.complementedType(), operator, aliasPath);
             return;
         }
         if (ref.isUnion()) {
-            for (Ast.TypeRef option : ref.arguments()) requireRuntimeReifiableType(option, operator);
+            for (Ast.TypeRef option : ref.arguments()) {
+                requireRuntimeReifiableType(option, operator, aliasPath);
+            }
             return;
         }
         if (ref.isBorrow() || ref.isTupleType() || ref.isRecordType() || ref.isStringLiteral()
@@ -6565,6 +6649,22 @@ public final class TypeChecker {
                     operator + " cannot test parameterized type '" + ref
                             + "' until generic runtime type arguments are reified; match constructors/structure instead");
         }
+        Ast.TypeAliasDecl alias = findTypeAlias(ref.name());
+        if (alias != null) {
+            if (!alias.genericParameters().isEmpty()) {
+                throw new IllegalArgumentException(
+                        operator + " cannot reify generic type alias '" + ref.name() + "'");
+            }
+            if (!aliasPath.add(alias.name())) {
+                throw new IllegalArgumentException(
+                        "cyclic runtime-reifiable type alias '" + alias.name() + "'");
+            }
+            try {
+                requireRuntimeReifiableType(alias.target(), operator, aliasPath);
+            } finally {
+                aliasPath.remove(alias.name());
+            }
+        }
     }
 
     private Type resolveSharedGeneric(Type type, Map<String, Type> bindings) {
@@ -6576,7 +6676,8 @@ public final class TypeChecker {
             return new Named(named.name(), named.arguments().stream()
                     .map(argument -> resolveSharedGeneric(argument, bindings)).toList());
         }
-        if (type instanceof ListType list) return new ListType(resolveSharedGeneric(list.element(), bindings));
+        if (type instanceof ListType list) return new ListType(resolveSharedGeneric(list.element(), bindings),
+                list.repeatUnit().stream().map(t -> resolveSharedGeneric(t, bindings)).toList());
         if (type instanceof Tuple tuple) {
             return new Tuple(tuple.elements().stream().map(element -> resolveSharedGeneric(element, bindings)).toList(), tuple.kind());
         }
@@ -6912,6 +7013,10 @@ public final class TypeChecker {
     private Type builtinCollectionMember(Type receiver, String member) {
         receiver = deref(receiver);
         if (receiver instanceof ListType list) {
+            if (list.patterned() && (member.equals("add") || member.equals("set"))) {
+                throw new IllegalArgumentException(
+                        "mutation of repeating-pattern collection requires a shape-preserving operation");
+            }
             return switch (member) {
                 case "size" -> Primitive.INT;
                 case "get" -> new Function(List.of(Primitive.INT), list.element());
@@ -8411,6 +8516,21 @@ public final class TypeChecker {
             return;
         }
         if (pattern instanceof ListType p && actual instanceof ListType a) {
+            // An ordered repeating unit is a type-level product, not merely a
+            // union of its possible element types. Infer each generic against
+            // its corresponding proven slot. Inferring T from the joined
+            // element alone loses positional information and can produce an
+            // arbitrary union where a specific slot type is required.
+            if (p.patterned()) {
+                if (!a.patterned() || a.repeatUnit().size() != p.repeatUnit().size()) {
+                    return; // assignability will reject missing/mismatched shape proofs
+                }
+                for (int i = 0; i < p.repeatUnit().size(); i++) {
+                    inferGenericBindings(p.repeatUnit().get(i), a.repeatUnit().get(i),
+                            bindings, fixedBindings, label + " repeating slot " + i);
+                }
+                return;
+            }
             inferGenericBindings(p.element(), a.element(), bindings, fixedBindings, label);
             return;
         }
@@ -8436,7 +8556,8 @@ public final class TypeChecker {
         if (type instanceof Generic generic) return bindings.getOrDefault(generic.name(), type);
         if (type instanceof SelfType receiverSelf) return new SelfType(substituteGenerics(receiverSelf.bound(), bindings));
         if (type instanceof Borrow borrow) return new Borrow(substituteGenerics(borrow.target(), bindings), borrow.mutable());
-        if (type instanceof ListType list) return new ListType(substituteGenerics(list.element(), bindings));
+        if (type instanceof ListType list) return new ListType(substituteGenerics(list.element(), bindings),
+                list.repeatUnit().stream().map(t -> substituteGenerics(t, bindings)).toList());
         if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> substituteGenerics(t, bindings)).toList(), tuple.kind());
         if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> substituteGenerics(t, bindings)).toList());
         if (type instanceof Types.Not not) return Types.notOf(substituteGenerics(not.excluded(), bindings));
@@ -8458,7 +8579,8 @@ public final class TypeChecker {
         if (type == Unknown.INSTANCE) return true;
         if (type instanceof SelfType receiverSelf) return containsUnknown(receiverSelf.bound());
         if (type instanceof Borrow borrow) return containsUnknown(borrow.target());
-        if (type instanceof ListType list) return containsUnknown(list.element());
+        if (type instanceof ListType list) return containsUnknown(list.element())
+                || list.repeatUnit().stream().anyMatch(this::containsUnknown);
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(this::containsUnknown);
         if (type instanceof Union union) return union.options().stream().anyMatch(this::containsUnknown);
         if (type instanceof Types.Not not) return containsUnknown(not.excluded());
@@ -8474,7 +8596,8 @@ public final class TypeChecker {
         if (type instanceof Generic generic) return names.contains(generic.name());
         if (type instanceof SelfType receiverSelf) return containsGenericNamed(receiverSelf.bound(), names);
         if (type instanceof Borrow borrow) return containsGenericNamed(borrow.target(), names);
-        if (type instanceof ListType list) return containsGenericNamed(list.element(), names);
+        if (type instanceof ListType list) return containsGenericNamed(list.element(), names)
+                || list.repeatUnit().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Union union) return union.options().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Types.Not not) return containsGenericNamed(not.excluded(), names);
@@ -8597,9 +8720,18 @@ public final class TypeChecker {
 
         Ast.TypeRef pattern = shape.arguments().getFirst();
         Type element;
+        List<Type> repeatingUnit = List.of();
         if (pattern.isRepeatMany()) {
+            if (declaredRank != null && declaredRank != 1) {
+                throw new IllegalArgumentException(
+                        "repeating sequence patterns currently require rank=1");
+            }
             List<Ast.TypeRef> unit = expandFiniteSequencePatterns(pattern.arguments(), ref.name());
-            element = unionResolved(unit, generics, self, allowNullMarker);
+            repeatingUnit = unit.stream()
+                    .map(slot -> resolve(slot, generics, self, allowNullMarker))
+                    .toList();
+            element = Types.unionOf(repeatingUnit.stream()
+                    .map(this::widenCollectionElement).toList());
         } else if (pattern.isRepeatExact()) {
             throw new IllegalArgumentException(ref.name() + "[" + pattern.repeatExactCount()
                     + " of T] declares a fixed extent; use FixedArray[" + pattern.repeatExactCount()
@@ -8610,7 +8742,7 @@ public final class TypeChecker {
 
         int rank = declaredRank == null ? 1 : declaredRank;
         Type result = element;
-        for (int i = 0; i < rank; i++) result = new ListType(result);
+        for (int i = 0; i < rank; i++) result = new ListType(result, i == 0 ? repeatingUnit : List.of());
         return result;
     }
 
@@ -8789,6 +8921,13 @@ public final class TypeChecker {
                 Ast.TypeRef expectedRef = unit.get(i % unit.size());
                 Type expected = resolve(expectedRef, generics, self);
                 Type actual = typeOf(literal.elements().get(i), env, generics, self);
+                if (containsUnknown(actual)) {
+                    throw new IllegalArgumentException(
+                            name + " repeating sequence element " + i
+                                    + " cannot be proved from an unresolved type");
+                }
+                requireReadonlyCapabilityPreserved(actual, expected,
+                        name + " repeating sequence element " + i);
                 requireAssignable(actual, expected, name + " repeating sequence element " + i);
             }
         } else if (!pattern.isRepeatExact()) {
