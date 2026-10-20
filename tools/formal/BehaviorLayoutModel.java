@@ -19,7 +19,7 @@ public final class BehaviorLayoutModel {
     record Edge(OresSymbol from, OresSymbol event, OresSymbol to) { }
     record Key(int from, OresSymbol event) { }
     record Row(int entity, int state) { }
-    record View(int index, long epoch) { }
+    record View(int index, long epoch, Object owningStore) { }
 
     static final class Chart {
         final Map<OresSymbol, Integer> ids = new LinkedHashMap<>();
@@ -62,6 +62,7 @@ public final class BehaviorLayoutModel {
     /** Exactly one authoritative layout; migrations invalidate epoch-bound views. */
     static final class Cohort {
         final int size, tile;
+        private final Object storeIdentity = new Object();
         Layout layout;
         long epoch;
         Row[] aos;
@@ -73,6 +74,11 @@ public final class BehaviorLayoutModel {
             require(!rows.isEmpty() && rows.size() <= 4096, "invalid cohort size");
             this.size = rows.size();
             this.tile = tile;
+            Set<Integer> identifiers = new HashSet<>();
+            for (Row row : rows) {
+                require(row != null && row.entity() >= 0 && row.state() >= 0, "invalid cohort row");
+                require(identifiers.add(row.entity()), "duplicate cohort entity ID");
+            }
             install(rows, layout);
         }
         private void install(List<Row> source, Layout destination) {
@@ -102,8 +108,9 @@ public final class BehaviorLayoutModel {
             tilesEntity = nextTilesEntity; tilesState = nextTilesState;
             layout = destination;
         }
-        View view(int index) { bounds(index); return new View(index, epoch); }
+        View view(int index) { bounds(index); return new View(index, epoch, storeIdentity); }
         Row read(View handle) {
+            require(handle != null && handle.owningStore() == storeIdentity, "foreign layout view");
             require(handle.epoch() == epoch, "stale layout view");
             return get(handle.index());
         }
@@ -211,11 +218,17 @@ public final class BehaviorLayoutModel {
     }
     static final class Net {
         final int places;
+        final Map<OresSymbol, Integer> placeIds;
         final List<Rule> rules;
         final int[][] invariants;
-        Net(int places, List<Rule> rules, int[][] invariants) {
-            require(places > 0 && places <= 256, "invalid net size");
-            this.places = places; this.rules = List.copyOf(rules);
+        Net(List<OresSymbol> namedPlaces, List<Rule> rules, int[][] invariants) {
+            require(!namedPlaces.isEmpty() && namedPlaces.size() <= 256, "invalid net size");
+            Map<OresSymbol, Integer> ids = new LinkedHashMap<>();
+            for (OresSymbol symbol : namedPlaces) {
+                require(symbol != null && ids.putIfAbsent(symbol, ids.size()) == null, "duplicate/invalid place Symbol");
+            }
+            this.placeIds = Map.copyOf(ids);
+            this.places = namedPlaces.size(); this.rules = List.copyOf(rules);
             this.invariants = Arrays.stream(invariants).map(int[]::clone).toArray(int[][]::new);
             Set<OresSymbol> names = new HashSet<>();
             for (Rule rule : rules) {
@@ -257,11 +270,15 @@ public final class BehaviorLayoutModel {
     }
 
     /** Abstract ECS access-set compatibility; not a compiler-issued provenance capability. */
-    record Access(Set<OresSymbol> reads, Set<OresSymbol> writes, boolean knownProvenance) {
+    /** Synthetic unforgeable-in-this-reference-model allocation ticket, NOT the real compiler proof. */
+    static final class AllocationIdentity { private AllocationIdentity() { } }
+    private static AllocationIdentity issuedReferenceAllocation() { return new AllocationIdentity(); }
+    record Access(Set<OresSymbol> reads, Set<OresSymbol> writes, AllocationIdentity owner) {
         Access { reads = Set.copyOf(reads); writes = Set.copyOf(writes); }
     }
     static boolean conflict(Access a, Access b) {
-        require(a.knownProvenance() && b.knownProvenance(), "unknown ECS provenance");
+        require(a.owner() != null && b.owner() != null, "unknown ECS provenance");
+        if (a.owner() != b.owner()) return false;
         for (OresSymbol key : a.writes()) if (b.writes().contains(key) || b.reads().contains(key)) return true;
         for (OresSymbol key : b.writes()) if (a.reads().contains(key)) return true;
         return false;
@@ -299,6 +316,11 @@ public final class BehaviorLayoutModel {
             ok(cohort.get(3).entity() == 1003, "entity ID lost through migration");
             cohort.checkPadding();
         }
+        rejects(() -> cohorts[1].read(cohorts[0].view(0)), "foreign layout view accepted");
+        rejects(() -> new Cohort(List.of(new Row(1, 0), new Row(1, 0)), Layout.SOA, 4),
+                "duplicate entity admitted");
+        rejects(() -> new Cohort(List.of(new Row(-1, 0)), Layout.AOS, 4),
+                "negative entity ID admitted");
         ok(chart.step(chart.id(busy), s("reset")) == chart.id(idle), "ancestor rule lost");
         rejects(() -> new Chart(List.of(idle, busy), Map.of(idle, busy, busy, idle), List.of()), "cycle accepted");
         rejects(() -> new Chart(List.of(idle, busy), Map.of(), List.of(
@@ -312,7 +334,7 @@ public final class BehaviorLayoutModel {
         Rule releaseA = new Rule(s("release_a"), List.of(new Arc(1, 1)), List.of(new Arc(0, 1)));
         Rule acquireB = new Rule(s("acquire_b"), List.of(new Arc(2, 1)), List.of(new Arc(3, 1)));
         Rule releaseB = new Rule(s("release_b"), List.of(new Arc(3, 1)), List.of(new Arc(2, 1)));
-        Net net = new Net(4, List.of(acquireA, releaseA, acquireB, releaseB),
+        Net net = new Net(List.of(s("free_a"), s("held_a"), s("free_b"), s("held_b")), List.of(acquireA, releaseA, acquireB, releaseB),
                 new int[][]{{1, 1, 0, 0}, {0, 0, 1, 1}});
         int[][] seed = new int[7][4];
         for (int[] marking : seed) { marking[0] = 1; marking[2] = 1; }
@@ -334,11 +356,13 @@ public final class BehaviorLayoutModel {
             if (step % 11 == 0) for (Markings store : stores)
                 store.migrate(Layout.values()[(store.layout.ordinal() + 1) % 3]);
         }
-        rejects(() -> new Net(2, List.of(new Rule(s("leak"), List.of(new Arc(0, 1)), List.of())),
+        rejects(() -> new Net(List.of(s("free"), s("held")), List.of(new Rule(s("leak"), List.of(new Arc(0, 1)), List.of())),
                 new int[][]{{1, 1}}), "nonconserving arc accepted");
-        rejects(() -> new Net(2, List.of(new Rule(s("duplicate"),
+        rejects(() -> new Net(List.of(s("free"), s("held")), List.of(new Rule(s("duplicate"),
                 List.of(new Arc(0, 1), new Arc(0, 2)), List.of())), new int[0][]), "duplicate arc accepted");
-        Net overflow = new Net(1, List.of(new Rule(s("over"), List.of(), List.of(new Arc(0, 1)))), new int[0][]);
+        rejects(() -> new Net(List.of(s("free"), s("free")), List.of(), new int[0][]),
+                "duplicate Petri place Symbol admitted");
+        Net overflow = new Net(List.of(s("free")), List.of(new Rule(s("over"), List.of(), List.of(new Arc(0, 1)))), new int[0][]);
         rejects(() -> overflow.fire(new int[]{Integer.MAX_VALUE}, overflow.rules.getFirst()), "token overflow accepted");
         ok(net.fire(new int[]{0, 1, 1, 0}, acquireA) == null, "disabled transition fired");
 
@@ -364,12 +388,17 @@ public final class BehaviorLayoutModel {
 
     static void testEcs() {
         OresSymbol behavior = s("behavior_state"), motion = s("motion"), effects = s("effects");
-        Access step = new Access(Set.of(motion), Set.of(behavior), true);
-        Access sample = new Access(Set.of(behavior), Set.of(), true);
-        Access render = new Access(Set.of(motion), Set.of(effects), true);
+        AllocationIdentity owned = issuedReferenceAllocation();
+        AllocationIdentity unrelated = issuedReferenceAllocation();
+        Access step = new Access(Set.of(motion), Set.of(behavior), owned);
+        Access sample = new Access(Set.of(behavior), Set.of(), owned);
+        Access render = new Access(Set.of(motion), Set.of(effects), owned);
         ok(conflict(step, sample), "ECS write/read conflict missed");
         ok(!conflict(step, render), "disjoint ECS system incorrectly serialized");
-        rejects(() -> conflict(step, new Access(Set.of(motion), Set.of(), false)), "unknown provenance admitted");
+        rejects(() -> conflict(step, new Access(Set.of(motion), Set.of(), null)), "unknown provenance admitted");
+        ok(!conflict(step, new Access(Set.of(behavior), Set.of(), unrelated)), "disjoint allocations incorrectly serialized");
+        ok(conflict(step, new Access(Set.of(), Set.of(s("behavior_state")), owned)),
+                "logical Symbol equality lost across descriptors");
         System.out.println("ECS: conservative access conflicts and unknown provenance checked");
     }
 
