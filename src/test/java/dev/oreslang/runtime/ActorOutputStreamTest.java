@@ -136,4 +136,66 @@ final class ActorOutputStreamTest {
         }
     }
 
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void dequeuedOutputReleaseFailureRetainsEnvelopeAndDoesNotHangNext()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> ref = runtime.spawnShared(
+                    context -> (message, turn) -> {
+                        turn.runtime().emitCurrentActorOutput("payload");
+                        turn.runtime().endCurrentActor();
+                    });
+
+            ref.ready().join();
+            ref.send("go");
+            ref.done().join();
+
+            long reserved = runtime.sharedMemoryBytes();
+            assertTrue(reserved > 0L,
+                    "buffered actor output must retain shared runtime accounting");
+
+            var accountingField =
+                    ActorRuntime.class.getDeclaredField("sharedMemoryBytes");
+            accountingField.setAccessible(true);
+            var accounting =
+                    (java.util.concurrent.atomic.AtomicLong)
+                            accountingField.get(runtime);
+
+            Object stream = ref.outputs();
+            var retainedField =
+                    stream.getClass().getDeclaredField("retainedEnvelopes");
+            retainedField.setAccessible(true);
+
+            accounting.set(0L);
+            CompletionException failed =
+                    assertThrows(
+                            CompletionException.class,
+                            () -> ref.outputs().next().join());
+            assertInstanceOf(IllegalStateException.class, failed.getCause());
+            assertTrue(failed.getCause().getMessage().contains(
+                    "shared actor memory accounting underflow"));
+
+            var retained =
+                    (java.util.Set<Object>) retainedField.get(stream);
+            assertEquals(1, retained.size(),
+                    "dequeued output must remain the exact release owner");
+            assertFalse(ref.outputs().isDone(),
+                    "closed-and-empty channel cannot hide retained cleanup");
+
+            // Repair the aggregate witness. The following next() reconciles the
+            // prior failed envelope before observing the closed empty channel.
+            accounting.set(reserved);
+            GeneratorRuntime.Step<ActorRuntime.ActorOutput<Object>> terminal =
+                    ref.outputs().next().join();
+
+            assertTrue(terminal.done());
+            assertNull(terminal.value());
+            assertTrue(((java.util.Set<?>) retainedField.get(stream)).isEmpty());
+            assertEquals(0L, runtime.sharedMemoryBytes());
+            assertTrue(ref.outputs().isDone());
+        }
+    }
+
 }
