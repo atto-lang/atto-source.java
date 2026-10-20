@@ -514,6 +514,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 ("/usr/bin/gh", (stat.S_IFLNK | 0o777, 0)),
                 ("/usr/bin/gh", (stat.S_IFREG | 0o777, 0)),
                 ("/usr/bin/gh", (stat.S_IFREG | 0o755, 1000)),
+                ("/usr/bin/gh", (stat.S_IFREG | 0o4755, 0)),  # setuid
+                ("/usr/bin/gh", (stat.S_IFREG | 0o2755, 0)),  # setgid
+                ("/usr/bin/gh", (stat.S_IFREG | 0o6755, 0)),  # both
                 ("/usr/bin/gh", (stat.S_IFREG | 0o644, 0)),
                 ("/usr/bin", (stat.S_IFDIR | 0o777, 0)),
                 ("/usr", (stat.S_IFDIR | 0o755, 1000))):
