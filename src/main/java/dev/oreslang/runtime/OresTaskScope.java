@@ -100,6 +100,14 @@ public final class OresTaskScope {
      */
     private final Set<ScopedReadClaim> liveScopedReadClaims =
             Collections.newSetFromMap(new IdentityHashMap<>());
+    /**
+     * One-shot claim identities admitted by this scope. Retired claims remain
+     * here to prevent ABA resurrection of stale hidden tickets. A scheduler
+     * admission failure explicitly rolls the issuance back because no child
+     * lifetime was established.
+     */
+    private final Set<ScopedReadClaim> issuedScopedReadClaims =
+            Collections.newSetFromMap(new IdentityHashMap<>());
     private int activeScopedReadClaims;
     // Runtime barrier: it is intentionally non-cancellable. Cancelling the
     // barrier itself must never manufacture a false reclamation witness.
@@ -174,6 +182,7 @@ public final class OresTaskScope {
                 // case no onQuiescent callback will arrive.
                 children.remove(child);
                 releaseScopedReadsLocked(child);
+                rollbackScopedReadIssuesLocked(child);
                 throw failure;
             }
 
@@ -372,9 +381,9 @@ public final class OresTaskScope {
                         "duplicate scoped read claim identity for binding '"
                                 + claim.bindingName() + "'");
             }
-            if (liveScopedReadClaims.contains(claim)) {
+            if (issuedScopedReadClaims.contains(claim)) {
                 throw new IllegalStateException(
-                        "scoped read claim is already owned by a live child: '"
+                        "scoped read claim identity was already issued by this scope: '"
                                 + claim.bindingName() + "'");
             }
             if (!bindings.add(claim.bindingName())) {
@@ -400,7 +409,8 @@ public final class OresTaskScope {
 
         child.readClaims = claims;
         for (ScopedReadClaim claim : claims) {
-            if (!liveScopedReadClaims.add(claim)) {
+            if (!issuedScopedReadClaims.add(claim)
+                    || !liveScopedReadClaims.add(claim)) {
                 throw new IllegalStateException(
                         "scoped read claim identity changed during reservation");
             }
@@ -474,6 +484,22 @@ public final class OresTaskScope {
                     "structured Task scoped-read identity/count accounting diverged");
         }
         child.readClaimsReleased = true;
+    }
+
+    private void rollbackScopedReadIssuesLocked(Child child) {
+        for (ScopedReadClaim claim : child.readClaims) {
+            if (!issuedScopedReadClaims.remove(claim)) {
+                throw new IllegalStateException(
+                        "failed Task admission could not roll back scoped-read issuance for '"
+                                + claim.bindingName() + "'");
+            }
+        }
+    }
+
+    int issuedScopedReadClaims() {
+        synchronized (lock) {
+            return issuedScopedReadClaims.size();
+        }
     }
 
     private void completeDrain() {
