@@ -1777,6 +1777,11 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.BlockStmt block) {
+            if (block.taskScope() && currentActorKind != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "task scope is not enabled inside actor execution until "
+                                + "actor quota/hot-reload structured-scope integration is proven");
+            }
             checkBlock(block.body(), env, generics, expectedReturn, self);
             return;
         }
@@ -4210,12 +4215,18 @@ public final class TypeChecker {
         Ast.ClassDecl previousClass = currentClassOwner;
         Ast.ClassDecl previousConstructor = currentConstructorOwner;
         List<Type> previousInference = inferredTaskReturnTypes;
+        boolean previousMaySuspend = currentMaySuspend;
         List<Type> discovered = expected == Unknown.INSTANCE ? new ArrayList<>() : null;
         currentConstructorOwner = null;
         inferredTaskReturnTypes = discovered;
+        // Task bodies are scheduler continuations by definition. They may
+        // invoke declared suspends callables even when their lexical parent is
+        // an ordinary synchronous function.
+        currentMaySuspend = true;
         try {
             checkCallableBlock(task.body(), child, generics, expected, self);
         } finally {
+            currentMaySuspend = previousMaySuspend;
             inferredTaskReturnTypes = previousInference;
             env.restoreInitialization(initializedBefore);
             currentClassOwner = previousClass;
