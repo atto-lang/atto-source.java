@@ -133,7 +133,13 @@ public final class StaticSafetyAnalyzer {
         private boolean guaranteedImmediateExit(List<Ast.Stmt> body) {
             if (body.isEmpty()) return false;
             Ast.Stmt first = body.get(0);
-            if (first instanceof Ast.BreakStmt || first instanceof Ast.ReturnStmt) return true;
+            if (first instanceof Ast.BreakStmt) return true;
+            if (first instanceof Ast.ReturnStmt r) {
+                // Evaluating a return expression could itself call a
+                // diverging routine. Only effect-free trivial returns are
+                // exempt from the advisory loop-termination warning.
+                return r.value() == null || r.value() instanceof Ast.LiteralExpr;
+            }
             return first instanceof Ast.BlockStmt b && guaranteedImmediateExit(b.body());
         }
 
