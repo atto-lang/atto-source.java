@@ -77,15 +77,6 @@ final class IpcTransportSessionLease {
     IpcTransportSessionLease(IpcReceiptCorrelation.Envelope trustedEpoch,
                              long generation, int limit,
                              IpcReceiptCompletionBridge receipts,
-                             FrameWriter writer, PhysicalCloser closer,
-                             CleanupScheduler scheduler) {
-        this(trustedEpoch, generation, limit, receipts, null,
-                writer, closer, scheduler);
-    }
-
-    IpcTransportSessionLease(IpcReceiptCorrelation.Envelope trustedEpoch,
-                             long generation, int limit,
-                             IpcReceiptCompletionBridge receipts,
                              Object physicalOwner,
                              FrameWriter writer, PhysicalCloser closer,
                              CleanupScheduler scheduler) {
@@ -157,55 +148,6 @@ final class IpcTransportSessionLease {
             releaseWrite();
         }
         return new WriteAttempt(outcome, error);
-    }
-
-    /**
-     * Linearize session admission, receipt dispatch commitment, and close
-     * intent on this session monitor, BEFORE any possible physical write.
-     * The transport callback is invoked OUTSIDE both session and receipt
-     * monitors while this operation pins the underlying physical resource.
-     */
-    void writeFrame(long expectedGeneration,
-                    IpcReceiptCorrelation.Envelope message,
-                    byte[] preparedFrame) throws IOException {
-        RuntimeBlockingGuard.requireBlockingHostThread("IPC transport write");
-        Objects.requireNonNull(message, "message");
-        Objects.requireNonNull(preparedFrame, "preparedFrame");
-        synchronized (this) {
-            if (phase != Phase.OPEN || expectedGeneration != generation
-                    || !sameTrustedEpoch(message) || activeWrites >= limit) {
-                throw new PreDispatchRejectedException(
-                        "closed/stale/bounded IPC transport");
-            }
-            // No arbitrary user callbacks or memory allocation after
-            // commitment until the writer has acquired the physical pin.
-            ++activeWrites;
-            try {
-                if (physicalOwner == null) {
-                    receipts.commitDispatch(message);
-                } else {
-                    receipts.commitDispatch(
-                            physicalOwner, message, generation);
-                }
-            } catch (RuntimeException failure) {
-                --activeWrites;
-                throw new PreDispatchRejectedException(
-                        "IPC receipt dispatch commitment rejected", failure);
-            } catch (Error failure) {
-                --activeWrites;
-                throw failure;
-            }
-        }
-        try {
-            writer.write(message, preparedFrame);
-        } catch (IOException | RuntimeException | Error failure) {
-            // A dispatch-committed failed write is INDETERMINATE, even when
-            // the host call threw before reporting any accepted bytes.
-            requestClose();
-            throw failure;
-        } finally {
-            releaseWrite();
-        }
     }
 
     /**
