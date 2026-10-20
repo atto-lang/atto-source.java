@@ -17,7 +17,8 @@ import java.util.concurrent.TimeUnit;
  * Forked-JVM authenticated IPC proof. The peer runs in a separate OS process,
  * so frame bytes cross a kernel socket/process boundary rather than only
  * crossing threads in one VM. This is still Java<->Java host evidence, not
- * broker identity/key establishment or LLVM parity.
+ * external identity/key negotiation or LLVM parity. The local transport side
+ * consumes a broker-minted physical connection authority.
  */
 public final class IpcAuthenticatedSocketTwoProcessSelfTest {
     private static final byte[] PAYLOAD =
@@ -200,6 +201,7 @@ public final class IpcAuthenticatedSocketTwoProcessSelfTest {
                     check(bridge.invariant());
                     check(transport.requestCloseAndAwait(3000));
                     check(transport.keyCloneZeroized());
+                    check(transport.connectionBindingCloneZeroized());
                 }
 
                 String output = finishPeer(peer);
