@@ -3612,6 +3612,11 @@ public final class TypeChecker {
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
+            if (isTypedMapType(sumReceiver)) {
+                throw new IllegalArgumentException(
+                        "typed Map members are sealed direct operations; "
+                                + "use map[key] or invoke has/get/take/remove directly");
+            }
             // Nested extraction consumes the receiver. unwrap_all also
             // requires a checked static-depth proof bound to the CallExpr's
             // identity. A first-class method value would bypass both direct
