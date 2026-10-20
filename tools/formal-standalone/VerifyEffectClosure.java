@@ -81,6 +81,34 @@ public final class VerifyEffectClosure {
         require(escaped.infer().get("caller").equals(Set.of(
             EffectContracts.Effect.PANIC, EffectContracts.Effect.UNKNOWN_CALL)),
             "trapping must not hide panic or missing FFI targets");
+        // A dynamic callback has no certified target even when its
+        // descriptive label collides with an otherwise pure known definition.
+        var indirect = new EffectContracts.Graph();
+        indirect.add(EffectContracts.Callable.pure("entry", Set.of(),
+            List.of(EffectContracts.Call.unresolved("lookalike"))));
+        indirect.add(EffectContracts.Callable.inferred("lookalike", Set.of(),
+            List.of()));
+        require(indirect.infer().get("entry").equals(
+            Set.of(EffectContracts.Effect.UNKNOWN_CALL)),
+            "unresolved callback was incorrectly resolved by its label");
+        try {
+            indirect.validate();
+            throw new AssertionError("pure caller must reject unresolved callback");
+        } catch (IllegalArgumentException expected) {
+            require(expected.getMessage().contains("[unresolved] lookalike"),
+                "missing trusted unresolved witness");
+        }
+        var trapDynamic = new EffectContracts.Graph();
+        trapDynamic.add(EffectContracts.Callable.trapping("trapped", Set.of(
+            EffectContracts.Effect.THROW), List.of(
+            EffectContracts.Call.unresolved("lookalike"))));
+        trapDynamic.add(EffectContracts.Callable.inferred("lookalike", Set.of(),
+            List.of()));
+        trapDynamic.add(EffectContracts.Callable.inferred("caller", Set.of(),
+            List.of(EffectContracts.Call.direct("trapped"))));
+        require(trapDynamic.infer().get("caller").equals(
+            Set.of(EffectContracts.Effect.UNKNOWN_CALL)),
+            "trap must not hide unknown callback effects");
         System.out.println("PASS " + checked
             + " effect-closure roots + trap/FFI negative control (bounded model only)");
     }
