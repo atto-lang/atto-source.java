@@ -440,6 +440,21 @@ def publish(repository, source, branch, trusted_root, source_commit):
                           {"path": PREFIX, "mode": "040000", "type": "tree",
                            "sha": isolated_sha}]})
     new_tree_sha = valid_sha(new_tree.get("sha"))
+    # Check GitHub's persisted root tree before creating an executable CI
+    # commit. An API response containing only a plausible tree hash does not
+    # establish that PREFIX was actually replaced with the reviewed source.
+    observed_root = gh_api(f"repos/{repository}/git/trees/{new_tree_sha}")
+    if (observed_root.get("sha") != new_tree_sha
+            or observed_root.get("truncated") is not False
+            or not isinstance(observed_root.get("tree"), list)):
+        raise Denied("destination root Git tree could not be independently verified")
+    matching = [entry for entry in observed_root["tree"]
+                if isinstance(entry, dict) and entry.get("path") == PREFIX]
+    if (len(matching) != 1
+            or matching[0].get("type") != "tree"
+            or matching[0].get("mode") != "040000"
+            or matching[0].get("sha") != isolated_sha):
+        raise Denied("destination root Git tree did not preserve exact source subtree")
     authorize_write()
     # Audit metadata is useful to destination CI but is NOT an independent
     # source authorization signature. Only the protected-origin approval and
