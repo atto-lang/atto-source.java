@@ -42,6 +42,10 @@ final class StaticFactsCliTest {
                 "--static-facts", "--strict-isolate", source.toString() }));
         assertEquals(2, OresMain.exitStatusForArgs(new String[] {
                 "--static-facts", "--allow-ffi", source.toString() }));
+        assertEquals(2, OresMain.exitStatusForArgs(new String[] {
+                "--static-facts", "--mode=aot", source.toString() }));
+        assertEquals(2, OresMain.exitStatusForArgs(new String[] {
+                "--static-facts", "--platform=server", source.toString() }));
     }
 
     @Test
