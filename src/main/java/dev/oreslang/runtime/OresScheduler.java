@@ -479,9 +479,18 @@ public final class OresScheduler implements AutoCloseable {
     public <T> OresFuture<T> startCompilerAdmittedTask(
             Task<T> task,
             CompilerTaskRetirement retirement) {
+        return startCompilerAdmittedTask(task, retirement, () -> { });
+    }
+
+    <T> OresFuture<T> startCompilerAdmittedTask(
+            Task<T> task,
+            CompilerTaskRetirement retirement,
+            Runnable onTerminalReady) {
         Objects.requireNonNull(retirement, "compiler Task retirement");
+        Objects.requireNonNull(onTerminalReady, "terminal-ready hook");
         return startAdmitted(
-                task, () -> { }, () -> { }, null, 0L, () -> { }, retirement);
+                task, () -> { }, onTerminalReady,
+                null, 0L, () -> { }, retirement);
     }
 
     /**
