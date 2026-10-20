@@ -258,6 +258,7 @@ public final class ChannelRuntime {
     public static final class SelectSet {
         private final List<SelectCase> cases;
         private final AtomicLong fairCursor;
+        private final int defaultIndex;
 
         public SelectSet(Collection<? extends SelectCase> cases) {
             this(cases, 0L);
@@ -284,13 +285,16 @@ public final class ChannelRuntime {
                         "select requires at least one case");
             }
             this.cases = List.copyOf(cases);
-            long defaults = this.cases.stream()
-                    .filter(DefaultCase.class::isInstance)
-                    .count();
-            if (defaults > 1) {
-                throw new IllegalArgumentException(
-                        "select permits at most one default case");
+            int foundDefault = -1;
+            for (int i = 0; i < this.cases.size(); i++) {
+                if (!(this.cases.get(i) instanceof DefaultCase)) continue;
+                if (foundDefault >= 0) {
+                    throw new IllegalArgumentException(
+                            "select permits at most one default case");
+                }
+                foundDefault = i;
             }
+            this.defaultIndex = foundDefault;
         }
 
         public static SelectSet of(SelectCase... cases) {
@@ -342,33 +346,6 @@ public final class ChannelRuntime {
                             this,
                             Objects.requireNonNull(policy, "policy"));
             return registration.tryNow();
-        }
-
-        private int[] initialOrder(SelectPolicy policy) {
-            int count = cases.size();
-            int[] order = new int[count];
-
-            if (policy == SelectPolicy.PRIORITY) {
-                for (int i = 0; i < count; i++) order[i] = i;
-                return order;
-            }
-
-            if (policy == SelectPolicy.FAIR) {
-                int start = Math.floorMod(fairCursor.get(), count);
-                for (int i = 0; i < count; i++) {
-                    order[i] = (start + i) % count;
-                }
-                return order;
-            }
-
-            for (int i = 0; i < count; i++) order[i] = i;
-            for (int i = count - 1; i > 0; i--) {
-                int j = ThreadLocalRandom.current().nextInt(i + 1);
-                int tmp = order[i];
-                order[i] = order[j];
-                order[j] = tmp;
-            }
-            return order;
         }
 
         private void selected(int index, SelectPolicy policy) {
@@ -618,11 +595,14 @@ public final class ChannelRuntime {
     private static final class SelectRegistration {
         private final SelectSet set;
         private final SelectPolicy policy;
-        // Initialized under COORDINATOR, not at construction: concurrent
-        // selections must see the fairness cursor at admission time.
-        private int[] order;
-        private final ArrayList<CaseRegistration> registrations =
-                new ArrayList<>();
+        // The cursor is captured under COORDINATOR on admission. FAIR and
+        // PRIORITY use ordinal arithmetic without materializing an int[] of
+        // arm indexes. RANDOM is the only mode requiring a shuffled array.
+        private int fairStart;
+        private int[] randomOrder;
+        // Indexed registration storage makes readiness O(1) by arm index and
+        // avoids an ArrayList backing buffer plus a detach-time copy.
+        private final CaseRegistration[] registrations;
         private final int defaultIndex;
         private final OresFuture<SelectResult> future;
         private boolean decided;
@@ -631,14 +611,8 @@ public final class ChannelRuntime {
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
             this.set = set;
             this.policy = policy;
-            int foundDefault = -1;
-            for (int i = 0; i < set.cases.size(); i++) {
-                if (set.cases.get(i) instanceof DefaultCase) {
-                    foundDefault = i;
-                    break;
-                }
-            }
-            this.defaultIndex = foundDefault;
+            this.defaultIndex = set.defaultIndex;
+            this.registrations = new CaseRegistration[set.cases.size()];
             this.future = new OresFuture<>(
                     this::cancelAdmission,
                     () -> { });
@@ -689,27 +663,54 @@ public final class ChannelRuntime {
             return Optional.of(future.join());
         }
 
-        private CaseRegistration caseOrDefault(int index) {
-            for (CaseRegistration registration : registrations) {
-                if (registration.index == index) return registration;
+        private void captureOrderLocked() {
+            if (policy == SelectPolicy.FAIR) {
+                fairStart = Math.floorMod(set.fairCursor.get(), set.cases.size());
+            } else if (policy == SelectPolicy.RANDOM) {
+                int count = set.cases.size();
+                randomOrder = new int[count];
+                for (int i = 0; i < count; i++) randomOrder[i] = i;
+                for (int i = count - 1; i > 0; i--) {
+                    int j = ThreadLocalRandom.current().nextInt(i + 1);
+                    int temp = randomOrder[i];
+                    randomOrder[i] = randomOrder[j];
+                    randomOrder[j] = temp;
+                }
             }
-            return new CaseRegistration(this, index, set.cases.get(index));
+        }
+
+        private int orderedIndex(int ordinal) {
+            if (policy == SelectPolicy.PRIORITY) return ordinal;
+            if (policy == SelectPolicy.RANDOM) return randomOrder[ordinal];
+            // Avoid overflow when the descriptor count approaches int limits.
+            int remaining = set.cases.size() - fairStart;
+            return ordinal < remaining
+                    ? fairStart + ordinal
+                    : ordinal - remaining;
+        }
+
+        private CaseRegistration caseOrDefault(int index) {
+            CaseRegistration registration = registrations[index];
+            return registration != null
+                    ? registration
+                    : new CaseRegistration(this, index, set.cases.get(index));
         }
     }
 
     private static void registerLocked(SelectRegistration selection) {
         if (selection.decided || selection.registered) return;
-        selection.order = selection.set.initialOrder(selection.policy);
+        selection.captureOrderLocked();
         selection.registered = true;
         ACTIVE.add(selection);
 
-        for (int index : selection.order) {
+        for (int step = 0; step < selection.set.cases.size(); step++) {
+            int index = selection.orderedIndex(step);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
             CaseRegistration registration =
                     new CaseRegistration(selection, index, selectCase);
-            selection.registrations.add(registration);
+            selection.registrations[index] = registration;
             channelOf(selectCase).registrations.add(registration);
         }
     }
@@ -718,11 +719,12 @@ public final class ChannelRuntime {
         if (!selection.registered) return;
         selection.registered = false;
         ACTIVE.remove(selection);
-        for (CaseRegistration registration :
-                List.copyOf(selection.registrations)) {
+        for (int i = 0; i < selection.registrations.length; i++) {
+            CaseRegistration registration = selection.registrations[i];
+            if (registration == null) continue;
             registration.channel().registrations.remove(registration);
+            selection.registrations[i] = null;
         }
-        selection.registrations.clear();
     }
 
     /**
@@ -820,7 +822,8 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
-        for (int index : selection.order) {
+        for (int step = 0; step < selection.set.cases.size(); step++) {
+            int index = selection.orderedIndex(step);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
@@ -857,7 +860,8 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
-        for (int index : selection.order) {
+        for (int step = 0; step < selection.set.cases.size(); step++) {
+            int index = selection.orderedIndex(step);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
@@ -939,10 +943,7 @@ public final class ChannelRuntime {
     private static CaseRegistration findRegistration(
             SelectRegistration selection,
             int index) {
-        for (CaseRegistration registration : selection.registrations) {
-            if (registration.index == index) return registration;
-        }
-        return null;
+        return selection.registrations[index];
     }
 
     private static void commitPairLocked(
