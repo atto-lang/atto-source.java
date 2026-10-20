@@ -774,4 +774,23 @@ final class V3DefaultArgValsAdmissionTest {
                         List.of(stringFormal), List.of(malformedUtf16)));
     }
 
+    @Test
+    void v3SourceContractFingerprintBoundsDeepTypeShapes() {
+        Ast.TypeRef shape = Ast.TypeRef.simple("int");
+        for (int i = 0; i < 66; i++) {
+            shape = new Ast.TypeRef("List", List.of(shape), false);
+        }
+        Ast.TypeRef tooDeep = shape;
+        assertThrows(IllegalArgumentException.class,
+                () -> V3SourceContractFingerprint.sha256Hex(
+                        List.of(new Ast.Param(tooDeep, "x")), List.of()));
+
+        Ast.TypeRef valid = Ast.TypeRef.simple("int");
+        for (int i = 0; i < 12; i++) {
+            valid = new Ast.TypeRef("List", List.of(valid), false);
+        }
+        assertEquals(64, V3SourceContractFingerprint.sha256Hex(
+                List.of(new Ast.Param(valid, "x")), List.of()).length());
+    }
+
 }
