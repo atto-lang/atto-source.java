@@ -34,31 +34,58 @@ final class UnaryTransportFrame {
         }
     }
 
-    record Envelope(Kind kind, long sessionId, long generation, long correlationId, byte[] payload) {
+    record Envelope(
+            Kind kind,
+            long sessionId,
+            long generation,
+            long correlationId,
+            OresBytes payloadValue) {
         Envelope {
             Objects.requireNonNull(kind, "kind");
-            Objects.requireNonNull(payload, "payload");
+            Objects.requireNonNull(payloadValue, "payloadValue");
             if (sessionId <= 0 || generation <= 0 || correlationId <= 0)
                 throw new IllegalArgumentException("session, generation and correlation ID must be positive");
-            if (payload.length > MAX_PAYLOAD_BYTES)
+            if (payloadValue.size() > MAX_PAYLOAD_BYTES)
                 throw new IllegalArgumentException("unary payload exceeds configured limit");
-            if (kind == Kind.CANCEL && payload.length != 0)
+            if (kind == Kind.CANCEL && !payloadValue.isEmpty())
                 throw new IllegalArgumentException("cancel envelopes cannot carry payload bytes");
-            payload = payload.clone();
         }
-        @Override public byte[] payload() { return payload.clone(); }
-        int payloadLength() { return payload.length; }
+
+        Envelope(
+                Kind kind,
+                long sessionId,
+                long generation,
+                long correlationId,
+                byte[] payload) {
+            this(kind, sessionId, generation, correlationId, OresBytes.copyOf(payload));
+        }
+
+        static Envelope fromFreshPayload(
+                Kind kind,
+                long sessionId,
+                long generation,
+                long correlationId,
+                byte[] freshPayload) {
+            Objects.requireNonNull(freshPayload, "freshPayload");
+            return new Envelope(
+                    kind, sessionId, generation, correlationId,
+                    OresBytes.wrapTrusted(freshPayload));
+        }
+
+        byte[] payload() { return payloadValue.toByteArray(); }
+        int payloadLength() { return payloadValue.size(); }
     }
 
     private UnaryTransportFrame() { }
 
     private static byte[] body(Envelope envelope) {
         Objects.requireNonNull(envelope, "envelope");
-        byte[] payload = envelope.payload;
-        ByteBuffer out = ByteBuffer.allocate(ENVELOPE_BYTES + payload.length).order(ByteOrder.BIG_ENDIAN);
+        OresBytes payload = envelope.payloadValue;
+        ByteBuffer out = ByteBuffer.allocate(ENVELOPE_BYTES + payload.size()).order(ByteOrder.BIG_ENDIAN);
         out.put((byte) VERSION).put((byte) envelope.kind().wire)
                 .putLong(envelope.sessionId()).putLong(envelope.generation())
-                .putLong(envelope.correlationId()).put(payload);
+                .putLong(envelope.correlationId());
+        payload.putInto(out);
         return out.array();
     }
 
@@ -77,7 +104,7 @@ final class UnaryTransportFrame {
         in.get(payload);
         if (kind == Kind.CANCEL && payload.length != 0)
             throw new IOException("cancel envelope contains payload");
-        return new Envelope(kind, sessionId, generation, correlationId, payload);
+        return Envelope.fromFreshPayload(kind, sessionId, generation, correlationId, payload);
     }
 
     /** One WebSocket binary MESSAGE, after RFC 6455 reassembly/validation. */
@@ -108,13 +135,13 @@ final class UnaryTransportFrame {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(envelope, "envelope");
         java.io.DataOutputStream writer = new java.io.DataOutputStream(output);
-        writer.writeInt(ENVELOPE_BYTES + envelope.payload.length);
+        writer.writeInt(ENVELOPE_BYTES + envelope.payloadValue.size());
         writer.writeByte(VERSION);
         writer.writeByte(envelope.kind().wire);
         writer.writeLong(envelope.sessionId());
         writer.writeLong(envelope.generation());
         writer.writeLong(envelope.correlationId());
-        writer.write(envelope.payload);
+        envelope.payloadValue.writeTo(writer);
     }
 
     /**
