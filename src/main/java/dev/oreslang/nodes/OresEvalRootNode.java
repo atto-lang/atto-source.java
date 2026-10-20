@@ -6316,7 +6316,8 @@ public final class OresEvalRootNode extends RootNode {
 
             if (call.callee() instanceof Ast.NameExpr tupleName
                     && tupleName.name().equals("tuple")
-                    && env.lookup("tuple") == Env.MISSING) {
+                    && env.lookup("tuple") == Env.MISSING
+                    && !hasFunctionFamily("tuple")) {
                 List<Object> args = evaluateArguments(call.arguments(), env);
                 return invokableInvocation(values -> List.copyOf(values), args);
             }
