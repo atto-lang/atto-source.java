@@ -622,6 +622,8 @@ public final class OresScheduler implements AutoCloseable {
         private final Task<T> task;
         private final Runnable onQuiescent;
         private final AtomicBoolean quiescenceNotified = new AtomicBoolean();
+        /** The deferred retirement callback can be invoked at most once. */
+        private final AtomicBoolean physicalRetirementCompleted = new AtomicBoolean();
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
@@ -1064,6 +1066,7 @@ public final class OresScheduler implements AutoCloseable {
                 // cancelled/failed guest turn is still physically executing.
                 // A terminal Future is not a carrier-exit witness.
                 task.afterCarrierQuiescent(() -> {
+                    if (!physicalRetirementCompleted.compareAndSet(false, true)) return;
                     // A child can still own actor/arena memory even after this
                     // parent's guest carrier has stopped. Keep the scheduler
                     // live-set entry and quiescence callback until descendants
