@@ -434,6 +434,21 @@ final class OresSchedulerTest {
     }
 
     @Test
+    void actorAllocationDomainPermitsZeroBasedOwnerWithoutBecomingExecutionIdentity() {
+        ExecutionContext context = ExecutionContext.actor(
+                11, 22, 11, 0, 3, 0, 0);
+
+        assertEquals(11L, context.id().runtimeDomain());
+        assertEquals(22L, context.id().execution());
+        assertEquals(ExecutionContext.AllocationKind.ACTOR,
+                context.allocationDomain().kind());
+        assertEquals(0L, context.allocationDomain().owner());
+        assertEquals(3L, context.allocationDomain().generation());
+        assertNotEquals(context.id().execution(), context.allocationDomain().owner(),
+                "execution and allocation-owner identities must never be conflated");
+    }
+
+    @Test
     void schedulerCannotCloseItselfFromOwnTaskTurn() throws Exception {
         OresScheduler scheduler = new OresScheduler(1);
         try {
