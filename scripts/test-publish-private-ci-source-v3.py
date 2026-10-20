@@ -156,11 +156,21 @@ class PrivateCiV3Test(unittest.TestCase):
                     "number": v3.REVIEW_AUTHORITY_PR,
                     "state": "closed",
                     "merged_at": "2026-10-20T00:00:00Z",
+                    "user": {"id": 424242, "login": "independent-author"},
                     "head": {
                         "sha": authority_head,
-                        "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                        "repo": {
+                            "full_name": v3.legacy.SOURCE_REPO,
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                        },
                     },
-                    "base": {"ref": v3.legacy.SOURCE_PROTECTED_BRANCH},
+                    "base": {
+                        "ref": v3.legacy.SOURCE_PROTECTED_BRANCH,
+                        "repo": {
+                            "full_name": v3.legacy.SOURCE_REPO,
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                        },
+                    },
                 }
             raise AssertionError(route)
 
@@ -193,6 +203,49 @@ class PrivateCiV3Test(unittest.TestCase):
                 main_sha,
             )
 
+    def test_unprotected_main_rejects_authority_authored_by_reviewer(self):
+        main_sha = "2" * 40
+        authority_head = "3" * 40
+        policy_bytes = b"trusted/ci\n"
+        policy_digest = hashlib.sha256(policy_bytes).digest()
+
+        def api(route, method="GET", payload=None):
+            if "/branches/" in route:
+                return {
+                    "name": v3.legacy.SOURCE_PROTECTED_BRANCH,
+                    "protected": False,
+                    "commit": {"sha": main_sha},
+                }
+            if route.endswith("/pulls/" + str(v3.REVIEW_AUTHORITY_PR)):
+                return {
+                    "number": v3.REVIEW_AUTHORITY_PR,
+                    "state": "closed",
+                    "merged_at": "2026-10-20T00:02:00Z",
+                    "user": {
+                        "id": v3.REVIEW_AUTHORITY_USER_ID,
+                        "login": v3.REVIEW_AUTHORITY_LOGIN,
+                    },
+                    "head": {
+                        "sha": authority_head,
+                        "repo": {
+                            "full_name": v3.legacy.SOURCE_REPO,
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                        },
+                    },
+                    "base": {
+                        "ref": v3.legacy.SOURCE_PROTECTED_BRANCH,
+                        "repo": {
+                            "full_name": v3.legacy.SOURCE_REPO,
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                        },
+                    },
+                }
+            raise AssertionError(route)
+
+        with patch.object(v3.legacy, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(v3.Denied, "independent merged"):
+                v3.authorized_main_sha("trusted/ci", policy_digest)
+
     def test_unprotected_main_rejects_stale_or_revoked_review(self):
         main_sha = "2" * 40
         authority_head = "3" * 40
@@ -211,11 +264,21 @@ class PrivateCiV3Test(unittest.TestCase):
                     "number": v3.REVIEW_AUTHORITY_PR,
                     "state": "closed",
                     "merged_at": "2026-10-20T00:00:00Z",
+                    "user": {"id": 424242, "login": "independent-author"},
                     "head": {
                         "sha": authority_head,
-                        "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                        "repo": {
+                            "full_name": v3.legacy.SOURCE_REPO,
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                        },
                     },
-                    "base": {"ref": v3.legacy.SOURCE_PROTECTED_BRANCH},
+                    "base": {
+                        "ref": v3.legacy.SOURCE_PROTECTED_BRANCH,
+                        "repo": {
+                            "full_name": v3.legacy.SOURCE_REPO,
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                        },
+                    },
                 }
             raise AssertionError(route)
 
@@ -281,11 +344,21 @@ class PrivateCiV3Test(unittest.TestCase):
                     "number": v3.REVIEW_AUTHORITY_PR,
                     "state": "closed",
                     "merged_at": "2026-10-20T00:01:00Z",
+                    "user": {"id": 424242, "login": "independent-author"},
                     "head": {
                         "sha": authority_head,
-                        "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                        "repo": {
+                            "full_name": v3.legacy.SOURCE_REPO,
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                        },
                     },
-                    "base": {"ref": v3.legacy.SOURCE_PROTECTED_BRANCH},
+                    "base": {
+                        "ref": v3.legacy.SOURCE_PROTECTED_BRANCH,
+                        "repo": {
+                            "full_name": v3.legacy.SOURCE_REPO,
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                        },
+                    },
                 }
             raise AssertionError(route)
 
@@ -324,11 +397,21 @@ class PrivateCiV3Test(unittest.TestCase):
                     "number": v3.REVIEW_AUTHORITY_PR,
                     "state": "closed",
                     "merged_at": "2026-10-20T00:00:00Z",
+                    "user": {"id": 424242, "login": "independent-author"},
                     "head": {
                         "sha": authority_head,
-                        "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                        "repo": {
+                            "full_name": v3.legacy.SOURCE_REPO,
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                        },
                     },
-                    "base": {"ref": v3.legacy.SOURCE_PROTECTED_BRANCH},
+                    "base": {
+                        "ref": v3.legacy.SOURCE_PROTECTED_BRANCH,
+                        "repo": {
+                            "full_name": v3.legacy.SOURCE_REPO,
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                        },
+                    },
                 }
             raise AssertionError(route)
 
@@ -379,11 +462,21 @@ class PrivateCiV3Test(unittest.TestCase):
                     "number": v3.REVIEW_AUTHORITY_PR,
                     "state": "closed",
                     "merged_at": "2026-10-20T00:02:00Z",
+                    "user": {"id": 424242, "login": "independent-author"},
                     "head": {
                         "sha": authority_head,
-                        "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                        "repo": {
+                            "full_name": v3.legacy.SOURCE_REPO,
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                        },
                     },
-                    "base": {"ref": v3.legacy.SOURCE_PROTECTED_BRANCH},
+                    "base": {
+                        "ref": v3.legacy.SOURCE_PROTECTED_BRANCH,
+                        "repo": {
+                            "full_name": v3.legacy.SOURCE_REPO,
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                        },
+                    },
                 }
             raise AssertionError(route)
 
@@ -565,7 +658,10 @@ class PrivateCiV3Test(unittest.TestCase):
                     "state": "open",
                     "head": {
                         "sha": "9" * 40,
-                        "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                        "repo": {
+                            "full_name": v3.legacy.SOURCE_REPO,
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                        },
                     },
                     "base": {"ref": "main"},
                 }
