@@ -110,7 +110,8 @@ final class FutureConstructorsLanguageTest {
 
     @Test
     void constructorRejectsSynchronousRun() {
-        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 define module app
                   define class Producer as
                     pub run(): int { return 5; }
@@ -121,6 +122,8 @@ final class FutureConstructorsLanguageTest {
                   }
                 end
                 """));
+        assertTrue(error.getMessage().contains("Future<T> provider must have public async run()"),
+                () -> "wrong synchronous-provider diagnostic: " + error.getMessage());
     }
 
     @Test
@@ -169,7 +172,8 @@ final class FutureConstructorsLanguageTest {
     }
     @Test
     void statelessProviderGateRejectsMutableReceiverCrossTaskAlias() {
-        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 define module app
                   define class Stateful as
                     pub let int value = 5;
@@ -181,6 +185,8 @@ final class FutureConstructorsLanguageTest {
                   }
                 end
                 """));
+        assertTrue(error.getMessage().contains("Future<T> async provider must be stateless"),
+                () -> "stateful provider failed before the intended ownership gate: " + error.getMessage());
     }
 
     @Test
