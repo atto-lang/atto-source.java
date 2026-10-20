@@ -5079,7 +5079,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean isTrappableFailure(RuntimeException failure) {
             return dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
-                    failure, OresPanic.class);
+                    failure, OresPanic.class, OresCastError.class);
         }
 
         // Cleanup may add suppressed diagnostics but must not replace a
