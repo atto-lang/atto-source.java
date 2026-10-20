@@ -197,7 +197,9 @@ public final class Types {
         return false; // Not knowing if types overlap is NOT proof of exclusion.
     }
 
-    private static boolean containsUncertainType(Type type) {
+    // Package-visible so TypeChecker can apply the same proof rule to
+    // declaration-aware structural relations.
+    static boolean containsUncertainType(Type type) {
         if (type == Unknown.INSTANCE || type instanceof Generic) return true;
         if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Not not) return containsUncertainType(not.excluded());
@@ -264,9 +266,22 @@ public final class Types {
             // therefore name the exact generated struct shape.
             if (source.kind() == AggregateKind.STRUCT
                     && source.members().size() != target.members().size()) return false;
+            // Readonly structural views may covariantly read fields, but a
+            // writable destination cannot widen a slot or recover mutation from
+            // an already-readonly source.
+            if (!target.readOnly() && source.readOnly()) return false;
             for (Map.Entry<String, Type> required : target.members().entrySet()) {
                 Type actual = source.members().get(required.getKey());
-                if (actual == null || !isAssignable(actual, required.getValue())) return false;
+                if (actual == null) return false;
+                if (target.readOnly()) {
+                    if (!actual.equals(required.getValue())
+                            && (containsUncertainType(actual)
+                                    || !isAssignable(actual, required.getValue()))) {
+                        return false;
+                    }
+                } else if (!actual.equals(required.getValue())) {
+                    return false;
+                }
             }
             return true;
         }
