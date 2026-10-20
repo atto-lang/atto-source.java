@@ -64,7 +64,7 @@ public final class ModelRunFencing {
             throw new IllegalArgumentException(code);
     }
 
-    public static long nextGraphGeneration(long current) {
+    public static String planCacheKey(String graphDigest, String profileDigest) {\n        requireDigest(graphDigest, "MODEL_INVALID_GRAPH_DIGEST");\n        requireDigest(profileDigest, "MODEL_INVALID_EXECUTION_PROFILE");\n        return "ores-model-plan-v1:" + graphDigest + ":" + profileDigest;\n    }\n\n    public static long nextGraphGeneration(long current) {
         if (current < 0) throw new IllegalArgumentException("MODEL_INVALID_GRAPH_GENERATION");
         if (current == Long.MAX_VALUE) throw new IllegalStateException("MODEL_GRAPH_GENERATION_OVERFLOW");
         return current + 1;
