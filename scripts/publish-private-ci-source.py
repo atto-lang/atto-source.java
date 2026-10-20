@@ -117,10 +117,12 @@ def _policy_authorization(contents, repository):
         if not line or line.startswith("#"):
             continue
         parts = line.split(" ")
-        if (len(parts) != 3
+        if (len(parts) != 5
                 or not NAME.fullmatch(parts[0])
                 or not REPOSITORY_ID.fullmatch(parts[1])
-                or not SHA.fullmatch(parts[2])):
+                or not SHA.fullmatch(parts[2])
+                or not SHA.fullmatch(parts[3])
+                or not SHA.fullmatch(parts[4])):
             raise Denied("private CI approval policy contains an invalid entry")
         if line != " ".join(parts):
             raise Denied(
@@ -129,10 +131,19 @@ def _policy_authorization(contents, repository):
             if approved is not None:
                 raise Denied(
                     "private CI approval policy contains duplicate destination entries")
-            approved = (int(parts[1]), parts[2])
+            approved = (
+                int(parts[1]),
+                parts[2],
+                parts[3],
+                parts[4])
     if approved is None:
         raise Denied("destination approval was revoked or absent")
-    return (hashlib.sha256(contents).digest(), approved[0], approved[1])
+    return (
+        hashlib.sha256(contents).digest(),
+        approved[0],
+        approved[1],
+        approved[2],
+        approved[3])
 
 
 def checked_policy_fingerprint(root, repository):
@@ -415,7 +426,9 @@ def publish(repository, source, branch, trusted_root, source_commit):
     approved_policy = checked_policy_fingerprint(
         trusted_root, repository)
     approved_repo_id = approved_policy[1]
-    approved_workflow_sha = approved_policy[2]
+    approved_base_commit = approved_policy[2]
+    approved_base_tree = approved_policy[3]
+    approved_workflow_sha = approved_policy[4]
 
     # Must check the GitHub origin's protected main before reading private bytes.
     verify_protected_origin(repository, approved_policy)
@@ -429,10 +442,16 @@ def publish(repository, source, branch, trusted_root, source_commit):
         raise Denied("destination default branch is invalid")
     base_ref = gh_api(f"repos/{repository}/git/ref/heads/{default}")
     base_sha = valid_sha(base_ref.get("object", {}).get("sha"))
+    if base_sha != approved_base_commit:
+        raise Denied(
+            "destination default branch differs from reviewed carrier base commit")
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
+    if base_tree != approved_base_tree:
+        raise Denied(
+            "destination carrier base tree differs from reviewed policy")
     checked_carrier_workflow(
-        repository, base_sha, approved_workflow_sha)
+        repository, approved_base_commit, approved_workflow_sha)
 
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
@@ -485,7 +504,9 @@ def publish(repository, source, branch, trusted_root, source_commit):
     commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
         "message": (
             "ci: exact private Oreslang tree "
-            + source_commit + " tree " + expected_source_tree
+            + source_commit + " tree " + expected_source_tree + "\n"
+            + "carrier-base " + approved_base_commit
+            + " tree " + approved_base_tree
         ),
         "tree": new_tree_sha, "parents": [base_sha]
     })
@@ -495,11 +516,27 @@ def publish(repository, source, branch, trusted_root, source_commit):
     # uploaded blobs but before attaching them to an executable CI branch.
     verify_protected_origin(repository, approved_policy)
     # CREATE a new CI ref, never UPDATE an existing branch, tag, or main.
+    # This starts the carrier workflow. Its pre-checkout job polls for the
+    # detached exact-commit authorization ref created immediately below.
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
         "ref": "refs/heads/" + branch, "sha": commit_sha
     })
     if created.get("ref") != "refs/heads/" + branch:
         raise Denied("GitHub did not confirm creation of requested isolated CI branch")
+
+    # Re-attest policy/origin before enabling checkout of the source-bearing
+    # carrier commit. The destination workflow accepts only this exact commit
+    # identity and cleans both ephemeral refs after the run.
+    authorize_write()
+    verify_protected_origin(repository, approved_policy)
+    authorization_ref = "refs/heads/ci/authorized-" + commit_sha
+    authorization = gh_api(
+        f"repos/{repository}/git/refs",
+        method="POST",
+        payload={"ref": authorization_ref, "sha": commit_sha})
+    if authorization.get("ref") != authorization_ref:
+        raise Denied(
+            "GitHub did not confirm exact detached carrier authorization ref")
     return commit_sha, len(files)
 
 
