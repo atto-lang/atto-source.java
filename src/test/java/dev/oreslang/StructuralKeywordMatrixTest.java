@@ -3,12 +3,14 @@ package dev.oreslang;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.Types;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -123,6 +125,38 @@ final class StructuralKeywordMatrixTest {
                 rejected.getMessage().toLowerCase().contains("readonly")
                         || rejected.getMessage().toLowerCase().contains("read-only"),
                 rejected.getMessage());
+    }
+
+    @Test
+    void readonlyStructuralViewsDoNotCoerceFieldRepresentations() {
+        Types.Record intShape = new Types.Record(
+                Map.of("value", Types.Primitive.INT), false, Types.AggregateKind.RECORD);
+        Types.Record floatView = new Types.Record(
+                Map.of("value", Types.Primitive.FLOAT), true, Types.AggregateKind.CONTRACT);
+        assertFalse(Types.isAssignable(intShape, floatView),
+                "readonly shape projections cannot reinterpret an int field as float");
+        assertFalse(Types.isAssignable(floatView,
+                new Types.Record(Map.of("value", Types.Primitive.FLOAT),
+                        false, Types.AggregateKind.RECORD)),
+                "readonly projections must not recover write access");
+
+        Types.Record nestedInt = new Types.Record(Map.of("inner", intShape),
+                false, Types.AggregateKind.RECORD);
+        Types.Record nestedFloat = new Types.Record(Map.of("inner", floatView),
+                true, Types.AggregateKind.CONTRACT);
+        assertFalse(Types.isAssignable(nestedInt, nestedFloat),
+                "nested structural fields must not regain numeric coercion");
+        assertTrue(Types.isAssignable(intShape, new Types.Record(
+                Map.of("value", Types.Primitive.INT), true, Types.AggregateKind.CONTRACT)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc wants(structural { value: float } row): float {
+                  return row.value;
+                }
+                fnc invalid(): float {
+                  return wants(record{value: 1});
+                }
+                """)));
     }
 
     @Test
