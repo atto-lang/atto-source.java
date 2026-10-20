@@ -344,7 +344,9 @@ final class ActorSharedRuntimeAccountingTest {
             try {
                 var failure = assertThrows(
                         IllegalStateException.class,
-                        () -> cell.update(ignored -> java.util.List.of(1)));
+                        () -> cell.update(
+                                ignored -> new java.util.ArrayList<>(
+                                        java.util.List.of(1))));
                 assertTrue(failure.getMessage().contains(
                         "shared actor memory accounting underflow"));
             } finally {
