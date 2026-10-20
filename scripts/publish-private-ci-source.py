@@ -441,9 +441,18 @@ def publish(repository, source, branch, trusted_root, source_commit):
                            "sha": isolated_sha}]})
     new_tree_sha = valid_sha(new_tree.get("sha"))
     authorize_write()
+    # Audit metadata is useful to destination CI but is NOT an independent
+    # source authorization signature. Only the protected-origin approval and
+    # the exact-tree check above grant permission to export private bytes.
+    message = (
+        "ci: source snapshot from approved private Oreslang checkout\n\n"
+        f"Oreslang-Source-Repo: {SOURCE_REPO}\n"
+        f"Oreslang-Source-Commit: {source_commit}\n"
+        f"Oreslang-Source-Tree: {expected_source_tree}\n"
+        f"Oreslang-Destination-Prefix: {PREFIX}\n"
+    )
     commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
-        "message": "ci: source snapshot from approved private Oreslang checkout",
-        "tree": new_tree_sha, "parents": [base_sha]
+        "message": message, "tree": new_tree_sha, "parents": [base_sha]
     })
     commit_sha = valid_sha(commit.get("sha"))
     authorize_write()
@@ -454,8 +463,9 @@ def publish(repository, source, branch, trusted_root, source_commit):
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
         "ref": "refs/heads/" + branch, "sha": commit_sha
     })
-    if created.get("ref") != "refs/heads/" + branch:
-        raise Denied("GitHub did not confirm creation of requested isolated CI branch")
+    if (created.get("ref") != "refs/heads/" + branch
+            or valid_sha(created.get("object", {}).get("sha")) != commit_sha):
+        raise Denied("GitHub did not attest the exact new CI branch target")
     return commit_sha, len(files)
 
 
