@@ -37,8 +37,19 @@ final class ProximateSupervisorSeparationTest {
                             privilegeFailure.set(new AssertionError(
                                     "actor A acquired supervisor authority"));
                         } catch (SecurityException expected) {
-                            // Correct: only the host / authenticated S CONTROL turn
-                            // may bind a new group explicitly to S.
+                            // Correct: only authenticated supervisor CONTROL may bind S.
+                        } catch (Throwable unexpected) {
+                            privilegeFailure.set(unexpected);
+                        }
+                        try {
+                            s.startChildHost(sWorkers,
+                                    ActorRuntime.ActorKind.PRIVATE,
+                                    IsolatePolicy.developer(),
+                                    worker -> (value, workerContext) -> { });
+                            privilegeFailure.set(new AssertionError(
+                                    "actor A invoked S's privileged startChildHost"));
+                        } catch (SecurityException expected) {
+                            // Knowing S's object is not possession of CONTROL authority.
                         } catch (Throwable unexpected) {
                             privilegeFailure.set(unexpected);
                         } finally {
