@@ -106,6 +106,47 @@ final class ScopedTaskTest {
                         """));
     }
 
+
+    @Test
+    void scopedTaskMayInvokeSuspendsCallableFromSynchronousParent() throws Exception {
+        String source = """
+                suspends fnc operation(): int {
+                    return 40;
+                }
+
+                pub routine main(): void {
+                    nb scope {
+                        let worker = nb {
+                            stdio.stdout.write(operation() + 2);
+                        };
+                    }
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("42", run(source));
+    }
+
+    @Test
+    void actorScopeIsRejectedStaticallyUntilActorIntegrationIsProven() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        actor fnc worker(): void {
+                            nb scope {
+                                let child = nb {
+                                    return;
+                                };
+                            }
+                            return;
+                        }
+                        """));
+        String message = failure.getMessage().toLowerCase();
+        assertTrue(message.contains("scope"));
+        assertTrue(message.contains("actor"));
+    }
+
     private static String run(String code) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, code, "scoped-task.ores")
