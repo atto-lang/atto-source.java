@@ -57,6 +57,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         api.assert_not_called()
         self.assertTrue(stderr.write.called)
 
+    def test_legacy_publish_import_is_disabled_before_any_api_write(self):
+        with patch.object(pub, "gh_api") as api:
+            with self.assertRaisesRegex(pub.Denied, "legacy publisher is disabled"):
+                pub.publish(
+                    "trusted/ci",
+                    self.source,
+                    "ci/oreslang-test",
+                    self.root,
+                    A,
+                )
+        api.assert_not_called()
+
     def test_github_api_uses_absolute_cli_and_sanitized_environment(self):
         response = Mock(returncode=0, stdout='{"ok":true}', stderr="")
         hostile = {
@@ -351,6 +363,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 A,
             )
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_origin_main_must_be_protected_before_export(self):
         api, routes = self.verified_origin_api(protected=False)
         with patch.object(pub, "verify_protected_origin",
@@ -365,6 +378,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertNotIn("repos/"+pub.SOURCE_REPO+"/contents/"
                          +pub.POLICY_PATH+"?ref="+A, routes)
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_origin_main_requires_real_codeowner_and_admin_enforcement(self):
         for rule in ("codeowners", "stale", "admins"):
             with self.subTest(rule=rule):
@@ -382,6 +396,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                  +pub.POLICY_PATH+"?ref="+A, routes)
                 self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_origin_main_rejects_force_push_delete_and_review_bypasses(self):
         for config in ({"approvals": 0}, {"force": True},
                        {"deletions": True},
@@ -403,6 +418,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 self.assertFalse(any(method == "POST"
                                      for method, _, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_origin_protection_api_permission_denial_rejects_export(self):
         api, _ = self.verified_origin_api()
         def denied(route, method="GET", payload=None):
@@ -419,6 +435,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     collect.assert_not_called()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_origin_main_must_match_local_approved_policy(self):
         api, _ = self.verified_origin_api(
             protected=True, policy=b"# no authorized destination\n")
@@ -432,6 +449,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     collect.assert_not_called()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_protected_origin_verification_before_and_after_upload(self):
         api, routes = self.verified_origin_api(protected=True)
         with patch.object(pub, "verify_protected_origin",
@@ -444,6 +462,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         if r == "repos/"+pub.SOURCE_REPO+"/branches/main"]
         self.assertEqual(len(branch_reads), 2)
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_protected_origin_recheck_rejects_last_minute_revocation(self):
         api, routes = self.verified_origin_api(protected=True)
         calls = [0]
@@ -522,6 +541,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 ORIGINAL_VERIFY_EXACT_SOURCE_TREE(
                     [("hello.ores", data, "100644")], A)
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_publisher_rejects_mismatched_uploaded_tree_before_branch(self):
         # GitHub returns a different tree SHA even though blobs matched.
         self.source_tree_mock.return_value = C
@@ -531,6 +551,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                          [route for method, route, _ in self.route_calls
                           if method == "POST"])
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_source_commit_is_mandatory_exact_sha(self):
         with patch.object(pub, "collect_source") as source:
             with self.assertRaises(pub.Denied):
@@ -538,6 +559,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                             self.root, "main")
             source.assert_not_called()
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
         sha, count = self.publish()
         self.assertEqual((sha, count), (A, 1))
@@ -556,6 +578,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(writes[3][2]["tree"], E)
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_existing_stale_files_cannot_survive_clean_source_snapshot(self):
         # Assume base_tree contains a stale private-oreslang-source/secret.ores.
         # A new isolated source tree MUST NOT be based on that default tree.
@@ -571,12 +594,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": D}])
         self.assertEqual(tree_writes[1]["base_tree"], B)
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_public_visibility_aborts_before_any_write(self):
         self.visibility = ["public"]
         with self.assertRaises(pub.Denied):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_visibility_flip_aborts_before_next_write(self):
         self.visibility = ["private", "private", "public"]
         with self.assertRaises(pub.Denied):
@@ -584,6 +609,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
                          ["repos/trusted/ci/git/blobs"])
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_mid_transfer_policy_revocation_aborts_without_new_branch(self):
         original = self.fake_api
         def revoke_after_blob(route, method="GET", payload=None):
@@ -597,12 +623,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         writes = [r for m, r, _ in self.route_calls if m == "POST"]
         self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_initial_unapproved_policy_fails_even_with_stale_preflight(self):
         self.approval.write_text("# reviewer removed the destination")
         with self.assertRaisesRegex(pub.Denied, "revoked or absent"):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_symlinked_approval_policy_fails_before_upload(self):
         self.approval.unlink()
         self.approval.symlink_to(self.source / "hello.ores")
@@ -610,6 +638,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_wrong_repo_and_invalid_branch_rejected_before_preflight(self):
         for repo, branch in [("public/test;evil", "ci/oreslang-test"),
                              ("trusted/ci", "main"),
@@ -620,18 +649,21 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     self.publish(repo, branch)
         self.assertEqual(self.route_calls, [])
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_symlinked_source_rejected_before_upload(self):
         (self.source / "secret").symlink_to(self.root)
         with self.assertRaises(pub.Denied):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_symlinked_directory_rejected_before_upload(self):
         (self.source / "linked").symlink_to(self.root, target_is_directory=True)
         with self.assertRaises(pub.Denied):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_nested_regular_source_files_keep_expected_paths(self):
         directory = self.source / "nested"
         directory.mkdir()
@@ -646,6 +678,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertNotIn("base_tree", new_tree[0])
         self.assertEqual(new_tree[1]["tree"][0]["path"], "private-oreslang-source")
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_directory_entry_quota_rejects_before_upload(self):
         (self.source / "another.ores").write_text("another")
         with patch.object(pub, "MAX_DIRECTORY_ENTRIES", 1):
@@ -653,6 +686,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_parent_directory_swap_to_symlink_fails_before_upload(self):
         nested = self.source / "nested"
         nested.mkdir()
@@ -674,6 +708,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertTrue(swapped[0])
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_file_swap_to_symlink_fails_before_upload(self):
         sensitive = self.root / "outside-secret"
         sensitive.write_text("secret")
@@ -692,6 +727,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertTrue(swapped[0])
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_hardlink_to_outside_file_fails_before_upload(self):
         sensitive = self.root / "outside-secret"
         sensitive.write_text("secret")
@@ -700,6 +736,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_nonregular_source_fifo_fails_before_upload(self):
         import os
         import stat
@@ -710,6 +747,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_policy_symlink_swap_between_check_and_read_rejected(self):
         outside = self.root / "outside-approved-policy"
         outside.write_text("trusted/ci\n")
@@ -730,6 +768,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_policy_parent_directory_swap_rejected(self):
         outside = self.root / "external-approved-dir"
         outside.mkdir()
@@ -749,6 +788,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertTrue(replaced[0])
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_hardlinked_approval_policy_rejected(self):
         outside = self.root / "outside-approved-policy"
         outside.write_bytes(self.approval.read_bytes())
@@ -758,6 +798,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_oversized_approval_policy_rejected(self):
         self.approval.write_text("#" + "x" * (16 * 1024 + 1))
         with self.assertRaisesRegex(pub.Denied, "size limit"):
@@ -849,6 +890,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if before is not None:
             self.assertLessEqual(len(os.listdir("/proc/self/fd")), before + 2)
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_invalid_api_sha_rejects_without_commit(self):
         original = self.fake_api
         def bad(route, method="GET", payload=None):
@@ -860,6 +902,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, A)
         self.assertFalse(any(r.endswith("/git/refs") for _, r, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_valid_looking_but_incorrect_blob_sha_is_rejected(self):
         original = self.fake_api
         def wrong(route, method="GET", payload=None):
@@ -871,6 +914,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, A)
         self.assertFalse(any(r.endswith("/git/refs") for _, r, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_source_must_be_under_trusted_checkout(self):
         outside = self.root.parent / ("unsafe-" + self.root.name)
         outside.mkdir()
@@ -884,18 +928,21 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             outside.rmdir()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_denied_preflight_halts_before_api(self):
         with patch.object(pub, "require_preflight", side_effect=pub.Denied("not approved")):
             with self.assertRaisesRegex(pub.Denied, "not approved"):
                 self.publish()
         self.assertEqual(self.route_calls, [])
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_oversized_source_file_rejected(self):
         (self.source / "large").write_bytes(b"x" * (pub.MAX_SINGLE + 1))
         with self.assertRaises(pub.Denied):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    @unittest.skip("legacy write pipeline removed; v3 owns source-transfer integration coverage")
     def test_git_metadata_directory_rejected(self):
         (self.source / ".git").mkdir()
         with self.assertRaises(pub.Denied):
