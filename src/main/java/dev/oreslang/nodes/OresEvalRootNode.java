@@ -1432,7 +1432,8 @@ public final class OresEvalRootNode extends RootNode {
             }
             OresScheduler current = OresScheduler.current();
             return (current != null ? current : context.vm().rootScheduler())
-                    .start(task, onQuiescent, onTerminalReady);
+                    .startCompilerAdmittedTask(
+                            task, onQuiescent, onTerminalReady);
         }
 
         private static final class TaskTransferLease {
