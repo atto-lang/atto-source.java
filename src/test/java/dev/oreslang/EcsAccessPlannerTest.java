@@ -1,7 +1,8 @@
-package dev.oreslang;
+package dev.oreslang.types;
 
 import dev.oreslang.types.EcsAccessPlanner;
 import dev.oreslang.types.EcsAccessPlanner.Access;
+import dev.oreslang.types.EcsAccessPlanner.AllocationIdentity;
 import dev.oreslang.types.EcsAccessPlanner.Mode;
 import dev.oreslang.types.EcsAccessPlanner.SystemAccess;
 import org.junit.jupiter.api.Test;
@@ -17,19 +18,19 @@ final class EcsAccessPlannerTest {
         return new SystemAccess(name, List.of(accesses));
     }
 
-    private static Access read(Object id, long begin, long end) {
+    private static Access read(AllocationIdentity id, long begin, long end) {
         return new Access(id, begin, end, Mode.READ);
     }
 
-    private static Access write(Object id, long begin, long end) {
+    private static Access write(AllocationIdentity id, long begin, long end) {
         return new Access(id, begin, end, Mode.WRITE);
     }
 
     @Test
     void permitsReadReadAndIndependentColumnsButSerializesOverlappingWrites() {
-        Object positions = new Object();
-        Object velocities = new Object();
-        Object health = new Object();
+        AllocationIdentity positions = EcsAccessPlanner.newAllocationIdentity();
+        AllocationIdentity velocities = EcsAccessPlanner.newAllocationIdentity();
+        AllocationIdentity health = EcsAccessPlanner.newAllocationIdentity();
         SystemAccess move = sys("movement", read(velocities, 0, 4096), write(positions, 0, 4096));
         SystemAccess damage = sys("damage", write(health, 0, 4096));
         SystemAccess render = sys("render", read(positions, 0, 4096));
@@ -44,7 +45,7 @@ final class EcsAccessPlannerTest {
 
     @Test
     void halfOpenChunksCanSplitWithoutOverlap() {
-        Object positions = new Object();
+        AllocationIdentity positions = EcsAccessPlanner.newAllocationIdentity();
         SystemAccess first = sys("first", write(positions, 0, 64));
         SystemAccess second = sys("second", write(positions, 64, 128));
         SystemAccess overlap = sys("overlap", read(positions, 63, 65));
@@ -56,7 +57,7 @@ final class EcsAccessPlannerTest {
 
     @Test
     void unknownAliasingFailsClosedRegardlessOfOffset() {
-        Object positions = new Object();
+        AllocationIdentity positions = EcsAccessPlanner.newAllocationIdentity();
         assertTrue(EcsAccessPlanner.conflicts(
                 sys("unknown", write(null, 0, 1)),
                 sys("known", read(positions, 1000, 1001))));
@@ -67,8 +68,8 @@ final class EcsAccessPlannerTest {
 
     @Test
     void neverBackfillsEarlierBatchPastAConflictingDependency() {
-        Object x = new Object();
-        Object y = new Object();
+        AllocationIdentity x = EcsAccessPlanner.newAllocationIdentity();
+        AllocationIdentity y = EcsAccessPlanner.newAllocationIdentity();
         SystemAccess a = sys("a", write(x, 0, 8));
         SystemAccess b = sys("b", read(x, 0, 8), write(y, 0, 8));
         SystemAccess c = sys("c", read(y, 0, 8));
@@ -78,7 +79,7 @@ final class EcsAccessPlannerTest {
 
     @Test
     void missingEffectFootprintsAreSerializationBarriers() {
-        Object positions = new Object();
+        AllocationIdentity positions = EcsAccessPlanner.newAllocationIdentity();
         SystemAccess unknownEffects = sys("unknown");
         SystemAccess readOnly = sys("read", read(positions, 0, 32));
         SystemAccess readOnly2 = sys("read2", read(positions, 0, 32));
@@ -92,7 +93,10 @@ final class EcsAccessPlannerTest {
     @Test
     void seededRandomAccessGraphsHonorEveryConflictAndBarrier() {
         Random random = new Random(0x5eed);
-        Object[] allocations = {new Object(), new Object(), new Object()};
+        AllocationIdentity[] allocations = {
+                EcsAccessPlanner.newAllocationIdentity(),
+                EcsAccessPlanner.newAllocationIdentity(),
+                EcsAccessPlanner.newAllocationIdentity()};
         for (int trial = 0; trial < 500; trial++) {
             List<SystemAccess> workload = new ArrayList<>();
             for (int index = 0; index < 8; index++) {
@@ -136,12 +140,12 @@ final class EcsAccessPlannerTest {
 
     @Test
     void plannerRejectsOversizedSystemCountsAndQuadraticProofs() {
-        SystemAccess simple = sys("read", read(new Object(), 0, 1));
+        SystemAccess simple = sys("read", read(EcsAccessPlanner.newAllocationIdentity(), 0, 1));
         assertThrows(IllegalArgumentException.class, () ->
                 EcsAccessPlanner.plan(java.util.Collections.nCopies(
                         EcsAccessPlanner.MAX_SYSTEMS + 1, simple)));
 
-        Access read = read(new Object(), 0, 1);
+        Access read = read(EcsAccessPlanner.newAllocationIdentity(), 0, 1);
         List<Access> largest = java.util.Collections.nCopies(
                 EcsAccessPlanner.MAX_ACCESSES_PER_SYSTEM, read);
         assertThrows(IllegalArgumentException.class, () ->
@@ -158,17 +162,16 @@ final class EcsAccessPlannerTest {
     }
 
     @Test
-    void provenanceUsesObjectIdentityNotSpoofableValueEquality() {
-        Object a = new String("same");
-        Object b = new String("same");
+    void provenanceUsesOpaqueCompilerTokens() {
+        AllocationIdentity a = EcsAccessPlanner.newAllocationIdentity();
+        AllocationIdentity b = EcsAccessPlanner.newAllocationIdentity();
         assertNotSame(a, b);
-        assertEquals(a, b);
         SystemAccess first = sys("a", write(a, 0, 100));
         SystemAccess second = sys("b", write(b, 0, 100));
-        assertFalse(EcsAccessPlanner.conflicts(first, second),
-                "compiler-owned provenance must be identity-based, not string equality");
+        assertFalse(EcsAccessPlanner.conflicts(first, second));
         SystemAccess shared = sys("shared", read(a, 0, 100));
         assertTrue(EcsAccessPlanner.conflicts(first, shared));
+        assertEquals(0, AllocationIdentity.class.getConstructors().length);
     }
 
     @Test
@@ -195,7 +198,7 @@ final class EcsAccessPlannerTest {
 
     @Test
     void aSystemCanReadModifyWriteItsOwnRegionButSerializesWithOtherSystems() {
-        Object allocation = new Object();
+        AllocationIdentity allocation = EcsAccessPlanner.newAllocationIdentity();
         SystemAccess update = sys("update",
                 read(allocation, 0, 64), write(allocation, 0, 64));
         SystemAccess observer = sys("observer", read(allocation, 0, 64));
@@ -205,10 +208,10 @@ final class EcsAccessPlannerTest {
 
     @Test
     void invalidRangesAndNullInputsFailClosed() {
-        assertThrows(IllegalArgumentException.class, () -> read(new Object(), -1, 1));
-        assertThrows(IllegalArgumentException.class, () -> write(new Object(), 5, 5));
-        assertThrows(IllegalArgumentException.class, () -> write(new Object(), 8, 7));
-        assertThrows(NullPointerException.class, () -> new Access(new Object(), 0, 1, null));
+        assertThrows(IllegalArgumentException.class, () -> read(EcsAccessPlanner.newAllocationIdentity(), -1, 1));
+        assertThrows(IllegalArgumentException.class, () -> write(EcsAccessPlanner.newAllocationIdentity(), 5, 5));
+        assertThrows(IllegalArgumentException.class, () -> write(EcsAccessPlanner.newAllocationIdentity(), 8, 7));
+        assertThrows(NullPointerException.class, () -> new Access(EcsAccessPlanner.newAllocationIdentity(), 0, 1, null));
         assertThrows(IllegalArgumentException.class, () -> sys(""));
         assertThrows(IllegalArgumentException.class,
                 () -> sys("x".repeat(EcsAccessPlanner.MAX_SYSTEM_NAME_CHARS + 1)));

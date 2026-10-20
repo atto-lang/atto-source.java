@@ -30,7 +30,15 @@ public final class EcsAccessPlanner {
 
     public enum Mode { READ, WRITE }
 
-    public record Access(Object allocationIdentity, long start, long end, Mode mode) {
+    public static final class AllocationIdentity {
+        private AllocationIdentity() { }
+    }
+
+    static AllocationIdentity newAllocationIdentity() {
+        return new AllocationIdentity();
+    }
+
+    public record Access(AllocationIdentity allocationIdentity, long start, long end, Mode mode) {
         public Access {
             Objects.requireNonNull(mode, "access mode");
             if (start < 0 || end <= start) {

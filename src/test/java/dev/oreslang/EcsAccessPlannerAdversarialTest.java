@@ -1,4 +1,4 @@
-package dev.oreslang;
+package dev.oreslang.types;
 
 import dev.oreslang.types.EcsAccessPlanner;
 import dev.oreslang.types.EcsAccessPlanner.Access;
@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class EcsAccessPlannerAdversarialTest {
     private static Access read() {
-        return new Access(new Object(), 0, 1, Mode.READ);
+        return new Access(EcsAccessPlanner.newAllocationIdentity(), 0, 1, Mode.READ);
     }
 
     private static SystemAccess system() {
