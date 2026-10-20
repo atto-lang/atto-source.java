@@ -416,3 +416,29 @@ capacity. Private source transfer is still denied by the unprotected
 origin main and empty approved-destination allowlist. Full JDK25
 GraalVM/Maven/JUnit execution and LLVM parity remain unverified.
 
+
+
+### Malformed external rejection cleanup — 2026-10-20
+
+The cancellable host callback adapter now treats an external
+`callback.reject(null)` as a **terminal rejection with a
+`NullPointerException` cause**, rather than throwing immediately out
+of the producer callback while leaving its Future pending indefinitely.
+This closes the missing-detach path for an invalid rejection issued
+*after* registration. The same rule applies to callbacks invoked
+synchronously inside `register`: terminal delivery is staged until
+the registrar returns a valid detach hook, after which it fails and
+detaches once. A subsequent settlement attempt is still a duplicate.
+
+Two staged host JUnit cases cover asynchronous and synchronous invalid
+rejection. The host suite now contains **23** tests and the guest
+Future-constructor suite **19** tests. A Java 21 **isolated surrogate**
+with a copied `StagedCallback` state machine passed null rejection,
+terminal reference clearing, duplicate rejection and 5,000 concurrent
+arm/revoke/settle races; these are **not** Maven/JUnit results from the
+actual Oreslang runtime.
+
+This host-runtime hardening does not magically make external
+registrations physically quiescent: detach action semantics remain a
+separate trusted runtime contract, and the untyped host-only
+`RunCallback` overload has no external detach hook.
