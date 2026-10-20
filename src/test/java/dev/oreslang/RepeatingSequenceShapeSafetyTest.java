@@ -248,4 +248,19 @@ final class RepeatingSequenceShapeSafetyTest {
                 }
                 """);
     }
+
+    @Test
+    void unknownElementsCannotForgePrecisePatternMetadata() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new Types.ListType(Types.Unknown.INSTANCE,
+                        List.of(Types.Primitive.INT, Types.Primitive.STRING)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Types.ListType(Types.Primitive.INT,
+                        List.of(Types.Unknown.INSTANCE)));
+        // A compile-time generic slot remains a typed placeholder, not Unknown.
+        assertDoesNotThrow(() ->
+                new Types.ListType(Types.unionOf(List.of(
+                        new Types.Generic("T"), Types.Primitive.INT)),
+                        List.of(new Types.Generic("T"), Types.Primitive.INT)));
+    }
 }
