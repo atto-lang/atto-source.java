@@ -20,6 +20,8 @@ public final class RealtimeActorSourceEffects {
     private static final int MAX_EXPR_NESTING = 64;
     private static final int MAX_STATEMENT_NESTING = 64;
     private static final int MAX_STATEMENTS = 4096;
+    private static final int MAX_PARAMS = 32;
+    private static final int MAX_NAME_LENGTH = 128;
 
     public record Budget(long maxAstSteps) {
         public Budget {
@@ -51,7 +53,9 @@ public final class RealtimeActorSourceEffects {
                         reject("only initialized, immutable, explicit scalar locals are admitted");
                     }
                     long init = expression(bind.initializer(), locals, 0);
-                    if (!locals.add(bind.name())) reject("duplicate local binding");
+                    if (bind.name() == null || bind.name().isBlank()
+                            || bind.name().length() > MAX_NAME_LENGTH
+                            || !locals.add(bind.name())) reject("invalid or duplicate local binding");
                     work = plus(work, plus(1, init));
                 } else if (stmt instanceof Ast.IfStmt iff) {
                     if (iff.branches().isEmpty() || iff.elseBody().isEmpty()) {
@@ -147,7 +151,10 @@ public final class RealtimeActorSourceEffects {
         Objects.requireNonNull(checked, "checked AST");
         Objects.requireNonNull(budget, "budget");
         if (actorName == null || actorName.isBlank()
-                || callbackName == null || callbackName.isBlank() || arity < 0) {
+                || callbackName == null || callbackName.isBlank() || arity < 0
+                || actorName.length() > MAX_NAME_LENGTH
+                || callbackName.length() > MAX_NAME_LENGTH
+                || arity > MAX_PARAMS) {
             reject("actor/callback identity is missing");
         }
         if (!checked.imports().isEmpty() || checked.modules().size() != 1) {
@@ -197,9 +204,14 @@ public final class RealtimeActorSourceEffects {
                 || !scalar(method.returnType())) {
             reject("callback signature or suspension is not admitted");
         }
+        if (method.parameters().size() > MAX_PARAMS) {
+            reject("callback arity exceeds admitted preflight bound");
+        }
         Set<String> locals = new HashSet<>();
         for (Ast.Param param : method.parameters()) {
-            if (param.mutable() || param.structural() || !scalar(param.type())
+            if (param.name() == null || param.name().isBlank()
+                    || param.name().length() > MAX_NAME_LENGTH
+                    || param.mutable() || param.structural() || !scalar(param.type())
                     || !locals.add(param.name())) {
                 reject("only distinct immutable primitive arguments are admitted");
             }
