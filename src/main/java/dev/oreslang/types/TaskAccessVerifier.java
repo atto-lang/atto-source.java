@@ -30,6 +30,14 @@ final class TaskAccessVerifier {
     public enum Mode { READ, WRITE }
 
     /**
+     * Authority class carried by the opaque verifier ticket. STATIC_ANALYSIS
+     * may model READ/WRITE conflicts but can never become an executable scoped
+     * memory capability. SCOPED_READ_BORROW is minted only by the canonical
+     * immutable-read proof path.
+     */
+    enum LoanKind { STATIC_ANALYSIS, SCOPED_READ_BORROW }
+
+    /**
      * Canonical allocation provenance from the borrow checker. Distinct IDs
      * prove nonaliasing only when BOTH roots have compiler-verified uniqueness.
      * A binding name, OS thread ID or value-equal user token cannot supply it.
@@ -188,13 +196,16 @@ final class TaskAccessVerifier {
     static final class CoherentAccessProof {
         private final Ast.Program programIdentity;
         private final List<Claim> claims;
+        private final LoanKind loanKind;
 
         private CoherentAccessProof(
                 Ast.Program programIdentity,
-                List<Claim> claims) {
+                List<Claim> claims,
+                LoanKind loanKind) {
             this.programIdentity =
                     Objects.requireNonNull(programIdentity, "programIdentity");
             this.claims = List.copyOf(Objects.requireNonNull(claims, "claims"));
+            this.loanKind = Objects.requireNonNull(loanKind, "loanKind");
         }
     }
 
@@ -250,7 +261,67 @@ final class TaskAccessVerifier {
         }
         return new CoherentAccessProof(
                 sourceProof.programIdentity(),
-                typed.stream().map(CoherentTypedClaim::claim).toList());
+                typed.stream().map(CoherentTypedClaim::claim).toList(),
+                LoanKind.STATIC_ANALYSIS);
+    }
+
+    /**
+     * Mint the only coherent proof currently eligible for executable scoped
+     * memory lowering. Every claim must be an immutable READ of one exact,
+     * compiler-proven PROCESS allocation generation and every projection in
+     * the path must carry a trusted layout witness. proveCoherentTyped then
+     * requires matching source + lowered Sync authority.
+     *
+     * <p>WRITE remains analysis-only until suspension/reborrow fencing has its
+     * own proof. Actor-private/untrusted heaps remain disabled until their
+     * execution-domain authorization is bound into this proof as well.</p>
+     */
+    static CoherentAccessProof proveScopedReadBorrow(
+            List<CoherentTypedClaim> requested,
+            SendSyncTraits sourceProof,
+            ThreadSafetyTraits.NominalProof resolvedNominals) {
+        List<CoherentTypedClaim> typed = List.copyOf(
+                Objects.requireNonNull(requested, "claims"));
+        if (typed.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "SCOPED_READ_BORROW requires at least one exact read claim");
+        }
+        for (CoherentTypedClaim entry : typed) {
+            Objects.requireNonNull(entry, "claim");
+            Claim claim = entry.claim();
+            if (claim.mode() != Mode.READ) {
+                throw new IllegalArgumentException(
+                        "SCOPED_READ_BORROW cannot carry WRITE authority");
+            }
+            Root root = claim.place().root();
+            if (!root.uniqueAllocationProven()) {
+                throw new IllegalArgumentException(
+                        "SCOPED_READ_BORROW requires exact compiler-proven allocation identity");
+            }
+            if (!root.domain().equals("PROCESS")) {
+                throw new IllegalArgumentException(
+                        "SCOPED_READ_BORROW actor/private domains require separate execution authorization");
+            }
+            for (Projection projection : claim.place().projections()) {
+                if (projection instanceof Field field
+                        && !field.disjointLayoutProven()) {
+                    throw new IllegalArgumentException(
+                            "SCOPED_READ_BORROW requires a canonical proven field projection");
+                }
+                if (projection instanceof Range range
+                        && !range.disjointLayoutProven()) {
+                    throw new IllegalArgumentException(
+                            "SCOPED_READ_BORROW requires a canonical proven range projection");
+                }
+            }
+        }
+
+        CoherentAccessProof coherent =
+                proveCoherentTyped(typed, sourceProof, resolvedNominals);
+        return new CoherentAccessProof(
+                coherent.programIdentity,
+                coherent.claims,
+                LoanKind.SCOPED_READ_BORROW);
     }
 
     /** Intentionally small trusted ABI subset; no nominal name guessing. */
@@ -292,10 +363,12 @@ final class TaskAccessVerifier {
     public static final class Ticket {
         private final Object scopeEpoch;
         private final long id;
+        private final LoanKind loanKind;
 
-        private Ticket(Object scopeEpoch, long id) {
+        private Ticket(Object scopeEpoch, long id, LoanKind loanKind) {
             this.scopeEpoch = Objects.requireNonNull(scopeEpoch, "scopeEpoch");
             this.id = id;
+            this.loanKind = Objects.requireNonNull(loanKind, "loanKind");
         }
     }
 
@@ -383,6 +456,12 @@ final class TaskAccessVerifier {
      * verify Send/Sync and task scope lifetime *before* invoking this method.
      */
     public synchronized Ticket admit(List<Claim> requested) {
+        return admitWithKind(requested, LoanKind.STATIC_ANALYSIS);
+    }
+
+    private synchronized Ticket admitWithKind(
+            List<Claim> requested, LoanKind loanKind) {
+        Objects.requireNonNull(loanKind, "loanKind");
         if (sealed) throw new IllegalStateException("TaskScope is sealed");
         List<Claim> claims = List.copyOf(Objects.requireNonNull(requested, "claims"));
         if (live.size() >= MAX_CHILDREN || claims.size() > MAX_CLAIMS_PER_CHILD) {
@@ -429,7 +508,7 @@ final class TaskAccessVerifier {
             throw new IllegalStateException("TaskScope allocation tracking capacity exceeded");
         }
         if (nextId == Long.MAX_VALUE) throw new IllegalStateException("Task ticket overflow");
-        Ticket ticket = new Ticket(scopeEpoch, nextId++);
+        Ticket ticket = new Ticket(scopeEpoch, nextId++, loanKind);
         // Only now commit the scope domain, claims and allocation generations.
         scopeDomain = requestedDomain;
         live.put(ticket, new Child(claims));
@@ -445,7 +524,7 @@ final class TaskAccessVerifier {
      * Runtime-bound admissions intentionally accept only a frozen compiler
      * proof. The source/resolved trait callbacks are not re-run at launch.
      */
-    TaskLoanAdmission admitProvenRuntimeBound(
+    TaskLoanAdmission admitProvenScopedReadRuntimeBound(
             CoherentAccessProof proof, Ast.Program exactProgram) {
         Objects.requireNonNull(proof, "proof");
         Objects.requireNonNull(exactProgram, "exactProgram");
@@ -453,9 +532,28 @@ final class TaskAccessVerifier {
             throw new IllegalArgumentException(
                     "coherent Task access proof belongs to a different exact program");
         }
+        if (proof.loanKind != LoanKind.SCOPED_READ_BORROW) {
+            throw new IllegalArgumentException(
+                    "runtime Task loan requires an exact SCOPED_READ_BORROW compiler proof");
+        }
         return new TaskLoanAdmission(
                 this,
-                admit(proof.claims));
+                admitWithKind(proof.claims, LoanKind.SCOPED_READ_BORROW));
+    }
+
+    /**
+     * Compatibility name retained for compiler-package callers. It is no
+     * longer a generic bridge: non-read-only proofs fail closed.
+     */
+    @Deprecated
+    TaskLoanAdmission admitProvenRuntimeBound(
+            CoherentAccessProof proof, Ast.Program exactProgram) {
+        return admitProvenScopedReadRuntimeBound(proof, exactProgram);
+    }
+
+    synchronized LoanKind loanKind(Ticket ticket) {
+        child(ticket);
+        return ticket.loanKind;
     }
 
     /** Cancellation is an intent; a still-running Task continues to own loans. */

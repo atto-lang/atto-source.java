@@ -88,6 +88,13 @@ public final class OresTaskScope implements AutoCloseable {
                 OresScheduler.CompilerTaskHandle<?> schedulerChild);
     }
 
+    /**
+     * Marker for the only executable borrowed-memory lowering currently
+     * admitted by the compiler. Implementations carry immutable READ authority;
+     * mutable WRITE loans must not implement or enter this path.
+     */
+    public interface CompilerReadLoanRetirement extends CompilerLoanRetirement { }
+
     private static final CompilerLoanRetirement NO_COMPILER_LOAN =
             new CompilerLoanRetirement() {
                 @Override public void bindScope(CompilerScopeEpoch scopeEpoch) { }
@@ -266,9 +273,24 @@ public final class OresTaskScope implements AutoCloseable {
     }
 
     /**
-     * Compiler-only scoped-memory admission. The loan capability binds first
-     * to this exact scope epoch and then to the exact provisional child owner.
-     * Scheduler rejection and physical exit are different retirement edges.
+     * Compiler-only immutable scoped READ admission. This named seam is the
+     * lowering target for SCOPED_READ_BORROW and cannot accept a generic
+     * CompilerLoanRetirement capability.
+     */
+    <T> OresTask<T> startCompilerReadBorrowFrame(
+            OresScheduler scheduler, OresScheduler.Task<T> frame,
+            Runnable onPhysicalExit,
+            CompilerReadLoanRetirement loanRetirement) {
+        return startCompilerFrame(
+                scheduler, frame, onPhysicalExit,
+                Objects.requireNonNull(loanRetirement, "read loan retirement"));
+    }
+
+    /**
+     * Generic compiler lifecycle implementation used by the named read-only
+     * seam above and by no-loan internal frames. Borrowed lowering must enter
+     * through startCompilerReadBorrowFrame; mutable WRITE authority is not
+     * accepted by that seam.
      */
     <T> OresTask<T> startCompilerFrame(
             OresScheduler scheduler, OresScheduler.Task<T> frame,

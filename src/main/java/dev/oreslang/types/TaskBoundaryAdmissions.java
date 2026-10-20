@@ -14,12 +14,13 @@ import java.util.Objects;
  * reconstructed Task expression has no authority, and an absent proof is never
  * represented as an empty capture list.</p>
  *
- * <p>The current executable surface records only the narrow copied-scalar Task.
- * The package-private scoped-loan path exists for the next compiler lowering
- * stage: it freezes coherent type validation into an exact ordered access
- * footprint so a later dynamic launch can mint {@link TaskLoanAdmission}
- * without retaining live type-proof callbacks or accepting caller-supplied
- * replacement claims.</p>
+ * <p>The current executable surface records the narrow copied-scalar Task plus
+ * a compiler-only SCOPED_READ_BORROW path. That path freezes coherent Sync
+ * validation and exact allocation/generation/projection identity into an
+ * ordered read-only footprint so a later dynamic launch can mint
+ * {@link TaskLoanAdmission} without retaining live type-proof callbacks or
+ * accepting caller-supplied replacement claims. Mutable WRITE borrowing is
+ * intentionally not executable.</p>
  */
 public final class TaskBoundaryAdmissions {
     private static final int MAX_BOUNDARIES = 4_096;
@@ -109,7 +110,7 @@ public final class TaskBoundaryAdmissions {
      * compiler-owned analysis in this package may bind allocation/generation
      * claims and type authorities to a source boundary.
      */
-    void recordScopedLoan(
+    void recordScopedReadBorrow(
             Ast.TaskExpr boundary,
             List<TaskAccessVerifier.CoherentTypedClaim> claims,
             SendSyncTraits sourceProof,
@@ -121,10 +122,24 @@ public final class TaskBoundaryAdmissions {
                     "scoped Task source type proof belongs to a different exact program instance");
         }
         TaskAccessVerifier.CoherentAccessProof frozen =
-                TaskAccessVerifier.proveCoherentTyped(
+                TaskAccessVerifier.proveScopedReadBorrow(
                         claims, sourceProof, resolvedNominals);
         put(Objects.requireNonNull(boundary, "boundary"),
                 new ScopedLoanBoundary(frozen));
+    }
+
+    /**
+     * Transitional compiler-package alias. Despite the older name this route
+     * is read-only and rejects every WRITE claim.
+     */
+    @Deprecated
+    void recordScopedLoan(
+            Ast.TaskExpr boundary,
+            List<TaskAccessVerifier.CoherentTypedClaim> claims,
+            SendSyncTraits sourceProof,
+            ThreadSafetyTraits.NominalProof resolvedNominals) {
+        recordScopedReadBorrow(
+                boundary, claims, sourceProof, resolvedNominals);
     }
 
     TaskBoundaryAdmissions seal() {
@@ -172,7 +187,7 @@ public final class TaskBoundaryAdmissions {
      * different claim list, type proof, allocation generation or capture order:
      * those are retained inside this sealed compiler proof.
      */
-    TaskLoanAdmission mintScopedLoan(
+    TaskLoanAdmission mintScopedReadBorrow(
             Ast.Program program,
             Ast.TaskExpr boundary,
             TaskAccessVerifier verifier) {
@@ -181,10 +196,19 @@ public final class TaskBoundaryAdmissions {
         BoundaryAdmission admission = requireBoundary(boundary);
         if (!(admission instanceof ScopedLoanBoundary scoped)) {
             throw new IllegalArgumentException(
-                    "exact Task boundary has no scoped-loan compiler proof");
+                    "exact Task boundary has no SCOPED_READ_BORROW compiler proof");
         }
-        return verifier.admitProvenRuntimeBound(
+        return verifier.admitProvenScopedReadRuntimeBound(
                 scoped.accessProof(), program);
+    }
+
+    /** Transitional name; authority remains strictly SCOPED_READ_BORROW. */
+    @Deprecated
+    TaskLoanAdmission mintScopedLoan(
+            Ast.Program program,
+            Ast.TaskExpr boundary,
+            TaskAccessVerifier verifier) {
+        return mintScopedReadBorrow(program, boundary, verifier);
     }
 
     /** Verify executable authority belongs to this exact checked program. */
