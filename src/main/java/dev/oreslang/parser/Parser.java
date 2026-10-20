@@ -437,9 +437,6 @@ public final class Parser {
             if (match(INT))
                 return new Ast.ModelValue(Ast.ModelValueKind.INTEGER,
                         "-" + previous().lexeme());
-            if (match(FLOAT))
-                return new Ast.ModelValue(Ast.ModelValueKind.FLOAT,
-                        "-" + previous().lexeme());
             throw error(peek(), "MODEL_NONCONSTANT_CONFIG: expected numeric literal after '-'");
         }
         if (match(INT)) return new Ast.ModelValue(Ast.ModelValueKind.INTEGER, previous().lexeme());
