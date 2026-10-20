@@ -110,23 +110,52 @@ public final class StaticSafetyAnalyzer {
         }
 
         private void enterLoop(String kind, boolean unboundedCandidate, List<Ast.Stmt> body) {
-            if (unboundedCandidate && !hasEscape(body)) {
-                warn("ORES-TERM-002", kind + " has no apparent exit; termination is not proven",
-                        List.of(current));
+            if (unboundedCandidate) {
+                if (!hasEscape(body)) {
+                    warn("ORES-TERM-002", kind + " has no apparent reachable exit; termination is not proven",
+                            List.of(current));
+                } else if (!guaranteedImmediateExit(body)) {
+                    warn("ORES-TERM-003",
+                            kind + " has a possible exit, but its reachability and termination are unproven",
+                            List.of(current));
+                }
             }
             loopDepth++;
             try { walkBody(body); }
             finally { loopDepth--; }
         }
 
-        /** Presence of break/return is never treated as proof of termination. */
+        /**
+         * A first unconditional break or return suffices for the local loop
+         * only when reached before executing any potentially diverging work.
+         * This is a minimal syntactic exemption, NOT a general ranking proof.
+         */
+        private boolean guaranteedImmediateExit(List<Ast.Stmt> body) {
+            if (body.isEmpty()) return false;
+            Ast.Stmt first = body.get(0);
+            if (first instanceof Ast.BreakStmt || first instanceof Ast.ReturnStmt) return true;
+            return first instanceof Ast.BlockStmt b && guaranteedImmediateExit(b.body());
+        }
+
+        /** Presence of a reachable-looking exit is never proof of termination. */
         private boolean hasEscape(List<Ast.Stmt> body) {
             for (Ast.Stmt stmt : body) {
                 if (stmt instanceof Ast.BreakStmt || stmt instanceof Ast.ReturnStmt) return true;
                 if (stmt instanceof Ast.BlockStmt block && hasEscape(block.body())) return true;
                 if (stmt instanceof Ast.IfStmt conditional) {
-                    for (Ast.IfBranch arm : conditional.branches()) if (hasEscape(arm.body())) return true;
-                    if (hasEscape(conditional.elseBody())) return true;
+                    boolean alwaysTaken = false;
+                    for (Ast.IfBranch arm : conditional.branches()) {
+                        // Constant false branches cannot establish an exit.
+                        if (arm.condition() instanceof Ast.LiteralExpr lit
+                                && Boolean.FALSE.equals(lit.value())) continue;
+                        if (hasEscape(arm.body())) return true;
+                        if (arm.condition() instanceof Ast.LiteralExpr lit
+                                && Boolean.TRUE.equals(lit.value())) {
+                            alwaysTaken = true;
+                            break;
+                        }
+                    }
+                    if (!alwaysTaken && hasEscape(conditional.elseBody())) return true;
                 }
                 if (stmt instanceof Ast.TryStmt t
                         && (hasEscape(t.body()) || hasEscape(t.catchBody()) || hasEscape(t.finallyBody()))) return true;
@@ -212,6 +241,18 @@ public final class StaticSafetyAnalyzer {
                         || m.member().equals("load"))) {
                     warn("ORES-SEC-010", "host-effect call requires permission and input-flow verification",
                             List.of(current, n.name() + "." + m.member()));
+                    // Non-literal operands are not proof of taint. They are
+                    // an explicit interprocedural taint-analysis obligation:
+                    // untrusted data reaching a privileged sink must be
+                    // sanitized and authorized along every feasible path.
+                    boolean dynamicInput = call.arguments().stream()
+                            .anyMatch(arg -> !(arg instanceof Ast.LiteralExpr));
+                    if (dynamicInput) {
+                        warn("ORES-SEC-011",
+                                "dynamic value reaches a privileged host-effect call; "
+                                    + "input provenance and sanitizer proof are unavailable",
+                                List.of(current, n.name() + "." + m.member()));
+                    }
                 }
                 walk(call.callee()); for (Ast.Expr arg : call.arguments()) walk(arg);
             } else if (expr instanceof Ast.RuntimeCallExpr rt) {
@@ -308,6 +349,13 @@ public final class StaticSafetyAnalyzer {
                             + " static actor-spawn site(s) in this cycle"
                         : "possible infinite recursion / repeated callable cycle";
                 warn(rule, message + "; no decreasing rank or total-work bound established", component);
+                if (spawn && actorSpawnSites > 1) {
+                    warn("ORES-AMP-002",
+                            "recursive actor cycle includes " + actorSpawnSites
+                            + " static spawn sites; possible multiplicative actor amplification "
+                            + "(branches may be mutually exclusive; no feasible-path fanout bound)",
+                            component);
+                }
             }
         }
     }
