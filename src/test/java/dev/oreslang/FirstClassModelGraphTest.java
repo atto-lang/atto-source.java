@@ -168,7 +168,7 @@ final class FirstClassModelGraphTest {
                   return input + delta;
                 }
 
-                pub define model LimitAdjust(delta: int = -9223372036854775808) as
+                pub define model PriceAdjust(delta: int = -9223372036854775808) as
                   Identity()
                   AddDelta(delta)
                 end
@@ -176,7 +176,7 @@ final class FirstClassModelGraphTest {
 
         ModelGraphCompiler.CompiledModel model =
                 ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(source))
-                        .find("LimitAdjust");
+                        .find("PriceAdjust");
         assertNotNull(model);
         // This model name intentionally differs from the PriceAdjust shared
         // golden, so verify endpoint acceptance/execution here; the canonical
@@ -184,14 +184,15 @@ final class FirstClassModelGraphTest {
         Map<String, Object> configuration = model.bindConfiguration(java.util.List.of());
         assertEquals(Long.MIN_VALUE, configuration.get("delta"));
         assertEquals(
-                model.configuredGraphDigest(configuration),
-                ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(source))
-                        .find("LimitAdjust")
-                        .configuredGraphDigest(configuration));
+                "ff37639d560a799bc3a77d1b05789855a991b8d7e1fb6cac3e15d6d0331e707a",
+                model.graphDigest());
+        assertEquals(
+                "c71df957be7cee30a59acf586c719d36279a6ed027072cabcb58fa89527e7cf4",
+                model.configuredGraphDigest(configuration));
 
         String output = run(source + """
                 pub routine main(): void {
-                  stdio.stdout.write(LimitAdjust().run(0));
+                  stdio.stdout.write(PriceAdjust().run(0));
                   return;
                 }
                 """);
