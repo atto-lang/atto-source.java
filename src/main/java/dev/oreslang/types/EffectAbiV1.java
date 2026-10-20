@@ -8,7 +8,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-import static dev.oreslang.types.EffectContracts.Effect;
+import dev.oreslang.types.EffectContracts.Effect;
 
 /**
  * Closed canonical source effect vocabulary shared with native
