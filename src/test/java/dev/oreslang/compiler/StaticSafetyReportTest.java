@@ -27,6 +27,14 @@ final class StaticSafetyReportTest {
     }
 
     @Test
+    void rejectsOverlongUntrustedDiagnosticText() {
+        var finding = new StaticSafetyAnalyzer.Finding("ORES-SEC-011", "potential",
+                "main", "x".repeat(16_385), List.of("witness"));
+        assertThrows(IllegalArgumentException.class,
+                () -> StaticSafetyReport.render(List.of(finding)));
+    }
+
+    @Test
     void rejectsOversizedOutputInsteadOfSilentlyTruncatingIt() {
         var result = new ArrayList<StaticSafetyAnalyzer.Finding>();
         for (int n = 0; n < 10_001; n++)
