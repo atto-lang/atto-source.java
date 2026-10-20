@@ -155,4 +155,48 @@ final class TaskScopeCancellationTest {
         }
     }
 
+    @Test
+    void futureAttachmentRacingCancellationAlwaysRevokesTheChild() throws Exception {
+        for (int attempt = 0; attempt < 128; attempt++) {
+            TaskScope scope = new TaskScope();
+            TaskScope.Registration ticket = scope.reserve();
+            OresFuture<Void> future = new OresFuture<>();
+            CountDownLatch start = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<Throwable> unexpected =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            Thread attacher = Thread.ofVirtual().start(() -> {
+                try {
+                    if (!start.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("attachment gate did not open");
+                    }
+                    ticket.attach(future);
+                } catch (Throwable failure) {
+                    unexpected.compareAndSet(null, failure);
+                }
+            });
+            Thread canceller = Thread.ofVirtual().start(() -> {
+                try {
+                    if (!start.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("cancellation gate did not open");
+                    }
+                    scope.cancelAndDrain();
+                } catch (Throwable failure) {
+                    unexpected.compareAndSet(null, failure);
+                }
+            });
+            start.countDown();
+            attacher.join();
+            canceller.join();
+            assertNull(unexpected.get(), "cancellation/attachment raised an exception");
+            assertTrue(future.isCancelled(), "attached child escaped scope cancellation");
+            OresFuture<Void> joined = scope.drained();
+            assertFalse(joined.isDone(), "terminal Future is not a quiescence witness");
+            ticket.quiesced();
+            assertTrue(joined.isCompletedExceptionally());
+            assertSame(joined, scope.cancelAndDrain(), "cancellation must be idempotent");
+            assertThrows(IllegalStateException.class, scope::reserve);
+        }
+    }
+
+
 }
