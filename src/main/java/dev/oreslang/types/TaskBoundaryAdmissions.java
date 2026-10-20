@@ -167,6 +167,11 @@ public final class TaskBoundaryAdmissions {
                 scoped.resolvedNominals());
     }
 
+    /** Verify this sealed ledger belongs to this exact checked program. */
+    public void requireProgramIdentity(Ast.Program program) {
+        requireProgram(program);
+    }
+
     public int boundaryCount() {
         return byBoundary.size();
     }
