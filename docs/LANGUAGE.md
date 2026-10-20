@@ -156,6 +156,12 @@ ownership/initialization semantics exist. This does not restrict module
 contracts: module contracts continue to require module constants/fields as well
 as functions.
 
+Static-contract conformance is also same-source-unit-only in v1. The current
+linked-unit typechecker transports public classes and their private field-type
+aliases, but not interface/contract declarations, so `import contract` does
+not yet carry a static contract into another compilation unit. Cross-unit static
+contracts must remain fail-closed until linked contract ABI metadata is wired.
+
 `implements static Contract` is distinct from ordinary `implements
 Interface`, and a module cannot `conforms` to a static class contract.
 Static function implementations remain brace-bodied; the
