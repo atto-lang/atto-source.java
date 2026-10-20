@@ -372,6 +372,10 @@ def live_ref_sha(repository, ref_name):
     result = _gh_ref_request(repository, ref_name, "GET")
     if result.returncode != 0:
         if "HTTP 404" in result.stderr:
+            # GitHub can mask private-resource authorization failures as 404.
+            # Prove the carrier is still visible and private before treating
+            # this response as evidence that the ref itself is absent.
+            legacy.checked_repo(repository)
             return None
         raise Denied("carrier ref lookup failed")
     try:
