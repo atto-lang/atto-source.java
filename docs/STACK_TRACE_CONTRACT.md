@@ -76,6 +76,17 @@ Hardening in this branch bounds and sanitizes metadata before attaching a
 marker. Source labels cannot inject newline/ANSI/bidi control characters or
 grow without limit; the original Throwable identity/message/cause stays intact.
 
+## Critical diagnostic/classification invariant
+
+The Java host `TrapFailurePolicy` has a 64-node limit on real Throwable
+cause/suppressed graphs, while `SourceBoundaryTrace` can attach 64 stackless
+diagnostic markers. Before this audit, a fully annotated ordinary failure
+could exceed the 64-node classifier budget and become non-trappable solely
+because tracing was enabled. Trusted `SourceBoundaryTrace` markers are now
+excluded from that classifier budget. **All non-marker suppressed failures**
+remain part of traversal, including cancellation/panic/fatal during cleanup.
+The regression test verifies both sides of the invariant.
+
 ## Admission matrix
 
 Before shipping common guest stack traces on both backends:
