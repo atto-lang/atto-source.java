@@ -127,4 +127,30 @@ final class CheckedEffectsTest {
         assertTrue(error.getMessage().contains("budget"));
     }
 
+
+    @Test
+    void rejectsAffineSourceEffectPayloadsFromSupersededHardeningDraft() {
+        // Additional payload cases from #1703, evaluated against the stronger
+        // closed, bounded ownership/data-only proof already in this branch.
+        for (String kind : new String[]{"throws", "raises", "panics"}) {
+            for (String payload : new String[]{
+                    "ActorRef<int>", "Generator<int>", "Pointer<int>",
+                    "List<int>", "Ref<int>", "unknown", "any"}) {
+                String source = "fnc unsafe(): int " + kind + " "
+                        + payload + " { return 1; }";
+                assertThrows(IllegalArgumentException.class, () -> checked(source),
+                        kind + " " + payload);
+            }
+        }
+    }
+
+    @Test
+    void stableScalarEffectTypesKeepExactCategoryChecking() {
+        assertDoesNotThrow(() -> checked(
+                "fnc f(): int throws int raises string panics bool { return 1; }"
+              + "fnc g(): int throws int raises string panics bool { return f(); }"));
+        assertThrows(IllegalArgumentException.class, () -> checked(
+                "fnc f(): int throws string { return 1; }"
+              + "fnc g(): int throws bool { return f(); }"));
+    }
 }
