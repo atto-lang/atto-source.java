@@ -128,7 +128,11 @@ public final class CallbackOrderingAnalyzer {
         }
 
         private boolean registered(Event key, State state) {
-            for (Event prior : state.registered) if (matches(prior, key)) return true;
+            // A wildcard is not proof of a definite subscription.
+            if ("*".equals(key.event())) return false;
+            for (Event prior : state.registered) {
+                if (prior.equals(key)) return true;
+            }
             return false;
         }
 
@@ -141,7 +145,7 @@ public final class CallbackOrderingAnalyzer {
             for (Exposure prior : state.pending.values()) {
                 if (matches(event, prior.event)) {
                     findings.add(new StaticSafetyAnalyzer.Finding(
-                            "ORES-ZALGO-001", "potential", callable,
+                            "ORES-CB-002", "potential", callable,
                             "callback passed to " + prior.invoker
                                     + " can emit " + prior.event.emitter() + "."
                                     + prior.event.event()
