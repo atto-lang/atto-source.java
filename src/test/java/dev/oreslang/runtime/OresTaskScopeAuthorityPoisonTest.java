@@ -13,6 +13,7 @@ final class OresTaskScopeAuthorityPoisonTest {
         OresTask<?> child;
         OresScheduler.CompilerTaskHandle<?> schedulerChild;
         RuntimeException bindFailure;
+        RuntimeException childBindFailure;
         RuntimeException schedulerBindFailure;
         RuntimeException retireFailure;
         int physicalCalls;
@@ -28,6 +29,7 @@ final class OresTaskScopeAuthorityPoisonTest {
                 OresTaskScope.CompilerScopeEpoch value, OresTask<?> task) {
             assertSame(epoch, value);
             child = task;
+            if (childBindFailure != null) throw childBindFailure;
         }
 
         @Override
@@ -105,7 +107,32 @@ final class OresTaskScopeAuthorityPoisonTest {
     }
 
     @Test
-    void schedulerChildBindFailureRollsBackBeforeSchedulerAuthority() {
+    void partialOwnerBindFailurePinsExactLoanAuthority() {
+        try (OresScheduler scheduler = new OresScheduler(1);
+             AsyncRuntime runtime = new AsyncRuntime()) {
+            OresTaskScope scope = new OresTaskScope(runtime);
+            Loan loan = new Loan();
+            RuntimeException failure =
+                    new RuntimeException("owner bind poison");
+            loan.childBindFailure = failure;
+
+            assertSame(failure, assertThrows(RuntimeException.class,
+                    () -> scope.startCompilerFrame(
+                            scheduler,
+                            resume -> new OresScheduler.Done<>(1),
+                            () -> { },
+                            loan)));
+            assertNotNull(loan.child,
+                    "fault injection partially accepted the owner identity");
+            assertEquals(1, scope.failedCompilerAuthoritiesForTesting());
+            assertFalse(scope.physicallyQuiescent(),
+                    "partial owner bind must pin compiler authority");
+            assertThrows(IllegalStateException.class, scope::close);
+        }
+    }
+
+    @Test
+    void partialSchedulerChildBindFailurePinsExactLoanAuthority() {
         try (OresScheduler scheduler = new OresScheduler(1);
              AsyncRuntime runtime = new AsyncRuntime()) {
             OresTaskScope scope = new OresTaskScope(runtime);
@@ -122,9 +149,11 @@ final class OresTaskScopeAuthorityPoisonTest {
                             loan)));
             assertNotNull(loan.child);
             assertNull(loan.schedulerChild,
-                    "failed scheduler binding must not commit runtime authority");
-            assertTrue(scope.physicallyQuiescent(),
-                    "successful pre-scheduler rollback releases the owner slot");
+                    "fault injection threw before recording committed scheduler authority");
+            assertEquals(1, scope.failedCompilerAuthoritiesForTesting());
+            assertFalse(scope.physicallyQuiescent(),
+                    "partial scheduler bind must not regress to owner-only rollback");
+            assertThrows(IllegalStateException.class, scope::close);
         }
     }
 
