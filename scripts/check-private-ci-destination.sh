@@ -53,27 +53,37 @@ done < "$policy"
   fail 'destination is absent from reviewed repository policy'
 command -v gh >/dev/null 2>&1 || fail 'GitHub CLI is required'
 
-metadata="$(GH_HOST=github.com gh api "repos/$target"   --jq '[.full_name, (.id|tostring), .visibility, (.private|tostring), .default_branch] | @tsv'   2>/dev/null)" ||
+metadata="$(GH_HOST=github.com gh api "repos/$target" \
+  --jq '[.full_name, (.id|tostring), .visibility, (.private|tostring), (.archived|tostring), (.disabled|tostring), (.fork|tostring), .default_branch] | @tsv' \
+  2>/dev/null)" ||
   fail 'cannot verify repository identity and visibility from live GitHub API'
 [[ -n "$metadata" && "$metadata" != *$'\n'* ]] ||
   fail 'API returned empty or multiline repository metadata'
-IFS=$'\t' read -r actual_name actual_id visibility private_flag default_branch <<< "$metadata"
+IFS=$'\t' read -r actual_name actual_id visibility private_flag archived_flag disabled_flag fork_flag default_branch <<< "$metadata"
 [[ "${actual_name,,}" == "${target,,}" ]] ||
   fail 'API identity differs from requested destination'
 [[ "$actual_id" == "$approved_id" ]] ||
   fail 'destination immutable repository ID differs from reviewed policy'
 [[ "$visibility" == private && "$private_flag" == true ]] ||
   fail 'destination is not private'
+[[ "$archived_flag" == false && "$disabled_flag" == false && "$fork_flag" == false ]] ||
+  fail 'destination is archived, disabled, or a fork'
 [[ "$default_branch" =~ ^[A-Za-z0-9_.-]{1,80}$ ]] ||
   fail 'destination default branch is invalid'
 
-base_ref="$(GH_HOST=github.com gh api "repos/$target/git/ref/heads/$default_branch" --jq '.object.sha' 2>/dev/null)" ||
+base_ref="$(GH_HOST=github.com gh api \
+  "repos/$target/git/ref/heads/$default_branch" --jq '.object.sha' 2>/dev/null)" ||
   fail 'cannot verify reviewed destination base ref'
+[[ -n "$base_ref" && "$base_ref" != *$'\n'* ]] ||
+  fail 'API returned invalid destination base ref'
 [[ "$base_ref" == "$approved_base_commit" ]] ||
   fail 'destination default branch differs from reviewed carrier base commit'
 
-actual_base_tree="$(GH_HOST=github.com gh api "repos/$target/git/commits/$approved_base_commit" --jq '.tree.sha' 2>/dev/null)" ||
+actual_base_tree="$(GH_HOST=github.com gh api \
+  "repos/$target/git/commits/$approved_base_commit" --jq '.tree.sha' 2>/dev/null)" ||
   fail 'cannot verify reviewed destination base tree'
+[[ -n "$actual_base_tree" && "$actual_base_tree" != *$'\n'* ]] ||
+  fail 'API returned invalid destination base tree'
 [[ "$actual_base_tree" == "$approved_base_tree" ]] ||
   fail 'destination carrier base tree differs from reviewed policy'
 
@@ -81,9 +91,9 @@ workflow_metadata="$(GH_HOST=github.com gh api \
   "repos/$target/contents/.github/workflows/private-oreslang-exact-tree.yml?ref=$approved_base_commit" \
   --jq '[.type, .sha] | @tsv' 2>/dev/null)" ||
   fail 'cannot verify reviewed destination workflow'
-[[ -n "$workflow_metadata" && "$workflow_metadata" != *\n'* ]] ||
+[[ -n "$workflow_metadata" && "$workflow_metadata" != *$'\n'* ]] ||
   fail 'API returned invalid destination workflow metadata'
-IFS=\t' read -r workflow_type actual_workflow_sha <<< "$workflow_metadata"
+IFS=$'\t' read -r workflow_type actual_workflow_sha <<< "$workflow_metadata"
 [[ "$workflow_type" == file && "$actual_workflow_sha" == "$approved_workflow" ]] ||
   fail 'destination exact-tree workflow differs from reviewed policy'
 
