@@ -16,6 +16,24 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 final class NativeCarrierExecutorTest {
 
     @Test
+    void schedulerVictimWindowsAreBoundedAndWrapWithoutOverflow() {
+        assertEquals(0, NativeCarrierExecutor.boundedCandidateCount(1, 8));
+        assertEquals(1, NativeCarrierExecutor.boundedCandidateCount(2, 8));
+        assertEquals(8, NativeCarrierExecutor.boundedCandidateCount(65_536, 8));
+        assertEquals(64, NativeCarrierExecutor.boundedCandidateCount(65_536, 64));
+        assertEquals(64, NativeCarrierExecutor.boundedCandidateCount(
+                Integer.MAX_VALUE, 64));
+        assertEquals(0, NativeCarrierExecutor.wrappedSlot(
+                Integer.MAX_VALUE - 1, 1, Integer.MAX_VALUE));
+        assertEquals(1, NativeCarrierExecutor.wrappedSlot(
+                Integer.MAX_VALUE - 1, 2, Integer.MAX_VALUE));
+        assertThrows(IllegalArgumentException.class,
+                () -> NativeCarrierExecutor.boundedCandidateCount(0, 8));
+        assertThrows(IllegalArgumentException.class,
+                () -> NativeCarrierExecutor.wrappedSlot(1, 3, 2));
+    }
+
+    @Test
     void manyLogicalTurnsMultiplexOntoOnePthreadCarrier() throws Exception {
         String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
         assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
