@@ -301,9 +301,23 @@ class PrivateCiV3Test(unittest.TestCase):
             receipt["test_plan"]["sha256"], hashlib.sha256(PLAN).hexdigest()
         )
         digest = v3.canonical_digest(receipt)
-        self.assertIn(
-            "Oreslang-CI-Receipt-SHA256: " + digest,
-            commit_payload["message"].splitlines(),
+        self.assertEqual(result["receipt_sha256"], digest)
+        self.assertEqual(
+            commit_payload["message"],
+            (
+                "ci: exact private Oreslang tree "
+                + "4" * 40
+                + " tree "
+                + SOURCE_TREE
+                + "\ncarrier-base "
+                + BASE
+                + " tree "
+                + "3" * 40
+                + "\nconnector-authorized source-repository "
+                + v3.legacy.SOURCE_REPO
+                + " id "
+                + str(v3.SOURCE_REPOSITORY_ID)
+            ),
         )
         refs = [
             payload["ref"]
