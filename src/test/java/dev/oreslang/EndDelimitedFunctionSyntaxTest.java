@@ -352,6 +352,10 @@ final class EndDelimitedFunctionSyntaxTest {
                 () -> Parser.parse("fnc same_line() -> int return 1 end"));
 
         assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc casty() -> int return 1 as int; end"));
+
+
+        assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("fnc colon(): int as return 1; end"));
     }
 
