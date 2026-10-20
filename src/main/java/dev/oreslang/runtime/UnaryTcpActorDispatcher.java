@@ -24,7 +24,7 @@ import java.util.concurrent.CancellationException;
 final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher {
     @FunctionalInterface
     interface ResultCodec {
-        byte[] encode(Object value) throws Exception;
+        OresBytes encode(Object value) throws Exception;
     }
 
     private final ActorRuntime runtime;
@@ -60,7 +60,7 @@ final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher
                 if (bytesValue.size() > maxBytes)
                     throw new IllegalArgumentException(
                             "unary TCP result exceeds selected byte limit");
-                return bytesValue.toByteArray();
+                return bytesValue;
             }
             if (!(value instanceof List<?> values))
                 throw new IllegalArgumentException(
@@ -93,12 +93,21 @@ final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher
                 }
                 bytes[i] = (byte) octet;
             }
-            return bytes;
+            return OresBytes.wrapTrusted(bytes);
         };
     }
 
     static ResultCodec byteListCodec(int maxBytes) {
         return bytesCodec(maxBytes);
+    }
+
+    private Object stageResult(Object value) {
+        Object frozen = ActorRuntime.freeze(value);
+        if (kind == ActorRuntime.ActorKind.PRIVATE
+                && frozen instanceof OresBytes bytes) {
+            return bytes.isolatedCopy();
+        }
+        return frozen;
     }
 
     @Override
@@ -124,7 +133,7 @@ final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher
                                         try {
                                             if (failure == null) {
                                                 staged.completeFromRuntime(
-                                                        ActorRuntime.freeze(value));
+                                                        stageResult(value));
                                             } else {
                                                 staged.failFromRuntime(
                                                         OresFuture.unwrap(failure));
@@ -141,7 +150,7 @@ final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher
                             return;
                         }
 
-                        staged.completeFromRuntime(ActorRuntime.freeze(result));
+                        staged.completeFromRuntime(stageResult(result));
                         turnContext.self().stop();
                     } catch (Error fatal) {
                         staged.failFromRuntime(fatal);
@@ -213,11 +222,12 @@ final class UnaryTcpActorDispatcher implements UnaryTcpSessionAdapter.Dispatcher
 
             try {
                 Object value = OresFuture.runtimeTerminalValue(terminal);
-                byte[] bytes = Objects.requireNonNull(
+                OresBytes bytes = Objects.requireNonNull(
                         codec.encode(value),
                         "unary TCP result codec returned null");
                 completion.completeFromRuntime(
-                        UnaryTcpSessionAdapter.Reply.successFresh(bytes));
+                        new UnaryTcpSessionAdapter.Reply(
+                                UnaryTransportFrame.Kind.REPLY, bytes));
             } catch (Error fatal) {
                 completion.failFromRuntime(fatal);
                 throw fatal;
