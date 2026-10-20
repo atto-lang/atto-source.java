@@ -32,6 +32,19 @@ public final class GenerationalReplyRegistryCheck {
         check(policy.result().toCompletableFuture().join().equals("active"));
         check(stats.result().toCompletableFuture().join() == 42);
 
+        // Caller-owned admission failure and split cancellation claim/publication
+        // must not require a response or an unsafe carrier callback.
+        var rejectedAdmission = registry.reserve(actor, child, Integer.class);
+        check(rejectedAdmission.failAdmission(actor, new IllegalStateException("full")));
+        check(rejectedAdmission.result().toCompletableFuture().isCompletedExceptionally());
+        check(!rejectedAdmission.reply(child, 5));
+        var deferredCancellation = registry.reserve(actor, child, Integer.class);
+        check(deferredCancellation.claimCancel(actor));
+        check(deferredCancellation.state() == GenerationalReplyRegistry.State.CANCELLED);
+        deferredCancellation.publishCancellation();
+        check(deferredCancellation.result().toCompletableFuture().isCompletedExceptionally());
+        check(!deferredCancellation.claimCancel(actor));
+
         // Cancel, slot reuse and ABA protection.
         var stale = registry.reserve(actor, child, String.class);
         long oldHandle = stale.localHandle();
