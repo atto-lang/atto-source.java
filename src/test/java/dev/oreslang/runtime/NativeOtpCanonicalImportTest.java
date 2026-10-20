@@ -12,9 +12,9 @@ import static org.junit.jupiter.api.Assertions.*;
 final class NativeOtpCanonicalImportTest {
     private static final List<String> NAMES = List.of(
             "gen_server", "supervisor", "gen_statem", "application",
-            "event_manager", "registry");
+            "event_manager", "registry", "pg", "ets");
 
-    @Test void exactlySixNamesShareStableIdentityAndPackagedSource() throws Exception {
+    @Test void exactlyEightNamesShareStableIdentityAndPackagedSource() throws Exception {
         for (String name : NAMES) {
             String modern = "otp/" + name;
             String legacy = "std/otp/" + name;
@@ -33,7 +33,7 @@ final class NativeOtpCanonicalImportTest {
 
     @Test void unknownTraversalAndShadowingOtpImportsFailClosed() throws Exception {
         for (String path : List.of("otp/../core", "otp/./gen_server", "otp//gen_server",
-                "otp/not_real", "otp/release", "otp/ets", "otp/a/../../core",
+                "otp/not_real", "otp/release", "otp/global", "otp/a/../../core",
                 "otp/gen_server?query", "otp/%2e%2e/core", "otp/",
                 "otp/gen_server/", "std/otp/gen_server/", "otp/gen_server/.")) {
             assertThrows(IllegalArgumentException.class, () -> CoreLibrarySources.source(path), path);
