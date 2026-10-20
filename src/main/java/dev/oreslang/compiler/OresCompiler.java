@@ -52,6 +52,19 @@ public final class OresCompiler {
     }
 
     /**
+     * Conservative checked-AST actor callback preflight. This proves only
+     * scalar syntax/effect exclusion, not actor heap or hard-RT execution.
+     * The checked AST is produced here, never supplied by the caller.
+     */
+    public static RealtimeActorSourceEffects.Report analyzeRealtimeActorCallback(
+            String source, String actorName, String callbackName, int arity,
+            RealtimeActorSourceEffects.Budget budget) {
+        Ast.Program checked = parseAndTypeCheck(source);
+        return RealtimeActorSourceEffects.analyzeChecked(
+                checked, actorName, callbackName, arity, budget);
+    }
+
+    /**
      * Parse and type-check the complete source first, then perform closed-world
      * build optimization. Type errors in code that later becomes unreachable
      * are still reported; tree shaking is an optimization, not conditional
