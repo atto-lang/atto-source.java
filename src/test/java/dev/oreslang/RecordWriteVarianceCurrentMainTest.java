@@ -73,16 +73,22 @@ final class RecordWriteVarianceCurrentMainTest {
         assertTrue(Types.isAssignable(struct,struct));
     }
     @Test void structuralParameterIsNotAWriteAuthorityInGuestSource() {
-        assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define interface Position
-                          value: int;
-                        end
-                        fnc bad(structural Position p): void {
-                          p.value = 3;
-                          return;
-                        }
-                        """)));
+        var parsed = assertDoesNotThrow(() -> Parser.parse("""
+                define interface Position
+                  value: int;
+                end
+                fnc bad(structural Position p): void {
+                  p.value = 3;
+                  return;
+                }
+                """), "the guest-source negative must parse successfully");
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(rejected.getMessage() != null
+                        && rejected.getMessage().toLowerCase(java.util.Locale.ROOT)
+                                .contains("readonly"),
+                "must reject due to readonly authority, not an unrelated error: " + rejected);
     }
 
     @Test void sourceStructuralParameterRetainsReadOnlyWidthSubtyping() {
@@ -104,18 +110,24 @@ final class RecordWriteVarianceCurrentMainTest {
     }
 
     @Test void structuralPatternProvesReadShapeNotWriteAuthority() {
-        assertThrows(IllegalArgumentException.class, () ->
-                TypeChecker.check(Parser.parse("""
-                        fnc bad({value: int} input): void {
-                          match input over
-                            on structural { value: int } narrowed -> {
-                              narrowed.value = 9;
-                            }
-                            on _ -> { return; }
-                          end
-                          return;
-                        }
-                        """)));
+        var parsed = assertDoesNotThrow(() -> Parser.parse("""
+                fnc bad({value: int} input): void {
+                  match input over
+                    on structural { value: int } narrowed -> {
+                      narrowed.value = 9;
+                    }
+                    on _ -> { return; }
+                  end
+                  return;
+                }
+                """), "the structural pattern guest source must parse");
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(rejected.getMessage() != null
+                        && rejected.getMessage().toLowerCase(java.util.Locale.ROOT)
+                                .contains("readonly"),
+                "pattern must reject mutation of the readonly view: " + rejected);
     }
 
     @Test void structuralPatternRetainsReadonlyFieldProjection() {
