@@ -93,13 +93,17 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.carrier_review_count = [1] * 100
         self.carrier_codeowner = [True] * 100
         self.carrier_codeowners_text = (
+            "/scripts/verify-oreslang-carrier-admin-policy.py @ORESoftware\n"
+            "/scripts/verify-oreslang-private-runner-attestation.py @ORESoftware\n"
             "/.github/private-oreslang-approved-source-snapshots.txt @ORESoftware\n"
             "/.github/CODEOWNERS @ORESoftware\n"
+            "/scripts/verify-oreslang-private-ci-snapshot.sh @ORESoftware\n"
+            "/scripts/launch-oreslang-private-ci-publisher.py @ORESoftware\n"
+            "/.github/oreslang-private-publisher.txt @ORESoftware\n"
+            "/.github/oreslang-private-build-images.txt @ORESoftware\n"
             "/.github/oreslang-private-execution-profile.txt @ORESoftware\n"
             "/.github/oreslang-private-workflows.txt @ORESoftware\n"
-            "/scripts/verify-private-ci-authorization.py @ORESoftware\n"
-            "/scripts/verify-private-ci-commit-authorization.py @ORESoftware\n"
-            "/scripts/publish-authorized-private-tree.py @ORESoftware\n"
+            "/scripts/run-oreslang-private-build-in-sandbox.py @ORESoftware\n"
             "/.github/workflows/ @ORESoftware\n"
         )
         self.carrier_codeowners_sha = None
@@ -113,9 +117,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "java25 sha256:" + "b" * 64 + "\n"
         )
         self.carrier_build_images_sha = None
+        self.carrier_publisher_policy_text = A + " " + A + "\n"
+        self.carrier_publisher_policy_sha = None
         self.carrier_workflows = {
             ".github/workflows/contracts.yml": W2,
-            ".github/workflows/private-oreslang-exact-tree.yml": W1,
+            ".github/workflows/oreslang-private-ci-gate.yml": W1,
         }
         self.carrier_workflow_manifest_text = "".join(
             f"{path} {sha}\n" for path, sha in sorted(self.carrier_workflows.items()))
@@ -123,7 +129,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.carrier_execution_profile_text = (
             "profile bwrap-offline-maven-v1\n"
             f"trusted-pom-blob {self.trusted_pom_sha}\n"
-            f"workflow .github/workflows/private-oreslang-exact-tree.yml {W1}\n"
+            f"workflow .github/workflows/oreslang-private-ci-gate.yml {W1}\n"
         )
         self.carrier_execution_profile_sha = None
         self.carrier_tree_truncated = False
@@ -318,6 +324,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                 + bytes([0]) + raw).hexdigest()
             return {"type": "file", "encoding": "base64", "size": len(raw),
                     "sha": self.carrier_execution_profile_sha or sha,
+                    "content": base64.b64encode(raw).decode("ascii")}
+        if route == pub.at_ref(
+                "repos/trusted/ci/contents/" + pub.CARRIER_PUBLISHER_POLICY_PATH, A):
+            raw = self.carrier_publisher_policy_text.encode("utf-8")
+            sha = hashlib.sha1(
+                b"blob " + str(len(raw)).encode("ascii") + bytes([0]) + raw
+            ).hexdigest()
+            return {"type": "file", "encoding": "base64", "size": len(raw),
+                    "sha": self.carrier_publisher_policy_sha or sha,
                     "content": base64.b64encode(raw).decode("ascii")}
         if route == pub.at_ref(
                 "repos/trusted/ci/contents/" + pub.CARRIER_APPROVAL_PATH, A):
@@ -2941,19 +2956,65 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
+    def test_carrier_publisher_policy_required_before_source_read(self):
+        valid = self.carrier_publisher_policy_text
+        for policy in (
+                "",
+                A + " " + B + "\n",
+                B + " " + A + "\n",
+                A + " " + A + "\n" + A + " " + A + "\n",
+                "not-a-policy-row\n"):
+            with self.subTest(policy=policy):
+                self.carrier_publisher_policy_text = policy
+                with patch.object(pub, "collect_source",
+                                  side_effect=AssertionError("private source read too early")):
+                    with self.assertRaises(pub.Denied):
+                        self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+                self.route_calls.clear()
+        self.carrier_publisher_policy_text = valid
+
+    def test_carrier_publisher_policy_blob_digest_must_match(self):
+        self.carrier_publisher_policy_sha = "f" * 40
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read too early")):
+            with self.assertRaisesRegex(pub.Denied, "publisher policy integrity failed"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        self.carrier_publisher_policy_sha = None
+
+    def test_sealed_build_images_are_required_before_source_read(self):
+        valid = self.carrier_build_images_text
+        for policy in (
+                "",
+                "java21 sha256:" + "a" * 64 + "\n",
+                "java21 sha256:" + "a" * 64 + "\n"
+                "java21 sha256:" + "b" * 64 + "\n"
+                "java25 sha256:" + "c" * 64 + "\n",
+                "java21 not-a-digest\njava25 sha256:" + "b" * 64 + "\n"):
+            with self.subTest(policy=policy):
+                self.carrier_build_images_text = policy
+                with patch.object(pub, "collect_source",
+                                  side_effect=AssertionError("private source read too early")):
+                    with self.assertRaises(pub.Denied):
+                        self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+                self.route_calls.clear()
+        self.carrier_build_images_text = valid
+
     def test_carrier_execution_profile_required_before_source_read(self):
         valid = self.carrier_execution_profile_text
         for policy in (
                 "",
                 "profile unknown\n"
                 f"trusted-pom-blob {self.trusted_pom_sha}\n"
-                f"workflow .github/workflows/private-oreslang-exact-tree.yml {W1}\n",
+                f"workflow .github/workflows/oreslang-private-ci-gate.yml {W1}\n",
                 "profile bwrap-offline-maven-v1\n"
                 "trusted-pom-blob not-a-sha\n"
-                f"workflow .github/workflows/private-oreslang-exact-tree.yml {W1}\n",
+                f"workflow .github/workflows/oreslang-private-ci-gate.yml {W1}\n",
                 "profile bwrap-offline-maven-v1\n"
                 f"trusted-pom-blob {self.trusted_pom_sha}\n"
-                f"workflow .github/workflows/private-oreslang-exact-tree.yml {W2}\n"):
+                f"workflow .github/workflows/oreslang-private-ci-gate.yml {W2}\n"):
             with self.subTest(policy=policy):
                 self.carrier_execution_profile_text = policy
                 with patch.object(pub, "collect_source",

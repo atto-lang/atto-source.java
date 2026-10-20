@@ -52,11 +52,15 @@ SOURCE_SNAPSHOT_ENTRY = re.compile(
     r"^([a-f0-9]{40}) ([a-f0-9]{40}) ([1-9][0-9]{0,19}) ([a-f0-9]{40}) ([a-f0-9]{40})$"
 )
 CARRIER_APPROVAL_PATH = ".github/private-oreslang-approved-source-snapshots.txt"
+CARRIER_PUBLISHER_POLICY_PATH = ".github/oreslang-private-publisher.txt"
 CARRIER_BUILD_IMAGES_PATH = ".github/oreslang-private-build-images.txt"
 CARRIER_EXECUTION_PROFILE_PATH = ".github/oreslang-private-execution-profile.txt"
 CARRIER_WORKFLOW_MANIFEST_PATH = ".github/oreslang-private-workflows.txt"
 CARRIER_SOURCE_ENTRY = re.compile(
     r"^([a-f0-9]{40}) ([a-f0-9]{40}) ([1-9][0-9]{0,19}) ([1-9][0-9]{0,19})$"
+)
+CARRIER_PUBLISHER_ENTRY = re.compile(
+    r"^([a-f0-9]{40}) ([a-f0-9]{40})$"
 )
 CARRIER_BUILD_IMAGE_ENTRY = re.compile(
     r"^(java21|java25) (sha256:[a-f0-9]{64})$"
@@ -65,7 +69,7 @@ CARRIER_WORKFLOW_ENTRY = re.compile(
     r"^(\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml) ([a-f0-9]{40})$"
 )
 CARRIER_EXECUTION_PROFILE = "bwrap-offline-maven-v1"
-CARRIER_PRIVATE_WORKFLOW = ".github/workflows/private-oreslang-exact-tree.yml"
+CARRIER_PRIVATE_WORKFLOW = ".github/workflows/oreslang-private-ci-gate.yml"
 PROTECTED_REVIEWS_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection/required_pull_request_reviews"
 CODEOWNERS_ROUTE = SOURCE_METADATA_ROUTE + "/contents/.github/CODEOWNERS"
 CODEOWNERS_ERRORS_ROUTE = SOURCE_METADATA_ROUTE + "/codeowners/errors"
@@ -535,14 +539,20 @@ def require_protected_carrier_codeowners(repository, carrier_main_sha):
                  if line.strip() and not line.strip().startswith("#")]
     # The last matching rule wins. The independent carrier source ledger,
     # CODEOWNERS itself, and all workflows must remain terminally owned.
-    expected = ["/" + CARRIER_APPROVAL_PATH + " " + REQUIRED_CODEOWNER,
-                "/.github/CODEOWNERS " + REQUIRED_CODEOWNER,
-                "/" + CARRIER_EXECUTION_PROFILE_PATH + " " + REQUIRED_CODEOWNER,
-                "/" + CARRIER_WORKFLOW_MANIFEST_PATH + " " + REQUIRED_CODEOWNER,
-                "/scripts/verify-private-ci-authorization.py " + REQUIRED_CODEOWNER,
-                "/scripts/verify-private-ci-commit-authorization.py " + REQUIRED_CODEOWNER,
-                "/scripts/publish-authorized-private-tree.py " + REQUIRED_CODEOWNER,
-                "/.github/workflows/ " + REQUIRED_CODEOWNER]
+    expected = [
+        "/scripts/verify-oreslang-carrier-admin-policy.py " + REQUIRED_CODEOWNER,
+        "/scripts/verify-oreslang-private-runner-attestation.py " + REQUIRED_CODEOWNER,
+        "/" + CARRIER_APPROVAL_PATH + " " + REQUIRED_CODEOWNER,
+        "/.github/CODEOWNERS " + REQUIRED_CODEOWNER,
+        "/scripts/verify-oreslang-private-ci-snapshot.sh " + REQUIRED_CODEOWNER,
+        "/scripts/launch-oreslang-private-ci-publisher.py " + REQUIRED_CODEOWNER,
+        "/" + CARRIER_PUBLISHER_POLICY_PATH + " " + REQUIRED_CODEOWNER,
+        "/" + CARRIER_BUILD_IMAGES_PATH + " " + REQUIRED_CODEOWNER,
+        "/" + CARRIER_EXECUTION_PROFILE_PATH + " " + REQUIRED_CODEOWNER,
+        "/" + CARRIER_WORKFLOW_MANIFEST_PATH + " " + REQUIRED_CODEOWNER,
+        "/scripts/run-oreslang-private-build-in-sandbox.py " + REQUIRED_CODEOWNER,
+        "/.github/workflows/ " + REQUIRED_CODEOWNER,
+    ]
     if effective[-len(expected):] != expected:
         raise Denied("private carrier workflows lack terminal security CODEOWNER coverage")
     errors = gh_api(at_ref(route + "/codeowners/errors", carrier_main_sha))
@@ -555,6 +565,53 @@ def require_protected_carrier_codeowners(repository, carrier_main_sha):
             or owner.get("type") != "User"
             or access.get("permission") not in ("write", "admin")):
         raise Denied("private carrier security CODEOWNER lacks write permission")
+
+
+def require_carrier_publisher_policy(repository, carrier_main_sha,
+                                     source_main_sha, publisher_blob_sha,
+                                     reviewed_blob_sha=None):
+    """Require carrier-reviewed executable identity for the source publisher."""
+    valid_sha(carrier_main_sha)
+    valid_sha(source_main_sha)
+    valid_sha(publisher_blob_sha)
+    metadata = gh_api(at_ref(
+        f"repos/{repository}/contents/{CARRIER_PUBLISHER_POLICY_PATH}",
+        carrier_main_sha))
+    if (metadata.get("type") != "file" or metadata.get("encoding") != "base64"
+            or not isinstance(metadata.get("content"), str)
+            or len(metadata["content"]) > 24 * 1024
+            or type(metadata.get("size")) is not int
+            or not 0 < metadata["size"] <= 16 * 1024):
+        raise Denied("private carrier publisher policy is unavailable")
+    try:
+        raw = base64.b64decode("".join(metadata["content"].splitlines()),
+                               validate=True)
+        lines = raw.decode("utf-8").splitlines()
+    except (ValueError, UnicodeError) as exc:
+        raise Denied("private carrier publisher policy is invalid") from exc
+    digest = hashlib.sha1(
+        b"blob " + str(len(raw)).encode("ascii") + bytes([0]) + raw
+    ).hexdigest()
+    if (len(raw) != metadata["size"] or bytes([0]) in raw
+            or valid_sha(metadata.get("sha")) != digest):
+        raise Denied("private carrier publisher policy integrity failed")
+    if reviewed_blob_sha is not None and digest != reviewed_blob_sha:
+        raise Denied("private carrier publisher policy changed during transfer")
+
+    approvals = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        match = CARRIER_PUBLISHER_ENTRY.fullmatch(stripped)
+        if match is None:
+            raise Denied("invalid private carrier publisher policy entry")
+        approvals.append(match.groups())
+    if len(approvals) != 1:
+        raise Denied("private carrier must approve exactly one publisher executable")
+    if approvals[0] != (source_main_sha, publisher_blob_sha):
+        raise Denied("private carrier publisher executable approval does not match bootstrap")
+    return digest, source_main_sha, publisher_blob_sha
 
 
 def require_carrier_source_approval(repository, expected_commit, expected_tree,
@@ -1472,6 +1529,9 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         return current_sha
     base_sha = require_pinned_carrier_main(
         approved_carrier_main_sha, approved_carrier_tree)
+    carrier_publisher = require_carrier_publisher_policy(
+        repository, base_sha, reviewed_main_sha, bootstrap_blob_sha)
+    carrier_images = require_carrier_sealed_build_images(repository, base_sha)
     expected_branch = "ci/oreslang-" + expected_source_commit + "-" + base_sha
     if branch != expected_branch:
         raise Denied(
@@ -1536,6 +1596,15 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
             repository, base_sha, approved_carrier_tree, carrier_workflows[0])
         if current_workflows[1:] != carrier_workflows[1:]:
             raise Denied("private carrier workflow surface changed during transfer")
+        current_publisher = require_carrier_publisher_policy(
+            repository, base_sha, reviewed_main_sha, bootstrap_blob_sha,
+            carrier_publisher[0])
+        if current_publisher[1:] != carrier_publisher[1:]:
+            raise Denied("private carrier publisher executable approval changed during transfer")
+        current_images = require_carrier_sealed_build_images(
+            repository, base_sha, carrier_images[0])
+        if current_images[1:] != carrier_images[1:]:
+            raise Denied("private carrier sealed build-image policy changed during transfer")
         current_execution = require_carrier_execution_profile(
             repository, base_sha, private_workflow_sha, carrier_execution[0])
         if current_execution[1:] != carrier_execution[1:]:
