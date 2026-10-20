@@ -2221,25 +2221,34 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
-         * Spawn, then register the worker before any readiness/mailbox work is
-         * scheduled. A registration failure cancels the newly spawned actor.
+         * Spawn and install lifecycle ownership in one group admission turn.
+         * The authority lock serializes with closeFromRuntime, so close never
+         * snapshots managedWorkers between a spawn and its registration.
+         * No user behavior factory executes during spawnInternal: actor
+         * initialization is deferred until its dispatcher is scheduled.
+         *
+         * Invariant: successful return has an owner, or concurrent close has
+         * already revoked it and requested cancellation. A failed admission
+         * must cancel the unexposed actor before propagating the error.
          */
         public <M> ActorRef<M> spawnWorker(
                 ActorKind kind,
                 IsolatePolicy policy,
                 BehaviorFactory<M> behaviorFactory) {
             requireManager("spawn an ActorGroup worker");
-            requireOpen();
-            ActorRef<M> worker = ActorRuntime.this.spawn(kind, policy, behaviorFactory);
-            try {
-                return manageWorker(worker);
-            } catch (RuntimeException | Error failure) {
+            synchronized (authorityLock) {
+                requireOpen();
+                ActorRef<M> worker = ActorRuntime.this.spawn(kind, policy, behaviorFactory);
                 try {
-                    worker.cancel();
-                } catch (RuntimeException cleanup) {
-                    failure.addSuppressed(cleanup);
+                    return manageWorker(worker);
+                } catch (RuntimeException | Error failure) {
+                    try {
+                        worker.cancel();
+                    } catch (RuntimeException cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                    throw failure;
                 }
-                throw failure;
             }
         }
 
