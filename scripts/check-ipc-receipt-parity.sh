@@ -18,6 +18,7 @@ trap 'rm -rf -- "$tmp"' EXIT
   "$root/src/test/java/dev/oreslang/runtime/IpcSessionAdmissionCloseRaceSelfTest.java" \
   "$root/src/test/java/dev/oreslang/runtime/IpcTransportSessionLeaseSelfTest.java" \
   "$root/src/test/java/dev/oreslang/runtime/IpcAuthenticatedSocketTransportSelfTest.java" \
+  "$root/src/test/java/dev/oreslang/runtime/IpcAuthenticatedSocketTwoProcessSelfTest.java" \
   "$root/src/test/java/dev/oreslang/runtime/IpcBlockingGuardSelfTest.java"
 "$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcReceiptCorrelationSelfTest
 "$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcReceiptCompletionBridgeSelfTest
@@ -25,5 +26,6 @@ trap 'rm -rf -- "$tmp"' EXIT
 "$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcSessionAdmissionCloseRaceSelfTest
 "$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcTransportSessionLeaseSelfTest
 "$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcAuthenticatedSocketTransportSelfTest
+"$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcAuthenticatedSocketTwoProcessSelfTest
 "$JAVA" -cp "$tmp" dev.oreslang.runtime.IpcBlockingGuardSelfTest
 printf 'JAVA_RECEIPTS_HOST_ONLY_PASS (not remote IPC or guest compilation)\n'
