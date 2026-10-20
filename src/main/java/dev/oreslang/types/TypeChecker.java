@@ -3928,6 +3928,16 @@ public final class TypeChecker {
                             "Future<T> constructor requires a non-actor class with async run()");
                 }
                 rejectUnimportedClassNamespace(providerClass);
+                // A source async-method task retains its receiver across
+                // scheduling. Until owner-move / pinning proofs are emitted,
+                // allow only stateless providers: never retain a mutable
+                // object graph across another task's execution domain.
+                if (!providerClass.fields().isEmpty()
+                        || !providerClass.parents().isEmpty()
+                        || providerClass.constructor() != null) {
+                    throw new IllegalArgumentException(
+                            "Future<T> async provider must be stateless until receiver ownership transfer is implemented");
+                }
                 ResolvedMethod target = findMethodTarget(
                         providerClass, producer, "run", 0, new LinkedHashSet<>());
                 if (target == null || !target.method().async()
