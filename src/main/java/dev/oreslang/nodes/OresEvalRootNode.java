@@ -5356,6 +5356,9 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     return new MutableStructValue(fields);
                 }
+                if (value instanceof OresKeyedMap map) {
+                    return map.detachedCopy();
+                }
                 if (value instanceof OresEntry entry) {
                     return new OresEntry(
                             detachAsyncValue(entry.key(), visiting),
