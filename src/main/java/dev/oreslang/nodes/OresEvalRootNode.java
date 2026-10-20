@@ -18,6 +18,7 @@ import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.OresEntry;
+import dev.oreslang.runtime.OresKeyedMap;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -4666,6 +4667,15 @@ public final class OresEvalRootNode extends RootNode {
                         }, args);
             }
 
+            if (receiver instanceof MapFactory
+                    && member.member().equals("from_entries")) {
+                Ast.MapShapeProof shape =
+                        Ast.CheckedMapFactoryShape.require(call);
+                return invokableInvocation(
+                        values -> createMapFromEntries(shape, values),
+                        args);
+            }
+
             if (receiver instanceof OresEntry entry) {
                 Object field = switch (member.member()) {
                     case "key" -> entry.key();
@@ -4902,6 +4912,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return value;
             }
+            if (receiver instanceof OresKeyedMap<?, ?> map) {
+                return map.getRequired(index);
+            }
             if (receiver instanceof OresEntry entry) {
                 if (!(index instanceof String key)) {
                     throw new IllegalArgumentException(
@@ -4979,6 +4992,10 @@ public final class OresEvalRootNode extends RootNode {
                 Object value,
                 Env env,
                 Ast.Expr receiverExpression) {
+            if (receiver instanceof OresKeyedMap<?, ?>) {
+                throw new IllegalArgumentException(
+                        "Map indexed assignment is not admitted in V1; use Map.put");
+            }
             if (receiver instanceof OresObject object) {
                 if (!object.klass.actorKind().equals(Ast.ActorKind.NONE)) {
                     throw new IllegalArgumentException(
@@ -5122,6 +5139,13 @@ public final class OresEvalRootNode extends RootNode {
                                     + "<T> constructor takes no positional arguments");
                 }
                 return new ArrayList<>();
+            }
+            if (created.type().name().equals("Map")) {
+                if (!args.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "new Map<K,V>() takes no positional arguments");
+                }
+                return newGuestMap(mapShapeFromTypeRef(created.type()));
             }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
@@ -6392,6 +6416,15 @@ public final class OresEvalRootNode extends RootNode {
                 Object receiver = eval(methodCall.receiver(), env);
                 List<Object> args = evaluateArguments(call.arguments(), env);
 
+                if (receiver instanceof MapFactory
+                        && methodCall.member().equals("from_entries")) {
+                    Ast.MapShapeProof shape =
+                            Ast.CheckedMapFactoryShape.require(call);
+                    return invokableInvocation(
+                            values -> createMapFromEntries(shape, values),
+                            args);
+                }
+
                 if (receiver instanceof OptionValue option
                         && methodCall.member().equals("unwrap_all")) {
                     int depth = checkedOptionDepth(call);
@@ -6729,6 +6762,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
                 if (name.name().equals("Entry")) return EntryFactory.INSTANCE;
+                if (name.name().equals("Map")) return MapFactory.INSTANCE;
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
                 if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                     return BooleanOpsNamespace.INSTANCE;
@@ -7000,6 +7034,13 @@ public final class OresEvalRootNode extends RootNode {
                                         + "<T> constructor takes no positional arguments");
                     }
                     return new ArrayList<>();
+                }
+                if (created.type().name().equals("Map")) {
+                    if (!created.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "new Map<K,V>() takes no positional arguments");
+                    }
+                    return newGuestMap(mapShapeFromTypeRef(created.type()));
                 }
                 if (created.type().name().equals("DynamicStruct")) {
                     throw new IllegalArgumentException(
@@ -7529,6 +7570,50 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException("unknown Entry member " + name);
                 }
                 return (Invokable) EntryFactory::create;
+            }
+            if (receiver instanceof MapFactory) {
+                throw new IllegalArgumentException(
+                        name.equals("from_entries")
+                                ? "Map.from_entries is direct-call-only"
+                                : "unknown Map factory member " + name);
+            }
+            if (receiver instanceof OresKeyedMap<?, ?> rawMap) {
+                @SuppressWarnings("unchecked")
+                OresKeyedMap<Object, Object> map =
+                        (OresKeyedMap<Object, Object>) rawMap;
+                return switch (name) {
+                    case "size" -> (Invokable) args -> {
+                        requireZero(args, "Map.size");
+                        return (long) map.size();
+                    };
+                    case "has" -> (Invokable) args -> {
+                        requireOne(args, "Map.has");
+                        return map.containsKey(args.getFirst());
+                    };
+                    case "get" -> (Invokable) args -> {
+                        requireOne(args, "Map.get");
+                        OresKeyedMap.Lookup<Object> found =
+                                map.lookup(args.getFirst());
+                        return new OptionValue(found.present(), found.value());
+                    };
+                    case "take" -> (Invokable) args -> {
+                        requireOne(args, "Map.take");
+                        OresKeyedMap.Lookup<Object> found =
+                                map.take(args.getFirst());
+                        return new OptionValue(found.present(), found.value());
+                    };
+                    case "remove" -> (Invokable) args -> {
+                        requireOne(args, "Map.remove");
+                        return map.take(args.getFirst()).present();
+                    };
+                    case "put" -> (Invokable) args -> {
+                        requireTwo(args, "Map.put");
+                        Object previous = map.put(args.get(0), args.get(1));
+                        return new OptionValue(previous != null, previous);
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown Map member " + name);
+                };
             }
             if (receiver instanceof ChannelFactory factory) {
                 if (!name.equals("new")) {
@@ -9076,6 +9161,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
             if (value instanceof OresEntry) return "Entry";
+            if (value instanceof OresKeyedMap<?, ?>) return "Map";
             if (value instanceof ActorRuntime.ActorOutput<?>) return "ActorOutput";
             if (value instanceof ActorRuntime.ActorOutputStream<?>) return "ActorOutputStream";
             if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
@@ -9479,6 +9565,29 @@ public final class OresEvalRootNode extends RootNode {
                 return key == entry.key() && entryValue == entry.value()
                         ? entry
                         : new OresEntry(key, entryValue);
+            }
+
+            if (declared.name().equals("Map")) {
+                if (!(value instanceof OresKeyedMap<?, ?> map)) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                Ast.MapShapeProof expected = mapShapeFromTypeRef(declared);
+                OresKeyedMap.KeyDomain expectedKey = switch (expected.keyDomain()) {
+                    case STRING -> OresKeyedMap.KeyDomain.STRING;
+                    case SYMBOL -> OresKeyedMap.KeyDomain.SYMBOL;
+                    case STRING_OR_SYMBOL -> OresKeyedMap.KeyDomain.STRING_OR_SYMBOL;
+                };
+                OresKeyedMap.ValueDomain expectedValue = switch (expected.valueDomain()) {
+                    case INT -> OresKeyedMap.ValueDomain.INT;
+                    case BOOL -> OresKeyedMap.ValueDomain.BOOL;
+                    case STRING -> OresKeyedMap.ValueDomain.STRING;
+                    case SYMBOL -> OresKeyedMap.ValueDomain.SYMBOL;
+                };
+                if (map.keyDomain() != expectedKey
+                        || map.valueDomain() != expectedValue) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                return map;
             }
 
             if (declared.name().equals("Array") || declared.name().equals("List")) {
@@ -10035,6 +10144,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (!(value instanceof OresObject
                         || value instanceof OresEntry
+                        || value instanceof OresKeyedMap<?, ?>
                         || value instanceof ReadonlyRecordValue
                         || value instanceof OptionValue
                         || value instanceof ResultValue
@@ -10056,6 +10166,9 @@ public final class OresEvalRootNode extends RootNode {
                         write(", value=");
                         append(entry.value(), depth + 1);
                         write("}");
+                    } else if (value instanceof OresKeyedMap<?, ?> map) {
+                        write("Map");
+                        append(map.shallowSnapshot(), depth + 1);
                     } else if (value instanceof OresObject object) {
                         write(object.klass.name());
                         write("{");
@@ -10204,6 +10317,85 @@ public final class OresEvalRootNode extends RootNode {
             return value == null ? List.of() : List.of(value);
         }
     }
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static OresKeyedMap<Object, Object> newGuestMap(
+            Ast.MapShapeProof shape) {
+        OresKeyedMap.ValueDomain valueDomain = switch (shape.valueDomain()) {
+            case INT -> OresKeyedMap.ValueDomain.INT;
+            case BOOL -> OresKeyedMap.ValueDomain.BOOL;
+            case STRING -> OresKeyedMap.ValueDomain.STRING;
+            case SYMBOL -> OresKeyedMap.ValueDomain.SYMBOL;
+        };
+        return (OresKeyedMap) switch (shape.keyDomain()) {
+            case STRING -> OresKeyedMap.stringKeys(valueDomain);
+            case SYMBOL -> OresKeyedMap.symbolKeys(valueDomain);
+            case STRING_OR_SYMBOL -> OresKeyedMap.stringOrSymbolKeys(valueDomain);
+        };
+    }
+
+    private static Ast.MapShapeProof mapShapeFromTypeRef(Ast.TypeRef type) {
+        if (!type.name().equals("Map") || type.inferArguments()
+                || type.arguments().size() != 2) {
+            throw new IllegalStateException(
+                    "runtime Map construction requires checked Map<K,V>");
+        }
+        Ast.TypeRef key = type.arguments().get(0);
+        Ast.TypeRef value = type.arguments().get(1);
+        Ast.MapKeyDomainProof keyDomain;
+        if (key.isUnion()) {
+            if (key.arguments().size() != 2) {
+                throw new IllegalStateException("runtime Map key union is not reifiable");
+            }
+            boolean string = key.arguments().stream().anyMatch(arg ->
+                    arg.name().equals("String") || arg.name().equals("string"));
+            boolean symbol = key.arguments().stream().anyMatch(arg ->
+                    arg.name().equals("Symbol"));
+            if (!string || !symbol) {
+                throw new IllegalStateException("runtime Map key union is not String | Symbol");
+            }
+            keyDomain = Ast.MapKeyDomainProof.STRING_OR_SYMBOL;
+        } else if (key.name().equals("String") || key.name().equals("string")) {
+            keyDomain = Ast.MapKeyDomainProof.STRING;
+        } else if (key.name().equals("Symbol")) {
+            keyDomain = Ast.MapKeyDomainProof.SYMBOL;
+        } else {
+            throw new IllegalStateException("runtime Map key type is not reifiable: " + key);
+        }
+
+        Ast.MapValueDomainProof valueDomain = switch (value.name()) {
+            case "int" -> Ast.MapValueDomainProof.INT;
+            case "bool", "Bool" -> Ast.MapValueDomainProof.BOOL;
+            case "string", "String" -> Ast.MapValueDomainProof.STRING;
+            case "Symbol" -> Ast.MapValueDomainProof.SYMBOL;
+            default -> throw new IllegalStateException(
+                    "runtime Map value type is not reifiable: " + value);
+        };
+        return new Ast.MapShapeProof(keyDomain, valueDomain);
+    }
+
+    private static Object createMapFromEntries(
+            Ast.MapShapeProof shape,
+            List<Object> args) {
+        requireOne(args, "Map.from_entries");
+        if (!(args.getFirst() instanceof List<?> rawEntries)) {
+            throw new IllegalArgumentException(
+                    "Map.from_entries requires an Array/List<Entry<K,V>>");
+        }
+        ArrayList<OresEntry> entries = new ArrayList<>(rawEntries.size());
+        for (Object value : rawEntries) {
+            if (!(value instanceof OresEntry entry)) {
+                throw new IllegalArgumentException(
+                        "Map.from_entries requires only nominal Entry<K,V> values");
+            }
+            entries.add(entry);
+        }
+        OresKeyedMap<Object, Object> map = newGuestMap(shape);
+        map.putEntries(entries);
+        return map;
+    }
+
+    private enum MapFactory { INSTANCE }
+
     private enum EntryFactory {
         INSTANCE;
 
@@ -10245,6 +10437,7 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof HostClassFacade || value instanceof HostObjectFacade) {
                 return false;
             }
+            if (value instanceof OresKeyedMap<?, ?>) return false;
 
             // Nested shared locks require recursive publication and lock-order
             // semantics that are intentionally not part of the current model.
