@@ -277,11 +277,11 @@ final class OresDiagnosticRendererTest {
 
         String json = OresDiagnosticRenderer.renderJson(root);
         int rendered =
-                json.split("\\\"event_order\\\":\\\"oldest_to_newest\\\"", -1).length - 1;
+                json.split("\"event_order\":\"oldest_to_newest\"", -1).length - 1;
 
         assertEquals(16, rendered,
                 "global render budget must cap logical trace expansion");
-        assertTrue(json.contains("\\\"elided_async_traces\\\":8"), json);
+        assertTrue(json.contains("\"elided_async_traces\":8"), json);
         assertTrue(json.length() < 200_000,
                 "global async trace budget must bound output");
     }
