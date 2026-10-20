@@ -59,6 +59,30 @@ public final class OresCompiler {
 
         AsyncSemanticProvenance semantic = checked.asyncSemantic();
         AsyncTransferProvenance transfers = owned.asyncTransfers();
+        requireAsyncProofJoin(semantic, transfers);
+
+        return new AsyncAdmissionResult(
+                checked.program(),
+                checked.warnings(),
+                transfers,
+                AsyncReleaseBarrier.TASK_SCOPE_GET_DONE);
+    }
+
+    /**
+     * Package-private so the linked/incremental compiler can enforce the same
+     * exact-call semantic + ownership join before leasing prechecked ASTs to
+     * the Truffle runtime.
+     */
+    static void requireAsyncProofJoin(
+            AsyncSemanticProvenance semantic,
+            AsyncTransferProvenance transfers) {
+        java.util.Objects.requireNonNull(semantic, "semantic");
+        java.util.Objects.requireNonNull(transfers, "transfers");
+        if (!semantic.sealed() || !transfers.sealed()) {
+            throw new IllegalStateException(
+                    "Oreslang compiler invariant violated: async proof "
+                            + "ledgers must be sealed before admission");
+        }
         if (semantic.callCount() != transfers.callCount()) {
             throw new IllegalArgumentException(
                     "async lowering admission is incomplete: semantic and "
@@ -80,12 +104,6 @@ public final class OresCompiler {
                                 + "admission for the exact call");
             }
         }
-
-        return new AsyncAdmissionResult(
-                checked.program(),
-                checked.warnings(),
-                transfers,
-                AsyncReleaseBarrier.TASK_SCOPE_GET_DONE);
     }
 
     /** Runs the complete front-end admission policy on an already parsed program. */
