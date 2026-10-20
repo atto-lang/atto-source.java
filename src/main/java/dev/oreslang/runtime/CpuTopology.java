@@ -21,12 +21,24 @@ final class CpuTopology {
     private static final int MAX_DISCOVERED_CPUS = 8192;
     private static final int MAX_CACHE_INDEXES = 32;
 
-    record Location(int cpu, int llc, int numa) {
+    /* The cache ID alone is not a globally unique LLC identity across
+     * physical packages or levels. Old three-argument locations are retained
+     * only for synthetic tests where llc is supplied as a prequalified key. */
+    record Location(int cpu, int llc, int numa, int llcLevel, int packageId) {
+        Location(int cpu, int llc, int numa) {
+            this(cpu, llc, numa, UNKNOWN, UNKNOWN);
+        }
         Location {
-            if (cpu < 0 || llc < UNKNOWN || numa < UNKNOWN) {
+            if (cpu < 0 || llc < UNKNOWN || numa < UNKNOWN
+                    || llcLevel < UNKNOWN || packageId < UNKNOWN
+                    || ((llcLevel == UNKNOWN) != (packageId == UNKNOWN))
+                    || (llcLevel >= 0 && (llc < 0 || llcLevel < 2))) {
                 throw new IllegalArgumentException("invalid CPU topology location");
             }
         }
+    }
+    private record CacheLevel(int id, int level) {
+        static CacheLevel unknown() { return new CacheLevel(UNKNOWN, UNKNOWN); }
     }
 
     private final Map<Integer, Location> locations;
@@ -61,7 +73,9 @@ final class CpuTopology {
         Location candidate = locations.get(candidateCpu);
         if (preferred == null || candidate == null) return 3;
         if (preferred.llc() >= 0 && candidate.llc() >= 0
-                && preferred.llc() == candidate.llc()) return 1;
+                && preferred.llc() == candidate.llc()
+                && preferred.llcLevel() == candidate.llcLevel()
+                && preferred.packageId() == candidate.packageId()) return 1;
         if (preferred.numa() >= 0 && candidate.numa() >= 0
                 && preferred.numa() == candidate.numa()) return 2;
         return 3;
@@ -85,10 +99,17 @@ final class CpuTopology {
                 if (discovered.size() >= MAX_DISCOVERED_CPUS) break;
                 int cpu = parseNumericSuffix(cpuDir.getFileName().toString(), "cpu");
                 if (cpu < 0) continue;
+                int packageId = readInt(cpuDir.resolve(
+                        "topology/physical_package_id"));
+                CacheLevel cache = discoverLastLevelCache(cpuDir);
+                /* Unknown package identity cannot establish same-LLC
+                 * locality across CPUs: fall back to NUMA or remote. */
+                final boolean trustedCache = packageId >= 0 && cache.id() >= 0;
                 discovered.put(cpu, new Location(
-                        cpu,
-                        discoverLastLevelCache(cpuDir),
-                        discoverNumaNode(cpuDir)));
+                        cpu, trustedCache ? cache.id() : UNKNOWN,
+                        discoverNumaNode(cpuDir),
+                        trustedCache ? cache.level() : UNKNOWN,
+                        trustedCache ? packageId : UNKNOWN));
             }
         } catch (IOException | SecurityException ignored) {
             return empty();
@@ -96,10 +117,10 @@ final class CpuTopology {
         return new CpuTopology(discovered);
     }
 
-    private static int discoverLastLevelCache(Path cpuDir) {
+    private static CacheLevel discoverLastLevelCache(Path cpuDir) {
         Path cacheRoot = cpuDir.resolve("cache");
-        if (!Files.isDirectory(cacheRoot)) return UNKNOWN;
-        int bestLevel = -1;
+        if (!Files.isDirectory(cacheRoot)) return CacheLevel.unknown();
+        int bestLevel = UNKNOWN;
         int bestId = UNKNOWN;
         for (int index = 0; index < MAX_CACHE_INDEXES; index++) {
             Path dir = cacheRoot.resolve("index" + index);
@@ -107,14 +128,16 @@ final class CpuTopology {
             int level = readInt(dir.resolve("level"));
             int id = readInt(dir.resolve("id"));
             String type = readString(dir.resolve("type"));
-            if (level <= 0 || id < 0 || type == null) continue;
-            if (!type.equalsIgnoreCase("Unified") && !type.equalsIgnoreCase("Data")) continue;
+            /* A per-core L1D ID is not evidence of a shared LLC. Requiring
+             * a unified L2+ avoids conflating independent cache kinds. */
+            if (level < 2 || id < 0 || type == null
+                    || !type.equalsIgnoreCase("Unified")) continue;
             if (level > bestLevel) {
                 bestLevel = level;
                 bestId = id;
             }
         }
-        return bestId;
+        return new CacheLevel(bestId, bestLevel);
     }
 
     private static int discoverNumaNode(Path cpuDir) {
