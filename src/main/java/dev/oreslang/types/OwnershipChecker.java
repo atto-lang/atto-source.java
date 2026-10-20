@@ -1223,6 +1223,25 @@ public final class OwnershipChecker {
             }
             concreteReceiver = ownershipAggregateType(concreteReceiver);
             if (concreteReceiver != null
+                    && concreteReceiver.name().equals("Map")
+                    && concreteReceiver.arguments().size() == 2) {
+                if (member.member().equals("size")) {
+                    return new ValueInfo(
+                            Ast.TypeRef.simple("int"), ValueKind.COPY, null);
+                }
+                throw error("Map methods are direct-call-only; invoke map."
+                        + member.member() + "(...) directly");
+            }
+            if (concreteReceiver != null
+                    && concreteReceiver.name().equals("DuplicateKey")
+                    && concreteReceiver.arguments().size() == 1) {
+                if (!member.member().equals("key")) {
+                    throw error("unknown DuplicateKey member '" + member.member() + "'");
+                }
+                Ast.TypeRef keyType = concreteReceiver.arguments().getFirst();
+                return new ValueInfo(keyType, kindOfType(keyType), null);
+            }
+            if (concreteReceiver != null
                     && concreteReceiver.name().equals("Entry")
                     && concreteReceiver.arguments().size() == 2) {
                 Ast.TypeRef valueType = switch (member.member()) {
@@ -1549,6 +1568,34 @@ public final class OwnershipChecker {
                     null);
         }
 
+        if (call.callee() instanceof Ast.MemberExpr mapCall
+                && mapCall.receiver() instanceof Ast.NameExpr mapFactory
+                && mapFactory.name().equals("Map")
+                && scope.lookup("Map") == null
+                && mapCall.member().equals("from_entries")) {
+            if (call.typeArgumentsPresent()) {
+                throw error("Map.from_entries infers K and V and does not accept call-site type arguments");
+            }
+            if (call.arguments().size() != 1
+                    || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                throw error("Map.from_entries expects exactly one Array<Entry<K,V>> argument");
+            }
+            ValueInfo entries = checkExpr(call.arguments().getFirst(), scope, true);
+            Ast.TypeRef element = iterableElementType(entries.type, false);
+            if (!element.name().equals("Entry") || element.arguments().size() != 2) {
+                throw error("Map.from_entries requires Array<Entry<K,V>>");
+            }
+            Ast.TypeRef key = element.arguments().get(0);
+            Ast.TypeRef value = element.arguments().get(1);
+            Ast.TypeRef mapType = new Ast.TypeRef(
+                    "Map", List.of(key, value), false);
+            Ast.TypeRef duplicateType = new Ast.TypeRef(
+                    "DuplicateKey", List.of(key), false);
+            Ast.TypeRef resultType = new Ast.TypeRef(
+                    "Result", List.of(mapType, duplicateType), false);
+            return new ValueInfo(resultType, kindOfType(resultType), null);
+        }
+
         if (call.callee() instanceof Ast.MemberExpr entryCall
                 && entryCall.receiver() instanceof Ast.NameExpr entryFactory
                 && entryFactory.name().equals("Entry")
@@ -1590,6 +1637,48 @@ public final class OwnershipChecker {
                         "function " + namespace.name() + "." + qualified.member());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
+            }
+        }
+
+        if (call.callee() instanceof Ast.MemberExpr mapMember) {
+            Ast.TypeRef receiverHint = receiverType(mapMember.receiver(), scope);
+            Ast.TypeRef concreteMap = receiverHint != null && receiverHint.isBorrow()
+                    ? receiverHint.borrowedTarget() : receiverHint;
+            if (concreteMap != null
+                    && concreteMap.name().equals("Map")
+                    && concreteMap.arguments().size() == 2) {
+                ValueInfo receiver = checkExpr(mapMember.receiver(), scope, false);
+                Ast.TypeRef key = concreteMap.arguments().get(0);
+                Ast.TypeRef value = concreteMap.arguments().get(1);
+                return switch (mapMember.member()) {
+                    case "has" -> {
+                        if (call.arguments().size() != 1) {
+                            throw error("Map.has expects exactly one key");
+                        }
+                        checkExpr(call.arguments().getFirst(), scope, false);
+                        yield new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+                    }
+                    case "get" -> {
+                        if (call.arguments().size() != 1) {
+                            throw error("Map.get expects exactly one key");
+                        }
+                        checkExpr(call.arguments().getFirst(), scope, false);
+                        Ast.TypeRef result = new Ast.TypeRef(
+                                "Option", List.of(value), false);
+                        yield new ValueInfo(result, kindOfType(result), null);
+                    }
+                    case "entries" -> {
+                        if (!call.arguments().isEmpty()) {
+                            throw error("Map.entries expects no arguments");
+                        }
+                        Ast.TypeRef entry = new Ast.TypeRef(
+                                "Entry", List.of(key, value), false);
+                        Ast.TypeRef result = new Ast.TypeRef(
+                                "Array", List.of(entry), false);
+                        yield new ValueInfo(result, kindOfType(result), null);
+                    }
+                    default -> null;
+                };
             }
         }
 
@@ -2402,6 +2491,11 @@ public final class OwnershipChecker {
                     && receiverType.arguments().size() == 2) {
                 throw error("Entry<K,V> is immutable; member assignment is not allowed");
             }
+            if (receiverType != null
+                    && receiverType.name().equals("Map")
+                    && receiverType.arguments().size() == 2) {
+                throw error("Map<K,V> is immutable in typed Map v1");
+            }
             Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
             if (klass != null) {
                 Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
@@ -2432,6 +2526,11 @@ public final class OwnershipChecker {
                     && receiverType.name().equals("Entry")
                     && receiverType.arguments().size() == 2) {
                 throw error("Entry<K,V> is immutable; indexed assignment is not allowed");
+            }
+            if (receiverType != null
+                    && receiverType.name().equals("Map")
+                    && receiverType.arguments().size() == 2) {
+                throw error("Map<K,V> is immutable in typed Map v1");
             }
             ensureMutableReceiver(indexed.receiver(), scope, "indexed value");
             checkExpr(indexed.index(), scope, false);
@@ -3752,6 +3851,10 @@ public final class OwnershipChecker {
 
         Object constantIndex = computedIndexConstant(indexed.index(), scope);
 
+        if (concrete.name().equals("Map") && concrete.arguments().size() == 2) {
+            return concrete.arguments().get(1);
+        }
+
         if (concrete.name().equals("Entry") && concrete.arguments().size() == 2) {
             if (constantIndex instanceof String key) {
                 return switch (key) {
@@ -3937,6 +4040,11 @@ public final class OwnershipChecker {
     private Ast.TypeRef objectMemberBindingType(Ast.TypeRef concrete, String name) {
         if (concrete.isBorrow()) concrete = concrete.borrowedTarget();
         concrete = ownershipAggregateType(concrete);
+        if (concrete.name().equals("DuplicateKey") && concrete.arguments().size() == 1) {
+            return name.equals("key")
+                    ? concrete.arguments().getFirst()
+                    : Ast.TypeRef.inferred();
+        }
         if (concrete.name().equals("Entry") && concrete.arguments().size() == 2) {
             return switch (name) {
                 case "key" -> concrete.arguments().get(0);
@@ -3995,6 +4103,12 @@ public final class OwnershipChecker {
                 && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
         }
+        if (concrete.name().equals("Map") && concrete.arguments().size() == 2) {
+            return new Ast.TypeRef(
+                    "Entry",
+                    List.of(concrete.arguments().get(0), concrete.arguments().get(1)),
+                    false);
+        }
         if ((concrete.name().equals("Array") || concrete.name().equals("List")
                         || concrete.name().equals("Generator") || concrete.name().equals("Iterator"))
                 && concrete.arguments().size() == 1) {
@@ -4043,6 +4157,11 @@ public final class OwnershipChecker {
             case "Entry" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))
                     && isCopyType(type.arguments().get(1));
+            case "Map" -> type.arguments().size() == 2
+                    && isCopyType(type.arguments().get(0))
+                    && isCopyType(type.arguments().get(1));
+            case "DuplicateKey" -> type.arguments().size() == 1
+                    && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))
                     && isCopyType(type.arguments().get(1));
