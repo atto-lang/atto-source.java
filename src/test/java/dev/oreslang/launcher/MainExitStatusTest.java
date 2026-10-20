@@ -82,6 +82,32 @@ final class MainExitStatusTest {
         }
     }
 
+
+    @Test void buildProfilesAreBuildContractsAndFailClosed() throws Exception {
+        Path path = temp.resolve("profile.ores");
+        Files.writeString(path, "pub routine main(): void { }");
+
+        assertEquals(0, OresMain.exitStatusForArgs(
+                new String[] {"--check", "--release", path.toString()}));
+        assertEquals(0, OresMain.exitStatusForArgs(
+                new String[] {"--check", "--strict-aot", path.toString()}));
+
+        assertEquals(2, OresMain.exitStatusForArgs(
+                new String[] {"--release", path.toString()}),
+                "runtime execution must not impersonate a release artifact");
+        assertEquals(2, OresMain.exitStatusForArgs(
+                new String[] {"--strict-aot", path.toString()}),
+                "interpreting guest source must not be labeled strict AOT");
+        assertEquals(2, OresMain.exitStatusForArgs(
+                new String[] {"--check", "--hard-rt", path.toString()}),
+                "hard RT must fail closed until realtime/WCET admission is wired");
+        assertEquals(2, OresMain.exitStatusForArgs(
+                new String[] {"--check", "--freestanding", path.toString()}),
+                "hosted Java/Graal cannot claim freestanding");
+        assertEquals(2, OresMain.exitStatusForArgs(
+                new String[] {"--check", "--release", "--strict-aot", path.toString()}));
+    }
+
     @Test void integerMainReturnsZero() throws Exception {
         assertEquals(0, exit("pub routine main(): int { return 0; }"));
     }
