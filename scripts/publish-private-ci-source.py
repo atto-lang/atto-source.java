@@ -34,6 +34,7 @@ MAX_CARRIER_RETENTION_DAYS = 7
 # present in the caller's current PR/worktree.
 SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
+PUBLISHER_PATH = "scripts/publish-private-ci-source.py"
 SOURCE_METADATA_ROUTE = "repos/" + SOURCE_REPOSITORY
 PROTECTED_BRANCH_ROUTE = SOURCE_METADATA_ROUTE + "/branches/main"
 PROTECTED_POLICY_ROUTE = (
@@ -139,6 +140,34 @@ def nested_sha(response, member):
 def at_ref(route, revision):
     """Bind security-sensitive GitHub content reads to one immutable commit."""
     return route + "?ref=" + valid_sha(revision)
+
+
+def require_bootstrap_attestation(trusted_root):
+    """Require the external bootstrap marker before policy/API/source access.
+
+    These in-process globals are not themselves a root of trust: the external
+    carrier bootstrap must establish them after authenticating the exact
+    publisher bytes. Requiring them here prevents imported/direct calls to
+    publish() from accidentally bypassing main()'s bootstrap gate, while the
+    protected-checkout verifier below binds the supplied blob SHA to source
+    protected main before any private source is read or written.
+    """
+    bootstrap_root = globals().get("_ORESLANG_VERIFIED_SOURCE_ROOT")
+    bootstrap_blob = globals().get("_ORESLANG_VERIFIED_PUBLISHER_BLOB_SHA")
+    if not isinstance(bootstrap_root, str) or not isinstance(bootstrap_blob, str):
+        raise Denied("independent publisher bootstrap required")
+    valid_sha(bootstrap_blob)
+    root_path = Path(bootstrap_root)
+    if not root_path.is_absolute():
+        raise Denied("verified bootstrap source root must be absolute")
+    try:
+        attested_root = root_path.resolve(strict=True)
+        requested_root = Path(trusted_root).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise Denied("verified bootstrap source root is unavailable") from exc
+    if requested_root != attested_root:
+        raise Denied("publisher trusted root differs from independent bootstrap")
+    return bootstrap_blob
 
 
 # Executables are resolved only from controlled system directories; a caller's
@@ -819,7 +848,8 @@ def require_protected_main_policy(approved_policy):
         raise Denied("destination policy is not approved on protected source main")
     return protected_main_sha
 
-def require_trusted_publisher_checkout(root, reviewed_main_sha):
+def require_trusted_publisher_checkout(
+        root, reviewed_main_sha, expected_publisher_blob_sha=None):
     """Enforce execution from the independently authenticated source main commit.
 
     A developer's PR checkout cannot self-authorize its publisher or policy.
@@ -827,6 +857,8 @@ def require_trusted_publisher_checkout(root, reviewed_main_sha):
     checkout and its complete bytes checked against the reviewed Git tree.
     """
     valid_sha(reviewed_main_sha)
+    if expected_publisher_blob_sha is not None:
+        valid_sha(expected_publisher_blob_sha)
     base = Path(root).resolve(strict=True)
     def git(*args):
         try:
@@ -845,7 +877,7 @@ def require_trusted_publisher_checkout(root, reviewed_main_sha):
     if git("rev-parse", "HEAD") != reviewed_main_sha:
         raise Denied("publisher is not executing reviewed protected-main commit")
     protected_paths = (
-        "scripts/publish-private-ci-source.py",
+        PUBLISHER_PATH,
         "scripts/run-in-private-ci-destination.sh",
         "scripts/check-private-ci-destination.sh",
         ".github/private-ci-approved-repositories.txt",
@@ -871,6 +903,11 @@ def require_trusted_publisher_checkout(root, reviewed_main_sha):
                         or fields[1] != "blob"):
                     raise Denied("publisher file is not a regular tracked Git blob")
                 expected_sha = valid_sha(fields[2])
+                if (rel == PUBLISHER_PATH
+                        and expected_publisher_blob_sha is not None
+                        and expected_sha != expected_publisher_blob_sha):
+                    raise Denied(
+                        "bootstrap publisher blob differs from protected source main")
                 parent_fd = os.dup(root_fd)
                 try:
                     components = rel.split("/")
@@ -1264,6 +1301,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         raise Denied("invalid destination or isolated CI branch name")
     valid_sha(expected_source_tree)
     valid_sha(expected_source_commit)
+    bootstrap_blob_sha = require_bootstrap_attestation(trusted_root)
     if branch_match.group(1) != expected_source_commit:
         raise Denied("isolated CI branch must encode the full approved source commit SHA")
     # The exact ref also binds the carrier-main revision, which is authenticated
@@ -1276,7 +1314,8 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     # A PR branch can contain an allowlist entry without security approval.
     # Require the exact policy Git blob to exist on protected source main.
     reviewed_main_sha = require_protected_main_policy(approved_policy)
-    require_trusted_publisher_checkout(trusted_root, reviewed_main_sha)
+    require_trusted_publisher_checkout(
+        trusted_root, reviewed_main_sha, bootstrap_blob_sha)
     # No checkout-local shell runs here. Revalidate the approved policy data
     # and pinned private destination identity without interpreting local code.
     # All failures above occur before private source reads or Git writes.
