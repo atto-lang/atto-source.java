@@ -42,7 +42,7 @@ public final class CallbackOrderingAnalyzer {
     }
 
     public static List<StaticSafetyAnalyzer.Finding> analyze(Ast.Program program) {
-        var scanner = new Scanner();
+        var scanner = new Scanner(CallbackParameterEffects.infer(program));
         for (Ast.ModuleDecl module : program.modules()) {
             String prefix = module.name() == null ? "__root__" : module.name();
             for (Ast.Decl decl : module.declarations()) {
@@ -64,6 +64,10 @@ public final class CallbackOrderingAnalyzer {
 
     private static final class Scanner {
         final List<StaticSafetyAnalyzer.Finding> findings = new ArrayList<>();
+        final Map<CallbackParameterEffects.Callable, CallbackParameterEffects.Summary> parameterEffects;
+        Scanner(Map<CallbackParameterEffects.Callable, CallbackParameterEffects.Summary> parameterEffects) {
+            this.parameterEffects = parameterEffects;
+        }
         String callable;
         int visits;
         int depth;
@@ -240,7 +244,8 @@ public final class CallbackOrderingAnalyzer {
 
                 boolean isSubscription = call.callee() instanceof Ast.MemberExpr member
                         && listener(member.member());
-                for (Ast.Expr arg : call.arguments()) {
+                for (int argumentIndex = 0; argumentIndex < call.arguments().size(); argumentIndex++) {
+                    Ast.Expr arg = call.arguments().get(argumentIndex);
                     Ast.LambdaExpr lambda = null;
                     if (arg instanceof Ast.LambdaExpr direct) lambda = direct;
                     else if (arg instanceof Ast.NameExpr named) lambda = state.lambdas.get(named.name());
@@ -249,8 +254,15 @@ public final class CallbackOrderingAnalyzer {
                         // arbitrary callback invocation. The library still
                         // must certify its install semantics before strict admission.
                         if (!isSubscription) {
+                            String effect = "unresolved callback timing";
+                            if (call.callee() instanceof Ast.NameExpr name) {
+                                String mod = callable.substring(0, callable.indexOf("::"));
+                                var summary = parameterEffects.get(new CallbackParameterEffects.Callable(
+                                        mod, name.name(), call.arguments().size(), argumentIndex));
+                                if (summary != null) effect = summary.timingHint();
+                            }
                             for (Event event : eventsFromLambda(lambda, state))
-                                publish(event, invoker, state);
+                                publish(event, invoker + " [" + effect + "]", state);
                         }
                     } else inspect(arg, state);
                 }
