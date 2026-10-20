@@ -8,7 +8,7 @@ const explicit = tuple {1, 2};    // Tuple<int,int>
 const entry = Entry.of(1, 2);     // Entry<int,int>
 ```
 
-`Entry<K,V>` is the compiler-known readonly structural product:
+`Entry<K,V>` is a compiler-known **nominal**, readonly key/value product. It exposes the two fields:
 
 ```ores
 {
@@ -17,8 +17,7 @@ const entry = Entry.of(1, 2);     // Entry<int,int>
 }
 ```
 
-`Entry.of(key, value)` infers both type arguments. Entry fields are immutable and
-preserve their names through member and checked computed access.
+`Entry.of(key, value)` infers both type arguments. Entry fields are immutable and preserve their names through member and checked computed access. A structural record or struct with fields named `key` and `value` is **not** assignable to `Entry<K,V>`; callers must construct an Entry explicitly.
 
 An array of entries is distinct from an array of arrays or tuples:
 
@@ -38,9 +37,7 @@ const entries = [
 ```
 
 Uniqueness is a collection invariant of a Map, not a value invariant of Entry.
-A future/current typed-Map integration may consume entry sequences and reject or
-explicitly resolve duplicate keys, but Entry construction itself never performs
-global uniqueness checks.
+A future/current typed-Map integration may consume entry sequences and reject or explicitly resolve duplicate keys, but Entry construction itself never performs global uniqueness checks. Actor freeze/private-isolation preserves the Entry tag while recursively validating and copying its key and value.
 
 There is no separate `Pair<A,B>` built-in in this slice. A two-element tuple is
 the positional pair representation; use Entry only when the semantic roles are
