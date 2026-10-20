@@ -117,6 +117,56 @@ contract. Named implementations and generic specialization are the base API.
   contract; any scheduler, heap-backed resolver, or host callback adapter
   is optional runtime/alloc territory rather than a mandatory OS dependency.
 
+## Audited host callback registration and cleanup
+
+The Java reference adapter provides three distinct entry points:
+
+- `fromRunCallback(operation)` is the **host-only immediate registrar**.
+  It may run the registrar synchronously on the caller's stack. It is only
+  safe when that caller is a trusted host boundary or already owns the
+  authorized guest turn. It is not general foreign-thread guest dispatch.
+- `fromRunCallbackOnCurrentTask(operation)` refuses registration unless
+  `OresScheduler.requireCurrent()` succeeds. This is a stricter lowering seam
+  for guest Tasks, not a substitute for actor turn or root context checks.
+- `fromCancellableRunCallback(operation)` takes a registrar returning a
+  runtime-only `Runnable` detach action. On success, failure or cancellation
+  it invokes that detach action **once**. It handles completion during
+  registration, completion after registration, cancellation races and
+  the case in which registration fails before returning its detach action.
+
+A detach callback is trusted runtime code only: **no guest execution, no
+blocking and no throws**. A registrar throwing after partial listener
+installation MUST itself roll back the partial installation. Missing or null
+detach actions are invalid registration. Physical callback quiescence is
+a separate lifecycle barrier: calling detach alone is not evidence that a
+racing foreign callback or owned Task has stopped.
+
+The host adapters do not presently provide an `AsyncRunCallback<T>` entry
+point for a source-level `async run(Callback<T>)`. Such lowering will require
+a tracked child `Future<void>` for the async registrar so a throwing/raising
+registration task rejects a still-pending result without swallowing its
+failure, while a successful registrar return leaves the result pending.
+A `do task` spawned by the registrar must have a scope/quiescence owner.
+
+### Validation and CI admission status (2026-10-20)
+
+- Java PR #1676 source head initially `2977c04bb42ed9a8490c05e3f83d275ecb0ef003`.
+- The GitHub-hosted `fast-ci` run 39435718937 concluded failure,
+  but its test job had **zero steps**, no runner and no actual Maven execution;
+  this is an **infrastructure / admission failure**, not a test result.
+- The original `ci` workflow's four jobs likewise had zero steps on
+  that source head. Do not call any of these red runs compiler failures.
+- The destination allowlist in
+  `.github/private-ci-approved-repositories.txt` contains **no approved
+  destinations** (commented candidates do not count).
+- GitHub reported source repository `main` `protected: false`.
+  Therefore, under `docs/security/CI_PRIVATE_SOURCE_MIRRORING.md`,
+  **no cross-organization private source mirror is authorized**. Merely
+  finding an organization with free Actions minutes cannot override this.
+- The local environment may permit only isolated Java 21 verification.
+  Successful local adapter compilation or a synthetic test double cannot
+  replace exact-tree JDK 25, full Maven, Graal native, or LLVM guest evidence.
+
 ## Backend state and staged gates
 
 ### Present in the Java host runtime
