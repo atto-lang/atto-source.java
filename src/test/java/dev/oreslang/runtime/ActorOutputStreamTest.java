@@ -97,6 +97,154 @@ final class ActorOutputStreamTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void runtimeDrainRetainsDequeuedEnvelopeWhenOutputRefundFails()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var emitted = new java.util.concurrent.CountDownLatch(1);
+            ActorRuntime.ActorRef<String> ref = runtime.spawnShared(
+                    context -> (message, turn) -> {
+                        turn.runtime().emitCurrentActorOutput("queued");
+                        emitted.countDown();
+                    });
+
+            ref.ready().join();
+            ref.send("go");
+            assertTrue(emitted.await(5, java.util.concurrent.TimeUnit.SECONDS));
+
+            long reserved = runtime.sharedMemoryBytes();
+            assertTrue(reserved > 0L);
+
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            var accountingField =
+                    ActorRuntime.class.getDeclaredField("sharedMemoryBytes");
+            actorsField.setAccessible(true);
+            accountingField.setAccessible(true);
+            var actors = (java.util.Map<Object, Object>) actorsField.get(runtime);
+            Object cell = actors.get(ref.id());
+            assertNotNull(cell);
+
+            var outputBytesField = cell.getClass().getDeclaredField("outputBytes");
+            outputBytesField.setAccessible(true);
+            var outputBytes = (java.util.concurrent.atomic.AtomicLong)
+                    outputBytesField.get(cell);
+            assertEquals(reserved, outputBytes.get());
+
+            ActorRuntime.ActorOutputStream<Object> stream = ref.outputs();
+            var closeMethod = stream.getClass().getDeclaredMethod(
+                    "closeAndDrainFromRuntime");
+            var pendingField = stream.getClass().getDeclaredField(
+                    "closePendingEnvelope");
+            var completeField = stream.getClass().getDeclaredField(
+                    "closeCleanupComplete");
+            closeMethod.setAccessible(true);
+            pendingField.setAccessible(true);
+            completeField.setAccessible(true);
+
+            var accounting = (java.util.concurrent.atomic.AtomicLong)
+                    accountingField.get(runtime);
+            accounting.set(0L);
+
+            var failure = assertThrows(
+                    java.lang.reflect.InvocationTargetException.class,
+                    () -> closeMethod.invoke(stream));
+            assertInstanceOf(IllegalStateException.class, failure.getCause());
+            assertTrue(failure.getCause().getMessage().contains(
+                    "shared actor memory accounting underflow"));
+
+            assertNotNull(pendingField.get(stream),
+                    "dequeued output envelope must remain the exact retry owner");
+            assertFalse(completeField.getBoolean(stream));
+            assertEquals(reserved, outputBytes.get(),
+                    "failed aggregate refund cannot consume actor-local output debit");
+
+            accounting.set(reserved);
+            closeMethod.invoke(stream);
+
+            assertNull(pendingField.get(stream));
+            assertTrue(completeField.getBoolean(stream));
+            assertEquals(0L, outputBytes.get());
+            assertEquals(0L, runtime.sharedMemoryBytes());
+
+            ref.stop();
+            assertTrue(ref.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void consumedOutputRefundFailureRetainsReadOwnerForRuntimeRetry()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var emitted = new java.util.concurrent.CountDownLatch(1);
+            ActorRuntime.ActorRef<String> ref = runtime.spawnShared(
+                    context -> (message, turn) -> {
+                        turn.runtime().emitCurrentActorOutput("read");
+                        emitted.countDown();
+                    });
+
+            ref.ready().join();
+            ref.send("go");
+            assertTrue(emitted.await(5, java.util.concurrent.TimeUnit.SECONDS));
+
+            long reserved = runtime.sharedMemoryBytes();
+            assertTrue(reserved > 0L);
+
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            var accountingField =
+                    ActorRuntime.class.getDeclaredField("sharedMemoryBytes");
+            actorsField.setAccessible(true);
+            accountingField.setAccessible(true);
+            var actors = (java.util.Map<Object, Object>) actorsField.get(runtime);
+            Object cell = actors.get(ref.id());
+            assertNotNull(cell);
+
+            var outputBytesField = cell.getClass().getDeclaredField("outputBytes");
+            outputBytesField.setAccessible(true);
+            var outputBytes = (java.util.concurrent.atomic.AtomicLong)
+                    outputBytesField.get(cell);
+
+            ActorRuntime.ActorOutputStream<Object> stream = ref.outputs();
+            var ownersField = stream.getClass().getDeclaredField(
+                    "readReleaseOwners");
+            var completeField = stream.getClass().getDeclaredField(
+                    "closeCleanupComplete");
+            var closeMethod = stream.getClass().getDeclaredMethod(
+                    "closeAndDrainFromRuntime");
+            ownersField.setAccessible(true);
+            completeField.setAccessible(true);
+            closeMethod.setAccessible(true);
+
+            var accounting = (java.util.concurrent.atomic.AtomicLong)
+                    accountingField.get(runtime);
+            accounting.set(0L);
+
+            CompletionException failure = assertThrows(
+                    CompletionException.class, () -> stream.next().join());
+            assertInstanceOf(IllegalStateException.class, failure.getCause());
+            assertTrue(failure.getCause().getMessage().contains(
+                    "shared actor memory accounting underflow"));
+
+            var owners = (java.util.List<Object>) ownersField.get(stream);
+            assertEquals(1, owners.size(),
+                    "failed consumer release must retain one exact envelope owner");
+            assertEquals(reserved, outputBytes.get());
+            assertFalse(completeField.getBoolean(stream));
+
+            accounting.set(reserved);
+            closeMethod.invoke(stream);
+
+            assertTrue(owners.isEmpty());
+            assertTrue(completeField.getBoolean(stream));
+            assertEquals(0L, outputBytes.get());
+            assertEquals(0L, runtime.sharedMemoryBytes());
+
+            ref.stop();
+            assertTrue(ref.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void outputStreamIsActorProducedAndReadOnlyByApiShape() {
         assertDoesNotThrow(() ->
                 ActorRuntime.ActorOutputStream.class.getMethod("next"));
