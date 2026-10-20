@@ -33,7 +33,7 @@ final class OresTupleRuntimeTest {
         assertEquals(2, tuple.size());
         assertEquals(1, tuple.get(0));
         assertEquals(2, tuple.get(1));
-        assertThrows(UnsupportedOperationException.class, () -> tuple.set(0, 9));
+        assertThrows(UnsupportedOperationException.class, () -> tuple.elements().set(0, 9));
         assertThrows(UnsupportedOperationException.class, () -> tuple.add(9));
         assertThrows(IndexOutOfBoundsException.class, () -> tuple.get(2));
 
@@ -43,7 +43,7 @@ final class OresTupleRuntimeTest {
         assertNotEquals(tuple, List.of(1, 2));
         assertNotEquals(new OresTuple(List.of(1, 2)), tuple);
         assertNotEquals(List.of(1, 2), tuple);
-        assertThrows(NullPointerException.class, () -> new OresTuple(List.of((Object) null)));
+        assertThrows(NullPointerException.class, () -> new OresTuple(java.util.Arrays.asList((Object) null)));
     }
 
     @Test
