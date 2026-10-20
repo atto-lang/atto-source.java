@@ -37,7 +37,7 @@ public final class TaskSemanticAdmission {
     }
 
     private final Ast.Program programIdentity;
-    private final IdentityHashMap<Object, List<Entry>> byBoundary =
+    private final IdentityHashMap<Ast.TaskExpr, List<Entry>> byBoundary =
             new IdentityHashMap<>();
     private int totalEntries;
     private boolean sealed;
@@ -50,7 +50,7 @@ public final class TaskSemanticAdmission {
 
     Ast.Program programIdentity() { return programIdentity; }
 
-    void record(Object boundary, List<Entry> entries) {
+    void record(Ast.TaskExpr boundary, List<Entry> entries) {
         if (sealed) {
             throw new IllegalStateException(
                     "Task semantic admission is already sealed");
@@ -77,17 +77,21 @@ public final class TaskSemanticAdmission {
         return this;
     }
 
-    List<Entry> entriesForIdentity(Object boundary) {
+    List<Entry> entriesForIdentity(Ast.TaskExpr boundary) {
         List<Entry> entries = byBoundary.get(boundary);
         return entries == null ? List.of() : entries;
     }
 
     public List<Entry> entriesFor(Ast.Stmt boundary) {
-        return entriesForIdentity(boundary);
+        Objects.requireNonNull(boundary, "boundary");
+        return List.of();
     }
 
     public List<Entry> entriesFor(Ast.Expr boundary) {
-        return entriesForIdentity(boundary);
+        Objects.requireNonNull(boundary, "boundary");
+        return boundary instanceof Ast.TaskExpr task
+                ? entriesForIdentity(task)
+                : List.of();
     }
 
     public int boundaryCount() { return byBoundary.size(); }
