@@ -130,4 +130,20 @@ grep -Fxq 'SOURCE_FREE_V3_LAUNCHER_OK' "$work/out"
 test ! -e "$work/launcher-unsafe"
 mv "$work/publisher-v3-original.py" "$script_dir/publish-private-ci-source-v3.py"
 
+# Regression: PR events must never earn a publisher receipt for GitHub's
+# synthetic pull_request merge commit. Check original SHA at both boundaries.
+workflow="$original_script_dir/../.github/workflows/private-ci-mirror-preflight.yml"
+test -f "$workflow"
+expected_expression="$(cat <<'EOF'
+${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+EOF
+)"
+grep -Fq "ref: $expected_expression" "$workflow"
+grep -Fq "EXPECTED_SOURCE_SHA: $expected_expression" "$workflow"
+grep -Fq '[[ "$actual" == "$EXPECTED_SOURCE_SHA" ]]' "$workflow"
+grep -Fq "PRIVATE_PUBLISHER_SOURCE_SHA_MISMATCH" "$workflow"
+grep -Fq "PRIVATE_PUBLISHER_POST_TEST_HEAD_MISMATCH" "$workflow"
+grep -Fq "PRIVATE_PUBLISHER_REGRESSIONS_COMPLETE_SHA=%s PASSES=3" "$workflow"
+printf 'PASS: publisher PR checkout and triple-regression receipt bind exact HEAD\n'
+
 printf 'PASS: private identity, symlink directory, multiline API, and launcher injection rejection\n'
