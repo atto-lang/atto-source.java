@@ -99,6 +99,15 @@ public final class OwnershipChecker {
     public static Ast.Program checkWithImportedClasses(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<Ast.BindingStmt, String> validatedShortAliases) {
+        return checkWithImportedClassesAndAsyncTransferProvenance(
+                program, linkedClasses, validatedShortAliases).program();
+    }
+
+    public static CheckResult
+            checkWithImportedClassesAndAsyncTransferProvenance(
+                    Ast.Program program,
+                    Map<String, Ast.ClassDecl> linkedClasses,
+                    Map<Ast.BindingStmt, String> validatedShortAliases) {
         if (linkedClasses == null) {
             throw new IllegalArgumentException("linked public classes cannot be null");
         }
@@ -121,7 +130,9 @@ public final class OwnershipChecker {
             checker.classes.put(name, declaration);
         }
         checker.validate(program);
-        return program;
+        return new CheckResult(
+                program,
+                checker.asyncTransferProvenance.seal());
     }
 
     private void index(Ast.Program program) {
