@@ -47,9 +47,12 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
 
     public static final class PrecheckedProgramScope implements AutoCloseable {
         private final Thread owner = Thread.currentThread();
+        private final PrecheckedProgramLease lease;
         private boolean closed;
 
-        private PrecheckedProgramScope() { }
+        private PrecheckedProgramScope(PrecheckedProgramLease lease) {
+            this.lease = lease;
+        }
 
         @Override
         public void close() {
@@ -58,7 +61,12 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
                 throw new IllegalStateException(
                         "prechecked Oreslang program lease must close on its owning thread");
             }
-            PRECHECKED_PROGRAM.remove();
+            // parse() consumes its lease before returning. If trusted host code
+            // has already opened the next one-shot lease on this thread, an
+            // older scope must never erase that newer lease.
+            if (PRECHECKED_PROGRAM.get() == lease) {
+                PRECHECKED_PROGRAM.remove();
+            }
             closed = true;
         }
     }
@@ -82,9 +90,10 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
             throw new IllegalStateException(
                     "nested prechecked Oreslang program leases are not supported");
         }
-        PRECHECKED_PROGRAM.set(new PrecheckedProgramLease(
-                codeUnitId, sourceText, program));
-        return new PrecheckedProgramScope();
+        PrecheckedProgramLease lease = new PrecheckedProgramLease(
+                codeUnitId, sourceText, program);
+        PRECHECKED_PROGRAM.set(lease);
+        return new PrecheckedProgramScope(lease);
     }
 
     private static Ast.Program consumePrecheckedProgram(
