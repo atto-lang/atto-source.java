@@ -1007,11 +1007,25 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override
         public synchronized void close() {
-            if (!sliceClosed.compareAndSet(false, true)) return;
-            for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
-            blocks.clear();
-            long bytes = usedBytes.getAndSet(0);
-            if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
+            // Closing the slice is a two-part transition: revoke guest access
+            // once, then settle the runtime-wide debit. The debit itself is a
+            // retryable finalization boundary. Never zero usedBytes before the
+            // aggregate release succeeds; otherwise an accounting failure
+            // would leave a closed slice with no remaining refund authority.
+            boolean firstClose = sliceClosed.compareAndSet(false, true);
+            if (firstClose) {
+                for (PrivateMemoryBlock block : List.copyOf(blocks)) {
+                    block.invalidateFromSlice();
+                }
+                blocks.clear();
+            }
+            long bytes = usedBytes.get();
+            if (bytes != 0) {
+                releasePrivateRuntimeBytes(bytes, owner);
+                // No fallible work follows the aggregate release. A failed
+                // release leaves the exact debit visible for supervisor retry.
+                usedBytes.set(0);
+            }
         }
 
         private void unregister(PrivateMemoryBlock block) {
