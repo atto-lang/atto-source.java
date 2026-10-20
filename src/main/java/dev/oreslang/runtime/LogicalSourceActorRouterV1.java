@@ -1626,6 +1626,72 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
     }
 
     /**
+     * Host/supervisor recovery when a physical stop request failed before the
+     * retired actor was stopped. Merely polling a finalization marker cannot
+     * make progress in this state.
+     *
+     * <p>Never stop a staging actor or the open active route. Snapshot only
+     * previously retired physical refs while holding routeLock, issue stop
+     * requests OUTSIDE the route monitor, and retain every retirement owner
+     * until a verified physical finalization permits its generation debit.
+     * A failed retry remains retryable; caller must not treat it as success.
+     */
+    public int retryRetiredPhysicalStops() {
+        requireBlockingHostSurface("retry retired actor physical stops");
+        synchronized (closeLock) {
+            final java.util.ArrayList<ActorRuntime.ActorRef<Object>> pending =
+                    new java.util.ArrayList<>();
+            synchronized (routeLock) {
+                if (activeUpgradeTxn != null) {
+                    throw new IllegalStateException(
+                            "cannot retry physical retirement during active upgrade");
+                }
+                for (Route old : retiredRoutes) {
+                    if ((old != active || closed)
+                            && !old.view.runtime().physicallyFinalizedForHotUpgrade(
+                                    old.physical)) {
+                        pending.add(old.physical);
+                    }
+                }
+                for (CandidateRetirement old : retiredCandidates) {
+                    ActorRuntime.ActorRef<Object> physical = old.physical;
+                    if (!old.publishedToRoute && old.retirementEligible
+                            && physical != null
+                            && !old.view.runtime().physicallyFinalizedForHotUpgrade(
+                                    physical)) {
+                        pending.add(physical);
+                    }
+                }
+            }
+            Throwable firstFailure = null;
+            for (ActorRuntime.ActorRef<Object> ref : pending) {
+                try {
+                    ref.stop();
+                } catch (RuntimeException | Error failure) {
+                    if (firstFailure == null) firstFailure = failure;
+                    else if (firstFailure != failure) {
+                        try {
+                            firstFailure.addSuppressed(failure);
+                        } catch (RuntimeException | Error ignored) {
+                            // Do not let an OOME in exception diagnostics
+                            // skip the remaining independent retirements.
+                        }
+                    }
+                }
+            }
+            final int released;
+            synchronized (routeLock) {
+                released = reapRetiredLocked();
+            }
+            if (firstFailure instanceof RuntimeException failure)
+                throw failure;
+            if (firstFailure instanceof Error failure)
+                throw failure;
+            return released;
+        }
+    }
+
+    /**
      * Release generation leases for previously published physical incarnations
      * once their runtimes report full actor finalization.
      */
