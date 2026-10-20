@@ -2410,8 +2410,10 @@ public final class OresEvalRootNode extends RootNode {
                                             SourceFlow.throwing(failure));
                                     return;
                                 }
+                                Env loopEnv = new Env(env);
+                                loopEnv.enableLoopSelectPlans();
                                 if (loop.asyncIteration()) {
-                                    runAsyncForOf(t, iterable, env, loop.body(),
+                                    runAsyncForOf(t, iterable, loopEnv, loop.body(),
                                             (iteration, item) -> iteration.define(
                                                     loop.bindingName(), item, loop.bindingKind()),
                                             continuation);
@@ -2421,7 +2423,7 @@ public final class OresEvalRootNode extends RootNode {
                                 runForOfIteration(
                                         t,
                                         loop,
-                                        env,
+                                        loopEnv,
                                         values.iterator(),
                                         0,
                                         (completed, flow) -> finishSourceIterable(
@@ -2442,8 +2444,10 @@ public final class OresEvalRootNode extends RootNode {
                                             SourceFlow.throwing(failure));
                                     return;
                                 }
+                                Env loopEnv = new Env(env);
+                                loopEnv.enableLoopSelectPlans();
                                 if (loop.asyncIteration()) {
-                                    runAsyncForOf(t, iterable, env, loop.body(),
+                                    runAsyncForOf(t, iterable, loopEnv, loop.body(),
                                             (iteration, item) -> {
                                                 List<?> parts = asSequence(item);
                                                 if (parts.size() != loop.bindings().size()) {
@@ -2461,7 +2465,7 @@ public final class OresEvalRootNode extends RootNode {
                                 runForOfDestructureIteration(
                                         t,
                                         loop,
-                                        env,
+                                        loopEnv,
                                         values.iterator(),
                                         0,
                                         (completed, flow) -> finishSourceIterable(
@@ -2790,6 +2794,7 @@ public final class OresEvalRootNode extends RootNode {
                 Env parent,
                 SourceFlowCont continuation) {
             Env loopEnv = new Env(parent);
+            loopEnv.enableLoopSelectPlans();
             if (loop.initializer() == null) {
                 runForIteration(
                         task,
@@ -2962,6 +2967,15 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.LoopStmt loop,
                 Env env,
                 SourceFlowCont continuation) {
+            Env loopEnv = new Env(env);
+            loopEnv.enableLoopSelectPlans();
+            runLoopSuspendableIteration(task, loop, loopEnv, continuation);
+        }
+        private void runLoopSuspendableIteration(
+                SourceTask task,
+                Ast.LoopStmt loop,
+                Env env,
+                SourceFlowCont continuation) {
             runBlock(
                     task,
                     loop.body(),
@@ -2977,7 +2991,7 @@ public final class OresEvalRootNode extends RootNode {
                         } else {
                             t.scheduleLoopContinuation(
                                     env,
-                                    (resumed, ignored, failure) -> runLoopSuspendable(
+                                    (resumed, ignored, failure) -> runLoopSuspendableIteration(
                                             resumed, loop, env, continuation));
                         }
                     });
@@ -5828,10 +5842,12 @@ public final class OresEvalRootNode extends RootNode {
                 Iterable<?> values = loop.asyncIteration()
                         ? asyncIterableValues(iterable, env)
                         : iterableValues(iterable, env);
+                Env loopEnv = new Env(env);
+                loopEnv.enableLoopSelectPlans();
                 try {
                     for (Object item : values) {
                         context.schedulerSafepoint();
-                        Env iteration = new Env(env);
+                        Env iteration = new Env(loopEnv);
                         bindSequenceDestructure(iterableValues(item, env), loop.bindings(), iteration,
                                 "for-of destructure");
                         try {
@@ -5855,10 +5871,12 @@ public final class OresEvalRootNode extends RootNode {
                 Iterable<?> values = loop.asyncIteration()
                         ? asyncIterableValues(iterable, env)
                         : iterableValues(iterable, env);
+                Env loopEnv = new Env(env);
+                loopEnv.enableLoopSelectPlans();
                 try {
                     for (Object item : values) {
                         context.schedulerSafepoint();
-                        Env iteration = new Env(env);
+                        Env iteration = new Env(loopEnv);
                         iteration.define(loop.bindingName(), item, loop.bindingKind());
                         try {
                             executeBlock(
@@ -5878,6 +5896,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (stmt instanceof Ast.ForStmt loop) {
                 Env loopEnv = new Env(env);
+                loopEnv.enableLoopSelectPlans();
                 if (loop.initializer() != null) {
                     executeStatement(
                             loop.initializer(),
@@ -5918,12 +5937,14 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.LoopStmt loop) {
+                Env loopEnv = new Env(env);
+                loopEnv.enableLoopSelectPlans();
                 while (true) {
                     context.schedulerSafepoint();
                     try {
                         executeBlock(
                                 loop.body(),
-                                env,
+                                loopEnv,
                                 inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
                     } catch (ContinueSignal ignored) {
                         continue;
@@ -9534,6 +9555,31 @@ public final class OresEvalRootNode extends RootNode {
         private final String lexicalModule;
         private final OresObject constructingObject;
         private final Map<String, Slot> slots = new HashMap<>();
+        // Per executed loop invocation; never stored in a shared AST.
+        private IdentityHashMap<Ast.SelectStmt, ChannelRuntime.SelectSet> loopSelectPlans;
+        private void enableLoopSelectPlans() {
+            loopSelectPlans = new IdentityHashMap<>();
+        }
+        private Env nearestSelectPlanAnchor() {
+            for (Env cursor = this; cursor != null; cursor = cursor.parent) {
+                if (cursor.loopSelectPlans != null) return cursor;
+            }
+            return null;
+        }
+        private ChannelRuntime.Channel<?> immutableLoopChannel(String name, Env anchor) {
+            for (Env cursor = this; cursor != anchor; cursor = cursor.parent) {
+                if (cursor == null || cursor.slots.containsKey(name)) return null;
+            }
+            for (Env cursor = anchor; cursor != null; cursor = cursor.parent) {
+                Slot slot = cursor.slots.get(name);
+                if (slot == null) continue;
+                if ((slot.kind != Ast.BindingKind.VAL
+                        && slot.kind != Ast.BindingKind.CONST)
+                        || !(slot.value instanceof ChannelRuntime.Channel<?> channel)) return null;
+                return channel;
+            }
+            return null;
+        }
         private Env(Env parent) {
             this(
                     parent,
