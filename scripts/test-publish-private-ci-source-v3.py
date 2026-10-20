@@ -315,12 +315,12 @@ class PrivateCiV3Test(unittest.TestCase):
             b"* @ORESoftware\n"
             b"/.github/ @ORESoftware\n"
             b"/.github/CODEOWNERS @ORESoftware\n"
-        ).replace(b"\\\n", b"\n")
+        )
         bad_rules = (
             b"* @ORESoftware\n"
             b"/.github/ @attacker\n"
             b"/.github/CODEOWNERS @ORESoftware\n"
-        ).replace(b"\\\n", b"\n")
+        )
         path = ".github/CODEOWNERS"
         def owner_item(raw):
             return {
