@@ -175,6 +175,17 @@ public final class SealedActorState {
                 throw new IllegalArgumentException("scalar was not captured in snapshot: " + name);
             return scalars.get(name);
         }
+
+        /**
+         * Compiler/runtime bridge for detached candidate construction. Source
+         * code never receives the issuer object itself; preparation remains
+         * authority-bound to this exact snapshot and actor incarnation.
+         */
+        public ScalarPublication preparePublication(
+                Map<String, Object> replacements) {
+            issuer.requireActorAuthority();
+            return issuer.prepareScalarPublication(this, replacements);
+        }
     }
 
     /**
@@ -357,9 +368,15 @@ public final class SealedActorState {
             if (version < 0)
                 throw new IllegalStateException("ML_INVALID_VERSION_VALUE");
             Objects.requireNonNull(names, "snapshot scalar names");
+            if (names.length == 0)
+                throw new IllegalArgumentException(
+                        "ML_SNAPSHOT_REQUIRES_NON_VERSION_SCALAR");
             var copied = new LinkedHashMap<String, Object>();
             for (String name : names) {
                 Objects.requireNonNull(name, "snapshot scalar name");
+                if (name.equals(versionField))
+                    throw new IllegalArgumentException(
+                            "ML_SNAPSHOT_VERSION_FIELD_DUPLICATED");
                 if (copied.containsKey(name))
                     throw new IllegalArgumentException("duplicate snapshot scalar: " + name);
                 Object value = read(name);

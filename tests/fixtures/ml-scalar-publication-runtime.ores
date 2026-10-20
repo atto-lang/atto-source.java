@@ -1,0 +1,63 @@
+define actor ScalarStage as
+    state {
+        version: int = 1;
+        weight: int = 5;
+        optimizer: int = 0;
+    }
+
+    private step(): bool with state.read, state.write, alloc {
+        val snapshot = self.handle_state(critical read |s| -> {
+            return state_snapshot(s, "version", "weight", "optimizer");
+        });
+        val version = snapshot_version(snapshot);
+        val weight = snapshot_int(snapshot, "weight");
+        val optimizer = snapshot_int(snapshot, "optimizer");
+        val publication = prepare_scalar_publication(
+            snapshot,
+            "version", version + 1,
+            "weight", weight - 1,
+            "optimizer", optimizer + 1
+        );
+        return self.handle_state(critical write |s| -> {
+            return publish_scalar_publication(s, publication);
+        });
+    }
+
+    private read_weight(): int with state.read {
+        return self.handle_state(critical read |s| -> {
+            return s.weight;
+        });
+    }
+
+    private read_version(): int with state.read {
+        return self.handle_state(critical read |s| -> {
+            return s.version;
+        });
+    }
+
+    private read_optimizer(): int with state.read {
+        return self.handle_state(critical read |s| -> {
+            return s.optimizer;
+        });
+    }
+
+    receive(ActorMail<String> mail): void {
+        if (mail.value == "run") {
+            val published = self.step();
+            stdio.println(published);
+            stdio.println(self.read_weight());
+            stdio.println(self.read_version());
+            stdio.println(self.read_optimizer());
+            self.end();
+        } fi
+        return;
+    }
+end
+
+pub async routine main(): void {
+    val worker = spawn ScalarStage();
+    await worker.get_ready();
+    worker.send("run");
+    await worker.get_done();
+    return;
+}
