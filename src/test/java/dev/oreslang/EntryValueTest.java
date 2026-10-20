@@ -778,4 +778,68 @@ final class EntryValueTest {
     }
 
 
+    @Test
+    void entryObjectDestructureMovesWholeAffineOwnerExactlyOnce() {
+        ownershipAccepted("""
+                fnc consume(Array<int> values): void {
+                  return;
+                }
+
+                fnc good(): void {
+                  const entry = Entry.of([1, 2], 7);
+                  const {key, value} = entry;
+                  consume(key);
+                  stdio.println(value);
+                  return;
+                }
+                """);
+
+        IllegalArgumentException reused = ownershipRejectedDirect("""
+                fnc consume_entry(Entry<Array<int>, int> value): void {
+                  return;
+                }
+
+                fnc bad(): void {
+                  const entry = Entry.of([1, 2], 7);
+                  const {key, value} = entry;
+                  consume_entry(entry);
+                  return;
+                }
+                """);
+        assertTrue(
+                reused.getMessage().contains("use-after-move")
+                        || reused.getMessage().contains("already moved"),
+                reused.getMessage());
+
+        ownershipAccepted("""
+                fnc good_copy(): int {
+                  const entry = Entry.of(20, 22);
+                  const {key, value} = entry;
+                  return key + value + entry.key;
+                }
+                """);
+    }
+
+    @Test
+    void ownershipCheckerRejectsAffineEntryProjectionReturns() {
+        IllegalArgumentException member = ownershipRejectedDirect("""
+                fnc bad(Entry<Array<int>, int> entry): Array<int> {
+                  return entry.key;
+                }
+                """);
+        assertTrue(
+                member.getMessage().contains("move-only Entry member projection"),
+                member.getMessage());
+
+        IllegalArgumentException indexed = ownershipRejectedDirect("""
+                fnc bad(Entry<int, Array<int>> entry): Array<int> {
+                  return entry["value"];
+                }
+                """);
+        assertTrue(
+                indexed.getMessage().contains("move-only Entry indexed projection"),
+                indexed.getMessage());
+    }
+
+
 }
