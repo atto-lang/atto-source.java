@@ -25,7 +25,6 @@ import dev.oreslang.types.Types.Unknown;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
-import java.util.function.Function as JavaFunction;
 
 /**
  * Canonical auto-trait classification for compiler-known value shapes.
