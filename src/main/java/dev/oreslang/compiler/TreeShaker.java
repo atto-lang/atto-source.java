@@ -55,7 +55,11 @@ public final class TreeShaker {
         }
     }
 
-    private record Symbol(String id, String module, Ast.Decl declaration) { }
+    private record Symbol(String id, String module, List<Ast.Decl> declarations) {
+        private Symbol {
+            declarations = List.copyOf(declarations);
+        }
+    }
 
     private static final class Engine {
         private final Ast.Program input;
@@ -104,7 +108,9 @@ public final class TreeShaker {
                 Symbol symbol = symbols.get(work.removeFirst());
                 if (symbol != null) {
                     scanRetainedModuleMetadata(symbol.module());
-                    scanDeclaration(symbol.module(), symbol.declaration());
+                    for (Ast.Decl declaration : symbol.declarations()) {
+                        scanDeclaration(symbol.module(), declaration);
+                    }
                 }
             }
 
@@ -1030,8 +1036,27 @@ public final class TreeShaker {
                     String name = declarationName(declaration);
                     if (name == null) continue;
                     String id = qualify(module.name(), name);
-                    Symbol symbol = new Symbol(id, module.name(), declaration);
-                    symbols.put(id, symbol);
+                    Symbol existing = symbols.get(id);
+                    if (existing == null) {
+                        symbols.put(id, new Symbol(id, module.name(), List.of(declaration)));
+                    } else {
+                        // Top-level callable overload identity is name + arity.
+                        // Reachability v1 retains the family conservatively, so
+                        // every overload in a live family must contribute its
+                        // dependencies. Other same-name declaration collisions
+                        // should already have failed semantic checking.
+                        boolean callableFamily = declaration instanceof Ast.FunctionDecl
+                                && existing.declarations().stream()
+                                        .allMatch(Ast.FunctionDecl.class::isInstance);
+                        if (!callableFamily) {
+                            throw new IllegalArgumentException(
+                                    "tree-shake symbol collision for '" + id + "'");
+                        }
+                        ArrayList<Ast.Decl> declarations =
+                                new ArrayList<>(existing.declarations());
+                        declarations.add(declaration);
+                        symbols.put(id, new Symbol(id, module.name(), declarations));
+                    }
                     String previous = uniqueSymbols.putIfAbsent(name, id);
                     if (previous != null && !previous.equals(id)) {
                         uniqueSymbols.remove(name);
@@ -1044,7 +1069,9 @@ public final class TreeShaker {
         private void seedRoots() {
             if (options.preservePublicApi()) {
                 for (Symbol symbol : symbols.values()) {
-                    if (isPublicApi(symbol.declaration())) mark(symbol.id());
+                    if (symbol.declarations().stream().anyMatch(this::isPublicApi)) {
+                        mark(symbol.id());
+                    }
                 }
             }
 
