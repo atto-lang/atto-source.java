@@ -40,6 +40,12 @@ public final class IpcBlockingGuardSelfTest {
         return key;
     }
 
+    private static byte[] binding() {
+        byte[] binding = new byte[16];
+        for (int i = 0; i < binding.length; ++i) binding[i] = (byte) (71 + i);
+        return binding;
+    }
+
     private static void actorCarrierDenied(Runnable operation, String operationName) {
         RuntimeBlockingGuard.enterActorCarrier();
         try {
@@ -58,6 +64,7 @@ public final class IpcBlockingGuardSelfTest {
 
     public static void main(String[] ignored) throws Exception {
         byte[] key = key();
+        byte[] binding = binding();
 
         {
             byte[] payload = "guard-send".getBytes(java.nio.charset.StandardCharsets.UTF_8);
@@ -69,7 +76,7 @@ public final class IpcBlockingGuardSelfTest {
                 peer.setSoTimeout(150);
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, message, 301, 1, key, cleanup::execute);
+                        client, bridge, message, 301, 1, key, binding, cleanup::execute);
 
                 actorCarrierDenied(
                         () -> transport.send(message, payload),
@@ -100,7 +107,7 @@ public final class IpcBlockingGuardSelfTest {
                  Socket peer = server.accept()) {
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, message, 302, 1, key, cleanup::execute);
+                        client, bridge, message, 302, 1, key, binding, cleanup::execute);
 
                 DataOutputStream peerOut = new DataOutputStream(peer.getOutputStream());
                 peerOut.writeInt(1);
@@ -139,7 +146,7 @@ public final class IpcBlockingGuardSelfTest {
                  Socket peer = server.accept()) {
                 var bridge = new IpcReceiptCompletionBridge(1);
                 var transport = new IpcAuthenticatedSocketTransport(
-                        client, bridge, message, 303, 1, key, cleanup::execute);
+                        client, bridge, message, 303, 1, key, binding, cleanup::execute);
 
                 actorCarrierDenied(
                         transport::requestClose,
