@@ -604,6 +604,19 @@ def require_exact_ref(repository, ref_name, expected_sha, expected_repository_id
         raise Denied("carrier ref does not point to exact handoff commit")
 
 
+def require_handoff_refs_absent(
+        repository, branch, authorization, expected_repository_id):
+    """Prove this invocation owns any refs it may later roll back.
+
+    Handoff names are deterministic/content-addressed. Without an absence
+    proof, an ambiguous create failure followed by cleanup could delete an
+    identical ref that predated this invocation.
+    """
+    for ref_name in (branch, authorization):
+        if live_ref_sha(repository, ref_name, expected_repository_id) is not None:
+            raise Denied("carrier handoff ref already exists before publication")
+
+
 def delete_exact_ref(repository, ref_name, expected_sha, expected_repository_id):
     expected_sha = valid_sha(expected_sha, "invalid rollback commit SHA")
     actual = live_ref_sha(repository, ref_name, expected_repository_id)
@@ -884,6 +897,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     # as potentially successful before it returns: transport ambiguity must not
     # strand a source-bearing ref.
     authorization = "ci/authorized-" + commit_sha
+    require_handoff_refs_absent(
+        repository, branch, authorization, contract["repository_id"]
+    )
     payload_attempted = False
     authorization_attempted = False
     try:
