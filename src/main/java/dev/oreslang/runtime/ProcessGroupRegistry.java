@@ -226,9 +226,9 @@ public final class ProcessGroupRegistry implements AutoCloseable {
                 throw new IllegalStateException(
                         "pg group limit exceeded: maximum " + maxGroups);
             }
-            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroup group = runtime.createRuntimeOwnedActorGroup();
             try {
-                Entry created = new Entry(group, group.joinCapability());
+                Entry created = new Entry(group, group.runtimeJoinCapability());
                 groups.put(key, created);
                 return created;
             } catch (RuntimeException | Error failure) {
