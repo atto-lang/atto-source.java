@@ -2588,7 +2588,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "source": "trusted/ci", "enforcement": "active",
             "bypass_actors": [],
             "conditions": {"ref_name": {
-                "include": ["refs/heads/ci/oreslang-*"], "exclude": []}},
+                "include": [
+                    "refs/heads/ci/authorized-*",
+                    "refs/heads/ci/oreslang-*",
+                ], "exclude": []}},
             "rules": [
                 {"type": "update",
                  "parameters": {"update_allows_fetch_and_merge": False}},
@@ -2639,6 +2642,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             api.assert_called_once_with(
                 "repos/trusted/ci/rules/branches/"
                 + TEST_BRANCH.replace("/", "%2F") + "?per_page=100&page=1")
+
+        with patch.object(pub, "gh_api", return_value=valid) as api:
+            self.assertEqual(
+                pub.require_effective_carrier_source_rules(
+                    "trusted/ci", AUTH_BRANCH, 777), 777)
+            api.assert_called_once_with(
+                "repos/trusted/ci/rules/branches/"
+                + AUTH_BRANCH.replace("/", "%2F") + "?per_page=100&page=1")
 
         failures = []
         failures.append(valid[:1])
