@@ -392,6 +392,10 @@ public final class OwnershipChecker {
             // Borrowed captures remain rejected until ExecutionPermit proof
             // metadata is wired into TaskExpr capture checking.
             checkBlock(taskScope.body(), scope, returnType);
+            // Scope exit is an implicit asynchronous physical-quiescence wait.
+            // Any loan owned by an enclosing scope would otherwise cross a
+            // hidden suspension point without appearing as an AwaitExpr.
+            checkSuspensionBorrows(scope, "nb scope exit");
             return;
         }
         if (stmt instanceof Ast.BreakStmt) {
