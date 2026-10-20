@@ -3,7 +3,7 @@ orestra/orestra/src/scheduler/placement.ores efdfad9083d07a9e0bb0797a915f9d3ac40
 orestra/orestra/src/controllers/deployment.ores c704214067c110d9ff8a8737df56d3d30b5477e8 src/test/resources/orestra-mirror/orestra/src/controllers/deployment.ores
 orestra/orestra/src/controllers/node.ores 3eff700dacd58810f9ea9e46234748b78b772626 src/test/resources/orestra-mirror/orestra/src/controllers/node.ores
 orestra/orestra/src/controllers/leases.ores 711fe64a65ab99876cbfb4c865cd1dfb23222ecf src/test/resources/orestra-mirror/orestra/src/controllers/leases.ores
-orestra/orestra/src/controllers/workload_state.ores b5f411da6a1039a2591c4307266f7cf9ccb64b61 src/test/resources/orestra-mirror/orestra/src/controllers/workload_state.ores
+orestra/orestra/src/controllers/workload_state.ores 6551ea386a4a8fff3208d752cd1687718d2910b7 src/test/resources/orestra-mirror/orestra/src/controllers/workload_state.ores
 orestra/orestra/examples/placement-smoke.ores eb57557b7f9dae84451a093c09f5873459235c8c src/test/resources/orestra-mirror/orestra/examples/placement-smoke.ores
 orestra/orestra/examples/edge-guards.ores 455c5a8b5d44686ff331cacb72d52004f7e8e169 src/test/resources/orestra-mirror/orestra/examples/edge-guards.ores
 orestra/orestra/examples/workload-state-smoke.ores a3f25075d8339ac5068f3ec45810b1a001c15153 src/test/resources/orestra-mirror/orestra/examples/workload-state-smoke.ores

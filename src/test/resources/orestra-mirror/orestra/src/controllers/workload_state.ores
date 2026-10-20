@@ -1,34 +1,34 @@
 // Workload transition guards; pure, deterministic Oreslang.
 // All external side effects must be verified by an agent before transition.
 define module workload_state as
-  pub fnc valid_transition(String from, String to,
+  pub fnc valid_transition(String previous_phase, String next_phase,
                            bool sandbox_observed,
                            bool delete_requested,
                            bool external_fence_proven): bool {
-    if from == to; do return true; fi
-    if from == "Pending" && to == "Assigned"; do
+    if previous_phase == next_phase; do return true; fi
+    if previous_phase == "Pending" && next_phase == "Assigned"; do
       return !delete_requested;
     fi
-    if from == "Assigned" && to == "Running"; do
+    if previous_phase == "Assigned" && next_phase == "Running"; do
       return sandbox_observed && !delete_requested;
     fi
-    if from == "Running" && to == "Succeeded"; do
+    if previous_phase == "Running" && next_phase == "Succeeded"; do
       return sandbox_observed;
     fi
-    if from == "Running" && to == "Failed"; do
+    if previous_phase == "Running" && next_phase == "Failed"; do
       return sandbox_observed;
     fi
-    if to == "Terminating"; do
-      return delete_requested && (from == "Pending" ||
-             from == "Assigned" || from == "Running" || from == "Failed");
+    if next_phase == "Terminating"; do
+      return delete_requested && (previous_phase == "Pending" ||
+             previous_phase == "Assigned" || previous_phase == "Running" || previous_phase == "Failed");
     fi
-    if to == "Stopped" && from == "Terminating"; do
+    if next_phase == "Stopped" && previous_phase == "Terminating"; do
       return external_fence_proven;
     fi
-    if to == "Unknown" && (from == "Assigned" || from == "Running"); do
+    if next_phase == "Unknown" && (previous_phase == "Assigned" || previous_phase == "Running"); do
       return !sandbox_observed;
     fi
-    if from == "Unknown" && to == "Stopped"; do
+    if previous_phase == "Unknown" && next_phase == "Stopped"; do
       return external_fence_proven;
     fi
     return false;
