@@ -49,6 +49,37 @@ final class OresTupleRuntimeTest {
     }
 
     @Test
+    void positionalArraySnapshotCannotMutateTupleStorage() {
+        OresTuple tuple = new OresTuple(List.of(3, 5, 8));
+        Object[] shaped = tuple.elements().toArray();
+        assertArrayEquals(new Object[] {3, 5, 8}, shaped);
+        shaped[0] = 99;
+        assertEquals(3, tuple.get(0));
+        assertEquals(3, tuple.elements().get(0));
+        assertThrows(UnsupportedOperationException.class,
+                () -> tuple.elements().set(1, 100));
+    }
+
+    @Test
+    void tupleDoesNotExposeCollectionOnlyOperations() {
+        var methods = java.util.Arrays.stream(OresTuple.class.getMethods())
+                .map(java.lang.reflect.Method::getName)
+                .collect(java.util.stream.Collectors.toSet());
+
+        for (String forbidden : List.of(
+                "toArray", "stream", "parallelStream", "contains",
+                "remove", "clear", "add", "addAll", "removeAll",
+                "retainAll", "isEmpty")) {
+            assertFalse(methods.contains(forbidden),
+                    "runtime Tuple must not expose host Collection." + forbidden);
+        }
+        assertTrue(methods.contains("iterator"));
+        assertTrue(methods.contains("get"));
+        assertTrue(methods.contains("size"));
+        assertTrue(methods.contains("elements"));
+    }
+
+    @Test
     void hostCallbacksNeverDefineTupleEqualityHashOrLogging() {
         OresTuple a = new OresTuple(List.of(new Hostile()));
         OresTuple b = new OresTuple(List.of(new Hostile()));
