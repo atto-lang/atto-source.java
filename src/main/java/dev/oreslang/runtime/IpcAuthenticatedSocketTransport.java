@@ -533,19 +533,36 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         private long lastMessageSequence;
         private long lastFrameSequence;
 
-        synchronized void accept(IpcReceiptCorrelation.Envelope envelope) {
+        void accept(IpcReceiptCorrelation.Envelope envelope) {
+            RuntimeBlockingGuard.requireBlockingHostThread(
+                    "IPC inbound replay admission");
             Objects.requireNonNull(envelope, "envelope");
-            if (envelope.messageSequence() <= lastMessageSequence
-                    || envelope.frameSequence() <= lastFrameSequence) {
-                throw new IllegalArgumentException(
-                        "duplicate/reordered authenticated IPC DATA sequence");
+            synchronized (this) {
+                if (envelope.messageSequence() <= lastMessageSequence
+                        || envelope.frameSequence() <= lastFrameSequence) {
+                    throw new IllegalArgumentException(
+                            "duplicate/reordered authenticated IPC DATA sequence");
+                }
+                lastMessageSequence = envelope.messageSequence();
+                lastFrameSequence = envelope.frameSequence();
             }
-            lastMessageSequence = envelope.messageSequence();
-            lastFrameSequence = envelope.frameSequence();
         }
 
-        synchronized long lastMessageSequence() { return lastMessageSequence; }
-        synchronized long lastFrameSequence() { return lastFrameSequence; }
+        long lastMessageSequence() {
+            RuntimeBlockingGuard.requireBlockingHostThread(
+                    "IPC inbound replay message diagnostic");
+            synchronized (this) {
+                return lastMessageSequence;
+            }
+        }
+
+        long lastFrameSequence() {
+            RuntimeBlockingGuard.requireBlockingHostThread(
+                    "IPC inbound replay frame diagnostic");
+            synchronized (this) {
+                return lastFrameSequence;
+            }
+        }
     }
 
     static byte[] encodeDataFrame(
