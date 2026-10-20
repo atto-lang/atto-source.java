@@ -147,6 +147,28 @@ final class ScopedTaskTest {
         assertTrue(message.contains("actor"));
     }
 
+
+    @Test
+    void outerMutableLoanCannotCrossImplicitScopeDrain() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub routine main(): void {
+                            let int value = 8;
+                            val ref = rt borrow mut value;
+                            nb scope {
+                                let worker = nb {
+                                    stdio.stdout.write(1);
+                                };
+                            }
+                            stdio.stdout.write(ref);
+                            return;
+                        }
+                        """));
+        String message = failure.getMessage().toLowerCase();
+        assertTrue(message.contains("scope") || message.contains("borrow"));
+    }
+
     private static String run(String code) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, code, "scoped-task.ores")
