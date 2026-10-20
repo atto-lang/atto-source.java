@@ -21,6 +21,50 @@ import java.util.function.BiConsumer;
 public final class ActorReplySchedulerBridge {
     private ActorReplySchedulerBridge() { }
 
+    /**
+     * First host-executable actor->actor unary path: reserve an opaque slot,
+     * bind its nonblocking Future to the CALLER's logical actor lane, and
+     * enqueue the data-only message with a VM-owned sidecar reply binding.
+     *
+     * Handler-side response uses ActorContext.replyCurrentCall(value). The
+     * current source compiler still lacks run()/ref.request() lowering.
+     */
+    static <M, R> OresFuture<R> requestCurrentActor(
+            ActorRuntime runtime,
+            GenerationalReplyRegistry registry,
+            GenerationalReplyRegistry.Endpoint caller,
+            GenerationalReplyRegistry.Endpoint callee,
+            ActorRuntime.ActorRef<M> destination,
+            M message,
+            Class<R> responseType,
+            Duration timeout,
+            ScheduledExecutorService timer) {
+        Objects.requireNonNull(destination, "destination");
+        Objects.requireNonNull(runtime, "runtime");
+        if (runtime.currentActorId().filter(destination.id()::equals).isPresent()) {
+            throw new IllegalArgumentException("actor cannot synchronously request itself");
+        }
+        // captureCurrentContinuationTarget also proves the caller currently
+        // executes inside this runtime's admitted actor lease.
+        ActorRuntime.ContinuationTarget owner = runtime.captureCurrentContinuationTarget();
+        if (!runtime.currentActorId().orElseThrow().equals(owner.actorId())) {
+            throw new SecurityException("caller actor execution identity changed");
+        }
+        GenerationalReplyRegistry.Ticket<R> ticket =
+                registry.reserve(caller, callee, responseType);
+        OresFuture<R> future = bindCurrentActor(
+                runtime, ticket, caller, timeout, timer, (value, failure) -> { });
+        if (ticket.state() != GenerationalReplyRegistry.State.PENDING) {
+            return future;
+        }
+        try {
+            runtime.sendCall(destination, message, ticket, callee);
+        } catch (RuntimeException | Error admissionFailure) {
+            ticket.failAdmission(caller, admissionFailure);
+        }
+        return future;
+    }
+
     static <R> OresFuture<R> bindCurrentActor(
             ActorRuntime runtime,
             GenerationalReplyRegistry.Ticket<R> ticket,
