@@ -387,6 +387,13 @@ public final class OwnershipChecker {
             checkBlock(block.body(), scope, returnType);
             return;
         }
+        if (stmt instanceof Ast.TaskScopeStmt taskScope) {
+            // Phase 2 still admits only today's owned/Send Task captures.
+            // Borrowed captures remain rejected until ExecutionPermit proof
+            // metadata is wired into TaskExpr capture checking.
+            checkBlock(taskScope.body(), scope, returnType);
+            return;
+        }
         if (stmt instanceof Ast.BreakStmt) {
             if (loopDepth == 0) throw error("'break' may only appear inside loop or for");
             return;
