@@ -23,6 +23,41 @@ public final class OresBytes {
         return new OresBytes(bytes, true);
     }
 
+    /**
+     * Checked source-level Bytes construction from Ores integer values.
+     * The created backing array is owned exclusively by the returned value.
+     */
+    public static OresBytes fromUnsignedIntegers(java.util.List<?> values) {
+        Objects.requireNonNull(values, "values");
+        byte[] owned = new byte[values.size()];
+        for (int i = 0; i < values.size(); i++) {
+            Object value = values.get(i);
+            final long octet;
+            if (value instanceof Byte byteValue) {
+                octet = Byte.toUnsignedInt(byteValue);
+            } else if (value instanceof Short shortValue) {
+                octet = shortValue.longValue();
+            } else if (value instanceof Integer intValue) {
+                octet = intValue.longValue();
+            } else if (value instanceof Long longValue) {
+                octet = longValue;
+            } else if (value instanceof java.math.BigInteger bigValue
+                    && bigValue.signum() >= 0
+                    && bigValue.bitLength() <= 8) {
+                octet = bigValue.longValue();
+            } else {
+                throw new IllegalArgumentException(
+                        "Bytes elements must be integers in 0..255");
+            }
+            if (octet < 0 || octet > 255) {
+                throw new IllegalArgumentException(
+                        "Bytes elements must be integers in 0..255");
+            }
+            owned[i] = (byte) octet;
+        }
+        return new OresBytes(owned, false);
+    }
+
     static OresBytes wrapTrusted(byte[] ownedBytes) {
         return new OresBytes(ownedBytes, false);
     }
