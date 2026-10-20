@@ -128,6 +128,43 @@ final class ActorMailTypeContractTest {
     }
 
     @Test
+    void actorRefsCrossMailboxesAsCapabilitiesButSmartPointersDoNotYet() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  receive(ActorMail<int> mail): void {
+                    return;
+                  }
+                end
+
+                define actor Registry as
+                  receive(ActorMail<ActorRef<Worker>> mail): void {
+                    return;
+                  }
+                end
+
+                pub routine main(): void {
+                  val worker = spawn Worker();
+                  val registry = spawn Registry();
+                  registry.send(worker);
+                  return;
+                }
+                """)));
+
+        IllegalArgumentException boxed = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          receive(ActorMail<Box<int>> mail): void {
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(boxed.getMessage().contains("Box")
+                        && boxed.getMessage().contains("actor boundary"),
+                boxed.getMessage());
+    }
+
+    @Test
     void receiveCannotBeInvokedLikeAnOrdinaryActorMethod() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
