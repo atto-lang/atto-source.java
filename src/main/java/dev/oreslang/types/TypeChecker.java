@@ -218,7 +218,7 @@ public final class TypeChecker {
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
-                "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
+                "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Bytes", "Symbol", "void",
                 "self", "null"));
 
         for (Ast.ModuleDecl module : program.modules()) {
@@ -1808,7 +1808,7 @@ public final class TypeChecker {
                                 "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
                                 "int", "uint", "bigint", "f32", "f64", "float", "decimal",
                                 "complex64", "complex128", "complex", "bool", "Bool",
-                                "boolean", "string", "String", "void", "null", "self",
+                                "boolean", "string", "String", "Bytes", "void", "null", "self",
                                 "Tuple", "Array", "List", "Vector", "Slice",
                                 "FixedArray", "FixedList", "DynamicStruct", "Option",
                                 "Result", "Future", "ActorId", "ActorKind",
