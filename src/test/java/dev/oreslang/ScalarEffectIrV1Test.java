@@ -13,7 +13,7 @@ final class ScalarEffectIrV1Test {
         "{\"schema_version\":1,\"functions\":[{\"name\":\"answer\",\"operations\":["
         + "{\"kind\":\"compute\",\"units\":1},"
         + "{\"kind\":\"compute\",\"units\":1},"
-        + "{\"kind\":\"compute\",\"units\":1}]}]";
+        + "{\"kind\":\"compute\",\"units\":1}]}]}";
     private static final String SHA256 =
         "8ee1adbf6faef704c1eb6d2b2075c3b2d723097037f646f9e6e518a69d005463";
 
