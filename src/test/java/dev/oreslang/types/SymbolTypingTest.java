@@ -37,6 +37,10 @@ class SymbolTypingTest {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(
                 Parser.parse("class Symbol { }")));
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(
+                Parser.parse("define interface Symbol fnc run() => void; end")));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(
+                Parser.parse("type Symbol = int;")));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(
                 Parser.parse("fnc identity<Symbol>(Symbol value) -> Symbol { return value; }")));
     }
 
