@@ -4478,6 +4478,24 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
 
+            if (call.callee() instanceof Ast.NameExpr tupleName
+                    && tupleName.name().equals("tuple")
+                    && env.lookup("tuple") == Env.MISSING
+                    && !hasFunctionFamily("tuple")) {
+                evalSuspendableArguments(
+                        task,
+                        call.arguments(),
+                        env,
+                        (t, values, failure) ->
+                                continuation.accept(
+                                        t,
+                                        failure == null
+                                                ? List.copyOf(values)
+                                                : null,
+                                        failure));
+                return;
+            }
+
             if (call.callee() instanceof Ast.MemberExpr member) {
                 evalSuspendableExpr(
                         task,
