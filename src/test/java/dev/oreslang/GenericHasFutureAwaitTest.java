@@ -241,6 +241,26 @@ final class GenericHasFutureAwaitTest {
                 """));
     }
 
+
+    @Test
+    void rejectsInheritedGetterReturningWrongFutureGeneric() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define trait HasFuture<T> as
+                            get_future(): Future<T>;
+                        end
+                        async fnc integerValue(): int { return 4; }
+                        async fnc stringValue(): string { return "wrong"; }
+                        define class Parent implements HasFuture<int> as
+                            pub get_future(): Future<int> { return integerValue(); }
+                        end
+                        define class Child extends Parent as
+                            pub get_future(): Future<string> { return stringValue(); }
+                        end
+                        fnc use(Child child): int { return await child; }
+                        """));
+    }
+
     @Test
     void rejectsMalformedHasFutureGenericArity() {
         assertThrows(IllegalArgumentException.class,
