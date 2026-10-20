@@ -6,6 +6,7 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
+import dev.oreslang.types.TaskBoundaryAdmissions;
 
 /** Trusted compiler front-end API for build systems and isolate admission. */
 public final class OresCompiler {
@@ -20,6 +21,37 @@ public final class OresCompiler {
         program = TypeChecker.checkTypes(program);
         OwnershipChecker.check(program);
         return program;
+    }
+
+    /**
+     * Executable frontend analysis carrying sealed exact-identity Task
+     * admissions alongside the exact checked program instance.
+     */
+    public record TaskBoundaryAnalysis(
+            Ast.Program program,
+            TaskBoundaryAdmissions taskAdmissions) {
+        public TaskBoundaryAnalysis {
+            java.util.Objects.requireNonNull(program, "program");
+            java.util.Objects.requireNonNull(taskAdmissions, "taskAdmissions");
+            if (!taskAdmissions.sealed()) {
+                throw new IllegalArgumentException(
+                        "Task boundary analysis requires sealed admissions");
+            }
+        }
+    }
+
+    public static TaskBoundaryAnalysis parseAndAnalyzeTaskBoundaries(
+            String source) {
+        return analyzeTaskBoundaries(Parser.parse(source));
+    }
+
+    public static TaskBoundaryAnalysis analyzeTaskBoundaries(
+            Ast.Program program) {
+        TypeChecker.TaskTypeCheckResult checked =
+                TypeChecker.checkTypesWithTaskAdmissions(program);
+        OwnershipChecker.check(checked.program());
+        return new TaskBoundaryAnalysis(
+                checked.program(), checked.taskAdmissions());
     }
 
     /** Compiler diagnostics are returned explicitly instead of written to shared stderr. */
