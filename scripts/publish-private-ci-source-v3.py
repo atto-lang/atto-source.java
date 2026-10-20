@@ -427,9 +427,12 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     contract = checked_contract(
         trusted_root, repository, source_pr, test_plan, protected_sha
     )
-    source_repo_id = verify_source_pr(source_pr, source_commit)
+    source_repo_id = verify_source_pr(source_pr, source_commit, contract)
     destination, base_tree, plan_bytes = checked_destination(repository, contract)
-    plan_sha256 = validate_test_plan(plan_bytes, source_pr)
+    plan_sha256 = (
+        validate_test_plan(plan_bytes, source_pr)
+        if contract["mode"] == "receipt" else None
+    )
 
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
@@ -473,75 +476,108 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     if isolated_sha != source_tree:
         raise Denied("uploaded source tree differs from pinned PR tree")
 
-    now = now or dt.datetime.now(dt.timezone.utc)
-    if now.tzinfo is None or now.utcoffset() is None:
-        raise Denied("publisher clock must be timezone-aware")
-    expires = (now.astimezone(dt.timezone.utc) + RECEIPT_TTL).replace(microsecond=0)
-    receipt = {
-        "schema": RECEIPT_SCHEMA,
-        "expires_at": expires.isoformat().replace("+00:00", "Z"),
-        "carrier": {
-            "workflow_blob_sha": contract["workflow_blob_sha"],
-        },
-        "destination": {
-            "repo": repository,
-            "repo_id": contract["repository_id"],
-            "base_sha": contract["base_sha"],
-        },
-        "mirror": {
-            "root_tree_sha": source_tree,
-        },
-        "source": {
-            "repo": legacy.SOURCE_REPO,
-            "repo_id": source_repo_id,
-            "pr": source_pr,
-            "head_sha": source_commit,
-            "root_tree_sha": source_tree,
-            "manifest_sha256": manifest_sha256,
-        },
-        "test_plan": {
-            "path": contract["test_plan_path"],
-            "sha256": plan_sha256,
-        },
-    }
-    receipt_bytes = canonical_bytes(receipt) + b"\n"
-    receipt_digest = canonical_digest(receipt)
+    receipt_digest = None
+    if contract["mode"] == "receipt":
+        now = now or dt.datetime.now(dt.timezone.utc)
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise Denied("publisher clock must be timezone-aware")
+        expires = (
+            now.astimezone(dt.timezone.utc) + RECEIPT_TTL
+        ).replace(microsecond=0)
+        receipt = {
+            "schema": RECEIPT_SCHEMA,
+            "expires_at": expires.isoformat().replace("+00:00", "Z"),
+            "carrier": {
+                "workflow_blob_sha": contract["workflow_blob_sha"],
+            },
+            "destination": {
+                "repo": repository,
+                "repo_id": contract["repository_id"],
+                "base_sha": contract["base_sha"],
+            },
+            "mirror": {
+                "root_tree_sha": source_tree,
+            },
+            "source": {
+                "repo": legacy.SOURCE_REPO,
+                "repo_id": source_repo_id,
+                "pr": source_pr,
+                "head_sha": source_commit,
+                "root_tree_sha": source_tree,
+                "manifest_sha256": manifest_sha256,
+            },
+            "test_plan": {
+                "path": contract["test_plan_path"],
+                "sha256": plan_sha256,
+            },
+        }
+        receipt_bytes = canonical_bytes(receipt) + b"\n"
+        receipt_digest = canonical_digest(receipt)
 
-    auth()
-    receipt_blob = legacy.gh_api(
-        f"repos/{repository}/git/blobs", method="POST",
-        payload={
-            "content": base64.b64encode(receipt_bytes).decode("ascii"),
-            "encoding": "base64",
-        },
-    )
-    receipt_blob_sha = valid_sha(
-        receipt_blob.get("sha"), "uploaded receipt blob SHA invalid"
-    )
-    if receipt_blob_sha != git_blob_sha(receipt_bytes):
-        raise Denied("uploaded receipt digest mismatch")
+        auth()
+        receipt_blob = legacy.gh_api(
+            f"repos/{repository}/git/blobs", method="POST",
+            payload={
+                "content": base64.b64encode(receipt_bytes).decode("ascii"),
+                "encoding": "base64",
+            },
+        )
+        receipt_blob_sha = valid_sha(
+            receipt_blob.get("sha"), "uploaded receipt blob SHA invalid"
+        )
+        if receipt_blob_sha != git_blob_sha(receipt_bytes):
+            raise Denied("uploaded receipt digest mismatch")
 
-    auth()
-    root_tree = legacy.gh_api(
-        f"repos/{repository}/git/trees", method="POST",
-        payload={
-            "base_tree": base_tree,
-            "tree": [
-                {
-                    "path": legacy.PREFIX,
-                    "mode": "040000",
-                    "type": "tree",
-                    "sha": source_tree,
-                },
-                {
-                    "path": RECEIPT_PATH,
-                    "mode": "100644",
-                    "type": "blob",
-                    "sha": receipt_blob_sha,
-                },
-            ],
-        },
-    )
+        auth()
+        root_tree = legacy.gh_api(
+            f"repos/{repository}/git/trees", method="POST",
+            payload={
+                "base_tree": base_tree,
+                "tree": [
+                    {
+                        "path": legacy.PREFIX,
+                        "mode": "040000",
+                        "type": "tree",
+                        "sha": source_tree,
+                    },
+                    {
+                        "path": RECEIPT_PATH,
+                        "mode": "100644",
+                        "type": "blob",
+                        "sha": receipt_blob_sha,
+                    },
+                ],
+            },
+        )
+        commit_message = (
+            "ci: exact private Oreslang PR tree\n\n"
+            "Oreslang-CI-Receipt-SHA256: " + receipt_digest
+        )
+    else:
+        auth()
+        root_tree = legacy.gh_api(
+            f"repos/{repository}/git/trees", method="POST",
+            payload={
+                "base_tree": base_tree,
+                "tree": [
+                    {
+                        "path": legacy.PREFIX,
+                        "mode": "040000",
+                        "type": "tree",
+                        "sha": source_tree,
+                    },
+                ],
+            },
+        )
+        commit_message = (
+            "ci: exact private Oreslang tree "
+            + source_commit + " tree " + source_tree + "\n"
+            + "carrier-base " + contract["base_sha"]
+            + " tree " + contract["base_tree_sha"] + "\n"
+            + "connector-authorized source-repository "
+            + legacy.SOURCE_REPO + " id " + str(source_repo_id)
+        )
+
     root_tree_sha = valid_sha(
         root_tree.get("sha"), "carrier root tree SHA invalid"
     )
@@ -550,10 +586,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     commit = legacy.gh_api(
         f"repos/{repository}/git/commits", method="POST",
         payload={
-            "message": (
-                "ci: exact private Oreslang PR tree\n\n"
-                "Oreslang-CI-Receipt-SHA256: " + receipt_digest
-            ),
+            "message": commit_message,
             "tree": root_tree_sha,
             "parents": [contract["base_sha"]],
         },
@@ -566,8 +599,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     if protected_main_sha() != protected_sha:
         raise Denied("source protected main advanced before publication")
     checked_contract(
-        trusted_root, repository, source_pr,
-        contract["test_plan_path"], protected_sha
+        trusted_root, repository, source_pr, test_plan, protected_sha
     )
     checked_destination(repository, contract)
 
@@ -588,15 +620,17 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     if approved.get("ref") != "refs/heads/" + authorization:
         raise Denied("carrier did not confirm dispatcher authorization ref")
 
-    return {
+    result = {
         "commit": commit_sha,
         "branch": branch,
         "authorization_ref": authorization,
         "source_tree": source_tree,
         "manifest_sha256": manifest_sha256,
-        "receipt_sha256": receipt_digest,
         "files": len(files),
     }
+    if receipt_digest is not None:
+        result["receipt_sha256"] = receipt_digest
+    return result
 
 
 def main(argv=None):
@@ -605,7 +639,7 @@ def main(argv=None):
     parser.add_argument("--source-dir", required=True, type=Path)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--source-pr", required=True, type=int)
-    parser.add_argument("--test-plan", required=True)
+    parser.add_argument("--test-plan")
     args = parser.parse_args(argv)
     root = SCRIPT_DIR.parent
     try:
