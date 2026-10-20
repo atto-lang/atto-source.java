@@ -61,6 +61,7 @@ public final class TypeChecker {
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
+    private NominalEnumRegistry.Registry nominalEnums;
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
@@ -109,6 +110,7 @@ public final class TypeChecker {
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
         program = AnnotationExpander.expand(program);
         TypeChecker checker = new TypeChecker();
+        checker.nominalEnums = NominalEnumRegistry.build(program);
         checker.validateImports(program);
         checker.collect(program);
         ActorStateContract.verify(program);
@@ -138,6 +140,7 @@ public final class TypeChecker {
                 else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
                 else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
                 else if (declaration instanceof Ast.TypeAliasDecl alias) localNames.add(alias.name());
+                else if (declaration instanceof Ast.EnumDecl enumeration) localNames.add(enumeration.name());
             }
         }
 
@@ -244,6 +247,19 @@ public final class TypeChecker {
                         Set<String> aliasGenerics = uniqueGenerics(alias.genericParameters(), "type alias " + alias.name());
                         resolve(alias.target(), aliasGenerics, null);
                     }
+                    else if (decl instanceof Ast.EnumDecl enumeration) {
+                        for (Ast.EnumCase variant : enumeration.cases()) {
+                            if (variant.payload() != null) {
+                                Type payload = resolve(variant.payload(), Set.of(), null);
+                                if (payload == Primitive.VOID || payload instanceof Borrow
+                                        || payload instanceof Function || payload instanceof ClassNamespace) {
+                                    throw new IllegalArgumentException(
+                                            "enum payload must be an owned value type: "
+                                                    + enumeration.name() + "." + variant.name());
+                                }
+                            }
+                        }
+                    }
                     else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
                 }
             } finally {
@@ -266,6 +282,9 @@ public final class TypeChecker {
             } else if (decl instanceof Ast.FieldDecl field) {
                 name = field.name();
                 category = "binding";
+            } else if (decl instanceof Ast.EnumDecl enumeration) {
+                name = enumeration.name();
+                category = "enum";
             } else {
                 continue; // interfaces and aliases occupy the type namespace
             }
