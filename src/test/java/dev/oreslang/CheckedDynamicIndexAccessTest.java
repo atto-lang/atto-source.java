@@ -358,6 +358,37 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void constructorLambdaCannotDeferIndexedSelfRead() {
+        IllegalArgumentException inferred = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse("""
+                define class Box as
+                  val int value;
+                  constructor(int next) {
+                    const reader = || -> self["value"];
+                    self.value = next;
+                  }
+                end
+                """)));
+        assertTrue(inferred.getMessage().contains("constructor self"), inferred::getMessage);
+
+        IllegalArgumentException contextual = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse("""
+                define class Box as
+                  val int value;
+                  constructor(int next) {
+                    val (() => int) reader = || -> {
+                      return self["value"];
+                    };
+                    self.value = next;
+                  }
+                end
+                """)));
+        assertTrue(contextual.getMessage().contains("constructor self"), contextual::getMessage);
+    }
+
+    @Test
     void constructorSelfCannotUseComputedFieldReadBeforeInitializationProof() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse("""
                 define class Box as
