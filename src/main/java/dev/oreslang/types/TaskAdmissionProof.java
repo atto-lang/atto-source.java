@@ -109,7 +109,11 @@ public final class TaskAdmissionProof {
                     "Task admission proof belongs to a different program instance");
         }
         Objects.requireNonNull(boundary, "boundary");
-        List<AdmittedTransfer> result = byBoundary.get(boundary);
+        if (!(boundary instanceof Ast.TaskExpr task)) {
+            throw new IllegalStateException(
+                    "Task lowering proof can only be consumed by an exact TaskExpr boundary");
+        }
+        List<AdmittedTransfer> result = byBoundary.get(task);
         if (result == null) {
             throw new IllegalStateException(
                     "Task lowering requires an exact joined admission proof");
