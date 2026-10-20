@@ -38,6 +38,20 @@ public final class OresCompiler {
     }
 
     /**
+     * Opt-in RT primitive subset: perform the full existing type/ownership check
+     * before admitting any source-level resource bounds or lowering to Java 8.
+     * This is not a verified no-heap runtime or WCET proof. Consumers must run
+     * the independent exact-classfile audit and target qualification gates.
+     */
+    public static RealtimePrimitiveCompiler.Artifact compileRealtimePrimitive(
+            String source, String entry, int arity,
+            RealtimePrimitiveCompiler.Budget budget, java.nio.file.Path outputDirectory)
+            throws java.io.IOException {
+        Ast.Program checked = parseAndTypeCheck(source);
+        return RealtimePrimitiveCompiler.compile(checked, entry, arity, budget, outputDirectory);
+    }
+
+    /**
      * Parse and type-check the complete source first, then perform closed-world
      * build optimization. Type errors in code that later becomes unreachable
      * are still reported; tree shaking is an optimization, not conditional
