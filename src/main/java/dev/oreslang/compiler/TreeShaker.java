@@ -629,6 +629,27 @@ public final class TreeShaker {
                         constructor,
                         methods);
             }
+            if (declaration instanceof Ast.ModelDecl model) {
+                LinkedHashMap<String, Object> locals = new LinkedHashMap<>();
+                List<Ast.ModelParam> parameters = new ArrayList<>();
+                for (Ast.ModelParam parameter : model.parameters()) {
+                    Ast.Expr defaultValue =
+                            rewriteExpression(parameter.defaultValue(), module, locals);
+                    parameters.add(new Ast.ModelParam(
+                            parameter.type(), parameter.name(), defaultValue));
+                    locals.put(parameter.name(), UNKNOWN);
+                }
+                List<Ast.ModelOp> operations = new ArrayList<>();
+                for (Ast.ModelOp operation : model.operations()) {
+                    List<Ast.Expr> arguments = new ArrayList<>();
+                    for (Ast.Expr argument : operation.arguments()) {
+                        arguments.add(rewriteExpression(argument, module, locals));
+                    }
+                    operations.add(new Ast.ModelOp(operation.name(), arguments));
+                }
+                return new Ast.ModelDecl(
+                        model.name(), model.visibility(), parameters, operations);
+            }
             return declaration;
         }
 
@@ -1060,6 +1081,9 @@ public final class TreeShaker {
             if (declaration instanceof Ast.ClassDecl klass) {
                 return klass.visibility() == Ast.Visibility.PUBLIC;
             }
+            if (declaration instanceof Ast.ModelDecl model) {
+                return model.visibility() == Ast.Visibility.PUBLIC;
+            }
             return declaration instanceof Ast.TypeAliasDecl;
         }
 
@@ -1076,7 +1100,9 @@ public final class TreeShaker {
                             || declaration instanceof Ast.FunctionDecl fn
                                     && fn.visibility() == Ast.Visibility.PUBLIC
                             || declaration instanceof Ast.FieldDecl field
-                                    && field.visibility() == Ast.Visibility.PUBLIC;
+                                    && field.visibility() == Ast.Visibility.PUBLIC
+                            || declaration instanceof Ast.ModelDecl model
+                                    && model.visibility() == Ast.Visibility.PUBLIC;
                     if (!exposed) continue;
                     String name = declarationName(declaration);
                     if (name != null) mark(qualify(module.name(), name));
@@ -1178,6 +1204,28 @@ public final class TreeShaker {
             }
             if (declaration instanceof Ast.TypeAliasDecl alias) {
                 scanType(alias.target());
+                return;
+            }
+            if (declaration instanceof Ast.ModelDecl model) {
+                LinkedHashSet<String> locals = new LinkedHashSet<>();
+                for (Ast.ModelParam parameter : model.parameters()) {
+                    scanType(parameter.type());
+                    scanExpression(module, parameter.defaultValue(), locals);
+                    locals.add(parameter.name());
+                }
+                for (Ast.ModelOp operation : model.operations()) {
+                    String localOperation = qualify(module, operation.name());
+                    if (symbols.containsKey(localOperation)) {
+                        mark(localOperation);
+                    } else {
+                        String resolved = resolveSymbol(operation.name(), false);
+                        if (resolved != null) mark(resolved);
+                        else externalBindings.add(operation.name());
+                    }
+                    for (Ast.Expr argument : operation.arguments()) {
+                        scanExpression(module, argument, locals);
+                    }
+                }
             }
         }
 
@@ -1514,6 +1562,7 @@ public final class TreeShaker {
             if (declaration instanceof Ast.InterfaceDecl iface) return iface.name();
             if (declaration instanceof Ast.FieldDecl field) return field.name();
             if (declaration instanceof Ast.TypeAliasDecl alias) return alias.name();
+            if (declaration instanceof Ast.ModelDecl model) return model.name();
             return null;
         }
 
