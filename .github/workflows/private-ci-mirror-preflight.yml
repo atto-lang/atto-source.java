@@ -7,9 +7,12 @@ on:
       - 'scripts/run-in-private-ci-destination.sh'
       - 'scripts/publish-private-ci-source.py'
       - 'scripts/test-publish-private-ci-source.py'
+      - 'scripts/private_ci_v3_contract.py'
+      - 'tests/test_private_ci_v3_contract.py'
       - '.github/private-ci-approved-repositories.txt'
       - '.github/CODEOWNERS'
       - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
+      - 'docs/security/PRIVATE_CI_V3_CONTRACT.md'
       - 'tools/verify-exact-source-tree.sh'
       - 'tools/test-verify-exact-source-tree.sh'
   push:
@@ -19,9 +22,12 @@ on:
       - 'scripts/run-in-private-ci-destination.sh'
       - 'scripts/publish-private-ci-source.py'
       - 'scripts/test-publish-private-ci-source.py'
+      - 'scripts/private_ci_v3_contract.py'
+      - 'tests/test_private_ci_v3_contract.py'
       - '.github/private-ci-approved-repositories.txt'
       - '.github/CODEOWNERS'
       - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
+      - 'docs/security/PRIVATE_CI_V3_CONTRACT.md'
       - 'tools/verify-exact-source-tree.sh'
       - 'tools/test-verify-exact-source-tree.sh'
 permissions:
@@ -36,7 +42,8 @@ jobs:
         run: |
           set -euo pipefail
           bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
-          python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py
+          python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py scripts/private_ci_v3_contract.py tests/test_private_ci_v3_contract.py
+          python3 -m unittest tests/test_private_ci_v3_contract.py
           bash scripts/test-private-ci-destination.sh
           bash -n tools/verify-exact-source-tree.sh tools/test-verify-exact-source-tree.sh
           bash tools/test-verify-exact-source-tree.sh
