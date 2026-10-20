@@ -444,10 +444,15 @@ public final class OresTaskScope {
         }
 
         private void retire(OresScheduler.CompilerTaskHandle<?> child) {
-            Objects.requireNonNull(child, "compiler Task child");
-            if (retired.compareAndSet(false, true)) {
-                retirement.run();
+            if (bound.get() != child) {
+                throw new IllegalStateException(
+                        "structured retirement belongs to a different exact Task child");
             }
+            if (!retired.compareAndSet(false, true)) {
+                throw new IllegalStateException(
+                        "structured compiler Task child retired more than once");
+            }
+            retirement.run();
         }
     }
 
