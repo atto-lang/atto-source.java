@@ -311,6 +311,7 @@ public final class CapabilityChecker {
             else if (stmt instanceof Ast.ExprStmt s) checkExpr(s.expression(), policy);
             else if (stmt instanceof Ast.DeferStmt s) checkExpr(s.expression(), policy);
             else if (stmt instanceof Ast.BlockStmt s) checkStatements(s.body(), policy);
+            else if (stmt instanceof Ast.TaskScopeStmt s) checkStatements(s.body(), policy);
             else if (stmt instanceof Ast.LoopStmt s) checkStatements(s.body(), policy);
             else if (stmt instanceof Ast.IfStmt s) {
                 for (Ast.IfBranch b : s.branches()) {
@@ -505,6 +506,13 @@ public final class CapabilityChecker {
             for (Ast.ObjectField f : e.fields()) {
                 checkExpr(f.value(), policy);
             }
+        }
+        else if (expr instanceof Ast.TaskExpr task) {
+            // A Task executes later, potentially on a different carrier.
+            // Its entire body must receive the same isolate capability and
+            // imported-code checks as its lexical parent. A new AST expression
+            // is never an effect/capability admission escape hatch.
+            checkStatements(task.body(), policy);
         }
         else if (expr instanceof Ast.LambdaExpr e) {
             if (e.expressionBody() != null) checkExpr(e.expressionBody(), policy);
