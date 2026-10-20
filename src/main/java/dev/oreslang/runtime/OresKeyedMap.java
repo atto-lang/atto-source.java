@@ -117,6 +117,11 @@ public final class OresKeyedMap {
     public int size() { return entries.size(); }
     public long keyBytes() { return keyBytes; }
 
+    /** Fresh mapping object for async ownership detachment; payloads are v1 copy-safe. */
+    public OresKeyedMap detachedCopy() {
+        return new OresKeyedMap(domain, entries, keyBytes);
+    }
+
     public boolean containsKey(Object key) {
         return entries.containsKey(normalizeKey(domain, key));
     }
