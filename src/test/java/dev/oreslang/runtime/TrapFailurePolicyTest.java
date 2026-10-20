@@ -12,14 +12,39 @@ import static org.junit.jupiter.api.Assertions.*;
 final class TrapFailurePolicyTest {
     private static final class GuestPanic extends RuntimeException { }
 
-    @Test void ordinaryGuestFailuresRemainTrappable() {
-        assertTrue(TrapFailurePolicy.isTrappable(
-                new IllegalStateException("Assert.equal: values are not equal"), GuestPanic.class));
-        assertTrue(TrapFailurePolicy.isTrappable(
-                new CompletionException(new IllegalArgumentException("ordinary guest error")),
-                GuestPanic.class));
+    // Production's equivalent is a privately constructed interpreter fault.
+    private static final class TrustedCastFailure extends RuntimeException {
+        private TrustedCastFailure(String message) { super(message); }
+    }
+
+    @Test void guestThrowAndTrustedInterpreterFaultAreTrappable() {
         assertTrue(TrapFailurePolicy.isTrappable(
                 new GuestControlSignal.Throw("ordinary guest throw"), GuestPanic.class));
+        assertTrue(TrapFailurePolicy.isTrappable(
+                new CompletionException(new TrustedCastFailure("guest cast failure")),
+                GuestPanic.class, TrustedCastFailure.class));
+        assertFalse(TrapFailurePolicy.isTrappable(
+                new TrustedCastFailure("missing trusted class"), GuestPanic.class));
+    }
+
+    @Test void forgedTraceNeverAuthorizesHostErrors() {
+        for (RuntimeException foreign : new RuntimeException[]{
+                new IllegalArgumentException("foreign"),
+                new IllegalStateException("foreign"),
+                new ArithmeticException("foreign"),
+                new ClassCastException("foreign")
+        }) {
+            foreign.setStackTrace(new StackTraceElement[]{
+                    new StackTraceElement("dev.oreslang.nodes.OresEvalRootNode",
+                            "eval", "OresEvalRootNode.java", 8080)
+            });
+            assertFalse(TrapFailurePolicy.isTrappable(foreign, GuestPanic.class),
+                    foreign::toString);
+            assertFalse(TrapFailurePolicy.isGuestCatchable(foreign, GuestPanic.class),
+                    foreign::toString);
+            assertFalse(TrapFailurePolicy.isTrappable(
+                    foreign, GuestPanic.class, TrustedCastFailure.class));
+        }
     }
 
     @Test void unclassifiedHostRuntimeFailuresFailClosed() {
