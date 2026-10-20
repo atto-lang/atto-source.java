@@ -2647,6 +2647,19 @@ public final class ActorRuntime implements AutoCloseable {
         // into a different supervisor before stop actually dispatches.
         private final Set<ActorId> stoppingWorkers = new java.util.HashSet<>();
         private final AtomicBoolean groupClosed = new AtomicBoolean();
+        /**
+         * Admission closure and close cleanup are distinct. Once groupClosed is
+         * visible, a throwing cleanup must retain enough exact state for a
+         * later supervisor/creator retry instead of treating the seal as proof
+         * that the group has been fully retired.
+         */
+        private boolean groupCloseActive; // guarded by authorityLock
+        private boolean groupCloseComplete; // guarded by authorityLock
+        private List<ActorRef<?>> groupCloseOwnedWorkers; // guarded by authorityLock
+        private boolean groupCloseObserversInstalled;
+        private boolean groupCloseObserverSetupAmbiguous;
+        // Package-runtime fault injection after the seal and durable snapshot.
+        private Runnable groupCloseAfterSealFaultForTesting;
         // Runtime-owned, non-cancellable observer; actor retirement may outlive
         // group admission revocation and clearing managed-worker references.
         private final OresFuture<Void> closedWorkersDone =
@@ -3149,78 +3162,147 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void closeFromRuntime() {
-            List<ActorRef<?>> owned;
+            final List<ActorRef<?>> owned;
             synchronized (authorityLock) {
-                if (!groupClosed.compareAndSet(false, true)) return;
-                // Revocation is part of close: even a capability held by code
-                // racing teardown can no longer pass validation.
-                joinSecret = UUID.randomUUID();
-                owned = List.copyOf(managedWorkers.values());
-                managedWorkers.clear();
-                stoppingWorkers.clear();
-            }
-            // Revoke every membership before asynchronous worker cleanup. A
-            // room close frees membership quota without stopping unrelated
-            // members or tearing down their other room subscriptions.
-            synchronized (groupMembershipLock) {
-                for (ActorId member : members) {
-                    Set<ActorGroupId> joined = groupMemberships.get(member);
-                    if (joined != null) {
-                        joined.remove(id);
-                        if (joined.isEmpty()) groupMemberships.remove(member);
+                if (groupCloseComplete) return;
+                if (groupCloseActive) {
+                    throw new IllegalStateException(
+                            "ActorGroup close is already in progress; retry after the "
+                                    + "current cleanup attempt releases ownership");
+                }
+                groupCloseActive = true;
+                try {
+                    if (!groupClosed.get()) {
+                        // Prepare allocation-bearing recovery ownership BEFORE
+                        // publishing the admission seal. After this point a
+                        // retry never reconstructs workers from cleared maps.
+                        UUID revokedJoinSecret = UUID.randomUUID();
+                        List<ActorRef<?>> snapshot =
+                                List.copyOf(managedWorkers.values());
+                        groupCloseOwnedWorkers = snapshot;
+                        joinSecret = revokedJoinSecret;
+                        groupClosed.set(true);
+                        managedWorkers.clear();
+                        stoppingWorkers.clear();
                     }
-                }
-                members.clear();
-                if (creator != null) {
-                    Set<ActorGroupId> created = createdGroupsByActor.get(creator);
-                    if (created != null) {
-                        created.remove(id);
-                        if (created.isEmpty()) createdGroupsByActor.remove(creator);
+                    owned = groupCloseOwnedWorkers;
+                    if (owned == null) {
+                        throw new IllegalStateException(
+                                "ActorGroup close lost its durable worker snapshot");
                     }
+                } catch (RuntimeException | Error failure) {
+                    groupCloseActive = false;
+                    throw failure;
                 }
             }
-            // Attach completion handlers before requesting cancellation: an
-            // actor might finalize synchronously during the first stop call.
-            // Keep only a future, not strong actor heap/arena references.
-            if (owned.isEmpty()) {
-                closedWorkersDone.completeFromRuntime(null);
-            } else {
-                AtomicInteger pending = new AtomicInteger(owned.size());
-                AtomicReference<Throwable> firstFailure = new AtomicReference<>();
-                for (ActorRef<?> worker : owned) {
-                    worker.done().whenCompleteRuntime((ignored, failure) -> {
-                        if (failure != null) firstFailure.compareAndSet(null, failure);
-                        if (pending.decrementAndGet() == 0) {
-                            Throwable terminal = firstFailure.get();
-                            if (terminal == null) closedWorkersDone.completeFromRuntime(null);
-                            else closedWorkersDone.failFromRuntime(terminal);
-                        }
-                    });
-                }
-            }
-            // Closing a cooperating group never cancels ordinary members.
-            // Only explicitly managed workers are structurally cancelled.
-            // Never abort event-bus and Mailman teardown because one worker's
-            // cancellation hook failed. Preserve the failure for the manager.
+
             RuntimeException cancellationFailure = null;
-            for (ActorRef<?> worker : owned) {
-                try {
-                    worker.cancel();
-                } catch (RuntimeException failure) {
-                    if (worker.isAlive()) {
-                        if (cancellationFailure == null) cancellationFailure = failure;
-                        else cancellationFailure.addSuppressed(failure);
+            boolean completed = false;
+            try {
+                Runnable injected = groupCloseAfterSealFaultForTesting;
+                if (injected != null) injected.run();
+
+                // Revoke every membership before asynchronous worker cleanup.
+                // These removals are idempotent, so a retry can safely repeat
+                // this stage from the retained close owner.
+                synchronized (groupMembershipLock) {
+                    for (ActorId member : members) {
+                        Set<ActorGroupId> joined = groupMemberships.get(member);
+                        if (joined != null) {
+                            joined.remove(id);
+                            if (joined.isEmpty()) groupMemberships.remove(member);
+                        }
+                    }
+                    members.clear();
+                    if (creator != null) {
+                        Set<ActorGroupId> created = createdGroupsByActor.get(creator);
+                        if (created != null) {
+                            created.remove(id);
+                            if (created.isEmpty()) createdGroupsByActor.remove(creator);
+                        }
                     }
                 }
-            }
-            try {
-                GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
-                if (mailman != null) mailman.close();
-            } finally {
+
+                // A partial observer-registration failure is ambiguous: replay
+                // could register the same worker twice and prematurely settle
+                // closedWorkersDone. Preserve the quarantine instead.
+                if (groupCloseObserverSetupAmbiguous) {
+                    throw new IllegalStateException(
+                            "ActorGroup close completion-observer setup is ambiguous; "
+                                    + "independent reconciliation is required");
+                }
+                if (!groupCloseObserversInstalled) {
+                    try {
+                        if (owned.isEmpty()) {
+                            closedWorkersDone.completeFromRuntime(null);
+                        } else {
+                            AtomicInteger pending = new AtomicInteger(owned.size());
+                            AtomicReference<Throwable> firstFailure =
+                                    new AtomicReference<>();
+                            for (ActorRef<?> worker : owned) {
+                                worker.done().whenCompleteRuntime((ignored, failure) -> {
+                                    if (failure != null) {
+                                        firstFailure.compareAndSet(null, failure);
+                                    }
+                                    if (pending.decrementAndGet() == 0) {
+                                        Throwable terminal = firstFailure.get();
+                                        if (terminal == null) {
+                                            closedWorkersDone.completeFromRuntime(null);
+                                        } else {
+                                            closedWorkersDone.failFromRuntime(terminal);
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        groupCloseObserversInstalled = true;
+                    } catch (RuntimeException | Error observerFailure) {
+                        groupCloseObserverSetupAmbiguous = true;
+                        throw observerFailure;
+                    }
+                }
+
+                // Closing a cooperating group never cancels membership-only
+                // actors. Managed workers are cancellation-idempotent, so this
+                // stage may safely replay after a later close-stage failure.
+                for (ActorRef<?> worker : owned) {
+                    try {
+                        worker.cancel();
+                    } catch (RuntimeException failure) {
+                        if (worker.isAlive()) {
+                            if (cancellationFailure == null) {
+                                cancellationFailure = failure;
+                            } else {
+                                cancellationFailure.addSuppressed(failure);
+                            }
+                        }
+                    }
+                }
+
                 try {
-                    eventBus.closeFromGroup();
+                    // Retain the exact Mailman owner until close returns. A
+                    // getAndSet(null) here would lose retry authority if its
+                    // teardown mutated state and then threw.
+                    GroupMailmanState<?> mailman = mailmanState.get();
+                    if (mailman != null) {
+                        mailman.close();
+                        mailmanState.compareAndSet(mailman, null);
+                    }
                 } finally {
-                    actorGroups.remove(id, this);
+                    try {
+                        eventBus.closeFromGroup();
+                    } finally {
+                        actorGroups.remove(id, this);
+                    }
+                }
+                completed = true;
+            } finally {
+                synchronized (authorityLock) {
+                    if (completed) {
+                        groupCloseComplete = true;
+                        groupCloseOwnedWorkers = null;
+                    }
+                    groupCloseActive = false;
                 }
             }
             if (cancellationFailure != null) throw cancellationFailure;
