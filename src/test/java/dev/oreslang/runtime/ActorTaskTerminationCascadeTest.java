@@ -302,6 +302,46 @@ final class ActorTaskTerminationCascadeTest {
     }
 
     @Test
+    void currentMainShardAndSnapshotQuotasRetireBeforeActorDone() throws Exception {
+        // Main added shard and snapshot leases after the Stage-3 branch fork.
+        // Integrating actor-owned Task finalization must preserve both revoke
+        // hooks before publishing the observable actor termination witness.
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            long initialBytes = runtime.sharedMemoryBytes();
+            AtomicReference<ActorRuntime.ActorShardLease> shard = new AtomicReference<>();
+            AtomicReference<ActorRuntime.ActorShardSnapshotLease> snapshot =
+                    new AtomicReference<>();
+            CountDownLatch reserved = new CountDownLatch(1);
+            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                if (message == 1) {
+                    shard.set(runtime.reserveActorShard(64));
+                    snapshot.set(runtime.reserveActorShardSnapshot(8));
+                    reserved.countDown();
+                } else {
+                    context.self().stop();
+                }
+            });
+            ref.send(1);
+            assertTrue(reserved.await(5, TimeUnit.SECONDS));
+            assertNotNull(shard.get());
+            assertNotNull(snapshot.get());
+            assertEquals(initialBytes + 64 + 8 * Double.BYTES,
+                    runtime.sharedMemoryBytes(),
+                    "both actor-local leases must charge shared quota");
+
+            ref.send(2);
+            assertTrue(ref.awaitTermination(10, TimeUnit.SECONDS));
+            assertNull(ref.done().get(3, TimeUnit.SECONDS));
+            assertEquals(initialBytes, runtime.sharedMemoryBytes(),
+                    "all shard/snapshot charges must be refunded before done");
+            assertThrows(IllegalStateException.class,
+                    () -> snapshot.get().length(),
+                    "retained snapshots must be revoked after actor death");
+        }
+    }
+
+    @Test
     void actorDoneWaitsForOwnedFutureCancellationCallbacksAfterTaskScopeJoin()
             throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
