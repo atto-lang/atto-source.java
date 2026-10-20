@@ -23,6 +23,11 @@ class IpcReceiptParityTest {
     }
 
     @Test
+    void brokerMintsOneShotPhysicalConnectionAuthority() {
+        IpcPhysicalConnectionBrokerSelfTest.main(new String[0]);
+    }
+
+    @Test
     void closeAndAdmissionLinearizeWithoutAmbiguousNeverSentWindow() throws Exception {
         IpcSessionAdmissionCloseRaceSelfTest.main(new String[0]);
     }
