@@ -1826,6 +1826,15 @@ public final class Parser {
             return new Ast.ForStmt(null, new Ast.LiteralExpr(true), null, turn);
         }
         if (match(IF)) return parseIf();
+        if (check(NB) && checkNextLexeme("scope")
+                && current + 2 < tokens.size()
+                && tokens.get(current + 2).type() == LBRACE) {
+            advance(); // nb
+            advance(); // contextual scope
+            Ast.Stmt scoped = new Ast.TaskScopeStmt(parseBlock());
+            match(SEMICOLON);
+            return scoped;
+        }
         // Procedural dispatch returns from its enclosing callable. Keep this
         // distinction in the AST instead of relying on source spelling later.
         if (check(DO) && checkNext(NB)

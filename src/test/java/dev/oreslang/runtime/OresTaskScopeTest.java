@@ -228,7 +228,7 @@ final class OresTaskScopeTest {
             OresTaskScope scope = new OresTaskScope(scheduler);
             CountDownLatch entered = new CountDownLatch(3);
             CountDownLatch releaseTasks = new CountDownLatch(1);
-            CountDownLatch subscriberEntered = new CountDownLatch(1);
+            CountDownLatch subscriberEntered = new CountDownLatch(3);
             CountDownLatch releaseSubscribers = new CountDownLatch(1);
             java.util.List<OresFuture<Integer>> children = new java.util.ArrayList<>();
 
@@ -255,7 +255,7 @@ final class OresTaskScopeTest {
                     () -> drainedRef.set(scope.cancelAndQuiesce()));
 
             assertTrue(subscriberEntered.await(5, TimeUnit.SECONDS),
-                    "at least one ordinary subscriber should be blocking publication");
+                    "all ordinary subscribers should publish independently after revocation");
             for (OresFuture<Integer> child : children) {
                 assertTrue(child.isCancelled(),
                         "all child cancellation claims must win before subscriber publication");
@@ -263,15 +263,19 @@ final class OresTaskScopeTest {
                         "all child revocation hooks must finish before the first subscriber can block");
             }
 
-            releaseSubscribers.countDown();
+            // Publication now runs off the caller/parent carrier. A blocking
+            // ordinary subscriber must not keep cancelAndQuiesce() itself stuck
+            // after every child authority has already been revoked.
             canceller.join(5000);
-            assertFalse(canceller.isAlive());
+            assertFalse(canceller.isAlive(),
+                    "scope cancellation caller remained pinned behind an ordinary subscriber");
 
             OresFuture<Void> drained = drainedRef.get();
             assertNotNull(drained);
             assertFalse(drained.isDone(),
                     "physical child carriers are still executing after logical cancellation");
 
+            releaseSubscribers.countDown();
             releaseTasks.countDown();
             assertNull(drained.get(5, TimeUnit.SECONDS));
             assertEquals(0, scope.activeChildren());
@@ -323,6 +327,29 @@ final class OresTaskScopeTest {
             assertTrue(parentQuiescent.await(5, TimeUnit.SECONDS),
                     "parent may retire only after all nested structured scopes physically drain");
             assertTrue(parent.isCancelled());
+        }
+    }
+
+
+    @Test
+    void ownerFinalizationFailureFailsDrainInsteadOfReportingSuccess() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            RuntimeException ownerFailure =
+                    new RuntimeException("owner deregistration failed");
+            OresTaskScope scope = new OresTaskScope(
+                    scheduler,
+                    ignored -> { },
+                    ignored -> { throw ownerFailure; });
+
+            OresFuture<Void> drained = scope.quiesce();
+
+            java.util.concurrent.ExecutionException observed =
+                    assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> drained.get(5, TimeUnit.SECONDS));
+            assertSame(ownerFailure, observed.getCause());
+            assertTrue(drained.isCompletedExceptionally());
+            assertFalse(drained.isCancelled());
         }
     }
 

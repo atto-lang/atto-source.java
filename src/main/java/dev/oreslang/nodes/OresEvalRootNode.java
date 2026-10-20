@@ -22,6 +22,7 @@ import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
+import dev.oreslang.runtime.OresTaskScope;
 import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
@@ -1281,6 +1282,14 @@ public final class OresEvalRootNode extends RootNode {
             // The logical SourceTask is scheduler-owned and may migrate between
             // host worker carriers. Actor Tasks remain supervised by CONTROL.
             task.initialBlockEnv = env.snapshot();
+            OresTaskScope structuredScope = env.structuredTaskScope();
+            if (structuredScope != null) {
+                if (ActorRuntime.inActorExecution()) {
+                    throw new IllegalStateException(
+                            "nb scope inside actor execution is not enabled until actor quota/hot-reload integration is proven");
+                }
+                return structuredScope.fork(task);
+            }
             if (ActorRuntime.inActorExecution()) {
                 OresFuture<Object> future = context.actors().startActorTask(task);
                 context.actors().ownCurrentActorFuture(future);
@@ -1470,6 +1479,11 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.DeferStmt defer) {
                 return expressionContainsPotentialSuspension(
                         defer.expression(), seen);
+            }
+            if (stmt instanceof Ast.TaskScopeStmt) {
+                // Scope exit always awaits physical child quiescence even when
+                // the body itself contains no explicit await.
+                return true;
             }
             if (stmt instanceof Ast.BlockStmt block) {
                 return block.body().stream().anyMatch(
@@ -1738,6 +1752,8 @@ public final class OresEvalRootNode extends RootNode {
                     || stmt instanceof Ast.ForOfDestructureStmt) return true;
             if (stmt instanceof Ast.BlockStmt block)
                 return block.body().stream().anyMatch(this::containsSourceLoop);
+            if (stmt instanceof Ast.TaskScopeStmt taskScope)
+                return taskScope.body().stream().anyMatch(this::containsSourceLoop);
             if (stmt instanceof Ast.IfStmt conditional)
                 return conditional.branches().stream().anyMatch(
                         branch -> branch.body().stream().anyMatch(this::containsSourceLoop))
@@ -2091,6 +2107,56 @@ public final class OresEvalRootNode extends RootNode {
                             block.body(),
                             env,
                             continuation);
+                    return;
+                }
+
+                if (stmt instanceof Ast.TaskScopeStmt taskScope) {
+                    if (ActorRuntime.inActorExecution()) {
+                        continuation.accept(
+                                task,
+                                SourceFlow.throwing(new IllegalStateException(
+                                        "nb scope inside actor execution is not enabled until actor quota/hot-reload integration is proven")));
+                        return;
+                    }
+
+                    final OresTaskScope runtimeScope;
+                    try {
+                        runtimeScope = OresTaskScope.openCurrent();
+                    } catch (RuntimeException | Error failure) {
+                        continuation.accept(task, SourceFlow.throwing(failure));
+                        return;
+                    }
+
+                    Env scopedEnv = env.withStructuredTaskScope(runtimeScope);
+                    runBlock(
+                            task,
+                            taskScope.body(),
+                            scopedEnv,
+                            (t, flow) -> {
+                                final OresFuture<Void> drained;
+                                try {
+                                    drained = flow.kind() == SourceFlowKind.THROW
+                                            ? runtimeScope.cancelAndQuiesce()
+                                            : runtimeScope.quiesce();
+                                } catch (RuntimeException | Error failure) {
+                                    continuation.accept(
+                                            t,
+                                            mergeCleanupFailure(flow, failure));
+                                    return;
+                                }
+
+                                t.suspend(
+                                        drained,
+                                        (resumed, ignored, failure) -> {
+                                            if (failure != null) {
+                                                continuation.accept(
+                                                        resumed,
+                                                        mergeCleanupFailure(flow, failure));
+                                            } else {
+                                                continuation.accept(resumed, flow);
+                                            }
+                                        });
+                            });
                     return;
                 }
 
@@ -5186,6 +5252,10 @@ public final class OresEvalRootNode extends RootNode {
                         env,
                         inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
                 return;
+            }
+            if (stmt instanceof Ast.TaskScopeStmt) {
+                throw new IllegalStateException(
+                        "nb scope reached synchronous source execution; suspension scan/lowering invariant violated");
             }
             if (stmt instanceof Ast.BreakStmt) throw new BreakSignal();
             if (stmt instanceof Ast.ContinueStmt) throw new ContinueSignal();
@@ -9017,6 +9087,9 @@ public final class OresEvalRootNode extends RootNode {
         private final String lexicalModule;
         private final OresObject constructingObject;
         private final Map<String, Slot> slots = new HashMap<>();
+        // Heap-owned lexical structured scope. This follows source continuation
+        // state across carrier migration and is never a ThreadLocal identity.
+        private OresTaskScope structuredTaskScope;
         private Env(Env parent) {
             this(
                     parent,
@@ -9068,6 +9141,8 @@ public final class OresEvalRootNode extends RootNode {
             this.lexicalContainerClass = lexicalContainerClass;
             this.lexicalModule = lexicalModule;
             this.constructingObject = constructingObject;
+            this.structuredTaskScope =
+                    parent == null ? null : parent.structuredTaskScope;
         }
 
         private Env lexicalBoundaryOnly() {
@@ -9084,6 +9159,12 @@ public final class OresEvalRootNode extends RootNode {
             return lexicalModule != null && !Parser.ROOT_MODULE.equals(lexicalModule);
         }
         private boolean canInitialize(OresObject object) { return constructingObject == object; }
+        private Env withStructuredTaskScope(OresTaskScope scope) {
+            Env child = new Env(this);
+            child.structuredTaskScope = Objects.requireNonNull(scope, "scope");
+            return child;
+        }
+        private OresTaskScope structuredTaskScope() { return structuredTaskScope; }
         private void define(String name, Object value, Ast.BindingKind kind) {
             if (slots.putIfAbsent(name, new Slot(value, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
         }
@@ -9115,6 +9196,7 @@ public final class OresEvalRootNode extends RootNode {
         private Env taskProjection(List<String> captureNames) {
             Env cp = new Env(null, descendantsNonLexical, accessClass,
                     null, lexicalModule, lexicalContainerClass);
+            cp.structuredTaskScope = structuredTaskScope;
             for (String name : captureNames) {
                 Slot slot = findTaskCapture(name);
                 if (slot == null || slot.value == MISSING) {
@@ -9138,6 +9220,7 @@ public final class OresEvalRootNode extends RootNode {
                     accessClass,
                     null,
                     lexicalModule);
+            cp.structuredTaskScope = structuredTaskScope;
             cp.slots.putAll(slots);
             return cp;
         }

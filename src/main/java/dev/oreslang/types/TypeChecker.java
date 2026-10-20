@@ -1780,6 +1780,15 @@ public final class TypeChecker {
             checkBlock(block.body(), env, generics, expectedReturn, self);
             return;
         }
+        if (stmt instanceof Ast.TaskScopeStmt taskScope) {
+            if (currentActorKind != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "nb scope is not enabled inside actor execution until "
+                                + "actor quota/hot-reload structured-scope integration is proven");
+            }
+            checkBlock(taskScope.body(), env, generics, expectedReturn, self);
+            return;
+        }
         if (stmt instanceof Ast.BreakStmt) {
             if (loopDepth == 0) throw new IllegalArgumentException("'break' may only appear inside loop or for");
             return;
@@ -4210,12 +4219,18 @@ public final class TypeChecker {
         Ast.ClassDecl previousClass = currentClassOwner;
         Ast.ClassDecl previousConstructor = currentConstructorOwner;
         List<Type> previousInference = inferredTaskReturnTypes;
+        boolean previousMaySuspend = currentMaySuspend;
         List<Type> discovered = expected == Unknown.INSTANCE ? new ArrayList<>() : null;
         currentConstructorOwner = null;
         inferredTaskReturnTypes = discovered;
+        // Task bodies are scheduler continuations by definition. They may await
+        // and may invoke declared suspends callables even when their lexical
+        // parent is an ordinary synchronous function.
+        currentMaySuspend = true;
         try {
             checkCallableBlock(task.body(), child, generics, expected, self);
         } finally {
+            currentMaySuspend = previousMaySuspend;
             inferredTaskReturnTypes = previousInference;
             env.restoreInitialization(initializedBefore);
             currentClassOwner = previousClass;
@@ -7226,6 +7241,8 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(defer.expression(), classGenerics, klass, method);
             } else if (statement instanceof Ast.BlockStmt block) {
                 rejectStaticClassGenericReferences(block.body(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.TaskScopeStmt taskScope) {
+                rejectStaticClassGenericReferences(taskScope.body(), classGenerics, klass, method);
             } else if (statement instanceof Ast.LoopStmt loop) {
                 rejectStaticClassGenericReferences(loop.body(), classGenerics, klass, method);
             } else if (statement instanceof Ast.IfStmt conditional) {
@@ -8609,6 +8626,7 @@ public final class TypeChecker {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.ReturnStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
+            if (stmt instanceof Ast.TaskScopeStmt taskScope && definitelyReturns(taskScope.body())) return true;
             if (stmt instanceof Ast.LoopStmt loop && !containsBreakForCurrentLoop(loop.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 boolean allBranches = !conditional.branches().isEmpty()
@@ -8636,6 +8654,8 @@ public final class TypeChecker {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.BreakStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && containsBreakForCurrentLoop(block.body())) return true;
+            if (stmt instanceof Ast.TaskScopeStmt taskScope
+                    && containsBreakForCurrentLoop(taskScope.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
                     if (containsBreakForCurrentLoop(branch.body())) return true;

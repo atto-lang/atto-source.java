@@ -387,6 +387,17 @@ public final class OwnershipChecker {
             checkBlock(block.body(), scope, returnType);
             return;
         }
+        if (stmt instanceof Ast.TaskScopeStmt taskScope) {
+            // Phase 2 still admits only today's owned/Send Task captures.
+            // Borrowed captures remain rejected until ExecutionPermit proof
+            // metadata is wired into TaskExpr capture checking.
+            checkBlock(taskScope.body(), scope, returnType);
+            // Scope exit is an implicit asynchronous physical-quiescence wait.
+            // Any loan owned by an enclosing scope would otherwise cross a
+            // hidden suspension point without appearing as an AwaitExpr.
+            checkSuspensionBorrows(scope, "nb scope exit");
+            return;
+        }
         if (stmt instanceof Ast.BreakStmt) {
             if (loopDepth == 0) throw error("'break' may only appear inside loop or for");
             return;
@@ -2592,6 +2603,8 @@ public final class OwnershipChecker {
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.DeferStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.BlockStmt s) {
+                scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.TaskScopeStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.LoopStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
