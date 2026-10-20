@@ -4,7 +4,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Isolated JDK test, not a Graal guest-language or network authentication test.
@@ -35,6 +37,77 @@ public final class IpcReceiptCorrelationSelfTest {
     }
 
     public static void main(String[] ignored) throws InterruptedException {
+        // The raw host receipt ledger is public and must independently reject
+        // actor carriers before its own monitor, even if a caller bypasses the
+        // higher-level bridge by mistake.
+        {
+            var guarded = new IpcReceiptCorrelation(1);
+            var guardedMessage = env(1, "guarded-ledger");
+            CountDownLatch held = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicReference<Throwable> holderFailure = new AtomicReference<>();
+            Thread holder = new Thread(() -> {
+                synchronized (guarded) {
+                    held.countDown();
+                    try {
+                        if (!release.await(3, TimeUnit.SECONDS)) {
+                            throw new AssertionError(
+                                    "receipt correlation monitor hold timed out");
+                        }
+                    } catch (Throwable failure) {
+                        holderFailure.set(failure);
+                    }
+                }
+            }, "ipc-test-correlation-monitor-holder");
+            holder.start();
+            check(held.await(3, TimeUnit.SECONDS));
+
+            AtomicInteger denials = new AtomicInteger();
+            AtomicReference<Throwable> carrierFailure = new AtomicReference<>();
+            Thread carrier = new Thread(() -> {
+                RuntimeBlockingGuard.enterActorCarrier();
+                try {
+                    Runnable[] probes = {
+                            () -> guarded.admit(guardedMessage),
+                            () -> guarded.commitDispatch(guardedMessage),
+                            () -> guarded.acceptVerified(
+                                    guardedMessage,
+                                    IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED),
+                            () -> guarded.rejectBeforeRemote(guardedMessage),
+                            () -> guarded.retireTransportLost(guardedMessage),
+                            () -> guarded.counters(),
+                            () -> guarded.invariant()
+                    };
+                    for (Runnable probe : probes) {
+                        try {
+                            probe.run();
+                            throw new AssertionError(
+                                    "actor carrier entered receipt correlation monitor");
+                        } catch (IllegalStateException expected) {
+                            denials.incrementAndGet();
+                        }
+                    }
+                } catch (Throwable failure) {
+                    carrierFailure.set(failure);
+                } finally {
+                    RuntimeBlockingGuard.exitActorCarrier();
+                }
+            }, "ipc-test-correlation-actor-carrier");
+            carrier.start();
+            carrier.join(500);
+            check(!carrier.isAlive());
+            check(carrierFailure.get() == null);
+            check(denials.get() == 7);
+
+            release.countDown();
+            holder.join(3000);
+            check(!holder.isAlive());
+            check(holderFailure.get() == null);
+            check(guarded.counters().equals(
+                    new IpcReceiptCorrelation.Counters(0, 0)));
+            check(guarded.invariant());
+        }
+
         var book = new IpcReceiptCorrelation(2);
         var first = env(1, "sessionA");
         var second = env(2, "sessionB");
