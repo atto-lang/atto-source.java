@@ -6646,8 +6646,11 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         operator + " requires Entry<K,V> with two explicit reifiable component types");
             }
-            requireRuntimeReifiableType(ref.arguments().get(0), operator + " Entry key");
-            requireRuntimeReifiableType(ref.arguments().get(1), operator + " Entry value");
+            // Retain the enclosing alias-resolution stack while walking
+            // Entry<K,V>. Restarting it here permits A = Entry<int,A>
+            // to evade cycle detection through nested component types.
+            requireRuntimeReifiableType(ref.arguments().get(0), operator + " Entry key", aliasPath);
+            requireRuntimeReifiableType(ref.arguments().get(1), operator + " Entry value", aliasPath);
             return;
         }
         if (ref.inferArguments() || !ref.arguments().isEmpty()) {
