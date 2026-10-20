@@ -700,6 +700,22 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void buildOptimizerLeavesNestedIndexedReturnHelperUninlined() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                fnc pick(string key): int {
+                  const point = infer struct{x: 7};
+                  return 1 + point[key];
+                }
+                pub routine main(): void {
+                  stdio.stdout.write(pick("x"));
+                  return;
+                }
+                """, BuildOptions.executable(java.util.Map.of()));
+        assertTrue(result.retained(Parser.ROOT_MODULE + ".pick"),
+                "nested indexed returns are not eligible for unchecked constant-call substitution");
+    }
+
+    @Test
     void uncheckedRewriteCannotInheritProofFromPrecheckedDestination() {
         Ast.IndexExpr unchecked = new Ast.IndexExpr(
                 new Ast.NameExpr("record"), new Ast.NameExpr("key"));
