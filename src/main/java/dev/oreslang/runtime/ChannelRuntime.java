@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -354,7 +355,7 @@ public final class ChannelRuntime {
      */
     public static final class SelectSet {
         private final List<SelectCase> cases;
-        private final AtomicLong fairCursor = new AtomicLong();
+        private final AtomicLong fairCursor;
 
         public SelectSet(Collection<? extends SelectCase> cases) {
             this(cases, 0L);
@@ -368,7 +369,16 @@ public final class ChannelRuntime {
         public SelectSet(
                 Collection<? extends SelectCase> cases,
                 long initialFairCursor) {
+            this(cases, new AtomicLong(initialFairCursor));
+        }
+
+        // Dynamic plan generations share a cursor only with their immutable snapshot.
+        // Old completions cannot rotate a newer generation's FAIR state.
+        private SelectSet(
+                Collection<? extends SelectCase> cases,
+                AtomicLong sharedFairCursor) {
             Objects.requireNonNull(cases, "cases");
+            this.fairCursor = Objects.requireNonNull(sharedFairCursor, "sharedFairCursor");
             if (cases.isEmpty()) {
                 throw new IllegalArgumentException(
                         "select requires at least one case");
@@ -378,7 +388,6 @@ public final class ChannelRuntime {
                         "select case count exceeds maximum " + MAX_SELECT_CASES);
             }
             this.cases = List.copyOf(cases);
-            this.fairCursor.set(initialFairCursor);
             long defaults = this.cases.stream()
                     .filter(DefaultCase.class::isInstance)
                     .count();
@@ -526,7 +535,9 @@ public final class ChannelRuntime {
         }
 
         private void selected(int index, SelectPolicy policy) {
-            if (policy == SelectPolicy.FAIR && !cases.isEmpty()) {
+            // Default did not perform I/O and must not rotate FAIR credit.
+            if (policy == SelectPolicy.FAIR && !cases.isEmpty()
+                    && !(cases.get(index) instanceof DefaultCase)) {
                 fairCursor.set((index + 1L) % cases.size());
             }
         }
@@ -591,6 +602,152 @@ public final class ChannelRuntime {
 
         public Optional<SelectResult> trySelect(SelectPolicy policy) {
             return set.trySelect(policy);
+        }
+    }
+
+    /**
+     * Mutation-friendly select plan retaining only reusable case descriptors,
+     * never armed waiters or completion authority. Insertion order defines
+     * index order; keyed selections pin that order to one immutable generation.
+     *
+     * <p>Each select creates a fresh, bounded SelectRegistration through the
+     * underlying SelectSet. This preserves Channel, Future and cancellation
+     * semantics (including late Future waiter detachment) from the current
+     * runtime rather than implementing a second arbitration path.
+     */
+    public static final class DynamicSelectPlan<K> {
+        private final LinkedHashMap<K, SelectCase> entries = new LinkedHashMap<>();
+        // One cursor per structural generation: late old wins never rotate a
+        // newer generation. Mutations do not acquire COORDINATOR.
+        private AtomicLong fairness = new AtomicLong();
+        private long version;
+        // The fast path performs one volatile read, not a plan monitor entry.
+        private volatile Snapshot<K> cached;
+
+        private record Snapshot<K>(long version, List<K> keys, SelectSet set) { }
+
+        public record PlannedResult<K>(long version, K key, SelectResult selection) {
+            public PlannedResult {
+                Objects.requireNonNull(key, "key");
+                Objects.requireNonNull(selection, "selection");
+            }
+        }
+
+        public DynamicSelectPlan() { }
+
+        public DynamicSelectPlan(Map<? extends K, ? extends SelectCase> initial) {
+            Objects.requireNonNull(initial, "initial");
+            for (Map.Entry<? extends K, ? extends SelectCase> entry : initial.entrySet()) {
+                put(entry.getKey(), entry.getValue());
+            }
+        }
+
+        /**
+         * Mutations publish a new generation. Replacements retain their key's
+         * insertion position; failed duplicates and quota checks are atomic.
+         */
+        public synchronized void put(K key, SelectCase selectCase) {
+            Objects.requireNonNull(key, "key");
+            Objects.requireNonNull(selectCase, "selectCase");
+            if (!entries.containsKey(key) && entries.size() >= MAX_SELECT_CASES) {
+                throw new SelectAdmissionException(
+                        "dynamic select case count exceeds maximum " + MAX_SELECT_CASES);
+            }
+            if (selectCase instanceof DefaultCase) {
+                for (Map.Entry<K, SelectCase> entry : entries.entrySet()) {
+                    if (!entry.getKey().equals(key)
+                            && entry.getValue() instanceof DefaultCase) {
+                        throw new IllegalArgumentException(
+                                "select permits at most one default case");
+                    }
+                }
+            }
+            long nextVersion = Math.addExact(version, 1L);
+            entries.put(key, selectCase);
+            fairness = new AtomicLong(fairness.get());
+            version = nextVersion;
+            cached = null;
+        }
+
+        /** Existing in-flight selections keep their original snapshot. */
+        public synchronized boolean remove(K key) {
+            Objects.requireNonNull(key, "key");
+            if (!entries.containsKey(key)) return false;
+            long nextVersion = Math.addExact(version, 1L);
+            entries.remove(key);
+            fairness = new AtomicLong(fairness.get());
+            version = nextVersion;
+            cached = null;
+            return true;
+        }
+
+        public synchronized long version() {
+            return version;
+        }
+
+        public synchronized int size() {
+            return entries.size();
+        }
+
+        public synchronized List<K> keys() {
+            return List.copyOf(entries.keySet());
+        }
+
+        /**
+         * Snapshot capture is the select's plan-version linearization point.
+         * Concurrent mutations may complete after the capture but before
+         * registration; the in-flight operation still owns the old generation.
+         */
+        private Snapshot<K> snapshot() {
+            Snapshot<K> result = cached;
+            if (result != null) return result;
+            synchronized (this) {
+                result = cached;
+                if (result != null) return result;
+                if (entries.isEmpty()) {
+                    throw new IllegalStateException("cannot select from an empty dynamic plan");
+                }
+                result = new Snapshot<>(
+                        version, List.copyOf(entries.keySet()),
+                        new SelectSet(entries.values(), fairness));
+                cached = result;
+                return result;
+            }
+        }
+
+        public SelectSet selectSetSnapshot() {
+            return snapshot().set();
+        }
+
+        public OresFuture<SelectResult> selectAsync() {
+            return selectAsync(SelectPolicy.FAIR);
+        }
+
+        public OresFuture<SelectResult> selectAsync(SelectPolicy policy) {
+            return snapshot().set().selectAsync(policy);
+        }
+
+        public Optional<SelectResult> trySelect() {
+            return trySelect(SelectPolicy.FAIR);
+        }
+
+        public Optional<SelectResult> trySelect(SelectPolicy policy) {
+            return snapshot().set().trySelect(policy);
+        }
+
+        public OresFuture<PlannedResult<K>> selectKeyedAsync(SelectPolicy policy) {
+            Snapshot<K> selected = snapshot();
+            return mapSelection(
+                    selected.set().selectAsync(policy),
+                    result -> new PlannedResult<>(
+                            selected.version(), selected.keys().get(result.index()), result));
+        }
+
+        public Optional<PlannedResult<K>> trySelectKeyed(SelectPolicy policy) {
+            Snapshot<K> selected = snapshot();
+            return selected.set().trySelect(policy)
+                    .map(result -> new PlannedResult<>(
+                            selected.version(), selected.keys().get(result.index()), result));
         }
     }
 
