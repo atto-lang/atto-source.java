@@ -330,4 +330,27 @@ final class OresTaskScopeTest {
         }
     }
 
+
+    @Test
+    void ownerFinalizationFailureFailsDrainInsteadOfReportingSuccess() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            RuntimeException ownerFailure =
+                    new RuntimeException("owner deregistration failed");
+            OresTaskScope scope = new OresTaskScope(
+                    scheduler,
+                    ignored -> { },
+                    ignored -> { throw ownerFailure; });
+
+            OresFuture<Void> drained = scope.quiesce();
+
+            java.util.concurrent.ExecutionException observed =
+                    assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> drained.get(5, TimeUnit.SECONDS));
+            assertSame(ownerFailure, observed.getCause());
+            assertTrue(drained.isCompletedExceptionally());
+            assertFalse(drained.isCancelled());
+        }
+    }
+
 }
