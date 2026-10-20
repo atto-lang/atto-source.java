@@ -1,0 +1,32 @@
+name: Real-time actor-region model admission
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/compiler/RealtimeRegionEffectModel.java'
+      - 'src/test/java/dev/oreslang/compiler/RealtimeRegionEffectModelSelfTest.java'
+      - 'docs/realtime/region-effect-stage1.md'
+      - '.github/workflows/rt-region-model-admission.yml'
+permissions:
+  contents: read
+jobs:
+  symbolic-region-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Compile real-time symbolic region analyzer
+        run: |
+          mkdir -p target/rt-region-model
+          javac --release 21 -d target/rt-region-model \
+            src/main/java/dev/oreslang/compiler/RealtimeRegionEffectModel.java \
+            src/test/java/dev/oreslang/compiler/RealtimeRegionEffectModelSelfTest.java
+      - name: Execute deterministic region/borrow/lifetime policy tests
+        run: |
+          java -ea -cp target/rt-region-model \
+            dev.oreslang.compiler.RealtimeRegionEffectModelSelfTest
