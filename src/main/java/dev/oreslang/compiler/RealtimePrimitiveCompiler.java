@@ -110,6 +110,9 @@ public final class RealtimePrimitiveCompiler {
         Path result = directory.resolve(CLASS_NAME + ".class");
         if (!Files.isRegularFile(result)) throw invalid("javac produced no classfile");
         RealtimeClassfileAudit.Report classfileReport = RealtimeClassfileAudit.audit(result);
+        if (classfileReport.verifiedMethods() != report.reachableFunctions()) {
+            throw invalid("post-lowering method set does not match the source call graph");
+        }
         return new Artifact(
                 result,
                 sha256(Files.readAllBytes(result)),
