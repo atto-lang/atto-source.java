@@ -285,7 +285,19 @@ public final class HotReloadManager implements AutoCloseable {
 
     public synchronized int liveGenerations() { return generations.size(); }
 
-    /** Closed guest contexts must not remain in the manager's active registry. */
+    /**
+     * A generation that has entered physical close must stop serving routing
+     * immediately, even if Context teardown later fails. Keep it in
+     * generations as the durable cleanup owner until onGenerationClosed().
+     */
+    private synchronized void onGenerationSealed(Generation generation) {
+        boolean removed =
+                activeByCodeUnit.remove(generation.codeUnitId(), generation);
+        removed |= active.compareAndSet(generation, null);
+        if (removed && !closed) advanceRoutingEpoch();
+    }
+
+    /** Closed guest contexts must not remain in the manager's cleanup registry. */
     private synchronized void onGenerationClosed(Generation generation) {
         generations.remove(generation.id(), generation);
         boolean removed = activeByCodeUnit.remove(generation.codeUnitId(), generation);
@@ -598,6 +610,9 @@ public final class HotReloadManager implements AutoCloseable {
             }
 
             try {
+                HotReloadManager manager = owner.get();
+                if (manager != null) manager.onGenerationSealed(this);
+
                 Runnable afterSeal = closeAfterSealFaultForTesting;
                 if (afterSeal != null) afterSeal.run();
 
@@ -614,7 +629,6 @@ public final class HotReloadManager implements AutoCloseable {
                 // Registry eviction is part of physical retirement. If it ever
                 // fails, contextCloseComplete lets a later retry skip Context
                 // teardown while retaining this exact Generation owner.
-                HotReloadManager manager = owner.get();
                 if (manager != null) manager.onGenerationClosed(this);
 
                 synchronized (this) {
