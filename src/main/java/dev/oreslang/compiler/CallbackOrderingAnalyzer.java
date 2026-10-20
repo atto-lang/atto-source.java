@@ -131,15 +131,6 @@ public final class CallbackOrderingAnalyzer {
                     || left.event().equals("*") || right.event().equals("*"));
         }
 
-        private boolean registered(Event key, State state) {
-            // A wildcard is not proof of a definite subscription.
-            if ("*".equals(key.event())) return false;
-            for (Event prior : state.registered) {
-                if (prior.equals(key)) return true;
-            }
-            return false;
-        }
-
         private void publish(Event event, String invoker, State state) {
             // A preceding wildcard subscription remains uncertain, never
             // proof that this exact event has an installed listener.
