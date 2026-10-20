@@ -51,6 +51,7 @@ public final class IpcReceiptPhysicalBindingSelfTest {
         check(bridge.transportLost(owner, epoch, 201) == 1);
         check(result.toCompletableFuture().join()
                 == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+        deny(() -> bridge.admitAndCommit(owner, env(2), 201));
         check(bridge.counters().equals(
                 new IpcReceiptCorrelation.Counters(0, 0)));
         check(bridge.invariant());
