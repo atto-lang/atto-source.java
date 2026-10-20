@@ -15,6 +15,7 @@ on:
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/test/java/dev/oreslang/V3DefaultBudgetAdmissionTest.java'
       - 'src/test/java/dev/oreslang/V3ScalarDefaultProgramNormalizerTest.java'
+      - 'src/test/java/dev/oreslang/V3ZeroArgumentCallRegressionTest.java'
       - 'src/test/java/dev/oreslang/V3ScalarDefaultLiteralLoweringTest.java'
       - 'src/test/java/dev/oreslang/V3DefaultArgValsAdmissionTest.java'
       - 'src/test/java/dev/oreslang/DefaultAnnotationAdmissionTest.java'
@@ -43,4 +44,4 @@ jobs:
       - name: Check actual compiler test classes on this PR head
         run: |
           java --version
-          mvn -B -ntp -Dtest=V3ScalarDefaultProgramNormalizerTest,V3DefaultBudgetAdmissionTest,V3ScalarDefaultLiteralLoweringTest,V3DefaultArgValsAdmissionTest,DefaultAnnotationAdmissionTest,DefaultArgumentPolicyTest test
+          mvn -B -ntp -Dtest=V3ZeroArgumentCallRegressionTest,V3ScalarDefaultProgramNormalizerTest,V3DefaultBudgetAdmissionTest,V3ScalarDefaultLiteralLoweringTest,V3DefaultArgValsAdmissionTest,DefaultAnnotationAdmissionTest,DefaultArgumentPolicyTest test
