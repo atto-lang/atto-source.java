@@ -25,6 +25,8 @@ public final class BehaviorLayoutModel {
         final Map<OresSymbol, Integer> ids = new LinkedHashMap<>();
         final int[] parent;
         final Map<Key, Integer> edges = new HashMap<>();
+        // Closed vocabulary, precomputed once: zero per-event Key allocations.
+        final Map<OresSymbol, int[]> compiledDispatch = new HashMap<>();
         Chart(List<OresSymbol> states, Map<OresSymbol, OresSymbol> parents, List<Edge> rules) {
             require(!states.isEmpty() && states.size() <= 4096, "empty or excessive states");
             for (OresSymbol state : states) {
@@ -41,11 +43,24 @@ public final class BehaviorLayoutModel {
                 Set<Integer> seen = new HashSet<>();
                 for (int p = state; p != -1; p = parent[p]) require(seen.add(p), "parent cycle");
             }
+            Set<OresSymbol> events = new HashSet<>();
             for (Edge rule : rules) {
-                require(rule.event() != null, "null event Symbol");
+                require(rule != null && rule.event() != null, "null transition/event Symbol");
                 require(ids.containsKey(rule.from()) && ids.containsKey(rule.to()), "unknown transition state");
                 Key key = new Key(ids.get(rule.from()), rule.event());
                 require(edges.putIfAbsent(key, ids.get(rule.to())) == null, "duplicate transition key");
+                events.add(rule.event());
+            }
+            // Strict static-memory admission: avoid an S*E table bomb in a
+            // closed AOT model. Real guest storage uses the alloc/provider layer.
+            require((long) ids.size() * events.size() <= 1_048_576L,
+                    "compiled transition table exceeds memory budget");
+            for (OresSymbol event : events) {
+                int[] targets = new int[parent.length];
+                for (int active = 0; active < parent.length; active++) {
+                    targets[active] = slowStep(active, event);
+                }
+                compiledDispatch.put(event, targets);
             }
         }
         int id(OresSymbol state) {
@@ -53,14 +68,18 @@ public final class BehaviorLayoutModel {
             require(id != null, "unknown state");
             return id;
         }
-        int step(int active, OresSymbol event) {
-            require(active >= 0 && active < parent.length, "state out of range");
-            require(event != null, "null chart event");
+        int slowStep(int active, OresSymbol event) {
             for (int p = active; p != -1; p = parent[p]) {
                 Integer target = edges.get(new Key(p, event));
                 if (target != null) return target;
             }
             return active;
+        }
+        int step(int active, OresSymbol event) {
+            require(active >= 0 && active < parent.length, "state out of range");
+            require(event != null, "null chart event");
+            int[] targets = compiledDispatch.get(event);
+            return targets == null ? active : targets[active];
         }
     }
 
@@ -340,6 +359,10 @@ public final class BehaviorLayoutModel {
         rejects(() -> new Cohort(List.of(new Row(-1, 0)), Layout.AOS, 4),
                 "negative entity ID admitted");
         ok(chart.step(chart.id(busy), s("reset")) == chart.id(idle), "ancestor rule lost");
+        for (int state = 0; state < chart.parent.length; state++)
+            for (OresSymbol event : List.of(begin, end, reset, s("ignored")))
+                ok(chart.step(state, event) == chart.slowStep(state, event),
+                        "compiled dispatch diverged from ancestor oracle");
         rejects(() -> new Chart(List.of(idle, busy), Map.of(idle, busy, busy, idle), List.of()), "cycle accepted");
         rejects(() -> new Chart(List.of(idle, busy), Map.of(), List.of(
                 new Edge(idle, begin, busy), new Edge(idle, begin, busy))), "duplicate accepted");
@@ -463,8 +486,11 @@ public final class BehaviorLayoutModel {
         for (int trial = 0; trial < 2000; trial++) {
             int row = random.nextInt(rows.size());
             OresSymbol event = events.get(random.nextInt(events.size()));
+            ok(chart.step(expectedRows[row].state(), event)
+                    == chart.slowStep(expectedRows[row].state(), event),
+                    "randomized compiled dispatch divergence");
             expectedRows[row] = new Row(expectedRows[row].entity(),
-                    chart.step(expectedRows[row].state(), event));
+                    chart.slowStep(expectedRows[row].state(), event));
             for (Cohort cohort : cohorts) cohort.setState(row, chart.step(cohort.get(row).state(), event));
 
             int instance = random.nextInt(seed.length);
