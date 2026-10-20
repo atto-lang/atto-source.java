@@ -5494,6 +5494,17 @@ public final class TypeChecker {
                         || (a.constructor().equals("None") && b.constructor().equals("Some"))
                         || (a.constructor().equals("Ok") && b.constructor().equals("Err"))
                         || (a.constructor().equals("Err") && b.constructor().equals("Ok"))) return true;
+                if (nominalEnums != null) {
+                    NominalEnumRegistry.Case leftCase =
+                            nominalEnums.caseOrNull(a.constructor());
+                    NominalEnumRegistry.Case rightCase =
+                            nominalEnums.caseOrNull(b.constructor());
+                    if (leftCase != null
+                            && rightCase != null
+                            && leftCase.owner().equals(rightCase.owner())) {
+                        return true;
+                    }
+                }
             }
             return false;
         }
@@ -6066,7 +6077,10 @@ public final class TypeChecker {
         boolean valueSemanticNamed = value instanceof Named named
                 && (named.name().equals("Option")
                     || named.name().equals("Result")
-                    || named.name().equals("IteratorResult"));
+                    || named.name().equals("IteratorResult")
+                    || (nominalEnums != null
+                            && (nominalEnums.enums().containsKey(named.name())
+                                    || nominalEnums.caseOrNull(named.name()) != null)));
 
         if (value instanceof Primitive || value instanceof StringLiteral
                 || value instanceof ClassNamespace || value instanceof Generic
