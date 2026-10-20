@@ -132,8 +132,17 @@ public final class ActorDenseIndexColumns extends ActorShardBacking implements A
     }
 
     public OptionalLong readIndex(int row, int field) {
+        return ManagedReferencePolicy.decodeDenseIndex32(readEncodedWord(row, field));
+    }
+
+    public int readEncodedWord(int row, int field) {
         requireOwner();
-        return ManagedReferencePolicy.decodeDenseIndex32(getEncoded(offset(row, field)));
+        return getEncoded(offset(row, field));
+    }
+
+    public void writeEncodedWord(int row, int field, int encodedWord) {
+        requireOwner();
+        putEncoded(offset(row, field), encodedWord);
     }
 
     /** Copy encoded 32-bit words without allocating per-index wrapper objects. */
