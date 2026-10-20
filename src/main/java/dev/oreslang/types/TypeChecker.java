@@ -3789,6 +3789,10 @@ public final class TypeChecker {
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "record/struct field key");
                 Map<String, Type> indexableMembers = indexableRecordMembers(record);
+                if (record.kind() == AggregateKind.CONTRACT) {
+                    Ast.CheckedStructuralFieldDomain.record(
+                            indexed.receiver(), indexableMembers.keySet());
+                }
                 if (indexedOwner != null && indexedOwner.hasUninitializedFields()) {
                     if (constantKey != null) {
                         if (indexedOwner.isUninitialized(constantKey)) {
