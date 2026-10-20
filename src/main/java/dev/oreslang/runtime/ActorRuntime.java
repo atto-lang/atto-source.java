@@ -3279,27 +3279,25 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
 
-                try {
-                    // Retain the exact Mailman owner until close returns. A
-                    // getAndSet(null) here would lose retry authority if its
-                    // teardown mutated state and then threw.
-                    GroupMailmanState<?> mailman = mailmanState.get();
-                    if (mailman != null) {
-                        mailman.close();
-                        mailmanState.compareAndSet(mailman, null);
-                    }
-                } finally {
-                    try {
-                        eventBus.closeFromGroup();
-                    } finally {
-                        actorGroups.remove(id, this);
-                    }
+                // Retain each nested cleanup owner until that stage returns.
+                // In particular, do not remove this closed group from the
+                // runtime registry while Mailman/event-bus teardown or live
+                // worker cancellation still needs a retry authority.
+                GroupMailmanState<?> mailman = mailmanState.get();
+                if (mailman != null) {
+                    mailman.close();
+                    mailmanState.compareAndSet(mailman, null);
                 }
+                eventBus.closeFromGroup();
+
                 // A live worker whose cancellation failed is still owned by
-                // this closed group. Do not discard the durable worker snapshot
-                // merely because Mailman/event-bus teardown completed: a later
-                // supervisor retry must be able to issue cancellation again.
-                completed = cancellationFailure == null;
+                // this closed group. Keep both the exact worker snapshot and
+                // the runtime registry entry so creator finalization/runtime
+                // teardown can find the same recovery authority again.
+                if (cancellationFailure == null) {
+                    actorGroups.remove(id, this);
+                    completed = true;
+                }
             } finally {
                 synchronized (authorityLock) {
                     if (completed) {
