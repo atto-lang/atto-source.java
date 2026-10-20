@@ -28,12 +28,15 @@ public final class ModelGraphAdmission {
 
     public record Signature(
             String name, Port input, Port output, String effect,
-            String abi, long scratchBytes, boolean vjp) {
+            String abi, String implDigest, String provenance,
+            long scratchBytes, boolean vjp) {
         public Signature {
             Objects.requireNonNull(name);
             Objects.requireNonNull(output);
             Objects.requireNonNull(effect);
             Objects.requireNonNull(abi);
+            Objects.requireNonNull(implDigest);
+            Objects.requireNonNull(provenance);
         }
     }
 
@@ -44,7 +47,8 @@ public final class ModelGraphAdmission {
         }
     }
 
-    public record Node(int id, String op, String abi, List<String> config,
+    public record Node(int id, String op, String abi, String implDigest,
+                       String provenance, List<String> config,
                        Port input, Port output, boolean vjp) {
         public Node { config = List.copyOf(config); }
     }
@@ -137,6 +141,10 @@ public final class ModelGraphAdmission {
             if (signature.abi().isBlank() || signature.abi().length() > 64
                     || !signature.abi().matches("[A-Za-z0-9_.-]+"))
                 throw new IllegalArgumentException("MODEL_INVALID_OP_ABI");
+            if (!signature.implDigest().matches("[0-9a-f]{64}"))
+                throw new IllegalArgumentException("MODEL_INVALID_IMPL_DIGEST");
+            if (!Set.of("verified-ores", "trusted-native").contains(signature.provenance()))
+                throw new IllegalArgumentException("MODEL_INVALID_OP_PROVENANCE");
             if (signature.scratchBytes() < 0)
                 throw new IllegalArgumentException("MODEL_INVALID_SCRATCH");
             // The parser's op arguments are configuration, NOT values read
