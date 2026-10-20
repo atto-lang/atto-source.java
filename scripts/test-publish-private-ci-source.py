@@ -102,6 +102,58 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "request failed"):
                 pub.gh_api("repos/trusted/ci", method="GET")
 
+    def test_github_api_ref_create_does_not_mistake_error_text_for_http_422(self):
+        ambiguous = (
+            "HTTP 422 appeared in an unrelated response body",
+            "gh: Remote error contains HTTP 422 (HTTP 500)\\n",
+            "gh: Validation Failed (HTTP 500)\\nDetails: HTTP 422\\n",
+            "gh: Validation Failed (HTTP 422) unexpected suffix\\n",
+        )
+        with (
+            patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"),
+            patch.dict(pub.os.environ, {"GH_TOKEN": "fixture"}, clear=True),
+        ):
+            for message in ambiguous:
+                with self.subTest(message=message):
+                    response = Mock(returncode=1, stdout="", stderr=message)
+                    with patch.object(pub.subprocess, "run", return_value=response):
+                        with self.assertRaisesRegex(pub.Denied, "request failed") as raised:
+                            pub.gh_api(
+                                "repos/trusted/ci/git/refs", method="POST",
+                                payload={"ref": "refs/heads/ci/oreslang-test",
+                                         "sha": "a" * 40},
+                            )
+                        self.assertNotIsInstance(
+                            raised.exception, pub.GitHubWriteRejected
+                        )
+
+    def test_github_api_bounds_both_error_streams_before_classification(self):
+        responses = (
+            Mock(returncode=1, stdout="x" * 129,
+                 stderr="gh: Ref exists (HTTP 422)\\n"),
+            Mock(returncode=1, stdout="", stderr="x" * 129),
+            Mock(returncode=1, stdout=None,
+                 stderr="gh: Ref exists (HTTP 422)\\n"),
+            Mock(returncode=1, stdout="", stderr=None),
+        )
+        with (
+            patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"),
+            patch.object(pub, "MAX_GH_API_RESPONSE_CHARS", 128),
+            patch.dict(pub.os.environ, {"GH_TOKEN": "fixture"}, clear=True),
+        ):
+            for response in responses:
+                with self.subTest(stdout=response.stdout, stderr=response.stderr):
+                    with patch.object(pub.subprocess, "run", return_value=response):
+                        with self.assertRaisesRegex(pub.Denied, "exceeds size limit") as raised:
+                            pub.gh_api(
+                                "repos/trusted/ci/git/refs", method="POST",
+                                payload={"ref": "refs/heads/ci/oreslang-test",
+                                         "sha": "a" * 40},
+                            )
+                        self.assertNotIsInstance(
+                            raised.exception, pub.GitHubWriteRejected
+                        )
+
     def test_github_api_requires_exactly_one_explicit_token(self):
         with patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"):
             for env in ({}, {"GH_TOKEN": "a", "GITHUB_TOKEN": "b"}):
