@@ -20,7 +20,8 @@ final class PrecheckedProgramLeaseTest {
 
     @Test
     void exactLeaseIsOneShotAndNestedLeaseIsRejected() {
-        OresCompiler.CheckedProgram program = OresCompiler.parseAndTypeCheckChecked(SOURCE);
+        OresCompiler.CheckedProgram program =
+                OresCompiler.parseAndTypeCheckChecked("lease.ores", SOURCE);
         Source source = assertDoesNotThrow(() ->
                 Source.newBuilder(OresLanguage.ID, SOURCE, "lease.ores")
                         .mimeType(OresLanguage.MIME_TYPE)
@@ -60,8 +61,6 @@ final class PrecheckedProgramLeaseTest {
 
     @Test
     void leaseFailsClosedOnIdentityOrContentMismatchAndDoesNotLeak() {
-        OresCompiler.CheckedProgram program = OresCompiler.parseAndTypeCheckChecked(SOURCE);
-
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false)
                 .build()) {
@@ -69,9 +68,11 @@ final class PrecheckedProgramLeaseTest {
                     Source.newBuilder(OresLanguage.ID, SOURCE, "wrong.ores")
                             .mimeType(OresLanguage.MIME_TYPE)
                             .buildLiteral());
+            OresCompiler.CheckedProgram expectedProgram =
+                    OresCompiler.parseAndTypeCheckChecked("expected.ores", SOURCE);
             try (OresLanguage.PrecheckedProgramScope ignored =
                     OresLanguage.openPrecheckedProgram(
-                            "expected.ores", SOURCE, program)) {
+                            "expected.ores", SOURCE, expectedProgram)) {
                 RuntimeException failure = assertThrows(
                         RuntimeException.class,
                         () -> context.parse(wrongIdentity));
@@ -93,9 +94,11 @@ final class PrecheckedProgramLeaseTest {
                     Source.newBuilder(OresLanguage.ID, changed, "lease.ores")
                             .mimeType(OresLanguage.MIME_TYPE)
                             .buildLiteral());
+            OresCompiler.CheckedProgram leaseProgram =
+                    OresCompiler.parseAndTypeCheckChecked("lease.ores", SOURCE);
             try (OresLanguage.PrecheckedProgramScope ignored =
                     OresLanguage.openPrecheckedProgram(
-                            "lease.ores", SOURCE, program)) {
+                            "lease.ores", SOURCE, leaseProgram)) {
                 RuntimeException failure = assertThrows(
                         RuntimeException.class,
                         () -> context.parse(wrongContent));
@@ -113,7 +116,8 @@ final class PrecheckedProgramLeaseTest {
 
     @Test
     void scopeCannotCloseFromAnotherThread() throws Exception {
-        OresCompiler.CheckedProgram program = OresCompiler.parseAndTypeCheckChecked(SOURCE);
+        OresCompiler.CheckedProgram program =
+                OresCompiler.parseAndTypeCheckChecked("lease.ores", SOURCE);
         OresLanguage.PrecheckedProgramScope scope =
                 OresLanguage.openPrecheckedProgram("lease.ores", SOURCE, program);
         AtomicReference<Throwable> failure = new AtomicReference<>();
