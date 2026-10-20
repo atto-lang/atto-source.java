@@ -5355,6 +5355,17 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
         Object prepared = isPrivateKind(cell.kind) ? isolateCopy(message) : freezeForTransport(message);
+        // Only the detached snapshot is admitted; caller-owned source data
+        // can change while it is copied.
+        validateMessageGraph(prepared);
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            rejectUntrustedInboundCapabilities(prepared, new IdentityHashMap<>(), 0);
+        }
+        requireMutexTransport(cell, prepared, new IdentityHashMap<>(), 0);
+        requireOwnedActorRefs(prepared, new IdentityHashMap<>(), 0);
+        if (cell.kind == ActorKind.SHARED) {
+            requireOwnedSharedHandles(prepared, new IdentityHashMap<>(), 0);
+        }
         Runnable release;
         if (isPrivateKind(cell.kind)) {
             MemoryReservation reservation;
@@ -6131,6 +6142,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value == null || isScalar(value)) return;
         if (value instanceof ActorRuntime.ActorRef<?>
+                || value instanceof ActorRuntime.ActorGroupJoinCapability
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Lock<?>
@@ -6318,7 +6330,10 @@ public final class ActorRuntime implements AutoCloseable {
     public static Object freeze(Object value) {
         validateMessageGraph(value);
         rejectDataFreezeCapabilities(value, new IdentityHashMap<>(), 0);
-        return freeze(value, new IdentityHashMap<>(), 0);
+        Object detached = freeze(value, new IdentityHashMap<>(), 0);
+        validateMessageGraph(detached);
+        rejectDataFreezeCapabilities(detached, new IdentityHashMap<>(), 0);
+        return detached;
     }
 
     private static Object freezeForTransport(Object value) {
@@ -6369,7 +6384,17 @@ public final class ActorRuntime implements AutoCloseable {
             Object value,
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
+        return freeze(value, visiting, depth, new long[]{0L});
+    }
+
+    private static Object freeze(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth,
+            long[] budget) {
         requireGraphDepth(depth);
+        requireGraphNodeCapacity(budget[0], 1L);
+        budget[0]++;
         if (isScalar(value)) return value;
         if (value instanceof Shared<?> shared) {
             shared.value();
@@ -6388,19 +6413,29 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
-                List<Object> frozen = new ArrayList<>(list.size());
-                for (Object item : list) frozen.add(freeze(item, visiting, depth + 1));
+                List<Object> frozen = new ArrayList<>();
+                for (Object item : list) frozen.add(freeze(item, visiting, depth + 1, budget));
                 return List.copyOf(frozen);
             }
             if (value instanceof Set<?> set) {
                 LinkedHashSet<Object> frozen = new LinkedHashSet<>();
-                for (Object item : set) frozen.add(freeze(item, visiting, depth + 1));
+                for (Object item : set) {
+                    Object detached = freeze(item, visiting, depth + 1, budget);
+                    if (!frozen.add(detached)) {
+                        throw new IllegalArgumentException("duplicate logical element during actor freeze");
+                    }
+                }
                 return Collections.unmodifiableSet(frozen);
             }
             if (value instanceof Map<?, ?> map) {
                 Map<Object, Object> frozen = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    frozen.put(freeze(entry.getKey(), visiting, depth + 1), freeze(entry.getValue(), visiting, depth + 1));
+                    Object key = freeze(entry.getKey(), visiting, depth + 1, budget);
+                    if (frozen.containsKey(key)) {
+                        throw new IllegalArgumentException("duplicate logical key during actor freeze");
+                    }
+                    Object element = freeze(entry.getValue(), visiting, depth + 1, budget);
+                    frozen.put(key, element);
                 }
                 return Collections.unmodifiableMap(frozen);
             }
@@ -6408,7 +6443,7 @@ public final class ActorRuntime implements AutoCloseable {
                 int length = Array.getLength(value);
                 List<Object> frozen = new ArrayList<>(length);
                 for (int i = 0; i < length; i++) {
-                    frozen.add(freeze(Array.get(value, i), visiting, depth + 1));
+                    frozen.add(freeze(Array.get(value, i), visiting, depth + 1, budget));
                 }
                 return List.copyOf(frozen);
             }
@@ -6431,7 +6466,17 @@ public final class ActorRuntime implements AutoCloseable {
             Object value,
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
+        return isolateCopy(value, visiting, depth, new long[]{0L});
+    }
+
+    private static Object isolateCopy(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth,
+            long[] budget) {
         requireGraphDepth(depth);
+        requireGraphNodeCapacity(budget[0], 1L);
+        budget[0]++;
         if (isScalar(value)) return value;
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("private actors cannot receive shared SyncCell values");
@@ -6442,7 +6487,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
         }
-        if (value instanceof Shared<?> shared) return isolateCopy(shared.value(), visiting, depth + 1);
+        if (value instanceof Shared<?> shared) return isolateCopy(shared.value(), visiting, depth + 1, budget);
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
         if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) return capability;
 
@@ -6451,19 +6496,29 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
-                List<Object> copy = new ArrayList<>(list.size());
-                for (Object item : list) copy.add(isolateCopy(item, visiting, depth + 1));
+                List<Object> copy = new ArrayList<>();
+                for (Object item : list) copy.add(isolateCopy(item, visiting, depth + 1, budget));
                 return Collections.unmodifiableList(copy);
             }
             if (value instanceof Set<?> set) {
                 LinkedHashSet<Object> copy = new LinkedHashSet<>();
-                for (Object item : set) copy.add(isolateCopy(item, visiting, depth + 1));
+                for (Object item : set) {
+                    Object detached = isolateCopy(item, visiting, depth + 1, budget);
+                    if (!copy.add(detached)) {
+                        throw new IllegalArgumentException("duplicate logical element during private actor copy");
+                    }
+                }
                 return Collections.unmodifiableSet(copy);
             }
             if (value instanceof Map<?, ?> map) {
                 Map<Object, Object> copy = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    copy.put(isolateCopy(entry.getKey(), visiting, depth + 1), isolateCopy(entry.getValue(), visiting, depth + 1));
+                    Object key = isolateCopy(entry.getKey(), visiting, depth + 1, budget);
+                    if (copy.containsKey(key)) {
+                        throw new IllegalArgumentException("duplicate logical key during private actor copy");
+                    }
+                    Object element = isolateCopy(entry.getValue(), visiting, depth + 1, budget);
+                    copy.put(key, element);
                 }
                 return Collections.unmodifiableMap(copy);
             }
@@ -6471,7 +6526,7 @@ public final class ActorRuntime implements AutoCloseable {
                 int length = Array.getLength(value);
                 List<Object> copy = new ArrayList<>(length);
                 for (int i = 0; i < length; i++) {
-                    copy.add(isolateCopy(Array.get(value, i), visiting, depth + 1));
+                    copy.add(isolateCopy(Array.get(value, i), visiting, depth + 1, budget));
                 }
                 return Collections.unmodifiableList(copy);
             }
