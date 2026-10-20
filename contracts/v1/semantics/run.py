@@ -90,6 +90,31 @@ def validate_command(command):
         raise ValueError("compiler command must contain exactly one {source}")
     return argv
 
+def verify_checkout_revision(revision):
+    """Refuse a semantic report detached from the actual clean tracked Git tree."""
+    repo = ROOT.parents[2].resolve()
+    def git(*args):
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(repo), *args], capture_output=True,
+                text=True, check=False, timeout=10)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ValueError("semantic runner cannot inspect Git checkout") from exc
+        if result.returncode:
+            raise ValueError("semantic runner cannot inspect Git checkout")
+        return result.stdout.strip()
+
+    if Path(git("rev-parse", "--show-toplevel")).resolve() != repo:
+        raise ValueError("semantic runner is not rooted at its Git checkout")
+    if git("rev-parse", "--verify", "HEAD") != revision:
+        raise ValueError("semantic report revision differs from actual Git checkout")
+    if git("status", "--porcelain=v1", "--untracked-files=no"):
+        raise ValueError("semantic runner checkout contains tracked modifications")
+    tree = git("rev-parse", "--verify", "HEAD^{tree}")
+    if not re.fullmatch(r"[a-f0-9]{40}", tree):
+        raise ValueError("semantic runner cannot verify Git tree identity")
+    return tree
+
 def requires_guest_runner(suite, backend):
     return backend == "graal" and any(
         case["kind"] == "native_exit" and case["backends"]["graal"] == "required"
@@ -188,6 +213,8 @@ def main():
     run_argv = validate_command(args.run_command) if args.run_command else None
     if requires_guest_runner(suite, args.backend) and run_argv is None:
         p.error("--run-command is mandatory for required Graal native_exit cases")
+    initial_tree = verify_checkout_revision(args.revision)
+    print(f"Verified semantic checkout commit={args.revision} tree={initial_tree}")
     results = []
     for case in suite["cases"]:
         if case["backends"][args.backend] == "pending":
@@ -198,6 +225,11 @@ def main():
         results.append(result)
         print(f"{result['status'].upper()} {case['id']} ({args.backend})"
               + (f": {result.get('detail','')}" if result["status"] == "fail" else ""))
+    if verify_checkout_revision(args.revision) != initial_tree:
+        raise ValueError("semantic runner checkout tree changed during fixture execution")
+    _, final_checksum = validate_suite()
+    if final_checksum != checksum:
+        raise ValueError("semantic fixture or schema bytes changed during execution")
     report = {"schema_version":"1.1.0", "backend":args.backend, "suite_sha256":checksum,
               "source_revision":args.revision, "results":results}
     if args.report:
