@@ -317,30 +317,24 @@ throws before changing the collection. It expects the exact preallocated
 ActorRef to remain observable, the original slot to remain counted,
 no premature physical finalization, and eventual exact stop/reap.
 
-**Important incomplete integration:** Attempts to modify
-`LogicalSourceActorRouterV1` to pass the new pre-registration callback
-for both initial spawn and staged upgrade were blocked by the connected
-GitHub operation. Therefore that router still invokes the legacy
-four-argument source spawn and two-argument transfer spawn. The test
-exercises the **runtime overload directly**, not the production
-`LogicalSourceActorRouterV1.spawn()` or
-`SupervisorUpgradeTxn` caller. A source router may still lose a
-generation pin if the runtime leaves an unreturned registered actor,
-so this is a **release blocker, not a certified fix**.
+**Superseding integration update (October 20):** A later commit in
+this draft branch connected the internal `onAllocated` callback in both
+production call sites. Initial `LogicalSourceActorRouterV1.spawn()` stores
+the exact physical ref in its pre-reserved `FailedInitialSpawn` owner;
+the supervisor's candidate-transfer call stores it in both
+`SupervisorUpgradeTxn.replacement` and
+`CandidateRetirement.physical` before restoration or registration can
+throw. This resolves the previously blocked *wiring* gap, but not its
+outstanding end-to-end certification.
 
-A source-free Java 21 ownership model at
-`/mnt/data/oreslang_admission_pre_return/AdmissionProtocolOracle.java`
-compiled with `javac --release 21 -Xlint:all -Werror` and passed
-323,000 assertions including 1,000 four-worker retirement races. This
-model is separate from the private production runtime. The real JUnit
-has not run. Source-owned GitHub workflows continue to report zero
-executed job steps; the protected source private-CI destination list
-contains no approved destinations and security issue #962 is still open.
+The original source-free Java 21 ownership model initially reported
+323,000 assertions but subsequently failed under repetition. See the
+following section for the corrected atomic-retirement model and
+successful source-free JDK25 CI. The real source JUnit has not run.
 
-Until the router handoff is completed, verified, and authorized
-exact-head JDK25/Maven/Graal CI executes, keep PR #1367 draft and
-production hot reload disabled. Do not substitute the source-free
-model for a production execution receipt.
+Until the newly wired router handoffs are verified by actual exact-head
+JDK25/Maven/Graal CI, keep PR #1367 draft and production hot reload
+disabled. Do not substitute source-free models for production tests.
 
 ## Admission lease race regression and revised model evidence
 
@@ -390,11 +384,15 @@ marker, one actor-slot refund, and no ghost registry entry.
 That production JUnit is still unexecuted by the private repo's
 JDK25/Graal CI.
 
-The router's `onAllocated` callback integration remains blocked by
-the GitHub write safety check and **has not landed**. Consequently the
-source supervisor cannot yet certify that an unreturned registered
-physical actor keeps its generation lease pinned across a failed
-initial or staged spawn. This is a merge-blocking gap. Neither passing
-source-free model nor successful public CI execution authorizes private
-tree copying, unblocks source policy #962/#904, or certifies
-production code/Task/checkpoint publication.
+**Updated ownership status:** Both source-router callback call sites
+have now landed (see the superseding integration note above).
+`LogicalSourceActorPreReturnHandoffTest`, committed at
+`b08f65674b38bd2be967fd0e7e28ea5b61d0d7c4`, adds two
+production source-compiled JUnit cases for initial registration and
+candidate migration where a registry insertion throws after publication
+and the first rollback removal throws before mutation. They check
+eventual cleanup of the exact runtime slot and generation pin, the
+old route's authority after candidate failure, and successful retry.
+**These JUnit tests have not executed.** Neither the passing source-free
+model nor public CI execution authorizes private-tree copying, satisfies
+source security #962/#904, or certifies code/Task/checkpoint publication.
