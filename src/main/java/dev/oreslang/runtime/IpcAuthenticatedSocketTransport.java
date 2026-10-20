@@ -117,59 +117,85 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             socketInput = socket.getInputStream();
             socketOutput = socket.getOutputStream();
         } catch (IOException | RuntimeException | Error constructionFailure) {
-            Arrays.fill(privateMacKey, (byte) 0);
-            try {
-                socket.close();
-            } catch (IOException closeFailure) {
-                constructionFailure.addSuppressed(closeFailure);
-            }
+            cleanupFailedConstruction(
+                    socket, privateMacKey, privateConnectionBinding,
+                    constructionFailure);
             throw constructionFailure;
         }
-        try {
-            receipts.claimPhysicalTransport(
-                    physicalOwner, trustedEpoch, physicalGeneration);
-        } catch (RuntimeException | Error bindingFailure) {
-            Arrays.fill(privateMacKey, (byte) 0);
-            try {
-                socket.close();
-            } catch (IOException closeFailure) {
-                bindingFailure.addSuppressed(closeFailure);
-            }
-            throw bindingFailure;
-        }
+
         this.macKey = privateMacKey;
         this.connectionBinding = privateConnectionBinding;
         this.physicalGeneration = physicalGeneration;
         this.input = socketInput;
         this.output = socketOutput;
-        this.sessionLease = new IpcTransportSessionLease(
-                trustedEpoch,
-                physicalGeneration,
-                maxOutstandingWrites,
-                receipts,
-                physicalOwner,
-                (ignoredEnvelope, preparedFrame) -> {
-                    synchronized (writeGate) {
-                        writeWireFrame(output, preparedFrame);
-                    }
-                },
-                () -> {
-                    try {
-                        // Close first so a receipt reader blocked in kernel I/O
-                        // is interrupted without waiting on readGate.
-                        socket.close();
-                    } finally {
-                        // A reader may already have consumed a complete frame
-                        // and be authenticating/applying it under readGate.
-                        // Do not destroy the key until that ordered receive
-                        // transaction exits. Taking readGate before close would
-                        // deadlock a blocked socket read.
-                        synchronized (readGate) {
-                            Arrays.fill(this.macKey, (byte) 0);
+
+        try {
+            // Assemble every reversible host-side component before claiming
+            // the one-shot receipt bridge. In particular, allocation failure
+            // while constructing the lease must not strand an irreversible
+            // physicalOwner/generation binding.
+            this.sessionLease = new IpcTransportSessionLease(
+                    trustedEpoch,
+                    physicalGeneration,
+                    maxOutstandingWrites,
+                    receipts,
+                    physicalOwner,
+                    (ignoredEnvelope, preparedFrame) -> {
+                        synchronized (writeGate) {
+                            writeWireFrame(output, preparedFrame);
                         }
-                    }
-                },
-                this.cleanupScheduler);
+                    },
+                    () -> {
+                        try {
+                            // Close first so a receipt reader blocked in kernel I/O
+                            // is interrupted without waiting on readGate.
+                            socket.close();
+                        } finally {
+                            // A reader may already have consumed a complete frame
+                            // and be authenticating/applying it under readGate.
+                            // Do not destroy authentication/replay material until
+                            // that ordered receive transaction exits. Taking
+                            // readGate before close would deadlock a blocked read.
+                            synchronized (readGate) {
+                                Arrays.fill(this.macKey, (byte) 0);
+                                Arrays.fill(this.connectionBinding, (byte) 0);
+                            }
+                        }
+                    },
+                    this.cleanupScheduler);
+
+            // Last irreversible constructor step. No allocation or other
+            // throwing assembly is allowed after this successful claim.
+            receipts.claimPhysicalTransport(
+                    physicalOwner, trustedEpoch, physicalGeneration);
+        } catch (RuntimeException | Error constructionFailure) {
+            cleanupFailedConstruction(
+                    socket, privateMacKey, privateConnectionBinding,
+                    constructionFailure);
+            throw constructionFailure;
+        }
+    }
+
+    private static void cleanupFailedConstruction(
+            Socket socket,
+            byte[] privateMacKey,
+            byte[] privateConnectionBinding,
+            Throwable constructionFailure) {
+        try {
+            socket.close();
+        } catch (IOException | RuntimeException | Error closeFailure) {
+            if (closeFailure != constructionFailure) {
+                try {
+                    constructionFailure.addSuppressed(closeFailure);
+                } catch (RuntimeException | Error ignoredSuppressionFailure) {
+                    // Preserve the original constructor failure even if the VM
+                    // cannot allocate suppression bookkeeping.
+                }
+            }
+        } finally {
+            Arrays.fill(privateMacKey, (byte) 0);
+            Arrays.fill(privateConnectionBinding, (byte) 0);
+        }
     }
 
     /**
@@ -404,6 +430,12 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     /** Package-local audit hook: exposes no key bytes. */
     boolean keyCloneZeroized() {
         for (byte value : macKey) if (value != 0) return false;
+        return true;
+    }
+
+    /** Package-local audit hook: exposes no connection-binding bytes. */
+    boolean connectionBindingCloneZeroized() {
+        for (byte value : connectionBinding) if (value != 0) return false;
         return true;
     }
 
