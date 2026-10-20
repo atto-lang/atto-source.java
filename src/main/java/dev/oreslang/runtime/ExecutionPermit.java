@@ -182,52 +182,50 @@ public final class ExecutionPermit<R, A extends ExecutionPermit.AccessSet<A>> {
         }
 
         synchronized (group) {
-            if (group.rejoined) {
-                throw new IllegalStateException("permit split group was already rejoined");
-            }
-            if (copy.size() != group.childCount) {
-                throw new IllegalArgumentException(
-                        "permit rejoin requires the complete sibling set");
-            }
+            synchronized (group.root) {
+                if (group.rejoined) {
+                    throw new IllegalStateException("permit split group was already rejoined");
+                }
+                if (copy.size() != group.childCount) {
+                    throw new IllegalArgumentException(
+                            "permit rejoin requires the complete sibling set");
+                }
 
-            Set<Integer> indexes = new HashSet<>();
-            for (ExecutionPermit<R, A> child : copy) {
-                Objects.requireNonNull(child, "child permit");
-                if (child.parentGroup != group
-                        || child.root != group.root
-                        || child.generation != group.generation) {
-                    throw new IllegalArgumentException(
-                            "permit rejoin cannot mix split lineages or generations");
-                }
-                if (!indexes.add(child.parentIndex)) {
-                    throw new IllegalArgumentException(
-                            "permit rejoin contains a duplicate sibling");
-                }
-                synchronized (child.root) {
+                Set<Integer> indexes = new HashSet<>();
+                for (ExecutionPermit<R, A> child : copy) {
+                    Objects.requireNonNull(child, "child permit");
+                    if (child.parentGroup != group
+                            || child.root != group.root
+                            || child.generation != group.generation) {
+                        throw new IllegalArgumentException(
+                                "permit rejoin cannot mix split lineages or generations");
+                    }
+                    if (!indexes.add(child.parentIndex)) {
+                        throw new IllegalArgumentException(
+                                "permit rejoin contains a duplicate sibling");
+                    }
                     child.requireLiveLocked("rejoin");
                 }
-            }
-            for (int i = 0; i < group.childCount; i++) {
-                if (!indexes.contains(i)) {
-                    throw new IllegalArgumentException(
-                            "permit rejoin is missing sibling index " + i);
+                for (int i = 0; i < group.childCount; i++) {
+                    if (!indexes.contains(i)) {
+                        throw new IllegalArgumentException(
+                                "permit rejoin is missing sibling index " + i);
+                    }
                 }
-            }
 
-            // All validation is complete. Consume children only now.
-            for (ExecutionPermit<R, A> child : copy) {
-                if (!child.live.compareAndSet(true, false)) {
-                    throw new IllegalStateException(
-                            "permit child was concurrently consumed during rejoin");
+                // Root lock excludes concurrent child split/rotation, so this
+                // sibling-set consumption is all-or-nothing.
+                for (ExecutionPermit<R, A> child : copy) {
+                    child.live.set(false);
                 }
+                group.rejoined = true;
+                return new ExecutionPermit<>(
+                        group.root,
+                        group.generation,
+                        group.parentAccess,
+                        group.returnGroup,
+                        group.returnIndex);
             }
-            group.rejoined = true;
-            return new ExecutionPermit<>(
-                    group.root,
-                    group.generation,
-                    group.parentAccess,
-                    group.returnGroup,
-                    group.returnIndex);
         }
     }
 
