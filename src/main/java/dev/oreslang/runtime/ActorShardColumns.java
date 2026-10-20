@@ -173,6 +173,9 @@ public final class ActorShardColumns implements AutoCloseable {
         }
         public int length() { return lease.length(); }
         public double read(int index) { return lease.read(index); }
+        public void copyInto(double[] destination, int offset) {
+            lease.copyInto(destination, offset);
+        }
         @Override public void close() { lease.close(); }
     }
 
@@ -202,14 +205,17 @@ public final class ActorShardColumns implements AutoCloseable {
         for (int i = 0; i < rows; i++) dest[offset + i] = get(offset(i, field));
     }
 
-    /** Trusted host copy; detached array lifetime is not budget accounted. */
-    @Deprecated
+    /**
+     * Legacy raw detached copy is intentionally disabled. Returning an array
+     * here would outlive the reservation that paid for it and reintroduce an
+     * unbounded allocation escape. Use snapshotColumnLeased() or copyColumnInto().
+     */
+    @Deprecated(forRemoval = true)
     public double[] snapshotColumn(int field) {
         requireOwner();
         if (field < 0 || field >= fields)
             throw new IndexOutOfBoundsException("field");
-        double[] copy = new double[rows];
-        copyColumnInto(field, copy, 0);
-        return copy;
+        throw new UnsupportedOperationException(
+                "unmetered detached snapshots are disabled; use a leased snapshot");
     }
 }
