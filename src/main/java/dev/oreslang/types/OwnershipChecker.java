@@ -1222,6 +1222,16 @@ public final class OwnershipChecker {
                 concreteReceiver = concreteReceiver.borrowedTarget();
             }
             concreteReceiver = ownershipAggregateType(concreteReceiver);
+            if (concreteReceiver != null
+                    && concreteReceiver.name().equals("Entry")
+                    && concreteReceiver.arguments().size() == 2) {
+                Ast.TypeRef valueType = switch (member.member()) {
+                    case "key" -> concreteReceiver.arguments().get(0);
+                    case "value" -> concreteReceiver.arguments().get(1);
+                    default -> throw error("unknown Entry member '" + member.member() + "'");
+                };
+                return new ValueInfo(valueType, kindOfType(valueType), null);
+            }
             if (concreteReceiver != null && concreteReceiver.isClosedAggregateType()) {
                 Ast.TypeRef valueType = concreteReceiver.aggregateMembers().get(member.member());
                 if (valueType == null) {
@@ -1552,12 +1562,14 @@ public final class OwnershipChecker {
             if (fields.size() != 2) {
                 throw error("Entry.of expects exactly two arguments: key, value");
             }
-            LinkedHashMap<String, Ast.TypeRef> members = new LinkedHashMap<>();
-            members.put("key", fields.get(0).type);
-            members.put("value", fields.get(1).type);
+            Ast.TypeRef entryType = new Ast.TypeRef(
+                    "Entry",
+                    List.of(fields.get(0).type, fields.get(1).type),
+                    false);
             return new ValueInfo(
-                    Ast.TypeRef.readonlyRecordType(members),
-                    ValueKind.MOVE_ONLY,
+                    entryType,
+                    fields.stream().allMatch(info -> info.kind == ValueKind.COPY)
+                            ? ValueKind.COPY : ValueKind.MOVE_ONLY,
                     null);
         }
 
@@ -3722,6 +3734,17 @@ public final class OwnershipChecker {
 
         Object constantIndex = computedIndexConstant(indexed.index(), scope);
 
+        if (concrete.name().equals("Entry") && concrete.arguments().size() == 2) {
+            if (constantIndex instanceof String key) {
+                return switch (key) {
+                    case "key" -> concrete.arguments().get(0);
+                    case "value" -> concrete.arguments().get(1);
+                    default -> Ast.TypeRef.inferred();
+                };
+            }
+            return Ast.TypeRef.union(concrete.arguments());
+        }
+
         if (concrete.isClosedAggregateType()) {
             Map<String, Ast.TypeRef> members = concrete.aggregateMembers();
             if (constantIndex instanceof String key) {
@@ -3896,6 +3919,13 @@ public final class OwnershipChecker {
     private Ast.TypeRef objectMemberBindingType(Ast.TypeRef concrete, String name) {
         if (concrete.isBorrow()) concrete = concrete.borrowedTarget();
         concrete = ownershipAggregateType(concrete);
+        if (concrete.name().equals("Entry") && concrete.arguments().size() == 2) {
+            return switch (name) {
+                case "key" -> concrete.arguments().get(0);
+                case "value" -> concrete.arguments().get(1);
+                default -> Ast.TypeRef.inferred();
+            };
+        }
         if (concrete.isClosedAggregateType()) {
             Ast.TypeRef member = concrete.aggregateMembers().get(name);
             if (member != null) return member;
@@ -3964,14 +3994,7 @@ public final class OwnershipChecker {
     }
 
     private Ast.TypeRef ownershipAggregateType(Ast.TypeRef type) {
-        if (type == null || type.isBorrow()) return type;
-        if (!type.name().equals("Entry") || type.arguments().size() != 2) {
-            return type;
-        }
-        LinkedHashMap<String, Ast.TypeRef> members = new LinkedHashMap<>();
-        members.put("key", type.arguments().get(0));
-        members.put("value", type.arguments().get(1));
-        return Ast.TypeRef.readonlyRecordType(members);
+        return type;
     }
 
     private Ast.TypeRef joinConditionalType(Ast.TypeRef left, Ast.TypeRef right) {
@@ -3999,6 +4022,9 @@ public final class OwnershipChecker {
                     "bool","Bool","string","String","void","SharedMutex",
                     "Channel","SelectCase","SelectSet","OptionUnwrapError" -> true;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
+            case "Entry" -> type.arguments().size() == 2
+                    && isCopyType(type.arguments().get(0))
+                    && isCopyType(type.arguments().get(1));
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))
                     && isCopyType(type.arguments().get(1));
