@@ -60,10 +60,12 @@ public final class RealtimeExecutionContract {
     public record Capabilities(
             boolean fullGuestAot,
             boolean runtimeCodegenDisabled,
+            boolean dynamicClassLoadingDisabled,
             boolean noManagedHeapOnCriticalPath,
             boolean deterministicActorRegions,
             boolean memoryPreallocated,
             boolean memoryPrefaulted,
+            boolean criticalWorkersPrestarted,
             boolean boundedDispatch,
             boolean boundedPriorityInversion,
             boolean criticalWorkerIsolation,
@@ -81,7 +83,8 @@ public final class RealtimeExecutionContract {
             return new Capabilities(
                     false, false, false, false, false, false,
                     false, false, false, false, false, false,
-                    false, false, false, false, false, false);
+                    false, false, false, false, false, false,
+                    false, false);
         }
     }
 
@@ -102,10 +105,12 @@ public final class RealtimeExecutionContract {
 
         require(capabilities.fullGuestAot(), "guest call graph is not full AOT", failures);
         require(capabilities.runtimeCodegenDisabled(), "runtime code generation remains enabled", failures);
+        require(capabilities.dynamicClassLoadingDisabled(), "dynamic class/module loading remains enabled in the critical domain", failures);
         require(capabilities.noManagedHeapOnCriticalPath(), "critical path can touch a tracing/managed heap", failures);
         require(capabilities.deterministicActorRegions(), "actor/task regions are not deterministically reclaimed", failures);
         require(capabilities.memoryPreallocated(), "critical memory is not fully preallocated", failures);
         require(capabilities.memoryPrefaulted(), "critical memory is not prefaulted", failures);
+        require(capabilities.criticalWorkersPrestarted(), "critical workers may be created lazily after admission", failures);
         require(capabilities.boundedDispatch(), "scheduler dispatch has no finite bound", failures);
         require(capabilities.boundedPriorityInversion(), "priority inversion/blocking is not bounded", failures);
         require(capabilities.criticalWorkerIsolation(), "critical workers share an unqualified general-purpose lane", failures);
