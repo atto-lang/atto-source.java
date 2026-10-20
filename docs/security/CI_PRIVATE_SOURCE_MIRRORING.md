@@ -122,7 +122,11 @@ blob, reviewed test-plan digest, and a 24-hour expiry. The receipt digest is
 bound into the carrier commit message. It then creates a **new**
 `ci/oreslang-<SOURCE_ROOT_TREE_SHA>` ref and the exact
 `ci/authorized-<CARRIER_COMMIT_SHA>` dispatcher authorization ref required
-by the carrier. Existing branches, including `main`, are never updated.
+by the carrier. Before either create, v3 proves that **both** deterministic
+handoff ref names are absent. This establishes rollback ownership: an ambiguous
+create failure must never cause cleanup to delete an identical ref that existed
+before the invocation. Existing branches, including `main`, are never updated
+or adopted.
 
 The reviewed carrier base must itself be source-free: neither
 `private-oreslang-source/` nor `ci/oreslang-receipt.json` may already be
