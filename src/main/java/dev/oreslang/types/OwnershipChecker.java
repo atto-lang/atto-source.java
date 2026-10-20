@@ -1469,6 +1469,31 @@ public final class OwnershipChecker {
         }
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
+                && Set.of("Box", "Arc", "Rc", "RefCell").contains(factory.name())
+                && findClass(factory.name()) == null
+                && factoryCall.member().equals("new")
+                && call.arguments().size() == 1) {
+            ValueInfo owned = checkExpr(
+                    call.arguments().getFirst(), scope, true);
+            if (owned.type != null && owned.type.isBorrow()) {
+                throw error(factory.name()
+                        + ".new requires an owned value; borrowed values cannot be stored");
+            }
+            if (containsMutexGuardType(owned.type)) {
+                throw error(factory.name()
+                        + ".new cannot hide a guard-bearing value");
+            }
+            Ast.TypeRef pointerType =
+                    new Ast.TypeRef(
+                            factory.name(),
+                            List.of(owned.type),
+                            false);
+            return new ValueInfo(
+                    pointerType, ValueKind.MOVE_ONLY, null);
+        }
+
+        if (call.callee() instanceof Ast.MemberExpr factoryCall
+                && factoryCall.receiver() instanceof Ast.NameExpr factory
                 && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
                 && factoryCall.member().equals("new")
                 && call.arguments().size() == 1) {
@@ -1621,6 +1646,156 @@ public final class OwnershipChecker {
                 if (receiverState != null) {
                     requireUsable(receiverState, receiverName.name(), false);
                     Ast.TypeRef receiverType = receiverState.type;
+                    if (receiverType.arguments().size() == 1
+                            && Set.of(
+                                    "Box", "Arc", "Weak",
+                                    "Rc", "RcWeak")
+                                    .contains(receiverType.name())) {
+                        Ast.TypeRef element =
+                                receiverType.arguments().getFirst();
+                        if (!call.arguments().isEmpty()) {
+                            throw error(
+                                    receiverType.name() + "."
+                                            + member.member()
+                                            + " expects no arguments");
+                        }
+                        switch (receiverType.name()) {
+                            case "Box" -> {
+                                if (member.member().equals("take")) {
+                                    move(receiverState, receiverName.name());
+                                    return new ValueInfo(
+                                            element,
+                                            kindOfType(element),
+                                            null);
+                                }
+                                if (member.member().equals("is_live")) {
+                                    return new ValueInfo(
+                                            Ast.TypeRef.simple("bool"),
+                                            ValueKind.COPY,
+                                            null);
+                                }
+                            }
+                            case "Arc" -> {
+                                if (member.member().equals("clone")) {
+                                    return new ValueInfo(
+                                            receiverType,
+                                            ValueKind.MOVE_ONLY,
+                                            null);
+                                }
+                                if (member.member().equals("downgrade")) {
+                                    return new ValueInfo(
+                                            new Ast.TypeRef(
+                                                    "Weak",
+                                                    List.of(element),
+                                                    false),
+                                            ValueKind.MOVE_ONLY,
+                                            null);
+                                }
+                                if (member.member().equals("strong_count")
+                                        || member.member().equals("weak_count")) {
+                                    return new ValueInfo(
+                                            Ast.TypeRef.simple("int"),
+                                            ValueKind.COPY,
+                                            null);
+                                }
+                                if (member.member().equals("is_closed")) {
+                                    return new ValueInfo(
+                                            Ast.TypeRef.simple("bool"),
+                                            ValueKind.COPY,
+                                            null);
+                                }
+                            }
+                            case "Weak" -> {
+                                if (member.member().equals("upgrade")) {
+                                    Ast.TypeRef arc =
+                                            new Ast.TypeRef(
+                                                    "Arc",
+                                                    List.of(element),
+                                                    false);
+                                    Ast.TypeRef option =
+                                            new Ast.TypeRef(
+                                                    "Option",
+                                                    List.of(arc),
+                                                    false);
+                                    return new ValueInfo(
+                                            option,
+                                            ValueKind.MOVE_ONLY,
+                                            null);
+                                }
+                                if (member.member().equals("strong_count")
+                                        || member.member().equals("weak_count")) {
+                                    return new ValueInfo(
+                                            Ast.TypeRef.simple("int"),
+                                            ValueKind.COPY,
+                                            null);
+                                }
+                                if (member.member().equals("is_closed")) {
+                                    return new ValueInfo(
+                                            Ast.TypeRef.simple("bool"),
+                                            ValueKind.COPY,
+                                            null);
+                                }
+                            }
+                            case "Rc" -> {
+                                if (member.member().equals("clone")) {
+                                    return new ValueInfo(
+                                            receiverType,
+                                            ValueKind.MOVE_ONLY,
+                                            null);
+                                }
+                                if (member.member().equals("downgrade")) {
+                                    return new ValueInfo(
+                                            new Ast.TypeRef(
+                                                    "RcWeak",
+                                                    List.of(element),
+                                                    false),
+                                            ValueKind.MOVE_ONLY,
+                                            null);
+                                }
+                                if (member.member().equals("strong_count")
+                                        || member.member().equals("weak_count")) {
+                                    return new ValueInfo(
+                                            Ast.TypeRef.simple("int"),
+                                            ValueKind.COPY,
+                                            null);
+                                }
+                                if (member.member().equals("is_closed")) {
+                                    return new ValueInfo(
+                                            Ast.TypeRef.simple("bool"),
+                                            ValueKind.COPY,
+                                            null);
+                                }
+                            }
+                            case "RcWeak" -> {
+                                if (member.member().equals("upgrade")) {
+                                    Ast.TypeRef rc =
+                                            new Ast.TypeRef(
+                                                    "Rc",
+                                                    List.of(element),
+                                                    false);
+                                    Ast.TypeRef option =
+                                            new Ast.TypeRef(
+                                                    "Option",
+                                                    List.of(rc),
+                                                    false);
+                                    return new ValueInfo(
+                                            option,
+                                            ValueKind.MOVE_ONLY,
+                                            null);
+                                }
+                                if (member.member().equals("strong_count")
+                                        || member.member().equals("weak_count")) {
+                                    return new ValueInfo(
+                                            Ast.TypeRef.simple("int"),
+                                            ValueKind.COPY,
+                                            null);
+                                }
+                            }
+                            default -> {
+                                // Unreachable because of the enclosing set.
+                            }
+                        }
+                    }
                     if ((receiverType.name().equals("Mutex") || receiverType.name().equals("SharedMutex"))
                             && receiverType.arguments().size() == 1) {
                         Ast.TypeRef element = receiverType.arguments().getFirst();
