@@ -69,19 +69,12 @@ public final class OresKeyedMap {
 
     public static OresKeyedMap fromEntries(List<?> values) {
         Objects.requireNonNull(values, "Map.from_entries entries");
-        if (values.size() > MAX_ENTRIES) {
+        int reportedSize = values.size();
+        if (reportedSize < 0 || reportedSize > MAX_ENTRIES) {
             throw new IllegalArgumentException("typed Map exceeds maximum key count");
         }
-        if (values.isEmpty()) {
-            throw new IllegalArgumentException(
-                    "Map.from_entries cannot infer an empty runtime key domain");
-        }
-        if (!(values.getFirst() instanceof OresEntry first)) {
-            throw new IllegalArgumentException(
-                    "Map.from_entries expects Array<Entry<K,V>>");
-        }
 
-        KeyDomain domain = domainOf(first.key());
+        KeyDomain domain = null;
         LinkedHashMap<Object, OresEntry> staged = new LinkedHashMap<>();
         long totalKeyBytes = 0L;
         int observed = 0;
@@ -93,17 +86,29 @@ public final class OresKeyedMap {
                 throw new IllegalArgumentException(
                         "Map.from_entries expects only Entry<K,V> values");
             }
+            if (domain == null) domain = domainOf(entry.key());
             Object normalized = normalizeKey(domain, entry.key());
             Object value = Objects.requireNonNull(entry.value(), "Map value");
             if (staged.containsKey(normalized)) {
                 throw new DuplicateKeyException(entry.key());
             }
-            totalKeyBytes = Math.addExact(totalKeyBytes, encodedKeyBytes(domain, normalized));
+            totalKeyBytes = Math.addExact(
+                    totalKeyBytes,
+                    encodedKeyBytes(domain, normalized));
             if (totalKeyBytes > MAX_KEY_SET_BYTES) {
                 throw new IllegalArgumentException(
                         "typed Map exceeds aggregate key byte budget");
             }
             staged.put(normalized, new OresEntry(entry.key(), value));
+        }
+
+        if (observed != reportedSize) {
+            throw new IllegalArgumentException(
+                    "Map.from_entries input size changed during snapshot");
+        }
+        if (domain == null) {
+            throw new IllegalArgumentException(
+                    "Map.from_entries cannot infer an empty runtime key domain");
         }
         return new OresKeyedMap(domain, staged, totalKeyBytes);
     }
