@@ -229,29 +229,25 @@ public final class OresKeyedMap<K, V> {
     }
 
     /**
-     * Snapshot contents under this map's monitor, then perform value
-     * equality/hash outside the monitor. Guest values may implement nontrivial
-     * equality; never invoke that code while one or two mutable Map monitors
-     * are held.
+     * Host Map carriers are mutable runtime-owned objects, not structural
+     * Java value objects. Guest Map equality (if provided) must be implemented
+     * by Oreslang's checked semantic comparison, not Java Map.equals/hashCode
+     * over arbitrary nested payloads. Identity also keeps host hash stable
+     * while this mapping is mutated.
      */
-    private synchronized LinkedHashMap<K, V> equalitySnapshot() {
-        return new LinkedHashMap<>(entries);
-    }
-
     @Override
     public boolean equals(Object other) {
-        if (this == other) return true;
-        if (!(other instanceof OresKeyedMap<?, ?> that)) return false;
-        if (domain != that.domain || valueDomain != that.valueDomain) return false;
-        return equalitySnapshot().equals(that.equalitySnapshot());
+        return this == other;
     }
 
     @Override
     public int hashCode() {
-        LinkedHashMap<K, V> snapshot = equalitySnapshot();
-        int result = domain.hashCode();
-        result = 31 * result + valueDomain.hashCode();
-        return 31 * result + snapshot.hashCode();
+        return System.identityHashCode(this);
+    }
+
+    @Override
+    public String toString() {
+        return "OresKeyedMap<opaque>";
     }
 
     public synchronized int size() {
