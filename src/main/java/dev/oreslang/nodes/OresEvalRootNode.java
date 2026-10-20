@@ -8428,7 +8428,8 @@ public final class OresEvalRootNode extends RootNode {
             for (Env cursor = anchor; cursor != null; cursor = cursor.parent) {
                 Slot slot = cursor.slots.get(name);
                 if (slot == null) continue;
-                if (slot.kind != Ast.BindingKind.VAL
+                if ((slot.kind != Ast.BindingKind.VAL
+                        && slot.kind != Ast.BindingKind.CONST)
                         || !(slot.value instanceof ChannelRuntime.Channel<?> channel)) {
                     return null;
                 }
