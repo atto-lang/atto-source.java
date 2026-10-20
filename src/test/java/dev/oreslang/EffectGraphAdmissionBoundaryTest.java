@@ -67,6 +67,12 @@ final class EffectGraphAdmissionBoundaryTest {
         assertEquals(Set.of(UNKNOWN_CALL), graph.infer().get("entry"));
         var error = assertThrows(IllegalArgumentException.class, graph::validate);
         assertTrue(error.getMessage().contains("entry -> [unresolved] same.name"));
+
+        var legacy = new EffectContracts.Graph();
+        legacy.add(EffectContracts.Callable.pure("entry", Set.of(),
+                List.of(new EffectContracts.Call("same.name"))));
+        legacy.add(EffectContracts.Callable.inferred("same.name", Set.of(), List.of()));
+        assertEquals(Set.of(UNKNOWN_CALL), legacy.infer().get("entry"));
         // A compiler-resolved direct invocation is a separate kind of edge.
         var direct = new EffectContracts.Graph();
         direct.add(EffectContracts.Callable.pure("entry", Set.of(),
