@@ -8235,6 +8235,16 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean finalCleanupStarted;
         private volatile boolean finalCleanupActive;
         private boolean finalized;
+        /**
+         * Exclusive physical-finalization owner. Unlike finalized, this is a
+         * retryable in-progress fence: a throwing cleanup clears it so a later
+         * supervisor stop can resume instead of mistaking partial teardown for
+         * a completed retirement.
+         */
+        private boolean finalizationActive;
+        // Package-runtime fault injection at the finalization boundary. Product
+        // code never installs this; regressions use it to prove retryability.
+        private Runnable finalizationFaultForTesting;
         /** Teardown receipt/cancellation observers must settle before
          * external physical finalization can certify code retirement. */
         private boolean terminalSettlementPending;
@@ -8653,64 +8663,83 @@ public final class ActorRuntime implements AutoCloseable {
             // fully crossed back out of the TurnExecutor boundary. For
             // Truffle-backed runtimes that boundary owns context enter/leave.
             if (finalized
+                    || finalizationActive
                     || terminalSettlementPending
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
                     || !children.isEmpty()) return;
-            finalized = true;
+            finalizationActive = true;
             ref.physicalFinalizationOwnerThread = Thread.currentThread();
-            OresScheduler scheduler = sourceScheduler;
-            sourceScheduler = null;
-            if (scheduler != null) {
+            boolean completed = false;
+            try {
+                OresScheduler scheduler = sourceScheduler;
+                sourceScheduler = null;
+                if (scheduler != null) {
+                    try {
+                        scheduler.close();
+                    } catch (RuntimeException ignored) {
+                        // Actor teardown remains authoritative; source scheduler
+                        // cancellation is best-effort after the actor has finalized.
+                    }
+                }
+                drainMailboxReservations();
+                staticSelectCursors.clear();
+                codeActorState = null;
+                Throwable terminalOutput = ref.terminationCause.get();
+                outputStream.close(terminalOutput);
+                if (memorySlice != null) memorySlice.close();
                 try {
-                    scheduler.close();
-                } catch (RuntimeException ignored) {
-                    // Actor teardown remains authoritative; source scheduler
-                    // cancellation is best-effort after the actor has finalized.
+                    actorExitHook.accept(executionDomain);
+                } catch (VirtualMachineError | ThreadDeath fatal) {
+                    throw fatal;
+                } catch (Throwable ignored) {
+                    // Actor termination must still complete. Runtime cleanup hooks
+                    // are best-effort and retryable by the process collector.
+                }
+                Runnable injected = finalizationFaultForTesting;
+                if (injected != null) injected.run();
+                // Preserve Group CONTROL and parent termination ordering:
+                // registry removal precedes user terminal Future notifications.
+                // A missing registry entry is NOT physical completion authority.
+                unregisterActor(this);
+                if (parent != null) parent.childFinalized(this);
+                Throwable terminal = ref.terminationCause.get();
+                if (!ref.readyFuture.isDone()) {
+                    // Preserve the initializer failure as the direct cause of
+                    // readiness rejection. Only a graceful stop-before-ready has
+                    // no underlying failure and needs a synthesized marker.
+                    ref.readyFuture.failFromRuntime(
+                            terminal == null
+                                    ? new ActorTerminatedException(ref.id(), kind, null)
+                                    : terminal);
+                }
+                if (terminal == null) ref.doneFuture.completeFromRuntime(null);
+                else ref.doneFuture.failFromRuntime(terminal);
+                finalizedFuture.completeFromRuntime(null);
+                // Publish internal completion only after every fallible
+                // finalization action returned. A failed attempt remains
+                // retryable and cannot masquerade as physical retirement.
+                finalized = true;
+                // Teardown can invoke synchronous observers and perform
+                // allocation-bearing actor-group registry cleanup. Keep the
+                // ActorRef's physical retirement marker false until all of that
+                // work is complete. If cleanup throws, fail closed and pin code
+                // instead of certifying retirement from an absent registry entry.
+                ref.physicallyFinalized.set(true);
+                ref.physicalFinalizationLatch.countDown();
+                completed = true;
+            } finally {
+                finalizationActive = false;
+                ref.physicalFinalizationOwnerThread = null;
+                lifecycleLock.notifyAll();
+                // completed is intentionally only diagnostic for invariants:
+                // finalized/physicallyFinalized are the durable success proof.
+                if (!completed && finalized) {
+                    throw new IllegalStateException(
+                            "actor finalization published before teardown completed");
                 }
             }
-            drainMailboxReservations();
-            staticSelectCursors.clear();
-            codeActorState = null;
-            Throwable terminalOutput = ref.terminationCause.get();
-            outputStream.close(terminalOutput);
-            if (memorySlice != null) memorySlice.close();
-            try {
-                actorExitHook.accept(executionDomain);
-            } catch (VirtualMachineError | ThreadDeath fatal) {
-                throw fatal;
-            } catch (Throwable ignored) {
-                // Actor termination must still complete. Runtime cleanup hooks
-                // are best-effort and retryable by the process collector.
-            }
-            // Preserve Group CONTROL and parent termination ordering:
-            // registry removal precedes user terminal Future notifications.
-            // A missing registry entry is NOT physical completion authority.
-            unregisterActor(this);
-            if (parent != null) parent.childFinalized(this);
-            Throwable terminal = ref.terminationCause.get();
-            if (!ref.readyFuture.isDone()) {
-                // Preserve the initializer failure as the direct cause of
-                // readiness rejection. Only a graceful stop-before-ready has
-                // no underlying failure and needs a synthesized marker.
-                ref.readyFuture.failFromRuntime(
-                        terminal == null
-                                ? new ActorTerminatedException(ref.id(), kind, null)
-                                : terminal);
-            }
-            if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-            else ref.doneFuture.failFromRuntime(terminal);
-            finalizedFuture.completeFromRuntime(null);
-            // Teardown can invoke synchronous observers and perform
-            // allocation-bearing actor-group registry cleanup. Keep the
-            // ActorRef's physical retirement marker false until all of that
-            // work is complete. If cleanup throws, fail closed and pin code
-            // instead of certifying retirement from an absent registry entry.
-            ref.physicallyFinalized.set(true);
-            ref.physicalFinalizationLatch.countDown();
-            ref.physicalFinalizationOwnerThread = null;
-            lifecycleLock.notifyAll();
         }
 
         private void childFinalized(ActorCell<?> child) {
@@ -9420,7 +9449,7 @@ public final class ActorRuntime implements AutoCloseable {
              */
             final TerminalSettlementBatch batch;
             synchronized (lifecycleLock) {
-                if (finalized) return;
+                if (finalized || finalizationActive) return;
                 if (terminalSettlementPending) {
                     // A previous stop already published stopped=true and
                     // transferred every exact receipt/operation/child to one
