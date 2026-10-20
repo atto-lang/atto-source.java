@@ -7,9 +7,10 @@ import static org.junit.jupiter.api.Assertions.*;
 final class RealtimeExecutionContractTest {
     private static RealtimeExecutionContract.Capabilities qualified() {
         return new RealtimeExecutionContract.Capabilities(
-                true, true, true, true, true, true,
-                true, true, true, true, true, true,
-                true, true, true, true, true, true);
+                true, true, true, true, true,
+                true, true, true, true, true,
+                true, true, true, true, true,
+                true, true, true, true, true);
     }
 
     @Test
@@ -29,7 +30,7 @@ final class RealtimeExecutionContractTest {
         var admission = RealtimeExecutionContract.evaluateHardRealtime(
                 timing, RealtimeExecutionContract.Capabilities.none());
         assertFalse(admission.admitted());
-        assertTrue(admission.failures().size() >= 18);
+        assertTrue(admission.failures().size() >= 20);
         assertThrows(IllegalStateException.class, () ->
                 RealtimeExecutionContract.requireHardRealtime(
                         timing, RealtimeExecutionContract.Capabilities.none()));
@@ -38,17 +39,39 @@ final class RealtimeExecutionContractTest {
     @Test
     void aotDoesNotImplyHardRealtime() {
         var c = new RealtimeExecutionContract.Capabilities(
-                true, true,
+                true, true, true,
                 false, false, false, false,
-                false, false, false, false, false, false,
-                false, false, false, false, true, false);
+                false, false, false, false,
+                false, false, false, false,
+                false, false, true, false, false);
         var admission = RealtimeExecutionContract.evaluateHardRealtime(
                 new RealtimeExecutionContract.TimingBudget(10_000, 100, 0, 0, 0), c);
         assertFalse(admission.admitted());
         assertTrue(admission.failures().stream()
                 .anyMatch(s -> s.contains("tracing/managed heap")));
         assertTrue(admission.failures().stream()
+                .anyMatch(s -> s.contains("workers")));
+        assertTrue(admission.failures().stream()
                 .anyMatch(s -> s.contains("timing")));
+    }
+
+    @Test
+    void dynamicLoadingIsIndependentFromAot() {
+        var q = qualified();
+        var c = new RealtimeExecutionContract.Capabilities(
+                q.fullGuestAot(), q.runtimeCodegenDisabled(), false,
+                q.noManagedHeapOnCriticalPath(), q.deterministicActorRegions(),
+                q.memoryPreallocated(), q.memoryPrefaulted(), q.criticalWorkersPrestarted(),
+                q.boundedDispatch(), q.boundedPriorityInversion(),
+                q.criticalWorkerIsolation(), q.osRealtimePolicy(), q.boundedCleanup(),
+                q.boundedCallGraph(), q.boundedLoops(), q.boundedQueues(),
+                q.blockingIoAbsent(), q.ffiQualified(), q.untrustedJitExcluded(),
+                q.timingEvidence());
+        var admission = RealtimeExecutionContract.evaluateHardRealtime(
+                new RealtimeExecutionContract.TimingBudget(1000, 1, 0, 0, 0), c);
+        assertFalse(admission.admitted());
+        assertTrue(admission.failures().stream()
+                .anyMatch(s -> s.contains("dynamic class/module loading")));
     }
 
     @Test
