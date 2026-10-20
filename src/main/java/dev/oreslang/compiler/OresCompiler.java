@@ -7,6 +7,7 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.AsyncTransferProvenance;
+import dev.oreslang.types.AsyncSemanticProvenance;
 
 /** Trusted compiler front-end API for build systems and isolate admission. */
 public final class OresCompiler {
@@ -55,10 +56,35 @@ public final class OresCompiler {
         OwnershipChecker.CheckResult owned =
                 OwnershipChecker.checkWithAsyncTransferProvenance(
                         checked.program(), checked.shortInferredAliases());
+
+        AsyncSemanticProvenance semantic = checked.asyncSemantic();
+        AsyncTransferProvenance transfers = owned.asyncTransfers();
+        if (semantic.callCount() != transfers.callCount()) {
+            throw new IllegalArgumentException(
+                    "async lowering admission is incomplete: semantic and "
+                            + "ownership proof counts differ");
+        }
+        for (Ast.CallExpr call : semantic.calls()) {
+            if (!transfers.contains(call)) {
+                throw new IllegalArgumentException(
+                        "async lowering admission is incomplete: a "
+                                + "semantically admitted async call has no "
+                                + "matching ownership-transfer proof");
+            }
+        }
+        for (Ast.CallExpr call : transfers.calls()) {
+            if (!semantic.contains(call)) {
+                throw new IllegalStateException(
+                        "Oreslang compiler invariant violated: async "
+                                + "ownership proof has no matching semantic "
+                                + "admission for the exact call");
+            }
+        }
+
         return new AsyncAdmissionResult(
                 checked.program(),
                 checked.warnings(),
-                owned.asyncTransfers(),
+                transfers,
                 AsyncReleaseBarrier.TASK_SCOPE_GET_DONE);
     }
 
