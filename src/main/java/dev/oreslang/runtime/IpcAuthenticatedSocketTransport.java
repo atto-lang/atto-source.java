@@ -223,23 +223,25 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     IpcReceiptCorrelation.Stage readVerifiedReceipt() throws IOException {
         RuntimeBlockingGuard.requireBlockingHostThread("IPC receipt read");
         try {
-            // TCP receipt order is protocol order. Keep frame consumption,
-            // authentication, epoch validation and ledger transition under
-            // one receive gate so concurrent host readers cannot read ACK then
-            // COMMIT in order but apply those state transitions out of order.
+            // TCP receipt order is protocol order. Read, authenticate and
+            // advance the ledger under one receive gate, but NEVER complete
+            // a user-observable future while holding it: dependent callbacks
+            // may synchronously wait for a second host receipt reader.
+            final DecodedReceipt receipt;
+            final CompletableFuture<IpcReceiptCorrelation.Stage> terminal;
             synchronized (readGate) {
                 byte[] frame = readReceiptWireFrame(input);
-                DecodedReceipt receipt = decodeReceiptFrame(
-                        frame, connectionBinding, macKey);
+                receipt = decodeReceiptFrame(frame, connectionBinding, macKey);
                 if (receipt.physicalGeneration() != physicalGeneration) {
                     throw new IOException("stale IPC physical transport generation");
                 }
                 requireTrustedEpoch(receipt.envelope());
-                receipts.acceptVerified(
+                terminal = receipts.acceptVerifiedDeferred(
                         physicalOwner, receipt.envelope(),
                         physicalGeneration, receipt.stage());
-                return receipt.stage();
             }
+            if (terminal != null) terminal.complete(receipt.stage());
+            return receipt.stage();
         } catch (IOException | RuntimeException | Error failure) {
             // Authentication, framing, EOF and state-machine violations are
             // fatal to this physical session. Never continue parsing a
