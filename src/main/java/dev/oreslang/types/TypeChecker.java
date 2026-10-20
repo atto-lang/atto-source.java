@@ -2702,7 +2702,8 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.NameExpr tupleName
                     && tupleName.name().equals("tuple")
-                    && env.lookup("tuple") == null) {
+                    && env.lookup("tuple") == null
+                    && !hasFunctionFamily("tuple")) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException(
                             "builtin tuple(...) does not accept call-site type arguments");
