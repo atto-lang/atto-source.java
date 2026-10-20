@@ -43,6 +43,11 @@ class OresSymbolTest {
             assertThrows(IllegalArgumentException.class, () -> OresSymbol.process(name), name);
         }
         assertEquals(256, OresSymbol.process("é".repeat(128)).name().getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+        IllegalArgumentException huge = assertThrows(IllegalArgumentException.class,
+                () -> OresSymbol.process("a".repeat(10_000)));
+        assertTrue(huge.getMessage().contains("normalization budget"));
+        // Legitimate canonical equivalents must still normalize identically.
+        assertEquals(OresSymbol.process("café"), OresSymbol.process("cafe\u0301"));
     }
 
     @Test void onlyPublicCoreSymbolsPassDefaultUntrustedPolicy() {
@@ -50,6 +55,20 @@ class OresSymbolTest {
         assertTrue(OresSymbol.process("error").publicToUntrustedCoreV1());
         assertFalse(OresSymbol.process("tenant-a/private").publicToUntrustedCoreV1());
         assertFalse(OresSymbol.stable("550e8400-e29b-41d4-a716-446655440000").publicToUntrustedCoreV1());
+    }
+
+    @Test void renderingAlwaysUsesLexicallyAcceptedHashOrQuotedShape() {
+        String shortName = "a".repeat(128);
+        String longName = "a".repeat(129);
+        assertEquals("#" + shortName, OresSymbol.process(shortName).toString());
+        assertEquals("#\"" + longName + "\"", OresSymbol.process(longName).toString());
+        assertEquals("#\"café\"", OresSymbol.process("cafe\u0301").toString());
+        assertEquals("#\"quote\\\"slash\\\\\"", OresSymbol.process("quote\"slash\\").toString());
+        List<Token> roundTrip = new Lexer(OresSymbol.process(longName).toString()).scan();
+        assertEquals(Token.Type.SYMBOL_LITERAL, roundTrip.getFirst().type());
+        assertEquals(longName, roundTrip.getFirst().lexeme());
+        assertEquals("Symbol.stable(\"550e8400-e29b-41d4-a716-446655440000\")",
+                OresSymbol.stable("550e8400-e29b-41d4-a716-446655440000").toString());
     }
 
     @Test void hashLiteralScannerKeepsColonAndStringKeysSeparate() {
