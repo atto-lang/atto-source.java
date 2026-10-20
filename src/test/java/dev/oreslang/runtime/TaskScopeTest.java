@@ -89,4 +89,44 @@ final class TaskScopeTest {
         assertTrue(joined.isDone());
         assertThrows(RuntimeException.class, joined::join);
     }
+
+    @Test
+    void exactFutureMayAttachAfterTerminalAndPhysicalRetirementRace() {
+        TaskScope scope = new TaskScope();
+        TaskScope.Registration ticket = scope.reserve();
+        OresFuture<Integer> child = OresFuture.completed(42);
+
+        // Model the fast-child race in source lowering: scheduler terminal
+        // authority and physical-quiescence callbacks can both happen before
+        // start(...) returns the Future to Registration.attach(...).
+        ticket.terminalReady(child);
+        ticket.quiesced();
+
+        OresFuture<Void> joined = scope.close();
+        assertTrue(joined.isDone());
+        assertDoesNotThrow(joined::join);
+
+        assertDoesNotThrow(() -> ticket.attach(child),
+                "late attachment of the exact terminal-witness Future is benign");
+        assertThrows(IllegalStateException.class,
+                () -> ticket.attach(OresFuture.completed(43)),
+                "retired ticket must not accept a different Future identity");
+    }
+
+    @Test
+    void failedAdmissionTicketStillRejectsLateFutureAttachment() {
+        TaskScope scope = new TaskScope();
+        TaskScope.Registration ticket = scope.reserve();
+        IllegalStateException admission = new IllegalStateException("rejected");
+        ticket.failedAdmission(admission);
+
+        OresFuture<Void> joined = scope.close();
+        assertTrue(joined.isDone());
+        assertThrows(RuntimeException.class, joined::join);
+        assertThrows(IllegalStateException.class,
+                () -> ticket.attach(OresFuture.completed(1)),
+                "failed admission has no scheduler Future identity to bind");
+    }
+
+
 }
