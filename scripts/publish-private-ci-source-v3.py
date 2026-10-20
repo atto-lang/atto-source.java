@@ -30,6 +30,21 @@ SPEC.loader.exec_module(legacy)
 Denied = legacy.Denied
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 CONTRACT_PATH = ".github/private-ci-carrier-contracts.json"
+
+REVIEW_AUTHORITY_PR = 1641
+REVIEW_AUTHORITY_LOGIN = "ORESoftware"
+REVIEW_AUTHORITY_USER_ID = 11139560
+MAX_GOVERNANCE_FILE = 1024 * 1024
+REVIEWED_GOVERNANCE_PATHS = (
+    ".github/CODEOWNERS",
+    ".github/private-ci-approved-repositories.txt",
+    ".github/private-ci-carrier-contracts.json",
+    ".github/workflows/private-ci-mirror-preflight.yml",
+    "scripts/check-private-ci-destination.sh",
+    "scripts/run-in-private-ci-destination.sh",
+    "scripts/publish-private-ci-source.py",
+    "scripts/publish-private-ci-source-v3.py",
+)
 RECEIPT_PATH = "ci/oreslang-receipt.json"
 RECEIPT_SCHEMA = "ores-private-ci-receipt-v3"
 CONTRACT_SCHEMA = 1
@@ -117,15 +132,129 @@ def read_local_contract(root):
     return raw
 
 
-def protected_main_sha():
+def gh_api_list(route):
+    argv = ["gh", "api", "--method", "GET", route,
+            "--header", "Accept: application/vnd.github+json"]
+    env = dict(os.environ, GH_HOST="github.com", GH_PROMPT_DISABLED="1")
+    try:
+        completed = subprocess.run(
+            argv, capture_output=True, text=True, env=env,
+            timeout=45, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Denied("authenticated GitHub list request unavailable") from exc
+    if completed.returncode != 0:
+        raise Denied("authenticated GitHub list request failed")
+    try:
+        data = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise Denied("invalid GitHub list JSON response") from exc
+    if not isinstance(data, list):
+        raise Denied("unexpected GitHub list response shape")
+    return data
+
+
+def latest_authority_review():
+    reviews = gh_api_list(
+        f"repos/{legacy.SOURCE_REPO}/pulls/{REVIEW_AUTHORITY_PR}/reviews?per_page=100"
+    )
+    matching = []
+    for review in reviews:
+        if not isinstance(review, dict):
+            continue
+        user = review.get("user")
+        if (isinstance(user, dict)
+                and user.get("id") == REVIEW_AUTHORITY_USER_ID
+                and isinstance(user.get("login"), str)
+                and user["login"].casefold() == REVIEW_AUTHORITY_LOGIN.casefold()):
+            matching.append(review)
+    if not matching:
+        raise Denied("independent private-CI authority review is missing")
+    matching.sort(key=lambda review: (
+        review.get("submitted_at") if isinstance(review.get("submitted_at"), str) else "",
+        review.get("id") if isinstance(review.get("id"), int) else -1,
+    ))
+    return matching[-1]
+
+
+def review_attested_main_sha(repository, expected_policy_digest):
     branch = legacy.gh_api(
         f"repos/{legacy.SOURCE_REPO}/branches/{legacy.SOURCE_PROTECTED_BRANCH}"
     )
-    if (branch.get("name") != legacy.SOURCE_PROTECTED_BRANCH
-            or branch.get("protected") is not True):
-        raise Denied("source main is not protected")
-    return valid_sha(branch.get("commit", {}).get("sha"),
-                     "source protected-main SHA invalid")
+    if branch.get("name") != legacy.SOURCE_PROTECTED_BRANCH:
+        raise Denied("source main branch identity changed")
+    main_sha = valid_sha(
+        branch.get("commit", {}).get("sha"), "source main SHA invalid"
+    )
+
+    authority = legacy.gh_api(
+        f"repos/{legacy.SOURCE_REPO}/pulls/{REVIEW_AUTHORITY_PR}"
+    )
+    head = authority.get("head")
+    base = authority.get("base")
+    if (authority.get("number") != REVIEW_AUTHORITY_PR
+            or authority.get("state") != "closed"
+            or authority.get("merged_at") is None
+            or not isinstance(head, dict)
+            or not isinstance(head.get("repo"), dict)
+            or head["repo"].get("full_name") != legacy.SOURCE_REPO
+            or not isinstance(base, dict)
+            or base.get("ref") != legacy.SOURCE_PROTECTED_BRANCH):
+        raise Denied("private-CI authority PR is not a merged source-main review")
+    reviewed_head = valid_sha(
+        head.get("sha"), "private-CI authority PR head SHA invalid"
+    )
+
+    review = latest_authority_review()
+    if (review.get("state") != "APPROVED"
+            or review.get("commit_id") != reviewed_head):
+        raise Denied("independent private-CI review is stale or not approved")
+
+    for path in REVIEWED_GOVERNANCE_PATHS:
+        _reviewed_raw, reviewed_blob = remote_file_at_source_main(
+            path, reviewed_head, MAX_GOVERNANCE_FILE
+        )
+        main_raw, main_blob = remote_file_at_source_main(
+            path, main_sha, MAX_GOVERNANCE_FILE
+        )
+        if main_blob != reviewed_blob:
+            raise Denied("source governance drifted after independent review: " + path)
+        if path == legacy.POLICY_PATH:
+            if hashlib.sha256(main_raw).digest() != expected_policy_digest:
+                raise Denied("source approval policy diverges from reviewed authority")
+
+    policy_raw, _ = remote_file_at_source_main(
+        legacy.POLICY_PATH, main_sha, MAX_GOVERNANCE_FILE
+    )
+    approved = False
+    try:
+        lines = policy_raw.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise Denied("reviewed source approval policy is not UTF-8") from exc
+    for line in lines:
+        if not line or line.startswith("#"):
+            continue
+        if not legacy.NAME.fullmatch(line):
+            raise Denied("reviewed source approval policy has an invalid entry")
+        if line.casefold() == repository.casefold():
+            approved = True
+    if not approved:
+        raise Denied("destination absent from independently reviewed source policy")
+    return main_sha
+
+
+def authorized_main_sha(repository, expected_policy_digest):
+    branch = legacy.gh_api(
+        f"repos/{legacy.SOURCE_REPO}/branches/{legacy.SOURCE_PROTECTED_BRANCH}"
+    )
+    if branch.get("name") != legacy.SOURCE_PROTECTED_BRANCH:
+        raise Denied("source main branch identity changed")
+    if branch.get("protected") is True:
+        legacy.verify_protected_origin(repository, expected_policy_digest)
+        return valid_sha(
+            branch.get("commit", {}).get("sha"), "source protected-main SHA invalid"
+        )
+    return review_attested_main_sha(repository, expected_policy_digest)
 
 
 def remote_file_at_source_main(path, main_sha, max_bytes):
@@ -383,10 +512,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     # Authorize before reading private source bytes.
     legacy.require_preflight(repository, trusted_root)
     approved_policy = legacy.checked_policy_fingerprint(trusted_root, repository)
-    legacy.verify_protected_origin(repository, approved_policy)
-    protected_sha = protected_main_sha()
+    authorized_sha = authorized_main_sha(repository, approved_policy)
     contract = checked_contract(
-        trusted_root, repository, source_pr, test_plan, protected_sha
+        trusted_root, repository, source_pr, test_plan, authorized_sha
     )
     source_repo_id = verify_source_pr(source_pr, source_commit)
     destination, base_tree, plan_bytes = checked_destination(repository, contract)
@@ -533,12 +661,11 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
 
     # Recheck both source policy/protection and the immutable carrier contract
     # immediately before making the source-bearing commit executable.
-    legacy.verify_protected_origin(repository, approved_policy)
-    if protected_main_sha() != protected_sha:
-        raise Denied("source protected main advanced before publication")
+    if authorized_main_sha(repository, approved_policy) != authorized_sha:
+        raise Denied("source authorized main advanced before publication")
     checked_contract(
         trusted_root, repository, source_pr,
-        contract["test_plan_path"], protected_sha
+        contract["test_plan_path"], authorized_sha
     )
     checked_destination(repository, contract)
 
