@@ -25,6 +25,9 @@ public sealed interface OresPropertyKey
         public int wireTag() { return wireTag; }
     }
 
+    /** New tagged-key metadata limit; legacy textual field storage is unchanged. */
+    int MAX_STRING_KEY_BYTES = 16_384;
+
     Domain domain();
     String name();
 
@@ -80,6 +83,9 @@ public sealed interface OresPropertyKey
                 } else if (Character.isLowSurrogate(c)) {
                     throw new IllegalArgumentException("unpaired surrogate in String member key");
                 }
+            }
+            if (name.getBytes(StandardCharsets.UTF_8).length > MAX_STRING_KEY_BYTES) {
+                throw new IllegalArgumentException("String property key exceeds 16384 UTF-8 bytes");
             }
         }
 
