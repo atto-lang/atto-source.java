@@ -480,6 +480,8 @@ final class OresTaskScopeTest {
         assertEquals(0, scope.activeChildren());
         assertEquals(0, scope.activeScopedReadClaims());
         assertEquals(0, scope.activeScopedReadRegions());
+        assertEquals(0, scope.issuedScopedReadClaims(),
+                "failed scheduler admission must roll back one-shot issuance");
         assertFalse(scope.hasScopedReadLease(31L, 2L));
     }
 
@@ -591,7 +593,7 @@ final class OresTaskScopeTest {
                     () -> scope.fork(
                             resume -> OresScheduler.done(2),
                             java.util.List.of(claim)));
-            assertTrue(duplicate.getMessage().contains("live child"));
+            assertTrue(duplicate.getMessage().contains("already issued"));
             assertEquals(1, scope.activeChildren());
             assertEquals(1, scope.activeScopedReadClaims());
             assertTrue(scope.hasScopedReadLease(claim));
@@ -601,6 +603,84 @@ final class OresTaskScopeTest {
             assertEquals(1, first.get(5, TimeUnit.SECONDS));
             assertNull(drained.get(5, TimeUnit.SECONDS));
             assertFalse(scope.hasScopedReadLease(claim));
+        }
+    }
+
+
+    @Test
+    void retiredClaimIdentityCannotBeReissuedInStillOpenScope()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresTaskScope scope = new OresTaskScope(scheduler);
+            OresTaskScope.ScopedReadClaim claim =
+                    new OresTaskScope.ScopedReadClaim("view", 67L, 0L, "$");
+
+            OresFuture<Integer> first = scope.fork(
+                    resume -> OresScheduler.done(1),
+                    java.util.List.of(claim));
+            assertEquals(1, first.get(5, TimeUnit.SECONDS));
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (scope.hasScopedReadLease(claim)
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(1L);
+            }
+
+            assertTrue(scope.isOpen(),
+                    "child retirement alone must not seal the lexical scope");
+            assertFalse(scope.hasScopedReadLease(claim));
+            assertEquals(1, scope.issuedScopedReadClaims(),
+                    "retired successful claim identity stays consumed");
+
+            IllegalStateException reused = assertThrows(
+                    IllegalStateException.class,
+                    () -> scope.fork(
+                            resume -> OresScheduler.done(2),
+                            java.util.List.of(claim)));
+            assertTrue(reused.getMessage().contains("already issued"));
+            assertEquals(0, scope.activeChildren());
+            assertEquals(0, scope.activeScopedReadClaims());
+            assertEquals(1, scope.issuedScopedReadClaims());
+
+            assertNull(scope.quiesce().get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void mixedFreshAndPreviouslyIssuedClaimsRejectWithoutPartialReservation()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresTaskScope scope = new OresTaskScope(scheduler);
+            OresTaskScope.ScopedReadClaim used =
+                    new OresTaskScope.ScopedReadClaim("used", 71L, 0L, "$");
+
+            OresFuture<Integer> first = scope.fork(
+                    resume -> OresScheduler.done(1),
+                    java.util.List.of(used));
+            assertEquals(1, first.get(5, TimeUnit.SECONDS));
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (scope.hasScopedReadLease(used)
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(1L);
+            }
+            assertFalse(scope.hasScopedReadLease(used));
+
+            OresTaskScope.ScopedReadClaim fresh =
+                    new OresTaskScope.ScopedReadClaim("fresh", 72L, 0L, "$");
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> scope.fork(
+                            resume -> OresScheduler.done(2),
+                            java.util.List.of(fresh, used)));
+
+            assertFalse(scope.hasScopedReadLease(fresh));
+            assertFalse(scope.hasScopedReadLease(72L, 0L));
+            assertEquals(0, scope.activeScopedReadClaims());
+            assertEquals(1, scope.issuedScopedReadClaims(),
+                    "fresh claim must remain unissued after atomic rejection");
+
+            assertNull(scope.quiesce().get(5, TimeUnit.SECONDS));
         }
     }
 
