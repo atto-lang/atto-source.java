@@ -47,6 +47,7 @@ public final class OwnershipChecker {
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
+    private final NominalEnumRegistry.Registry nominalEnums;
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private int mutexCriticalSectionDepth;
@@ -57,6 +58,7 @@ public final class OwnershipChecker {
     private boolean currentAsyncGenerator;
 
     private OwnershipChecker(Ast.Program program) {
+        nominalEnums = NominalEnumRegistry.build(program);
         index(program);
     }
 
@@ -1290,6 +1292,34 @@ public final class OwnershipChecker {
             }
         }
 
+        if (call.callee() instanceof Ast.MemberExpr enumConstructor
+                && enumConstructor.receiver() instanceof Ast.NameExpr enumName
+                && scope.lookup(enumName.name()) == null) {
+            NominalEnumRegistry.Variant variant = nominalEnums.variant(
+                    enumName.name() + "." + enumConstructor.member());
+            if (variant != null) {
+                int expected = variant.payload() == null ? 0 : 1;
+                if (call.arguments().size() != expected) {
+                    throw error("enum constructor " + variant.qualifiedName()
+                            + " expects " + expected + " argument(s)");
+                }
+                if (variant.payload() != null) {
+                    ValueInfo payload = checkExpr(
+                            call.arguments().getFirst(), scope, true);
+                    if (payload.type != null && payload.type.isBorrow()) {
+                        throw error("enum payload cannot retain a borrow");
+                    }
+                    if (containsMlScalarCapabilityType(payload.type)) {
+                        throw error("enum payload cannot retain actor scalar capabilities");
+                    }
+                }
+                return new ValueInfo(
+                        Ast.TypeRef.simple(variant.owner()),
+                        ValueKind.MOVE_ONLY,
+                        null);
+            }
+        }
+
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);
@@ -2393,6 +2423,12 @@ public final class OwnershipChecker {
 
     private List<Ast.TypeRef> constructorPatternTypes(String constructor, Ast.TypeRef subjectType) {
         if (subjectType == null) return List.of();
+        NominalEnumRegistry.Variant variant = nominalEnums.variant(constructor);
+        if (variant != null && variant.owner().equals(subjectType.name())) {
+            return variant.payload() == null
+                    ? List.of()
+                    : List.of(variant.payload());
+        }
         if (constructor.equals("Some") && subjectType.name().equals("Option") && subjectType.arguments().size() == 1) {
             return List.of(subjectType.arguments().getFirst());
         }
