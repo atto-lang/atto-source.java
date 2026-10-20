@@ -192,6 +192,64 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
+    void nestedEndDelimitedDispatchDoesNotStealCallableEnd() {
+        String source = """
+                fnc classify(int x) -> int
+                    switch x
+                        case 1 -> { return 1; }
+                        default -> { return 0; }
+                    end
+                end
+                """;
+
+        assertDoesNotThrow(() -> Parser.parse(source));
+    }
+
+    @Test
+    void missingFiCannotBeClosedByCallableEnd() {
+        String source = """
+                fnc broken(int x) -> int
+                    if x > 0 then
+                        return 1
+                end
+                """;
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
+    }
+
+    @Test
+    void returnValueDisciplineIsUnchangedByEndBody() {
+        String voidWithValue = """
+                fnc bad_void() -> void
+                    return 1
+                end
+                """;
+        String nonVoidBareReturn = """
+                fnc bad_int() -> int
+                    return
+                end
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(voidWithValue)));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(nonVoidBareReturn)));
+    }
+
+    @Test
+    void deeplyNestedReturnTypeUsesTheOrdinaryRecursiveTypeGrammar() {
+        String source = """
+                fnc nested() -> Result<Option<tuple (int, string)>, string>
+                    return Ok(Some((1, "one")))
+                end
+                """;
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void tupleKeywordStaysContextualAndTupleArityIsBounded() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc tuple(int value): int {
