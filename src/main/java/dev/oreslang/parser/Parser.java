@@ -3610,7 +3610,7 @@ public final class Parser {
         if (isContextualIdentifier("tuple") && checkNext(LBRACE)) {
             advance(); // explicit tuple literal; tuple(...) remains legacy-compatible
             consume(LBRACE, "expected '{' after tuple");
-            List<Ast.Expr> items = parseArgumentsUntil(RBRACE);
+            List<Ast.Expr> items = parseTupleItemsUntil(RBRACE);
             consume(RBRACE, "expected '}' after explicit tuple");
             return new Ast.TupleExpr(items);
         }
@@ -3671,7 +3671,10 @@ public final class Parser {
             if (match(COMMA)) {
                 List<Ast.Expr> items = new ArrayList<>();
                 items.add(first);
-                do items.add(parseExpression()); while (match(COMMA));
+                while (!check(RPAREN)) {
+                    items.add(parseExpression());
+                    if (!match(COMMA)) break;
+                }
                 consume(RPAREN, "expected ')' after tuple");
                 return new Ast.TupleExpr(items);
             }
@@ -3719,23 +3722,24 @@ public final class Parser {
                 : inferredStruct ? "expected '{' after infer struct"
                 : inferredRecord ? "expected '{' after infer record"
                 : "expected '{' after explicit struct shape");
+        String aggregateName = plainRecord ? "record"
+                : inferredRecord ? "infer record"
+                : inferredStruct ? "infer struct"
+                : "explicit struct";
         List<Ast.ObjectField> fields = new ArrayList<>();
         if (!check(RBRACE)) {
             do {
                 if (check(BACKTICK)) {
                     throw error(peek(),
-                            "struct fields must be statically named for AOT compilation; "
+                            aggregateName + " fields must be statically named for AOT compilation; "
                                     + "computed/backtick field names are not supported");
                 }
-                String name = consumeStaticObjectKeyName("expected struct field name");
-                consume(COLON, "expected ':' after struct field name");
+                String name = consumeStaticObjectKeyName("expected " + aggregateName + " field name");
+                consume(COLON, "expected ':' after " + aggregateName + " field name");
                 fields.add(Ast.ObjectField.named(name, parseExpression()));
             } while (match(COMMA));
         }
-        consume(RBRACE, explicitStruct
-                ? "expected '}' after explicit struct initializer"
-                : inferredRecord ? "expected '}' after infer record literal"
-                : "expected '}' after infer struct literal");
+        consume(RBRACE, "expected '}' after " + aggregateName + " literal");
         return new Ast.ObjectExpr(fields, kind, declaredFields);
     }
 
@@ -3833,6 +3837,17 @@ public final class Parser {
         List<Ast.Expr> args = new ArrayList<>();
         do args.add(parseExpression()); while (match(COMMA));
         return args;
+    }
+
+    /** Tuple bodies admit a trailing comma so (x,) has the canonical singleton meaning. */
+    private List<Ast.Expr> parseTupleItemsUntil(Token.Type terminator) {
+        if (check(terminator)) return List.of();
+        List<Ast.Expr> items = new ArrayList<>();
+        while (true) {
+            items.add(parseExpression());
+            if (!match(COMMA) || check(terminator)) break;
+        }
+        return items;
     }
 
     private void consumeMemberTerminator(Token.Type structuralTerminator, String message) {
