@@ -84,7 +84,7 @@ public final class OresKeyedMap<K, V> {
      * operation. Guest callbacks must never be installed here.
      */
     @FunctionalInterface
-    public interface EntryValidator {
+    interface EntryValidator {
         void validate(Object key, Object value);
     }
 
@@ -128,7 +128,7 @@ public final class OresKeyedMap<K, V> {
      * The validator runs after generic key/value-domain checks and before
      * every mutation, including each entry of transactional putAll.
      */
-    public static <V> OresKeyedMap<String, V> stringKeys(
+    static <V> OresKeyedMap<String, V> stringKeys(
             ValueDomain values,
             EntryValidator validator) {
         return new OresKeyedMap<>(
@@ -146,7 +146,7 @@ public final class OresKeyedMap<K, V> {
         return new OresKeyedMap<>(KeyDomain.SYMBOL, values, NO_ENTRY_VALIDATOR);
     }
 
-    public static <V> OresKeyedMap<OresSymbol, V> symbolKeys(
+    static <V> OresKeyedMap<OresSymbol, V> symbolKeys(
             ValueDomain values,
             EntryValidator validator) {
         return new OresKeyedMap<>(
@@ -164,7 +164,7 @@ public final class OresKeyedMap<K, V> {
         return new OresKeyedMap<>(KeyDomain.STRING_OR_SYMBOL, values, NO_ENTRY_VALIDATOR);
     }
 
-    public static <V> OresKeyedMap<Object, V> stringOrSymbolKeys(
+    static <V> OresKeyedMap<Object, V> stringOrSymbolKeys(
             ValueDomain values,
             EntryValidator validator) {
         return new OresKeyedMap<>(
