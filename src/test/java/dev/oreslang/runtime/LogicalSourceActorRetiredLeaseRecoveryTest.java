@@ -106,6 +106,89 @@ final class LogicalSourceActorRetiredLeaseRecoveryTest {
         }
     }
     @Test
+    void postPublicationFailedStopCanBeRetriedWithoutRevertingRoute()
+            throws Exception {
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration(
+                    "retire-stop-retry-old.ores", SOURCE);
+            var second = manager.stageActorGeneration(
+                    "retire-stop-retry-next.ores",
+                    SOURCE.replace(
+                            "self.count = self.count + mail.value;",
+                            "self.count = self.count + mail.value + 1;"));
+            ActorRuntime oldRuntime = first.linkActorGeneration("Counter").runtime();
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                    first, ActorRuntime.ActorKind.SHARED, "Counter", WAIT)) {
+                var actorRegistry = ActorRuntime.class.getDeclaredField("actors");
+                actorRegistry.setAccessible(true);
+                @SuppressWarnings("unchecked")
+                java.util.Map<Object, Object> original =
+                        (java.util.Map<Object, Object>) actorRegistry.get(oldRuntime);
+                var failed = new java.util.concurrent.atomic.AtomicBoolean(false);
+                var faulted = new java.util.concurrent.ConcurrentHashMap<Object, Object>() {
+                    @Override public Object get(Object key) {
+                        // Only interrupt the physical stop AFTER route commit.
+                        // Check runtime stop's actual stack frame, so the earlier
+                        // checkpoint/freeze lookups are not mistaken for stop.
+                        boolean stopping = false;
+                        for (StackTraceElement frame
+                                : Thread.currentThread().getStackTrace()) {
+                            if (ActorRuntime.class.getName().equals(
+                                    frame.getClassName())
+                                    && "stop".equals(frame.getMethodName())) {
+                                stopping = true;
+                                break;
+                            }
+                        }
+                        if (stopping && failed.compareAndSet(false, true))
+                            throw new OutOfMemoryError(
+                                    "injected old actor stop before registry lookup");
+                        return super.get(key);
+                    }
+                };
+                faulted.putAll(original);
+                actorRegistry.set(oldRuntime, faulted);
+                try {
+                    var error = assertThrows(
+                            OutOfMemoryError.class,
+                            () -> router.upgradeTo(second, WAIT));
+                    assertEquals("injected old actor stop before registry lookup",
+                            error.getMessage());
+                    assertTrue(failed.get(),
+                            "fault must occur during old physical stop");
+                    assertEquals(2L, router.ref().routeEpoch(),
+                            "postcommit physical stop failure cannot unpublish new route");
+                    assertThrows(IllegalStateException.class,
+                            () -> router.ref().send(3L),
+                            "pending old actor retirement must quarantine new ingress");
+                    assertEquals(0, router.reapRetired(),
+                            "mere reaping cannot terminate a still-live old actor");
+                    assertEquals(1, router.retryRetiredPhysicalStops(),
+                            "explicit host retry must stop and debit old physical owner");
+                    assertEquals(0, router.retryRetiredPhysicalStops(),
+                            "completed old retirement must be one-shot");
+                    assertEquals(2L, router.ref().routeEpoch(),
+                            "retirement repair cannot revert published route epoch");
+                    Field pins = HotReloadManager.Generation.class
+                            .getDeclaredField("actorRoutePins");
+                    pins.setAccessible(true);
+                    assertEquals(0, pins.getInt(first),
+                            "old generation pin must close exactly once");
+                    assertDoesNotThrow(() -> router.ref().send(3L),
+                            "verified retirement releases host ingress quarantine");
+                } finally {
+                    // Restore the latest entries, never resurrect a cell
+                    // that the fault-injected registry already unregistered.
+                    original.clear();
+                    original.putAll(faulted);
+                    actorRegistry.set(oldRuntime, original);
+                }
+            }
+        }
+    }
+
+    @Test
     void pendingRetiredPhysicalActorFencesSendsOutputsTasksAndUpgrade()
             throws Exception {
         try (var manager = new HotReloadManager(
