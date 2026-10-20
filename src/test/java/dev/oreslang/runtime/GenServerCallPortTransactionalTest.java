@@ -115,6 +115,33 @@ final class GenServerCallPortTransactionalTest {
         }
     }
 
+    @Test void oneHundredConcurrentClientsCanCompleteOutOfOrderWithoutCrossReplies()
+            throws Exception {
+        var port = new GenServerCallPort<Integer>(100);
+        var accepted = new java.util.ArrayList<
+                java.util.concurrent.Future<GenServerCallPort.PendingCall<Integer>>>();
+        try (var clients = Executors.newFixedThreadPool(12)) {
+            for (int i = 0; i < 100; i++) {
+                accepted.add(clients.submit(() ->
+                        port.registerAndPublish(actor(1), ticket -> { })));
+            }
+            var calls = new java.util.ArrayList<GenServerCallPort.PendingCall<Integer>>();
+            for (var admitted : accepted) {
+                calls.add(admitted.get(10, java.util.concurrent.TimeUnit.SECONDS));
+            }
+            assertEquals(100, port.pendingCount());
+            assertThrows(IllegalStateException.class, () -> port.register(actor(1)));
+            for (int i = 99; i >= 0; i--) {
+                assertTrue(port.reply(calls.get(i).ticket(), actor(1), i * 2));
+            }
+            for (int i = 0; i < 100; i++) {
+                assertEquals(i * 2, calls.get(i).future().get().intValue());
+            }
+            assertEquals(0, port.pendingCount());
+            assertEquals(0, port.pendingTargetCount());
+        }
+    }
+
     @Test void sameTicketReplyVsTimeoutRacesOnlyOneWinner() throws Exception {
         for (int iteration = 0; iteration < 128; iteration++) {
             var port = new GenServerCallPort<Integer>(1);
