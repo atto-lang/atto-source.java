@@ -389,3 +389,30 @@ acceptable substitutes for this contract.
 The interface/trait declaration gate is staged on PR #1676. A source-free
 JDK21 syntax/probe cannot validate Oreslang's complete parser or GraalVM
 runtime; these cases still require real exact-head guest JUnit execution.
+
+
+### MutexGuard admission and exact-head CI scope (2026-10-20)
+
+`new Future<T>(provider)` immediately starts an async source method,
+even though expression evaluation returns a Future without awaiting it.
+Consequently the OwnershipChecker now rejects that constructor when a
+`MutexGuard` is live or execution is inside a protected
+`with_lock`/`recover` critical section. Starting a new Task under an
+unreleased guard is not equivalent to constructing a passive value. A guest
+regression asserts this precise ownership diagnostic.
+
+The focused GitHub Actions workflow now watches the ownership checker,
+scheduler, Future, async runtime, and TaskScope source files as well as its
+guest and host test suites, not only the original type checker/evaluator
+files. This avoids missing regression runs for ownership-only changes.
+
+**CI evidence boundary:** the exact-head GitHub-hosted Actions jobs in
+the source repository continue failing with no assigned runner and zero
+steps. Source-free Actions jobs in the two examined private carrier
+repositories exhibit the same zero-step failure. The latter observation
+does not prove why jobs fail or establish available Actions minutes; it
+does indicate those repositories have not yet demonstrated working
+capacity. Private source transfer is still denied by the unprotected
+origin main and empty approved-destination allowlist. Full JDK25
+GraalVM/Maven/JUnit execution and LLVM parity remain unverified.
+
