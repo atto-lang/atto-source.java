@@ -8965,6 +8965,12 @@ public final class TypeChecker {
 
     private boolean structuralRecordAssignable(Record actual, Record expected) {
         if (!aggregateKindsCompatible(actual.kind(), expected.kind())) return false;
+        // A concrete struct can be projected by width only through an explicit
+        // readonly structural CONTRACT. A writable contract would discard the
+        // struct's exact storage identity and expose mutation without a loan.
+        if (actual.kind() == AggregateKind.STRUCT
+                && expected.kind() == AggregateKind.CONTRACT
+                && !expected.readOnly()) return false;
         if (expected.kind() == AggregateKind.STRUCT
                 && actual.members().size() != expected.members().size()) return false;
         // Readonly structural views may covariantly read members, but writable
