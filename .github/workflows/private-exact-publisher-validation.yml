@@ -74,7 +74,8 @@ jobs:
         run: |
           set -euo pipefail
           bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
-          python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py
+          python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py scripts/publish-private-ci-source-v3.py scripts/test-publish-private-ci-source-v3.py
+          bash -n tools/verify-exact-source-tree.sh tools/test-verify-exact-source-tree.sh
       - name: Execute destination-policy fail-closed Bash suite
         shell: bash
         run: |
@@ -108,4 +109,6 @@ jobs:
               raise SystemExit("Publisher tests failed, skipped, or did not fully execute")
           print(f"VERIFIED_PUBLISHER_TESTS={result.testsRun}")
           PY
+            python3 scripts/test-publish-private-ci-source-v3.py
+            bash tools/test-verify-exact-source-tree.sh
           done
