@@ -105,9 +105,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_github_api_ref_create_does_not_mistake_error_text_for_http_422(self):
         ambiguous = (
             "HTTP 422 appeared in an unrelated response body",
-            "gh: Remote error contains HTTP 422 (HTTP 500)\\n",
-            "gh: Validation Failed (HTTP 500)\\nDetails: HTTP 422\\n",
-            "gh: Validation Failed (HTTP 422) unexpected suffix\\n",
+            "gh: Remote error contains HTTP 422 (HTTP 500)\n",
+            "gh: Validation Failed (HTTP 500)\nDetails: HTTP 422\n",
+            "gh: Validation Failed (HTTP 422) unexpected suffix\n",
         )
         with (
             patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"),
@@ -130,10 +130,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_github_api_bounds_both_error_streams_before_classification(self):
         responses = (
             Mock(returncode=1, stdout="x" * 129,
-                 stderr="gh: Ref exists (HTTP 422)\\n"),
+                 stderr="gh: Ref exists (HTTP 422)\n"),
             Mock(returncode=1, stdout="", stderr="x" * 129),
             Mock(returncode=1, stdout=None,
-                 stderr="gh: Ref exists (HTTP 422)\\n"),
+                 stderr="gh: Ref exists (HTTP 422)\n"),
             Mock(returncode=1, stdout="", stderr=None),
         )
         with (
