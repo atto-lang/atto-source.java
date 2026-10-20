@@ -42,6 +42,9 @@ public final class OwnershipChecker {
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    private final TaskTransferProvenance taskTransferProvenance;
+    private TaskTransferProvenance.LexicalTypeContext currentTaskTypeContext =
+            TaskTransferProvenance.LexicalTypeContext.none();
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -49,13 +52,33 @@ public final class OwnershipChecker {
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
 
     private OwnershipChecker(Ast.Program program) {
+        this.taskTransferProvenance = new TaskTransferProvenance(program);
         index(program);
+    }
+
+    public record CheckResult(
+            Ast.Program program,
+            TaskTransferProvenance taskTransfers) {
+        public CheckResult {
+            if (program == null || taskTransfers == null || !taskTransfers.sealed()) {
+                throw new IllegalArgumentException(
+                        "ownership result requires a sealed Task provenance ledger");
+            }
+        }
     }
 
     public static Ast.Program check(Ast.Program program) {
         OwnershipChecker checker = new OwnershipChecker(program);
         checker.validate(program);
+        checker.taskTransferProvenance.seal();
         return program;
+    }
+
+    public static CheckResult checkWithTaskTransferProvenance(Ast.Program program) {
+        OwnershipChecker checker = new OwnershipChecker(program);
+        checker.validate(program);
+        checker.taskTransferProvenance.seal();
+        return new CheckResult(program, checker.taskTransferProvenance);
     }
 
     /** Reuse only public, explicitly linked class layouts for cross-file loans. */
@@ -83,6 +106,7 @@ public final class OwnershipChecker {
             checker.classes.put(name, declaration);
         }
         checker.validate(program);
+        checker.taskTransferProvenance.seal();
         return program;
     }
 
@@ -143,11 +167,16 @@ public final class OwnershipChecker {
         }
         defineImplicitArguments(scope, fn.parameters());
         boolean previousAsyncGenerator = currentAsyncGenerator;
+        TaskTransferProvenance.LexicalTypeContext previousTaskTypeContext =
+                currentTaskTypeContext;
         currentAsyncGenerator = fn.generator() && fn.async();
+        currentTaskTypeContext = new TaskTransferProvenance.LexicalTypeContext(
+                fn.genericParameters(), null, TaskTransferProvenance.SelfMode.NONE);
         try {
             checkBlock(fn.body(), scope, fn.returnType());
         } finally {
             currentAsyncGenerator = previousAsyncGenerator;
+            currentTaskTypeContext = previousTaskTypeContext;
             scope.close();
         }
     }
@@ -190,6 +219,11 @@ public final class OwnershipChecker {
                     }
                 }
             }
+            TaskTransferProvenance.LexicalTypeContext previousTaskTypeContext =
+                    currentTaskTypeContext;
+            currentTaskTypeContext = new TaskTransferProvenance.LexicalTypeContext(
+                    klass.genericParameters(), null,
+                    TaskTransferProvenance.SelfMode.NONE);
             try {
                 for (Ast.FieldDecl field : klass.fields()) {
                     if (field.initializer() == null) continue;
@@ -204,6 +238,7 @@ public final class OwnershipChecker {
                     }
                 }
             } finally {
+                currentTaskTypeContext = previousTaskTypeContext;
                 initializerScope.close();
             }
         }
@@ -222,13 +257,19 @@ public final class OwnershipChecker {
             defineImplicitArguments(scope, constructor.parameters());
             Ast.ClassDecl previousInitializingClass = initializingClass;
             Set<String> previousFixedWrites = constructorFixedFieldWrites;
+            TaskTransferProvenance.LexicalTypeContext previousTaskTypeContext =
+                    currentTaskTypeContext;
             initializingClass = klass;
             constructorFixedFieldWrites = new HashSet<>();
+            currentTaskTypeContext = new TaskTransferProvenance.LexicalTypeContext(
+                    klass.genericParameters(), klass,
+                    TaskTransferProvenance.SelfMode.CLASS_NOMINAL);
             try {
                 checkBlock(constructor.body(), scope, Ast.TypeRef.simple("void"));
             } finally {
                 initializingClass = previousInitializingClass;
                 constructorFixedFieldWrites = previousFixedWrites;
+                currentTaskTypeContext = previousTaskTypeContext;
             }
             scope.close();
         }
@@ -275,10 +316,27 @@ public final class OwnershipChecker {
                     }
                 }
             }
-            for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
+            for (Ast.Param param : method.parameters()) {
+                scope.define(param.name(), stateForParam(param));
+            }
             defineImplicitArguments(scope, method.parameters());
-            checkBlock(method.body(), scope, method.returnType());
-            scope.close();
+            ArrayList<String> taskGenerics = new ArrayList<>();
+            if (!method.isStatic()) taskGenerics.addAll(klass.genericParameters());
+            taskGenerics.addAll(method.genericParameters());
+            TaskTransferProvenance.LexicalTypeContext previousTaskTypeContext =
+                    currentTaskTypeContext;
+            currentTaskTypeContext = new TaskTransferProvenance.LexicalTypeContext(
+                    taskGenerics,
+                    method.isStatic() ? null : klass,
+                    method.isStatic()
+                            ? TaskTransferProvenance.SelfMode.NONE
+                            : TaskTransferProvenance.SelfMode.RECEIVER_POLYMORPHIC);
+            try {
+                checkBlock(method.body(), scope, method.returnType());
+            } finally {
+                currentTaskTypeContext = previousTaskTypeContext;
+                scope.close();
+            }
         }
     }
 
@@ -1348,23 +1406,20 @@ public final class OwnershipChecker {
             if (scope.descendantsNonLexical()) {
                 throw error("nb Task cannot capture a non-lexical/unknown execution scope");
             }
-            // Task executes after this statement returns, possibly on a
-            // different worker. Reuse the closure move checker, but impose
-            // the stricter cross-Task Send contract on every capture.
             Ast.LambdaExpr body = new Ast.LambdaExpr(List.of(), null, task.body());
             CaptureSet captures = collectCaptures(body, scope, null);
+            ArrayList<TaskTransferProvenance.Transfer> transfers =
+                    new ArrayList<>(captures.values.size());
             for (Capture capture : captures.values.values()) {
-                Ast.TypeRef type = capture.source.type;
-                if (!taskCaptureSend(type, new HashSet<>(), 0)) {
-                    throw error("nb Task capture '" + capture.name
-                            + "' is not a concrete owned Send value; "
-                            + "borrows, thread-affine capabilities, unresolved "
-                            + "generic types and actor state cannot cross Tasks");
-                }
+                TaskTransferProvenance.TransferKind kind =
+                        capture.write() || capture.source.kind == ValueKind.MOVE_ONLY
+                        ? TaskTransferProvenance.TransferKind.UNIQUE_MOVE
+                        : TaskTransferProvenance.TransferKind.COPY;
+                transfers.add(new TaskTransferProvenance.Transfer(
+                        capture.name(), capture.source.type, kind));
             }
             checkLambda(body, scope, null);
-            // Export only proven lexical captures into the isolated Task.
-            // No whole-frame Env snapshot or implicit actor-private aliases.
+            taskTransferProvenance.record(task, transfers, currentTaskTypeContext);
             task.bindCaptures(new ArrayList<>(captures.values.keySet()));
             return new ValueInfo(
                     new Ast.TypeRef("Task", List.of(task.checkedResultType()), false),
