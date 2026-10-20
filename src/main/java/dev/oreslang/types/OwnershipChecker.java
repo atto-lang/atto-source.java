@@ -1426,6 +1426,26 @@ public final class OwnershipChecker {
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
 
+        if (call.callee() instanceof Ast.MemberExpr qualifiedModel
+                && qualifiedModel.receiver() instanceof Ast.NameExpr namespace
+                && scope.lookup(namespace.name()) == null
+                && modelCatalog != null) {
+            ModelGraphCompiler.CompiledModel model =
+                    modelCatalog.find(namespace.name() + "." + qualifiedModel.member());
+            if (model != null) {
+                if (call.arguments().size() > model.parameters().size()) {
+                    throw error("MODEL_CONFIG_ARITY: too many model configuration arguments");
+                }
+                for (Ast.Expr argument : call.arguments()) {
+                    checkExpr(argument, scope, false);
+                }
+                return new ValueInfo(
+                        Ast.TypeRef.simple(model.modelTypeName()),
+                        ValueKind.MOVE_ONLY,
+                        null);
+            }
+        }
+
         if (call.callee() instanceof Ast.NameExpr modelName
                 && scope.lookup(modelName.name()) == null
                 && modelCatalog != null) {
