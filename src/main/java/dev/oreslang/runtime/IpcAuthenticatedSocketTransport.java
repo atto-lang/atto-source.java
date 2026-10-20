@@ -228,7 +228,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             // a user-observable future while holding it: dependent callbacks
             // may synchronously wait for a second host receipt reader.
             final DecodedReceipt receipt;
-            final CompletableFuture<IpcReceiptCorrelation.Stage> terminal;
+            final IpcReceiptCompletionBridge.PreparedDelivery terminal;
             synchronized (readGate) {
                 byte[] frame = readReceiptWireFrame(input);
                 receipt = decodeReceiptFrame(frame, connectionBinding, macKey);
@@ -240,7 +240,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                         physicalOwner, receipt.envelope(),
                         physicalGeneration, receipt.stage());
             }
-            if (terminal != null) terminal.complete(receipt.stage());
+            if (terminal != null) terminal.deliver();
             return receipt.stage();
         } catch (IOException | RuntimeException | Error failure) {
             // Authentication, framing, EOF and state-machine violations are
