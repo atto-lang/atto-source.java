@@ -89,11 +89,14 @@ final class CpuTopology {
     int preferredSlotForNuma(int affinityKey, int preferredNuma, int enabled,
                              java.util.function.IntUnaryOperator cpuForSlot) {
         Objects.requireNonNull(cpuForSlot, "cpuForSlot");
-        if (enabled < 1 || enabled > 8192 || preferredNuma < UNKNOWN) {
+        if (enabled < 1 || preferredNuma < UNKNOWN || preferredNuma > 65535) {
             throw new IllegalArgumentException("invalid carrier/NUMA bounds");
         }
         int fallback = Math.floorMod(affinityKey, enabled);
-        if (preferredNuma == UNKNOWN) return fallback;
+        // Untargeted SOFT dispatch must remain valid for larger carrier
+        // pools. Never perform an unbounded NUMA topology scan on hot paths.
+        if (preferredNuma == UNKNOWN || enabled > MAX_DISCOVERED_CPUS)
+            return fallback;
         for (int distance = 0; distance < enabled; distance++) {
             int slot = (int) (((long) fallback + distance) % enabled);
             Location location = locations.get(cpuForSlot.applyAsInt(slot));
