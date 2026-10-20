@@ -15,7 +15,10 @@ an independent reference adapter rather than the new source lowering target.
 The compiler statically requires exactly one explicit `T` and one nominal
 class instance argument. That class must be non-actor and expose a public
 non-abstract non-generic `async run(): T` method taking zero arguments.
-Return type compatibility is checked with concrete generic substitutions.
+The first slice is deliberately **stateless**: provider instance fields,
+inheritance, and explicit constructors are rejected until the compiler proves
+exclusive receiver movement/pinning across the Task boundary. Return type
+compatibility is checked with concrete generic substitutions.
 Private, sync, suspends-only, actor, dynamic/unknown and incompatible run
 providers are rejected. The evaluator invokes `run()` through its existing
 async source Task path and returns the resulting `OresFuture` **without
