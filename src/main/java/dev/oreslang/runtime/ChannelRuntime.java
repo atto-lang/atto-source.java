@@ -331,7 +331,23 @@ public final class ChannelRuntime {
             SelectRegistration registration =
                     new SelectRegistration(
                             this,
-                            Objects.requireNonNull(policy, "policy"));
+                            Objects.requireNonNull(policy, "policy"), 0L, false);
+            registration.start(false);
+            return registration.future;
+        }
+
+        /**
+         * Compiler-only static-select entry point: its FAIR ticket comes from
+         * the owning static source site, not from this reusable descriptor.
+         * The ticket is scoped to this invocation, so overlapping pending
+         * selections cannot accidentally overwrite one another's ordering.
+         */
+        public OresFuture<SelectResult> selectStaticAsync(
+                SelectPolicy policy, long staticTicket) {
+            SelectRegistration registration =
+                    new SelectRegistration(
+                            this, Objects.requireNonNull(policy, "policy"),
+                            staticTicket, true);
             registration.start(false);
             return registration.future;
         }
@@ -344,7 +360,17 @@ public final class ChannelRuntime {
             SelectRegistration registration =
                     new SelectRegistration(
                             this,
-                            Objects.requireNonNull(policy, "policy"));
+                            Objects.requireNonNull(policy, "policy"), 0L, false);
+            return registration.tryNow();
+        }
+
+        /** See selectStaticAsync: this preserves the static site's FAIR tickets. */
+        public Optional<SelectResult> tryStaticSelect(
+                SelectPolicy policy, long staticTicket) {
+            SelectRegistration registration =
+                    new SelectRegistration(
+                            this, Objects.requireNonNull(policy, "policy"),
+                            staticTicket, true);
             return registration.tryNow();
         }
 
@@ -612,6 +638,8 @@ public final class ChannelRuntime {
         // PRIORITY use ordinal arithmetic without materializing an int[] of
         // arm indexes. RANDOM is the only mode requiring a shuffled array.
         private int fairStart;
+        private final long staticTicket;
+        private final boolean useStaticTicket;
         private int[] randomOrder;
         // Indexed registration storage makes readiness O(1) by arm index and
         // avoids an ArrayList backing buffer plus a detach-time copy.
@@ -621,9 +649,13 @@ public final class ChannelRuntime {
         private boolean decided;
         private boolean registered;
 
-        private SelectRegistration(SelectSet set, SelectPolicy policy) {
+        private SelectRegistration(
+                SelectSet set, SelectPolicy policy,
+                long staticTicket, boolean useStaticTicket) {
             this.set = set;
             this.policy = policy;
+            this.staticTicket = staticTicket;
+            this.useStaticTicket = useStaticTicket;
             this.defaultIndex = set.defaultIndex;
             this.registrations = new CaseRegistration[set.cases.size()];
             this.future = new OresFuture<>(
@@ -678,7 +710,9 @@ public final class ChannelRuntime {
 
         private void captureOrderLocked() {
             if (policy == SelectPolicy.FAIR) {
-                fairStart = Math.floorMod(set.fairCursor.get(), set.cases.size());
+                fairStart = Math.floorMod(
+                        useStaticTicket ? staticTicket : set.fairCursor.get(),
+                        set.cases.size());
             } else if (policy == SelectPolicy.RANDOM) {
                 int count = set.cases.size();
                 randomOrder = new int[count];
