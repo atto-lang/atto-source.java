@@ -414,8 +414,7 @@ That last rule is intentional. Reusing descriptors is mechanically safe;
 reusing live registrations is a separate optimization because stale waiters
 must never consume a value for the next iteration.
 
-Conceptually, a compiler may later hoist a plan for a provably stable static
-site:
+The Java evaluator now hoists eligible read-only static-select descriptor cases inside lexical loop scopes:
 
 ```text
 loop {
@@ -430,9 +429,17 @@ loop {
 }
 ```
 
-This transformation is permitted only when evaluating the case expressions has
-no required per-iteration observable behavior and the referenced channel/value
-bindings are stable. Otherwise the compiler must keep the original lowering.
+Hoisting applies only when all non-default arms are direct lexical
+readch operands resolving to non-shadowed immutable `val`/`const`
+Channel bindings at or above the loop anchor. It works in `for`,
+`for-of`, destructuring `for-of`, `loop` and suspendable source paths.
+Dynamic expressions, WRITE arms, mutable bindings and per-iteration shadow
+bindings keep original evaluation. The cached SelectSet is owned by a
+single loop invocation, not the shared AST. Each select still consumes its
+source-site FAIR ticket via an invocation-local override and creates fresh
+registrations; cancellation, default and pending-winner behavior are retained.
+This is a conservative interpreter optimization, not generalized LLVM/SSA
+hoisting, and the changed Java source still needs current-head CI.
 
 Two reusable plan types are available on the Java reference backend:
 
@@ -444,8 +451,7 @@ Two reusable plan types are available on the Java reference backend:
   `remove(key)` stops arming that case on **future** executions. `size()`
   and `version()` expose the current builder state.
 
-Example (case expressions are fixed here, not automatically hoisted by the
-compiler):
+Example (explicitly preconstructed case descriptors):
 
 ```ores
 val DynamicSelectPlan plan = DynamicSelectPlan.new();
@@ -481,20 +487,21 @@ A dynamic plan likewise retains the same immutable case snapshot until
 lookup is a lock-free volatile read on the Java runtime; version changes are
 serialized, publishing new immutable snapshots without stealing old pending
 selections. Neither plan re-evaluates its
-case expressions on each iteration. Ordinary inline static select *does*
-still evaluate each arm's operands on every iteration; auto-hoisting is
-not implemented and cannot be assumed.
+case expressions on each iteration. Eligible immutable read-only inline
+static selects now reuse descriptors inside a lexical loop. Other inline
+static selects still evaluate operands and rebuild descriptors per iteration.
 
 Each invocation still creates a fresh selection and per-channel waiter
 registrations to guarantee single-winner and cancellation semantics.
 FAIR and PRIORITY reuse their plan descriptors and compute arm ordering
 without an extra per-selection order array; RANDOM still shuffles a fresh
-array. The coordinator continues to arbitrate all channel operations. There is not yet an
-automatic static-select hoisting pass or a demonstrated throughput/latency
-speedup over unplanned static select. A compiler may hoist only when expression
-evaluation is side-effect-free, bindings stable, and actor-local ownership
-preserved. Plans are actor-domain-local capabilities and must not be sent
-through actor mailboxes.
+array. The coordinator continues to arbitrate all channel operations.
+The non-gating `SelectPlanMicrobenchmark` compares reconstruction,
+immutable-plan reuse, cached static source selection, and dynamic keyed
+plans with warmups, median ns/op and GC collection counts. These are not
+exact allocated bytes. No speedup is claimed before controlled JDK25/GraalVM
+measurement on the new head. Plans are actor-domain-local capabilities
+and must not be sent through mailboxes.
 
 ### Linear ownership and generation hardening
 
@@ -699,3 +706,29 @@ See `examples/channel-streaming.ores` for an executable example of both loop
 forms. Streaming tests cover arrays, synchronous and asynchronous iterators,
 blocking and awaited nonblocking writes, rendezvous backpressure, early iterator
 cleanup, braced select dispatch, and invalid element/iterator types.
+
+
+## Heterogeneous mixed-readiness integration gate (PR #433)
+
+The separate heterogeneous-select PR #433 diverges from this optimized
+runtime branch. It must be semantically rebased and retested before
+integration. The reusable SelectCase backend here handles only channel
+READ, WRITE, and DEFAULT; await, timeout and cancelled are NOT enabled
+in a cached plan by this patch.
+
+- READ: cached channel reference, fresh read registration.
+- WRITE: cached channel and repeatable Copy payload, fresh write admission.
+- AWAIT: typed Future reference, fresh completion subscription and epoch.
+- TIMEOUT: cached duration only if pure/stable, fresh monotonic deadline.
+- CANCELLED: token reference, fresh subscription and revocation.
+- DEFAULT: single descriptor, immediate fallback, no FAIR rotation credit.
+
+Mixed-arm selection must own exactly one winner across all sources,
+without invoking guest callbacks while holding the channel coordinator.
+Loser subscriptions and timers must be revoked; stale completion callbacks
+must be generation/epoch checked after cancellation, mutation, actor stop
+and hot reload. Relative deadlines restart on each selection; mutable
+duration expressions must be reevaluated. Stable result keys must include
+snapshot-version metadata, with sound Option/unit payload typing.
+Native LLVM stays fail-closed until differential/sanitizer testing proves
+equivalent semantics.
