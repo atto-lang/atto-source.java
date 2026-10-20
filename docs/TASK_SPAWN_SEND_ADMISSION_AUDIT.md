@@ -559,3 +559,73 @@ into the current lowering stack and retain each transferred owner until that
 specific child has reached scheduler-confirmed physical quiescence. Logical
 result settlement, cancellation request, scope sealing, and ordinary Future
 subscriber delivery remain insufficient release witnesses.
+
+
+## Return-summary authority and provenance-budget hardening — 2026-10-19
+
+A further audit found two authority/robustness gaps in the combined Task
+admission path.
+
+### Semantic validation must precede return-ownership authority
+
+`OresCompiler.proveTaskTransfers` previously prepared type declarations for
+Task transfer resolution without running the canonical semantic checker over
+ordinary helper functions that could receive compiler-minted
+`FRESH`/`MOVES_PARAMETER(n)` return-ownership summaries. A helper could
+therefore have a syntactically fresh return expression but an invalid declared
+return contract, while the ownership summary still participated in Task
+admission.
+
+`TypeChecker.prepareTaskAdmissionProgram` now invokes canonical
+`checkFunction` for exactly the synchronous functions for which
+`OwnershipChecker` could mint a return-ownership summary. This validates the
+helper's declared/body types before the ownership pass can consume the summary,
+without enabling Task source execution or pretending Task result lowering is
+complete.
+
+Regressions reject both:
+- a `FRESH` helper whose body returns `Array<string>` under an
+  `Array<int>` declaration; and
+- a `MOVES_PARAMETER(0)` helper whose moved parameter cannot satisfy its
+  declared result type.
+
+### Provenance expression walks are explicitly bounded
+
+The newer return/provenance walkers are now bounded independently to:
+- maximum expression depth: **128**;
+- maximum visited expression nodes: **4,096**.
+
+On exhaustion:
+- fresh-return proof fails to `false`;
+- owned-rvalue proof fails to `false`;
+- projection scanning fails to `true` so transfer admission rejects.
+
+A 140-level nested-cast hostile-shape regression requires fail-closed
+provenance behavior rather than unbounded recursion.
+
+Exact substantive code head:
+`94c6cb7cf591e4caa3b69f492f9ddc4aee7785c8`.
+
+Exact blobs:
+- `OwnershipChecker.java`: `de00825d33476bbd9a5529b36f3f82f6ec9447a7`
+- `TypeChecker.java`: `bd2a4423cc19fc7490c57f69af33af4117a5532e`
+- `TaskAdmissionProof.java`: `05e8f7b2c864015adbd02c33a76b01228c943144`
+- `TaskSemanticAdmission.java`: `c3df724cfcbcb8b01923eef4257a40187e789a47`
+- `TaskTransferProvenance.java`: `ded91b5473f0dc8d805727405c814e54726f4e80`
+- `TaskAdmissionProofTest.java`: `e196dfcf9d14f3eaca9bd1a373dbd1d27734996b` (7 tests)
+- `TaskTransferProvenanceTest.java`: `9bc0b447901cd6a91a36b975264e4e9c697879e3` (15 tests)
+
+Targeted Task admission inventory at this point is **47 committed JUnit
+methods**: 13 spawn/preflight + 7 resolved authority + 5 shared capture
+analysis + 15 ownership/provenance + 7 combined admission-proof tests.
+
+No GitHub Actions runs are attached to exact source head
+`94c6cb7cf591e4caa3b69f492f9ddc4aee7785c8`; therefore no exact-source
+Maven/JUnit/GraalVM result is claimed.
+
+A funded carrier executed an independent **source-free** model of the new
+invariants at commit `7f494943823ddbb7b490408feb268ca2edbbe5ff`:
+run #39348430205 / job #118386579820 completed SUCCESS with **8/8 tests
+passing**, zero failures/skips/cancellations, and every workflow step green.
+That evidence covers only the semantic-summary and proof-budget model; it does
+not contain the private Oreslang tree.
