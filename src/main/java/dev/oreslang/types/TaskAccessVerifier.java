@@ -187,11 +187,11 @@ final class TaskAccessVerifier {
      */
     static final class CoherentAccessProof {
         private final Ast.Program programIdentity;
-        private final List<CoherentTypedClaim> claims;
+        private final List<Claim> claims;
 
         private CoherentAccessProof(
                 Ast.Program programIdentity,
-                List<CoherentTypedClaim> claims) {
+                List<Claim> claims) {
             this.programIdentity =
                     Objects.requireNonNull(programIdentity, "programIdentity");
             this.claims = List.copyOf(Objects.requireNonNull(claims, "claims"));
@@ -211,8 +211,7 @@ final class TaskAccessVerifier {
         CoherentAccessProof proof =
                 proveCoherentTyped(requested, sourceProof, resolvedNominals);
         // Reuses the SAME ledger and all-or-nothing alias/generation rules.
-        return admit(proof.claims.stream()
-                .map(CoherentTypedClaim::claim).toList());
+        return admit(proof.claims);
     }
 
     /**
@@ -249,7 +248,9 @@ final class TaskAccessVerifier {
                         "Task access lacks matching source/resolved " + needed + " proof");
             }
         }
-        return new CoherentAccessProof(sourceProof.programIdentity(), typed);
+        return new CoherentAccessProof(
+                sourceProof.programIdentity(),
+                typed.stream().map(CoherentTypedClaim::claim).toList());
     }
 
     /** Intentionally small trusted ABI subset; no nominal name guessing. */
@@ -454,8 +455,7 @@ final class TaskAccessVerifier {
         }
         return new TaskLoanAdmission(
                 this,
-                admit(proof.claims.stream()
-                        .map(CoherentTypedClaim::claim).toList()));
+                admit(proof.claims));
     }
 
     /** Cancellation is an intent; a still-running Task continues to own loans. */
