@@ -287,6 +287,8 @@ def checked_repo(repository, expected_id=None):
         raise Denied("destination numeric repository identity unavailable or changed")
     if result.get("archived") is not False or result.get("disabled") is not False:
         raise Denied("destination is archived, disabled, or its status is unknown")
+    if result.get("fork") is not False:
+        raise Denied("destination must be a standalone repository, not a fork")
     return result
 
 
