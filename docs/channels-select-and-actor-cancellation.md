@@ -474,9 +474,19 @@ registration, and fairness state persists across snapshot revisions.
 Selecting with zero cases fails fast; at most one default is permitted.
 
 **Performance boundary:** plans avoid rebuilding immutable case metadata
-on every source-level `select from plan` iteration. Each invocation still
-allocates a fresh select registration, per-case registrations and an order
-array, and runs the existing global arbitration logic. There is not yet an
+on every source-level `select from plan` iteration. Declare a `SelectPlan`
+outside a hot `for`/actor loop and select from that same plan inside it.
+A dynamic plan likewise retains the same immutable case snapshot until
+`put` or `remove` changes its version. Neither plan re-evaluates its
+case expressions on each iteration. Ordinary inline static select *does*
+still evaluate each arm's operands on every iteration; auto-hoisting is
+not implemented and cannot be assumed.
+
+Each invocation still creates a fresh selection and per-channel waiter
+registrations to guarantee single-winner and cancellation semantics.
+FAIR and PRIORITY reuse their plan descriptors and compute arm ordering
+without an extra per-selection order array; RANDOM still shuffles a fresh
+array. The coordinator continues to arbitrate all channel operations. There is not yet an
 automatic static-select hoisting pass or a demonstrated throughput/latency
 speedup over unplanned static select. A compiler may hoist only when expression
 evaluation is side-effect-free, bindings stable, and actor-local ownership
