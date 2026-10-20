@@ -753,4 +753,71 @@ final class OresTaskScopeTest {
         }
     }
 
+
+    @Test
+    void scopedReadRetirementCorruptionPoisonsScopeWithoutDrainWitness()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresTaskScope scope = new OresTaskScope(scheduler);
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            OresTaskScope.ScopedReadClaim claim =
+                    new OresTaskScope.ScopedReadClaim(
+                            "view", 79L, 9L, "$");
+
+            OresFuture<Integer> child = scope.fork(
+                    resume -> {
+                        entered.countDown();
+                        assertTrue(release.await(5, TimeUnit.SECONDS));
+                        return OresScheduler.done(7);
+                    },
+                    java.util.List.of(claim));
+
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertTrue(scope.hasScopedReadLease(claim));
+
+            java.lang.reflect.Field lockField =
+                    OresTaskScope.class.getDeclaredField("lock");
+            lockField.setAccessible(true);
+            Object scopeLock = lockField.get(scope);
+            java.lang.reflect.Field liveClaimsField =
+                    OresTaskScope.class.getDeclaredField("liveScopedReadClaims");
+            liveClaimsField.setAccessible(true);
+            synchronized (scopeLock) {
+                @SuppressWarnings("unchecked")
+                java.util.Set<OresTaskScope.ScopedReadClaim> liveClaims =
+                        (java.util.Set<OresTaskScope.ScopedReadClaim>)
+                                liveClaimsField.get(scope);
+                assertTrue(liveClaims.remove(claim));
+            }
+
+            OresFuture<Void> drained = scope.quiesce();
+            release.countDown();
+            assertEquals(7, child.get(5, TimeUnit.SECONDS));
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (scope.scopedReadRetirementFailure() == null
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(1L);
+            }
+
+            Throwable retirementFailure = scope.scopedReadRetirementFailure();
+            assertNotNull(retirementFailure);
+            assertTrue(retirementFailure.getMessage().contains("retired early"));
+            assertFalse(scope.isOpen());
+            assertEquals(1, scope.activeChildren(),
+                    "failed child must remain pinned in the join set");
+            assertFalse(drained.isDone(),
+                    "failed region retirement must not become a drain witness");
+            assertThrows(
+                    java.util.concurrent.TimeoutException.class,
+                    () -> drained.get(100, TimeUnit.MILLISECONDS));
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> scope.fork(
+                            resume -> OresScheduler.done(1),
+                            java.util.List.of()));
+        }
+    }
+
 }
