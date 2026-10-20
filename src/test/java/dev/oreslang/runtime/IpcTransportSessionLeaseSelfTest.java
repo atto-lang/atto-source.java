@@ -394,6 +394,34 @@ public final class IpcTransportSessionLeaseSelfTest {
                     == IpcTransportSessionLease.Phase.QUARANTINED);
             check(!bound.lease().snapshot().physicalCloseConfirmed());
 
+            // Later lifecycle noise cannot replace the descriptor-close
+            // ambiguity once the actual close invocation has failed.
+            var laterTimeout = new IOException("later supervisor timeout");
+            check(!bound.lease().quarantineIfUnsettled(laterTimeout));
+            check(bound.lease().closeFailure() == physicalFailure);
+
+            AtomicReference<Throwable> deferredFailure =
+                    new AtomicReference<>();
+            Thread staleScheduler = new Thread(() -> {
+                RuntimeBlockingGuard.enterActorCarrier();
+                try {
+                    bound.lease().deferExternalSchedulerFailure(
+                            new IllegalStateException(
+                                    "later actor-carrier scheduler violation"));
+                } catch (Throwable failure) {
+                    deferredFailure.set(failure);
+                } finally {
+                    RuntimeBlockingGuard.exitActorCarrier();
+                }
+            }, "ipc-test-late-close-failure-noise");
+            staleScheduler.start();
+            staleScheduler.join(1000);
+            check(!staleScheduler.isAlive());
+            check(deferredFailure.get() == null);
+            check(bound.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.QUARANTINED);
+            check(bound.lease().closeFailure() == physicalFailure);
+
             releaseWrite.countDown();
             sender.join(3000);
             check(!sender.isAlive());
