@@ -31,20 +31,29 @@ public final class EffectContracts {
                 Effect.PANIC, Effect.CANCELLATION));
     }
 
-    public record Call(String target) {
+    /**
+     * An unresolved invocation must not silently become a trusted direct call
+     * merely because its diagnostic label matches a symbol later added to the graph.
+     * DIRECT edges are only valid after overload/dispatch resolution by the compiler.
+     */
+    public record Call(String target, Resolution resolution) {
+        public enum Resolution { DIRECT, UNRESOLVED }
+        public Call(String target) { this(target, Resolution.DIRECT); }
         public Call {
             Objects.requireNonNull(target, "target");
-            if (target.isBlank() || target.length() > 256) {
+            Objects.requireNonNull(resolution, "resolution");
+            if (invalidSymbol(target)) {
                 throw new IllegalArgumentException("invalid effect call target");
             }
         }
-        public static Call direct(String target) { return new Call(target); }
+        public static Call direct(String target) { return new Call(target, Resolution.DIRECT); }
+        public static Call unresolved(String label) { return new Call(label, Resolution.UNRESOLVED); }
     }
 
     public record Callable(String symbol, Set<Effect> direct, List<Call> calls, Set<Effect> allowed, boolean trapsThrow) {
         public Callable {
             Objects.requireNonNull(symbol, "symbol");
-            if (symbol.isBlank() || symbol.length() > 256) {
+            if (invalidSymbol(symbol)) {
                 throw new IllegalArgumentException("invalid callable symbol");
             }
             direct = Set.copyOf(direct);
@@ -100,6 +109,12 @@ public final class EffectContracts {
                 for (Callable def : definitions.values()) {
                     EnumSet<Effect> acc = enumCopy(def.direct());
                     for (Call call : def.calls()) {
+                        // Dynamic dispatch, callback invocation, reflection and
+                        // unauthenticated imports have no trusted static target.
+                        if (call.resolution() == Call.Resolution.UNRESOLVED) {
+                            acc.add(Effect.UNKNOWN_CALL);
+                            continue;
+                        }
                         Set<Effect> from = results.get(call.target());
                         if (from == null) {
                             acc.add(Effect.UNKNOWN_CALL); // fail closed across unknown/imported/FFI targets
@@ -151,6 +166,13 @@ public final class EffectContracts {
                 }
                 for (Call call : def.calls()) {
                     String target = call.target();
+                    if (call.resolution() == Call.Resolution.UNRESOLVED) {
+                        if (wanted == Effect.UNKNOWN_CALL) {
+                            return " via " + formatPath(symbol, parent)
+                                    + " -> [unresolved] " + target;
+                        }
+                        continue;
+                    }
                     if (wanted == Effect.THROW && definitions.containsKey(target)
                             && definitions.get(target).trapsThrow()) continue;
                     if (wanted == Effect.UNKNOWN_CALL && !definitions.containsKey(target)) {
@@ -174,6 +196,16 @@ public final class EffectContracts {
             return String.join(" -> ", reversed);
         }
 
+    }
+
+    /**
+     * Reject control and format characters in diagnostic identities. Unicode
+     * format controls can otherwise disguise distinct targets in witness paths.
+     */
+    private static boolean invalidSymbol(String symbol) {
+        if (symbol.isBlank() || symbol.length() > 256) return true;
+        return symbol.codePoints().anyMatch(cp -> Character.isISOControl(cp)
+                || Character.getType(cp) == Character.FORMAT);
     }
 
     private static EnumSet<Effect> enumCopy(Set<Effect> source) {
