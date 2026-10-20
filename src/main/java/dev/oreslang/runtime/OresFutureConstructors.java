@@ -68,7 +68,8 @@ public final class OresFutureConstructors {
      */
     public static <T> OresFuture<T> fromRunCallback(RunCallback<T> operation) {
         Objects.requireNonNull(operation, "operation");
-        return OresFuture.fromCallback(operation::run);
+        return OresFuture.fromCallback(callback ->
+                operation.run(normalizeExternalRejection(callback)));
     }
 
     /**
@@ -80,7 +81,40 @@ public final class OresFutureConstructors {
             RunCallback<T> operation) {
         Objects.requireNonNull(operation, "operation");
         OresScheduler.requireCurrent();
-        return OresFuture.fromCallback(operation::run);
+        return OresFuture.fromCallback(callback ->
+                operation.run(normalizeExternalRejection(callback)));
+    }
+
+    /**
+     * A malformed null failure from a retained foreign callback must not
+     * strand an otherwise pending Future. Keep OresFuture's single-shot
+     * authority and duplicate-completion semantics in the underlying target.
+     * This adapter neither runs guest code nor changes scheduler ownership.
+     */
+    private static <T> OresFuture.Callback<T> normalizeExternalRejection(
+            OresFuture.Callback<T> target) {
+        return new OresFuture.Callback<>() {
+            @Override
+            public void resolve(T value) {
+                target.resolve(value);
+            }
+
+            @Override
+            public void reject(Throwable failure) {
+                target.reject(failure != null ? failure
+                        : new NullPointerException("callback rejection failure must not be null"));
+            }
+
+            @Override
+            public void cancel() {
+                target.cancel();
+            }
+
+            @Override
+            public boolean isDone() {
+                return target.isDone();
+            }
+        };
     }
 
     /**
