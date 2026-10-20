@@ -207,6 +207,18 @@ public final class CapabilityChecker {
                     if (field.initializer() != null) checkExpr(field.initializer(), policy);
                 } else if (declaration instanceof Ast.TypeAliasDecl alias) {
                     checkType(alias.target(), policy);
+                } else if (declaration instanceof Ast.ModelDecl model) {
+                    for (Ast.ModelParam parameter : model.parameters()) {
+                        checkType(parameter.type(), policy);
+                        if (parameter.defaultValue() != null) {
+                            checkExpr(parameter.defaultValue(), policy);
+                        }
+                    }
+                    for (Ast.ModelOp operation : model.operations()) {
+                        for (Ast.Expr argument : operation.arguments()) {
+                            checkExpr(argument, policy);
+                        }
+                    }
                 }
             }
         }
