@@ -85,6 +85,31 @@ jobs:
           grep -F "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-aot.out
           grep -F "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-aot.out
 
+  native-aot-ref64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: GraalVM diagnostics
+        run: |
+          java --version
+          native-image --version
+      - name: Build full-width AOT image
+        run: mvn -B -ntp -Pnative-aot,native-ref64 -DskipTests package
+      - name: Run full-width AOT image
+        run: ./target/ores-aot --mode=aot --platform=linux examples/together.ores
+      - name: Load packaged native stdlib under full-width AOT
+        run: ./target/ores-aot --mode=aot --platform=linux examples/native-core-library.ores
+
   native-hybrid:
     runs-on: ubuntu-latest
     steps:
