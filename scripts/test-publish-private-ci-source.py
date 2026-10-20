@@ -14,6 +14,7 @@ pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
 ORIGINAL_VERIFY_PROTECTED_ORIGIN = pub.verify_protected_origin
 ORIGINAL_VERIFY_EXACT_SOURCE_TREE = pub.verified_exact_source_tree
+ORIGINAL_REQUIRE_PREFLIGHT = pub.require_preflight
 A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
 
 
@@ -96,6 +97,37 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     with patch.object(pub.subprocess, "run", return_value=response):
                         with self.assertRaises(pub.Denied):
                             pub.gh_api("repos/trusted/ci")
+
+    def test_preflight_is_data_only_and_never_executes_checkout_shell(self):
+        with (
+            patch.object(pub, "checked_repo", return_value={
+                "full_name": "trusted/ci",
+                "visibility": "private",
+                "private": True,
+            }),
+            patch.object(
+                pub.subprocess, "run",
+                side_effect=AssertionError("preflight executed checkout code"),
+            ),
+        ):
+            ORIGINAL_REQUIRE_PREFLIGHT("trusted/ci", self.root)
+
+    def test_policy_rejects_noncanonical_line_separators_and_control_bytes(self):
+        bad = (
+            b"# comment\x0btrusted/ci\n",
+            b"# comment\rtrusted/ci\n",
+            b"# comment\x00trusted/ci\n",
+            b"# comment\xfftrusted/ci\n",
+        )
+        for payload in bad:
+            with self.subTest(payload=payload):
+                self.approval.write_bytes(payload)
+                with self.assertRaisesRegex(pub.Denied, "noncanonical"):
+                    pub.checked_policy_fingerprint(self.root, "trusted/ci")
+        self.approval.write_bytes(b"# reviewed\ntrusted/ci\n")
+        self.assertIsInstance(
+            pub.checked_policy_fingerprint(self.root, "trusted/ci"), bytes
+        )
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
