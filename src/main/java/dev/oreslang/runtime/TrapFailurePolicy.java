@@ -25,7 +25,7 @@ public final class TrapFailurePolicy {
     private TrapFailurePolicy() { }
 
     public static boolean isTrappable(
-            RuntimeException failure, Class<? extends Throwable> panicType) {
+            Throwable failure, Class<? extends Throwable> panicType) {
         return permits(failure, panicType, false);
     }
 
