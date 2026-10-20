@@ -62,6 +62,33 @@ final class CallbackOrderingAnalyzerTest {
     }
 
     @Test
+    void registeringFirstRequiresVerifiedListenerInstallationForStrictAdmission() {
+        var result = scan("""
+                pub fnc foo(Callback cb): void {
+                    let randie = bar();
+                    randie.on("done", cb);
+                    doMore(|| -> { randie.emit("done", true); });
+                }
+                """);
+        assertFalse(containsRule(result, "ORES-CB-002"), result.toString());
+        assertTrue(containsRule(result, "ORES-CB-006"),
+                "unverified installation must not be misrepresented as proven safe");
+    }
+
+    @Test
+    void wildcardPriorSubscriptionCannotProveDefiniteRegistration() {
+        var result = scan("""
+                pub fnc foo(Callback cb, string eventName): void {
+                    let randie = bar();
+                    randie.on(eventName, cb);
+                    doMore(|| -> { randie.emit("done", true); });
+                }
+                """);
+        assertFalse(containsRule(result, "ORES-CB-006"),
+                "wildcard subscription must not establish a definite installed listener");
+    }
+
+    @Test
     void eventNameMustMatchUnlessDynamic() {
         var result = scan("""
                 pub fnc foo(Callback cb): void {
