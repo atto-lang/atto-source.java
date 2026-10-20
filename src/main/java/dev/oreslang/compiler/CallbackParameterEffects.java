@@ -159,7 +159,10 @@ public final class CallbackParameterEffects {
                 } else if (expr instanceof Ast.CallExpr call) {
                     if (call.callee() instanceof Ast.NameExpr n
                             && parameter.equals(n.name())) {
-                        if (deferred) escape = true;
+                        // Even an immediate callback call can execute
+                        // after the caller has suspended or cooperated, or
+                        // from a declared async/generator routine.
+                        if (deferred || maySuspend) escape = true;
                         else inline = true;
                     } else expression(call.callee(), deferred);
                     for (Ast.Expr arg : call.arguments()) expression(arg, true);
