@@ -3,7 +3,6 @@ package dev.oreslang.runtime;
 import java.io.IOException;
 import java.util.Objects;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Trusted host-side ownership of one IPC transport incarnation.
@@ -74,10 +73,6 @@ final class IpcTransportSessionLease {
     private boolean cleanupExecuting;
     private long enqueueAttempt;
     private Thread enqueueCaller;
-    // Actor-carrier cleanup misuse must be reportable without taking this
-    // monitor. A trusted host observation folds the violation into quarantine.
-    private final AtomicReference<Throwable> deferredCarrierFailure =
-            new AtomicReference<>();
 
     IpcTransportSessionLease(IpcReceiptCorrelation.Envelope trustedEpoch,
                              long generation, int limit,
@@ -225,7 +220,6 @@ final class IpcTransportSessionLease {
         RuntimeBlockingGuard.requireBlockingHostThread("IPC transport close request");
         boolean finalize;
         synchronized (this) {
-            absorbDeferredCarrierFailureLocked();
             if (phase == Phase.OPEN) phase = Phase.CLOSING;
             finalize = beginFinalization();
         }
@@ -249,12 +243,9 @@ final class IpcTransportSessionLease {
             long remainingNanos = timeoutMillis * 1_000_000L;
             long deadline = System.nanoTime() + remainingNanos;
             while (phase != Phase.RETIRED && phase != Phase.QUARANTINED) {
-                absorbDeferredCarrierFailureLocked();
-                if (phase == Phase.RETIRED || phase == Phase.QUARANTINED) break;
                 if (remainingNanos <= 0) return false;
-                long sliceNanos = Math.min(remainingNanos, 50_000_000L);
-                long millis = sliceNanos / 1_000_000L;
-                int nanos = (int) (sliceNanos % 1_000_000L);
+                long millis = remainingNanos / 1_000_000L;
+                int nanos = (int) (remainingNanos % 1_000_000L);
                 wait(millis, nanos);
                 remainingNanos = deadline - System.nanoTime();
             }
@@ -267,21 +258,17 @@ final class IpcTransportSessionLease {
      * write pins do not drain by a supervisor deadline. Never marks an
      * executing physical close as retired or interrupts its cleanup worker.
      */
-    boolean quarantineIfUnsettled(Throwable failure) {
-        RuntimeBlockingGuard.requireBlockingHostThread(
-                "IPC transport quarantine");
+    synchronized boolean quarantineIfUnsettled(Throwable failure) {
         Objects.requireNonNull(failure, "failure");
-        synchronized (this) {
-            if (phase == Phase.RETIRED || phase == Phase.QUARANTINED) return false;
-            if (phase == Phase.FINALIZING && cleanupExecuting) {
-                if (closeFailure == null) closeFailure = failure;
-                return false;
-            }
-            closeFailure = failure;
-            phase = Phase.QUARANTINED;
-            notifyAll();
-            return true;
+        if (phase == Phase.RETIRED || phase == Phase.QUARANTINED) return false;
+        if (phase == Phase.FINALIZING && cleanupExecuting) {
+            if (closeFailure == null) closeFailure = failure;
+            return false;
         }
+        closeFailure = failure;
+        phase = Phase.QUARANTINED;
+        notifyAll();
+        return true;
     }
 
     /** An explicit supervisor retry never reopens a quarantined session. */
@@ -289,7 +276,6 @@ final class IpcTransportSessionLease {
         RuntimeBlockingGuard.requireBlockingHostThread(
                 "IPC transport quarantined close retry");
         synchronized (this) {
-            absorbDeferredCarrierFailureLocked();
             if (phase != Phase.QUARANTINED || activeWrites != 0) {
                 throw new IllegalStateException("transport not quarantined");
             }
@@ -355,11 +341,6 @@ final class IpcTransportSessionLease {
     }
 
     private void finalizePhysicalClose(long attempt) {
-        // The scheduler callback itself may have been misrouted onto an actor
-        // carrier. Reject before touching this monitor: checking only after
-        // synchronized(this) could park the actor behind a host lifecycle lock.
-        RuntimeBlockingGuard.requireBlockingHostThread(
-                "IPC transport cleanup worker");
         synchronized (this) {
             if (phase != Phase.FINALIZING || cleanupAttempt != attempt
                     || cleanupExecuting) return;
@@ -367,6 +348,13 @@ final class IpcTransportSessionLease {
                 closeFailure = new IllegalStateException(
                         "cleanup scheduler executed inline on requesting carrier");
                 enqueueCaller = null;
+                phase = Phase.QUARANTINED;
+                notifyAll();
+                return;
+            }
+            if (RuntimeBlockingGuard.actorCarrierMarked()) {
+                closeFailure = new IllegalStateException(
+                        "cleanup scheduler executed on an actor carrier");
                 phase = Phase.QUARANTINED;
                 notifyAll();
                 return;
@@ -410,27 +398,7 @@ final class IpcTransportSessionLease {
         }
     }
 
-    void deferActorCarrierFailure(Throwable failure) {
-        Objects.requireNonNull(failure, "failure");
-        if (!RuntimeBlockingGuard.actorCarrierMarked()) {
-            throw new IllegalStateException(
-                    "deferred carrier failure requires an actor carrier");
-        }
-        deferredCarrierFailure.compareAndSet(null, failure);
-    }
-
-    /** Only called while holding this monitor on a trusted host thread. */
-    private void absorbDeferredCarrierFailureLocked() {
-        Throwable failure = deferredCarrierFailure.getAndSet(null);
-        if (failure == null || phase == Phase.RETIRED || phase == Phase.QUARANTINED) return;
-        if (closeFailure == null) closeFailure = failure;
-        cleanupExecuting = false;
-        phase = Phase.QUARANTINED;
-        notifyAll();
-    }
-
     synchronized Snapshot snapshot() {
-        absorbDeferredCarrierFailureLocked();
         return new Snapshot(generation, phase, activeWrites,
                 physicalCloseConfirmed, receiptsRetired);
     }
