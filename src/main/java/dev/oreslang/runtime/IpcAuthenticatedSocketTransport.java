@@ -62,9 +62,9 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     private final InputStream input;
     private final OutputStream output;
     private final IpcTransportSessionLease.CleanupScheduler cleanupScheduler;
-    // Opaque host identity used only to bind one receipt bridge to this exact
-    // physical connection object. It is never serialized or guest-visible.
-    private final Object physicalOwner = new Object();
+    // Opaque host identity minted together with generation/key/binding by the
+    // trusted broker. It is never serialized or guest-visible.
+    private final Object physicalOwner;
     // 0 = no abort callback owns this connection; >0 = queued attempt;
     // <0 = that attempt atomically claimed physical close execution.
     private final AtomicLong abortState = new AtomicLong();
@@ -77,69 +77,84 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             Socket socket,
             IpcReceiptCompletionBridge receipts,
             IpcReceiptCorrelation.Envelope trustedEpoch,
-            long physicalGeneration,
             int maxOutstandingWrites,
-            byte[] macKey,
-            byte[] connectionBinding,
+            IpcPhysicalConnectionBroker.Authority authority,
             IpcTransportSessionLease.CleanupScheduler cleanupScheduler) throws IOException {
         this.socket = Objects.requireNonNull(socket, "socket");
         this.receipts = Objects.requireNonNull(receipts, "receipts");
         this.trustedEpoch = Objects.requireNonNull(trustedEpoch, "trustedEpoch");
-        if (physicalGeneration <= 0) {
-            throw new IllegalArgumentException("physical generation must be positive");
-        }
+        Objects.requireNonNull(authority, "authority");
         if (maxOutstandingWrites != 1) {
             throw new IllegalArgumentException(
                     "TCP physical write concurrency must be exactly one; "
                     + "receipt lifetimes are bounded separately");
         }
-        if (macKey == null || macKey.length < 32 || macKey.length > 128) {
-            throw new IllegalArgumentException("IPC MAC key must be 32..128 bytes");
-        }
-        if (connectionBinding == null
-                || connectionBinding.length != CONNECTION_BINDING_BYTES) {
-            throw new IllegalArgumentException(
-                    "IPC connection binding must be exactly 16 bytes");
-        }
-        boolean nonzeroBinding = false;
-        for (byte value : connectionBinding) nonzeroBinding |= value != 0;
-        if (!nonzeroBinding) {
-            throw new IllegalArgumentException(
-                    "IPC connection binding must not be all zero");
-        }
         this.cleanupScheduler = Objects.requireNonNull(
                 cleanupScheduler, "cleanupScheduler");
-        byte[] privateMacKey = macKey.clone();
-        final byte[] privateConnectionBinding;
-        try {
-            privateConnectionBinding = connectionBinding.clone();
-        } catch (RuntimeException | Error cloneFailure) {
-            Arrays.fill(privateMacKey, (byte) 0);
-            throw cloneFailure;
-        }
+
         final InputStream socketInput;
         final OutputStream socketOutput;
         try {
+            // Stream acquisition is reversible and deliberately precedes
+            // one-shot broker authority consumption. If setup fails here, the
+            // caller may retry with the same still-unconsumed authority.
             socketInput = socket.getInputStream();
             socketOutput = socket.getOutputStream();
         } catch (IOException | RuntimeException | Error constructionFailure) {
             cleanupFailedConstruction(
-                    socket, privateMacKey, privateConnectionBinding,
-                    constructionFailure);
+                    socket, null, null, constructionFailure);
             throw constructionFailure;
         }
 
-        this.macKey = privateMacKey;
-        this.connectionBinding = privateConnectionBinding;
-        this.physicalGeneration = physicalGeneration;
-        this.input = socketInput;
-        this.output = socketOutput;
+        final IpcPhysicalConnectionBroker.Authority.Transfer transfer;
+        try {
+            transfer = authority.consume();
+        } catch (RuntimeException | Error authorityFailure) {
+            cleanupFailedConstruction(
+                    socket, null, null, authorityFailure);
+            throw authorityFailure;
+        }
+
+        byte[] privateMacKey = transfer.macKey();
+        byte[] privateConnectionBinding = transfer.connectionBinding();
+        long physicalGeneration = transfer.generation();
+        Object brokerPhysicalOwner = transfer.physicalOwner();
 
         try {
-            // Assemble every reversible host-side component before claiming
-            // the one-shot receipt bridge. In particular, allocation failure
-            // while constructing the lease must not strand an irreversible
-            // physicalOwner/generation binding.
+            if (physicalGeneration <= 0) {
+                throw new IllegalStateException(
+                        "broker produced nonpositive physical generation");
+            }
+            if (privateMacKey.length < 32 || privateMacKey.length > 128) {
+                throw new IllegalStateException(
+                        "broker produced invalid IPC MAC key length");
+            }
+            if (privateConnectionBinding.length != CONNECTION_BINDING_BYTES) {
+                throw new IllegalStateException(
+                        "broker produced invalid IPC connection binding length");
+            }
+            boolean nonzeroBinding = false;
+            for (byte value : privateConnectionBinding) {
+                nonzeroBinding |= value != 0;
+            }
+            if (!nonzeroBinding) {
+                throw new IllegalStateException(
+                        "broker produced all-zero IPC connection binding");
+            }
+            Objects.requireNonNull(
+                    brokerPhysicalOwner, "broker physical owner");
+
+            this.macKey = privateMacKey;
+            this.connectionBinding = privateConnectionBinding;
+            this.physicalGeneration = physicalGeneration;
+            this.physicalOwner = brokerPhysicalOwner;
+            this.input = socketInput;
+            this.output = socketOutput;
+
+            // Assemble every remaining host-side component before claiming
+            // the one-shot receipt bridge. Authority has already transferred;
+            // any failure from this point burns it and destroys its credentials
+            // rather than making a partially consumed authority reusable.
             this.sessionLease = new IpcTransportSessionLease(
                     trustedEpoch,
                     physicalGeneration,
@@ -160,8 +175,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                             // A reader may already have consumed a complete frame
                             // and be authenticating/applying it under readGate.
                             // Do not destroy authentication/replay material until
-                            // that ordered receive transaction exits. Taking
-                            // readGate before close would deadlock a blocked read.
+                            // that ordered receive transaction exits.
                             synchronized (readGate) {
                                 Arrays.fill(this.macKey, (byte) 0);
                                 Arrays.fill(this.connectionBinding, (byte) 0);
@@ -170,8 +184,8 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                     },
                     this.cleanupScheduler);
 
-            // Last irreversible constructor step. No allocation or other
-            // throwing assembly is allowed after this successful claim.
+            // Final irreversible binding step. No allocation/assembly follows
+            // a successful bridge claim.
             receipts.claimPhysicalTransport(
                     physicalOwner, trustedEpoch, physicalGeneration);
         } catch (RuntimeException | Error constructionFailure) {
@@ -199,8 +213,12 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                 }
             }
         } finally {
-            Arrays.fill(privateMacKey, (byte) 0);
-            Arrays.fill(privateConnectionBinding, (byte) 0);
+            if (privateMacKey != null) {
+                Arrays.fill(privateMacKey, (byte) 0);
+            }
+            if (privateConnectionBinding != null) {
+                Arrays.fill(privateConnectionBinding, (byte) 0);
+            }
         }
     }
 
