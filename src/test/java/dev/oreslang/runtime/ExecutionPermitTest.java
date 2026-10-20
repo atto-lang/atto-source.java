@@ -137,6 +137,13 @@ final class ExecutionPermitTest {
 
         ExecutionPermit<Region, IntAccessSet> restored =
                 ExecutionPermit.rejoin(children);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> restored.rotateGeneration(5, access(1, 2, 3)),
+                "generation rotation must not widen authority");
+        assertTrue(restored.isLive(),
+                "rejected authority widening must not consume the root permit");
+
         ExecutionPermit<Region, IntAccessSet> next =
                 restored.rotateGeneration(5, access(1, 2));
 
