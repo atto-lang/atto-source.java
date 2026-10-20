@@ -19,12 +19,12 @@ public final class ModelRunFencing {
             long parameterVersion,
             String executionProfileDigest) {
         public Owner {
-            requireId(modelTypeId, "MODEL_INVALID_TYPE_ID");
+            requireId(modelTypeId, "MODEL_INVALID_MODEL_TYPE_ID");
             requireDigest(graphDigest, "MODEL_INVALID_GRAPH_DIGEST");
             if (graphGeneration < 0) throw new IllegalArgumentException("MODEL_INVALID_GRAPH_GENERATION");
             requireId(instanceId, "MODEL_INVALID_INSTANCE_ID");
             if (parameterVersion < 0) throw new IllegalArgumentException("MODEL_INVALID_PARAMETER_VERSION");
-            requireDigest(executionProfileDigest, "MODEL_INVALID_PROFILE_DIGEST");
+            requireDigest(executionProfileDigest, "MODEL_INVALID_EXECUTION_PROFILE");
         }
     }
 
@@ -38,12 +38,12 @@ public final class ModelRunFencing {
             String executionProfileDigest) {
         public RunStamp {
             requireId(runId, "MODEL_INVALID_RUN_ID");
-            requireId(modelTypeId, "MODEL_INVALID_TYPE_ID");
+            requireId(modelTypeId, "MODEL_INVALID_MODEL_TYPE_ID");
             requireDigest(graphDigest, "MODEL_INVALID_GRAPH_DIGEST");
             if (graphGeneration < 0) throw new IllegalArgumentException("MODEL_INVALID_GRAPH_GENERATION");
             requireId(instanceId, "MODEL_INVALID_INSTANCE_ID");
             if (parameterVersion < 0) throw new IllegalArgumentException("MODEL_INVALID_PARAMETER_VERSION");
-            requireDigest(executionProfileDigest, "MODEL_INVALID_PROFILE_DIGEST");
+            requireDigest(executionProfileDigest, "MODEL_INVALID_EXECUTION_PROFILE");
         }
     }
 
@@ -87,17 +87,17 @@ public final class ModelRunFencing {
         if (ledger.committedRunIds().contains(stamp.runId()))
             throw new IllegalStateException("MODEL_RUN_REPLAY");
         if (!owner.modelTypeId().equals(stamp.modelTypeId()))
-            throw new IllegalStateException("MODEL_WRONG_TYPE");
+            throw new IllegalStateException("MODEL_INSTANCE_TYPE_MISMATCH");
         if (!owner.graphDigest().equals(stamp.graphDigest()))
-            throw new IllegalStateException("MODEL_STALE_GRAPH");
+            throw new IllegalStateException("MODEL_INSTANCE_GRAPH_MISMATCH");
         if (owner.graphGeneration() != stamp.graphGeneration())
-            throw new IllegalStateException("MODEL_STALE_GRAPH_GENERATION");
+            throw new IllegalStateException("MODEL_INSTANCE_GRAPH_MISMATCH_GENERATION");
         if (!owner.instanceId().equals(stamp.instanceId()))
-            throw new IllegalStateException("MODEL_WRONG_INSTANCE");
+            throw new IllegalStateException("MODEL_INSTANCE_ID_MISMATCH");
         if (owner.parameterVersion() != stamp.parameterVersion())
-            throw new IllegalStateException("MODEL_STALE_PARAMETER_VERSION");
+            throw new IllegalStateException("MODEL_PARAMETER_VERSION_MISMATCH");
         if (!owner.executionProfileDigest().equals(stamp.executionProfileDigest()))
-            throw new IllegalStateException("MODEL_WRONG_EXECUTION_PROFILE");
+            throw new IllegalStateException("MODEL_EXECUTION_PROFILE_MISMATCH");
         Set<String> next = new HashSet<>(ledger.committedRunIds());
         next.add(stamp.runId());
         return new Ledger(next);
