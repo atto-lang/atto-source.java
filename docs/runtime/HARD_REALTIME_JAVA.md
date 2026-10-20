@@ -72,7 +72,7 @@ The common contract allows period/minimum inter-arrival time only where applicab
 
 A zero-byte `maxMemoryBytes` is valid when the compiler/runtime proves that the reachable critical path has a zero-byte peak. The cap is therefore checked against an independent peak-footprint witness instead of treating zero as "missing".
 
-The two-argument `admitJavaHardRt(effects, budget)` entry point now deliberately fails closed because it has no scheduler or peak-memory proof. Callers seeking hard-RT admission must provide `RealtimeProfile.Proof`; this record is evidence plumbing only and does not by itself create or certify either proof.
+The public two-argument `admitJavaHardRt(effects, budget)` entry point now deliberately fails closed because it has no scheduler or peak-memory proof. The proof carrier and proof-bearing overload are package-internal so external callers cannot self-certify by constructing a `Proof(true, ...)`. A future trusted compiler/runtime bridge must mint the witness only after validating the exact budget, scheduler, deployment and peak-memory bound.
 
 The next compiler step is transitive effect inference from guest source plus a compiler-derived peak-memory witness, with the deployment scheduler supplying the independent schedulability result.
 
