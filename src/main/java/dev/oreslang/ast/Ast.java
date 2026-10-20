@@ -36,7 +36,7 @@ public final class Ast {
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl, ModelDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
@@ -525,6 +525,61 @@ public final class Ast {
         /** Existing AST producers without an explicit visibility are private by default. */
         public TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) {
             this(name, Visibility.PRIVATE, genericParameters, target);
+        }
+    }
+
+    /** A compile-time model parameter. Defaults remain syntax until typed constant admission. */
+    public record ModelParam(TypeRef type, String name, Expr defaultValue) {
+        public ModelParam {
+            java.util.Objects.requireNonNull(type, "model parameter type");
+            if (name == null || name.isBlank() || name.startsWith("$")) {
+                throw new IllegalArgumentException("invalid model parameter name");
+            }
+        }
+    }
+
+    /** One positional or named static argument to a nominal model operation. */
+    public record ModelArgument(String name, Expr value) {
+        public ModelArgument {
+            if (name != null && (name.isBlank() || name.startsWith("$"))) {
+                throw new IllegalArgumentException("invalid named model argument");
+            }
+            java.util.Objects.requireNonNull(value, "model argument value");
+        }
+    }
+
+    /**
+     * V1 model bodies are an ordered, non-empty sequence of nominal operation
+     * constructor calls. This is syntax/HIR input only, not executable guest code.
+     */
+    public record ModelOpCall(String name, List<ModelArgument> arguments) {
+        public ModelOpCall {
+            if (name == null || name.isBlank() || name.startsWith("$")) {
+                throw new IllegalArgumentException("invalid model operation name");
+            }
+            arguments = List.copyOf(arguments);
+        }
+    }
+
+    /**
+     * Nominal first-class computational model declaration. The parser may build
+     * this node before typed ModelGraph lowering exists; semantic admission must
+     * fail closed rather than interpreting operations as ordinary function calls.
+     */
+    public record ModelDecl(
+            String name,
+            Visibility visibility,
+            List<ModelParam> parameters,
+            List<ModelOpCall> operations) implements Decl {
+        public ModelDecl {
+            if (name == null || name.isBlank() || name.startsWith("$")) {
+                throw new IllegalArgumentException("invalid model name");
+            }
+            parameters = List.copyOf(parameters);
+            operations = List.copyOf(operations);
+            if (operations.isEmpty()) {
+                throw new IllegalArgumentException("MODEL_EMPTY_BODY: model body must contain at least one operation");
+            }
         }
     }
 
