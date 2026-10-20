@@ -16,9 +16,10 @@ import java.util.Objects;
  *
  * <p>The current executable surface records only the narrow copied-scalar Task.
  * The package-private scoped-loan path exists for the next compiler lowering
- * stage: it stores the exact ordered coherent claims and type authorities so a
- * later dynamic launch can mint {@link TaskLoanAdmission} without accepting
- * caller-supplied replacement claims.</p>
+ * stage: it freezes coherent type validation into an exact ordered access
+ * footprint so a later dynamic launch can mint {@link TaskLoanAdmission}
+ * without retaining live type-proof callbacks or accepting caller-supplied
+ * replacement claims.</p>
  */
 public final class TaskBoundaryAdmissions {
     private static final int MAX_BOUNDARIES = 4_096;
