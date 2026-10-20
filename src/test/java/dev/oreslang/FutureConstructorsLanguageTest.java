@@ -219,4 +219,23 @@ final class FutureConstructorsLanguageTest {
     }
 
 
+    @Test
+    void constructorRejectsErasedProviderGenericArgument() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                define module app
+                  define class ErasedProducer<T> as
+                    pub async run(): int { return 5; }
+                  end
+                  pub fnc main(): void {
+                    let Future<int> f = new Future<int>(new ErasedProducer<Any>());
+                    return;
+                  }
+                end
+                """));
+        assertTrue(error.getMessage().contains("requires an owned nominal async provider"),
+                () -> "erased provider generic escaped Future constructor gate: " + error.getMessage());
+    }
+
+
 }
