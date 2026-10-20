@@ -12,14 +12,18 @@ import static org.junit.jupiter.api.Assertions.*;
 final class TrapFailurePolicyTest {
     private static final class GuestPanic extends RuntimeException { }
 
-    @Test void ordinaryGuestFailuresRemainTrappable() {
-        assertTrue(TrapFailurePolicy.isTrappable(
+    @Test void onlyExplicitGuestFailuresHaveAuthenticatedTrapOrigin() {
+        // A JDK exception's mutable stack trace is NOT a runtime-origin proof.
+        assertFalse(TrapFailurePolicy.isTrappable(
                 new IllegalStateException("Assert.equal: values are not equal"), GuestPanic.class));
-        assertTrue(TrapFailurePolicy.isTrappable(
+        assertFalse(TrapFailurePolicy.isTrappable(
                 new CompletionException(new IllegalArgumentException("ordinary guest error")),
                 GuestPanic.class));
         assertTrue(TrapFailurePolicy.isTrappable(
                 new GuestControlSignal.Throw("ordinary guest throw"), GuestPanic.class));
+        assertTrue(TrapFailurePolicy.isTrappable(
+                new CompletionException(new GuestControlSignal.Throw("wrapped guest throw")),
+                GuestPanic.class));
     }
 
     @Test void unclassifiedHostRuntimeFailuresFailClosed() {
@@ -125,4 +129,28 @@ final class TrapFailurePolicyTest {
         }
         assertFalse(TrapFailurePolicy.isTrappable(failure, GuestPanic.class));
     }
+    @Test void hostExceptionCannotForgeRuntimeProvenanceByReplacingStackTrace() {
+        RuntimeException foreign = new IllegalStateException("host network failure");
+        foreign.setStackTrace(new StackTraceElement[]{
+                new StackTraceElement(
+                        "dev.oreslang.runtime.TrapFailurePolicy",
+                        "permitted", "TrapFailurePolicy.java", 1)
+        });
+        assertFalse(TrapFailurePolicy.isTrappable(foreign, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(foreign, GuestPanic.class));
+        RuntimeException wrapped = new CompletionException(
+                new GuestControlSignal.Throw("guest error"), foreign);
+        assertFalse(TrapFailurePolicy.isTrappable(wrapped, GuestPanic.class),
+                "a guest cause must not hide a forged host error in cleanup");
+    }
+
+    @Test void offCarrierCancellationOrPanicCannotBeDowngradedThroughSuppression() {
+        var failure = new CompletionException(
+                new GuestControlSignal.Throw("normal guest failure"));
+        failure.addSuppressed(new CompletionException(
+                new GuestControlSignal.Raise("nontrappable CONTROL")));
+        assertFalse(TrapFailurePolicy.isTrappable(failure, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(failure, GuestPanic.class));
+    }
+
 }
