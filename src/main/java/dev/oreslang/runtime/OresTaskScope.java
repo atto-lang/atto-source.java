@@ -128,8 +128,7 @@ public final class OresTaskScope {
                 throw new IllegalStateException("Task scope is already sealed");
             }
 
-            TaskLoanReservation<?, ?> reservation =
-                    Objects.requireNonNullElseGet(reservationFactory.get(), () -> null);
+            TaskLoanReservation<?, ?> reservation = reservationFactory.get();
             child = new Child(reservation);
             children.add(child);
 
