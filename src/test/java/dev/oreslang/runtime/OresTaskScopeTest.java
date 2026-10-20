@@ -772,7 +772,7 @@ final class OresTaskScopeTest {
 
             assertTrue(entered.await(5, TimeUnit.SECONDS));
             assertTrue(scope.hasScopedReadLease(claim));
-            scope.corruptScopedReadRegionForTest(83L);
+            corruptScopedReadRegionForTest(scope, 83L);
 
             OresFuture<Void> drained = scope.quiesce();
             release.countDown();
@@ -830,7 +830,7 @@ final class OresTaskScopeTest {
             assertTrue(entered.await(5, TimeUnit.SECONDS));
             OresFuture<Void> drained = scope.quiesce();
 
-            scope.corruptScopedReadRegionForTest(101L);
+            corruptScopedReadRegionForTest(scope, 101L);
             releaseCorrupt.countDown();
             assertEquals(1, corrupt.get(5, TimeUnit.SECONDS));
 
@@ -862,9 +862,35 @@ final class OresTaskScopeTest {
                     "poison must preserve the original accounting failure");
             assertTrue(ownerDeregistered.get(),
                     "poisoned scope may deregister only after every child carrier exits");
-            assertEquals(2, scope.activeChildren(),
-                    "poison preserves forensic child/claim state instead of publishing success");
-            assertEquals(2, scope.activeScopedReadClaims());
+            assertEquals(1, scope.activeChildren(),
+                    "only the corrupt child remains pinned for forensic state");
+            assertEquals(1, scope.activeScopedReadClaims(),
+                    "healthy sibling authority must retire after physical quiescence");
+            assertFalse(scope.hasScopedReadLease(siblingClaim),
+                    "poison must not keep a healthy sibling's stale ticket valid");
+            assertTrue(siblingClaim.issued(),
+                    "successful sibling claim identity stays one-shot consumed");
+        }
+    }
+
+
+    @SuppressWarnings("unchecked")
+    private static void corruptScopedReadRegionForTest(
+            OresTaskScope scope, long regionId) throws Exception {
+        // Keep corruption capability out of production runtime API. The test
+        // reaches the private bookkeeping only through reflection.
+        java.lang.reflect.Field lockField =
+                OresTaskScope.class.getDeclaredField("lock");
+        java.lang.reflect.Field regionsField =
+                OresTaskScope.class.getDeclaredField("scopedReadRegions");
+        lockField.setAccessible(true);
+        regionsField.setAccessible(true);
+
+        Object lock = lockField.get(scope);
+        synchronized (lock) {
+            java.util.Map<Long, ?> regions =
+                    (java.util.Map<Long, ?>) regionsField.get(scope);
+            regions.remove(regionId);
         }
     }
 
