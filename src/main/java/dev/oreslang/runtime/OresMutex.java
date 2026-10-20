@@ -390,20 +390,46 @@ public final class OresMutex {
 
         synchronized boolean reserveRuntimePublication(ActorRuntime runtime) {
             Objects.requireNonNull(runtime, "runtime");
+            if (pendingPublications < 0
+                    || (owningRuntime == null && pendingPublications != 0)) {
+                throw new IllegalStateException(
+                        "SharedMutex publication reservation state is corrupted");
+            }
+            if (owningRuntime != null && owningRuntime != runtime) {
+                return false;
+            }
+            if (pendingPublications == Integer.MAX_VALUE) {
+                throw new IllegalStateException(
+                        "SharedMutex publication reservation capacity exhausted");
+            }
             if (owningRuntime == null) {
                 owningRuntime = runtime;
-            } else if (owningRuntime != runtime) {
-                return false;
             }
             pendingPublications++;
             return true;
         }
 
-        synchronized void commitRuntimePublication(ActorRuntime runtime) {
+        /**
+         * Fallible invariant check performed before physical mailbox
+         * acceptance. runtimeLifecycleLock serializes actor send transactions,
+         * so a successfully reserved publication cannot be consumed by another
+         * send before its own post-admission commit.
+         */
+        synchronized void validateRuntimePublicationCommit(ActorRuntime runtime) {
             Objects.requireNonNull(runtime, "runtime");
             if (owningRuntime != runtime || pendingPublications <= 0) {
-                throw new IllegalStateException("SharedMutex publication commit without matching reservation");
+                throw new IllegalStateException(
+                        "SharedMutex publication commit without matching reservation");
             }
+        }
+
+        /**
+         * Post-mailbox-acceptance commit. All fallible validation must have
+         * completed before tryWrite(). This method deliberately performs only
+         * primitive state mutation so accepted mail is never followed by an
+         * ordinary validation/allocation failure.
+         */
+        synchronized void commitRuntimePublicationAfterAdmission() {
             pendingPublications--;
             publishedToRuntime = true;
         }
@@ -411,7 +437,8 @@ public final class OresMutex {
         synchronized void abortRuntimePublication(ActorRuntime runtime) {
             Objects.requireNonNull(runtime, "runtime");
             if (owningRuntime != runtime || pendingPublications <= 0) {
-                throw new IllegalStateException("SharedMutex publication abort without matching reservation");
+                throw new IllegalStateException(
+                        "SharedMutex publication abort without matching reservation");
             }
             pendingPublications--;
             if (pendingPublications == 0 && !publishedToRuntime) {
