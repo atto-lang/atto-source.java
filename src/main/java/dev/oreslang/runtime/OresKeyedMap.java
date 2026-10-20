@@ -6,11 +6,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.nio.ByteBuffer;
-import java.nio.CharBuffer;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.CodingErrorAction;
-import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -222,19 +217,12 @@ public final class OresKeyedMap<K, V> {
     }
 
     private static void checkStringKey(String text) {
-        if (text.length() > MAX_TEXT_KEY_BYTES) {
-            throw new IllegalArgumentException("Map String key exceeds byte limit");
-        }
         try {
-            ByteBuffer bytes = StandardCharsets.UTF_8.newEncoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .encode(CharBuffer.wrap(text));
-            if (bytes.remaining() > MAX_TEXT_KEY_BYTES) {
-                throw new IllegalArgumentException("Map String key exceeds byte limit");
-            }
-        } catch (CharacterCodingException invalid) {
-            throw new IllegalArgumentException("Map String key must be valid Unicode", invalid);
+            SymbolPropertyKeyCodec.encodedWireLength(text);
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalArgumentException(
+                    "Map String key must be valid Unicode and fit the byte limit",
+                    invalid);
         }
     }
 
@@ -325,8 +313,9 @@ public final class OresKeyedMap<K, V> {
 
     private static int wireKeyBytes(Object key) {
         // The canonical tagged-key codec defines the identical logical
-        // String/PROCESS/STABLE footprint used by bulk serialization.
-        return SymbolPropertyKeyCodec.encode(key).length;
+        // String/PROCESS/STABLE footprint used by bulk serialization. Use its
+        // strict size preflight rather than allocating a throwaway wire frame.
+        return SymbolPropertyKeyCodec.encodedWireLength(key);
     }
 
     public synchronized V put(K key, V value) {
@@ -446,10 +435,17 @@ public final class OresKeyedMap<K, V> {
     public synchronized Lookup<V> take(Object key) {
         rejectReentrantMutation();
         checkKey(key);
-        V removed = entries.remove(key);
-        if (removed == null) return Lookup.missing();
-        storedKeyWireBytes -= wireKeyBytes(key);
-        return Lookup.present(removed);
+        V existing = entries.get(key);
+        if (existing == null) return Lookup.missing();
+        int refundBytes = wireKeyBytes(key);
+        if (refundBytes > storedKeyWireBytes) {
+            throw new IllegalStateException("typed Map key-byte accounting underflow");
+        }
+        // Compute and validate the refund before mutating live storage so an
+        // internal codec/accounting failure cannot partially remove the entry.
+        entries.remove(key);
+        storedKeyWireBytes -= refundBytes;
+        return Lookup.present(existing);
     }
 
     /** Host compatibility API; guest consuming lowering should prefer take(). */
