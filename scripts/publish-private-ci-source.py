@@ -34,6 +34,21 @@ class Denied(RuntimeError):
     pass
 
 
+def safe_descriptor_flags_available():
+    """Require distinct positive descriptor-safety flag bits."""
+    flags = tuple(
+        getattr(os, name, None)
+        for name in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
+    )
+    if not all(type(value) is int and value > 0 for value in flags):
+        return False
+    return all(
+        (left & right) == 0
+        for index, left in enumerate(flags)
+        for right in flags[index + 1:]
+    )
+
+
 def valid_sha(value):
     if not isinstance(value, str) or not SHA.fullmatch(value):
         raise Denied("GitHub returned an invalid object SHA")
@@ -123,8 +138,7 @@ def _parse_policy_approval(contents, repository, label):
 
 def checked_policy_approval(root, repository):
     """Return the exact policy digest and immutable approved repository ID."""
-    if (not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW")
-            or not hasattr(os, "O_NONBLOCK")):
+    if not safe_descriptor_flags_available():
         raise Denied("OS cannot safely read the destination approval policy")
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     policy_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
@@ -248,8 +262,7 @@ def collect_source(root, trusted_root):
     descendants are opened relative to directory descriptors anchored at
     the trusted checkout, so a rename cannot redirect them outside it.
     """
-    if (not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY")
-            or not hasattr(os, "O_NONBLOCK")):
+    if not safe_descriptor_flags_available():
         raise Denied("OS cannot enforce descriptor-relative no-follow reads")
     if root.is_symlink() or not root.is_dir():
         raise Denied("source path must be a real directory")
