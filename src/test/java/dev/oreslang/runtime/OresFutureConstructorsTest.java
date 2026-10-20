@@ -361,4 +361,39 @@ final class OresFutureConstructorsTest {
     }
 
 
+    @Test
+    void malformedAsynchronousNullRejectionFailsFutureAndDetaches() throws Exception {
+        AtomicReference<OresFuture.Callback<Integer>> foreign = new AtomicReference<>();
+        java.util.concurrent.atomic.AtomicInteger detaches = new java.util.concurrent.atomic.AtomicInteger();
+        OresFuture<Integer> future = OresFutureConstructors.fromCancellableRunCallback(
+                callback -> {
+                    foreign.set(callback);
+                    return detaches::incrementAndGet;
+                });
+
+        assertFalse(future.isDone());
+        assertDoesNotThrow(() -> foreign.get().reject(null));
+        var failed = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> future.get(5, TimeUnit.SECONDS));
+        assertInstanceOf(NullPointerException.class, failed.getCause());
+        assertEquals(1, detaches.get(), "malformed asynchronous rejection must not leak subscription");
+        assertTrue(foreign.get().isDone());
+        assertThrows(OresFuture.AlreadySettledException.class,
+                () -> foreign.get().resolve(40));
+    }
+
+    @Test
+    void malformedSynchronousNullRejectionDetachesAfterRegistration() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger detaches = new java.util.concurrent.atomic.AtomicInteger();
+        OresFuture<Integer> future = OresFutureConstructors.fromCancellableRunCallback(
+                callback -> {
+                    callback.reject(null);
+                    return detaches::incrementAndGet;
+                });
+        var failed = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> future.get(5, TimeUnit.SECONDS));
+        assertInstanceOf(NullPointerException.class, failed.getCause());
+        assertEquals(1, detaches.get(), "registration must detach after early malformed rejection");
+    }
+
 }
