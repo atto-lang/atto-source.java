@@ -53,6 +53,16 @@ final class StatechartGuestV0Test {
         assertInvalid("statechart-symbol-invalid-active.ores", "active state is undeclared");
     }
 
+    @Test
+    void bypassingCheckedFactoryCannotBypassStepValidation() {
+        assertInvalid("statechart-symbol-invalid-raw.ores", "duplicate state Symbol");
+    }
+
+    @Test
+    void unknownParentIndexMustRejectAtGuestRuntime() {
+        assertInvalid("statechart-symbol-invalid-parent.ores", "unknown parent index");
+    }
+
     private static void assertInvalid(String filename, String expectedMessage) {
         Exception thrown = assertThrows(Exception.class, () -> run(filename), filename);
         StringBuilder messages = new StringBuilder();
