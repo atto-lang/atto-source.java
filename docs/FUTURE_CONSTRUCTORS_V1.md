@@ -442,3 +442,25 @@ This host-runtime hardening does not magically make external
 registrations physically quiescent: detach action semantics remain a
 separate trusted runtime contract, and the untyped host-only
 `RunCallback` overload has no external detach hook.
+
+
+### Host RunCallback null-rejection normalization — 2026-10-20
+
+The synchronous host-only `fromRunCallback` and scheduler-admitted
+`fromRunCallbackOnCurrentTask` now normalize a malformed
+`callback.reject(null)` into a **terminal failure** with a
+`NullPointerException` cause. Their original pass-through callbacks
+would instead throw before settling the returned `OresFuture` when a
+retained external producer delivered that invalid signal later.
+A small adapter delegates `resolve`, `cancel` and `isDone` to the
+existing `OresFuture.Callback`, retaining the original single-claim
+and late-cancellation arbitration. The separate
+`fromCancellableRunCallback` staging/cleanup contract is unchanged.
+
+Three additional host JUnit cases cover late foreign null rejection,
+synchronous null rejection during registration, and rejection inside
+an admitted scheduler turn. The **host suite now stages 26 JUnit tests**
+and the guest suite stages **20 JUnit tests**. In a **source-free Java 21
+surrogate**, three terminal-state checks and 2,000 concurrent settle/
+cancel races passed; this model is not the actual Oreslang runtime or
+GraalVM/LLVM/Maven integration, so exact-head CI remains mandatory.
