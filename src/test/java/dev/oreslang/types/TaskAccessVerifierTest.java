@@ -1,8 +1,10 @@
 package dev.oreslang.types;
 
+import dev.oreslang.ast.Ast;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 /** Admission-layer tests; these do not prove guest Task execution. */
@@ -236,6 +238,70 @@ final class TaskAccessVerifierTest {
                 () -> ledger.admitTyped(List.of(new TaskAccessVerifier.TypedClaim(
                         read(unique), new Types.Generic("T"))), (name, trait) -> true));
         assertEquals(0, ledger.activeChildren());
+    }
+
+    @Test
+    void scopedReadBorrowRequiresSyncAndCanonicalExactPlace() {
+        Ast.Program program = new Ast.Program(List.of());
+        SendSyncTraits scalarSource = new SendSyncTraits(program, Set.of());
+        ThreadSafetyTraits.NominalProof resolved = (type, trait) -> false;
+        var exact = new TaskAccessVerifier.CoherentTypedClaim(
+                read(TaskAccessVerifier.Place.whole(WORLD)
+                        .field("position", true)
+                        .range(0, 64, true)),
+                Ast.TypeRef.simple("int"),
+                Types.Primitive.INT);
+
+        assertNotNull(TaskAccessVerifier.proveScopedReadBorrow(
+                List.of(exact), scalarSource, resolved));
+
+        var writeClaim = new TaskAccessVerifier.CoherentTypedClaim(
+                write(TaskAccessVerifier.Place.whole(WORLD)),
+                Ast.TypeRef.simple("int"),
+                Types.Primitive.INT);
+        assertThrows(IllegalArgumentException.class,
+                () -> TaskAccessVerifier.proveScopedReadBorrow(
+                        List.of(writeClaim), scalarSource, resolved));
+
+        var unknownAllocation = new TaskAccessVerifier.CoherentTypedClaim(
+                read(TaskAccessVerifier.Place.whole(UNKNOWN)),
+                Ast.TypeRef.simple("int"),
+                Types.Primitive.INT);
+        assertThrows(IllegalArgumentException.class,
+                () -> TaskAccessVerifier.proveScopedReadBorrow(
+                        List.of(unknownAllocation), scalarSource, resolved));
+
+        var unprovenProjection = new TaskAccessVerifier.CoherentTypedClaim(
+                read(TaskAccessVerifier.Place.whole(WORLD)
+                        .field("opaque", false)),
+                Ast.TypeRef.simple("int"),
+                Types.Primitive.INT);
+        assertThrows(IllegalArgumentException.class,
+                () -> TaskAccessVerifier.proveScopedReadBorrow(
+                        List.of(unprovenProjection), scalarSource, resolved));
+
+        var actorPrivate = new TaskAccessVerifier.CoherentTypedClaim(
+                read(TaskAccessVerifier.Place.whole(
+                        new TaskAccessVerifier.Root(
+                                "ACTOR_PRIVATE", "actor-1:epoch-1",
+                                44, 1, true))),
+                Ast.TypeRef.simple("int"),
+                Types.Primitive.INT);
+        assertThrows(IllegalArgumentException.class,
+                () -> TaskAccessVerifier.proveScopedReadBorrow(
+                        List.of(actorPrivate), scalarSource, resolved));
+
+        SendSyncTraits arraySource =
+                new SendSyncTraits(program, Set.of("Array"));
+        var mutableArray = new TaskAccessVerifier.CoherentTypedClaim(
+                read(TaskAccessVerifier.Place.whole(WORLD)),
+                new Ast.TypeRef(
+                        "Array", List.of(Ast.TypeRef.simple("int")), false),
+                new Types.ListType(Types.Primitive.INT));
+        assertThrows(IllegalArgumentException.class,
+                () -> TaskAccessVerifier.proveScopedReadBorrow(
+                        List.of(mutableArray), arraySource, resolved),
+                "mutable Array storage has no canonical Sync proof");
     }
 
     @Test void typedAdmissionRejectsEveryClaimBeforeAnyReservation() {
@@ -536,9 +602,13 @@ final class TaskAccessVerifierTest {
         Object exactEpoch = epochField.get(exact);
         long exactId = idField.getLong(exact);
         var constructor = TaskAccessVerifier.Ticket.class
-                .getDeclaredConstructor(Object.class, long.class);
+                .getDeclaredConstructor(
+                        Object.class, long.class,
+                        TaskAccessVerifier.LoanKind.class);
         constructor.setAccessible(true);
-        var forged = constructor.newInstance(exactEpoch, exactId);
+        var forged = constructor.newInstance(
+                exactEpoch, exactId,
+                TaskAccessVerifier.LoanKind.STATIC_ANALYSIS);
 
         assertNotSame(exact, forged);
         assertThrows(IllegalArgumentException.class,

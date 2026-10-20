@@ -130,7 +130,7 @@ final class TaskBoundaryAdmissionsTest {
     }
 
     @Test
-    void scopedLoanMintUsesClaimsStoredInExactBoundaryProof() {
+    void scopedReadBorrowMintUsesClaimsStoredInExactBoundaryProof() {
         Ast.TaskExpr first = new Ast.TaskExpr(List.of(
                 new Ast.ReturnStmt(new Ast.LiteralExpr(1L))));
         Ast.TaskExpr second = new Ast.TaskExpr(List.of(
@@ -157,7 +157,7 @@ final class TaskBoundaryAdmissionsTest {
                         Ast.TypeRef.simple("int"),
                         Types.Primitive.INT);
         assertThrows(IllegalArgumentException.class,
-                () -> admissions.recordScopedLoan(
+                () -> admissions.recordScopedReadBorrow(
                         new Ast.TaskExpr(first.body()),
                         List.of(firstClaim),
                         new SendSyncTraits(new Ast.Program(List.of()), Set.of()),
@@ -165,12 +165,28 @@ final class TaskBoundaryAdmissionsTest {
                 "source type authority from another program must fail closed");
         assertEquals(0, admissions.boundaryCount());
 
-        admissions.recordScopedLoan(
+        Ast.TaskExpr forbiddenWrite = new Ast.TaskExpr(List.of(
+                new Ast.ReturnStmt(new Ast.LiteralExpr(3L))));
+        assertThrows(IllegalArgumentException.class,
+                () -> admissions.recordScopedReadBorrow(
+                        forbiddenWrite,
+                        List.of(new TaskAccessVerifier.CoherentTypedClaim(
+                                new TaskAccessVerifier.Claim(
+                                        TaskAccessVerifier.Place.whole(generationOne),
+                                        TaskAccessVerifier.Mode.WRITE),
+                                Ast.TypeRef.simple("int"),
+                                Types.Primitive.INT)),
+                        sourceProof,
+                        resolved),
+                "SCOPED_READ_BORROW must reject WRITE before ledger insertion");
+        assertEquals(0, admissions.boundaryCount());
+
+        admissions.recordScopedReadBorrow(
                 first,
                 List.of(firstClaim),
                 sourceProof,
                 resolved);
-        admissions.recordScopedLoan(
+        admissions.recordScopedReadBorrow(
                 second,
                 List.of(new TaskAccessVerifier.CoherentTypedClaim(
                         new TaskAccessVerifier.Claim(
@@ -184,31 +200,31 @@ final class TaskBoundaryAdmissionsTest {
 
         TaskAccessVerifier verifier = new TaskAccessVerifier();
         assertThrows(IllegalStateException.class,
-                () -> admissions.mintScopedLoan(program, first, verifier),
+                () -> admissions.mintScopedReadBorrow(program, first, verifier),
                 "sealed type proof still needs exact ownership authorization");
         assertEquals(0, verifier.activeChildren());
 
         admissions.authorizeExecution(
                 program, OwnershipChecker.checkForTaskAdmission(program));
-        assertNotNull(admissions.mintScopedLoan(program, first, verifier));
+        assertNotNull(admissions.mintScopedReadBorrow(program, first, verifier));
         assertEquals(1, verifier.activeChildren());
 
         assertThrows(IllegalStateException.class,
-                () -> admissions.mintScopedLoan(program, second, verifier),
+                () -> admissions.mintScopedReadBorrow(program, second, verifier),
                 "stale allocation generation must fail before runtime capability mint");
 
         assertThrows(IllegalArgumentException.class,
-                () -> admissions.mintScopedLoan(
+                () -> admissions.mintScopedReadBorrow(
                         new Ast.Program(List.of()), first, verifier));
         assertThrows(IllegalArgumentException.class,
-                () -> admissions.mintScopedLoan(
+                () -> admissions.mintScopedReadBorrow(
                         program, new Ast.TaskExpr(first.body()), verifier));
         assertEquals(1, verifier.activeChildren(),
                 "failed hostile lookups must not mutate the loan ledger");
     }
 
     @Test
-    void scalarBoundaryCannotBeReinterpretedAsScopedLoan() {
+    void scalarBoundaryCannotBeReinterpretedAsScopedReadBorrow() {
         OresCompiler.TaskBoundaryAnalysis checked =
                 OresCompiler.parseAndAnalyzeTaskBoundaries("""
                     pub fnc main(): void {
@@ -218,7 +234,7 @@ final class TaskBoundaryAdmissionsTest {
                     """);
         TaskAccessVerifier verifier = new TaskAccessVerifier();
         assertThrows(IllegalArgumentException.class,
-                () -> checked.taskAdmissions().mintScopedLoan(
+                () -> checked.taskAdmissions().mintScopedReadBorrow(
                         checked.program(), firstTask(checked.program()), verifier));
         assertEquals(0, verifier.activeChildren());
     }

@@ -26,14 +26,14 @@ final class TaskLoanAdmissionTest {
     private static TaskLoanAdmission admission(TaskAccessVerifier verifier) {
         var claim = new TaskAccessVerifier.Claim(
                 TaskAccessVerifier.Place.whole(ROOT),
-                TaskAccessVerifier.Mode.WRITE);
+                TaskAccessVerifier.Mode.READ);
         var typed = new TaskAccessVerifier.CoherentTypedClaim(
                 claim, new Ast.TypeRef("int", List.of(), false),
                 Types.Primitive.INT);
         TaskAccessVerifier.CoherentAccessProof proof =
-                TaskAccessVerifier.proveCoherentTyped(
+                TaskAccessVerifier.proveScopedReadBorrow(
                         List.of(typed), SOURCE_PROOF, RESOLVED_PROOF);
-        return verifier.admitProvenRuntimeBound(proof, PROGRAM);
+        return verifier.admitProvenScopedReadRuntimeBound(proof, PROGRAM);
     }
 
     private static OresTaskScope.CompilerScopeEpoch epochForTest() {
@@ -65,11 +65,11 @@ final class TaskLoanAdmissionTest {
             OresScheduler.Task<T> frame,
             TaskLoanAdmission admission) throws Exception {
         var method = OresTaskScope.class.getDeclaredMethod(
-                "startCompilerFrame",
+                "startCompilerReadBorrowFrame",
                 OresScheduler.class,
                 OresScheduler.Task.class,
                 Runnable.class,
-                OresTaskScope.CompilerLoanRetirement.class);
+                OresTaskScope.CompilerReadLoanRetirement.class);
         method.setAccessible(true);
         try {
             return (OresTask<T>) method.invoke(
@@ -80,6 +80,26 @@ final class TaskLoanAdmissionTest {
             if (cause instanceof Error error) throw error;
             throw new AssertionError(cause);
         }
+    }
+
+    @Test
+    void staticWriteProofCannotMintRuntimeLoanAuthority() {
+        TaskAccessVerifier verifier = new TaskAccessVerifier();
+        var write = new TaskAccessVerifier.CoherentTypedClaim(
+                new TaskAccessVerifier.Claim(
+                        TaskAccessVerifier.Place.whole(ROOT),
+                        TaskAccessVerifier.Mode.WRITE),
+                Ast.TypeRef.simple("int"),
+                Types.Primitive.INT);
+        TaskAccessVerifier.CoherentAccessProof staticProof =
+                TaskAccessVerifier.proveCoherentTyped(
+                        List.of(write), SOURCE_PROOF, RESOLVED_PROOF);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> verifier.admitProvenRuntimeBound(
+                        staticProof, PROGRAM),
+                "analysis-only WRITE proof must never become a runtime loan");
+        assertEquals(0, verifier.activeChildren());
     }
 
     @Test
@@ -298,6 +318,9 @@ final class TaskLoanAdmissionTest {
             assertTrue(entered.await(
                     5, java.util.concurrent.TimeUnit.SECONDS));
             assertEquals(1, verifier.activeChildren());
+            assertTrue(admission.scopedReadBorrowForTesting());
+            assertTrue(admission.schedulerBoundForTesting(),
+                    "read authority must be bound through the exact scheduler child");
             assertFalse(verifier.parentMayAccess(claim),
                     "parent mutation must stay denied while child owns exact loan");
 
