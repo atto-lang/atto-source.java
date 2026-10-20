@@ -172,45 +172,73 @@ final class IpcReceiptCompletionBridge {
         if (done != null) done.complete(stage);
     }
 
-    int transportLost(Object owner,
-                      IpcReceiptCorrelation.Envelope trustedEpoch,
-                      long generation) {
+    /**
+     * Retired correlation outcomes prepared without invoking callbacks. Only
+     * the trusted host may call complete() and it must do so after releasing
+     * transport lifecycle locks and publishing physical RETIRED status.
+     */
+    static final class RetiredCompletions {
+        private final ArrayList<CompletableFuture<IpcReceiptCorrelation.Stage>> done =
+                new ArrayList<>();
+        private List<IpcReceiptCorrelation.LostCorrelation> losses = List.of();
+
+        int size() { return done.size(); }
+
+        void complete() {
+            for (int i = 0; i < losses.size(); ++i) {
+                var loss = losses.get(i);
+                IpcReceiptCorrelation.Stage terminal =
+                        loss.lastObserved() == IpcReceiptCorrelation.Stage.LOCAL_ADMITTED
+                                ? IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE
+                                : IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN;
+                done.get(i).complete(terminal);
+            }
+        }
+    }
+
+    /**
+     * Fence admission and retire the receipt ledger, but do not execute user
+     * completion callbacks. Physical shutdown uses this to publish RETIRED
+     * before any dependent application callback can block its cleanup worker.
+     * Every potentially allocating container is prepared before ledger
+     * mutation, so allocation failure leaves retry authority intact.
+     */
+    RetiredCompletions transportLostDeferred(
+            Object owner, IpcReceiptCorrelation.Envelope trustedEpoch,
+            long generation) {
         RuntimeBlockingGuard.requireBlockingHostThread(
                 "IPC receipt bridge transport loss");
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(trustedEpoch, "trustedEpoch");
-        ArrayList<CompletableFuture<IpcReceiptCorrelation.Stage>> done =
-                new ArrayList<>();
-        List<IpcReceiptCorrelation.LostCorrelation> losses;
+        RetiredCompletions terminal = new RetiredCompletions();
         synchronized (gate) {
             requirePhysicalTransport(owner, trustedEpoch, generation);
-            // Claim physical loss before any allocation/retirement work. If
-            // that work throws, admission remains fenced and a supervisor may
-            // retry this same owner/generation to finish retirement.
             transportLossClaimed = true;
-            done.ensureCapacity(completions.size());
+            terminal.done.ensureCapacity(completions.size());
             if (completions.size() != correlations.counters().pending()) {
                 throw new IllegalStateException("host correlation parity violated");
             }
-            losses = correlations.retireTransportLost(trustedEpoch);
-            for (var loss : losses) {
+            terminal.losses = correlations.retireTransportLost(trustedEpoch);
+            for (var loss : terminal.losses) {
                 var completion = completions.remove(
                         loss.envelope().messageSequence());
                 if (completion == null) {
                     throw new IllegalStateException("missing lost completion");
                 }
-                done.add(completion);
+                terminal.done.add(completion);
             }
         }
-        int index = 0;
-        for (var loss : losses) {
-            IpcReceiptCorrelation.Stage terminal =
-                    loss.lastObserved() == IpcReceiptCorrelation.Stage.LOCAL_ADMITTED
-                            ? IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE
-                            : IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN;
-            done.get(index++).complete(terminal);
-        }
-        return done.size();
+        return terminal;
+    }
+
+    /** Compatibility entry point for non-lease host self-tests. */
+    int transportLost(Object owner,
+                      IpcReceiptCorrelation.Envelope trustedEpoch,
+                      long generation) {
+        RetiredCompletions terminal = transportLostDeferred(
+                owner, trustedEpoch, generation);
+        terminal.complete();
+        return terminal.size();
     }
 
     public IpcReceiptCorrelation.Counters counters() {
