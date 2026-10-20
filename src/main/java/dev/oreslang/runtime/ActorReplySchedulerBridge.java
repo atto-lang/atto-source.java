@@ -61,6 +61,10 @@ public final class ActorReplySchedulerBridge {
             ScheduledExecutorService timer) {
         Objects.requireNonNull(destination, "destination");
         Objects.requireNonNull(runtime, "runtime");
+        Objects.requireNonNull(caller, "caller");
+        if (caller.role() != GenerationalReplyRegistry.Role.ACTOR) {
+            throw new SecurityException("a supervisor application endpoint cannot impersonate an actor caller");
+        }
         if (runtime.currentActorId().filter(destination.id()::equals).isPresent()) {
             throw new IllegalArgumentException("actor cannot synchronously request itself");
         }
