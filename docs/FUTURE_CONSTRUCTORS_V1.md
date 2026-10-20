@@ -313,3 +313,38 @@ LLVM. In particular, this local result cannot qualify the PR for merge.
 The focused exact-head source Actions run #39473077546 still failed with
 **zero executed steps**. Cross-org mirroring remains deny-by-default until
 main protection and a reviewed destination/pinned contract are confirmed.
+
+
+### Recursive source-type admission audit — 2026-10-20
+
+The first source constructor slice must reject **dynamically erased**
+`Future<T>` payloads. Checking only the internal `Unknown.INSTANCE`
+sentinel is insufficient: the type resolver can represent source `Any` and
+`Unknown` as `Named` types, including in nested `Option<Any>`,
+`Array<Unknown>`, records, unions, or function signatures. The dedicated
+`containsUnresolvedFutureConstructorType` guard now recurses through
+all those shapes, rejects unresolved `Generic` parameters, and is applied
+to the producer's type arguments as well as its resolved `run()` result and
+the requested `Future<T>` type. This strict rule applies **only to this
+incomplete first-stage constructor** and does not globally ban legitimate
+generic declarations or existing Future consumption. A follow-up compiler
+proof must allow explicitly bounded/specialized generic constructors rather
+than relaxing it by type erasure.
+
+There are now **14 guest Future-constructor tests** (including nominal
+`Any`, nested `Option<Any>`, `Unknown`, and erased provider-generic
+rejection) and **21 host JUnit tests** staged in the PR. The type-gate
+recursion was independently syntax-compiled on **OpenJDK 21** in a
+source-free surrogate harness with 14 deterministic positive/negative
+cases passed. This tests the standalone predicate against synthetic type
+nodes, **not** the actual Oreslang type checker, parser or evaluator.
+
+An existing private source-free runner probe in
+`sonus-auris-test/clients-api-contract` was rerun (Actions run
+`39362748484`, attempt 3) and completed successfully with a JDK25
+GraalVM toolchain. That repository is **not** an authorized source mirror.
+At the audited exact PR head, the source's Future-constructor workflow still
+failed with zero executed steps. The source `main` branch reports
+`protected: false`, and the protected destination allowlist contains no
+approved entries. Do not copy private source to that carrier until reviewed
+origin and destination contracts allow it.
