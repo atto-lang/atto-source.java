@@ -436,8 +436,12 @@ public final class ActorRuntime implements AutoCloseable {
      * once, quota-accounted once, and retained until runtime teardown.
      */
     public final class Shared<T> {
+        /** Admission seal; not a cleanup-complete witness. */
         private final AtomicBoolean sharedClosed = new AtomicBoolean();
+        /** Guarded by this Shared instance. */
+        private boolean sharedCleanupComplete;
         private T value;
+        /** Exact runtime-wide debit retained until aggregate release succeeds. */
         private long reservedBytes;
 
         private Shared(T value, long reservedBytes) {
@@ -455,13 +459,25 @@ public final class ActorRuntime implements AutoCloseable {
             return ActorRuntime.this == runtime;
         }
 
-        private void closeFromRuntime() {
-            if (!sharedClosed.compareAndSet(false, true)) return;
-            long bytes = reservedBytes;
-            reservedBytes = 0L;
+        private synchronized void closeFromRuntime() {
+            if (sharedCleanupComplete) return;
+
+            // Revoke guest observation immediately, but do not treat that seal
+            // as proof that the aggregate memory debit has been refunded.
+            sharedClosed.set(true);
             value = null;
-            releaseSharedRuntimeBytes(bytes);
+
+            long bytes = reservedBytes;
+            if (bytes != 0L) {
+                // Keep the exact debit locally until the aggregate release
+                // succeeds. A failed runtime close can then retry the same
+                // owner instead of skipping cleanup because sharedClosed=true.
+                releaseSharedRuntimeBytes(bytes);
+                reservedBytes = 0L;
+            }
+
             sharedValues.remove(this);
+            sharedCleanupComplete = true;
         }
     }
 
