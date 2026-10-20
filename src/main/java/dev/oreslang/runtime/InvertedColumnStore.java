@@ -74,6 +74,9 @@ public final class InvertedColumnStore implements AutoCloseable {
     private final int[] readers;
     private final boolean[] writers;
     private boolean closed;
+    // Synchronized is reentrant: block nested access while compiler plans
+    // are evaluating a detached row snapshot prior to atomic commit.
+    private boolean transforming;
 
     public InvertedColumnStore(Kind... types) {
         if (types == null || types.length == 0) {
@@ -96,6 +99,9 @@ public final class InvertedColumnStore implements AutoCloseable {
 
     private void open() {
         if (closed) throw new IllegalStateException("inverted store is closed");
+        if (transforming) {
+            throw new IllegalStateException("reentrant access during inverted row transaction");
+        }
     }
 
     private int column(int index) {
@@ -313,7 +319,16 @@ public final class InvertedColumnStore implements AutoCloseable {
         Objects.requireNonNull(verifiedTransform, "verified row transform");
         Object[] snapshot = new Object[kinds.length];
         for (int i = 0; i < snapshot.length; i++) snapshot[i] = load(i, row);
-        Object[] updated = verifiedTransform.apply(snapshot);
+        // Even a package-private callback may be malformed. Never let a
+        // nested read/write/resize observe or change the logical row mid-plan.
+        // Release the guard on every Throwable, including OOME and errors.
+        Object[] updated;
+        transforming = true;
+        try {
+            updated = verifiedTransform.apply(snapshot);
+        } finally {
+            transforming = false;
+        }
         open();
         if (updated == null || updated.length != kinds.length) {
             throw new IllegalStateException("invalid compiler row transform result");
