@@ -202,4 +202,97 @@ final class ReplySlotRegistryTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new ReplySlotRegistry(ORIGIN, 1_000_001));
     }
+
+    @Test
+    void remoteTicketPreventsBlindHandleForgeryAndCrossRequestReply() throws Exception {
+        try (ReplySlotRegistry registry = new ReplySlotRegistry(ORIGIN, 2)) {
+            var first = registry.reserve(String.class, "sha256:str-v1", CHILD);
+            var second = registry.reserve(String.class, "sha256:str-v1", CHILD);
+            byte[] firstTicket = registry.issueRemoteTicket(
+                    first.handle(), CHILD, "sha256:str-v1");
+            byte[] secondTicket = registry.issueRemoteTicket(
+                    second.handle(), CHILD, "sha256:str-v1");
+            assertEquals(ReplyTicketAuthenticator.TICKET_BYTES, firstTicket.length);
+            assertFalse(java.util.Arrays.equals(firstTicket, secondTicket));
+            assertFalse(registry.completeRemote(
+                    ORIGIN, second.handle(), CHILD, "sha256:str-v1", firstTicket, "forged"));
+            assertFalse(registry.completeRemote(
+                    ORIGIN, second.handle(), CHILD, "sha256:str-v1", new byte[16], "guessed"));
+            assertFalse(registry.completeRemote(
+                    ORIGIN, second.handle(), CHILD, "sha256:str-v1", new byte[0], "empty"));
+            assertFalse(registry.completeRemote(
+                    ORIGIN, second.handle(), CHILD, "sha256:str-v1", null, "null"));
+            byte[] tampered = secondTicket.clone();
+            tampered[tampered.length - 1] ^= 1;
+            assertFalse(registry.completeRemote(
+                    ORIGIN, second.handle(), CHILD, "sha256:str-v1", tampered, "tampered"));
+            assertFalse(registry.completeRemote(
+                    ORIGIN, second.handle(), IMPOSTOR, "sha256:str-v1", secondTicket, "impostor"));
+            assertFalse(registry.completeRemote(
+                    ORIGIN, second.handle(), CHILD, "sha256:str-v2", secondTicket, "abi"));
+            assertFalse(second.future().isDone());
+            assertTrue(registry.completeRemote(
+                    ORIGIN, first.handle(), CHILD, "sha256:str-v1", firstTicket, "first"));
+            assertTrue(registry.completeRemote(
+                    ORIGIN, second.handle(), CHILD, "sha256:str-v1", secondTicket, "second"));
+            assertEquals("first", first.future().get(1, TimeUnit.SECONDS));
+            assertEquals("second", second.future().get(1, TimeUnit.SECONDS));
+            assertFalse(registry.completeRemote(
+                    ORIGIN, first.handle(), CHILD, "sha256:str-v1", firstTicket, "duplicate"));
+            assertThrows(IllegalStateException.class,
+                    () -> registry.issueRemoteTicket(first.handle(), CHILD, "sha256:str-v1"));
+        }
+    }
+
+    @Test
+    void ticketsAreFencedAcrossOriginRestartSessionAndSlotReuse() throws Exception {
+        byte[] issued;
+        long oldHandle;
+        try (ReplySlotRegistry old = new ReplySlotRegistry(ORIGIN, 1)) {
+            var first = old.reserve(String.class, "sha256:str-v1", CHILD);
+            oldHandle = first.handle();
+            issued = old.issueRemoteTicket(oldHandle, CHILD, "sha256:str-v1");
+            assertTrue(first.future().cancel(false));
+            var second = old.reserve(String.class, "sha256:str-v1", CHILD);
+            assertFalse(old.completeRemote(
+                    ORIGIN, second.handle(), CHILD, "sha256:str-v1", issued, "late"));
+            assertTrue(old.completeRemote(
+                    ORIGIN, second.handle(), CHILD, "sha256:str-v1",
+                    old.issueRemoteTicket(second.handle(), CHILD, "sha256:str-v1"), "ok"));
+        }
+        var nextOrigin = new ReplySlotRegistry.Endpoint(ORIGIN.id(), ORIGIN.incarnation()+1,
+                ORIGIN.routeEpoch());
+        try (ReplySlotRegistry restarted = new ReplySlotRegistry(nextOrigin, 1)) {
+            var newCall = restarted.reserve(String.class, "sha256:str-v1", CHILD);
+            assertEquals(oldHandle, newCall.handle(), "same numeric slot is safe across incarnation");
+            assertFalse(restarted.completeRemote(
+                    nextOrigin, newCall.handle(), CHILD, "sha256:str-v1", issued, "replay"));
+            var valid = restarted.issueRemoteTicket(newCall.handle(), CHILD, "sha256:str-v1");
+            assertTrue(restarted.completeRemote(
+                    nextOrigin, newCall.handle(), CHILD, "sha256:str-v1", valid, "fresh"));
+            assertEquals("fresh", newCall.future().get(1, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void remoteFailureRequiresSameAuthorityAsSuccess() throws Exception {
+        try (ReplySlotRegistry registry = new ReplySlotRegistry(ORIGIN, 1)) {
+            var pending = registry.reserve(String.class, "sha256:str-v1", CHILD);
+            var ticket = registry.issueRemoteTicket(
+                    pending.handle(), CHILD, "sha256:str-v1");
+            var cause = new IllegalStateException("sanitized remote error");
+            assertFalse(registry.failRemote(
+                    ORIGIN, pending.handle(), IMPOSTOR, "sha256:str-v1", ticket, cause));
+            assertFalse(registry.failRemote(
+                    ORIGIN, pending.handle(), CHILD, "sha256:str-v1", new byte[16], cause));
+            assertFalse(pending.future().isDone());
+            assertTrue(registry.failRemote(
+                    ORIGIN, pending.handle(), CHILD, "sha256:str-v1", ticket, cause));
+            assertSame(cause,
+                    assertThrows(ExecutionException.class,
+                            () -> pending.future().get(1, TimeUnit.SECONDS)).getCause());
+            assertFalse(registry.failRemote(
+                    ORIGIN, pending.handle(), CHILD, "sha256:str-v1", ticket, cause));
+        }
+    }
 }
