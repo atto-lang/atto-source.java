@@ -106,6 +106,59 @@ final class SelectPlanLanguageTest {
                 """));
     }
 
+    @Test
+    void inlineStaticSelectReusesSafeChannelOperandsAcrossForOfAndLoop() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  val Channel<int> inbox = Channel.new<int>(4);
+                  for val number of [10, 20, 30] {
+                    writech inbox, number;
+                    select first {
+                      when readch inbox: val message {
+                        stdio.stdout.write(message);
+                        stdio.stdout.write(":");
+                      }
+                    }
+                  }
+                  let int remaining = 2;
+                  loop {
+                    writech inbox, remaining;
+                    try select first {
+                      when readch inbox: val message {
+                        stdio.stdout.write(message);
+                        stdio.stdout.write(":");
+                      }
+                    }
+                    remaining = remaining - 1;
+                    if remaining == 0 then break; fi
+                  }
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("10:20:30:2:1:", run(program));
+    }
+
+    @Test
+    void perIterationShadowChannelIsNotHoistedAcrossIterations() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  for val number of [1, 2, 3] {
+                    val Channel<int> inbox = Channel.new<int>(1);
+                    writech inbox, number;
+                    select first {
+                      when readch inbox: val message {
+                        stdio.stdout.write(message);
+                      }
+                    }
+                  }
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("123", run(program));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "select-plan.ores")
