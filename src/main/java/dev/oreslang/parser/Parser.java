@@ -277,7 +277,7 @@ public final class Parser {
             String operation = advance().lexeme();
             consume(LPAREN,
                     "MODEL_NON_LAYER_EXPRESSION: expected '(' after model operation '" + operation + "'");
-            List<Ast.Expr> arguments = parseArgumentsUntil(RPAREN);
+            List<Ast.Expr> arguments = parseModelArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after model operation arguments");
             match(SEMICOLON);
             operations.add(new Ast.ModelOp(operation, arguments));
@@ -310,7 +310,7 @@ public final class Parser {
             }
             Ast.Expr defaultValue = null;
             if (match(EQUAL)) {
-                defaultValue = parseExpression();
+                defaultValue = parseModelExpression("model parameter default");
                 seenDefault = true;
             } else if (seenDefault) {
                 throw error(previous(),
@@ -3863,6 +3863,27 @@ public final class Parser {
             }
         }
         return false;
+    }
+
+    private Ast.Expr parseModelExpression(String where) {
+        try {
+            return parseExpression();
+        } catch (IllegalArgumentException failure) {
+            String message = failure.getMessage();
+            if (message != null && message.contains("integer literal overflows signed 64-bit")) {
+                throw error(peek(),
+                        "MODEL_CONST_OVERFLOW: " + where + " exceeds signed i64");
+            }
+            throw failure;
+        }
+    }
+
+    private List<Ast.Expr> parseModelArgumentsUntil(Token.Type terminator) {
+        if (check(terminator)) return List.of();
+        List<Ast.Expr> args = new ArrayList<>();
+        do args.add(parseModelExpression("model operation static argument"));
+        while (match(COMMA));
+        return args;
     }
 
     private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
