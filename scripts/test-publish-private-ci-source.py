@@ -15,6 +15,32 @@ spec.loader.exec_module(pub)
 ORIGINAL_VERIFY_PROTECTED_ORIGIN = pub.verify_protected_origin
 ORIGINAL_VERIFY_EXACT_SOURCE_TREE = pub.verified_exact_source_tree
 A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
+DESTINATION_ID = 1412142815
+WORKFLOW_SHA = "2d4b412ca8480d02fcd122a9cb7ee3a5d7d45227"
+APPROVED_POLICY = (
+    f"trusted/ci {DESTINATION_ID} {WORKFLOW_SHA}\n".encode()
+)
+
+
+class PolicyAuthorizationTest(unittest.TestCase):
+    def test_policy_pins_slug_id_and_workflow_blob(self):
+        digest, repository_id, workflow_sha = pub._policy_authorization(
+            APPROVED_POLICY, "trusted/ci")
+        self.assertEqual(hashlib.sha256(APPROVED_POLICY).digest(), digest)
+        self.assertEqual(DESTINATION_ID, repository_id)
+        self.assertEqual(WORKFLOW_SHA, workflow_sha)
+
+    def test_slug_only_id_only_duplicate_and_bad_workflow_fail_closed(self):
+        bad_policies = (
+            b"trusted/ci\n",
+            f"trusted/ci {DESTINATION_ID}\n".encode(),
+            f"trusted/ci {DESTINATION_ID} not-a-sha\n".encode(),
+            APPROVED_POLICY + APPROVED_POLICY,
+        )
+        for bad in bad_policies:
+            with self.subTest(policy=bad):
+                with self.assertRaises(pub.Denied):
+                    pub._policy_authorization(bad, "trusted/ci")
 
 
 class DestinationBoundPublisherTests(unittest.TestCase):
@@ -26,10 +52,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.source.mkdir()
         (self.root / ".github").mkdir()
         self.approval = self.root / ".github" / "private-ci-approved-repositories.txt"
-        self.approval.write_text("trusted/ci\n")
+        self.approval.write_bytes(APPROVED_POLICY)
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.route_calls = []
         self.visibility = ["private"] * 100
+        self.repository_ids = [DESTINATION_ID] * 100
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
@@ -48,8 +75,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
         if route == "repos/trusted/ci":
-            return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
-                        private=True, default_branch="main")
+            return dict(
+                full_name="trusted/ci",
+                id=self.repository_ids.pop(0),
+                visibility=self.visibility.pop(0),
+                private=True,
+                default_branch="main")
+        if route == (
+                "repos/trusted/ci/contents/"
+                + pub.CARRIER_WORKFLOW_PATH + "?ref=" + A):
+            return {"type": "file", "sha": WORKFLOW_SHA}
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
             return {"sha": hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
@@ -71,7 +106,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, A)
 
-    def verified_origin_api(self, protected=True, policy=b"trusted/ci\n",
+    def verified_origin_api(self, protected=True, policy=APPROVED_POLICY,
                             codeowners=True, stale=True, admins=True,
                             approvals=1, force=False, deletions=False,
                             bypasses=None):
@@ -304,6 +339,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
              "type": "tree", "sha": D}])
         self.assertEqual(writes[2][2]["base_tree"], B)
         self.assertEqual(writes[3][2]["tree"], E)
+        self.assertEqual(
+            writes[3][2]["message"],
+            "ci: exact private Oreslang tree " + A + " tree " + D)
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
 
     def test_existing_stale_files_cannot_survive_clean_source_snapshot(self):
@@ -320,6 +358,32 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(tree_writes[1]["tree"], [
             {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": D}])
         self.assertEqual(tree_writes[1]["base_tree"], B)
+
+    def test_repository_id_flip_aborts_before_source_read_or_write(self):
+        self.repository_ids = [DESTINATION_ID + 1]
+        with patch.object(pub, "collect_source") as collect:
+            with self.assertRaisesRegex(pub.Denied, "repository ID"):
+                self.publish()
+            collect.assert_not_called()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_unreviewed_carrier_workflow_aborts_before_source_read(self):
+        original = self.fake_api
+        def changed_workflow(route, method="GET", payload=None):
+            if route == (
+                    "repos/trusted/ci/contents/"
+                    + pub.CARRIER_WORKFLOW_PATH + "?ref=" + A):
+                return {"type": "file", "sha": C}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=changed_workflow):
+            with patch.object(pub, "collect_source") as collect:
+                with self.assertRaisesRegex(
+                        pub.Denied, "workflow differs"):
+                    pub.publish(
+                        "trusted/ci", self.source,
+                        "ci/oreslang-test", self.root, A)
+                collect.assert_not_called()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_public_visibility_aborts_before_any_write(self):
         self.visibility = ["public"]
@@ -462,7 +526,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_policy_symlink_swap_between_check_and_read_rejected(self):
         outside = self.root / "outside-approved-policy"
-        outside.write_text("trusted/ci\n")
+        outside.write_bytes(APPROVED_POLICY)
         self.approval.write_text("# no approval\n")
         original_read = Path.read_bytes
         def malicious_read(path):
@@ -483,7 +547,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_policy_parent_directory_swap_rejected(self):
         outside = self.root / "external-approved-dir"
         outside.mkdir()
-        (outside / "private-ci-approved-repositories.txt").write_text("trusted/ci\n")
+        (outside / "private-ci-approved-repositories.txt").write_bytes(APPROVED_POLICY)
         self.approval.write_text("# no approval\n")
         original_open = pub.os.open
         replaced = [False]
@@ -572,7 +636,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         import os
         import threading
         outside = self.root / "outside-policy"
-        outside.write_text("trusted/ci\n")
+        outside.write_bytes(APPROVED_POLICY)
         self.approval.write_text("# no approval\n")
         stop = threading.Event()
         def attacker():
