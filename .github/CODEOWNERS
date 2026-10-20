@@ -17,3 +17,13 @@
 /.github/workflows/ @ORESoftware
 /scripts/ @ORESoftware
 /pom.xml @ORESoftware
+
+# Terminal exact rules for private-source export authorization.
+# @ORESoftware is a verified admin collaborator and is distinct from the PR author account.
+/.github/CODEOWNERS @ORESoftware
+/.github/private-ci-approved-repositories.txt @ORESoftware
+/.github/private-ci-carrier-contracts.json @ORESoftware
+/scripts/check-private-ci-destination.sh @ORESoftware
+/scripts/run-in-private-ci-destination.sh @ORESoftware
+/scripts/publish-private-ci-source.py @ORESoftware
+/scripts/publish-private-ci-source-v3.py @ORESoftware
