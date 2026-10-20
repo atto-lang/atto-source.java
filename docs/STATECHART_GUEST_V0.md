@@ -8,7 +8,7 @@ File: `stdlib/behavior/statechart.ores`.
 
 - `Chart` is a nominal group of five parallel arrays: `states`, `parent_index`, `sources`, `event_keys`, `targets`.
 - `checked(...): Chart` verifies nonempty, <=256 declared states; matching parent count; <=1024 source/event/target rules; unique states and state/event rules; source/target membership; parent bounds and absence of cycles.
-- `step(Chart, Symbol active, Symbol event): Symbol` validates the arrays on every call and selects the first matching **nearest ancestor** rule. Unhandled events return the existing state (stutter). An unknown active state fails closed.
+- `step(&Chart, Symbol active, Symbol event): Symbol` validates the arrays on every call and selects the first matching **nearest ancestor** rule. Unhandled events return the existing state (stutter). An unknown active state fails closed.
 - Only one active state leaf, no orthogonal regions/history/guards/effects/timers or async execution; no side effects are invoked by `step`.
 - This initial API uses `Array<...>` for its host/userland representation. Arrays are **not** proven deeply frozen by `val`: callers can alias/mutate them, so the implementation never relies on a one-time validation result. Do not share the mutable descriptor arrays concurrently or across actor domains without appropriate isolation.
 - No private integer ordinals are treated as Symbol identities or transport keys. All semantic transitions use logical `#symbols` via `eq`. Untrusted actor visibility and immutable code-gen export roots must follow the existing `OresSymbol` policy.
@@ -27,8 +27,8 @@ pub routine main(): void {
     arr[#start, #reset],
     arr[#busy, #idle]
   );
-  val Symbol busy = step(chart, #idle, #start);
-  val Symbol idle = step(chart, busy, #reset);
+  val Symbol busy = step(&chart, #idle, #start);
+  val Symbol idle = step(&chart, busy, #reset);
   if !(idle eq #idle) {
     rt fail("statechart regression");
   } fi
