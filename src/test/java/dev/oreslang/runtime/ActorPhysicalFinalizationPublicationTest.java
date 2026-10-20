@@ -640,6 +640,67 @@ final class ActorPhysicalFinalizationPublicationTest {
 
 
     @Test
+    @SuppressWarnings("unchecked")
+    void finalizationFaultAfterUnregisterRetainsRetryOwnerAndExitHookExactlyOnce()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var exitHookCalls = new AtomicInteger();
+            runtime.setActorExitHook(ignored -> exitHookCalls.incrementAndGet());
+
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+
+            var registryField = ActorRuntime.class.getDeclaredField("actors");
+            registryField.setAccessible(true);
+            var registry = (java.util.Map<Object, Object>)
+                    registryField.get(runtime);
+            Object cell = registry.get(actor.id());
+            assertNotNull(cell);
+
+            var afterUnregisterFault = cell.getClass().getDeclaredField(
+                    "finalizationAfterUnregisterFaultForTesting");
+            afterUnregisterFault.setAccessible(true);
+            var recoveryField = actor.getClass().getDeclaredField(
+                    "physicalFinalizationRecoveryCell");
+            recoveryField.setAccessible(true);
+
+            var attempts = new AtomicInteger();
+            afterUnregisterFault.set(cell, (Runnable) () -> {
+                if (attempts.incrementAndGet() == 1) {
+                    throw new OutOfMemoryError(
+                            "injected after actor unregister publication");
+                }
+            });
+
+            var failure = assertThrows(OutOfMemoryError.class, actor::stop);
+            assertTrue(failure.getMessage().contains(
+                    "injected after actor unregister publication"));
+            assertNull(registry.get(actor.id()),
+                    "fault is deliberately after primary-registry removal");
+            assertFalse(runtime.physicallyFinalizedForHotUpgrade(actor),
+                    "registry absence must not certify physical retirement");
+            assertFalse(actor.awaitTermination(0, TimeUnit.NANOSECONDS));
+            assertSame(cell, recoveryField.get(actor),
+                    "ActorRef must retain the exact cell for supervisor retry");
+            assertEquals(1, exitHookCalls.get(),
+                    "first finalization attempt invokes actor exit hook once");
+
+            actor.stop();
+
+            assertEquals(2, attempts.get(),
+                    "retry must cross the post-unregister boundary again");
+            assertEquals(1, exitHookCalls.get(),
+                    "retry must not duplicate the documented exactly-once exit hook");
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(runtime.physicallyFinalizedForHotUpgrade(actor));
+            assertNull(recoveryField.get(actor),
+                    "successful physical finalization must release recovery ownership");
+        }
+    }
+
+
+    @Test
     void terminalObserverStopCannotSelfJoinPhysicalFinalization() throws Exception {
         try (var runtime = new ActorRuntime()) {
             var actor = runtime.<Integer>spawnShared(
