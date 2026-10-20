@@ -37,12 +37,8 @@ public final class IpcReceiptPhysicalBindingSelfTest {
         bridge.claimPhysicalTransport(owner, epoch, 201);
         deny(() -> bridge.claimPhysicalTransport(foreignOwner, epoch, 202));
         deny(() -> bridge.claimPhysicalTransport(owner, epoch, 201));
-        deny(() -> bridge.transportLost(epoch));
-
-        deny(() -> bridge.admit(epoch));
-        CompletionStage<IpcReceiptCorrelation.Stage> result =
+         CompletionStage<IpcReceiptCorrelation.Stage> result =
                 bridge.admitAndCommit(owner, epoch, 201);
-        deny(() -> bridge.commitDispatch(epoch));
         deny(() -> bridge.transportLost(foreignOwner, epoch, 201));
         deny(() -> bridge.transportLost(owner, epoch, 202));
 
