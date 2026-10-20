@@ -1,6 +1,7 @@
 package dev.oreslang.launcher;
 
 import dev.oreslang.compiler.BuildOptions;
+import dev.oreslang.compiler.BuildProfile;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.TreeShaker;
 import dev.oreslang.config.OresProjectConfig;
@@ -82,6 +83,9 @@ public final class OresMain {
         boolean strict = false;
         boolean checkOnly = false;
         boolean buildAnalysis = false;
+        BuildProfile buildProfile = BuildProfile.DEV;
+        boolean freestanding = false;
+        boolean modeExplicit = false;
         List<String> buildDefines = new ArrayList<>();
         Set<String> buildEntryPoints = new LinkedHashSet<>();
         String mode = NativeBuildMode.defaultExecutionMode();
@@ -106,7 +110,12 @@ public final class OresMain {
                 else if (arg.equals("--core-debug")) coreDebug = true;
                 else if (arg.equals("--no-core-debug")) coreDebug = false;
                 else if (arg.equals("--build-analysis")) buildAnalysis = true;
-                else if (arg.equals("--no-prompt")) {
+                else if (arg.equals("--release") || arg.equals("--strict-aot") || arg.equals("--hard-rt")) {
+                    buildProfile = BuildProfile.select(buildProfile, BuildProfile.fromFlag(arg));
+                } else if (arg.equals("--freestanding")) {
+                    if (freestanding) throw new IllegalArgumentException("duplicate --freestanding");
+                    freestanding = true;
+                } else if (arg.equals("--no-prompt")) {
                     // Oreslang permissions never prompt. This Deno-compatible
                     // spelling is accepted so automation can state that intent.
                 } else if (arg.startsWith("--permission-check=")) {
@@ -127,7 +136,10 @@ public final class OresMain {
                     String raw = arg.substring("--entry=".length()).trim();
                     if (raw.isEmpty()) throw new IllegalArgumentException("--entry requires a symbol name");
                     buildEntryPoints.add(raw);
-                } else if (arg.startsWith("--mode=")) mode = arg.substring("--mode=".length());
+                } else if (arg.startsWith("--mode=")) {
+                    mode = arg.substring("--mode=".length());
+                    modeExplicit = true;
+                }
                 else if (arg.startsWith("--platform=")) platform = arg.substring("--platform=".length());
                 else if (arg.startsWith("--allow=")) {
                     String raw = arg.substring("--allow=".length());
@@ -160,6 +172,23 @@ public final class OresMain {
         // An invalid invocation is status 2 even when the source path is absent.
         if (checkOnly && buildAnalysis) {
             throw new UsageException("--check and --build-analysis are mutually exclusive");
+        }
+        if (buildProfile.requiresFullAot()) {
+            if (modeExplicit && !"aot".equalsIgnoreCase(mode)) {
+                throw new UsageException("--" + buildProfile.cliName()
+                        + " requires --mode=aot; JIT/hybrid execution cannot satisfy full AOT");
+            }
+            mode = "aot";
+        }
+        if (buildProfile.requiresHardRealtime()) {
+            throw new UsageException(
+                    "--hard-rt is recognized but the Java/Graal launcher is not yet wired to "
+                    + "the realtime admission/WCET evidence gate; refusing to weaken the profile");
+        }
+        if (freestanding) {
+            throw new UsageException(
+                    "--freestanding is not admitted by the hosted Java/Graal launcher; "
+                    + "use a backend/target with an explicit freestanding provider");
         }
 
         final CoreLog.Level admittedLogLevel;
@@ -241,6 +270,8 @@ public final class OresMain {
                     directOresSource,
                     new BuildOptions(defines, entries, false));
 
+            System.out.println("build profile: " + buildProfile.cliName());
+            System.out.println("runtime reflection: forbidden");
             System.out.println("tree-shake retained:");
             result.retainedSymbols().stream().sorted().forEach(symbol -> System.out.println("  + " + symbol));
             System.out.println("tree-shake removed:");
@@ -345,6 +376,7 @@ public final class OresMain {
                         + "[--allow-ffi[=PATH,...]] [--deny-ffi[=PATH,...]] "
                         + "[--allow-import[=PATH,...]] [--deny-import[=PATH,...]] "
                         + "[--no-prompt] [--define=name=value ...] [--entry=symbol ...] "
+                        + "[--release|--strict-aot|--hard-rt] [--freestanding] "
                         + "[--strict-isolate] [--core-perf|--no-core-perf] [--core-debug|--no-core-debug] "
                         + "[--core-log-level=off|error|warn|info|debug|trace] [--no-core-log] [--mode=aot|jit|hybrid] "
                         + "[--platform=server|windows|macos|linux|android|ios] "
