@@ -4,6 +4,7 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -42,6 +43,40 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
+    void newlineDoSelectRemainsARealFirstBodyStatement() {
+        var endDelimited = Parser.parse("""
+                fnc consume(Channel<int> incoming) -> void
+                    do select {
+                        case readch incoming: val number {
+                            return;
+                        }
+                    }
+                end
+                """);
+        var braced = Parser.parse("""
+                fnc consume(Channel<int> incoming) -> void {
+                    do select {
+                        case readch incoming: val number {
+                            return;
+                        }
+                    }
+                }
+                """);
+
+        assertEquals(braced, endDelimited);
+    }
+
+    @Test
+    void standaloneNextLineDoIsNotAcceptedAsTheCallableSeparator() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc identity(int x) -> int
+                    do
+                    return x
+                end
+                """));
+    }
+
+    @Test
     void doProvidesCompactSameLineBodyBoundary() {
         var compact = Parser.parse("fnc identity(int x) -> int do return x; end");
         var multiline = Parser.parse("""
@@ -56,11 +91,26 @@ final class EndDelimitedFunctionSyntaxTest {
 
     @Test
     void doFollowsTheCompleteHigherOrderReturnType() {
-        assertDoesNotThrow(() -> Parser.parse("""
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc callback() -> () => void do
                     return || -> { return; };
                 end
-                """));
+                """)));
+    }
+
+    @Test
+    void higherOrderReturnChecksReturnedLambdaSignature() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc callback() -> () => void do
+                    return |int value| -> { return; };
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc callback() -> () => void do
+                    return || -> { return 1; };
+                end
+                """)));
     }
 
     @Test
@@ -135,6 +185,46 @@ final class EndDelimitedFunctionSyntaxTest {
                     end
                 end
                 """));
+    }
+
+    @Test
+    void commentsCannotMasqueradeAsOptionalDoOrCallableEnd() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "fnc value() -> int /* do end */ do /* end */ return 7; end // end do\n")));
+
+        var compact = Parser.parse(
+                "fnc text() -> string do return \"do end fi\"; end // do end\n");
+        var multiline = Parser.parse("""
+                fnc text() -> string
+                    return "do end fi"
+                end
+                """);
+        assertEquals(multiline, compact);
+    }
+
+    @Test
+    void optionalDoMayCrossCommentsOnTheHeaderLineButNeverAPhysicalNewline() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "fnc value() -> int /* boundary */ do return 7; end")));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc value() -> int /* boundary */
+                do
+                    return 7
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "fnc value() -> int; /* not a body boundary */ do return 7; end"));
+    }
+
+    @Test
+    void compactDoSupportsExpressionAndBlockLambdasWithoutStealingTheirDelimiters() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "fnc make() -> () => int do return || -> 7; end")));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "fnc make() -> () => string do return || -> { return \"do end\"; }; end")));
     }
 
     @Test
@@ -325,6 +415,16 @@ final class EndDelimitedFunctionSyntaxTest {
                     return Ok(Some((1, "one")))
                 end
                 """));
+    }
+
+    @Test
+    void sharedFormatterRoundTripCorpusParsesAndTypeChecks() throws Exception {
+        try (var input = EndDelimitedFunctionSyntaxTest.class
+                .getResourceAsStream("/function-syntax/end-delimited-roundtrip.ores")) {
+            assertNotNull(input, "missing shared function-syntax corpus");
+            String source = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        }
     }
 
     @Test
