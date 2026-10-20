@@ -57,7 +57,16 @@ public final class SourceEffectAudit {
         if (!checked.imports().isEmpty()) {
             unsupported.add("imports require verified effect metadata");
         }
+        if (checked.modules().isEmpty()) {
+            unsupported.add("empty source cannot establish a compilation unit effect proof");
+        }
         for (Ast.ModuleDecl module : checked.modules()) {
+            if (!module.annotations().isEmpty() || !module.contracts().isEmpty()) {
+                unsupported.add(module.name() + ": module annotations/contracts need effect elaboration");
+            }
+            if (module.declarations().isEmpty()) {
+                unsupported.add(module.name() + ": no analyzable declarations");
+            }
             for (Ast.Decl decl : module.declarations()) {
                 if (!(decl instanceof Ast.FunctionDecl fn)) {
                     unsupported.add(module.name() + ": unclassified "
@@ -70,6 +79,11 @@ public final class SourceEffectAudit {
                         EnumSet.noneOf(EffectContracts.Effect.class);
                 if (fn.async() || fn.suspends() || fn.generator()) {
                     direct.add(EffectContracts.Effect.SCHEDULER);
+                }
+                if (!fn.annotations().isEmpty() || fn.kind() != Ast.CallableKind.FNC) {
+                    // Annotation and routine semantics are not yet certified
+                    // by the closed-subset effect elaborator.
+                    direct.add(EffectContracts.Effect.UNKNOWN_CALL);
                 }
                 if (fn.actorKind() != Ast.ActorKind.NONE) {
                     direct.add(EffectContracts.Effect.ACTOR);
@@ -149,6 +163,16 @@ public final class SourceEffectAudit {
             if (node instanceof Ast.DynamicSelectExpr) {
                 direct.add(EffectContracts.Effect.UNKNOWN_CALL);
             }
+            if (node instanceof Ast.YieldStmt) {
+                // Yield/cooperate is a scheduling boundary even if it yields a
+                // constant; never certify a generator's body as effect-free.
+                direct.add(EffectContracts.Effect.SCHEDULER);
+            }
+            if (node instanceof Ast.CastExpr || node instanceof Ast.SpreadExpr) {
+                // Conversion, iteration and generic spreads may invoke
+                // compiler hooks or user-defined protocol implementations.
+                direct.add(EffectContracts.Effect.UNKNOWN_CALL);
+            }
 
             // Never silently treat a newly introduced syntax node as pure.
             if (node instanceof Ast.Expr expr
@@ -193,10 +217,9 @@ public final class SourceEffectAudit {
                 // implicit protocol hooks, backpressure or user code.
                 direct.add(EffectContracts.Effect.UNKNOWN_CALL);
             }
-            if (node instanceof Ast.DeferStmt || node instanceof Ast.TrapExpr) {
-                // Visit the body, including finally/deferred user code.
-                // This audit never claims a handler removes an effect.
-            }
+            // Visit every embedded expression in deferred, try/finally and
+            // handler forms. A trap never automatically discharges ambient
+            // effects and a finally does not inherit an exception waiver.
             if (!node.getClass().isRecord()
                     || !node.getClass().getName().startsWith("dev.oreslang.ast.Ast$")) {
                 return;
