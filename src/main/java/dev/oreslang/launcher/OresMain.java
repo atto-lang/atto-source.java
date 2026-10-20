@@ -82,6 +82,7 @@ public final class OresMain {
         boolean strict = false;
         boolean checkOnly = false;
         boolean buildAnalysis = false;
+        boolean buildAnalysisJson = false;
         List<String> buildDefines = new ArrayList<>();
         Set<String> buildEntryPoints = new LinkedHashSet<>();
         String mode = NativeBuildMode.defaultExecutionMode();
@@ -106,6 +107,10 @@ public final class OresMain {
                 else if (arg.equals("--core-debug")) coreDebug = true;
                 else if (arg.equals("--no-core-debug")) coreDebug = false;
                 else if (arg.equals("--build-analysis")) buildAnalysis = true;
+                else if (arg.equals("--build-analysis-json")) {
+                    buildAnalysis = true;
+                    buildAnalysisJson = true;
+                }
                 else if (arg.equals("--no-prompt")) {
                     // Oreslang permissions never prompt. This Deno-compatible
                     // spelling is accepted so automation can state that intent.
@@ -241,10 +246,14 @@ public final class OresMain {
                     directOresSource,
                     new BuildOptions(defines, entries, false));
 
-            System.out.println("tree-shake retained:");
-            result.retainedSymbols().stream().sorted().forEach(symbol -> System.out.println("  + " + symbol));
-            System.out.println("tree-shake removed:");
-            result.removedSymbols().stream().sorted().forEach(symbol -> System.out.println("  - " + symbol));
+            if (buildAnalysisJson) {
+                System.out.println(result.manifest().toCanonicalJson());
+            } else {
+                System.out.println("tree-shake retained:");
+                result.retainedSymbols().stream().sorted().forEach(symbol -> System.out.println("  + " + symbol));
+                System.out.println("tree-shake removed:");
+                result.removedSymbols().stream().sorted().forEach(symbol -> System.out.println("  - " + symbol));
+            }
             return 0;
         }
 
