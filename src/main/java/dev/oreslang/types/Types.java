@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
+    public sealed interface Type permits Primitive, Named, Dyn, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -15,6 +15,16 @@ public final class Types {
 
     public record Named(String name, List<Type> arguments) implements Type {
         public Named { arguments = List.copyOf(arguments); }
+    }
+
+    /**
+     * Statically validated nominal interface view retained in the semantic type
+     * graph. This Task convergence branch does not expose source dyn syntax;
+     * ThreadSafetyTraits must nevertheless recognize and deny erased views
+     * rather than falling through a nominal callback.
+     */
+    public record Dyn(Named interfaceType) implements Type {
+        public Dyn { Objects.requireNonNull(interfaceType, "dyn interface"); }
     }
 
     /**
@@ -169,10 +179,11 @@ public final class Types {
         return false; // Not knowing if types overlap is NOT proof of exclusion.
     }
 
-    private static boolean containsUncertainType(Type type) {
+    public static boolean containsUncertainType(Type type) {
         if (type == Unknown.INSTANCE || type instanceof Generic) return true;
         if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Not not) return containsUncertainType(not.excluded());
+        if (type instanceof Dyn dyn) return containsUncertainType(dyn.interfaceType());
         if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Record record) return record.members().values().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof ListType list) return containsUncertainType(list.element());
@@ -181,6 +192,26 @@ public final class Types {
                 || containsUncertainType(function.result());
         if (type instanceof Borrow borrow) return containsUncertainType(borrow.target());
         if (type instanceof SelfType self) return containsUncertainType(self.bound());
+        return false;
+    }
+
+    /**
+     * Locate an erased-interface witness anywhere in a semantic type graph.
+     * Unknown/generic values may never fabricate such a witness by permissive
+     * assignment through a container or callable boundary.
+     */
+    public static boolean containsDynWitness(Type type) {
+        if (type instanceof Dyn) return true;
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsDynWitness);
+        if (type instanceof ListType list) return containsDynWitness(list.element());
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsDynWitness);
+        if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsDynWitness);
+        if (type instanceof Record record) return record.members().values().stream().anyMatch(Types::containsDynWitness);
+        if (type instanceof Function function) return function.parameters().stream().anyMatch(Types::containsDynWitness)
+                || containsDynWitness(function.result());
+        if (type instanceof Borrow borrow) return containsDynWitness(borrow.target());
+        if (type instanceof SelfType self) return containsDynWitness(self.bound());
+        if (type instanceof Not not) return containsDynWitness(not.excluded());
         return false;
     }
 
@@ -195,9 +226,15 @@ public final class Types {
         }
         if (from instanceof Not) return to == Unknown.INSTANCE;
         if (from instanceof BoolLiteral && to == Primitive.BOOL) return true;
+        if (from.equals(to)) return true;
+        // Unknown/generic values cannot manufacture an erased interface witness.
+        // Exact equality above preserves an already-validated witness unchanged.
+        if (containsDynWitness(to) && containsUncertainType(from)) return false;
+        // New direct dyn conversions require nominal/interface proof in the
+        // dedicated dyn checker; this Task branch does not expose that path.
+        if (from instanceof Dyn || to instanceof Dyn) return false;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
-        if (from.equals(to)) return true;
         if (from instanceof SelfType source) {
             if (to instanceof SelfType target) {
                 return isAssignable(source.bound(), target.bound())

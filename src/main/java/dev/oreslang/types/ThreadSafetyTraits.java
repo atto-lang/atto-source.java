@@ -33,8 +33,8 @@ import dev.oreslang.types.Types.Unknown;
  *
  * <p>No guest declarations or unsafe/user-defined implementations can forge a
  * trait proof. NominalProof is a trusted compiler callback, not a guest hook.
- * This stacked Task branch predates the dyn semantic type; after rebase onto
- * the dyn convergence branch, erased dyn values remain fail-closed there.
+ * An erased dyn interface currently carries no Send/Sync auto-trait bound,
+ * so it is always denied, even for a nominal callback claiming it safe.
  * Arc/Weak likewise remain denied until trusted intrinsic lowering exists.
  */
 public final class ThreadSafetyTraits {
@@ -133,7 +133,9 @@ public final class ThreadSafetyTraits {
             int next = current.depth() + 1;
             if (type instanceof Named named) {
                 for (Type arg : named.arguments()) pending.push(new Pending(arg, next));
-             } else if (type instanceof ListType list) {
+            } else if (type instanceof Types.Dyn dyn) {
+                pending.push(new Pending(dyn.interfaceType(), next));
+            } else if (type instanceof ListType list) {
                 pending.push(new Pending(list.element(), next));
             } else if (type instanceof Tuple tuple) {
                 for (Type element : tuple.elements()) pending.push(new Pending(element, next));
@@ -183,10 +185,13 @@ public final class ThreadSafetyTraits {
             Type type, Trait trait, NominalProof nominalProof, Set<Type> visiting,
             IdentityHashMap<Type, Map<Integer, Boolean>> proven, int[] steps, int depth) {
         if (type == Unknown.INSTANCE || type instanceof Generic
+                || type instanceof Types.Dyn
                 || type instanceof SelfType || type instanceof ClassNamespace
                 || type instanceof Function || type instanceof Types.Not) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
-        if (type instanceof StringLiteral || type instanceof BoolLiteral) return true;
+        // Malformed embedding/compiler-created literal types must not gain traits.
+        if (type instanceof StringLiteral literal) return literal.value() != null;
+        if (type instanceof BoolLiteral) return true;
 
         if (type instanceof Borrow borrow) {
             // &T: Send iff T: Sync; &mut T: Send iff T: Send.
@@ -214,6 +219,11 @@ public final class ThreadSafetyTraits {
         if (type instanceof Record record) {
             // readOnly is a capability/view, not a frozen-backing witness.
             if (trait == Trait.SYNC) return false;
+            // Public Type records may be constructed by embedding callers;
+            // a blank member name is not a valid source field identity.
+            for (String memberName : record.members().keySet()) {
+                if (memberName.isBlank()) return false;
+            }
             for (Type member : record.members().values()) {
                 if (!has(member, trait, nominalProof,
                         visiting, proven, steps, depth + 1)) return false;
@@ -229,6 +239,9 @@ public final class ThreadSafetyTraits {
         }
         if (!(type instanceof Named named)) return false;
         String name = named.name();
+        // Do not crash or delegate malformed nominal identity to a permissive
+        // callback: an unrecognized spelling must never become a trait proof.
+        if (name == null || name.isBlank()) return false;
         if (name.equals("OptionUnwrapError")) {
             return nominalProof.trustedIntrinsic(named) && named.arguments().isEmpty();
         }
