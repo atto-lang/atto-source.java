@@ -451,6 +451,11 @@ public final class ModelGraphCompiler {
                             "model parameter '" + name.name() + "' for operation '"
                                     + sourceOperation.name() + "'");
                     lowered = new StaticArg(name.name(), null, parameter.type());
+                } else if (argument instanceof Ast.NameExpr name) {
+                    fail("MODEL_UNKNOWN_FORMAL",
+                            "unknown model parameter '" + name.name()
+                                    + "' for operation '" + sourceOperation.name() + "'");
+                    throw new AssertionError();
                 } else {
                     Object literal = constantValue(argument,
                             "static argument for operation '" + sourceOperation.name() + "'");
