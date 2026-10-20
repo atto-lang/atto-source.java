@@ -58,8 +58,8 @@ final class OresEntryHostCarrierBoundaryTest {
         OresEntry a = new OresEntry(hostile, hostile);
         OresEntry b = new OresEntry(hostile, hostile);
         assertFalse(a.equals(b));
-        assertDoesNotThrow(a::hashCode);
-        assertEquals("OresEntry<opaque>", assertDoesNotThrow(a::toString));
+        assertEquals(System.identityHashCode(a), a.hashCode());
+        assertEquals("OresEntry<opaque>", a.toString());
     }
 
     @Test
@@ -72,7 +72,7 @@ final class OresEntryHostCarrierBoundaryTest {
         otherKey.add(second);
 
         assertNotEquals(first, second);
-        assertDoesNotThrow(first::hashCode);
+        assertEquals(System.identityHashCode(first), first.hashCode());
         assertEquals("OresEntry<opaque>", first.toString());
         assertFalse(first.toString().contains("secret-value"));
 
