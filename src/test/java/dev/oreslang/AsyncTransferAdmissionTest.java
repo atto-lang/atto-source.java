@@ -103,6 +103,70 @@ final class AsyncTransferAdmissionTest {
     }
 
     @Test
+    void copyCallResultUsesResolvedAsyncParameterType() {
+        Ast.Program program = Parser.parse("""
+                define module app
+                  fnc make_int(): int {
+                    return 9;
+                  }
+
+                  async fnc consume(int n): int {
+                    return n;
+                  }
+
+                  pub fnc main(): void {
+                    val pending = consume(make_int());
+                    return;
+                  }
+                end
+                """);
+        Ast.CallExpr call = bindingCall(program, "main", 0);
+
+        OresCompiler.AsyncAdmissionResult checked =
+                OresCompiler.analyzeForAsyncLowering(program);
+
+        assertEquals(
+                AsyncTransferProvenance.TransferKind.COPY,
+                checked.asyncTransfers().transfersFor(call).getFirst().kind());
+        assertEquals(
+                "int",
+                checked.asyncTransfers().transfersFor(call).getFirst()
+                        .type().name());
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(5)
+    void hostileFreshRvalueDepthFailsClosed() {
+        String type = "int";
+        String expression = "1";
+        for (int i = 0; i < 70; i++) {
+            type = "Array<" + type + ">";
+            expression = "arr[" + expression + "]";
+        }
+        String source = """
+                define module app
+                  async fnc consume(TYPE value): int {
+                    return 1;
+                  }
+
+                  pub fnc main(): void {
+                    val pending = consume(EXPR);
+                    return;
+                  }
+                end
+                """
+                .replace("TYPE", type)
+                .replace("EXPR", expression);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(
+                failure.getMessage().contains("rvalue provenance"),
+                failure::getMessage);
+    }
+
+    @Test
     void arbitraryCallResultCannotSelfMintAsyncOwnership() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
