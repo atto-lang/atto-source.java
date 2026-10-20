@@ -351,7 +351,7 @@ final class GenericHasFutureAwaitTest {
                             pub static fnc get_future(): Future<int> { return value(); }
                         end
                         """));
-        assertNotNull(error.getMessage());
+        assertTrue(error.getMessage().contains("get_future"), error.getMessage());
     }
 
     @Test
@@ -366,7 +366,7 @@ final class GenericHasFutureAwaitTest {
                             pub get_future<U>(): Future<int> { return value(); }
                         end
                         """));
-        assertNotNull(error.getMessage());
+        assertTrue(error.getMessage().contains("get_future"), error.getMessage());
     }
 
     @Test
@@ -385,7 +385,7 @@ final class GenericHasFutureAwaitTest {
                         end
                         fnc read(Child child): int { return await child; }
                         """));
-        assertNotNull(error.getMessage());
+        assertTrue(error.getMessage().contains("effective HasFuture"), error.getMessage());
     }
 
     @Test
