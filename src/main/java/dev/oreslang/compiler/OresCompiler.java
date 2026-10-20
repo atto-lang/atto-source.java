@@ -18,10 +18,22 @@ public final class OresCompiler {
      * arbitrary parsed/manually-constructed Ast.Program.
      */
     public static final class CheckedProgram {
+        private final String codeUnitId;
+        private final String sourceText;
         private final Ast.Program program;
 
-        CheckedProgram(Ast.Program program) {
+        CheckedProgram(String codeUnitId, String sourceText, Ast.Program program) {
+            this.codeUnitId = codeUnitId;
+            this.sourceText = java.util.Objects.requireNonNull(sourceText, "checked source text");
             this.program = java.util.Objects.requireNonNull(program, "checked program");
+        }
+
+        public String codeUnitId() {
+            return codeUnitId;
+        }
+
+        public String sourceText() {
+            return sourceText;
         }
 
         public Ast.Program program() {
@@ -34,7 +46,17 @@ public final class OresCompiler {
     }
 
     public static CheckedProgram parseAndTypeCheckChecked(String source) {
-        return new CheckedProgram(parseAndTypeCheck(source));
+        return new CheckedProgram(null, source, parseAndTypeCheck(source));
+    }
+
+    public static CheckedProgram parseAndTypeCheckChecked(
+            String codeUnitId,
+            String source) {
+        java.util.Objects.requireNonNull(codeUnitId, "checked code unit id");
+        if (codeUnitId.isBlank()) {
+            throw new IllegalArgumentException("checked code unit id cannot be blank");
+        }
+        return new CheckedProgram(codeUnitId, source, parseAndTypeCheck(source));
     }
 
     /** Runs the complete front-end admission policy on an already parsed program. */
