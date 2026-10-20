@@ -369,6 +369,93 @@ public final class IpcReceiptCompletionBridgeSelfTest {
             check(racing.invariant());
             check(racing.counters().pending() == 0);
         }
+
+        // Once REMOTE_ACCEPTED has consumed the transport credit, a verified
+        // terminal receipt and trusted physical loss race for exactly one
+        // terminal owner. Whichever mutation wins the bridge gate removes the
+        // sole internal future; the loser must fail/observe zero retirement,
+        // callbacks fire exactly once, and credits/pending entries stay zero.
+        IpcReceiptCorrelation.Stage[] terminalStages = {
+                IpcReceiptCorrelation.Stage.HANDLER_COMMITTED,
+                IpcReceiptCorrelation.Stage.HANDLER_FAILED
+        };
+        for (var terminalStage : terminalStages) {
+            for (int trial = 0; trial < 1024; ++trial) {
+                var terminalRace = new IpcReceiptCompletionBridge(1);
+                var message = env(1, "terminalRace");
+                Object owner = new Object();
+                long generation = 900 + terminalStage.ordinal();
+                terminalRace.claimPhysicalTransport(owner, message, generation);
+                var future = terminalRace.admitAndCommit(owner, message, generation);
+                terminalRace.acceptVerified(
+                        owner, message, generation,
+                        IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+                check(terminalRace.counters().equals(
+                        new IpcReceiptCorrelation.Counters(1, 0)));
+
+                AtomicInteger callbackCount = new AtomicInteger();
+                AtomicReference<IpcReceiptCorrelation.Stage> callbackStage =
+                        new AtomicReference<>();
+                future.thenAccept(stage -> {
+                    callbackStage.set(stage);
+                    callbackCount.incrementAndGet();
+                });
+
+                CountDownLatch fire = new CountDownLatch(1);
+                AtomicInteger terminalWins = new AtomicInteger();
+                AtomicInteger lost = new AtomicInteger();
+                AtomicReference<Throwable> problem = new AtomicReference<>();
+
+                Thread terminal = new Thread(() -> {
+                    try {
+                        fire.await();
+                        terminalRace.acceptVerified(
+                                owner, message, generation, terminalStage);
+                        terminalWins.incrementAndGet();
+                    } catch (IllegalArgumentException expectedLossWon) {
+                        // Trusted transport retirement already removed it.
+                    } catch (Throwable failure) {
+                        problem.compareAndSet(null, failure);
+                    }
+                }, "ipc-test-terminal-receipt-race");
+
+                Thread loss = new Thread(() -> {
+                    try {
+                        fire.await();
+                        lost.addAndGet(terminalRace.transportLost(
+                                owner, message, generation));
+                    } catch (Throwable failure) {
+                        problem.compareAndSet(null, failure);
+                    }
+                }, "ipc-test-terminal-loss-race");
+
+                terminal.start();
+                loss.start();
+                fire.countDown();
+                terminal.join();
+                loss.join();
+
+                check(problem.get() == null);
+                check(terminalWins.get() + lost.get() == 1);
+                var outcome = result(future);
+                if (terminalWins.get() == 1) {
+                    check(outcome == terminalStage);
+                    check(lost.get() == 0);
+                    check(terminalRace.transportLost(
+                            owner, message, generation) == 0);
+                } else {
+                    check(outcome == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+                    check(lost.get() == 1);
+                    denied(() -> terminalRace.acceptVerified(
+                            owner, message, generation, terminalStage));
+                }
+                check(callbackCount.get() == 1);
+                check(callbackStage.get() == outcome);
+                check(terminalRace.counters().equals(
+                        new IpcReceiptCorrelation.Counters(0, 0)));
+                check(terminalRace.invariant());
+            }
+        }
         System.out.println("JAVA_IPC_HOST_COMPLETIONS_PASS assertions=" + checks
                 + " races=512");
     }
