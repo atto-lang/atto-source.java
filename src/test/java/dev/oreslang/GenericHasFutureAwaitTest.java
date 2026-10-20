@@ -138,9 +138,8 @@ final class GenericHasFutureAwaitTest {
                 end
                 async fnc value(): int { return 9; }
                 define class Counter implements HasFuture<int> as
-                    pub let int calls = 0;
                     pub get_future(): Future<int> {
-                        self.calls = self.calls + 1;
+                        stdio.stdout.write("P");
                         return value();
                     }
                 end
@@ -148,7 +147,6 @@ final class GenericHasFutureAwaitTest {
                     let Counter counter = new Counter();
                     val int result = await counter;
                     stdio.stdout.write(result);
-                    stdio.stdout.write(counter.calls);
                     return;
                 }
                 """;
@@ -159,7 +157,62 @@ final class GenericHasFutureAwaitTest {
             context.eval(Source.newBuilder(OresLanguage.ID, source, "hasfuture-once.ores")
                     .mimeType(OresLanguage.MIME_TYPE).build());
         }
-        assertEquals("91", stdout.toString(StandardCharsets.UTF_8).trim());
+        assertEquals("P9", stdout.toString(StandardCharsets.UTF_8).trim());
+    }
+
+
+    @Test
+    void rejectsMutableReceiverProjectionOnImmutableCapability() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define trait HasFuture<T> as
+                            get_future(): Future<T>;
+                        end
+                        async fnc source(): int { return 1; }
+                        define class Wrong implements HasFuture<int> as
+                            pub get_future(mut self)(): Future<int> { return source(); }
+                        end
+                        """));
+    }
+
+    @Test
+    void preservesExactlyOneFutureNestingLayer() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                define trait HasFuture<T> as
+                    get_future(): Future<T>;
+                end
+                async fnc inner(): int { return 7; }
+                async fnc nested(): Future<int> { return inner(); }
+                define class Nested implements HasFuture<Future<int>> as
+                    pub get_future(): Future<Future<int>> { return nested(); }
+                end
+                fnc read(): int {
+                    val Future<int> first = await new Nested();
+                    return await first;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define trait HasFuture<T> as
+                            get_future(): Future<T>;
+                        end
+                        async fnc inner(): int { return 7; }
+                        async fnc nested(): Future<int> { return inner(); }
+                        define class Nested implements HasFuture<Future<int>> as
+                            pub get_future(): Future<Future<int>> { return nested(); }
+                        end
+                        fnc invalid(): int { return await new Nested(); }
+                        """));
+    }
+
+    @Test
+    void rejectsMalformedHasFutureGenericArity() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define trait HasFuture<T, E> as
+                            get_future(): Future<T>;
+                        end
+                        """));
     }
 
     @Test
