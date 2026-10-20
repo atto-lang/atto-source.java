@@ -935,7 +935,12 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         require_exact_ref(
             repository, authorization, commit_sha, contract["repository_id"]
         )
-    except Denied as exc:
+    # Ref creation can succeed remotely before any local exception is raised.
+    # Do not limit cleanup to expected Denied exceptions: a malformed GitHub
+    # response, subprocess failure or operator interruption must also trigger
+    # best-effort cleanup of every possibly-created ref. Preserve the original
+    # exception/traceback if cleanup succeeds.
+    except BaseException:
         rollback_error = None
         if authorization_attempted:
             try:
@@ -943,7 +948,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
                     repository, authorization, commit_sha,
                     contract["repository_id"],
                 )
-            except Denied as rollback_exc:
+            except BaseException as rollback_exc:
                 rollback_error = rollback_exc
         if payload_attempted:
             try:
@@ -951,13 +956,13 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
                     repository, branch, commit_sha,
                     contract["repository_id"],
                 )
-            except Denied as rollback_exc:
+            except BaseException as rollback_exc:
                 rollback_error = rollback_error or rollback_exc
         if rollback_error is not None:
             raise Denied(
                 "private CI handoff failed and carrier ref rollback was incomplete"
             ) from rollback_error
-        raise exc
+        raise
 
     return {
         "commit": commit_sha,
