@@ -278,6 +278,7 @@ public final class TypeChecker {
                         : decl instanceof Ast.ClassDecl klass ? klass.name()
                         : decl instanceof Ast.InterfaceDecl iface ? iface.name()
                         : decl instanceof Ast.TypeAliasDecl alias ? alias.name()
+                        : decl instanceof Ast.FieldDecl field ? field.name()
                         : null;
                 if ("Entry".equals(reservedName)) {
                     throw new IllegalArgumentException(
