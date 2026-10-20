@@ -2028,6 +2028,7 @@ public final class TypeChecker {
 
             if (call.callee() instanceof Ast.MemberExpr enumMember
                     && enumMember.receiver() instanceof Ast.NameExpr enumOwner
+                    && env.lookup(enumOwner.name()) == null
                     && nominalEnums != null) {
                 NominalEnumRegistry.Case enumCase =
                         nominalEnums.caseOrNull(
