@@ -42,6 +42,8 @@ MAX_CONTRACT = 64 * 1024
 MAX_PLAN = 64 * 1024
 RECEIPT_TTL = dt.timedelta(hours=24)
 SOURCE_REPOSITORY_ID = 1400792274
+TRUSTED_SOURCE_REVIEWER = "ORESoftware"
+MAX_PR_REVIEWS = 100
 CONTROL_PLANE_PATHS = (
     "scripts/check-private-ci-destination.sh",
     "scripts/run-in-private-ci-destination.sh",
@@ -331,7 +333,59 @@ def checked_destination(repository, contract):
     return repo, base_tree, plan_bytes
 
 
+def require_source_codeowner_approval(source_pr, source_commit, author):
+    """Require the independent source CODEOWNER to approve this exact PR head."""
+    source_commit = valid_sha(source_commit, "invalid source commit")
+    if not isinstance(author, str) or not author:
+        raise Denied("source PR author identity is missing")
+    if author.casefold() == TRUSTED_SOURCE_REVIEWER.casefold():
+        raise Denied("source PR author cannot self-authorize private CI export")
+    response = legacy.gh_api(
+        f"repos/{legacy.SOURCE_REPO}/pulls/{source_pr}/reviews?per_page=100"
+    )
+    reviews = response.get("reviews")
+    if not isinstance(reviews, list) or len(reviews) >= MAX_PR_REVIEWS:
+        raise Denied("source PR reviews are missing or pagination is incomplete")
+    owner_reviews = []
+    seen_ids = set()
+    for review in reviews:
+        if not isinstance(review, dict):
+            raise Denied("source PR review data is malformed")
+        review_id = review.get("id")
+        user = review.get("user")
+        submitted = review.get("submitted_at")
+        if (not isinstance(review_id, int) or isinstance(review_id, bool)
+                or not isinstance(user, dict)
+                or not isinstance(user.get("login"), str)
+                or not isinstance(submitted, str)):
+            raise Denied("source PR review identity or chronology is invalid")
+        if review_id in seen_ids:
+            raise Denied("source PR review ids are duplicated")
+        seen_ids.add(review_id)
+        if user["login"].casefold() != TRUSTED_SOURCE_REVIEWER.casefold():
+            continue
+        try:
+            instant = dt.datetime.fromisoformat(submitted.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise Denied("source PR review timestamp is malformed") from exc
+        if instant.tzinfo is None or instant.utcoffset() is None:
+            raise Denied("source PR review timestamp lacks timezone")
+        owner_reviews.append((instant, review_id, review))
+    if not owner_reviews:
+        raise Denied("source PR has no independent CODEOWNER approval")
+    owner_reviews.sort(key=lambda item: (item[0], item[1]))
+    current = owner_reviews[-1][2]
+    if (current.get("state") != "APPROVED"
+            or current.get("commit_id") != source_commit):
+        raise Denied("source PR lacks current exact-HEAD CODEOWNER approval")
+    return owner_reviews[-1][0]
+
+
 def verify_source_pr(source_pr, source_commit):
+    if (not isinstance(source_pr, int) or isinstance(source_pr, bool)
+            or source_pr <= 0):
+        raise Denied("invalid source PR number")
+    source_commit = valid_sha(source_commit, "invalid source commit")
     origin = legacy.gh_api(f"repos/{legacy.SOURCE_REPO}")
     repo_id = origin.get("id")
     if (origin.get("full_name") != legacy.SOURCE_REPO
@@ -345,15 +399,22 @@ def verify_source_pr(source_pr, source_commit):
     pr = legacy.gh_api(f"repos/{legacy.SOURCE_REPO}/pulls/{source_pr}")
     head = pr.get("head")
     base = pr.get("base")
+    user = pr.get("user")
     if (pr.get("number") != source_pr
             or pr.get("state") != "open"
+            or pr.get("draft") is not False
+            or not isinstance(user, dict)
+            or not isinstance(user.get("login"), str)
             or not isinstance(head, dict)
             or head.get("sha") != source_commit
             or not isinstance(head.get("repo"), dict)
             or head["repo"].get("full_name") != legacy.SOURCE_REPO
             or not isinstance(base, dict)
+            or not isinstance(base.get("repo"), dict)
+            or base["repo"].get("full_name") != legacy.SOURCE_REPO
             or base.get("ref") != legacy.SOURCE_PROTECTED_BRANCH):
-        raise Denied("source commit is not the exact open PR head against main")
+        raise Denied("source commit is not the exact reviewed open PR head against main")
+    require_source_codeowner_approval(source_pr, source_commit, user["login"])
     return repo_id
 
 
