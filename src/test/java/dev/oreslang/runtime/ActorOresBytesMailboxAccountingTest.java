@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -61,6 +62,38 @@ final class ActorOresBytesMailboxAccountingTest {
             actor.getDone().get(5, TimeUnit.SECONDS);
         } finally {
             release.countDown();
+        }
+    }
+
+    @Test
+    void privateMailboxOwnsDistinctCompactByteStorage() throws Exception {
+        CountDownLatch observed = new CountDownLatch(1);
+        AtomicReference<OresBytes> received = new AtomicReference<>();
+        OresBytes source = OresBytes.copyOf(new byte[] {1, 2, (byte) 255});
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<OresBytes>spawnPrivateTrusted(
+                    context -> (message, selfContext) -> {
+                        received.set(message);
+                        observed.countDown();
+                    });
+            actor.send(source);
+            assertTrue(observed.await(5, TimeUnit.SECONDS));
+            actor.drain().get(5, TimeUnit.SECONDS);
+
+            OresBytes isolated = received.get();
+            assertNotNull(isolated);
+            assertNotSame(source, isolated,
+                    "PRIVATE transport must not retain the host OresBytes object");
+            assertEquals(source, isolated,
+                    "PRIVATE transport copy must preserve byte value");
+            byte[] exported = isolated.toByteArray();
+            exported[0] = 99;
+            assertEquals(1, source.unsignedAt(0));
+            assertEquals(1, isolated.unsignedAt(0));
+
+            actor.stop();
+            actor.getDone().get(5, TimeUnit.SECONDS);
         }
     }
 
