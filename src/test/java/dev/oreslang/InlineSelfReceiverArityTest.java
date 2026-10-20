@@ -112,6 +112,56 @@ final class InlineSelfReceiverArityTest {
     }
 
     @Test
+    void explicitSelfValueIsActuallyUsedInsideSelectedMethod() throws Exception {
+        // If the caller argument is accidentally swallowed as a receiver,
+        // 'other' will be missing and this guest program must fail.
+        String output = run("""
+                define class Foo as
+                  pub add(int x): int { return x + 10; }
+                  pub foo(self other, int x): int { return other.add(x); }
+                  pub compute(): int { return self.foo(self, 5); }
+                end
+                pub routine main(): void {
+                  val instance = new Foo();
+                  stdio.stdout.write(instance.compute());
+                }
+                """);
+        assertEquals("15", output);
+    }
+
+    @Test
+    void inlineMutableReceiverMayWriteMutableInstanceFields() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Counter as
+                  pub let int count = 0;
+                  pub increment(mut self, int delta): void {
+                    self.count = self.count + delta;
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void inlineMutableReceiverRetainsExclusiveArgumentLoanChecks() {
+        // Receiver mutability is NOT included in overload arity, but it
+        // must be checked for aliases across all ordinary value arguments.
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Counter as
+                          pub let int count = 0;
+                          pub borrow_and_read(mut self, borrow mut Counter other): int {
+                            return other.count;
+                          }
+                        end
+                        fnc unsafe_alias(): int {
+                          val Counter counter = new Counter();
+                          return counter.borrow_and_read(rt borrow mut counter);
+                        }
+                        """)));
+    }
+
+    @Test
     void explicitSelfValueCannotSatisfyAnImplicitReceiver() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
@@ -193,7 +243,7 @@ final class InlineSelfReceiverArityTest {
         Source source = Source.newBuilder(OresLanguage.ID, sourceText, "inline-self-arity.ores")
                 .mimeType(OresLanguage.MIME_TYPE).build();
         try (Context context = Context.newBuilder(OresLanguage.ID)
-                .out(output).allowAllAccess(true).build()) {
+                .out(output).allowAllAccess(false).build()) {
             context.eval(source);
         }
         return output.toString(StandardCharsets.UTF_8);
