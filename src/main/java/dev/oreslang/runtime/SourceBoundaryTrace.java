@@ -34,6 +34,13 @@ public final class SourceBoundaryTrace extends RuntimeException {
             int point = value.codePointAt(offset);
             int width = Character.charCount(point);
             if (label.length() + width > maxLength) {
+                // An ellipsis is part of the bound, not one extra UTF-16 unit.
+                // Back up by a whole code point so a trailing surrogate pair
+                // is never torn apart when the buffer is exactly full.
+                if (label.length() == maxLength) {
+                    int last = label.codePointBefore(label.length());
+                    label.setLength(label.length() - Character.charCount(last));
+                }
                 label.append('…');
                 break;
             }
