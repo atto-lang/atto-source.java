@@ -113,7 +113,6 @@ public final class IpcReceiptCorrelation {
             lastRouteEpoch = message.routeEpoch();
             lastCapabilityGeneration = message.capabilityGeneration();
             ++transportCredits;
-        
         }
     }
 
@@ -137,7 +136,6 @@ public final class IpcReceiptCorrelation {
                 throw new IllegalArgumentException("invalid or duplicate IPC dispatch commitment");
             }
             entry.stage = Stage.DISPATCH_COMMITTED;
-        
         }
     }
 
@@ -174,7 +172,6 @@ public final class IpcReceiptCorrelation {
                 }
             }
             throw new IllegalArgumentException("illegal/duplicate IPC receipt transition");
-        
         }
     }
 
@@ -198,7 +195,6 @@ public final class IpcReceiptCorrelation {
             }
             pending.remove(message.messageSequence());
             --transportCredits;
-        
         }
     }
 
@@ -231,7 +227,6 @@ public final class IpcReceiptCorrelation {
                         || removed.stage == Stage.DISPATCH_COMMITTED) --transportCredits;
             }
             return immutableLosses;
-        
         }
     }
 
@@ -255,7 +250,6 @@ public final class IpcReceiptCorrelation {
         RuntimeBlockingGuard.requireBlockingHostThread("IPC receipt correlation counters");
         synchronized (this) {
             return new Counters(pending.size(), transportCredits);
-        
         }
     }
 
@@ -271,7 +265,6 @@ public final class IpcReceiptCorrelation {
                 else if (entry.stage != Stage.REMOTE_ACCEPTED) return false;
             }
             return transportCredits == awaitingReceipt;
-        
         }
     }
 
