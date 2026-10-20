@@ -572,17 +572,33 @@ public final class TypeChecker {
             }
             Ast.TypeRef type = next.type();
             for (Ast.TypeRef child : type.arguments()) {
+                if (pending.size() + nodes >= 128) {
+                    throw new IllegalArgumentException(
+                            "checked effect payload exceeds structural verification budget");
+                }
                 pending.addLast(new Pending(child, next.depth() + 1));
             }
             if (type.isRecordType()) {
                 for (Ast.TypeRef child : type.recordMembers().values()) {
-                    pending.addLast(new Pending(child, next.depth() + 1));
+                    if (pending.size() + nodes >= 128) {
+                    throw new IllegalArgumentException(
+                            "checked effect payload exceeds structural verification budget");
+                }
+                pending.addLast(new Pending(child, next.depth() + 1));
                 }
             }
             if (type.isBorrow()) {
+                if (pending.size() + nodes >= 128) {
+                    throw new IllegalArgumentException(
+                            "checked effect payload exceeds structural verification budget");
+                }
                 pending.addLast(new Pending(type.borrowedTarget(), next.depth() + 1));
             }
             if (type.isComplement()) {
+                if (pending.size() + nodes >= 128) {
+                    throw new IllegalArgumentException(
+                            "checked effect payload exceeds structural verification budget");
+                }
                 pending.addLast(new Pending(type.complementedType(), next.depth() + 1));
             }
         }
