@@ -562,35 +562,16 @@ public final class TypeChecker {
      * checked ownership, runtime unwinding and serialization proofs.
      */
     private static boolean unsupportedCheckedEffectPayload(Type type) {
-        if (type == Primitive.VOID || type == Primitive.NULL
-                || type == Unknown.INSTANCE
-                || type instanceof Borrow || type instanceof Function
-                || type instanceof Generic || type instanceof SelfType
-                || type instanceof ClassNamespace || type instanceof Types.Not
-                || type instanceof ListType || type instanceof Record) return true;
-        if (type instanceof Named named) {
-            String leaf = named.name();
-            int dot = leaf.lastIndexOf('.');
-            if (dot >= 0) leaf = leaf.substring(dot + 1);
-            if (switch (leaf) {
-                case "any", "unknown", "Any", "Unknown", "ActorRef",
-                     "ActorMail", "ActorOutput", "Channel", "Future",
-                     "Generator", "AsyncGenerator", "Iterator", "AsyncIterator",
-                     "Mutex", "MutexGuard", "SharedMutex", "TcpConnection",
-                     "HttpExchange", "HttpServer", "Socket", "File",
-                     "Pointer", "Ref", "WeakRef" -> true;
-                default -> false;
-            }) return true;
-            return named.arguments().stream().anyMatch(
-                    TypeChecker::unsupportedCheckedEffectPayload);
-        }
-        if (type instanceof Tuple tuple)
-            return tuple.elements().stream().anyMatch(
-                    TypeChecker::unsupportedCheckedEffectPayload);
-        if (type instanceof Union union)
-            return union.options().stream().anyMatch(
-                    TypeChecker::unsupportedCheckedEffectPayload);
-        return false;
+        // Signature-only v1 has no verified control-channel ownership,
+        // nominal immutability or serializer for user classes, aliases,
+        // collections, generic containers or opaque values. A blacklist of
+        // familiar affine type names is not enough: users can freely define
+        // new nominal types with borrowed or mutable members.
+        //
+        // Until typed unwind and ownership certification exist, accept only
+        // the explicit closed scalar type set, never arbitrary Named records.
+        return type != Primitive.INT && type != Primitive.BOOL
+                && type != Primitive.FLOAT && type != Primitive.STRING;
     }
 
     private void validateCheckedEffects(Ast.FunctionDecl fn, Set<String> generics) {
