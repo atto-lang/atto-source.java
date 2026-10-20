@@ -4,6 +4,7 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -414,6 +415,16 @@ final class EndDelimitedFunctionSyntaxTest {
                     return Ok(Some((1, "one")))
                 end
                 """));
+    }
+
+    @Test
+    void sharedFormatterRoundTripCorpusParsesAndTypeChecks() throws Exception {
+        try (var input = EndDelimitedFunctionSyntaxTest.class
+                .getResourceAsStream("/function-syntax/end-delimited-roundtrip.ores")) {
+            assertNotNull(input, "missing shared function-syntax corpus");
+            String source = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        }
     }
 
     @Test
