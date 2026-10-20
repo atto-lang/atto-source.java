@@ -327,8 +327,11 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                 if (!abortState.compareAndSet(attempt, -attempt)) return;
                 try {
                     socket.close();
-                } catch (IOException abortFailure) {
+                } catch (IOException | RuntimeException abortFailure) {
                     sessionLease.quarantineIfUnsettled(abortFailure);
+                } catch (Error fatalAbortFailure) {
+                    sessionLease.quarantineIfUnsettled(fatalAbortFailure);
+                    throw fatalAbortFailure;
                 } finally {
                     abortState.compareAndSet(-attempt, 0);
                 }
