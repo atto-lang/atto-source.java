@@ -357,14 +357,28 @@ public final class RuntimePermissions {
             return canonical.toString();
         }
 
-        if (normalizedHost.endsWith(".")) {
-            normalizedHost = normalizedHost.substring(0, normalizedHost.length() - 1);
+        if (normalizedHost.chars().anyMatch(Character::isWhitespace)) {
+            throw new IllegalArgumentException("invalid DNS network endpoint host");
         }
+        final String asciiHost;
+        try {
+            asciiHost = java.net.IDN.toASCII(
+                    normalizedHost,
+                    java.net.IDN.USE_STD3_ASCII_RULES)
+                    .toLowerCase(Locale.ROOT);
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalArgumentException(
+                    "invalid DNS network endpoint host '" + host + "'",
+                    invalid);
+        }
+        normalizedHost = asciiHost.endsWith(".")
+                ? asciiHost.substring(0, asciiHost.length() - 1)
+                : asciiHost;
         if (normalizedHost.isBlank()
+                || normalizedHost.length() > 253
                 || normalizedHost.startsWith(".")
                 || normalizedHost.endsWith(".")
-                || normalizedHost.contains("..")
-                || normalizedHost.chars().anyMatch(Character::isWhitespace)) {
+                || normalizedHost.contains("..")) {
             throw new IllegalArgumentException("invalid DNS network endpoint host");
         }
         return normalizedHost;
