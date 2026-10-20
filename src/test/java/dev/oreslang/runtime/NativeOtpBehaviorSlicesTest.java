@@ -17,10 +17,10 @@ import static org.junit.jupiter.api.Assertions.*;
 final class NativeOtpBehaviorSlicesTest {
     private static final List<String> MODULES = List.of(
             "gen_server", "supervisor", "gen_statem",
-            "application", "event_manager", "registry");
+            "application", "event_manager", "registry", "pg", "ets");
 
     @Test
-    void exactSixOtpModulesAreExplicitlyRegisteredAndPureOreslang() throws Exception {
+    void exactEightOtpModulesAreExplicitlyRegisteredAndPureOreslang() throws Exception {
         Set<String> actual = CoreLibrarySources.packagedSourcePaths().stream()
                 .filter(path -> path.startsWith("otp/"))
                 .collect(Collectors.toSet());
@@ -181,6 +181,6 @@ final class NativeOtpBehaviorSlicesTest {
         assertThrows(IllegalArgumentException.class,
                 () -> CoreLibrarySources.source("std/otp/release"));
         assertThrows(IllegalArgumentException.class,
-                () -> CoreLibrarySources.source("std/otp/ets"));
+                () -> CoreLibrarySources.source("std/otp/global"));
     }
 }
