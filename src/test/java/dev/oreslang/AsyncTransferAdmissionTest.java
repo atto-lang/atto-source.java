@@ -4,6 +4,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.AsyncTransferProvenance;
+import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -281,6 +282,33 @@ final class AsyncTransferAdmissionTest {
                           }
                         end
                         """));
+        assertTrue(
+                failure.getMessage().contains("async lowering admission"),
+                failure::getMessage);
+    }
+
+    @Test
+    void directTypeCheckerFullAdmissionAlsoRejectsProofMismatch() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app
+                          define class Box as
+                            pub let int value = 1;
+                          end
+
+                          async fnc consume(Box box): int {
+                            return box.value;
+                          }
+
+                          pub fnc main(): void {
+                            let original = new Box();
+                            val action = consume;
+                            val pending = action(original);
+                            return;
+                          }
+                        end
+                        """)));
         assertTrue(
                 failure.getMessage().contains("async lowering admission"),
                 failure::getMessage);
