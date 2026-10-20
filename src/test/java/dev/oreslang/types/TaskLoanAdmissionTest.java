@@ -58,6 +58,30 @@ final class TaskLoanAdmissionTest {
         }
     }
 
+    @SuppressWarnings("unchecked")
+    private static <T> OresTask<T> startCompilerFrameForTest(
+            OresTaskScope scope,
+            OresScheduler scheduler,
+            OresScheduler.Task<T> frame,
+            TaskLoanAdmission admission) throws Exception {
+        var method = OresTaskScope.class.getDeclaredMethod(
+                "startCompilerFrame",
+                OresScheduler.class,
+                OresScheduler.Task.class,
+                Runnable.class,
+                OresTaskScope.CompilerLoanRetirement.class);
+        method.setAccessible(true);
+        try {
+            return (OresTask<T>) method.invoke(
+                    scope, scheduler, frame, (Runnable) () -> { }, admission);
+        } catch (java.lang.reflect.InvocationTargetException wrapped) {
+            Throwable cause = wrapped.getCause();
+            if (cause instanceof Exception exception) throw exception;
+            if (cause instanceof Error error) throw error;
+            throw new AssertionError(cause);
+        }
+    }
+
     @Test
     void physicalRetirementRequiresExactScopeOwnerAndSchedulerChild()
             throws Exception {
@@ -230,4 +254,70 @@ final class TaskLoanAdmissionTest {
         }
         assertEquals(0, verifier.activeChildren());
     }
+
+    @Test
+    void cancellationKeepsExactVerifierLoanUntilPhysicalQuiescence()
+            throws Exception {
+        TaskAccessVerifier verifier = new TaskAccessVerifier();
+        TaskLoanAdmission admission = admission(verifier);
+        var claim = new TaskAccessVerifier.Claim(
+                TaskAccessVerifier.Place.whole(ROOT),
+                TaskAccessVerifier.Mode.WRITE);
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+
+        try (OresScheduler scheduler = new OresScheduler(1);
+             AsyncRuntime runtime = new AsyncRuntime();
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            OresTask<Integer> child = startCompilerFrameForTest(
+                    scope,
+                    scheduler,
+                    resume -> {
+                        entered.countDown();
+                        boolean interrupted = false;
+                        try {
+                            while (!release.await(
+                                    50, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                                // Keep the guest carrier physically live across
+                                // logical cancellation/result settlement.
+                            }
+                        } catch (InterruptedException ignored) {
+                            interrupted = true;
+                            while (release.getCount() != 0) {
+                                Thread.onSpinWait();
+                            }
+                        } finally {
+                            if (interrupted) {
+                                Thread.currentThread().interrupt();
+                            }
+                        }
+                        return OresScheduler.done(41);
+                    },
+                    admission);
+
+            assertTrue(entered.await(
+                    5, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(1, verifier.activeChildren());
+            assertFalse(verifier.parentMayAccess(claim),
+                    "parent mutation must stay denied while child owns exact loan");
+
+            assertTrue(scope.cancel());
+            assertFalse(child.isQuiescent());
+            assertFalse(admission.retiredForTesting());
+            assertEquals(1, verifier.activeChildren());
+            assertFalse(verifier.parentMayAccess(claim),
+                    "cancellation/Future settlement must not release borrowed memory");
+
+            release.countDown();
+            assertNull(AsyncRuntime.await(child.getDone()));
+            assertTrue(child.isQuiescent());
+            assertTrue(admission.retiredForTesting());
+            assertEquals(0, verifier.activeChildren());
+            assertTrue(verifier.parentMayAccess(claim),
+                    "parent authority returns only after physical scheduler quiescence");
+        } finally {
+            release.countDown();
+        }
+    }
+
 }
