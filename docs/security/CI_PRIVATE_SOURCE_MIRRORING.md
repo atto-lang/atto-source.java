@@ -84,13 +84,13 @@ carrier.
 ## Reviewed destination execution containment
 
 The reviewed carrier is immutable Git commit
-`5e1079638ba322d0208631ef34fcbd3f129b40ab`, tree
-`1f2f5d5f816213192d13c179d0e9381d00fdeaf7`. Authorization binds those Git
+`c5f5155259aa37b808f4e96dbe09cddded4c04ed`, tree
+`15fcb558350a2965d9edf1f503d45a6d8e7f98df`. Authorization binds those Git
 objects directly; movement of destination `main` is not an authorization
 input. The preflight also resolves
 `.github/workflows/private-oreslang-exact-tree.yml` from that immutable
 carrier commit and requires reviewed blob
-`2d4b412ca8480d02fcd122a9cb7ee3a5d7d45227`; it never trusts a cleanup
+`ef7b0caaa1aedb56864f01fad14bfe88321f1ab1`; it never trusts a cleanup
 workflow fetched from mutable destination `main`.
 
 Every published carrier commit carries a second, machine-checked provenance line
@@ -100,6 +100,8 @@ the parent tree, reconstructs the permitted root as the reviewed carrier tree
 plus the exact `private-oreslang-source` subtree, and requires that reconstructed
 root to equal `HEAD^{tree}`. This prevents a matching source subtree on an
 unreviewed carrier from producing acceptable evidence.
+
+Carrier contract run `39348566012` also passed the source-free adversarial sandbox contract on the reviewed carrier commit, including masked mount roots, cleared token environment, network isolation, dropped capabilities, and host-write denial.
 
 The carrier treats the mirrored source and every source-owned build/test
 program as untrusted. For a real private source run it first requires the
