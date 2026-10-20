@@ -81,7 +81,7 @@ final class ReachabilityManifestTest {
     void canonicalConstantsNormalizeFloatingSyntaxAndEscapeUnicodeSafely() {
         BuildOptions options = BuildOptions.executable(Map.of(
                 "ratio", "-0.0",
-                "label", "line\\n\u2603"));
+                "label", "line\n☃"));
         TreeShaker.Result result = OresCompiler.compileForBuild("""
                 pub const float ratio = 1.0;
                 pub const String label = "x";
@@ -89,8 +89,8 @@ final class ReachabilityManifestTest {
                 """, options);
 
         String json = ReachabilityManifest.from(result, options).canonicalJson();
-        assertTrue(json.contains("\\\"__root__.ratio\\\":0.0"));
-        assertTrue(json.contains("\\\"__root__.label\\\":\\\"line\\\\n\u2603\\\""));
+        assertTrue(json.contains("\"__root__.ratio\":0.0"));
+        assertTrue(json.contains("\"__root__.label\":\"line\\n☃\""));
     }
 
     @Test
