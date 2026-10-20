@@ -59,7 +59,17 @@ public final class OresTaskScope implements AutoCloseable {
         private final OresFuture<Void> retired = new OresFuture<>();
         private final CountDownLatch physicalExitObserved = new CountDownLatch(1);
         private boolean exitObserved;
+        /** Trusted retirement callback returned normally. */
         private boolean releaseComplete;
+        /**
+         * The non-cancellable physical retirement Future has been published.
+         * Keep this separate from releaseComplete: publication itself is a
+         * retryable stage and must not rerun an already-successful external
+         * release callback.
+         */
+        private boolean retirementPublished;
+        // Package/reflection fault injection after release, before publication.
+        private Runnable afterReleaseBeforePublishFaultForTesting;
 
         PhysicalRetirementOwner(Runnable retirement) {
             this.retirement = Objects.requireNonNull(retirement, "retirement");
@@ -103,17 +113,33 @@ public final class OresTaskScope implements AutoCloseable {
         }
 
         private synchronized void retryRetirementAfterExit() {
-            if (releaseComplete) return;
+            if (retirementPublished) return;
             if (!exitObserved) {
                 throw new IllegalStateException(
                         "trusted Task retirement attempted before physical carrier exit");
             }
-            retirement.run();
-            // Publish the retirement fence while this same owner lock is still
-            // held. A concurrent close that observes releaseComplete must also
-            // observe the slot-removal callback before it can return.
-            releaseComplete = true;
-            retired.completeFromRuntime(null);
+
+            if (!releaseComplete) {
+                retirement.run();
+                // Once the external release callback returned normally, never
+                // replay it merely because Future publication later failed.
+                releaseComplete = true;
+            }
+
+            Runnable injected = afterReleaseBeforePublishFaultForTesting;
+            if (injected != null) injected.run();
+
+            // Publish while holding the same owner lock. A concurrent close
+            // cannot observe retirementPublished before the Future terminal
+            // state is visible. If publication throws, the exact owner remains
+            // retryable without duplicating the successful external release.
+            if (!retired.isDone()) {
+                if (!retired.completeFromRuntime(null) && !retired.isDone()) {
+                    throw new IllegalStateException(
+                            "trusted Task retirement fence rejected publication");
+                }
+            }
+            retirementPublished = true;
         }
     }
 
@@ -221,7 +247,9 @@ public final class OresTaskScope implements AutoCloseable {
      * leases. The onPhysicalExit callback is first invoked AFTER the final
      * guest carrier turn has unwound, not when the cancelable result settles.
      * If it throws, the exact callback remains owned and may be retried by a
-     * later host close; successful retirement is published exactly once.
+     * later host close. If callback release succeeds but fence publication
+     * fails, only publication is retried; the successful external release is
+     * never replayed. Successful retirement is published exactly once.
      * A suspends call uses its parent's existing Task and does not re-enter
      * this admission path. A child task needs its own independent code pin.
      *
