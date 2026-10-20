@@ -5344,10 +5344,11 @@ public final class OresEvalRootNode extends RootNode {
                     return new MutableStructValue(fields);
                 }
                 if (value instanceof OresEntry entry) {
-                return runtimeSharedSafe(entry.key(), seen)
-                        && runtimeSharedSafe(entry.value(), seen);
-            }
-            if (value instanceof OptionValue option) {
+                    return new OresEntry(
+                            detachAsyncValue(entry.key(), visiting),
+                            detachAsyncValue(entry.value(), visiting));
+                }
+                if (value instanceof OptionValue option) {
                     return option.present()
                             ? new OptionValue(true, detachAsyncValue(option.value(), visiting))
                             : option;
