@@ -24,6 +24,9 @@ MAX_SINGLE = 10 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
+SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
+SOURCE_PROTECTED_BRANCH = "main"
+POLICY_PATH = ".github/private-ci-approved-repositories.txt"
 
 
 class Denied(RuntimeError):
@@ -134,6 +137,90 @@ def checked_policy_fingerprint(root, repository):
     if not approved:
         raise Denied("destination approval was revoked or absent")
     return hashlib.sha256(contents).digest()
+
+def verify_protected_origin(repository, expected_policy_digest):
+    """Fail closed unless local policy matches CODEOWNER-controlled protected main.
+
+    An unreviewed test checkout can add its own allowlist line; consulting
+    only the local file is not authorization. Always pin the remote policy
+    lookup to the HEAD commit of the official protected origin/main. A
+    GitHub "protected: false" branch is explicitly insufficient even when
+    CODEOWNERS exists (without branch protection, its review is optional).
+    """
+    origin = gh_api(f"repos/{SOURCE_REPO}")
+    if (origin.get("full_name") != SOURCE_REPO
+            or origin.get("private") is not True):
+        raise Denied("cannot attest identity and privacy of source origin")
+    branch = gh_api(f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}")
+    if (branch.get("name") != SOURCE_PROTECTED_BRANCH
+            or branch.get("protected") is not True):
+        raise Denied("source main is not protected; CODEOWNER approval is unenforced")
+    # A "protected" branch might enforce only status checks, without
+    # mandatory CODEOWNER approval, or allow administrators to bypass review.
+    # Require the actual classic branch-protection settings to be readable.
+    # On plans/credentials where GitHub denies this API, fail closed.
+    protection = gh_api(
+        f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}/protection")
+    reviews = protection.get("required_pull_request_reviews")
+    administrators = protection.get("enforce_admins")
+    force_pushes = protection.get("allow_force_pushes")
+    deletions = protection.get("allow_deletions")
+    if (not isinstance(reviews, dict)
+            or reviews.get("require_code_owner_reviews") is not True
+            or reviews.get("dismiss_stale_reviews") is not True
+            or not isinstance(reviews.get("required_approving_review_count"), int)
+            or isinstance(reviews["required_approving_review_count"], bool)
+            or reviews["required_approving_review_count"] < 1
+            or not isinstance(administrators, dict)
+            or administrators.get("enabled") is not True
+            or not isinstance(force_pushes, dict)
+            or force_pushes.get("enabled") is not False
+            or not isinstance(deletions, dict)
+            or deletions.get("enabled") is not False):
+        raise Denied(
+            "origin main must enforce CODEOWNER approvals, stale-review dismissal, "
+            "administrator protection and deny forced pushes/deletions")
+    bypasses = reviews.get("bypass_pull_request_allowances")
+    if bypasses is not None:
+        if (not isinstance(bypasses, dict)
+                or any(not isinstance(bypasses.get(category, []), list)
+                       or bypasses.get(category)
+                       for category in ("users", "teams", "apps"))):
+            raise Denied("origin main has PR review bypass allowances")
+    commit_sha = valid_sha(branch.get("commit", {}).get("sha"))
+    policy = gh_api(f"repos/{SOURCE_REPO}/contents/{POLICY_PATH}?ref={commit_sha}")
+    if (policy.get("path") != POLICY_PATH or policy.get("type") != "file"
+            or policy.get("encoding") != "base64"):
+        raise Denied("protected origin approval policy has invalid metadata")
+    encoded = policy.get("content")
+    if not isinstance(encoded, str):
+        raise Denied("protected origin approval policy has no content")
+    try:
+        # Whitespace may separate base64 lines in GitHub Contents responses,
+        # but any non-whitespace/non-base64 character must be rejected.
+        packed = "".join(encoded.split())
+        remote_contents = base64.b64decode(packed, validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise Denied("protected origin approval policy has invalid base64") from exc
+    if len(remote_contents) > 16 * 1024:
+        raise Denied("protected origin approval policy exceeds size limit")
+    if hashlib.sha256(remote_contents).digest() != expected_policy_digest:
+        raise Denied("source policy diverges from reviewed protected main")
+    try:
+        lines = remote_contents.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise Denied("protected origin approval policy is not UTF-8") from exc
+    approved = False
+    for line in lines:
+        if not line or line.startswith("#"):
+            continue
+        if not NAME.fullmatch(line):
+            raise Denied("protected origin approval policy has an invalid entry")
+        if line.casefold() == repository.casefold():
+            approved = True
+    if not approved:
+        raise Denied("destination absent from protected origin allowlist")
+
 
 def collect_source(root, trusted_root):
     """Snapshot regular files using descriptor-relative, no-follow traversal.
@@ -246,12 +333,62 @@ def collect_source(root, trusted_root):
     return sorted(entries, key=lambda item: item[0])
 
 
-def publish(repository, source, branch, trusted_root):
+def verified_exact_source_tree(files, source_commit):
+    """Match every local upload blob/mode/path to a pinned origin commit tree.
+
+    Source-dir scanning alone is not a Git-tree snapshot: dirty/untracked
+    bytes could be exported under a valid destination approval. Require a
+    full (non-truncated) authoritative tree at an exact 40-hex commit SHA
+    before uploading anything. Git tree entries also reject submodules and
+    symlinks even if a caller's local snapshot omits them.
+    """
+    source_commit = valid_sha(source_commit)
+    commit = gh_api(f"repos/{SOURCE_REPO}/git/commits/{source_commit}")
+    if commit.get("sha") != source_commit:
+        raise Denied("source commit SHA is not attested by origin")
+    tree_sha = valid_sha(commit.get("tree", {}).get("sha"))
+    source_tree = gh_api(
+        f"repos/{SOURCE_REPO}/git/trees/{tree_sha}?recursive=1")
+    if source_tree.get("sha") != tree_sha or source_tree.get("truncated") is not False:
+        raise Denied("source Git tree is incomplete or its SHA changed")
+    raw_entries = source_tree.get("tree")
+    if not isinstance(raw_entries, list) or len(raw_entries) > 4096:
+        raise Denied("source Git tree entries missing or over safety limit")
+    tracked = {}
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            raise Denied("malformed source Git tree entry")
+        kind = entry.get("type")
+        if kind == "tree":
+            continue
+        if kind != "blob" or entry.get("mode") not in ("100644", "100755"):
+            raise Denied("source Git tree contains symlink or unsupported file mode")
+        path = entry.get("path")
+        if not isinstance(path, str) or not path or path in tracked:
+            raise Denied("malformed/duplicate path in source Git tree")
+        tracked[path] = (entry["mode"], valid_sha(entry.get("sha")))
+    local = {}
+    for path, data, mode in files:
+        expected_blob = hashlib.sha1(
+            b"blob " + str(len(data)).encode("ascii") + bytes([0]) + data
+        ).hexdigest()
+        if path in local:
+            raise Denied("duplicate local source path")
+        local[path] = (mode, expected_blob)
+    if not local or local != tracked:
+        raise Denied("source directory differs from pinned Git tree")
+    return tree_sha
+
+
+def publish(repository, source, branch, trusted_root, source_commit):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
+    source_commit = valid_sha(source_commit)
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
+    # Must check the GitHub origin's protected main before reading private bytes.
+    verify_protected_origin(repository, approved_policy)
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
     try:
@@ -259,6 +396,7 @@ def publish(repository, source, branch, trusted_root):
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source, trusted_root)
+    expected_source_tree = verified_exact_source_tree(files, source_commit)
     base = checked_repo(repository)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
@@ -292,6 +430,8 @@ def publish(repository, source, branch, trusted_root):
     isolated = gh_api(f"repos/{repository}/git/trees", method="POST",
                       payload={"tree": elements})
     isolated_sha = valid_sha(isolated.get("sha"))
+    if isolated_sha != expected_source_tree:
+        raise Denied("uploaded source tree differs from pinned Git commit")
     # Replace the entire PREFIX subtree atomically in the new root tree.
     # Preserve unrelated destination files and CI workflows from base_tree.
     authorize_write()
@@ -307,6 +447,9 @@ def publish(repository, source, branch, trusted_root):
     })
     commit_sha = valid_sha(commit.get("sha"))
     authorize_write()
+    # Re-verify protected origin at the publication boundary, after any
+    # uploaded blobs but before attaching them to an executable CI branch.
+    verify_protected_origin(repository, approved_policy)
     # CREATE a new CI ref, never UPDATE an existing branch, tag, or main.
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
         "ref": "refs/heads/" + branch, "sha": commit_sha
@@ -321,11 +464,14 @@ def main(argv=None):
     p.add_argument("repository", help="approved private owner/repo")
     p.add_argument("--source-dir", required=True, type=Path)
     p.add_argument("--branch", required=True)
+    p.add_argument("--source-commit", required=True,
+                   help="exact source-origin 40-hex Git commit to prove")
     args = p.parse_args(argv)
     # Policy and code are taken from the same trusted checkout as this script.
     root = Path(__file__).resolve().parent.parent
     try:
-        commit, count = publish(args.repository, args.source_dir, args.branch, root)
+        commit, count = publish(
+            args.repository, args.source_dir, args.branch, root, args.source_commit)
     except Denied as exc:
         print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
         return 1

@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
@@ -197,6 +198,7 @@ public final class NativeHttp implements AutoCloseable {
     public final class Server implements AutoCloseable {
         private final HttpServer transport;
         private final Semaphore admission;
+        private final HttpResponseBodyOpenGate bodyOpenGate;
         private final int bodyLimit, deadlineMillis;
         private final ArrayDeque<Exchange> pending = new ArrayDeque<>();
         private final Set<State> active = ConcurrentHashMap.newKeySet();
@@ -208,6 +210,10 @@ public final class NativeHttp implements AutoCloseable {
         private Server(HttpServer transport, int capacity, int bodyLimit, int deadlineMillis) {
             this.transport = transport; this.admission = new Semaphore(capacity);
             this.bodyLimit = bodyLimit; this.deadlineMillis = deadlineMillis;
+            // A timed-out host Supplier can ignore interrupts. Retain its
+            // opener slot until it *actually returns*, even after HTTP admission
+            // is released, so hostile suppliers cannot create unbounded tasks.
+            this.bodyOpenGate = new HttpResponseBodyOpenGate(Math.min(32, capacity), io);
             // Preserve the original executor when diagnostics are off. In
             // diagnostic mode, measure the JDK-to-virtual-thread handoff.
             if (CorePerf.enabled() || CoreDebug.enabled()) {
@@ -295,7 +301,9 @@ public final class NativeHttp implements AutoCloseable {
             if (drained != null) return drained;
             drained = new OresFuture<>(() -> false, () -> { });
             stopAccepting();
-            io.execute(() -> {
+            // Drain must still be driven if the I/O pool was concurrently shut
+            // down. A rejected task must not strand the drained Future.
+            HttpResponseCleanupDispatcher.dispatch(io, () -> {
                 try { transport.stop((int) (((long) graceMillis + 999) / 1000)); }
                 finally {
                     synchronized (this) { transportStopped = true; }
@@ -329,9 +337,13 @@ public final class NativeHttp implements AutoCloseable {
         long generation;
         long spawnNanos, readyNanos, movedNanos, claimedNanos;
         Object owner;
+        // Response ownership and terminal cancellation share the State lock
+        // with the first, irreversible HTTP header attempt.
+        final HttpResponseWirePhase wirePhase = new HttpResponseWirePhase();
         boolean busy, committed, bodyRead, streamingBody, suppressBody;
         int bodyBytes;
         volatile boolean terminal;
+        volatile InputStream activeResponseInput;
         boolean transportClosed;
         String ticket;
         final String requestId = UUID.randomUUID().toString();
@@ -347,12 +359,25 @@ public final class NativeHttp implements AutoCloseable {
         State(Server server, HttpExchange raw) {
             this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = context;
         }
+        // Linearize cancellation against success header emission. Never
+        // hold this monitor while performing blocking socket I/O.
+        boolean beginHeaders() {
+            synchronized (this) {
+                return wirePhase.begin(committed, terminal);
+            }
+        }
+        void noteHeadersSent() {
+            synchronized (this) { wirePhase.markSent(); }
+        }
         void abort(int status) { abort(status, true); }
         void abort(int status, boolean cancelOwner) {
             boolean send, alreadyClosed;
             synchronized (this) {
                 alreadyClosed = terminal;
-                send = !terminal && !committed && !busy;
+                // A reserved response that never reached the wire may still
+                // fail precommit. Once an emission attempt starts, never
+                // synthesize a second HTTP status.
+                send = wirePhase.maySendError(terminal, busy);
                 if (!terminal) responseStatus = send ? status : 0;
                 terminal = true;
             }
@@ -360,11 +385,32 @@ public final class NativeHttp implements AutoCloseable {
             if (alreadyClosed && poolWorker != null) { release(); return; }
             if (actor != null && cancelOwner) actor.cancel();
             if (alreadyClosed) { release(); return; }
-            try { io.execute(() -> { try { if (send) reject(raw, status); else raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); } }); }
-            catch (RejectedExecutionException closed) { release(); }
+            InputStream responseInput = activeResponseInput;
+            // A hostile InputStream.close() can block. Never wait for producer
+            // cleanup before closing the network exchange or releasing admission.
+            if (responseInput != null) {
+                HttpResponseCleanupDispatcher.dispatch(io, () -> {
+                    try { responseInput.close(); }
+                    catch (IOException ignored) { }
+                });
+            }
+            HttpResponseCleanupDispatcher.dispatch(io, () -> {
+                try {
+                    if (send) reject(raw, status); else raw.close();
+                } finally {
+                    synchronized (this) { transportClosed = true; }
+                    release();
+                }
+            });
         }
-        void finish() {
-            synchronized (this) { if (terminal) return; terminal = true; }
+        void finish() throws IOException {
+            synchronized (this) {
+                // An abort/deadline may win after the wire writer finishes.
+                // Do not resolve the actor's respond()/finish() Future as
+                // successful when the request has already been terminated.
+                HttpResponseWirePhase.requireLiveFinish(terminal);
+                terminal = true;
+            }
             try { raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); }
         }
         void release() {
@@ -474,10 +520,24 @@ public final class NativeHttp implements AutoCloseable {
             synchronized (state) {
                 checkOwner();
                 if (state.committed || state.busy) throw new IllegalStateException("response already started");
-                if (!name.matches("[!#$%&'*+.^_`|~0-9A-Za-z-]+") || value.chars().anyMatch(c -> c < 32 || c == 127))
+                if (name == null || value == null
+                        || !name.matches("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+                        || value.chars().anyMatch(c -> c < 32 || c == 127 || c > 255))
                     throw new IllegalArgumentException("invalid HTTP header");
-                if (Set.of("content-length", "transfer-encoding", "connection", "trailer", "upgrade").contains(name.toLowerCase(Locale.ROOT)))
+                if (Set.of("content-length", "transfer-encoding", "connection", "trailer", "upgrade",
+                        "te", "host", "keep-alive", "proxy-connection", "http2-settings",
+                        "proxy-authenticate", "proxy-authorization").contains(name.toLowerCase(Locale.ROOT)))
                     throw new IllegalArgumentException("transport-owned response header");
+                int fields = 1, bytes = name.length() + value.length() + 4;
+                for (Map.Entry<String, List<String>> existing : state.raw.getResponseHeaders().entrySet()) {
+                    if (existing.getKey().equalsIgnoreCase(name)) continue;
+                    for (String item : existing.getValue()) {
+                        fields++;
+                        bytes += existing.getKey().length() + item.length() + 4;
+                    }
+                }
+                if (fields > 100 || bytes > 32768)
+                    throw new IllegalArgumentException("response headers exceed configured bounds");
                 state.raw.getResponseHeaders().set(name, value);
             }
         }
@@ -511,6 +571,40 @@ public final class NativeHttp implements AutoCloseable {
                 return owned;
             });
         }
+        /**
+         * Trusted host transport adapter for the planned unary HttpResponse result.
+         * Caller ownership is still enforced by operation(...). The response is
+         * consumed once and the stream runs on a virtual I/O worker. This does
+         * not expose HttpResponseDraft to Oreslang guest code.
+         */
+        public OresFuture<Object> respond(HttpResponseDraft draft) {
+            Objects.requireNonNull(draft, "response");
+            if (!draft.streaming() && draft.bufferedLength() > state.server.bodyLimit)
+                throw new IllegalArgumentException("buffered response exceeds configured limit");
+            return operation(() -> {
+                synchronized (state) {
+                    if (state.terminal) throw new IllegalStateException("HTTP request was cancelled before response commitment");
+                    if (state.committed) throw new IllegalStateException("response already started");
+                    // Preflight must be non-I/O, non-consuming, and serialized
+                    // with setHeader, cancellation and exchange ownership.
+                    draft.preflight(state.raw);
+                    draft.claim();
+                    state.committed = true;
+                    state.responseStatus = draft.status();
+                }
+                draft.writeClaimedTo(state.raw, () -> state.terminal,
+                        input -> state.activeResponseInput = input,
+                        () -> draft.streaming()
+                                ? state.server.bodyOpenGate.open(draft, () -> state.terminal,
+                                TimeUnit.MILLISECONDS.toNanos(state.server.deadlineMillis)
+                                        - (System.nanoTime() - state.admittedNanos))
+                                : draft.openBody(),
+                        state::beginHeaders, state::noteHeadersSent);
+                state.finish();
+                return null;
+            });
+        }
+
         public OresFuture<Object> respond(int status, String contentType, String body) {
             return respondBuffer(status, contentType, body.getBytes(StandardCharsets.UTF_8));
         }
@@ -529,7 +623,9 @@ public final class NativeHttp implements AutoCloseable {
                 boolean noBody = noBody(status);
                 if (state.raw.getRequestMethod().equals("HEAD") && status != 204 && status != 205)
                     state.raw.getResponseHeaders().set("Content-Length", Integer.toString(bytes.length));
+                if (!state.beginHeaders()) throw new IOException("HTTP request cancelled before response headers");
                 state.raw.sendResponseHeaders(status, noBody || bytes.length == 0 ? -1 : bytes.length);
+                state.noteHeadersSent();
                 if (!noBody && bytes.length != 0) state.raw.getResponseBody().write(bytes);
                 state.finish(); return null;
             });
@@ -543,7 +639,9 @@ public final class NativeHttp implements AutoCloseable {
                     state.responseStatus = status;
                 }
                 state.suppressBody = noBody(status);
+                if (!state.beginHeaders()) throw new IOException("HTTP request cancelled before response headers");
                 state.raw.sendResponseHeaders(status, state.suppressBody ? -1 : 0);
+                state.noteHeadersSent();
                 return null;
             });
         }

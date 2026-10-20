@@ -228,7 +228,11 @@ public final class LinkedProgramRunner {
                         Source source = Source.newBuilder(OresLanguage.ID, unit.sourceText(), id)
                                 .mimeType(OresLanguage.MIME_TYPE)
                                 .buildLiteral();
-                        parsedUnits.put(id, context.parse(source));
+                        try (OresLanguage.PrecheckedProgramScope ignored =
+                                OresLanguage.openPrecheckedProgram(
+                                        id, unit.sourceText(), unit.program())) {
+                            parsedUnits.put(id, context.parse(source));
+                        }
                     }
 
                     for (Map.Entry<String, Map<String, String>> importer : importResolutions.entrySet()) {
@@ -354,7 +358,9 @@ public final class LinkedProgramRunner {
 
     private static Map<String, Ast.Program> parsePrograms(Map<String, String> sources) {
         LinkedHashMap<String, Ast.Program> programs = new LinkedHashMap<>();
-        for (Map.Entry<String, String> source : sources.entrySet()) programs.put(source.getKey(), Parser.parse(source.getValue()));
+        for (Map.Entry<String, String> source : sources.entrySet()) {
+            programs.put(source.getKey(), Parser.parse(source.getValue()));
+        }
         return programs;
     }
 

@@ -13,6 +13,7 @@ import dev.oreslang.types.Types.ListType;
 import dev.oreslang.types.Types.Named;
 import dev.oreslang.types.Types.Primitive;
 import dev.oreslang.types.Types.Record;
+import dev.oreslang.types.Types.AggregateKind;
 import dev.oreslang.types.Types.SelfType;
 import dev.oreslang.types.Types.StringLiteral;
 import dev.oreslang.types.Types.Tuple;
@@ -69,6 +70,8 @@ public final class TypeChecker {
     private Env currentTypeScope;
     /** Names declared by named inference, including aliases not yet initialized. */
     private final Set<String> inferredTypeNames = new HashSet<>();
+    /** Short named inference is resolved only for otherwise unbound capitalized row type names. */
+    private final IdentityHashMap<Ast.BindingStmt, String> shortInferredTypeNames = new IdentityHashMap<>();
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
@@ -80,6 +83,8 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    /** Both type-only and value imports occupy names short inference may not redefine. */
+    private final Set<String> importedNames = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
@@ -105,16 +110,30 @@ public final class TypeChecker {
     private final List<String> warnings = new ArrayList<>();
 
     /** Non-fatal compiler diagnostics, detached from mutable checker state. */
-    public record TypeCheckResult(Ast.Program program, List<String> warnings) {
-        public TypeCheckResult { warnings = List.copyOf(warnings); }
+    public record TypeCheckResult(
+            Ast.Program program,
+            List<String> warnings,
+            Map<Ast.BindingStmt, String> shortInferredAliases) {
+        public TypeCheckResult {
+            warnings = List.copyOf(warnings);
+            // BindingStmt is a value record. Two separately declared bindings
+            // can compare equal, but they are not the same lexical declaration.
+            // Retain AST identity instead of collapsing them in Map.copyOf().
+            shortInferredAliases = java.util.Collections.unmodifiableMap(
+                    new IdentityHashMap<>(shortInferredAliases));
+        }
+
+        public TypeCheckResult(Ast.Program program, List<String> warnings) {
+            this(program, warnings, Map.of());
+        }
     }
     /** The one explicit struct literal currently permitted to omit declared fields. */
     private Ast.ObjectExpr permittedPartialStructInitializer;
 
     public static Ast.Program check(Ast.Program program) {
-        program = checkTypes(program);
-        OwnershipChecker.check(program);
-        return program;
+        TypeCheckResult checked = checkTypesWithDiagnostics(program);
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return checked.program();
     }
 
     /** Type analysis only; executable admission must use OresCompiler.analyze. */
@@ -129,7 +148,7 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
-        return new TypeCheckResult(program, checker.warnings);
+        return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
     /**
@@ -139,6 +158,14 @@ public final class TypeChecker {
      * rather than fabricating an integer or disabling type checking.
      */
     public static Ast.Program checkTypesWithImportedClasses(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases) {
+        return checkTypesWithImportedClassesWithDiagnostics(
+                program, linkedClasses, linkedAliases).program();
+    }
+
+    /** Proof metadata must cross both type and ownership passes in linked builds. */
+    public static TypeCheckResult checkTypesWithImportedClassesWithDiagnostics(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases) {
         if (linkedClasses == null || linkedAliases == null) {
@@ -179,7 +206,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
-        return program;
+        return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
     private void validateImports(Ast.Program program) {
@@ -188,7 +215,7 @@ public final class TypeChecker {
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
-                "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
+                "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
@@ -198,10 +225,22 @@ public final class TypeChecker {
             if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) localNames.add(fn.name());
-                else if (declaration instanceof Ast.ClassDecl klass) localNames.add(klass.name());
+                else if (declaration instanceof Ast.ClassDecl klass) {
+                    if (klass.name().equals("HttpResponse")) {
+                        throw new IllegalArgumentException(
+                                "HttpResponse is a sealed transport response type; user classes cannot shadow it");
+                    }
+                    localNames.add(klass.name());
+                }
                 else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
                 else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
-                else if (declaration instanceof Ast.TypeAliasDecl alias) localNames.add(alias.name());
+                else if (declaration instanceof Ast.TypeAliasDecl alias) {
+                    if (alias.name().equals("HttpResponse")) {
+                        throw new IllegalArgumentException(
+                                "HttpResponse is a sealed transport response type; type aliases cannot shadow it");
+                    }
+                    localNames.add(alias.name());
+                }
             }
         }
 
@@ -209,6 +248,7 @@ public final class TypeChecker {
             ImportRules.validate(imported);
             for (String name : ImportRules.exposedBindings(imported)) {
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
+                importedNames.add(name);
                 if (localNames.contains(name)) {
                     throw new IllegalArgumentException("imported name '" + name + "' conflicts with a local or builtin name");
                 }
@@ -1623,10 +1663,63 @@ public final class TypeChecker {
                     env.reserveInferredType(binding.inferredTypeName());
                 }
             }
-            for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
+            // Short-form aliases are lexical declarations, so reserve them
+            // in statement order. Pre-reserving every later short alias would
+            // let a future declaration interfere with an earlier nested block
+            // and invert lexical scope. Explicit infer<T> declarations above
+            // remain pre-reserved because their name is stated explicitly and
+            // must reject forward use before initialization.
+            for (Ast.Stmt stmt : body) {
+                if (stmt instanceof Ast.BindingStmt binding
+                        && isShortNamedAggregateInference(binding, env, generics)) {
+                    String name = binding.declaredType().name();
+                    shortInferredTypeNames.put(binding, name);
+                    inferredTypeNames.add(name);
+                    env.reserveInferredType(name);
+                }
+                checkStatement(stmt, env, generics, expectedReturn, self);
+            }
         } finally {
             currentTypeScope = previousTypeScope;
         }
+    }
+
+    /**
+     * A short name introduces an alias only when the name is truly absent.
+     * Existing aliases, class/interface names, generics, builtins, and an
+     * explicitly reserved forward alias use the ordinary declared-type path.
+     * Limiting the implicit form to uppercase-starting names prevents a typo
+     * in lowercase builtins from silently manufacturing a type.
+     */
+    private boolean isShortNamedAggregateInference(
+            Ast.BindingStmt binding, Env env, Set<String> generics) {
+        if (binding.inferredTypeName() != null || binding.kind() != Ast.BindingKind.CONST
+                || binding.mutableReferent()
+                || !(binding.initializer() instanceof Ast.ObjectExpr object && object.inferredAggregate())) {
+            return false;
+        }
+        Ast.TypeRef ref = binding.declaredType();
+        if (ref == null || ref.name() == null || ref.name().isEmpty()
+                || !Character.isUpperCase(ref.name().codePointAt(0))
+                || ref.name().contains(".") || ref.isRecordType()
+                || ref.inferArguments() || !ref.arguments().isEmpty()) {
+            return false;
+        }
+        String name = ref.name();
+        if (generics.contains(name) || GENERIC_DEFAULT_BUILTINS.contains(name)
+                || Set.of("Object", "Any", "Unknown", "Error", "Symbol",
+                        "Ref", "WeakRef", "Map", "OrderedMap", "DynamicStruct").contains(name)
+                || findClass(name) != null || findInterface(name) != null
+                || findTypeAlias(name) != null || modules.containsKey(name)
+                || importedNames.contains(name)
+                || env.hasReservedInferredType(name) || env.lookupInferredType(name) != null
+                || env.hasSeenInferredType(name)
+                || hiddenLinkedAliasNames.contains(name)) {
+            return false;
+        }
+        // Do not turn a missing import into an inferred alias.
+        rejectUnimportedTypeDependency(name);
+        return true;
     }
 
     private void checkLoopBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
@@ -1664,7 +1757,9 @@ public final class TypeChecker {
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
         if (stmt instanceof Ast.BindingStmt binding) {
-            boolean namedInference = binding.inferredTypeName() != null;
+            String inferredName = binding.inferredTypeName() != null
+                    ? binding.inferredTypeName() : shortInferredTypeNames.get(binding);
+            boolean namedInference = inferredName != null;
             Type declaredAhead = namedInference || binding.declaredType() == null
                     ? null : resolve(binding.declaredType(), generics, self);
             if (binding.declaredType() != null && binding.initializer() instanceof Ast.ListExpr listLiteral) {
@@ -1703,11 +1798,11 @@ public final class TypeChecker {
             }
             if (actual instanceof Record record && record.readOnly() && binding.mutableReferent()) {
                 throw new IllegalArgumentException(
-                        "infer struct values are closed and readonly; they cannot be bound with mutable referent access");
+                        "readonly record values cannot be bound with mutable referent access");
             }
 
             if (namedInference) {
-                String name = binding.inferredTypeName();
+                String name = inferredName;
                 if (generics.contains(name)
                         || Set.of(
                                 "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
@@ -1722,13 +1817,14 @@ public final class TypeChecker {
                                 "Generator", "AsyncGenerator", "Iterator", "AsyncIterator",
                                 "IteratorResult", "Fnc", "Function").contains(name)
                         || findClass(name) != null || findInterface(name) != null
-                        || findTypeAlias(name) != null || modules.containsKey(name)) {
+                        || findTypeAlias(name) != null || modules.containsKey(name)
+                        || importedNames.contains(name)) {
                     throw new IllegalArgumentException(
                             "inferred type name '" + name + "' conflicts with an existing type or namespace");
                 }
                 if (!(actual instanceof Record || actual instanceof Tuple)) {
                     throw new IllegalArgumentException(
-                            "infer<" + name + "> requires an inferred struct or finite tuple");
+                            "infer<" + name + "> requires an inferred struct, inferred record, or finite tuple");
                 }
                 // String literals infer their general field/slot type, not a
                 // value-dependent singleton. Preserve all nested ownership/readonly
@@ -1744,8 +1840,27 @@ public final class TypeChecker {
                     ? actual
                     : overlayReadonlyCapabilities(actual, declaredAhead);
             requireAssignable(actual, declared, "initializer for " + binding.name());
+
+            // Resolve CONST selector metadata before defining the new binding so
+            // an initializer alias refers to the lexical source, not to the just-
+            // declared name in a shadowing scope.
+            Long constantInteger = null;
+            String constantString = null;
+            if (binding.kind() == Ast.BindingKind.CONST) {
+                constantInteger = constantTupleIndex(binding.initializer(), env);
+                constantString = constantStringKey(binding.initializer(), env);
+            }
+
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
+            if (binding.kind() == Ast.BindingKind.CONST) {
+                if (constantInteger != null) {
+                    env.defineConstantInteger(binding.name(), constantInteger);
+                }
+                if (constantString != null) {
+                    env.defineConstantString(binding.name(), constantString);
+                }
+            }
             return;
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
@@ -2138,6 +2253,7 @@ public final class TypeChecker {
         if (expr instanceof Ast.AssignExpr assignment) {
             Type targetType;
             List<Type> dynamicFixedSlots = List.of();
+            String initializedIndexedField = null;
             String where;
             if (assignment.target() instanceof Ast.NameExpr name) {
                 Env.Binding binding = env.lookup(name.name());
@@ -2149,40 +2265,149 @@ public final class TypeChecker {
                 targetType = memberType(member, env, generics, self, true);
                 where = member.member();
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
-                Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
-                Type index = typeOf(indexed.index(), env, generics, self);
-                requireAssignable(index, Primitive.INT, "array/list index");
-                if (receiver instanceof ListType list) targetType = list.element();
-                else if (receiver instanceof Tuple tuple) {
-                    // Constant reads preserve individual slot types, so
-                    // writes must retain the same invariant.
-                    Long constant = constantTupleIndex(indexed.index());
-                    if (tuple.elements().isEmpty() || (constant != null
-                            && (constant < 0 || constant >= tuple.elements().size()))) {
-                        throw new IllegalArgumentException("fixed collection index outside arity "
-                                + tuple.elements().size());
-                    }
-                    if (constant != null) {
-                        targetType = tuple.elements().get(constant.intValue());
+                if (indexed.receiver() instanceof Ast.NameExpr namespace
+                        && modules.containsKey(namespace.name())) {
+                    throw new IllegalArgumentException(
+                            "module namespace '" + namespace.name()
+                                    + "' does not support indexed assignment");
+                }
+                String constantKey = constantStringKey(indexed.index(), env);
+                Type receiverSource;
+                if (indexed.receiver() instanceof Ast.NameExpr receiverName) {
+                    Env.Binding receiverBinding = env.lookup(receiverName.name());
+                    if (receiverBinding != null && receiverBinding.hasUninitializedFields()) {
+                        if (constantKey == null) {
+                            throw new IllegalArgumentException(
+                                    "dynamic indexed assignment cannot target partially initialized explicit struct '"
+                                            + receiverName.name()
+                                            + "'; initialize a statically known missing field first");
+                        }
+                        receiverSource = receiverBinding.type();
                     } else {
-                        targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                        dynamicFixedSlots = tuple.elements();
+                        receiverSource = typeOf(indexed.receiver(), env, generics, self);
+                    }
+                } else {
+                    receiverSource = typeOf(indexed.receiver(), env, generics, self);
+                }
+                Type receiver = receiverDispatchType(deref(receiverSource));
+                Type index = typeOf(indexed.index(), env, generics, self);
+                if (receiver instanceof Record record) {
+                    requireAssignable(index, Primitive.STRING, "record/struct field key");
+                    Map<String, Type> indexableMembers = indexableRecordMembers(record);
+                    if (record.kind() == AggregateKind.CONTRACT) {
+                        throw new IllegalArgumentException(
+                                "cannot mutate through a structural contract view");
+                    }
+                    if (record.readOnly()) {
+                        throw new IllegalArgumentException(
+                                "cannot mutate a readonly structural record through indexed access");
+                    }
+                    if (constantKey != null) {
+                        initializedIndexedField = constantKey;
+                        targetType = indexableMembers.get(constantKey);
+                        if (targetType == null) {
+                            throw new IllegalArgumentException(
+                                    "unknown record/struct field key '" + constantKey + "'");
+                        }
+                    } else {
+                        if (indexableMembers.isEmpty()) {
+                            throw new IllegalArgumentException(
+                                    "cannot dynamically assign through an empty record/struct shape");
+                        }
+                        targetType = indexedElementUnion(indexableMembers.values());
+                        dynamicFixedSlots = List.copyOf(indexableMembers.values());
+                    }
+                } else if (receiver instanceof Named named && findClass(named.name()) != null) {
+                    requireAssignable(index, Primitive.STRING, "class field key");
+                    Ast.ClassDecl klass = findClass(named.name());
+                    if (klass.actorKind() != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException("computed indexing is not supported for this receiver kind");
+                    }
+                    Ast.CheckedClassView.record(indexed.receiver(), named.name());
+                    if (constantKey != null) {
+                        ResolvedField field = findFieldTarget(
+                                klass, named, constantKey, new LinkedHashSet<>());
+                        if (field == null) {
+                            throw new IllegalArgumentException(
+                                    "unknown class field key '" + constantKey + "' on " + named.name());
+                        }
+                        requireClassMemberVisible(
+                                field.field().visibility(), field.owner(), "field", field.field().name());
+                        if (field.field().bindingKind() != Ast.BindingKind.LET) {
+                            throw new IllegalArgumentException(
+                                    "field '" + field.owner().name() + "." + field.field().name()
+                                            + "' is immutable/final; indexed assignment cannot initialize fixed class fields");
+                        }
+                        Type pattern = classFieldType(field.owner(), field.field());
+                        targetType = substituteGenerics(
+                                pattern, classGenericBindings(field.owner(), field.ownerType()));
+                    } else {
+                        List<Type> writableFields = new ArrayList<>();
+                        for (ResolvedField field : effectiveFieldTargets(
+                                klass, named, new LinkedHashSet<>())) {
+                            requireClassMemberVisible(
+                                    field.field().visibility(), field.owner(), "field", field.field().name());
+                            if (field.field().bindingKind() != Ast.BindingKind.LET) {
+                                throw new IllegalArgumentException(
+                                        "dynamic class field assignment requires every reachable field to be mutable; '"
+                                                + field.owner().name() + "." + field.field().name()
+                                                + "' is immutable/final");
+                            }
+                            Type pattern = classFieldType(field.owner(), field.field());
+                            writableFields.add(substituteGenerics(
+                                    pattern, classGenericBindings(field.owner(), field.ownerType())));
+                        }
+                        if (writableFields.isEmpty()) {
+                            throw new IllegalArgumentException(
+                                    "class '" + named.name() + "' has no indexable instance fields");
+                        }
+                        targetType = indexedElementUnion(writableFields);
+                        dynamicFixedSlots = List.copyOf(writableFields);
+                    }
+                } else {
+                    requireAssignable(index, Primitive.INT, "array/list/tuple index");
+                    if (receiver instanceof ListType list) {
+                        targetType = list.element();
+                    } else if (receiver instanceof Tuple tuple) {
+                        if (tuple.kind() == TupleKind.TUPLE) {
+                            throw new IllegalArgumentException(
+                                    "Tuple values are positional immutable products; indexed assignment is not allowed");
+                        }
+                        // FixedArray/FixedList retain their existing indexed mutation contract.
+                        Long constant = constantTupleIndex(indexed.index(), env);
+                        if (tuple.elements().isEmpty() || (constant != null
+                                && (constant < 0 || constant >= tuple.elements().size()))) {
+                            throw new IllegalArgumentException("fixed collection index outside arity "
+                                    + tuple.elements().size());
+                        }
+                        if (constant != null) {
+                            targetType = tuple.elements().get(constant.intValue());
+                        } else {
+                            targetType = indexedElementUnion(tuple.elements());
+                            dynamicFixedSlots = tuple.elements();
+                        }
+                    } else {
+                        throw new IllegalArgumentException(
+                                "indexed assignment requires a mutable array/list/fixed collection, mutable struct, or class field");
                     }
                 }
-                else throw new IllegalArgumentException(
-                        "indexed assignment requires an array/list or tuple; structs have a closed static field set");
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
             requireReadonlyCapabilityPreserved(value, targetType, "assignment to " + where);
             requireAssignable(value, targetType, "assignment to " + where);
             for (Type slot : dynamicFixedSlots) {
-                requireReadonlyCapabilityPreserved(value, slot, "dynamic fixed collection slot assignment");
-                requireAssignable(value, slot, "dynamic fixed collection slot assignment");
+                requireReadonlyCapabilityPreserved(value, slot, "dynamic indexed target assignment");
+                requireAssignable(value, slot, "dynamic indexed target assignment");
             }
             if (assignment.target() instanceof Ast.MemberExpr member
                     && member.receiver() instanceof Ast.NameExpr owner) {
                 env.markInitialized(owner.name(), member.member());
+            }
+            if (initializedIndexedField != null
+                    && assignment.target() instanceof Ast.IndexExpr indexed
+                    && indexed.receiver() instanceof Ast.NameExpr owner) {
+                env.markInitialized(owner.name(), initializedIndexedField);
             }
             return targetType;
         }
@@ -3572,25 +3797,102 @@ public final class TypeChecker {
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.IndexExpr indexed) {
-            Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
+            if (indexed.receiver() instanceof Ast.NameExpr namespace
+                    && modules.containsKey(namespace.name())) {
+                throw new IllegalArgumentException(
+                        "module namespace '" + namespace.name()
+                                + "' does not support computed property access; use a declared member name");
+            }
+            Type receiver = receiverDispatchType(deref(typeOf(indexed.receiver(), env, generics, self)));
             Type index = typeOf(indexed.index(), env, generics, self);
+            String constantKey = constantStringKey(indexed.index(), env);
+            Env.Binding indexedOwner = indexed.receiver() instanceof Ast.NameExpr ownerName
+                    ? env.lookup(ownerName.name()) : null;
             if (receiver instanceof Record record) {
-                requireAssignable(index, Primitive.STRING, "object/map key");
-                if (index instanceof StringLiteral key) {
-                    Type member = record.members().get(key.value());
+                requireAssignable(index, Primitive.STRING, "record/struct field key");
+                Map<String, Type> indexableMembers = indexableRecordMembers(record);
+                if (record.kind() == AggregateKind.CONTRACT) {
+                    Ast.CheckedStructuralFieldDomain.record(
+                            indexed.receiver(), indexableMembers.keySet());
+                }
+                if (indexedOwner != null && indexedOwner.hasUninitializedFields()) {
+                    if (constantKey != null) {
+                        if (indexedOwner.isUninitialized(constantKey)) {
+                            throw new IllegalArgumentException(
+                                    "explicit struct field '" + constantKey
+                                            + "' is read before initialization on '"
+                                            + ((Ast.NameExpr) indexed.receiver()).name() + "'");
+                        }
+                    } else {
+                        throw new IllegalArgumentException(
+                                "dynamic indexed read cannot select from partially initialized struct '"
+                                        + ((Ast.NameExpr) indexed.receiver()).name()
+                                        + "'; initialize every field or use an exact initialized key");
+                    }
+                }
+                if (constantKey != null) {
+                    Type member = indexableMembers.get(constantKey);
                     if (member == null) {
-                        throw new IllegalArgumentException("unknown object/map key '" + key.value() + "'");
+                        throw new IllegalArgumentException(
+                                "unknown record/struct field key '" + constantKey + "'");
                     }
                     return member;
                 }
-                if (record.members().isEmpty()) return Unknown.INSTANCE;
-                return indexedElementUnion(record.members().values());
+                if (indexableMembers.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "structural value has no indexable data fields");
+                }
+                return indexedElementUnion(indexableMembers.values());
             }
-            requireAssignable(index, Primitive.INT, "array/list index");
+            if (receiver instanceof Named named) {
+                Ast.ClassDecl klass = findClass(named.name());
+                if (klass != null) {
+                    requireAssignable(index, Primitive.STRING, "class field key");
+                    if (!klass.actorKind().equals(Ast.ActorKind.NONE)) {
+                        throw new IllegalArgumentException(
+                                "computed indexing requires an ordinary class instance");
+                    }
+                    Ast.CheckedClassView.record(indexed.receiver(), named.name());
+                    if (constantKey != null) {
+                        ResolvedField field = findFieldTarget(
+                                klass, named, constantKey, new LinkedHashSet<>());
+                        if (field == null) {
+                            throw new IllegalArgumentException(
+                                    "unknown class field key '" + constantKey + "' on " + named.name());
+                        }
+                        requireClassMemberVisible(
+                                field.field().visibility(), field.owner(), "field", field.field().name());
+                        Type pattern = classFieldType(field.owner(), field.field());
+                        return substituteGenerics(
+                                pattern, classGenericBindings(field.owner(), field.ownerType()));
+                    }
+                    List<Type> fields = new ArrayList<>();
+                    for (ResolvedField field : effectiveFieldTargets(
+                            klass, named, new LinkedHashSet<>())) {
+                        // Arbitrary dynamic keys must not become a private-field
+                        // side channel. Outside the declaring class, fail closed
+                        // if the runtime key could select an inaccessible field.
+                        requireClassMemberVisible(
+                                field.field().visibility(), field.owner(), "field", field.field().name());
+                        Type pattern = classFieldType(field.owner(), field.field());
+                        fields.add(substituteGenerics(
+                                pattern, classGenericBindings(field.owner(), field.ownerType())));
+                    }
+                    if (fields.isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "class '" + named.name() + "' has no indexable instance fields");
+                    }
+                    return indexedElementUnion(fields);
+                }
+            }
+            requireAssignable(index, Primitive.INT, "array/list/tuple index");
             if (isBytesType(receiver)) return Primitive.INT;
             if (receiver instanceof ListType list) return list.element();
             if (receiver instanceof Tuple tuple) {
-                Long constant = constantTupleIndex(indexed.index());
+                if (tuple.elements().isEmpty()) {
+                    throw new IllegalArgumentException("cannot index an empty finite tuple");
+                }
+                Long constant = constantTupleIndex(indexed.index(), env);
                 if (constant != null) {
                     if (constant < 0 || constant >= tuple.elements().size()) {
                         throw new IllegalArgumentException(
@@ -3601,9 +3903,22 @@ public final class TypeChecker {
                 return indexedElementUnion(tuple.elements());
             }
             throw new IllegalArgumentException(
-                    "indexing requires an array/list, tuple, or closed struct with a statically known string key");
+                    "indexing requires an array/list, tuple, record/struct, or class instance field");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
+                if (created.type().inferArguments() || !created.type().arguments().isEmpty()
+                        || created.arguments().size() > 1) {
+                    throw new IllegalArgumentException(
+                            "HttpResponse constructor currently accepts zero or one string body; "
+                            + "status/headers/streams need the checked Fetch response initializer");
+                }
+                if (!created.arguments().isEmpty()) {
+                    requireAssignable(typeOf(created.arguments().getFirst(), env, generics, self),
+                            Primitive.STRING, "HttpResponse body");
+                }
+                return new Named("HttpResponse", List.of());
+            }
             // Guest Symbols are immutable keys, not fresh reference capabilities.
             // Do not silently reinterpret the historical STABLE constructor.
             if (created.type().name().equals("Symbol") && findClass("Symbol") == null) {
@@ -3893,7 +4208,7 @@ public final class TypeChecker {
                                     + "; partial initialization is only allowed as the direct initializer "
                                     + "of a mutable binding");
                 }
-                return new Record(members, false);
+                return Record.struct(members);
             }
 
             Map<String, Type> members = new LinkedHashMap<>();
@@ -3901,14 +4216,16 @@ public final class TypeChecker {
                 Type exactValueType = typeOf(field.value(), env, generics, self);
                 if (members.putIfAbsent(
                         field.name(),
-                        object.inferredStruct()
+                        object.inferredFieldTypes()
                                 ? widenCollectionElement(exactValueType)
                                 : exactValueType) != null) {
                     throw new IllegalArgumentException(
                             "duplicate struct field '" + field.name() + "'");
                 }
             }
-            return new Record(members, object.inferredStruct());
+            if (object.structuralRecord()) return new Record(members, true, AggregateKind.RECORD);
+            if (object.inferredStruct()) return Record.struct(members);
+            throw new IllegalArgumentException("unknown anonymous aggregate kind " + object.kind());
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
@@ -4301,7 +4618,11 @@ public final class TypeChecker {
                                 ? entry.getValue()
                                 : overlayReadonlyCapabilities(sourceMember, entry.getValue()));
             }
-            return new Record(members, sourceRecord.readOnly() || targetRecord.readOnly());
+            if (!aggregateKindsCompatible(sourceRecord.kind(), targetRecord.kind())) return expected;
+            return new Record(
+                    members,
+                    sourceRecord.readOnly() || targetRecord.readOnly(),
+                    targetRecord.kind());
         }
         if (source instanceof ListType sourceList && target instanceof ListType targetList) {
             return new ListType(overlayReadonlyCapabilities(sourceList.element(), targetList.element()));
@@ -4414,7 +4735,7 @@ public final class TypeChecker {
     private void requireReadonlyCapabilityPreserved(Type actual, Type expected, String where) {
         if (readonlyCapabilityErased(actual, expected)) {
             throw new IllegalArgumentException(
-                    where + " would erase infer struct readonly capability; "
+                    where + " would erase readonly record capability; "
                             + "use a generic/capability-preserving type or an explicit mutable struct instead");
         }
     }
@@ -4427,14 +4748,14 @@ public final class TypeChecker {
         Type concrete = deref(type);
         if (concrete instanceof Record record && record.readOnly()) {
             throw new IllegalArgumentException(
-                    where + " cannot request mutable access to a infer struct value; "
-                            + "inferred structs are permanently readonly");
+                    where + " cannot request mutable access to a readonly record value; "
+                            + "records are readonly structural values");
         }
         if (concrete instanceof Union union
                 && union.options().stream().anyMatch(option ->
                         deref(option) instanceof Record record && record.readOnly())) {
             throw new IllegalArgumentException(
-                    where + " cannot request mutable access because the value may be a readonly infer struct record");
+                    where + " cannot request mutable access because the value may be a readonly record");
         }
     }
 
@@ -4564,12 +4885,18 @@ public final class TypeChecker {
         source = deref(source);
         if (source instanceof Record record) {
             Map<String, Type> remainder = new LinkedHashMap<>();
-            for (Map.Entry<String, Type> member : record.members().entrySet()) {
+            for (Map.Entry<String, Type> member : indexableRecordMembers(record).entrySet()) {
                 if (!selectedMembers.contains(member.getKey())) {
                     remainder.put(member.getKey(), member.getValue());
                 }
             }
-            return new Record(remainder, record.readOnly());
+            if (record.kind() == AggregateKind.STRUCT
+                    || record.kind() == AggregateKind.CONTRACT) {
+                // Removing fields destroys concrete struct identity, and an
+                // internal method-bearing contract must never escape as data.
+                return new Record(remainder, true, AggregateKind.RECORD);
+            }
+            return new Record(remainder, record.readOnly(), AggregateKind.RECORD);
         }
         if (source instanceof Union union) {
             List<Type> alternatives = new ArrayList<>(union.options().size());
@@ -4697,7 +5024,7 @@ public final class TypeChecker {
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             record.members().forEach((name, member) -> members.put(name, bindReceiverSelf(member, receiver)));
-            return new Record(members, record.readOnly());
+            return new Record(members, record.readOnly(), record.kind());
         }
         return type;
     }
@@ -4839,6 +5166,8 @@ public final class TypeChecker {
                 case "handler" -> new Function(List.of(Primitive.STRING), new Named("HttpHandler", List.of()));
                 case "listen" -> new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT, Primitive.INT, Primitive.INT), server);
                 case "claim" -> new Function(List.of(Primitive.STRING), exchange);
+                case "response" -> new Function(List.of(Primitive.INT, Primitive.STRING, Primitive.STRING), new Named("HttpResponse", List.of()));
+                case "response_empty" -> new Function(List.of(Primitive.INT), new Named("HttpResponse", List.of()));
                 default -> null;
             };
             case "HttpHandler" -> switch (name) {
@@ -4872,6 +5201,7 @@ public final class TypeChecker {
                 case "respond_bytes" -> new Function(List.of(Primitive.INT, Primitive.STRING, new ListType(Primitive.INT)), voidFuture);
                 case "body_text" -> new Function(List.of(), new Named("Future", List.of(Primitive.STRING)));
                 case "respond" -> new Function(List.of(Primitive.INT, Primitive.STRING, Primitive.STRING), voidFuture);
+                case "respond_response" -> new Function(List.of(new Named("HttpResponse", List.of())), voidFuture);
                 case "start" -> new Function(List.of(Primitive.INT, Primitive.STRING), voidFuture);
                 case "write" -> new Function(List.of(Primitive.STRING), voidFuture);
                 case "finish" -> new Function(List.of(), voidFuture);
@@ -4909,7 +5239,7 @@ public final class TypeChecker {
                 unwrapMutexGuard(deref(rawReceiver)));
         if (writing && receiver instanceof Record record && record.readOnly()) {
             throw new IllegalArgumentException(
-                    "cannot mutate a infer struct value; inferred structs are closed and readonly");
+                    "cannot mutate a readonly structural record value");
         }
         if (receiver instanceof Record record) {
             Type result = record.members().get(member.member());
@@ -4945,7 +5275,7 @@ public final class TypeChecker {
                                             + "' is immutable/final; constructor must initialize it at most once");
                         }
                     }
-                    Type pattern = resolve(field.field().type(), Set.copyOf(field.owner().genericParameters()), field.ownerType());
+                    Type pattern = classFieldType(field.owner(), field.field());
                     return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                 }
             }
@@ -5015,7 +5345,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
-        if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
+        if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
@@ -5369,7 +5699,18 @@ public final class TypeChecker {
             Ast.TypeRef sourceTarget,
             Type resolvedTarget,
             Set<String> generics) {
-        if (resolvedTarget instanceof Record record) return record;
+        if (resolvedTarget instanceof Record record) {
+            if (record.kind() == AggregateKind.STRUCT) {
+                throw new IllegalArgumentException(
+                        "structural pattern target must be a structural record, interface, or trait; concrete struct shapes require exact type matching");
+            }
+            // 'structural { ... }' is a contract view. Converting only the
+            // pattern target keeps ordinary RECORD and STRUCT values distinct.
+            if (record.kind() == AggregateKind.RECORD) {
+                return new Record(record.members(), true, AggregateKind.CONTRACT);
+            }
+            return record;
+        }
         if (!(resolvedTarget instanceof Named named)) {
             throw new IllegalArgumentException(
                     "structural pattern target must be an inline record shape or named interface/trait, got "
@@ -5769,6 +6110,9 @@ public final class TypeChecker {
 
     private boolean runtimeRecordShapeCovered(Record source, Record target, int depth) {
         if (depth >= 32) return false;
+        if (!aggregateKindsCompatible(source.kind(), target.kind())) return false;
+        if (target.kind() == AggregateKind.STRUCT
+                && source.members().size() != target.members().size()) return false;
         for (Map.Entry<String, Type> required : target.members().entrySet()) {
             Type actual = source.members().get(required.getKey());
             if (actual == null || !runtimeValueTypeCovered(actual, required.getValue(), depth + 1)) {
@@ -5875,7 +6219,9 @@ public final class TypeChecker {
             }
             return true;
         }
-        if (a instanceof Record && b instanceof Record) return true;
+        if (a instanceof Record ar && b instanceof Record br) {
+            return aggregateKindsCompatible(ar.kind(), br.kind());
+        }
         return a.equals(b);
     }
 
@@ -5981,7 +6327,7 @@ public final class TypeChecker {
             for (Map.Entry<String, Type> entry : record.members().entrySet()) {
                 members.put(entry.getKey(), resolveSharedGeneric(entry.getValue(), bindings));
             }
-            return new Record(members, record.readOnly());
+            return new Record(members, record.readOnly(), record.kind());
         }
         return type;
     }
@@ -6267,8 +6613,8 @@ public final class TypeChecker {
                 .reduce(Types::unionOf).orElse(Unknown.INSTANCE);
     }
 
-    /** Folds trivial signed integer literals without performing guest arithmetic. */
-    private Long constantTupleIndex(Ast.Expr expression) {
+    /** Folds trivial signed integer constants without performing guest arithmetic. */
+    private Long constantIntegerLiteral(Ast.Expr expression) {
         if (expression instanceof Ast.LiteralExpr literal
                 && literal.value() instanceof Long index) return index;
         if (expression instanceof Ast.UnaryExpr unary
@@ -6277,6 +6623,26 @@ public final class TypeChecker {
                 && literal.value() instanceof Long index) {
             if (index == Long.MIN_VALUE) return null;
             return -index;
+        }
+        return null;
+    }
+
+    private Long constantTupleIndex(Ast.Expr expression, Env env) {
+        Long literal = constantIntegerLiteral(expression);
+        if (literal != null) return literal;
+        if (expression instanceof Ast.NameExpr name) {
+            return env.lookupConstantInteger(name.name());
+        }
+        return null;
+    }
+
+    private String constantStringKey(Ast.Expr expression, Env env) {
+        if (expression instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof String key) {
+            return key;
+        }
+        if (expression instanceof Ast.NameExpr name) {
+            return env.lookupConstantString(name.name());
         }
         return null;
     }
@@ -6290,7 +6656,7 @@ public final class TypeChecker {
             // Keep the left-hand shape while overlaying any stronger readonly
             // capability carried by the equivalent right-hand value. This is
             // recursive, so List<Record>, Tuple<Record>, Option<Record>, etc.
-            // cannot erase nested inferred-struct readonly state during joins.
+            // cannot erase nested readonly-record capability during joins.
             return overlayReadonlyCapabilities(b, a);
         }
         return null;
@@ -6403,7 +6769,7 @@ public final class TypeChecker {
                     "class " + klass.name());
         }
         stack.remove(klass);
-        Record result = new Record(members);
+        Record result = Record.contract(members);
         classShapeCache.put(klass, result);
         return result;
     }
@@ -6435,7 +6801,7 @@ public final class TypeChecker {
             }
         }
         stack.remove(klass);
-        return new Record(members);
+        return Record.contract(members);
     }
 
     private Record interfaceShape(Ast.InterfaceDecl iface, Set<String> generics, Set<Ast.InterfaceDecl> stack) {
@@ -6473,7 +6839,7 @@ public final class TypeChecker {
             }
         }
         stack.remove(iface);
-        return new Record(members);
+        return Record.contract(members);
     }
 
     private Named inferConstructedClassType(
@@ -7072,11 +7438,12 @@ public final class TypeChecker {
         }
 
         Type concrete = resolve(param.type(), generics, self);
-        if (concrete instanceof Record) {
-            // Inline structural shapes are already the canonical read-only
-            // structural contract. They do not need a nominal class/interface
-            // lookup and may safely view readonly inferred records.
-            return concrete;
+        if (concrete instanceof Record record) {
+            // The explicit structural modifier converts an inline record
+            // spelling into a non-storable contract view. Do not leave it as
+            // ordinary RECORD data: concrete structs are allowed to satisfy
+            // structural contracts without becoming records.
+            return new Record(record.members(), true, AggregateKind.CONTRACT);
         }
         Ast.InterfaceDecl iface = findInterface(param.type().name());
         if (iface != null) {
@@ -7608,7 +7975,7 @@ public final class TypeChecker {
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             record.members().forEach((name, member) -> members.put(name, substituteGenerics(member, bindings)));
-            return new Record(members, record.readOnly());
+            return new Record(members, record.readOnly(), record.kind());
         }
         return type;
     }
@@ -8001,12 +8368,14 @@ public final class TypeChecker {
                     .map(element -> resolve(element, generics, self, allowNullMarker))
                     .toList(), TupleKind.TUPLE);
         }
-        if (ref.isRecordType()) {
+        if (ref.isClosedAggregateType()) {
             Map<String, Type> members = new LinkedHashMap<>();
-            for (Map.Entry<String, Ast.TypeRef> member : ref.recordMembers().entrySet()) {
+            for (Map.Entry<String, Ast.TypeRef> member : ref.aggregateMembers().entrySet()) {
                 members.put(member.getKey(), resolve(member.getValue(), generics, self, allowNullMarker));
             }
-            return new Record(members, ref.isReadonlyRecordType());
+            return ref.isStructType()
+                    ? Record.struct(members)
+                    : new Record(members, true, AggregateKind.RECORD);
         }
         if (generics.contains(ref.name())) {
             if (!ref.arguments().isEmpty() || ref.inferArguments()) {
@@ -8351,7 +8720,38 @@ public final class TypeChecker {
         return false;
     }
 
+    private static boolean aggregateKindsCompatible(
+            AggregateKind left, AggregateKind right) {
+        if (left == right) return true;
+        // CONTRACT is an explicit structural view, not a stored data kind.
+        // Concrete structs may satisfy that view without becoming RECORD data.
+        if (left == AggregateKind.STRUCT && right == AggregateKind.CONTRACT) return true;
+        if (left == AggregateKind.STRUCT || right == AggregateKind.STRUCT) return false;
+        return true;
+    }
+
+    private static boolean methodContractMember(String key) {
+        return key.startsWith("instance$")
+                && key.contains("$arity")
+                && key.contains("$generics");
+    }
+
+    /** Data members visible through [] on an internal structural contract. */
+    private Map<String, Type> indexableRecordMembers(Record record) {
+        if (record.kind() != AggregateKind.CONTRACT) return record.members();
+        LinkedHashMap<String, Type> fields = new LinkedHashMap<>();
+        for (Map.Entry<String, Type> entry : record.members().entrySet()) {
+            if (!methodContractMember(entry.getKey())) {
+                fields.put(entry.getKey(), entry.getValue());
+            }
+        }
+        return java.util.Collections.unmodifiableMap(fields);
+    }
+
     private boolean structuralRecordAssignable(Record actual, Record expected) {
+        if (!aggregateKindsCompatible(actual.kind(), expected.kind())) return false;
+        if (expected.kind() == AggregateKind.STRUCT
+                && actual.members().size() != expected.members().size()) return false;
         for (Map.Entry<String, Type> required : expected.members().entrySet()) {
             Type candidate = actual.members().get(required.getKey());
             if (candidate == null || !assignable(candidate, required.getValue())) return false;
@@ -8584,13 +8984,28 @@ public final class TypeChecker {
         private final boolean descendantsNonLexical;
         private final boolean deferredCaptureBoundary;
         private final Map<String, Binding> bindings = new HashMap<>();
+        /** Literal integer constants used only for exact fixed-product index selection. */
+        private final Map<String, Long> constantIntegers = new HashMap<>();
+        /** Literal string constants used only for exact fixed-product field selection. */
+        private final Map<String, String> constantStrings = new HashMap<>();
         private final Map<String, Type> inferredTypes = new HashMap<>();
         private final Set<String> reservedInferredNames = new HashSet<>();
+        /**
+         * Shared by lexical descendants of one callable/root environment.
+         * A short inferred alias may not silently reuse a name whose defining
+         * block has ended; a separate callable gets a fresh domain.
+         */
+        private final Set<String> seenInferredNames;
         private void reserveInferredType(String name) {
             if (hasReservedInferredType(name) || lookupInferredType(name) != null
+                    || seenInferredNames.contains(name)
                     || !reservedInferredNames.add(name)) {
                 throw new IllegalArgumentException("duplicate or shadowed inferred type '" + name + "'");
             }
+            seenInferredNames.add(name);
+        }
+        private boolean hasSeenInferredType(String name) {
+            return seenInferredNames.contains(name);
         }
         private boolean hasReservedInferredType(String name) {
             return reservedInferredNames.contains(name)
@@ -8625,6 +9040,8 @@ public final class TypeChecker {
             this.parent = parent;
             this.descendantsNonLexical = descendantsNonLexical;
             this.deferredCaptureBoundary = deferredCaptureBoundary;
+            this.seenInferredNames =
+                    parent == null ? new HashSet<>() : parent.seenInferredNames;
         }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
         private void define(String name, Type type, Ast.BindingKind kind) {
@@ -8638,6 +9055,28 @@ public final class TypeChecker {
             if (bindings.putIfAbsent(name, new Binding(type, kind, uninitializedFields)) != null) {
                 throw new IllegalArgumentException("duplicate binding '" + name + "'");
             }
+        }
+        private void defineConstantInteger(String name, long value) {
+            if (!bindings.containsKey(name)) {
+                throw new IllegalStateException(
+                        "constant integer metadata requires an existing binding '" + name + "'");
+            }
+            constantIntegers.put(name, value);
+        }
+        private Long lookupConstantInteger(String name) {
+            if (bindings.containsKey(name)) return constantIntegers.get(name);
+            return parent == null ? null : parent.lookupConstantInteger(name);
+        }
+        private void defineConstantString(String name, String value) {
+            if (!bindings.containsKey(name)) {
+                throw new IllegalStateException(
+                        "constant string metadata requires an existing binding '" + name + "'");
+            }
+            constantStrings.put(name, value);
+        }
+        private String lookupConstantString(String name) {
+            if (bindings.containsKey(name)) return constantStrings.get(name);
+            return parent == null ? null : parent.lookupConstantString(name);
         }
         private Binding lookup(String name) {
             Binding binding = bindings.get(name);
@@ -8656,6 +9095,8 @@ public final class TypeChecker {
         private void replace(String name, Type type, Ast.BindingKind kind) {
             if (!bindings.containsKey(name)) throw new IllegalArgumentException("unknown binding '" + name + "'");
             bindings.put(name, new Binding(type, kind, Set.of()));
+            constantIntegers.remove(name);
+            constantStrings.remove(name);
         }
         private void markInitialized(String name, String field) {
             Binding binding = lookup(name);
