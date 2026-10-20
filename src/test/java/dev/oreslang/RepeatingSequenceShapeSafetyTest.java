@@ -276,6 +276,24 @@ final class RepeatingSequenceShapeSafetyTest {
     }
 
     @Test
+    void nestedUnresolvedAndMismatchedGenericSlotsCannotForgeShapeProofs() {
+        var unknownBox = new Types.Named("Box", List.of(Types.Unknown.INSTANCE));
+        var intBox = new Types.Named("Box", List.of(Types.Primitive.INT));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Types.ListType(unknownBox, List.of(unknownBox)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Types.ListType(new Types.Borrow(unknownBox, false),
+                        List.of(new Types.Borrow(unknownBox, false))));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Types.ListType(
+                        new Types.Named("Box", List.of(new Types.Generic("T"))),
+                        List.of(new Types.Named("Box", List.of(new Types.Generic("S"))))));
+        var sameGeneric = new Types.Named("Box", List.of(new Types.Generic("T")));
+        assertDoesNotThrow(() -> new Types.ListType(sameGeneric, List.of(sameGeneric)));
+        assertDoesNotThrow(() -> new Types.ListType(intBox, List.of(intBox)));
+    }
+
+    @Test
     void genericTypeInferenceUsesRepeatedSlotTypesInsteadOfTheElementUnion() {
         accepts("""
                 fnc preserve<T>(Array[...(T, string, bool)] input):
