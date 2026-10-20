@@ -14,27 +14,34 @@ pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
 ORIGINAL_VERIFY_PROTECTED_ORIGIN = pub.verify_protected_origin
 ORIGINAL_VERIFY_EXACT_SOURCE_TREE = pub.verified_exact_source_tree
-A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
+A, B, C, D, E, F = (
+    "a"*40, "b"*40, "c"*40, "d"*40, "e"*40, "f"*40)
 DESTINATION_ID = 1412142815
-WORKFLOW_SHA = "ef7b0caaa1aedb56864f01fad14bfe88321f1ab1"
+BASE_COMMIT = A
+BASE_TREE = B
+WORKFLOW_SHA = F
 APPROVED_POLICY = (
-    f"trusted/ci {DESTINATION_ID} {WORKFLOW_SHA}\n".encode()
+    f"trusted/ci {DESTINATION_ID} {BASE_COMMIT} {BASE_TREE} {WORKFLOW_SHA}\n".encode()
 )
 
 
 class PolicyAuthorizationTest(unittest.TestCase):
-    def test_policy_pins_slug_id_and_workflow_blob(self):
-        digest, repository_id, workflow_sha = pub._policy_authorization(
-            APPROVED_POLICY, "trusted/ci")
+    def test_policy_pins_slug_id_base_tree_and_workflow_blob(self):
+        digest, repository_id, base_commit, base_tree, workflow_sha = (
+            pub._policy_authorization(APPROVED_POLICY, "trusted/ci"))
         self.assertEqual(hashlib.sha256(APPROVED_POLICY).digest(), digest)
         self.assertEqual(DESTINATION_ID, repository_id)
+        self.assertEqual(BASE_COMMIT, base_commit)
+        self.assertEqual(BASE_TREE, base_tree)
         self.assertEqual(WORKFLOW_SHA, workflow_sha)
 
-    def test_slug_only_id_only_duplicate_and_bad_workflow_fail_closed(self):
+    def test_partial_duplicate_and_bad_control_plane_policy_fail_closed(self):
         bad_policies = (
             b"trusted/ci\n",
             f"trusted/ci {DESTINATION_ID}\n".encode(),
-            f"trusted/ci {DESTINATION_ID} not-a-sha\n".encode(),
+            f"trusted/ci {DESTINATION_ID} {BASE_COMMIT}\n".encode(),
+            f"trusted/ci {DESTINATION_ID} {BASE_COMMIT} {BASE_TREE}\n".encode(),
+            f"trusted/ci {DESTINATION_ID} {BASE_COMMIT} {BASE_TREE} not-a-sha\n".encode(),
             APPROVED_POLICY + APPROVED_POLICY,
         )
         for bad in bad_policies:
@@ -92,11 +99,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == "repos/trusted/ci/git/trees":
             # A fresh file tree and its parent root tree must be distinct.
             return {"sha": E if "base_tree" in payload else D}
+        if route == "repos/trusted/ci/git/refs" and method == "POST":
+            return {"ref": payload["ref"]}
         mapping = {
-            "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
-            "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
+            "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": BASE_COMMIT}},
+            "repos/trusted/ci/git/commits/"+BASE_COMMIT: {
+                "tree": {"sha": BASE_TREE}},
             "repos/trusted/ci/git/commits": {"sha": A},
-            "repos/trusted/ci/git/refs": {"ref": "refs/heads/ci/oreslang-test"},
         }
         if route not in mapping:
             raise AssertionError("unexpected or cross-repository GitHub API route " + route)
@@ -330,8 +339,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual([r for _, r, _ in writes], [
             "repos/trusted/ci/git/blobs", "repos/trusted/ci/git/trees",
             "repos/trusted/ci/git/trees", "repos/trusted/ci/git/commits",
-            "repos/trusted/ci/git/refs"])
-        self.assertEqual(writes[-1][2]["ref"], "refs/heads/ci/oreslang-test")
+            "repos/trusted/ci/git/refs", "repos/trusted/ci/git/refs"])
+        self.assertEqual(
+            writes[-2][2]["ref"], "refs/heads/ci/oreslang-test")
+        self.assertEqual(
+            writes[-1][2]["ref"], "refs/heads/ci/authorized-" + A)
+        self.assertEqual(writes[-1][2]["sha"], A)
         self.assertEqual(writes[1][2]["tree"][0]["path"], "hello.ores")
         self.assertNotIn("base_tree", writes[1][2])
         self.assertEqual(writes[2][2]["tree"], [
@@ -341,8 +354,32 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(writes[3][2]["tree"], E)
         self.assertEqual(
             writes[3][2]["message"],
-            "ci: exact private Oreslang tree " + A + " tree " + D)
+            "ci: exact private Oreslang tree " + A + " tree " + D
+            + "\ncarrier-base " + BASE_COMMIT + " tree " + BASE_TREE)
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
+
+    def test_detached_authorization_ref_must_confirm_exact_commit(self):
+        original = self.fake_api
+        refs = [0]
+        def wrong_authorization(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/refs" and method == "POST":
+                refs[0] += 1
+                if refs[0] == 2:
+                    return {"ref": "refs/heads/ci/authorized-" + C}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=wrong_authorization):
+            with self.assertRaisesRegex(pub.Denied, "authorization ref"):
+                pub.publish(
+                    "trusted/ci", self.source,
+                    "ci/oreslang-test", self.root, A)
+        ref_writes = [
+            payload for method, route, payload in self.route_calls
+            if method == "POST" and route.endswith("/git/refs")]
+        self.assertEqual(len(ref_writes), 2)
+        self.assertEqual(
+            ref_writes[0]["ref"], "refs/heads/ci/oreslang-test")
+        self.assertEqual(
+            ref_writes[1]["ref"], "refs/heads/ci/authorized-" + A)
 
     def test_existing_stale_files_cannot_survive_clean_source_snapshot(self):
         # Assume base_tree contains a stale private-oreslang-source/secret.ores.
@@ -365,6 +402,36 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "repository ID"):
                 self.publish()
             collect.assert_not_called()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_unreviewed_carrier_base_commit_aborts_before_source_read(self):
+        original = self.fake_api
+        def moved_base(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/ref/heads/main":
+                return {"object": {"sha": C}}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=moved_base):
+            with patch.object(pub, "collect_source") as collect:
+                with self.assertRaisesRegex(pub.Denied, "base commit"):
+                    pub.publish(
+                        "trusted/ci", self.source,
+                        "ci/oreslang-test", self.root, A)
+                collect.assert_not_called()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_unreviewed_carrier_base_tree_aborts_before_source_read(self):
+        original = self.fake_api
+        def changed_tree(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/commits/" + BASE_COMMIT:
+                return {"tree": {"sha": C}}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=changed_tree):
+            with patch.object(pub, "collect_source") as collect:
+                with self.assertRaisesRegex(pub.Denied, "base tree"):
+                    pub.publish(
+                        "trusted/ci", self.source,
+                        "ci/oreslang-test", self.root, A)
+                collect.assert_not_called()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_unreviewed_carrier_workflow_aborts_before_source_read(self):
