@@ -229,6 +229,21 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "stale, late, or not approved"):
                 v3.authorized_main_sha("trusted/ci", policy_digest)
 
+    def test_review_history_cap_fails_closed(self):
+        review = {
+            "id": 1,
+            "state": "APPROVED",
+            "commit_id": "3" * 40,
+            "submitted_at": "2026-10-20T00:00:00Z",
+            "user": {
+                "id": v3.REVIEW_AUTHORITY_USER_ID,
+                "login": v3.REVIEW_AUTHORITY_LOGIN,
+            },
+        }
+        with patch.object(v3, "gh_api_list", return_value=[review] * 100):
+            with self.assertRaisesRegex(v3.Denied, "exceeds bounded page"):
+                v3.latest_authority_review()
+
     def test_unprotected_main_rejects_approval_after_merge(self):
         main_sha = "2" * 40
         authority_head = "3" * 40
