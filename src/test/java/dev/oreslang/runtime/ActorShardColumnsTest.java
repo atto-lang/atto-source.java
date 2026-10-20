@@ -11,6 +11,20 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(20)
 final class ActorShardColumnsTest {
     @Test
+    void leaseLifecycleHooksAreNotPublicShardApi() {
+        assertThrows(NoSuchMethodException.class,
+                () -> ActorShardColumns.class.getMethod("revokeBackingFromLease"));
+        assertThrows(NoSuchMethodException.class,
+                () -> ActorDenseIndexColumns.class.getMethod("revokeBackingFromLease"));
+        assertThrows(NoSuchMethodException.class,
+                () -> ActorShardColumns.class.getMethod(
+                        "ownedBy", ActorRuntime.class, ActorRuntime.ActorId.class));
+        assertThrows(NoSuchMethodException.class,
+                () -> ActorDenseIndexColumns.class.getMethod(
+                        "ownedBy", ActorRuntime.class, ActorRuntime.ActorId.class));
+    }
+
+    @Test
     void allLayoutsComputeSameResultsAcrossActorTurnAndWorkerChanges() throws Exception {
         for (ActorShardColumns.Layout layout : ActorShardColumns.Layout.values()) {
             try (ActorRuntime runtime = new ActorRuntime()) {
