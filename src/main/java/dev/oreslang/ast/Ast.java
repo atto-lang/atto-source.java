@@ -35,7 +35,7 @@ public final class Ast {
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl, EnumDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
@@ -464,6 +464,14 @@ public final class Ast {
             if (name == null || name.isBlank()) throw new IllegalArgumentException("method name cannot be blank");
             if (arity < 0) throw new IllegalArgumentException("method arity cannot be negative");
         }
+    }
+
+    /** Nominal enum case. tag is a stable positive discriminator, not its value. */
+    public record EnumCase(String name, TypeRef payload, int tag) { }
+
+    /** Closed nominal enum. Cases may optionally carry one typed payload. */
+    public record EnumDecl(String name, List<EnumCase> cases) implements Decl {
+        public EnumDecl { cases = List.copyOf(cases); }
     }
 
     public record TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) implements Decl {
