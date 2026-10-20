@@ -55,6 +55,18 @@ import java.util.function.UnaryOperator;
  * shared actors may coordinate through explicitly synchronized shared cells.
  */
 public final class ActorRuntime implements AutoCloseable {
+    /**
+     * Keep the first actor-teardown error while recording later resource
+     * failures. Cleanup is best-effort across resources, not short-circuiting.
+     * Package-visible only for the real-runtime teardown unit regression.
+     */
+    static Throwable appendCleanupFailure(Throwable earlier, Throwable failure) {
+        Objects.requireNonNull(failure, "failure");
+        if (earlier == null) return failure;
+        if (earlier != failure) earlier.addSuppressed(failure);
+        return earlier;
+    }
+
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
     private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
     private static final int MAX_ACTOR_GROUPS_PER_ACTOR = 64;
@@ -7200,13 +7212,6 @@ public final class ActorRuntime implements AutoCloseable {
          * points can race to request finalization, but only the winning
          * finalizationClaimed transition can execute this body.
          */
-        private static Throwable appendCleanupFailure(
-                Throwable earlier, Throwable failure) {
-            if (earlier == null) return failure;
-            if (earlier != failure) earlier.addSuppressed(failure);
-            return earlier;
-        }
-
         private void completeFinalizationOutsideLock() {
             finalizerThread = Thread.currentThread();
             OresScheduler scheduler;
