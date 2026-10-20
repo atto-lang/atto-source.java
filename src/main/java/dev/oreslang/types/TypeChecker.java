@@ -2456,6 +2456,16 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "module init is a lifecycle hook and cannot be called directly; startup invokes it exactly once");
             }
+            if (call.callee() instanceof Ast.MemberExpr qualifiedModel
+                    && qualifiedModel.receiver() instanceof Ast.NameExpr namespace
+                    && env.lookup(namespace.name()) == null) {
+                ModelGraphCompiler.CompiledModel model =
+                        modelCatalog == null ? null
+                                : modelCatalog.find(namespace.name() + "." + qualifiedModel.member());
+                if (model != null) {
+                    return typeModelConstruction(model, call, env, generics, self);
+                }
+            }
             if (call.callee() instanceof Ast.NameExpr modelName
                     && env.lookup(modelName.name()) == null) {
                 ModelGraphCompiler.CompiledModel model = findModel(modelName.name());
