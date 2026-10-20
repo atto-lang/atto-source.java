@@ -1067,6 +1067,80 @@ public final class Ast {
         }
     }
 
+    /**
+     * Compiler-verified source-to-formal permutation for a staged named call.
+     * Runtime lowering must evaluate the callee first, then argument expressions
+     * in lexical source order, and only then reorder the resulting values by
+     * this permutation. Identity keys prevent structurally-equal ASTs from
+     * sharing authority accidentally.
+     */
+    public static final class CheckedNamedCallPlan {
+        private CheckedNamedCallPlan() { }
+
+        private static final java.lang.ref.ReferenceQueue<StagedCallExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, java.util.List<Integer>> PLANS =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey extends java.lang.ref.WeakReference<StagedCallExpr> {
+            private final int hash;
+            private IdentityKey(
+                    StagedCallExpr call,
+                    java.lang.ref.ReferenceQueue<StagedCallExpr> queue) {
+                super(call, queue);
+                hash = System.identityHashCode(call);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                StagedCallExpr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends StagedCallExpr> collected;
+            while ((collected = CLEARED.poll()) != null) PLANS.remove(collected);
+        }
+
+        public static synchronized void record(
+                StagedCallExpr call,
+                java.util.List<Integer> sourceItemIndexByFormal) {
+            java.util.Objects.requireNonNull(call, "call");
+            java.util.Objects.requireNonNull(sourceItemIndexByFormal, "sourceItemIndexByFormal");
+            java.util.List<Integer> plan = java.util.List.copyOf(sourceItemIndexByFormal);
+            if (plan.size() != call.arguments().size()) {
+                throw new IllegalArgumentException("named-call plan arity mismatch");
+            }
+            boolean[] seen = new boolean[plan.size()];
+            for (int sourceIndex : plan) {
+                if (sourceIndex < 0 || sourceIndex >= seen.length || seen[sourceIndex]) {
+                    throw new IllegalArgumentException("named-call plan must be a complete permutation");
+                }
+                seen[sourceIndex] = true;
+            }
+            expunge();
+            IdentityKey key = new IdentityKey(call, CLEARED);
+            java.util.List<Integer> old = PLANS.putIfAbsent(key, plan);
+            if (old != null && !old.equals(plan)) {
+                throw new IllegalStateException(
+                        "same named call site received inconsistent checked permutations");
+            }
+        }
+
+        public static synchronized java.util.List<Integer> require(StagedCallExpr call) {
+            java.util.Objects.requireNonNull(call, "call");
+            expunge();
+            java.util.List<Integer> plan = PLANS.get(new IdentityKey(call, null));
+            if (plan == null) {
+                throw new IllegalStateException(
+                        "named call requires a statically checked source-to-formal plan");
+            }
+            return plan;
+        }
+    }
+
     /** Named constructor/actor arguments are staged; trailing closures are calls only. */
     public record StagedNewExpr(
             TypeRef type, List<CallArgument> arguments, boolean actorSpawn) implements Expr {

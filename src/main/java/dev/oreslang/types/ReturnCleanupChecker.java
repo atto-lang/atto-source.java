@@ -272,9 +272,16 @@ public final class ReturnCleanupChecker {
 
     private static void expression(Ast.Expr expr, Scope scope, boolean inDefer, State state) {
         if (expr == null) return;
-        if (expr instanceof Ast.StagedCallExpr || expr instanceof Ast.StagedNewExpr) {
+        if (expr instanceof Ast.StagedCallExpr staged) {
+            expression(staged.callee(), scope, inDefer, state);
+            for (Ast.CallArgument argument : staged.arguments()) {
+                expression(argument.value(), scope, inDefer, state);
+            }
+            return;
+        }
+        if (expr instanceof Ast.StagedNewExpr) {
             throw new IllegalArgumentException(
-                    "staged named/trailing-closure calls must be lowered before return/cleanup analysis");
+                    "named constructor/actor calls must be lowered before return/cleanup analysis");
         }
         if (expr instanceof Ast.TypeExpr) {
             throw new IllegalArgumentException(
