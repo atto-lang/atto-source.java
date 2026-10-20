@@ -156,6 +156,20 @@ Git blob SHA-1 against the source bytes. It checks that the reviewed
 destination policy has not changed
 before every API write, in addition to rechecking the destination's live
 private visibility. It does not print source contents in API failures.
+Authenticated GitHub CLI subprocess output is now OS-bounded **before**
+the publisher reads it: on the supported POSIX/Linux execution path, stdout
+and stderr are redirected to separate anonymous temporary regular files,
+and the child has a pre-exec `RLIMIT_FSIZE` of 24 MiB per stream. Responses
+that reach the cap, time out, are non-UTF-8, or cannot be securely limited
+are rejected without logging payloads. This is a per-stream byte cap, not a
+total child-disk-I/O or memory limit. Both legacy authenticated API calls
+and v3 carrier ref queries use this boundary. HTTP 422 ref-create conflict
+and HTTP 404 ref-absence decisions require canonical first-line `gh`
+status messages; incidental status substrings are not trusted. Source-free
+regressions exercise actual child writes to both descriptors, decoding,
+timeouts, and spoofed status lines. **A passing focused reproduction is not
+a passing full publisher regression or compiler CI run.**
+
 API failure before ref creation can leave unreferenced Git objects in
 the private destination; a follow-up retention policy is still needed.
 
