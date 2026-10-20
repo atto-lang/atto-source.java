@@ -3993,6 +3993,42 @@ public final class TypeChecker {
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.NameExpr constructor
+                && !call.typeArgumentsPresent()
+                && call.arguments().size() == 1
+                && expected instanceof Named sum) {
+            Type payloadExpected = null;
+            if (constructor.name().equals("Some")
+                    && sum.name().equals("Option")
+                    && sum.arguments().size() == 1) {
+                payloadExpected = sum.arguments().getFirst();
+            } else if (constructor.name().equals("Ok")
+                    && sum.name().equals("Result")
+                    && sum.arguments().size() == 2) {
+                payloadExpected = sum.arguments().get(0);
+            } else if (constructor.name().equals("Err")
+                    && sum.name().equals("Result")
+                    && sum.arguments().size() == 2) {
+                payloadExpected = sum.arguments().get(1);
+            }
+            if (payloadExpected != null) {
+                Type actualPayload = typeOfAgainstExpected(
+                        call.arguments().getFirst(),
+                        payloadExpected,
+                        env,
+                        generics,
+                        self);
+                rejectMlCapabilityStorage(
+                        actualPayload,
+                        constructor.name());
+                requireAssignable(
+                        actualPayload,
+                        payloadExpected,
+                        constructor.name() + " payload");
+                return expected;
+            }
+        }
         if (expr instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
             return fn;
