@@ -1179,6 +1179,132 @@ class PrivateCiV3Test(unittest.TestCase):
             ],
         )
 
+    def test_handoff_unexpected_failure_or_interrupt_always_attempts_ref_cleanup(self):
+        """No orphaned source-bearing ref on malformed response or interruption."""
+        scenarios = (
+            ("payload_response", AttributeError, False),
+            ("authorization_response", AttributeError, False),
+            ("authorization_interrupt", KeyboardInterrupt, False),
+            ("authorization_cleanup_failure", v3.Denied, True),
+        )
+        carrier = contract()
+        for scenario, exception_type, cleanup_fails in scenarios:
+            with self.subTest(scenario=scenario):
+                writes = []
+
+                def api(route, method="GET", payload=None):
+                    if method == "POST" and route.endswith("/git/blobs"):
+                        data = base64.b64decode(payload["content"], validate=True)
+                        return {"sha": v3.git_blob_sha(data)}
+                    if method == "POST" and route.endswith("/git/trees"):
+                        return {
+                            "sha": SOURCE_TREE
+                            if payload.get("base_tree") is None else ROOT_TREE
+                        }
+                    if method == "POST" and route.endswith("/git/commits"):
+                        return {"sha": COMMIT}
+                    if method == "POST" and route.endswith("/git/refs"):
+                        writes.append(payload["ref"])
+                        authorized = payload["ref"].startswith(
+                            "refs/heads/ci/authorized-"
+                        )
+                        if scenario == "payload_response" or (
+                            authorized and scenario != "payload_response"
+                        ):
+                            if scenario == "authorization_interrupt":
+                                raise KeyboardInterrupt()
+                            # A successful remote create with a malformed
+                            # response can raise AttributeError in the caller.
+                            return {"ref": payload["ref"], "object": None}
+                        return {
+                            "ref": payload["ref"],
+                            "object": {"sha": payload["sha"]},
+                        }
+                    raise AssertionError((method, route))
+
+                with tempfile.TemporaryDirectory() as td:
+                    root = Path(td)
+                    source = root / "snapshot"
+                    source.mkdir()
+                    (source / "hello.ores").write_text("synthetic\\n")
+                    with (
+                        patch.object(v3.legacy, "require_preflight"),
+                        patch.object(
+                            v3.legacy, "checked_policy_fingerprint",
+                            return_value=POLICY,
+                        ),
+                        patch.object(
+                            v3.legacy, "verify_protected_origin",
+                            return_value=PROTECTED,
+                        ),
+                        patch.object(v3, "checked_control_plane"),
+                        patch.object(v3, "checked_contract", return_value=carrier),
+                        patch.object(
+                            v3, "verify_source_pr",
+                            return_value=v3.SOURCE_REPOSITORY_ID,
+                        ),
+                        patch.object(
+                            v3, "checked_destination",
+                            return_value=(
+                                {
+                                    "id": carrier["repository_id"],
+                                    "private": True,
+                                    "visibility": "private",
+                                },
+                                "3" * 40,
+                                PLAN,
+                            ),
+                        ),
+                        patch.object(
+                            v3.legacy, "collect_source",
+                            return_value=[(
+                                "hello.ores", b"synthetic\\n", "100644"
+                            )],
+                        ),
+                        patch.object(
+                            v3.legacy, "verified_exact_source_tree",
+                            return_value=SOURCE_TREE,
+                        ),
+                        patch.object(v3, "authorize_write"),
+                        patch.object(v3, "verify_published_root_and_commit"),
+                        patch.object(v3, "require_exact_ref"),
+                        patch.object(v3.legacy, "gh_api", side_effect=api),
+                        patch.object(v3, "delete_exact_ref") as cleanup,
+                    ):
+                        if cleanup_fails:
+                            cleanup.side_effect = [
+                                OSError("carrier rollback API unavailable"),
+                                None,
+                            ]
+                        with self.assertRaises(exception_type) as caught:
+                            v3.publish(
+                                "trusted/ci", source, "4" * 40, 1482,
+                                "ci/test-plans/java-pr1482.json", root,
+                                now=dt.datetime(
+                                    2026, 10, 20, tzinfo=dt.timezone.utc
+                                ),
+                            )
+
+                expected = [
+                    (
+                        "trusted/ci", "ci/oreslang-" + SOURCE_TREE,
+                        COMMIT, carrier["repository_id"],
+                    ),
+                ]
+                if scenario != "payload_response":
+                    expected.insert(0, (
+                        "trusted/ci", "ci/authorized-" + COMMIT,
+                        COMMIT, carrier["repository_id"],
+                    ))
+                self.assertEqual(
+                    [call.args for call in cleanup.call_args_list], expected
+                )
+                if cleanup_fails:
+                    self.assertIn("rollback was incomplete", str(caught.exception))
+                    self.assertIsInstance(caught.exception.__cause__, OSError)
+                else:
+                    self.assertIsInstance(caught.exception, exception_type)
+
     def test_ref_request_accepts_exact_authorization_ref_and_uses_get_route(self):
         response = type(
             "Result", (),
