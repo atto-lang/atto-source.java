@@ -121,6 +121,70 @@ final class UnaryTcpActorDispatcherJUnitTest {
     }
 
     @Test
+    void privateAsyncResultCopiesAtProducerAndSupervisorBoundaries()
+            throws Exception {
+        OresFuture<Object> producer = new OresFuture<>();
+        OresBytes producerBytes = OresBytes.copyOf(new byte[] {
+                1, 2, 3, (byte) 255
+        });
+        CountDownLatch invocationEntered = new CountDownLatch(1);
+        CountDownLatch completed = new CountDownLatch(1);
+        AtomicReference<OresBytes> actorSeen = new AtomicReference<>();
+        AtomicReference<UnaryTcpSessionAdapter.Reply> reply = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            UnaryTcpActorDispatcher.ResultCodec codec = value -> {
+                assertTrue(runtime.currentThreadOwnsActorExecutionLease(),
+                        "PRIVATE async result codec must execute on actor lane");
+                OresBytes bytes = assertInstanceOf(OresBytes.class, value);
+                actorSeen.set(bytes);
+                return bytes;
+            };
+
+            var dispatcher = new UnaryTcpActorDispatcher(
+                    runtime,
+                    ActorRuntime.ActorKind.PRIVATE,
+                    (message, context) -> {
+                        invocationEntered.countDown();
+                        return producer;
+                    },
+                    codec);
+
+            var handle = dispatcher.dispatch(new UnaryTcpSessionAdapter.Request(
+                    new UnaryTcpSessionAdapter.PeerIdentity("peer:private-async"),
+                    61, 11, 1, new byte[0]));
+            handle.whenComplete((value, terminal) -> {
+                reply.set(value);
+                failure.set(terminal);
+                completed.countDown();
+            });
+
+            assertTrue(invocationEntered.await(5, TimeUnit.SECONDS));
+            producer.completeFromRuntime(producerBytes);
+
+            assertTrue(completed.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertNotNull(actorSeen.get());
+            assertNotNull(reply.get());
+
+            assertNotSame(producerBytes, actorSeen.get(),
+                    "PRIVATE continuation must detach producer-owned bytes");
+            assertEquals(producerBytes, actorSeen.get());
+            assertNotSame(actorSeen.get(), reply.get().payloadValue(),
+                    "PRIVATE result must detach actor-owned bytes before supervisor publication");
+            assertEquals(actorSeen.get(), reply.get().payloadValue());
+            assertArrayEquals(producerBytes.toByteArray(), reply.get().payload());
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (runtime.actorCount() != 0 && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+            assertEquals(0, runtime.actorCount());
+        }
+    }
+
+    @Test
     void transportCancellationCancelsActorOwnedAsyncResult() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch producerCancelled = new CountDownLatch(1);
