@@ -117,6 +117,30 @@ final class ActorCausalEnvelopeTest {
     }
 
     @Test
+    void twoActorCycleKeepsLastSixteenVisitsAndMarksOlderVisitsElided()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            java.util.concurrent.atomic.AtomicReference<ActorRuntime.ActorRef<Integer>> first =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<ActorRuntime.ActorRef<Integer>> second =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            first.set(runtime.spawnPrivateTrusted(ignored -> (count, context) -> {
+                if (count == 200) throw new IllegalStateException("cycle exhausted");
+                second.get().send(count + 1);
+            }));
+            second.set(runtime.spawnPrivateTrusted(ignored -> (count, context) -> {
+                if (count == 200) throw new IllegalStateException("cycle exhausted");
+                first.get().send(count + 1);
+            }));
+            first.get().send(0);
+            String result = traceText(first.get());
+            assertTrue(result.contains("185 older actor visits elided"), result);
+            assertTrue(result.contains(first.get().id().value().toString()), result);
+            assertTrue(result.contains(second.get().id().value().toString()), result);
+        }
+    }
+
+    @Test
     void hostSendCreatesFreshLineageRatherThanReusingLastMailTurn() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorRef<String> first = runtime.spawnPrivateTrusted(
