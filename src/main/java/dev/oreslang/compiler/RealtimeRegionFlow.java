@@ -205,6 +205,9 @@ public final class RealtimeRegionFlow {
                 Value holder = value(values, regions, released, event.holderId());
                 Value referenced = value(values, regions, released, event.referentId());
                 if (holder.primitive()) throw deny("primitive value cannot store a reference");
+                if (holder.deeplyImmutable() && !referenced.deeplyImmutable()) {
+                    throw deny("deeply immutable object may not contain a mutable referent");
+                }
                 Region dst = regions.get(holder.regionId());
                 Region src = regions.get(referenced.regionId());
                 if (!mayReference(src, dst, plan.actorShareDomains(), regions)) {
@@ -254,6 +257,9 @@ public final class RealtimeRegionFlow {
                         || source.kind() == Kind.EXTERNAL_UNKNOWN) {
                     throw deny("cross-actor copy requires a known primitive value");
                 }
+                if (!knownActor(regions, event.destinationActor())) {
+                    throw deny("unknown destination actor");
+                }
                 if (source.actor() == null || source.actor().equals(event.destinationActor())) {
                     throw deny("copy sender must be a distinct owning actor");
                 }
@@ -262,6 +268,10 @@ public final class RealtimeRegionFlow {
             } else if (step instanceof ShareToActor event) {
                 Value v = value(values, regions, released, event.valueId());
                 Region source = regions.get(v.regionId());
+                if (!knownActor(regions, event.senderActor())
+                        || !knownActor(regions, event.destinationActor())) {
+                    throw deny("unknown shared-domain participant");
+                }
                 if (source.kind() != Kind.SHARED_IMMUTABLE || !v.deeplyImmutable()) {
                     throw deny("actor-private or mutable value cannot be shared by reference");
                 }
@@ -357,6 +367,13 @@ public final class RealtimeRegionFlow {
         if (v == null) throw deny("unknown value: " + id);
         requireLiveRegion(regions, released, v.regionId());
         return v;
+    }
+
+    private static boolean knownActor(Map<String, Region> regions, String actor) {
+        for (Region r : regions.values()) {
+            if (r.kind() == Kind.ACTOR_LOCAL && r.actor().equals(actor)) return true;
+        }
+        return false;
     }
 
     private static boolean hasGrant(Map<String, Set<String>> grants, String actor, String domain) {
