@@ -303,23 +303,34 @@ public final class IpcTransportSessionLeaseSelfTest {
         cleanupMonitorHolder.start();
         check(cleanupMonitorHeld.await(2, TimeUnit.SECONDS));
 
-        AtomicReference<Throwable> actorSnapshotFailure = new AtomicReference<>();
-        Thread actorSnapshotWorker = new Thread(() -> {
-            RuntimeBlockingGuard.enterActorCarrier();
-            try {
-                carrierCleanup.snapshot();
-            } catch (Throwable failure) {
-                actorSnapshotFailure.set(failure);
-            } finally {
-                RuntimeBlockingGuard.exitActorCarrier();
-            }
-        }, "ipc-test-illegal-actor-snapshot");
-        actorSnapshotWorker.start();
-        actorSnapshotWorker.join(1000);
-        check(!actorSnapshotWorker.isAlive());
-        check(actorSnapshotFailure.get() instanceof IllegalStateException);
-        check(actorSnapshotFailure.get().getMessage().contains(
-                "cannot block an actor carrier"));
+        Runnable[] actorDiagnosticCalls = new Runnable[] {
+                () -> carrierCleanup.snapshot(),
+                () -> carrierCleanup.closeFailure(),
+                () -> carrierCleanup.invariant()
+        };
+        String[] actorDiagnosticNames = new String[] {
+                "snapshot", "close-failure", "invariant"
+        };
+        for (int diagnostic = 0; diagnostic < actorDiagnosticCalls.length; ++diagnostic) {
+            Runnable diagnosticCall = actorDiagnosticCalls[diagnostic];
+            AtomicReference<Throwable> actorDiagnosticFailure = new AtomicReference<>();
+            Thread actorDiagnosticWorker = new Thread(() -> {
+                RuntimeBlockingGuard.enterActorCarrier();
+                try {
+                    diagnosticCall.run();
+                } catch (Throwable failure) {
+                    actorDiagnosticFailure.set(failure);
+                } finally {
+                    RuntimeBlockingGuard.exitActorCarrier();
+                }
+            }, "ipc-test-illegal-actor-" + actorDiagnosticNames[diagnostic]);
+            actorDiagnosticWorker.start();
+            actorDiagnosticWorker.join(1000);
+            check(!actorDiagnosticWorker.isAlive());
+            check(actorDiagnosticFailure.get() instanceof IllegalStateException);
+            check(actorDiagnosticFailure.get().getMessage().contains(
+                    "cannot block an actor carrier"));
+        }
 
         AtomicReference<Throwable> actorCleanupFailure = new AtomicReference<>();
         Thread actorCleanupWorker = new Thread(() -> {
