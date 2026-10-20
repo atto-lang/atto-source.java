@@ -1826,6 +1826,10 @@ public final class Parser {
             return new Ast.ForStmt(null, new Ast.LiteralExpr(true), null, turn);
         }
         if (match(IF)) return parseIf();
+        if (check(DO) && checkNext(LBRACE)) {
+            advance();
+            return parseDoWhile();
+        }
         // Procedural dispatch returns from its enclosing callable. Keep this
         // distinction in the AST instead of relying on source spelling later.
         if (match(DO)) {
@@ -1842,6 +1846,9 @@ public final class Parser {
             return new Ast.LoopStmt(parseLoopBody());
         }
         if (match(FOR)) {
+            if (check(LBRACE) || check(DO)) {
+                return new Ast.LoopStmt(parseLoopBody());
+            }
             boolean asyncIteration = match(AWAIT);
             return parseFor(asyncIteration);
         }
@@ -2066,6 +2073,19 @@ public final class Parser {
             return Ast.SelectPolicy.RANDOM;
         }
         return Ast.SelectPolicy.FAIR;
+    }
+
+    private Ast.Stmt parseDoWhile() {
+        List<Ast.Stmt> body = parseBlock();
+        consume(WHILE, "expected 'while' after do-while body");
+        consume(LPAREN, "post-test do-while requires 'while (<condition>);'");
+        if (check(RPAREN)) {
+            throw error(peek(), "do-while requires a condition; use 'loop { ... }' for an unconditional loop");
+        }
+        Ast.Expr condition = parseExpression();
+        consume(RPAREN, "expected ')' after do-while condition");
+        consume(SEMICOLON, "do-while must end with ';'");
+        return new Ast.DoWhileStmt(body, condition);
     }
 
     private Ast.Stmt parseFor(boolean asyncIteration) {
@@ -2817,7 +2837,7 @@ public final class Parser {
             suppressRefinementOperators = previousSuppression;
         }
 
-        boolean canonicalOver = matchContextualIdentifier("over");
+        boolean canonicalOver = match(OVER) || matchContextualIdentifier("over");
         if (!canonicalOver) match(SEMICOLON);
         // "over { ... }" owns the outer braces, while "over ... end"
         // retains its established terminator. Neither form may consume the
