@@ -27,6 +27,7 @@ public final class OresTaskScope {
         OPEN,
         QUIESCING,
         CANCELLING,
+        POISONED,
         CLOSED
     }
 
@@ -49,6 +50,9 @@ public final class OresTaskScope {
     private final OresFuture<Void> drained =
             new OresFuture<>(() -> false, () -> { });
     private State state = State.OPEN;
+    // Compiler-owned retirement failure means transfer authority was not
+    // proven released. Keep the join slot live and publish no drain witness.
+    private Throwable compilerRetirementFailure;
 
     public OresTaskScope(OresScheduler scheduler) {
         this(scheduler, ignored -> { }, ignored -> { });
@@ -95,6 +99,11 @@ public final class OresTaskScope {
         Objects.requireNonNull(task, "task");
         Objects.requireNonNull(
                 retireAfterPhysicalDone, "physical Task retirement");
+
+        OresFuture<T> future = null;
+        Throwable admissionFailure = null;
+        List<OresFuture<?>> cancelAfterFailure = List.of();
+
         synchronized (lock) {
             if (state != State.OPEN) {
                 throw new IllegalStateException("Task scope is already sealed");
@@ -103,25 +112,39 @@ public final class OresTaskScope {
             Child child = new Child();
             child.retireAfterPhysicalDone = retireAfterPhysicalDone;
             children.add(child);
-            final OresFuture<T> future;
             try {
                 future = scheduler.start(
                         task,
                         () -> childQuiescent(child),
                         () -> childTerminal(child));
             } catch (RuntimeException | Error failure) {
-                children.remove(child);
+                admissionFailure = failure;
                 try {
+                    // No runtime child exists, but transfer retention still
+                    // belongs to this synthetic join slot until rollback succeeds.
                     retireAfterPhysicalDone.run();
+                    if (!children.remove(child)) {
+                        throw new IllegalStateException(
+                                "never-started compiler Task child disappeared");
+                    }
                 } catch (RuntimeException | Error retirementFailure) {
                     failure.addSuppressed(retirementFailure);
+                    poisonCompilerRetirementLocked(retirementFailure);
+                    cancelAfterFailure = liveChildFuturesLocked();
                 }
-                throw failure;
             }
 
-            child.future = future;
-            return future;
+            if (admissionFailure == null) {
+                child.future = Objects.requireNonNull(
+                        future, "scheduler returned null Task Future");
+            }
         }
+
+        if (admissionFailure != null) {
+            cancelFutures(cancelAfterFailure);
+            throw rethrowAdmissionFailure(admissionFailure);
+        }
+        return Objects.requireNonNull(future, "Task child Future");
     }
 
     /**
@@ -131,10 +154,13 @@ public final class OresTaskScope {
     public OresFuture<Void> quiesce() {
         boolean complete = false;
         synchronized (lock) {
+            if (state == State.POISONED || state == State.CLOSED) {
+                return drained;
+            }
             if (state == State.OPEN) {
                 state = State.QUIESCING;
             }
-            if (state != State.OPEN && children.isEmpty() && state != State.CLOSED) {
+            if (children.isEmpty()) {
                 state = State.CLOSED;
                 complete = true;
             }
@@ -157,59 +183,19 @@ public final class OresTaskScope {
         boolean complete = false;
         synchronized (lock) {
             if (state == State.CLOSED) return drained;
-            if (state != State.CANCELLING) {
+            if (state == State.POISONED) {
+                cancel = liveChildFuturesLocked();
+            } else if (state != State.CANCELLING) {
                 state = State.CANCELLING;
-                ArrayList<OresFuture<?>> snapshot = new ArrayList<>(children.size());
-                for (Child child : children) {
-                    // fork() holds the same lock through start + Future binding,
-                    // so every child visible here has a handle.
-                    snapshot.add(Objects.requireNonNull(
-                            child.future, "Task scope child missing Future"));
-                }
-                cancel = List.copyOf(snapshot);
+                cancel = liveChildFuturesLocked();
             }
-            if (children.isEmpty()) {
+            if (state != State.POISONED && children.isEmpty()) {
                 state = State.CLOSED;
                 complete = true;
             }
         }
 
-        // Two-phase structured cancellation: first claim every still-pending
-        // child, then revoke every claimed child before publishing any ordinary
-        // Future subscribers. A blocking subscriber on child A must never
-        // prevent revocation of child B.
-        ArrayList<OresFuture.RuntimeCancellation<?>> claimed =
-                new ArrayList<>(cancel.size());
-        for (OresFuture<?> child : cancel) {
-            OresFuture.RuntimeCancellation<?> cancellation =
-                    child.claimCancellationFromRuntime();
-            if (cancellation != null) claimed.add(cancellation);
-        }
-        for (OresFuture.RuntimeCancellation<?> cancellation : claimed) {
-            cancellation.revoke();
-        }
-        if (!claimed.isEmpty()) {
-            List<OresFuture.RuntimeCancellation<?>> fallback = new ArrayList<>();
-            // Ordinary Future subscribers are not part of the structured
-            // lifetime proof. After every child is revoked, publish each
-            // Future independently so a blocking subscriber on child A cannot
-            // pin the parent carrier or starve notifications for child B.
-            for (OresFuture.RuntimeCancellation<?> cancellation : claimed) {
-                try {
-                    Thread.ofVirtual()
-                            .name("ores-task-scope-cancel-publish")
-                            .start(cancellation::publish);
-                } catch (RuntimeException | Error unavailable) {
-                    fallback.add(cancellation);
-                }
-            }
-            // Attempt every asynchronous publication before a synchronous
-            // fallback can block. Revocation is already complete for all
-            // children, so this path cannot weaken the reclamation invariant.
-            for (OresFuture.RuntimeCancellation<?> cancellation : fallback) {
-                cancellation.publish();
-            }
-        }
+        cancelFutures(cancel);
 
         if (complete) completeDrain();
         return drained;
@@ -224,6 +210,12 @@ public final class OresTaskScope {
     public int activeChildren() {
         synchronized (lock) {
             return children.size();
+        }
+    }
+
+    Throwable compilerRetirementFailure() {
+        synchronized (lock) {
+            return compilerRetirementFailure;
         }
     }
 
@@ -256,24 +248,14 @@ public final class OresTaskScope {
         try {
             retirement.run();
         } catch (RuntimeException | Error failure) {
-            java.util.ArrayList<OresFuture<?>> cancel =
-                    new java.util.ArrayList<>();
+            List<OresFuture<?>> cancel;
             synchronized (lock) {
-                if (state != State.CLOSED) {
-                    state = State.CANCELLING;
-                }
-                for (Child remaining : children) {
-                    if (remaining.future != null) {
-                        cancel.add(remaining.future);
-                    }
-                }
+                poisonCompilerRetirementLocked(failure);
+                cancel = liveChildFuturesLocked();
             }
-            // Fail closed: never remove this child or publish a successful
-            // scope-drain witness when compiler-owned retirement failed.
-            drained.failFromRuntime(failure);
-            for (OresFuture<?> future : cancel) {
-                future.cancel(false);
-            }
+            // A failed transfer release cannot become an exceptional-but-
+            // catchable scope-exit witness. Keep this child pinned forever.
+            cancelFutures(cancel);
             return;
         }
 
@@ -281,6 +263,7 @@ public final class OresTaskScope {
         synchronized (lock) {
             if (!children.remove(child)) return;
             if (state != State.OPEN
+                    && state != State.POISONED
                     && children.isEmpty()
                     && state != State.CLOSED) {
                 state = State.CLOSED;
@@ -288,6 +271,59 @@ public final class OresTaskScope {
             }
         }
         if (complete) completeDrain();
+    }
+
+    private void poisonCompilerRetirementLocked(Throwable failure) {
+        Objects.requireNonNull(failure, "failure");
+        if (compilerRetirementFailure == null) {
+            compilerRetirementFailure = failure;
+        } else if (compilerRetirementFailure != failure) {
+            compilerRetirementFailure.addSuppressed(failure);
+        }
+        state = State.POISONED;
+    }
+
+    private List<OresFuture<?>> liveChildFuturesLocked() {
+        ArrayList<OresFuture<?>> snapshot = new ArrayList<>(children.size());
+        for (Child child : children) {
+            if (child.future != null) snapshot.add(child.future);
+        }
+        return List.copyOf(snapshot);
+    }
+
+    private void cancelFutures(List<OresFuture<?>> cancel) {
+        ArrayList<OresFuture.RuntimeCancellation<?>> claimed =
+                new ArrayList<>(cancel.size());
+        for (OresFuture<?> child : cancel) {
+            OresFuture.RuntimeCancellation<?> cancellation =
+                    child.claimCancellationFromRuntime();
+            if (cancellation != null) claimed.add(cancellation);
+        }
+        for (OresFuture.RuntimeCancellation<?> cancellation : claimed) {
+            cancellation.revoke();
+        }
+        if (claimed.isEmpty()) return;
+
+        List<OresFuture.RuntimeCancellation<?>> fallback = new ArrayList<>();
+        for (OresFuture.RuntimeCancellation<?> cancellation : claimed) {
+            try {
+                Thread.ofVirtual()
+                        .name("ores-task-scope-cancel-publish")
+                        .start(cancellation::publish);
+            } catch (RuntimeException | Error unavailable) {
+                fallback.add(cancellation);
+            }
+        }
+        for (OresFuture.RuntimeCancellation<?> cancellation : fallback) {
+            cancellation.publish();
+        }
+    }
+
+    private static RuntimeException rethrowAdmissionFailure(Throwable failure) {
+        if (failure instanceof RuntimeException runtime) return runtime;
+        if (failure instanceof Error error) throw error;
+        throw new IllegalStateException(
+                "unexpected checked Task admission failure", failure);
     }
 
     private void completeDrain() {
