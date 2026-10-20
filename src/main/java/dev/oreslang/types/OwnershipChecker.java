@@ -3,7 +3,9 @@ package dev.oreslang.types;
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
@@ -12,6 +14,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Ownership / borrow / closure-capture analysis.
@@ -31,6 +34,8 @@ import java.util.Set;
  * - moving an outer value from a repeating loop is rejected conservatively.
  */
 public final class OwnershipChecker {
+    private static final AtomicLong NEXT_REGION_ID = new AtomicLong();
+
     private record ResolvedMethod(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.MethodDecl method) { }
     private record ResolvedField(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.FieldDecl field) { }
     private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
@@ -47,6 +52,12 @@ public final class OwnershipChecker {
     private boolean currentAsyncGenerator;
     /** Every active try records outer roots transferred anywhere inside its body. */
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
+    /**
+     * Lexical structured-scope proof stack. Only the innermost active
+     * nb scope may authorize a shared-borrow Task capture.
+     */
+    private final Deque<StructuredBorrowContext> structuredBorrowScopes =
+            new ArrayDeque<>();
 
     private OwnershipChecker(Ast.Program program) {
         index(program);
@@ -388,14 +399,22 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.TaskScopeStmt taskScope) {
-            // Phase 2 still admits only today's owned/Send Task captures.
-            // Borrowed captures remain rejected until ExecutionPermit proof
-            // metadata is wired into TaskExpr capture checking.
-            checkBlock(taskScope.body(), scope, returnType);
+            StructuredBorrowContext context = new StructuredBorrowContext();
+            structuredBorrowScopes.push(context);
+            try {
+                checkBlock(taskScope.body(), scope, returnType);
+            } finally {
+                StructuredBorrowContext popped = structuredBorrowScopes.pop();
+                if (popped != context) {
+                    throw new IllegalStateException(
+                            "structured borrow scope stack corrupted");
+                }
+            }
             // Scope exit is an implicit asynchronous physical-quiescence wait.
-            // Any loan owned by an enclosing scope would otherwise cross a
-            // hidden suspension point without appearing as an AwaitExpr.
-            checkSuspensionBorrows(scope, "nb scope exit");
+            // Ordinary borrows still cannot cross it. The only exception is a
+            // shared region whose compiler-issued read permit was captured by a
+            // child Task in this exact lexical scope.
+            checkTaskScopeExitBorrows(scope, context);
             return;
         }
         if (stmt instanceof Ast.BreakStmt) {
@@ -766,13 +785,50 @@ public final class OwnershipChecker {
             throw error("cannot " + operation + " while holding a MutexGuard; release the guard before suspension");
         }
         // Actor self is retained by the mailbox continuation under the same
-        // execution lease. Ordinary user borrows (including aliases of self)
-        // still cannot cross suspension.
+        // execution lease. Compiler-issued scoped read captures are separately
+        // tied to a physical-quiescence barrier and may survive child Task
+        // suspension/carrier migration. Every other borrow remains forbidden.
         if (scope.visibleStates().stream().anyMatch(state -> !state.moved
                 && !("self".equals(state.debugName) && isActorConfinedBorrow(state) && state.immutableBorrows == 0 && !state.mutableBorrowed)
+                && !isScopedReadPermitState(state)
                 && (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
                     || state.immutableBorrows > 0 || state.mutableBorrowed))) {
             throw error("cannot " + operation + " while an ordinary borrow is live; end the lexical borrow before suspension");
+        }
+    }
+
+    private boolean isScopedReadPermitState(VarState state) {
+        return state.scopedTaskReadPermit
+                && state.kind == ValueKind.IMM_BORROW
+                && !state.mutableBorrowed
+                && state.immutableBorrows == 0;
+    }
+
+    private void checkTaskScopeExitBorrows(
+            Scope scope, StructuredBorrowContext context) {
+        if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
+            throw error("cannot nb scope exit while holding a MutexGuard; "
+                    + "release the guard before suspension");
+        }
+        for (VarState state : scope.visibleStates()) {
+            if (state.moved) continue;
+            boolean borrowed = state.kind == ValueKind.IMM_BORROW
+                    || state.kind == ValueKind.MUT_BORROW
+                    || state.immutableBorrows > 0
+                    || state.mutableBorrowed;
+            if (!borrowed) continue;
+
+            if (state.kind == ValueKind.MUT_BORROW || state.mutableBorrowed) {
+                throw error("cannot nb scope exit while a mutable borrow is live");
+            }
+
+            VarState region = state.borrowSource != null
+                    ? ownershipRoot(state.borrowSource)
+                    : ownershipRoot(state);
+            if (!context.readRegions.contains(region)) {
+                throw error("cannot nb scope exit while an ordinary borrow is live; "
+                        + "only compiler-permitted scoped read captures may cross the drain");
+            }
         }
     }
 
