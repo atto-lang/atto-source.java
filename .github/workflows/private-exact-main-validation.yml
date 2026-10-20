@@ -1,0 +1,200 @@
+name: Private exact-main Java/Native validation
+
+# No PR trigger: only reviewed mainline code may run on this private runner.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# All three private-source validation workflows share one admission queue.
+# Never run two source candidates on the same class of disposable runner.
+concurrency:
+  group: private-oreslang-isolated-validation
+  cancel-in-progress: false
+
+jobs:
+  # Fail closed, without checking out source or admitting an unapproved job
+  # onto the private runner. GitHub-hosted denial may itself fail on exhausted
+  # Actions minutes, which remains a failure rather than a false green.
+  deny-unapproved:
+    if: ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java' || github.event.repository.id != 1400792274 || github.event.repository.private != true || github.ref != 'refs/heads/main' || github.ref_protected != true || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == '' || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != github.sha || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE == '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Reject missing exact-SHA or private-runner approval
+        run: |
+          echo "::error::Private mainline validation denied; verify repository, ref, SHA, tree and ephemeral runner approval"
+          exit 1
+
+  validate-exact-main:
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.id == 1400792274 && github.event.repository.private == true && github.ref == 'refs/heads/main' && github.ref_protected == true && vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != '' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.sha && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != '' }}
+    # Administrator must register a disposable *repository-scoped* single-use
+    # Linux x64 runner with this exact label. No public/hosted fallback.
+    runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]
+    timeout-minutes: 180
+    env:
+      APPROVED_SHA: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA }}
+      APPROVED_TREE: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE }}
+    steps:
+      - name: Verify exact-main admission before source checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'ores-truffle-oreslang/oreslang-source.java'
+          test "$GITHUB_REPOSITORY_ID" = '1400792274'
+          test "$GITHUB_REF" = 'refs/heads/main'
+          test "$GITHUB_REF_PROTECTED" = 'true'
+          [[ "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$APPROVED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$APPROVED_TREE" =~ ^[a-f0-9]{40}$ ]]
+          test "$GITHUB_SHA" = "$APPROVED_SHA"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Verify source identity and immutable Git tree before tool setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'ores-truffle-oreslang/oreslang-source.java'
+          test "$GITHUB_REPOSITORY_ID" = '1400792274'
+          test "$GITHUB_REF" = 'refs/heads/main'
+          test "$GITHUB_REF_PROTECTED" = 'true'
+          [[ "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$APPROVED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$APPROVED_TREE" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse --verify HEAD)" = "$GITHUB_SHA"
+          test "$GITHUB_SHA" = "$APPROVED_SHA"
+          test "$(git rev-parse --verify HEAD^{tree})" = "$APPROVED_TREE"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "SOURCE_COMMIT=$GITHUB_SHA"
+          echo "SOURCE_TREE=$APPROVED_TREE"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          distribution: graalvm
+          java-version: '25'
+          version: '25.3'
+      - name: Verify toolchain
+        run: |
+          set -euo pipefail
+          java --version
+          native-image --version
+          mvn --version
+          python3 --version
+      - name: Focused Future/select and exception-isolation regression suites
+        run: mvn -B -ntp '-Dtest=ChannelCompletionPublicationIsolationTest,FutureSelectAttachmentPublicationBarrierTest,FutureChannelSelectTest,ChannelCommittedCompletionDrainTest,ChannelMappedCancellationStressTest,OresFutureHostWaiterDetachmentTest' clean test
+      - name: Complete GraalVM JDK 25 Maven verification
+        # A clean build prevents earlier focused-test reports from being
+        # mistaken for actual full-suite execution.
+        run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests=false -Dmaven.test.skip=false clean verify
+      - name: Prove fresh exact-main full JUnit suite execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Only trusted workflow-owned verification; never execute a
+          # candidate-owned report checker.
+          python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          required = {
+              "dev.oreslang.runtime.ChannelCompletionPublicationIsolationTest",
+              "dev.oreslang.runtime.FutureSelectAttachmentPublicationBarrierTest",
+              "dev.oreslang.runtime.FutureChannelSelectTest",
+              "dev.oreslang.runtime.ChannelCommittedCompletionDrainTest",
+              "dev.oreslang.runtime.ChannelMappedCancellationStressTest",
+              "dev.oreslang.runtime.OresFutureHostWaiterDetachmentTest",
+          }
+          report_dir = Path("target/surefire-reports")
+          if (not report_dir.is_dir() or report_dir.is_symlink()
+                  or report_dir.parent.is_symlink()):
+              raise SystemExit("Missing or symlinked exact-main Maven Surefire reports")
+          reports = list(report_dir.glob("TEST-*.xml"))
+          if len(reports) <= len(required):
+              raise SystemExit("Exact-main Maven test suite produced no broader JUnit reports")
+          executed = set()
+          for report in reports:
+              if report.is_symlink() or not report.is_file():
+                  raise SystemExit(f"Invalid exact-main Surefire report: {report}")
+              if not 0 < report.stat().st_size <= 16 * 1024 * 1024:
+                  raise SystemExit(f"Empty or oversized Surefire report: {report}")
+              classname = report.name[len("TEST-"):-len(".xml")]
+              root = ElementTree.parse(report).getroot()
+              if root.tag != "testsuite" or root.get("name") != classname:
+                  raise SystemExit(f"Mismatched exact-main JUnit suite: {report}")
+              cases = root.findall("testcase")
+              try:
+                  declared = int(root.get("tests", "-1"))
+                  totals = [int(root.get(k, "-1"))
+                            for k in ("failures", "errors", "skipped")]
+              except ValueError:
+                  raise SystemExit(f"Invalid exact-main JUnit totals: {report}")
+              if declared < 1 or declared != len(cases) or any(n != 0 for n in totals):
+                  raise SystemExit(f"Failed/skipped or inconsistent JUnit suite: {report}")
+              for case in cases:
+                  if case.get("classname") != classname:
+                      raise SystemExit(f"Incorrect exact-main testcase identity: {report}")
+                  if any(case.find(k) is not None for k in
+                         ("failure", "error", "skipped", "flakyFailure",
+                          "flakyError", "rerunFailure", "rerunError")):
+                      raise SystemExit(f"Failed/skipped/flaky exact-main testcase: {report}")
+              executed.add(classname)
+          if not required.issubset(executed):
+              raise SystemExit("Missing exact-main focused classes: "
+                               + ", ".join(sorted(required - executed)))
+          additional = executed - required
+          if not additional:
+              raise SystemExit("No JUnit classes beyond exact-main focused subset")
+          print(f"VERIFIED_EXACT_MAIN_JUNIT_CLASSES={len(executed)}")
+          print(f"VERIFIED_EXACT_MAIN_EXTRA_CLASSES={len(additional)}")
+          PY
+      - name: Ten deterministic Future/channel stress replays
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 10); do
+            echo "RACE_REPLAY=$i"
+            mvn -B -ntp '-Dtest=FutureChannelSelectTest,ChannelMappedCancellationStressTest,FutureSelectAttachmentPublicationBarrierTest,ChannelCompletionPublicationIsolationTest' test
+          done
+      - name: Native AOT image and compiled guest smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Pnative-aot -DskipTests clean package
+          timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/together.ores
+          timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-core-library.ores
+          test "$(timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-channel-select-smoke.ores)" = 'first:7:9'
+          test "$(timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-future-select-smoke.ores)" = 'future:4'
+      - name: Native hybrid image and compiled guest smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Pnative-hybrid -DskipTests clean package
+          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/together.ores
+          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-core-library.ores
+          test "$(timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-channel-select-smoke.ores)" = 'first:7:9'
+          test "$(timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-future-select-smoke.ores)" = 'future:4'
+      - name: Strict polyglot isolate and compiled guest smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Pnative-isolate -DskipTests clean package
+          # Choose exactly one fresh regular shared library; reject absent,
+          # ambiguous or symlinked artifacts rather than picking arbitrarily.
+          test -d target && test ! -L target
+          libraries=()
+          for candidate in target/oresvm.so target/liboresvm.so; do
+            if test -e "$candidate" || test -L "$candidate"; then
+              if ! test -f "$candidate" || test -L "$candidate" || ! test -s "$candidate"; then
+                echo "::error::Reject invalid native isolate artifact: $candidate" >&2
+                exit 1
+              fi
+              libraries+=("$candidate")
+            fi
+          done
+          test "${#libraries[@]}" -eq 1
+          lib="${libraries[0]}"
+          echo "VERIFIED_ISOLATE_LIBRARY=$lib"
+          timeout 180s mvn -B -ntp "-Dpolyglot.engine.IsolateLibrary=$PWD/$lib" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=hybrid --platform=linux examples/together.ores"
+          timeout 180s mvn -B -ntp "-Dpolyglot.engine.IsolateLibrary=$PWD/$lib" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=hybrid --platform=linux examples/native-core-library.ores"
