@@ -58,6 +58,7 @@ The current Maven `native-aot` profile is therefore an important build substrate
 It rejects:
 
 - managed heap access;
+- tracing collector interference with the certified thread;
 - runtime code generation;
 - unknown FFI;
 - unbounded allocation/blocking/loops/cleanup;
