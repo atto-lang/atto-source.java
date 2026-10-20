@@ -50,7 +50,9 @@ final class ActorOresBytesMailboxAccountingTest {
 
             IllegalStateException rejected = assertThrows(
                     IllegalStateException.class, () -> actor.send(oneMiB));
-            assertTrue(rejected.getMessage().contains("memory"));
+            assertTrue(rejected.getMessage().contains("private actor")
+                            && rejected.getMessage().contains("limit exceeded"),
+                    rejected.getMessage());
             assertEquals(baseline + 15L * MESSAGE_BYTES, runtime.sharedMemoryBytes(),
                     "failed admission must not retain bytes");
 
