@@ -78,6 +78,34 @@ final class ReachabilityManifestTest {
     }
 
     @Test
+    void canonicalConstantsNormalizeFloatingSyntaxAndEscapeUnicodeSafely() {
+        BuildOptions options = BuildOptions.executable(Map.of(
+                "ratio", "-0.0",
+                "label", "line\\n\u2603"));
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                pub const float ratio = 1.0;
+                pub const String label = "x";
+                pub routine main(): void { return; }
+                """, options);
+
+        String json = ReachabilityManifest.from(result, options).canonicalJson();
+        assertTrue(json.contains("\\\"__root__.ratio\\\":0.0"));
+        assertTrue(json.contains("\\\"__root__.label\\\":\\\"line\\\\n\u2603\\\""));
+    }
+
+    @Test
+    void malformedUnicodeBuildConstantFailsClosedBeforeDigesting() {
+        BuildOptions options = BuildOptions.executable(Map.of("label", "\uD800"));
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                pub const String label = "x";
+                pub routine main(): void { return; }
+                """, options);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> ReachabilityManifest.from(result, options));
+    }
+
+    @Test
     void manifestCollectionsCannotBeMutatedByBackendCode() {
         BuildOptions options = BuildOptions.executable();
         TreeShaker.Result result = OresCompiler.compileForBuild(
