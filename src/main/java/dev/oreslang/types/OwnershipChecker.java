@@ -42,6 +42,13 @@ public final class OwnershipChecker {
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    /**
+     * Compiler-owned structural proof, independent of actor transport.
+     * Mutable Array/List captures are moved, never Sync-shared. InvertedArray,
+     * Arc, ThreadBound and unlowered synchronization remain untrusted here.
+     * This preflight does not enable guest Task execution.
+     */
+    private final SendSyncTraits taskSendSyncTraits;
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -49,6 +56,10 @@ public final class OwnershipChecker {
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
 
     private OwnershipChecker(Ast.Program program) {
+        // Array/List have checked unique ownership moves in this pass. This
+        // admission does not promise runtime worker-scheduler/actor authority.
+        taskSendSyncTraits = new SendSyncTraits(
+                program, Set.of("Array", "List", "Option", "Result"));
         index(program);
     }
 
@@ -1819,6 +1830,16 @@ public final class OwnershipChecker {
                     + " arguments but received " + arguments.size());
         }
         rejectBorrowedScheduledParameters(lambda);
+        validateScheduledCaptures(lambda, scope);
+        // Scheduled lambda parameters also move into a worker-owned activation.
+        // A borrowed/nominally unresolved parameter cannot be marked Send by
+        // source annotations or via a permissive actor Sendable codec.
+        for (Ast.Param parameter : lambda.parameters()) {
+            if (!taskSendSyncTraits.isSend(parameter.type())) {
+                throw error("scheduled lambda parameter '" + parameter.name()
+                        + "' requires proven Send");
+            }
+        }
         checkLambda(lambda, scope, null);
         for (int i = 0; i < arguments.size(); i++) {
             ValueInfo value = checkExpr(arguments.get(i), scope, true);
@@ -1829,6 +1850,10 @@ public final class OwnershipChecker {
             if (containsMutexGuardType(value.type)) {
                 throw error("async/Task argument " + i
                         + " cannot transfer a MutexGuard into scheduled work");
+            }
+            if (!taskSendSyncTraits.isSend(value.type)) {
+                throw error("scheduled lambda argument " + i
+                        + " requires proven Send for owned transfer");
             }
         }
         Ast.TypeRef result = Ast.TypeRef.inferred();
@@ -2479,9 +2504,36 @@ public final class OwnershipChecker {
         if (mutexCriticalSectionDepth > 0 || outer.hasLiveMutexGuard()) {
             throw error("Task cannot launch while a MutexGuard/critical section is live");
         }
-        checkLambda(new Ast.LambdaExpr(List.of(), null, body), outer, null);
+        Ast.LambdaExpr block = new Ast.LambdaExpr(List.of(), null, body);
+        validateScheduledCaptures(block, outer);
+        checkLambda(block, outer, null);
         return new ValueInfo(new Ast.TypeRef(
                 "Task", List.of(Ast.TypeRef.inferred()), false), ValueKind.MOVE_ONLY, null);
+    }
+
+    /**
+     * Spawn-time Send eligibility is checked BEFORE checkLambda transfers
+     * affine captures. This proof does not replace its lifetime/actor/guard
+     * checks, nor does it mint runtime execution/actor sharing permissions.
+     */
+    private void validateScheduledCaptures(Ast.LambdaExpr lambda, Scope outer) {
+        // A nonlexical scope does not expose a reliable transitive capture
+        // ledger. Skipping that ledger would silently bypass Send admission
+        // and allow actor/private/foreign authority to reach a worker.
+        // Until MIR effect/capture proofs exist, deny instead of assuming
+        // the scheduled activation has no captured data.
+        if (lambda.nonLexical() || outer.descendantsNonLexical()) {
+            throw error("scheduled Task in a nonlexical scope requires a proven capture/effect ledger");
+        }
+        CaptureSet captures = collectCaptures(lambda, outer, null);
+        for (Capture capture : captures.values.values()) {
+            Ast.TypeRef type = capture.source.type;
+            if (!taskSendSyncTraits.isSend(type)) {
+                throw error("scheduled Task capture '" + capture.name
+                        + "' requires proven Send for owned transfer; type is "
+                        + type + " (Task source execution remains disabled)");
+            }
+        }
     }
 
     private static boolean containsBorrowType(Ast.TypeRef type) {
