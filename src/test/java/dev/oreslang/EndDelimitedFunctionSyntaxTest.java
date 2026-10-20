@@ -23,6 +23,38 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
+    void endDelimitedAndBracedFreeFunctionsNormalizeToTheSameAst() {
+        var endDelimited = Parser.parse("""
+                fnc identity(int x) -> int
+                    return x
+                end
+                """);
+        var braced = Parser.parse("""
+                fnc identity(int x) -> int {
+                    return x;
+                }
+                """);
+
+        assertEquals(braced, endDelimited);
+    }
+
+    @Test
+    void explicitTupleTypeNormalizesToExistingFiniteTupleType() {
+        var explicit = Parser.parse("""
+                fnc identity(tuple (int, string) value) -> tuple (int, string) {
+                    return value;
+                }
+                """);
+        var existing = Parser.parse("""
+                fnc identity([int, string] value) -> [int, string] {
+                    return value;
+                }
+                """);
+
+        assertEquals(existing, explicit);
+    }
+
+    @Test
     void explicitVoidMayFallThroughEndDelimitedBody() {
         String source = """
                 fnc log_once() -> void
