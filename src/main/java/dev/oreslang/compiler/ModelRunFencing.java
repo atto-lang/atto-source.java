@@ -97,7 +97,7 @@ public final class ModelRunFencing {
         if (!owner.graphDigest().equals(stamp.graphDigest()))
             throw new IllegalStateException("MODEL_INSTANCE_GRAPH_MISMATCH");
         if (owner.graphGeneration() != stamp.graphGeneration())
-            throw new IllegalStateException("MODEL_INSTANCE_GRAPH_MISMATCH_GENERATION");
+            throw new IllegalStateException("MODEL_GRAPH_GENERATION_MISMATCH");
         if (!owner.instanceId().equals(stamp.instanceId()))
             throw new IllegalStateException("MODEL_INSTANCE_ID_MISMATCH");
         if (owner.parameterVersion() != stamp.parameterVersion())
