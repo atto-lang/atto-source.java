@@ -296,6 +296,32 @@ final class StaticContractSignatureV1Test {
     }
 
     @Test
+    void staticContractHasNoSelfReceiverType() {
+        String source = """
+                define static contract Factory as
+                    fnc identity() -> self;
+                end
+                """;
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void actorCannotClaimStaticContractDomain() {
+        String source = """
+                define static contract Factory as
+                    fnc create(int id) -> int;
+                end
+
+                define actor Worker implements static Factory as
+                end
+                """;
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
+    }
+
+    @Test
     void staticContractsAreSameSourceUnitOnlyInV1() {
         String source = """
                 import contract Factory from "./factory.ores";
