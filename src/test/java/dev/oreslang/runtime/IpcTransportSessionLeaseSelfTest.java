@@ -14,9 +14,37 @@ public final class IpcTransportSessionLeaseSelfTest {
     private IpcTransportSessionLeaseSelfTest() { }
     private static int assertions;
 
+    private record BoundLease(
+            IpcTransportSessionLease lease,
+            IpcReceiptCompletionBridge bridge,
+            Object owner,
+            long generation) { }
+
     private static IpcReceiptCorrelation.Envelope message(long id, String session) {
         return new IpcReceiptCorrelation.Envelope("tenant", "sender", "worker",
                 session, "a".repeat(64), 1, 2, 3, 4, id, id);
+    }
+
+    private static BoundLease bind(
+            IpcReceiptCorrelation.Envelope epoch,
+            long generation,
+            int capacity,
+            IpcTransportSessionLease.FrameWriter writer,
+            IpcTransportSessionLease.PhysicalCloser closer,
+            IpcTransportSessionLease.CleanupScheduler scheduler) {
+        var bridge = new IpcReceiptCompletionBridge(capacity);
+        Object owner = new Object();
+        bridge.claimPhysicalTransport(owner, epoch, generation);
+        var lease = new IpcTransportSessionLease(
+                epoch, generation, 1, bridge, owner, writer, closer, scheduler);
+        return new BoundLease(lease, bridge, owner, generation);
+    }
+
+    private static IpcTransportSessionLease.WriteAttempt send(
+            BoundLease bound,
+            IpcReceiptCorrelation.Envelope message) {
+        return bound.lease().sendPreparedFrame(
+                bound.generation(), message, new byte[] { 1 });
     }
 
     private static void check(boolean value) {
@@ -27,7 +55,8 @@ public final class IpcTransportSessionLeaseSelfTest {
     private static void deny(Runnable action) {
         try { action.run(); }
         catch (IllegalStateException | IllegalArgumentException expected) {
-            ++assertions; return;
+            ++assertions;
+            return;
         }
         throw new AssertionError("invalid transport admission was allowed");
     }
@@ -35,60 +64,70 @@ public final class IpcTransportSessionLeaseSelfTest {
     private static void offCallerCleanup(Runnable cleanup) {
         Thread worker = new Thread(cleanup, "ipc-cleanup-selftest");
         worker.start();
-        try { worker.join(); }
-        catch (InterruptedException interrupted) {
+        try {
+            worker.join();
+        } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("cleanup self-test interrupted", interrupted);
         }
     }
 
     public static void main(String[] ignored) throws Exception {
+        // Every lease is physically owner-bound. There is no compatibility
+        // constructor that can synthesize or defer physical authority.
+        try {
+            new IpcTransportSessionLease(
+                    message(1, "missingOwner"), 79, 1,
+                    new IpcReceiptCompletionBridge(1), null,
+                    (value, preparedFrame) -> { },
+                    () -> { },
+                    IpcTransportSessionLeaseSelfTest::offCallerCleanup);
+            throw new AssertionError("IPC lease accepted a null physical owner");
+        } catch (NullPointerException expected) {
+            check(expected.getMessage().contains("physicalOwner"));
+        }
+
         // Defense in depth: package-local lease APIs themselves enforce the
-        // actor-carrier blocking boundary. This prevents future adapters from
-        // bypassing IpcAuthenticatedSocketTransport's outer guard.
+        // actor-carrier blocking boundary before admission or monitor entry.
         {
-            var guardedBridge = new IpcReceiptCompletionBridge(1);
             var guardedMessage = message(1, "guarded");
-            Object guardedOwner = new Object();
-            guardedBridge.claimPhysicalTransport(guardedOwner, guardedMessage, 80);
             AtomicInteger guardedWrites = new AtomicInteger();
-            var guardedLease = new IpcTransportSessionLease(
-                    guardedMessage, 80, 1, guardedBridge, guardedOwner,
+            var guarded = bind(
+                    guardedMessage, 80, 1,
                     (value, preparedFrame) -> guardedWrites.incrementAndGet(),
                     () -> { },
                     IpcTransportSessionLeaseSelfTest::offCallerCleanup);
 
             RuntimeBlockingGuard.enterActorCarrier();
             try {
-                deny(() -> guardedLease.sendPreparedFrame(
-                        80, guardedMessage, new byte[] { 1 }));
+                deny(() -> send(guarded, guardedMessage));
+                deny(guarded.lease()::requestClose);
                 deny(() -> {
                     try {
-                        guardedLease.awaitTerminal(1);
+                        guarded.lease().awaitTerminal(1);
                     } catch (InterruptedException impossibleBeforeGuard) {
                         throw new AssertionError(impossibleBeforeGuard);
                     }
                 });
-                deny(() -> guardedLease.quarantineIfUnsettled(
+                deny(() -> guarded.lease().quarantineIfUnsettled(
                         new IllegalStateException("actor carrier quarantine")));
             } finally {
                 RuntimeBlockingGuard.exitActorCarrier();
             }
             check(guardedWrites.get() == 0);
-            check(guardedBridge.counters().equals(
+            check(guarded.bridge().counters().equals(
                     new IpcReceiptCorrelation.Counters(0, 0)));
-            check(guardedLease.snapshot().phase() == IpcTransportSessionLease.Phase.OPEN);
+            check(guarded.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.OPEN);
 
-            // Diagnostics are host-blocking operations too: their guard must
-            // run before Java monitor entry. Hold the lease monitor on a host
-            // thread and prove a marked actor carrier can probe all three
-            // diagnostics without parking behind that monitor.
+            // Hold the lease monitor on a host thread and prove every
+            // diagnostic rejects an actor carrier before monitor entry.
             CountDownLatch diagnosticMonitorHeld = new CountDownLatch(1);
             CountDownLatch releaseDiagnosticMonitor = new CountDownLatch(1);
             AtomicReference<Throwable> diagnosticHolderFailure =
                     new AtomicReference<>();
             Thread diagnosticHolder = new Thread(() -> {
-                synchronized (guardedLease) {
+                synchronized (guarded.lease()) {
                     diagnosticMonitorHeld.countDown();
                     try {
                         if (!releaseDiagnosticMonitor.await(3, TimeUnit.SECONDS)) {
@@ -110,21 +149,21 @@ public final class IpcTransportSessionLeaseSelfTest {
                 RuntimeBlockingGuard.enterActorCarrier();
                 try {
                     try {
-                        guardedLease.snapshot();
+                        guarded.lease().snapshot();
                         throw new AssertionError(
                                 "actor carrier entered snapshot monitor");
                     } catch (IllegalStateException expected) {
                         diagnosticDenials.incrementAndGet();
                     }
                     try {
-                        guardedLease.closeFailure();
+                        guarded.lease().closeFailure();
                         throw new AssertionError(
                                 "actor carrier entered closeFailure monitor");
                     } catch (IllegalStateException expected) {
                         diagnosticDenials.incrementAndGet();
                     }
                     try {
-                        guardedLease.invariant();
+                        guarded.lease().invariant();
                         throw new AssertionError(
                                 "actor carrier entered invariant monitor");
                     } catch (IllegalStateException expected) {
@@ -147,471 +186,500 @@ public final class IpcTransportSessionLeaseSelfTest {
             check(!diagnosticHolder.isAlive());
             check(diagnosticHolderFailure.get() == null);
 
-            guardedLease.requestClose();
-            check(guardedLease.awaitTerminal(3000));
-            check(guardedBridge.invariant());
+            guarded.lease().requestClose();
+            check(guarded.lease().awaitTerminal(3000));
+            check(guarded.bridge().invariant());
         }
 
+        // Happy path: admission and dispatch commitment are atomic with the
+        // physical write pin and return the authoritative completion.
         {
-            var guardedBridge = new IpcReceiptCompletionBridge(1);
-            var guardedMessage = message(1, "guardedLegacy");
-            var guardedOutcome = guardedBridge.admit(guardedMessage);
-            AtomicInteger guardedWrites = new AtomicInteger();
-            var guardedLease = new IpcTransportSessionLease(
-                    guardedMessage, 801, 1, guardedBridge,
-                    (value, preparedFrame) -> guardedWrites.incrementAndGet(),
+            var frame = message(1, "session");
+            AtomicInteger writes = new AtomicInteger();
+            AtomicInteger closes = new AtomicInteger();
+            var bound = bind(
+                    frame, 81, 2,
+                    (value, preparedFrame) -> writes.incrementAndGet(),
+                    closes::incrementAndGet,
+                    IpcTransportSessionLeaseSelfTest::offCallerCleanup);
+            var attempt = send(bound, frame);
+            check(attempt.error() == null);
+            check(writes.get() == 1);
+            check(!attempt.outcome().toCompletableFuture().isDone());
+            bound.bridge().acceptVerified(
+                    bound.owner(), frame, bound.generation(),
+                    IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+            bound.bridge().acceptVerified(
+                    bound.owner(), frame, bound.generation(),
+                    IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(attempt.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(bound.lease().invariant());
+            bound.lease().requestClose();
+            check(closes.get() == 1);
+            check(bound.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.RETIRED);
+            bound.lease().requestClose();
+            check(closes.get() == 1);
+            deny(() -> send(bound, frame));
+        }
+
+        // Stale physical generations fail before admission or writer entry.
+        {
+            var rejectMessage = message(1, "reject");
+            AtomicInteger writes = new AtomicInteger();
+            var bound = bind(
+                    rejectMessage, 15, 1,
+                    (value, preparedFrame) -> writes.incrementAndGet(),
                     () -> { },
                     IpcTransportSessionLeaseSelfTest::offCallerCleanup);
+            deny(() -> bound.lease().sendPreparedFrame(
+                    14, rejectMessage, new byte[] { 1 }));
+            check(writes.get() == 0);
+            check(bound.bridge().counters().equals(
+                    new IpcReceiptCorrelation.Counters(0, 0)));
+            bound.lease().requestClose();
+            check(bound.lease().invariant());
+        }
 
-            RuntimeBlockingGuard.enterActorCarrier();
+        // A failed committed write is indeterminate. Ordinary host failures
+        // are returned diagnostically while the receipt completion remains
+        // authoritative.
+        {
+            var failingMessage = message(1, "failed");
+            AtomicInteger closes = new AtomicInteger();
+            var bound = bind(
+                    failingMessage, 55, 1,
+                    (value, preparedFrame) -> {
+                        throw new IOException("wire write was uncertain");
+                    },
+                    closes::incrementAndGet,
+                    IpcTransportSessionLeaseSelfTest::offCallerCleanup);
+            var attempt = send(bound, failingMessage);
+            check(attempt.error() instanceof IOException);
+            check(attempt.error().getMessage().contains("uncertain"));
+            check(attempt.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(closes.get() == 1);
+            check(bound.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.RETIRED);
+            check(bound.lease().invariant());
+        }
+
+        // VM-level Errors are never converted into ordinary send failures.
+        // Close still retires the committed receipt as OUTCOME_UNKNOWN.
+        {
+            var fatalMessage = message(1, "fatal");
+            AtomicInteger closes = new AtomicInteger();
+            var bound = bind(
+                    fatalMessage, 551, 1,
+                    (value, preparedFrame) -> {
+                        throw new AssertionError("fatal writer");
+                    },
+                    closes::incrementAndGet,
+                    IpcTransportSessionLeaseSelfTest::offCallerCleanup);
             try {
-                deny(() -> {
-                    try {
-                        guardedLease.writeFrame(
-                                801, guardedMessage, new byte[] { 1 });
-                    } catch (IOException impossibleBeforeGuard) {
-                        throw new AssertionError(impossibleBeforeGuard);
-                    }
-                });
-            } finally {
-                RuntimeBlockingGuard.exitActorCarrier();
+                send(bound, fatalMessage);
+                throw new AssertionError("fatal writer Error was swallowed");
+            } catch (AssertionError expected) {
+                check(expected.getMessage().equals("fatal writer"));
             }
-            check(guardedWrites.get() == 0);
-            guardedBridge.rejectBeforeRemote(guardedMessage);
-            check(guardedOutcome.toCompletableFuture().join()
-                    == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
-            guardedLease.requestClose();
-            check(guardedLease.awaitTerminal(3000));
-            check(guardedBridge.invariant());
+            check(closes.get() == 1);
+            check(bound.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.RETIRED);
+            check(bound.lease().snapshot().activeWrites() == 0);
+            check(bound.bridge().counters().equals(
+                    new IpcReceiptCorrelation.Counters(0, 1)));
+            check(bound.lease().invariant());
         }
-
-        var bridge = new IpcReceiptCompletionBridge(2);
-        var frame = message(1, "session");
-        var done = bridge.admit(frame);
-        AtomicInteger writes = new AtomicInteger();
-        AtomicInteger closes = new AtomicInteger();
-        var transport = new IpcTransportSessionLease(frame, 81, 1,
-                bridge, (value, preparedFrame) -> writes.incrementAndGet(),
-                closes::incrementAndGet,
-                IpcTransportSessionLeaseSelfTest::offCallerCleanup);
-        transport.writeFrame(81, frame, new byte[] { 1 });
-        check(writes.get() == 1);
-        check(!done.toCompletableFuture().isDone());
-        bridge.acceptVerified(frame, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
-        bridge.acceptVerified(frame, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
-        check(done.toCompletableFuture().join()
-                == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
-        check(transport.invariant());
-        transport.requestClose();
-        check(closes.get() == 1);
-        check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
-        transport.requestClose();
-        check(closes.get() == 1);
-        deny(() -> {
-            try { transport.writeFrame(81, frame, new byte[] { 1 }); }
-            catch (IOException impossible) { throw new AssertionError(impossible); }
-        });
-
-        var rejectionBridge = new IpcReceiptCompletionBridge(1);
-        var rejectMessage = message(1, "reject");
-        var rejected = rejectionBridge.admit(rejectMessage);
-        var blocked = new IpcTransportSessionLease(rejectMessage, 15, 1,
-                rejectionBridge, (value, preparedFrame) -> {
-                    throw new AssertionError("stale session wrote");
-                }, () -> { }, IpcTransportSessionLeaseSelfTest::offCallerCleanup);
-        deny(() -> {
-            try { blocked.writeFrame(14, rejectMessage, new byte[] { 1 }); } catch (IOException impossible) { throw new AssertionError(impossible); }
-        });
-        rejectionBridge.rejectBeforeRemote(rejectMessage);
-        check(rejected.toCompletableFuture().join()
-                == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
-        blocked.requestClose();
-        check(blocked.invariant());
-
-        var failureBridge = new IpcReceiptCompletionBridge(1);
-        var failingMessage = message(1, "failed");
-        var failingFuture = failureBridge.admit(failingMessage);
-        AtomicInteger failedCloses = new AtomicInteger();
-        var failing = new IpcTransportSessionLease(failingMessage, 55, 1,
-                failureBridge, (value, preparedFrame) -> {
-                    throw new IOException("wire write was uncertain");
-                }, failedCloses::incrementAndGet,
-                IpcTransportSessionLeaseSelfTest::offCallerCleanup);
-        try {
-            failing.writeFrame(55, failingMessage, new byte[] { 1 });
-            throw new AssertionError("write must throw");
-        } catch (IOException expected) { check(expected.getMessage().contains("uncertain")); }
-        check(failingFuture.toCompletableFuture().join()
-                == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
-        check(failedCloses.get() == 1);
-        check(failing.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
-        check(failing.invariant());
-
-        // VM-level host Errors are never converted into ordinary send
-        // failures. The lease still requests close, releases the write pin,
-        // and retires the committed correlation as OUTCOME_UNKNOWN.
-        var fatalBridge = new IpcReceiptCompletionBridge(1);
-        var fatalMessage = message(1, "fatal");
-        var fatalFuture = fatalBridge.admit(fatalMessage);
-        AtomicInteger fatalCloses = new AtomicInteger();
-        var fatal = new IpcTransportSessionLease(fatalMessage, 551, 1,
-                fatalBridge, (value, preparedFrame) -> {
-                    throw new AssertionError("fatal writer");
-                }, fatalCloses::incrementAndGet,
-                IpcTransportSessionLeaseSelfTest::offCallerCleanup);
-        try {
-            fatal.writeFrame(551, fatalMessage, new byte[] { 1 });
-            throw new AssertionError("fatal writer Error was swallowed");
-        } catch (AssertionError expected) {
-            check(expected.getMessage().equals("fatal writer"));
-        }
-        check(fatalFuture.toCompletableFuture().join()
-                == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
-        check(fatalCloses.get() == 1);
-        check(fatal.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
-        check(fatal.snapshot().activeWrites() == 0);
-        check(fatal.invariant());
 
         // A failed physical close is QUARANTINED, never marked reusable.
-        var quarantineBridge = new IpcReceiptCompletionBridge(1);
-        var quarantinedMessage = message(1, "quarantine");
-        var quarantineFuture = quarantineBridge.admit(quarantinedMessage);
-        var quarantine = new IpcTransportSessionLease(quarantinedMessage, 56, 1,
-                quarantineBridge, (value, preparedFrame) -> { },
-                () -> { throw new IOException("close not confirmed"); },
-                IpcTransportSessionLeaseSelfTest::offCallerCleanup);
-        quarantine.writeFrame(56, quarantinedMessage, new byte[] { 1 });
-        quarantine.requestClose();
-        check(quarantine.snapshot().phase() == IpcTransportSessionLease.Phase.QUARANTINED);
-        check(!quarantine.snapshot().physicalCloseConfirmed());
-        check(!quarantineFuture.toCompletableFuture().isDone());
-        check(quarantine.closeFailure() instanceof IOException);
-        check(quarantine.invariant());
+        {
+            var quarantinedMessage = message(1, "quarantine");
+            var bound = bind(
+                    quarantinedMessage, 56, 1,
+                    (value, preparedFrame) -> { },
+                    () -> { throw new IOException("close not confirmed"); },
+                    IpcTransportSessionLeaseSelfTest::offCallerCleanup);
+            var attempt = send(bound, quarantinedMessage);
+            check(attempt.error() == null);
+            bound.lease().requestClose();
+            check(bound.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.QUARANTINED);
+            check(!bound.lease().snapshot().physicalCloseConfirmed());
+            check(!attempt.outcome().toCompletableFuture().isDone());
+            check(bound.lease().closeFailure() instanceof IOException);
+            check(bound.lease().invariant());
+        }
 
-        // A trusted supervisor may explicitly retry a quarantined physical
-        // close, but no write admission reopens during recovery.
-        var recoveryBridge = new IpcReceiptCompletionBridge(1);
-        var recoveryMessage = message(1, "recovery");
-        var recoveryResult = recoveryBridge.admit(recoveryMessage);
-        AtomicInteger closeAttempts = new AtomicInteger();
-        var recovery = new IpcTransportSessionLease(recoveryMessage, 57, 1,
-                recoveryBridge, (value, preparedFrame) -> { }, () -> {
-                    if (closeAttempts.incrementAndGet() == 1) {
-                        throw new IOException("first close was unconfirmed");
-                    }
-                }, IpcTransportSessionLeaseSelfTest::offCallerCleanup);
-        recovery.writeFrame(57, recoveryMessage, new byte[] { 1 });
-        recovery.requestClose();
-        check(recovery.snapshot().phase() == IpcTransportSessionLease.Phase.QUARANTINED);
-        check(!recoveryResult.toCompletableFuture().isDone());
-        deny(() -> {
-            try { recovery.writeFrame(57, recoveryMessage, new byte[] { 1 }); }
-            catch (IOException impossible) { throw new AssertionError(impossible); }
-        });
-        recovery.retryQuarantinedClose();
-        check(closeAttempts.get() == 2);
-        check(recovery.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
-        check(recoveryResult.toCompletableFuture().join()
-                == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
-        check(recovery.invariant());
-        deny(recovery::retryQuarantinedClose);
+        // Explicit retry never reopens send admission.
+        {
+            var recoveryMessage = message(1, "recovery");
+            AtomicInteger closeAttempts = new AtomicInteger();
+            var bound = bind(
+                    recoveryMessage, 57, 1,
+                    (value, preparedFrame) -> { },
+                    () -> {
+                        if (closeAttempts.incrementAndGet() == 1) {
+                            throw new IOException("first close was unconfirmed");
+                        }
+                    },
+                    IpcTransportSessionLeaseSelfTest::offCallerCleanup);
+            var attempt = send(bound, recoveryMessage);
+            bound.lease().requestClose();
+            check(bound.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.QUARANTINED);
+            check(!attempt.outcome().toCompletableFuture().isDone());
+            deny(() -> send(bound, recoveryMessage));
+            bound.lease().retryQuarantinedClose();
+            check(closeAttempts.get() == 2);
+            check(bound.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.RETIRED);
+            check(attempt.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(bound.lease().invariant());
+            deny(bound.lease()::retryQuarantinedClose);
+        }
 
-        // A trusted host scheduler must accept cleanup without running it on
-        // an actor carrier. No physical close or callback occurs before the
-        // queued cleanup task is actually executed on the host worker.
-        // Misconfigured caller-runs cleanup is detected before physical
-        // close and quarantined instead of blocking the requesting carrier.
-        var inlineBridge = new IpcReceiptCompletionBridge(1);
-        var inlineMessage = message(1, "inline");
-        var inlineFuture = inlineBridge.admit(inlineMessage);
-        AtomicInteger inlineCloses = new AtomicInteger();
-        var inline = new IpcTransportSessionLease(inlineMessage, 580, 1,
-                inlineBridge, (value, preparedFrame) -> { }, inlineCloses::incrementAndGet, Runnable::run);
-        inline.writeFrame(580, inlineMessage, new byte[] { 1 });
-        inline.requestClose();
-        check(inline.snapshot().phase() == IpcTransportSessionLease.Phase.QUARANTINED);
-        check(inlineCloses.get() == 0);
-        check(!inlineFuture.toCompletableFuture().isDone());
-        check(inline.closeFailure() instanceof IllegalStateException);
-        check(inline.invariant());
+        // Misconfigured caller-runs cleanup is detected before physical close.
+        {
+            var inlineMessage = message(1, "inline");
+            AtomicInteger inlineCloses = new AtomicInteger();
+            var bound = bind(
+                    inlineMessage, 580, 1,
+                    (value, preparedFrame) -> { },
+                    inlineCloses::incrementAndGet,
+                    Runnable::run);
+            var attempt = send(bound, inlineMessage);
+            bound.lease().requestClose();
+            check(bound.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.QUARANTINED);
+            check(inlineCloses.get() == 0);
+            check(!attempt.outcome().toCompletableFuture().isDone());
+            check(bound.lease().closeFailure() instanceof IllegalStateException);
+            check(bound.lease().invariant());
+        }
 
-        // A scheduler can violate the host-worker contract without running
-        // inline: executing later on a different actor carrier is equally
-        // forbidden. The lease must quarantine before physical close.
-        var carrierCleanupBridge = new IpcReceiptCompletionBridge(1);
-        var carrierCleanupMessage = message(1, "carrierCleanup");
-        var carrierCleanupFuture = carrierCleanupBridge.admit(carrierCleanupMessage);
-        AtomicReference<Runnable> actorCarrierCleanup = new AtomicReference<>();
-        AtomicInteger actorCarrierCloses = new AtomicInteger();
-        var carrierCleanup = new IpcTransportSessionLease(
-                carrierCleanupMessage, 581, 1,
-                carrierCleanupBridge, (value, preparedFrame) -> { },
-                actorCarrierCloses::incrementAndGet,
-                cleanup -> {
-                    if (!actorCarrierCleanup.compareAndSet(null, cleanup)) {
-                        throw new IllegalStateException("cleanup queue overflow");
+        // A delayed cleanup callback routed onto an actor carrier must report
+        // misuse lock-free even while the lease monitor is held elsewhere.
+        {
+            var carrierMessage = message(1, "carrierCleanup");
+            AtomicReference<Runnable> actorCarrierCleanup = new AtomicReference<>();
+            AtomicInteger closes = new AtomicInteger();
+            var bound = bind(
+                    carrierMessage, 581, 1,
+                    (value, preparedFrame) -> { },
+                    closes::incrementAndGet,
+                    cleanup -> {
+                        if (!actorCarrierCleanup.compareAndSet(null, cleanup)) {
+                            throw new IllegalStateException("cleanup queue overflow");
+                        }
+                    });
+            var attempt = send(bound, carrierMessage);
+            bound.lease().requestClose();
+            check(bound.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.FINALIZING);
+
+            CountDownLatch leaseMonitorHeld = new CountDownLatch(1);
+            CountDownLatch releaseLeaseMonitor = new CountDownLatch(1);
+            AtomicReference<Throwable> monitorHolderFailure = new AtomicReference<>();
+            Thread monitorHolder = new Thread(() -> {
+                synchronized (bound.lease()) {
+                    leaseMonitorHeld.countDown();
+                    try {
+                        if (!releaseLeaseMonitor.await(3, TimeUnit.SECONDS)) {
+                            throw new AssertionError("lease monitor hold timed out");
+                        }
+                    } catch (Throwable failure) {
+                        monitorHolderFailure.set(failure);
                     }
-                });
-        carrierCleanup.writeFrame(581, carrierCleanupMessage, new byte[] { 1 });
-        carrierCleanup.requestClose();
-        check(carrierCleanup.snapshot().phase()
-                == IpcTransportSessionLease.Phase.FINALIZING);
-        // Hold the lease monitor on a host thread while the misrouted
-        // cleanup callback runs on an actor carrier. The actor callback must
-        // still return promptly: reporting scheduler misuse cannot wait for
-        // the lifecycle monitor it is trying to protect.
-        CountDownLatch leaseMonitorHeld = new CountDownLatch(1);
-        CountDownLatch releaseLeaseMonitor = new CountDownLatch(1);
-        AtomicReference<Throwable> monitorHolderFailure = new AtomicReference<>();
-        Thread monitorHolder = new Thread(() -> {
-            synchronized (carrierCleanup) {
-                leaseMonitorHeld.countDown();
-                try {
-                    if (!releaseLeaseMonitor.await(3, TimeUnit.SECONDS)) {
-                        throw new AssertionError("lease monitor hold timed out");
-                    }
-                } catch (Throwable failure) {
-                    monitorHolderFailure.set(failure);
                 }
-            }
-        }, "ipc-test-lease-monitor-holder");
-        monitorHolder.start();
-        check(leaseMonitorHeld.await(3, TimeUnit.SECONDS));
+            }, "ipc-test-lease-monitor-holder");
+            monitorHolder.start();
+            check(leaseMonitorHeld.await(3, TimeUnit.SECONDS));
 
-        AtomicReference<Throwable> actorCleanupFailure = new AtomicReference<>();
-        Thread actorCleanupWorker = new Thread(() -> {
-            RuntimeBlockingGuard.enterActorCarrier();
-            try {
-                actorCarrierCleanup.get().run();
-            } catch (Throwable failure) {
-                actorCleanupFailure.set(failure);
-            } finally {
-                RuntimeBlockingGuard.exitActorCarrier();
-            }
-        }, "ipc-test-illegal-actor-cleanup");
-        actorCleanupWorker.start();
-        actorCleanupWorker.join(500);
-        check(!actorCleanupWorker.isAlive());
-        check(actorCleanupFailure.get() == null);
-        check(actorCarrierCloses.get() == 0);
+            AtomicReference<Throwable> actorCleanupFailure = new AtomicReference<>();
+            Thread actorCleanupWorker = new Thread(() -> {
+                RuntimeBlockingGuard.enterActorCarrier();
+                try {
+                    actorCarrierCleanup.get().run();
+                } catch (Throwable failure) {
+                    actorCleanupFailure.set(failure);
+                } finally {
+                    RuntimeBlockingGuard.exitActorCarrier();
+                }
+            }, "ipc-test-illegal-actor-cleanup");
+            actorCleanupWorker.start();
+            actorCleanupWorker.join(500);
+            check(!actorCleanupWorker.isAlive());
+            check(actorCleanupFailure.get() == null);
+            check(closes.get() == 0);
 
-        releaseLeaseMonitor.countDown();
-        monitorHolder.join(3000);
-        check(!monitorHolder.isAlive());
-        check(monitorHolderFailure.get() == null);
+            releaseLeaseMonitor.countDown();
+            monitorHolder.join(3000);
+            check(!monitorHolder.isAlive());
+            check(monitorHolderFailure.get() == null);
 
-        check(carrierCleanup.snapshot().phase()
-                == IpcTransportSessionLease.Phase.QUARANTINED);
-        check(!carrierCleanupFuture.toCompletableFuture().isDone());
-        check(carrierCleanup.closeFailure() instanceof IllegalStateException);
-        check(carrierCleanup.closeFailure().getMessage().contains("actor carrier"));
-        check(carrierCleanup.invariant());
+            check(bound.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.QUARANTINED);
+            check(!attempt.outcome().toCompletableFuture().isDone());
+            check(bound.lease().closeFailure() instanceof IllegalStateException);
+            check(bound.lease().closeFailure().getMessage().contains("actor carrier"));
+            check(bound.lease().invariant());
+        }
 
-        var deferredBridge = new IpcReceiptCompletionBridge(1);
-        var deferredMessage = message(1, "deferred");
-        var deferredResult = deferredBridge.admit(deferredMessage);
-        AtomicReference<Runnable> queuedCleanup = new AtomicReference<>();
-        AtomicInteger deferredCloses = new AtomicInteger();
-        var deferred = new IpcTransportSessionLease(deferredMessage, 58, 1,
-                deferredBridge, (value, preparedFrame) -> { }, deferredCloses::incrementAndGet,
-                cleanup -> {
-                    if (!queuedCleanup.compareAndSet(null, cleanup)) {
-                        throw new IllegalStateException("cleanup queue overflow");
-                    }
-                });
-        deferred.writeFrame(58, deferredMessage, new byte[] { 1 });
-        deferred.requestClose();
-        check(deferred.snapshot().phase() == IpcTransportSessionLease.Phase.FINALIZING);
-        check(deferredCloses.get() == 0);
-        check(!deferredResult.toCompletableFuture().isDone());
-        queuedCleanup.get().run(); // explicit stand-in for isolated host worker
-        queuedCleanup.get().run(); // duplicated scheduler callback must be inert
-        check(deferredCloses.get() == 1);
-        check(deferred.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
-        check(deferredResult.toCompletableFuture().join()
-                == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+        // Duplicate scheduler callbacks are inert after the first successful
+        // physical close/receipt retirement.
+        {
+            var deferredMessage = message(1, "deferred");
+            AtomicReference<Runnable> queuedCleanup = new AtomicReference<>();
+            AtomicInteger closes = new AtomicInteger();
+            var bound = bind(
+                    deferredMessage, 58, 1,
+                    (value, preparedFrame) -> { },
+                    closes::incrementAndGet,
+                    cleanup -> {
+                        if (!queuedCleanup.compareAndSet(null, cleanup)) {
+                            throw new IllegalStateException("cleanup queue overflow");
+                        }
+                    });
+            var attempt = send(bound, deferredMessage);
+            bound.lease().requestClose();
+            check(bound.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.FINALIZING);
+            check(closes.get() == 0);
+            queuedCleanup.get().run();
+            queuedCleanup.get().run();
+            check(closes.get() == 1);
+            check(bound.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.RETIRED);
+            check(attempt.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+        }
 
-        var deniedCleanupBridge = new IpcReceiptCompletionBridge(1);
-        var deniedCleanupMessage = message(1, "noWorker");
-        var deniedCleanupFuture = deniedCleanupBridge.admit(deniedCleanupMessage);
-        var deniedCleanup = new IpcTransportSessionLease(deniedCleanupMessage, 59, 1,
-                deniedCleanupBridge, (value, preparedFrame) -> { }, () -> { },
-                cleanup -> { throw new IllegalStateException("host cleanup budget denied"); });
-        deniedCleanup.writeFrame(59, deniedCleanupMessage, new byte[] { 1 });
-        deniedCleanup.requestClose();
-        check(deniedCleanup.snapshot().phase() == IpcTransportSessionLease.Phase.QUARANTINED);
-        check(!deniedCleanupFuture.toCompletableFuture().isDone());
-        check(deniedCleanup.closeFailure() instanceof IllegalStateException);
-        check(deniedCleanup.invariant());
+        // Scheduler admission failure quarantines without retiring receipts.
+        {
+            var deniedMessage = message(1, "noWorker");
+            var bound = bind(
+                    deniedMessage, 59, 1,
+                    (value, preparedFrame) -> { },
+                    () -> { },
+                    cleanup -> {
+                        throw new IllegalStateException("host cleanup budget denied");
+                    });
+            var attempt = send(bound, deniedMessage);
+            bound.lease().requestClose();
+            check(bound.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.QUARANTINED);
+            check(!attempt.outcome().toCompletableFuture().isDone());
+            check(bound.lease().closeFailure() instanceof IllegalStateException);
+            check(bound.lease().invariant());
+        }
 
-        // A scheduler that partially enqueued a task before throwing must
-        // not let that stale callback steal a later explicit recovery attempt.
-        var staleBridge = new IpcReceiptCompletionBridge(1);
-        var staleMessage = message(1, "staleCleanup");
-        var staleOutcome = staleBridge.admit(staleMessage);
-        AtomicInteger cleanupSchedules = new AtomicInteger();
-        AtomicInteger actualCloses = new AtomicInteger();
-        AtomicReference<Runnable> priorTask = new AtomicReference<>();
-        AtomicReference<Runnable> resumedTask = new AtomicReference<>();
-        var staleGate = new IpcTransportSessionLease(staleMessage, 60, 1,
-                staleBridge, (value, preparedFrame) -> { }, actualCloses::incrementAndGet, cleanup -> {
-                    if (cleanupSchedules.incrementAndGet() == 1) {
-                        priorTask.set(cleanup);
-                        throw new IllegalStateException("schedule admission uncertain");
-                    }
-                    resumedTask.set(cleanup);
-                });
-        staleGate.writeFrame(60, staleMessage, new byte[] { 1 });
-        staleGate.requestClose();
-        check(staleGate.snapshot().phase() == IpcTransportSessionLease.Phase.QUARANTINED);
-        staleGate.retryQuarantinedClose();
+        // A partially enqueued stale callback cannot steal a later explicit
+        // recovery attempt or poison it from an actor carrier.
+        {
+            var staleMessage = message(1, "staleCleanup");
+            AtomicInteger schedules = new AtomicInteger();
+            AtomicInteger closes = new AtomicInteger();
+            AtomicReference<Runnable> priorTask = new AtomicReference<>();
+            AtomicReference<Runnable> resumedTask = new AtomicReference<>();
+            var bound = bind(
+                    staleMessage, 60, 1,
+                    (value, preparedFrame) -> { },
+                    closes::incrementAndGet,
+                    cleanup -> {
+                        if (schedules.incrementAndGet() == 1) {
+                            priorTask.set(cleanup);
+                            throw new IllegalStateException(
+                                    "schedule admission uncertain");
+                        }
+                        resumedTask.set(cleanup);
+                    });
+            var attempt = send(bound, staleMessage);
+            bound.lease().requestClose();
+            check(bound.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.QUARANTINED);
+            bound.lease().retryQuarantinedClose();
 
-        // Even when the stale callback is itself misrouted onto an actor
-        // carrier, its deferred failure is bound to attempt 1 and must not
-        // poison the newer explicit recovery attempt 2.
-        AtomicReference<Throwable> staleActorFailure = new AtomicReference<>();
-        Thread staleActor = new Thread(() -> {
-            RuntimeBlockingGuard.enterActorCarrier();
-            try {
-                priorTask.get().run();
-            } catch (Throwable failure) {
-                staleActorFailure.set(failure);
-            } finally {
-                RuntimeBlockingGuard.exitActorCarrier();
-            }
-        }, "ipc-test-stale-actor-cleanup");
-        staleActor.start();
-        staleActor.join(1000);
-        check(!staleActor.isAlive());
-        check(staleActorFailure.get() == null);
-        check(actualCloses.get() == 0);
-        check(staleGate.snapshot().phase()
-                == IpcTransportSessionLease.Phase.FINALIZING);
-        check(!staleOutcome.toCompletableFuture().isDone());
+            AtomicReference<Throwable> staleActorFailure = new AtomicReference<>();
+            Thread staleActor = new Thread(() -> {
+                RuntimeBlockingGuard.enterActorCarrier();
+                try {
+                    priorTask.get().run();
+                } catch (Throwable failure) {
+                    staleActorFailure.set(failure);
+                } finally {
+                    RuntimeBlockingGuard.exitActorCarrier();
+                }
+            }, "ipc-test-stale-actor-cleanup");
+            staleActor.start();
+            staleActor.join(1000);
+            check(!staleActor.isAlive());
+            check(staleActorFailure.get() == null);
+            check(closes.get() == 0);
+            check(bound.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.FINALIZING);
+            check(!attempt.outcome().toCompletableFuture().isDone());
 
-        resumedTask.get().run();
-        check(actualCloses.get() == 1);
-        check(staleGate.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
-        check(staleOutcome.toCompletableFuture().join()
-                == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
-        check(staleGate.invariant());
+            resumedTask.get().run();
+            check(closes.get() == 1);
+            check(bound.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.RETIRED);
+            check(attempt.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(bound.lease().invariant());
+        }
 
-        // Reusing both session text and FD generation cannot grant an old
-        // route/capability authority over a new logical transport epoch.
-        var epochBridge = new IpcReceiptCompletionBridge(2);
-        var previousRoute = message(1, "shared");
-        var upgradedRoute = new IpcReceiptCorrelation.Envelope(
-                "tenant", "sender", "worker", "shared", "a".repeat(64),
-                1, 2, 4, 5, 2, 2);
-        var oldReceipt = epochBridge.admit(previousRoute);
-        var newReceipt = epochBridge.admit(upgradedRoute);
-        var prior = new IpcTransportSessionLease(previousRoute, 77, 1,
-                epochBridge, (ignoredFrame, preparedFrame) -> { }, () -> { },
-                IpcTransportSessionLeaseSelfTest::offCallerCleanup);
-        deny(() -> {
-            try {
-                prior.writeFrame(77, upgradedRoute, new byte[] { 1 });
-            } catch (IOException impossible) { throw new AssertionError(impossible); }
-        });
-        prior.writeFrame(77, previousRoute, new byte[] { 1 });
-        prior.requestClose();
-        check(oldReceipt.toCompletableFuture().join()
-                == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
-        check(!newReceipt.toCompletableFuture().isDone());
-        check(epochBridge.counters().equals(new IpcReceiptCorrelation.Counters(1, 1)));
-        var successor = new IpcTransportSessionLease(upgradedRoute, 77, 1,
-                epochBridge, (ignoredFrame, preparedFrame) -> { }, () -> { },
-                IpcTransportSessionLeaseSelfTest::offCallerCleanup);
-        successor.writeFrame(77, upgradedRoute, new byte[] { 1 });
-        epochBridge.acceptVerified(upgradedRoute, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
-        epochBridge.acceptVerified(upgradedRoute, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
-        check(newReceipt.toCompletableFuture().join()
-                == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
-        successor.requestClose();
-        check(epochBridge.invariant());
+        // A stale logical transport epoch cannot use an old physical lease.
+        // Reconnect allocates a fresh receipt bridge and physical generation.
+        {
+            var previousRoute = message(1, "shared");
+            var upgradedRoute = new IpcReceiptCorrelation.Envelope(
+                    "tenant", "sender", "worker", "shared", "a".repeat(64),
+                    1, 2, 4, 5, 2, 2);
+            var prior = bind(
+                    previousRoute, 77, 1,
+                    (ignoredFrame, preparedFrame) -> { },
+                    () -> { },
+                    IpcTransportSessionLeaseSelfTest::offCallerCleanup);
+            deny(() -> prior.lease().sendPreparedFrame(
+                    77, upgradedRoute, new byte[] { 1 }));
+            check(prior.bridge().counters().equals(
+                    new IpcReceiptCorrelation.Counters(0, 0)));
+            var oldAttempt = send(prior, previousRoute);
+            prior.lease().requestClose();
+            check(oldAttempt.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
 
-        // Verify close never recycles a descriptor during a real host write.
+            var successor = bind(
+                    upgradedRoute, 78, 1,
+                    (ignoredFrame, preparedFrame) -> { },
+                    () -> { },
+                    IpcTransportSessionLeaseSelfTest::offCallerCleanup);
+            var newAttempt = send(successor, upgradedRoute);
+            successor.bridge().acceptVerified(
+                    successor.owner(), upgradedRoute, successor.generation(),
+                    IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+            successor.bridge().acceptVerified(
+                    successor.owner(), upgradedRoute, successor.generation(),
+                    IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(newAttempt.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            successor.lease().requestClose();
+            check(successor.bridge().invariant());
+        }
+
+        // Close never recycles a descriptor while a host write is pinned.
         for (int trial = 0; trial < 512; ++trial) {
-            var candidateBridge = new IpcReceiptCompletionBridge(1);
             var candidateMessage = message(1, "race");
-            var terminal = candidateBridge.admit(candidateMessage);
             CountDownLatch entered = new CountDownLatch(1);
             CountDownLatch release = new CountDownLatch(1);
             AtomicInteger closed = new AtomicInteger();
             AtomicReference<Throwable> failure = new AtomicReference<>();
-            var candidate = new IpcTransportSessionLease(candidateMessage, trial + 1L, 1,
-                    candidateBridge, (value, preparedFrame) -> {
+            AtomicReference<IpcTransportSessionLease.WriteAttempt> attemptRef =
+                    new AtomicReference<>();
+            var candidate = bind(
+                    candidateMessage, trial + 1L, 1,
+                    (value, preparedFrame) -> {
                         entered.countDown();
                         try {
-                            if (!release.await(3, TimeUnit.SECONDS))
+                            if (!release.await(3, TimeUnit.SECONDS)) {
                                 throw new IOException("test write latch expired");
-                        } catch (InterruptedException e) {
+                            }
+                        } catch (InterruptedException interrupted) {
                             Thread.currentThread().interrupt();
-                            throw new IOException(e);
+                            throw new IOException(interrupted);
                         }
-                    }, closed::incrementAndGet,
+                    },
+                    closed::incrementAndGet,
                     IpcTransportSessionLeaseSelfTest::offCallerCleanup);
-            long epoch = trial + 1L;
             Thread writer = new Thread(() -> {
                 try {
-                    candidate.writeFrame(epoch, candidateMessage, new byte[] { 1 });
-                } catch (Throwable problem) { failure.set(problem); }
+                    attemptRef.set(send(candidate, candidateMessage));
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                }
             });
             writer.start();
             check(entered.await(3, TimeUnit.SECONDS));
-            candidate.requestClose();
+            candidate.lease().requestClose();
             check(closed.get() == 0);
-            check(candidate.snapshot().activeWrites() == 1);
-            check(!terminal.toCompletableFuture().isDone());
+            check(candidate.lease().snapshot().activeWrites() == 1);
             release.countDown();
             writer.join();
             check(failure.get() == null);
+            check(attemptRef.get() != null);
             check(closed.get() == 1);
-            check(candidate.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
-            check(terminal.toCompletableFuture().join()
+            check(candidate.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.RETIRED);
+            check(attemptRef.get().outcome().toCompletableFuture().join()
                     == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
-            check(candidateBridge.invariant());
-            check(candidate.invariant());
+            check(candidate.bridge().invariant());
+            check(candidate.lease().invariant());
         }
 
-        // Competing close and transport admission linearize: no writes
-        // permitted after close, but any admitted in-flight writer drains.
+        // Competing close and admission linearize. If send wins, the admitted
+        // write drains and becomes OUTCOME_UNKNOWN. If close wins, there is no
+        // correlation to retire and send is rejected before the writer.
         for (int trial = 0; trial < 512; ++trial) {
-            var contenderBridge = new IpcReceiptCompletionBridge(1);
             var contenderMessage = message(1, "compete");
-            var terminal = contenderBridge.admit(contenderMessage);
             CountDownLatch start = new CountDownLatch(1);
             AtomicInteger closeCount = new AtomicInteger();
             AtomicInteger wrote = new AtomicInteger();
+            AtomicInteger rejected = new AtomicInteger();
             AtomicReference<Throwable> error = new AtomicReference<>();
-            var contender = new IpcTransportSessionLease(contenderMessage, trial + 1L, 1,
-                    contenderBridge, (x, preparedFrame) -> wrote.incrementAndGet(), closeCount::incrementAndGet,
+            AtomicReference<IpcTransportSessionLease.WriteAttempt> admitted =
+                    new AtomicReference<>();
+            var contender = bind(
+                    contenderMessage, trial + 1L, 1,
+                    (value, preparedFrame) -> wrote.incrementAndGet(),
+                    closeCount::incrementAndGet,
                     IpcTransportSessionLeaseSelfTest::offCallerCleanup);
-            long epoch = trial + 1L;
             Thread sender = new Thread(() -> {
                 try {
                     start.await();
-                    contender.writeFrame(epoch, contenderMessage, new byte[] { 1 });
-                } catch (IllegalStateException expectedClosed) {
-                    // Close took precedence; local unsent outcome remains valid.
-                } catch (Throwable bad) { error.compareAndSet(null, bad); }
+                    admitted.set(send(contender, contenderMessage));
+                } catch (IpcTransportSessionLease.PreDispatchRejectedException expectedClosed) {
+                    rejected.incrementAndGet();
+                } catch (Throwable bad) {
+                    error.compareAndSet(null, bad);
+                }
             });
             Thread shutdown = new Thread(() -> {
-                try { start.await(); contender.requestClose(); }
-                catch (Throwable bad) { error.compareAndSet(null, bad); }
+                try {
+                    start.await();
+                    contender.lease().requestClose();
+                } catch (Throwable bad) {
+                    error.compareAndSet(null, bad);
+                }
             });
-            sender.start();shutdown.start();start.countDown();
-            sender.join();shutdown.join();
+            sender.start();
+            shutdown.start();
+            start.countDown();
+            sender.join();
+            shutdown.join();
+
             check(error.get() == null);
             check(closeCount.get() == 1);
-            check(contender.snapshot().activeWrites() == 0);
-            check(contender.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
-            check(terminal.toCompletableFuture().join()
-                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
-            check(wrote.get() == 0 || wrote.get() == 1);
-            check(contenderBridge.invariant());
+            check(contender.lease().snapshot().activeWrites() == 0);
+            check(contender.lease().snapshot().phase()
+                    == IpcTransportSessionLease.Phase.RETIRED);
+            if (admitted.get() != null) {
+                check(rejected.get() == 0);
+                check(wrote.get() == 1);
+                check(admitted.get().outcome().toCompletableFuture().join()
+                        == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            } else {
+                check(rejected.get() == 1);
+                check(wrote.get() == 0);
+                check(contender.bridge().counters().equals(
+                        new IpcReceiptCorrelation.Counters(0, 0)));
+            }
+            check(contender.bridge().invariant());
         }
+
         System.out.println("JAVA_IPC_PHYSICAL_SESSION_HOST_PASS assertions=" + assertions
-                + " races=1024");
+                + " races=1024 owner_bound=true");
     }
 }
