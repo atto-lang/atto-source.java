@@ -345,8 +345,8 @@ printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_selector=%s source_com
 \t' read -r actual_source_id actual_source_name actual_source_private < <(
   gh_api "repos/$SOURCE_REPO" --jq '[.id, .full_name, .private] | @tsv'
 ) || die "cannot read authenticated source repository"
-[[ "$actual_source_id" == "$SOURCE_ID"
-    && "$actual_source_name" == "$SOURCE_REPO"
+[[ "$actual_source_id" == "$SOURCE_ID" \
+    && "$actual_source_name" == "$SOURCE_REPO" \
     && "$actual_source_private" == "true" ]] \
   || die "source GitHub repository identity, canonical name, or private visibility mismatch"
 
