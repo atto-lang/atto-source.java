@@ -52,7 +52,21 @@ public final class OresTaskScope implements AutoCloseable {
     public interface CompilerLoanRetirement {
         void bindScope(CompilerScopeEpoch scopeEpoch);
         void bindChild(CompilerScopeEpoch scopeEpoch, OresTask<?> child);
-        void retireNeverStarted(CompilerScopeEpoch scopeEpoch);
+
+        /**
+         * No provisional runtime child was ever created. This edge is valid
+         * only before bindChild and carries no authority for a child that
+         * already has an exact runtime identity.
+         */
+        void retireBeforeChildBound(CompilerScopeEpoch scopeEpoch);
+
+        /**
+         * An exact provisional child exists, but executable scheduler
+         * admission never happened. The exact child identity is mandatory.
+         */
+        void retireNeverStarted(
+                CompilerScopeEpoch scopeEpoch, OresTask<?> child);
+
         void retireAfterPhysicalQuiescence(
                 CompilerScopeEpoch scopeEpoch, OresTask<?> child);
     }
