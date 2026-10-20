@@ -49,7 +49,7 @@ final class StaticContractArrowTupleSyntaxTest {
     @Test
     void instanceInterfaceStillRejectsSlimArrowSignature() {
         String source = """
-                define interface InstanceFactory as
+                define interface InstanceFactory
                     fnc create(int id) -> int;
                 end
                 """;
