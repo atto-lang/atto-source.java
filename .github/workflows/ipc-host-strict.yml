@@ -1,0 +1,63 @@
+name: IPC host strict parity
+
+on:
+  pull_request:
+    paths:
+      - "src/main/java/dev/oreslang/runtime/Ipc*.java"
+      - "src/main/java/dev/oreslang/runtime/RuntimeBlockingGuard.java"
+      - "src/test/java/dev/oreslang/runtime/Ipc*.java"
+      - "scripts/check-ipc-receipt-parity.sh"
+      - ".github/workflows/ipc-host-strict.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/main/java/dev/oreslang/runtime/Ipc*.java"
+      - "src/main/java/dev/oreslang/runtime/RuntimeBlockingGuard.java"
+      - "src/test/java/dev/oreslang/runtime/Ipc*.java"
+      - "scripts/check-ipc-receipt-parity.sh"
+      - ".github/workflows/ipc-host-strict.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ipc-host-strict-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  strict-host:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Set up GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+      - name: Record exact source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "commit=$(git rev-parse HEAD)"
+          echo "tree=$(git rev-parse 'HEAD^{tree}')"
+          git hash-object             src/main/java/dev/oreslang/runtime/IpcReceiptCorrelation.java             src/main/java/dev/oreslang/runtime/IpcReceiptCompletionBridge.java             src/main/java/dev/oreslang/runtime/IpcPhysicalConnectionBroker.java             src/main/java/dev/oreslang/runtime/IpcTransportSessionLease.java             src/main/java/dev/oreslang/runtime/IpcAuthenticatedSocketTransport.java
+      - name: Strict IPC host suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          java --version
+          javac --version
+          bash scripts/check-ipc-receipt-parity.sh
+      - name: Repeat adversarial IPC host suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "IPC strict repeat $attempt/3"
+            bash scripts/check-ipc-receipt-parity.sh
+          done
