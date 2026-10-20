@@ -214,6 +214,10 @@ final class IpcTransportSessionLease {
      * worker; on scheduler failure the session stays quarantined.
      */
     void requestClose() {
+        // Closing can synchronously acquire this monitor and enqueue cleanup.
+        // Keep even nominally nonblocking host-supervisor lifecycle calls off
+        // actor carriers so a misbehaving scheduler cannot park guest progress.
+        RuntimeBlockingGuard.requireBlockingHostThread("IPC transport close request");
         boolean finalize;
         synchronized (this) {
             if (phase == Phase.OPEN) phase = Phase.CLOSING;
@@ -269,6 +273,8 @@ final class IpcTransportSessionLease {
 
     /** An explicit supervisor retry never reopens a quarantined session. */
     void retryQuarantinedClose() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport quarantined close retry");
         synchronized (this) {
             if (phase != Phase.QUARANTINED || activeWrites != 0) {
                 throw new IllegalStateException("transport not quarantined");
@@ -342,6 +348,13 @@ final class IpcTransportSessionLease {
                 closeFailure = new IllegalStateException(
                         "cleanup scheduler executed inline on requesting carrier");
                 enqueueCaller = null;
+                phase = Phase.QUARANTINED;
+                notifyAll();
+                return;
+            }
+            if (RuntimeBlockingGuard.actorCarrierMarked()) {
+                closeFailure = new IllegalStateException(
+                        "cleanup scheduler executed on an actor carrier");
                 phase = Phase.QUARANTINED;
                 notifyAll();
                 return;
