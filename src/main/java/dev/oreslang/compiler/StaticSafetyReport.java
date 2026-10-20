@@ -48,7 +48,7 @@ public final class StaticSafetyReport {
             }
             output.append("]}");
             if (output.length() > MAX_REPORT_CHARS)
-                throw new IllegalArgumentException("static safety report byte budget exceeded");
+                throw new IllegalArgumentException("static safety report UTF-16 character budget exceeded");
         }
         return output.append("]}").toString();
     }
