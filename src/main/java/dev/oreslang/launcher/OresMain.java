@@ -85,6 +85,7 @@ public final class OresMain {
         boolean checkOnly = false;
         boolean buildAnalysis = false;
         boolean staticFacts = false;
+        boolean explicitExecutionProfile = false;
         String reachabilityReportPath = null;
         List<String> buildDefines = new ArrayList<>();
         Set<String> buildEntryPoints = new LinkedHashSet<>();
@@ -141,8 +142,14 @@ public final class OresMain {
                     String raw = arg.substring("--entry=".length()).trim();
                     if (raw.isEmpty()) throw new IllegalArgumentException("--entry requires a symbol name");
                     buildEntryPoints.add(raw);
-                } else if (arg.startsWith("--mode=")) mode = arg.substring("--mode=".length());
-                else if (arg.startsWith("--platform=")) platform = arg.substring("--platform=".length());
+                } else if (arg.startsWith("--mode=")) {
+                    mode = arg.substring("--mode=".length());
+                    explicitExecutionProfile = true;
+                }
+                else if (arg.startsWith("--platform=")) {
+                    platform = arg.substring("--platform=".length());
+                    explicitExecutionProfile = true;
+                }
                 else if (arg.startsWith("--allow=")) {
                     String raw = arg.substring("--allow=".length());
                     if (raw.isBlank()) {
@@ -222,7 +229,7 @@ public final class OresMain {
             if (!buildDefines.isEmpty() || !buildEntryPoints.isEmpty() || reachabilityReportPath != null) {
                 throw new UsageException("--static-facts does not accept build defines, entries or reports");
             }
-            if (strict || permissionCheckMode != PermissionCheckMode.RUNTIME
+            if (strict || explicitExecutionProfile || permissionCheckMode != PermissionCheckMode.RUNTIME
                     || !touchedPermissions.isEmpty() || !additionalCapabilities.isEmpty()
                     || !allowedHostClasses.isEmpty()) {
                 throw new UsageException("--static-facts is advisory only and cannot claim isolate/capability-policy admission");
