@@ -1122,7 +1122,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final PrivateMemoryBlock privateBlock;
         private final long sharedBytes;
         private final AtomicBoolean revoked = new AtomicBoolean();
-        private ActorShardColumns attachedShard;
+        private ActorShardBacking attachedShard;
 
         private ActorShardLease(ActorCell<?> cell, PrivateMemoryBlock block, long bytes) {
             this.cell = cell;
@@ -1130,7 +1130,7 @@ public final class ActorRuntime implements AutoCloseable {
             this.sharedBytes = block == null ? bytes : 0L;
         }
         boolean privateBacking() { return privateBlock != null; }
-        void attach(ActorShardColumns shard) {
+        void attach(ActorShardBacking shard) {
             synchronized (cell.lifecycleLock) {
                 requireOwner();
                 if (attachedShard != null) {
@@ -1158,13 +1158,21 @@ public final class ActorRuntime implements AutoCloseable {
             requireOwner();
             privateBlock.writeDouble(Math.multiplyExact(element, Double.BYTES), value);
         }
+        int readInt(int element) {
+            requireOwner();
+            return privateBlock.readInt(Math.multiplyExact(element, Integer.BYTES));
+        }
+        void writeInt(int element, int value) {
+            requireOwner();
+            privateBlock.writeInt(Math.multiplyExact(element, Integer.BYTES), value);
+        }
         private void release(boolean ownerTurn) {
             synchronized (cell.lifecycleLock) {
                 // Close/stop, backing detachment, and byte refund must have
                 // one lifecycle linearization point. In particular, finalizer
                 // and close must not both believe they own the same quota.
                 if (!revoked.compareAndSet(false, true)) return;
-                ActorShardColumns shard = attachedShard;
+                ActorShardBacking shard = attachedShard;
                 attachedShard = null;
                 if (shard != null) shard.revokeBackingFromLease();
                 cell.shardLeases.remove(this);
