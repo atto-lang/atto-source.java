@@ -563,4 +563,32 @@ final class OresKeyedMapTest {
     }
 
 
+    @Test void entryValidatorPolicySurfaceIsRuntimePackagePrivate() throws Exception {
+        Class<?> validator = Class.forName(
+                "dev.oreslang.runtime.OresKeyedMap$EntryValidator");
+        assertFalse(java.lang.reflect.Modifier.isPublic(validator.getModifiers()),
+                "arbitrary external hosts must not be able to install Map policy callbacks");
+
+        for (String factory : List.of("stringKeys", "symbolKeys", "stringOrSymbolKeys")) {
+            var method = OresKeyedMap.class.getDeclaredMethod(
+                    factory, OresKeyedMap.ValueDomain.class, validator);
+            assertFalse(java.lang.reflect.Modifier.isPublic(method.getModifiers()),
+                    factory + " validator overload must remain runtime-package private");
+        }
+
+        assertTrue(java.lang.reflect.Modifier.isPublic(
+                OresKeyedMap.class
+                        .getDeclaredMethod("stringKeys", OresKeyedMap.ValueDomain.class)
+                        .getModifiers()));
+        assertTrue(java.lang.reflect.Modifier.isPublic(
+                OresKeyedMap.class
+                        .getDeclaredMethod("symbolKeys", OresKeyedMap.ValueDomain.class)
+                        .getModifiers()));
+        assertTrue(java.lang.reflect.Modifier.isPublic(
+                OresKeyedMap.class
+                        .getDeclaredMethod("stringOrSymbolKeys", OresKeyedMap.ValueDomain.class)
+                        .getModifiers()));
+    }
+
+
 }
