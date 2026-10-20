@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - ci/synthetic-policy-smoke-20261020
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
