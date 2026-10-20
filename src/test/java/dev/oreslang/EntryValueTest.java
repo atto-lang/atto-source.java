@@ -578,4 +578,24 @@ final class EntryValueTest {
     }
 
 
+    @Test
+    void entryUsesValueEqualityNotReferenceIdentity() {
+        accepted("""
+                fnc equal(): bool {
+                  return Entry.of(1, 2) == Entry.of(1, 2);
+                }
+                """);
+
+        IllegalArgumentException identity = rejected("""
+                fnc bad(): bool {
+                  const left = Entry.of(1, 2);
+                  const right = Entry.of(1, 2);
+                  return left is right;
+                }
+                """);
+        assertTrue(identity.getMessage().contains("identity-bearing"),
+                identity.getMessage());
+    }
+
+
 }
