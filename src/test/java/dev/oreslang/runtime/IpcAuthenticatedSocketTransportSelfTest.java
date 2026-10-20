@@ -971,12 +971,15 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             client.setSendBufferSize(1024);
             peer.setReceiveBufferSize(1024);
             AtomicInteger scheduled = new AtomicInteger();
+            AtomicReference<Throwable> illegalAbortFailure = new AtomicReference<>();
             IpcTransportSessionLease.CleanupScheduler scheduler = cleanup -> {
                 if (scheduled.incrementAndGet() == 1) {
                     Thread invalidCarrier = new Thread(() -> {
                         RuntimeBlockingGuard.enterActorCarrier();
                         try {
                             cleanup.run();
+                        } catch (Throwable failure) {
+                            illegalAbortFailure.set(failure);
                         } finally {
                             RuntimeBlockingGuard.exitActorCarrier();
                         }
@@ -1023,6 +1026,9 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             check(!transport.requestCloseAndAwait(3000));
             check(transport.snapshot().phase()
                     == IpcTransportSessionLease.Phase.QUARANTINED);
+            check(illegalAbortFailure.get() instanceof IllegalStateException);
+            check(illegalAbortFailure.get().getMessage().contains(
+                    "cannot block an actor carrier"));
             check(transport.snapshot().activeWrites() == 1);
             check(sender.isAlive());
             transport.retryQuarantinedAbort();
