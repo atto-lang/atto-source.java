@@ -153,6 +153,46 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
+    void commentsCannotMasqueradeAsOptionalDoOrCallableEnd() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "fnc value() -> int /* do end */ do /* end */ return 7; end // end do\n")));
+
+        var compact = Parser.parse(
+                "fnc text() -> string do return \"do end fi\"; end // do end\n");
+        var multiline = Parser.parse("""
+                fnc text() -> string
+                    return "do end fi"
+                end
+                """);
+        assertEquals(multiline, compact);
+    }
+
+    @Test
+    void optionalDoMayBeSeparatedFromReturnTypeByCommentsButNotSemicolon() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "fnc value() -> int /* boundary */ do return 7; end")));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc value() -> int /* boundary */
+                do
+                    return 7
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "fnc value() -> int; /* not a body boundary */ do return 7; end"));
+    }
+
+    @Test
+    void compactDoSupportsExpressionAndBlockLambdasWithoutStealingTheirDelimiters() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "fnc make() -> () => int do return || -> 7; end")));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "fnc make() -> () => string do return || -> { return \"do end\"; }; end")));
+    }
+
+    @Test
     void explicitVoidMayFallThrough() {
         String source = """
                 fnc noop() -> void
