@@ -44,6 +44,76 @@ final class ActorAsyncFinalizationBarrierTest {
     }
 
     @Test
+    void privateSynchronousResultIsDetachedBeforeSupervisorPublication()
+            throws Exception {
+        java.util.concurrent.atomic.AtomicReference<OresBytes> actorOwned =
+                new java.util.concurrent.atomic.AtomicReference<>();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            OresFuture<OresBytes> result = runtime.invokeAsync(
+                    ActorRuntime.ActorKind.PRIVATE,
+                    "request",
+                    (message, context) -> {
+                        OresBytes bytes = OresBytes.copyOf(
+                                new byte[] {1, 2, (byte) 255});
+                        actorOwned.set(bytes);
+                        return bytes;
+                    });
+
+            OresBytes exported = result.get(5, TimeUnit.SECONDS);
+            assertNotNull(actorOwned.get());
+            assertNotSame(actorOwned.get(), exported,
+                    "PRIVATE one-shot result must not expose actor-owned Bytes");
+            assertEquals(actorOwned.get(), exported);
+            assertEquals(0, runtime.actorCount());
+        }
+    }
+
+    @Test
+    void privateFutureBackedResultDetachesProducerAndActorDomains()
+            throws Exception {
+        OresFuture<Object> producer = new OresFuture<>();
+        OresBytes producerBytes = OresBytes.copyOf(
+                new byte[] {9, 8, 7, (byte) 254});
+        CountDownLatch invoked = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            @SuppressWarnings({"unchecked", "rawtypes"})
+            OresFuture<OresBytes> result =
+                    (OresFuture<OresBytes>) (OresFuture) runtime.invokeAsync(
+                            ActorRuntime.ActorKind.PRIVATE,
+                            "request",
+                            (ActorRuntime.Invocation<String, Object>)
+                                    (message, context) -> {
+                                        invoked.countDown();
+                                        return producer;
+                                    });
+
+            assertTrue(invoked.await(5, TimeUnit.SECONDS));
+            producer.completeFromRuntime(producerBytes);
+
+            OresBytes exported = result.get(5, TimeUnit.SECONDS);
+            assertNotSame(producerBytes, exported,
+                    "PRIVATE future result must not publish producer-owned Bytes");
+            assertEquals(producerBytes, exported);
+            assertEquals(0, runtime.actorCount());
+        }
+    }
+
+    @Test
+    void sharedBytesResultRemainsImmutableZeroCopy() throws Exception {
+        OresBytes shared = OresBytes.copyOf(new byte[] {4, 5, 6});
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            OresFuture<OresBytes> result = runtime.invokeAsync(
+                    ActorRuntime.ActorKind.SHARED,
+                    "request",
+                    (message, context) -> shared);
+            assertSame(shared, result.get(5, TimeUnit.SECONDS));
+            assertEquals(0, runtime.actorCount());
+        }
+    }
+
+    @Test
     void failedAsyncInvocationIsNotPublishedUntilTurnExecutorReturns() throws Exception {
         CountDownLatch guestTurnFinished = new CountDownLatch(1);
         CountDownLatch releaseCarrier = new CountDownLatch(1);
