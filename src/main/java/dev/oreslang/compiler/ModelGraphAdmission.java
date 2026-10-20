@@ -86,6 +86,48 @@ public final class ModelGraphAdmission {
         return item;
     }
 
+    // Parser checks are not a trust boundary: the compiler also accepts
+    // programmatically built ASTs, which must not bypass syntax/budget rules.
+    private static void validScalar(Ast.ModelValue value, boolean allowFormal) {
+        String raw = value.source();
+        if (raw.length() > 256)
+            throw new IllegalArgumentException("MODEL_NONCONSTANT_CONFIG");
+        if (value.kind() == Ast.ModelValueKind.FORMAL) {
+            if (!allowFormal || !raw.matches("[A-Za-z][A-Za-z0-9_]{0,127}"))
+                throw new IllegalArgumentException("MODEL_NONCONSTANT_CONFIG");
+            return;
+        }
+        switch (value.kind()) {
+            case INTEGER -> {
+                String canonical = raw.replace("_", "");
+                if (!canonical.matches("-?(0|[1-9][0-9]*)"))
+                    throw new IllegalArgumentException("MODEL_INVALID_CONST");
+                try { new java.math.BigInteger(canonical).longValueExact(); }
+                catch (ArithmeticException overflow) {
+                    throw new IllegalArgumentException("MODEL_CONST_OVERFLOW", overflow);
+                }
+            }
+            case FLOAT -> {
+                if (!raw.matches("[0-9]+\\.[0-9]+([eE][+-]?[0-9]+)?"))
+                    throw new IllegalArgumentException("MODEL_INVALID_CONST");
+                if (!Double.isFinite(Double.parseDouble(raw)))
+                    throw new IllegalArgumentException("MODEL_NONFINITE_CONST");
+            }
+            case BOOLEAN -> {
+                if (!"true".equals(raw) && !"false".equals(raw))
+                    throw new IllegalArgumentException("MODEL_INVALID_CONST");
+            }
+            case STRING -> {
+                // Preserve source metadata only. String-to-operator type
+                // binding is still owned by the resolved lowering phase.
+                if (raw.length() < 2 || raw.charAt(0) != '"' ||
+                        raw.charAt(raw.length() - 1) != '"')
+                    throw new IllegalArgumentException("MODEL_INVALID_CONST");
+            }
+            default -> throw new IllegalArgumentException("MODEL_INVALID_CONST");
+        }
+    }
+
     private static void validDefault(Ast.ModelFormal formal) {
         if (formal.defaultValue() == null) return;
         String type = formal.type().name();
@@ -98,6 +140,7 @@ public final class ModelGraphAdmission {
             default -> false; // Typed symbolic defaults require compiler-specific checking.
         };
         if (!compatible) throw new IllegalArgumentException("MODEL_FORMAL_DEFAULT_TYPE_MISMATCH");
+        validScalar(formal.defaultValue(), false);
     }
 
     /**
@@ -120,6 +163,9 @@ public final class ModelGraphAdmission {
         Set<String> formals = new HashSet<>();
         List<String> formalConfig = new ArrayList<>();
         for (Ast.ModelFormal formal : source.formals()) {
+            if (formal.name().length() > 128 ||
+                    !formal.name().matches("[A-Za-z][A-Za-z0-9_]*"))
+                throw new IllegalArgumentException("MODEL_NONCONSTANT_CONFIG");
             if (!formals.add(formal.name()))
                 throw new IllegalArgumentException("MODEL_DUPLICATE_FORMAL");
             validDefault(formal);
@@ -133,6 +179,8 @@ public final class ModelGraphAdmission {
         Port prior = null;
         long used = 0L;
         for (Ast.ModelOperation op : source.operations()) {
+            if (op.arguments().size() > 16)
+                throw new IllegalArgumentException("MODEL_ARGUMENT_BUDGET");
             Signature signature = trusted.get(op.name());
             if (signature == null || !op.name().equals(signature.name()))
                 throw new IllegalArgumentException("MODEL_UNKNOWN_OP");
@@ -152,6 +200,9 @@ public final class ModelGraphAdmission {
             // canonical descriptor so distinct static configs cannot alias.
             List<String> config = new ArrayList<>();
             for (Ast.ModelArgument argument : op.arguments()) {
+                if (argument.label() != null)
+                    throw new IllegalArgumentException("MODEL_NAMED_ARGUMENT_UNRESOLVED");
+                validScalar(argument.value(), true);
                 if (argument.value().kind() == Ast.ModelValueKind.FORMAL
                         && !formals.contains(argument.value().source()))
                     throw new IllegalArgumentException("MODEL_UNKNOWN_FORMAL");
