@@ -1,0 +1,97 @@
+name: Actor source hot reload E2E (SHARED and PRIVATE)
+on:
+  pull_request:
+    paths:
+      - 'src/test/java/dev/oreslang/SharedPrivateSourceActorHotReloadE2ETest.java'
+      - 'src/test/java/dev/oreslang/SourceActorHotUpgradeExecutionTest.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/main/java/dev/oreslang/runtime/HotReloadManager.java'
+      - '.github/workflows/actor-source-hot-reload-e2e.yml'
+  push:
+    branches: [tests/shared-private-source-actor-e2e-20261020]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-actor-hot-reload:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout authorized exact source revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact source head and tree
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git rev-parse HEAD^{tree} | grep -Eq '^[a-f0-9]{40}$'
+          test -f src/test/java/dev/oreslang/SharedPrivateSourceActorHotReloadE2ETest.java
+          test -f src/test/java/dev/oreslang/SourceActorHotUpgradeExecutionTest.java
+      - name: Set up GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Compile real guest source and run SHARED and PRIVATE hot reload
+        run: mvn -B -ntp -Dtest=SourceActorHotUpgradeExecutionTest,SharedPrivateSourceActorHotReloadE2ETest -DfailIfNoTests=true test
+      - name: Verify exact JUnit result and forbid absent/skipped tests
+        if: always()
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, xml.etree.ElementTree as ET
+          from pathlib import Path
+          classes = {
+              "dev.oreslang.SourceActorHotUpgradeExecutionTest": 3,
+              "dev.oreslang.SharedPrivateSourceActorHotReloadE2ETest": 1,
+          }
+          actual = subprocess.run(["git","rev-parse","HEAD"],text=True,capture_output=True,check=False).stdout.strip()
+          tree = subprocess.run(["git","rev-parse","HEAD^{tree}"],text=True,capture_output=True,check=False).stdout.strip()
+          evidence = {"source_head": actual, "tree": tree, "expected_head":os.environ["EXPECTED_SHA"],
+                      "guest_compiled_and_executed":False,"physical_sandbox_verified":False,
+                      "native_guest_aot_verified":False,"test_classes":{}}
+          verified = actual == evidence["expected_head"] and len(tree) == 40
+          for cls, minimum in classes.items():
+              report = Path("target/surefire-reports/TEST-"+cls+".xml")
+              stats = {"tests":0,"failures":0,"errors":0,"skipped":0}
+              if report.is_file():
+                  try:
+                      root = ET.parse(report).getroot()
+                      stats = {k:int(root.get(k,"0")) for k in stats}
+                  except (ET.ParseError,ValueError):
+                      verified = False
+              else:
+                  verified = False
+              verified = (verified and stats["tests"] >= minimum
+                          and not any(stats[k] for k in ("failures","errors","skipped")))
+              evidence["test_classes"][cls] = stats
+          evidence["guest_compiled_and_executed"] = verified
+          output = Path("target/ci-evidence/hot-reload-guest-e2e.json")
+          output.parent.mkdir(parents=True,exist_ok=True)
+          output.write_text(json.dumps(evidence,sort_keys=True)+"\\n",encoding="utf-8")
+          print(json.dumps(evidence,indent=2,sort_keys=True))
+          if not verified:
+              raise SystemExit("GUEST HOT RELOAD NOT VERIFIED")
+          PY
+      - name: Retain exact-head guest test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: actor-source-hot-reload-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/ci-evidence/hot-reload-guest-e2e.json
+            target/surefire-reports/TEST-dev.oreslang.SourceActorHotUpgradeExecutionTest.xml
+            target/surefire-reports/TEST-dev.oreslang.SharedPrivateSourceActorHotReloadE2ETest.xml
+          if-no-files-found: error
+          retention-days: 7
