@@ -53,6 +53,11 @@ public final class OresSymbol {
 
     public static String normalizeAndValidate(String input) {
         Objects.requireNonNull(input, "Symbol name");
+        // Bound attacker-controlled text before Unicode normalization or UTF-8 allocation.
+        // Canonical names remain limited to 256 UTF-8 bytes after NFC.
+        if (input.length() > 1_024) {
+            throw new IllegalArgumentException("Symbol name exceeds raw-input budget");
+        }
         String value = Normalizer.normalize(input, Normalizer.Form.NFC);
         if (value.isEmpty() || value.getBytes(StandardCharsets.UTF_8).length > 256) {
             throw new IllegalArgumentException("Symbol name requires 1..256 UTF-8 bytes");
@@ -89,7 +94,10 @@ public final class OresSymbol {
 
     @Override public String toString() {
         if (kind == Kind.STABLE) return "Symbol.stable(\"" + name + "\")";
-        if (name.matches("[A-Za-z_][A-Za-z0-9_]*")) return "#" + name;
+        // Unquoted #identifiers have a stricter 128-byte lexer limit.
+        if (name.length() <= 128 && name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+            return "#" + name;
+        }
         return "#\"" + name.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
     }
 }
