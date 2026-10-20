@@ -9461,6 +9461,26 @@ public final class OresEvalRootNode extends RootNode {
                 return value;
             }
 
+            if (declared.name().equals("Entry")) {
+                if (declared.inferArguments() || declared.arguments().size() != 2
+                        || !(value instanceof OresEntry entry)) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                Object key = shapeReturnedValue(
+                        declared.arguments().get(0),
+                        entry.key(),
+                        callable + ".key",
+                        resolving);
+                Object entryValue = shapeReturnedValue(
+                        declared.arguments().get(1),
+                        entry.value(),
+                        callable + ".value",
+                        resolving);
+                return key == entry.key() && entryValue == entry.value()
+                        ? entry
+                        : new OresEntry(key, entryValue);
+            }
+
             if (declared.name().equals("Array") || declared.name().equals("List")) {
                 if (declared.arguments().size() != 1) return value;
                 List<?> items = asSequence(value);
