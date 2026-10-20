@@ -72,11 +72,35 @@ final class ActorRuntimePreReturnAdmissionQuarantineTest {
                         "registered physical incarnation still owns a runtime slot");
                 assertFalse(runtime.physicallyFinalizedForHotUpgrade(admitted.get()),
                         "a surviving registered actor cannot certify code retirement");
-                admitted.get().stop();
+                // Every concurrent closer owns the same exact ActorRef.
+                // Registry removal, slot refund and final marker publication
+                // must be one-shot, even though the ref escaped only through
+                // the pre-registration callback and no spawn returned it.
+                var closers = new java.util.concurrent.CountDownLatch(1);
+                var failures = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+                Thread[] threads = new Thread[8];
+                for (int i = 0; i < threads.length; i++) {
+                    threads[i] = Thread.ofPlatform().start(() -> {
+                        try {
+                            closers.await();
+                            admitted.get().stop();
+                        } catch (Throwable problem) {
+                            failures.compareAndSet(null, problem);
+                        }
+                    });
+                }
+                closers.countDown();
+                for (Thread thread : threads) {
+                    thread.join(10_000);
+                    assertFalse(thread.isAlive(), "physical close race must terminate");
+                }
+                assertNull(failures.get(),
+                        "exact registered identity must have one terminal owner");
                 assertTrue(admitted.get().awaitTermination(5, TimeUnit.SECONDS));
                 assertTrue(runtime.physicallyFinalizedForHotUpgrade(admitted.get()));
                 assertTrue(injected.isEmpty());
-                assertEquals(0, count.get());
+                assertEquals(0, count.get(),
+                        "all concurrent closers must refund exactly one actor slot");
             } finally {
                 actorsField.set(runtime, original);
             }
