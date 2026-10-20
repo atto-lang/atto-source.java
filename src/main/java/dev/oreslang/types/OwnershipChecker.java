@@ -31,6 +31,9 @@ import java.util.Set;
  * - moving an outer value from a repeating loop is rejected conservatively.
  */
 public final class OwnershipChecker {
+    private static final int TASK_PROVENANCE_MAX_EXPR_DEPTH = 128;
+    private static final int TASK_PROVENANCE_MAX_EXPR_NODES = 4_096;
+
     private record ResolvedMethod(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.MethodDecl method) { }
     private record ResolvedField(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.FieldDecl field) { }
     private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
@@ -2725,50 +2728,61 @@ public final class OwnershipChecker {
      * into an OWNED_RVALUE provenance proof.
      */
     private static boolean containsUntrackedProjection(Ast.Expr expression) {
+        return containsUntrackedProjection(
+                expression, 0,
+                new int[] {TASK_PROVENANCE_MAX_EXPR_NODES});
+    }
+
+    private static boolean containsUntrackedProjection(
+            Ast.Expr expression, int depth, int[] remaining) {
         if (expression == null) return false;
+        if (depth > TASK_PROVENANCE_MAX_EXPR_DEPTH
+                || remaining[0]-- <= 0) {
+            return true;
+        }
         if (expression instanceof Ast.MemberExpr
                 || expression instanceof Ast.IndexExpr) return true;
         if (expression instanceof Ast.CastExpr cast) {
-            return containsUntrackedProjection(cast.value());
+            return containsUntrackedProjection(cast.value(), depth + 1, remaining);
         }
         if (expression instanceof Ast.SpreadExpr spread) {
-            return containsUntrackedProjection(spread.expression());
+            return containsUntrackedProjection(spread.expression(), depth + 1, remaining);
         }
         if (expression instanceof Ast.TrapExpr trapped) {
-            return containsUntrackedProjection(trapped.expression());
+            return containsUntrackedProjection(trapped.expression(), depth + 1, remaining);
         }
         if (expression instanceof Ast.AwaitExpr awaited) {
-            return containsUntrackedProjection(awaited.expression());
+            return containsUntrackedProjection(awaited.expression(), depth + 1, remaining);
         }
         if (expression instanceof Ast.UnaryExpr unary) {
-            return containsUntrackedProjection(unary.operand());
+            return containsUntrackedProjection(unary.operand(), depth + 1, remaining);
         }
         if (expression instanceof Ast.BinaryExpr binary) {
-            return containsUntrackedProjection(binary.left())
-                    || containsUntrackedProjection(binary.right());
+            return containsUntrackedProjection(binary.left(), depth + 1, remaining)
+                    || containsUntrackedProjection(binary.right(), depth + 1, remaining);
         }
         if (expression instanceof Ast.AssignExpr assignment) {
-            return containsUntrackedProjection(assignment.target())
-                    || containsUntrackedProjection(assignment.value());
+            return containsUntrackedProjection(assignment.target(), depth + 1, remaining)
+                    || containsUntrackedProjection(assignment.value(), depth + 1, remaining);
         }
         if (expression instanceof Ast.ConditionalExpr conditional) {
-            return containsUntrackedProjection(conditional.condition())
-                    || containsUntrackedProjection(conditional.whenTrue())
-                    || containsUntrackedProjection(conditional.whenFalse());
+            return containsUntrackedProjection(conditional.condition(), depth + 1, remaining)
+                    || containsUntrackedProjection(conditional.whenTrue(), depth + 1, remaining)
+                    || containsUntrackedProjection(conditional.whenFalse(), depth + 1, remaining);
         }
         if (expression instanceof Ast.MatchExpr match) {
-            if (containsUntrackedProjection(match.subject())) return true;
+            if (containsUntrackedProjection(match.subject(), depth + 1, remaining)) return true;
             for (Ast.MatchValueArm arm : match.arms()) {
-                if (containsUntrackedProjection(arm.guard())
-                        || containsUntrackedProjection(arm.value())) return true;
+                if (containsUntrackedProjection(arm.guard(), depth + 1, remaining)
+                        || containsUntrackedProjection(arm.value(), depth + 1, remaining)) return true;
             }
             return false;
         }
         if (expression instanceof Ast.TypeTestExpr test) {
-            return containsUntrackedProjection(test.value());
+            return containsUntrackedProjection(test.value(), depth + 1, remaining);
         }
         if (expression instanceof Ast.PatternTestExpr test) {
-            return containsUntrackedProjection(test.value());
+            return containsUntrackedProjection(test.value(), depth + 1, remaining);
         }
         if (expression instanceof Ast.CallExpr call) {
             // Member syntax in callee position selects a callable; it is not
@@ -2776,51 +2790,57 @@ public final class OwnershipChecker {
             // arguments can hide an untracked projection here. The ordinary
             // call checker separately validates receiver/member effects.
             for (Ast.Expr argument : call.arguments()) {
-                if (containsUntrackedProjection(argument)) return true;
+                if (containsUntrackedProjection(argument, depth + 1, remaining)) return true;
             }
             return false;
         }
         if (expression instanceof Ast.RuntimeCallExpr runtime) {
             for (Ast.Expr argument : runtime.arguments()) {
-                if (containsUntrackedProjection(argument)) return true;
+                if (containsUntrackedProjection(argument, depth + 1, remaining)) return true;
             }
             return false;
         }
         if (expression instanceof Ast.NewExpr created) {
             for (Ast.Expr argument : created.arguments()) {
-                if (containsUntrackedProjection(argument)) return true;
+                if (containsUntrackedProjection(argument, depth + 1, remaining)) return true;
             }
             return false;
         }
         if (expression instanceof Ast.ChannelOpExpr channel) {
-            return containsUntrackedProjection(channel.channel())
-                    || containsUntrackedProjection(channel.value());
+            return containsUntrackedProjection(channel.channel(), depth + 1, remaining)
+                    || containsUntrackedProjection(channel.value(), depth + 1, remaining);
         }
         if (expression instanceof Ast.DynamicSelectExpr selected) {
-            return containsUntrackedProjection(selected.cases());
+            return containsUntrackedProjection(selected.cases(), depth + 1, remaining);
         }
         if (expression instanceof Ast.ListExpr list) {
             for (Ast.Expr element : list.elements()) {
-                if (containsUntrackedProjection(element)) return true;
+                if (containsUntrackedProjection(element, depth + 1, remaining)) return true;
             }
             return false;
         }
         if (expression instanceof Ast.TupleExpr tuple) {
             for (Ast.Expr element : tuple.elements()) {
-                if (containsUntrackedProjection(element)) return true;
+                if (containsUntrackedProjection(element, depth + 1, remaining)) return true;
             }
             return false;
         }
         if (expression instanceof Ast.ObjectExpr object) {
             for (Ast.ObjectField field : object.fields()) {
-                if (containsUntrackedProjection(field.value())) return true;
+                if (containsUntrackedProjection(field.value(), depth + 1, remaining)) return true;
             }
             return false;
         }
         return false;
     }
 
-    private ReturnOwnershipSummary summarizeReturnOwnership(
+    static boolean mayMintTaskReturnOwnershipSummary(
+            Ast.FunctionDecl function) {
+        return summarizeReturnOwnership(function).kind()
+                != ReturnOwnershipKind.UNKNOWN;
+    }
+
+    private static ReturnOwnershipSummary summarizeReturnOwnership(
             Ast.FunctionDecl function) {
         if (function.kind() != Ast.CallableKind.FNC
                 || function.async()
@@ -2860,42 +2880,55 @@ public final class OwnershipChecker {
      * body independently.</p>
      */
     private static boolean isStaticallyFreshReturn(Ast.Expr expression) {
-        if (expression == null) return false;
+        return isStaticallyFreshReturn(
+                expression, 0,
+                new int[] {TASK_PROVENANCE_MAX_EXPR_NODES});
+    }
+
+    private static boolean isStaticallyFreshReturn(
+            Ast.Expr expression, int depth, int[] remaining) {
+        if (expression == null
+                || depth > TASK_PROVENANCE_MAX_EXPR_DEPTH
+                || remaining[0]-- <= 0) {
+            return false;
+        }
         if (expression instanceof Ast.LiteralExpr) return true;
         if (expression instanceof Ast.CastExpr cast) {
-            return isStaticallyFreshReturn(cast.value());
+            return isStaticallyFreshReturn(cast.value(), depth + 1, remaining);
         }
         if (expression instanceof Ast.SpreadExpr spread) {
-            return isStaticallyFreshReturn(spread.expression());
+            return isStaticallyFreshReturn(spread.expression(), depth + 1, remaining);
         }
         if (expression instanceof Ast.TrapExpr trapped) {
-            return isStaticallyFreshReturn(trapped.expression());
+            return isStaticallyFreshReturn(trapped.expression(), depth + 1, remaining);
         }
         if (expression instanceof Ast.ConditionalExpr conditional) {
-            return isStaticallyFreshReturn(conditional.whenTrue())
-                    && isStaticallyFreshReturn(conditional.whenFalse());
+            return isStaticallyFreshReturn(
+                        conditional.whenTrue(), depth + 1, remaining)
+                    && isStaticallyFreshReturn(
+                        conditional.whenFalse(), depth + 1, remaining);
         }
         if (expression instanceof Ast.ListExpr list) {
             for (Ast.Expr item : list.elements()) {
-                if (!isStaticallyFreshReturn(item)) return false;
+                if (!isStaticallyFreshReturn(item, depth + 1, remaining)) return false;
             }
             return true;
         }
         if (expression instanceof Ast.TupleExpr tuple) {
             for (Ast.Expr item : tuple.elements()) {
-                if (!isStaticallyFreshReturn(item)) return false;
+                if (!isStaticallyFreshReturn(item, depth + 1, remaining)) return false;
             }
             return true;
         }
         if (expression instanceof Ast.ObjectExpr object) {
             for (Ast.ObjectField field : object.fields()) {
-                if (!isStaticallyFreshReturn(field.value())) return false;
+                if (!isStaticallyFreshReturn(field.value(), depth + 1, remaining)) return false;
             }
             return true;
         }
         if (expression instanceof Ast.NewExpr created) {
             for (Ast.Expr argument : created.arguments()) {
-                if (!isStaticallyFreshReturn(argument)) return false;
+                if (!isStaticallyFreshReturn(argument, depth + 1, remaining)) return false;
             }
             return true;
         }
@@ -2927,7 +2960,21 @@ public final class OwnershipChecker {
 
     private boolean isProvenTaskOwnedRvalue(
             Ast.Expr expression, Scope scope) {
-        if (expression == null) return false;
+        return isProvenTaskOwnedRvalue(
+                expression, scope, 0,
+                new int[] {TASK_PROVENANCE_MAX_EXPR_NODES});
+    }
+
+    private boolean isProvenTaskOwnedRvalue(
+            Ast.Expr expression,
+            Scope scope,
+            int depth,
+            int[] remaining) {
+        if (expression == null
+                || depth > TASK_PROVENANCE_MAX_EXPR_DEPTH
+                || remaining[0]-- <= 0) {
+            return false;
+        }
         if (expression instanceof Ast.LiteralExpr) return true;
         if (expression instanceof Ast.NameExpr name) {
             VarState state = scope.lookup(name.name());
@@ -2939,24 +2986,26 @@ public final class OwnershipChecker {
                     && !root.mutableBorrowed;
         }
         if (expression instanceof Ast.CastExpr cast) {
-            return isProvenTaskOwnedRvalue(cast.value(), scope);
+            return isProvenTaskOwnedRvalue(cast.value(), scope, depth + 1, remaining);
         }
         if (expression instanceof Ast.SpreadExpr spread) {
-            return isProvenTaskOwnedRvalue(spread.expression(), scope);
+            return isProvenTaskOwnedRvalue(spread.expression(), scope, depth + 1, remaining);
         }
         if (expression instanceof Ast.TrapExpr trapped) {
-            return isProvenTaskOwnedRvalue(trapped.expression(), scope);
+            return isProvenTaskOwnedRvalue(trapped.expression(), scope, depth + 1, remaining);
         }
         if (expression instanceof Ast.ConditionalExpr conditional) {
             // The condition selects a branch but does not contribute ownership
             // to the expression result.
-            return isProvenTaskOwnedRvalue(conditional.whenTrue(), scope)
+            return isProvenTaskOwnedRvalue(
+                        conditional.whenTrue(), scope, depth + 1, remaining)
                     && isProvenTaskOwnedRvalue(
-                            conditional.whenFalse(), scope);
+                            conditional.whenFalse(), scope, depth + 1, remaining);
         }
         if (expression instanceof Ast.MatchExpr match) {
             for (Ast.MatchValueArm arm : match.arms()) {
-                if (!isProvenTaskOwnedRvalue(arm.value(), scope)) {
+                if (!isProvenTaskOwnedRvalue(
+                        arm.value(), scope, depth + 1, remaining)) {
                     return false;
                 }
             }
@@ -2978,25 +3027,29 @@ public final class OwnershipChecker {
         }
         if (expression instanceof Ast.NewExpr created) {
             for (Ast.Expr argument : created.arguments()) {
-                if (!isProvenTaskOwnedRvalue(argument, scope)) return false;
+                if (!isProvenTaskOwnedRvalue(
+                        argument, scope, depth + 1, remaining)) return false;
             }
             return true;
         }
         if (expression instanceof Ast.ListExpr list) {
             for (Ast.Expr element : list.elements()) {
-                if (!isProvenTaskOwnedRvalue(element, scope)) return false;
+                if (!isProvenTaskOwnedRvalue(
+                        element, scope, depth + 1, remaining)) return false;
             }
             return true;
         }
         if (expression instanceof Ast.TupleExpr tuple) {
             for (Ast.Expr element : tuple.elements()) {
-                if (!isProvenTaskOwnedRvalue(element, scope)) return false;
+                if (!isProvenTaskOwnedRvalue(
+                        element, scope, depth + 1, remaining)) return false;
             }
             return true;
         }
         if (expression instanceof Ast.ObjectExpr object) {
             for (Ast.ObjectField field : object.fields()) {
-                if (!isProvenTaskOwnedRvalue(field.value(), scope)) {
+                if (!isProvenTaskOwnedRvalue(
+                        field.value(), scope, depth + 1, remaining)) {
                     return false;
                 }
             }
@@ -3022,7 +3075,7 @@ public final class OwnershipChecker {
                         && parameterIndex < call.arguments().size()
                         && isProvenTaskOwnedRvalue(
                                 call.arguments().get(parameterIndex),
-                                scope);
+                                scope, depth + 1, remaining);
             }
             return false;
         }
