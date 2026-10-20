@@ -158,6 +158,8 @@ def latest_authority_review():
     reviews = gh_api_list(
         f"repos/{legacy.SOURCE_REPO}/pulls/{REVIEW_AUTHORITY_PR}/reviews?per_page=100"
     )
+    if len(reviews) >= 100:
+        raise Denied("private-CI authority review history exceeds bounded page")
     matching = []
     for review in reviews:
         if not isinstance(review, dict):
