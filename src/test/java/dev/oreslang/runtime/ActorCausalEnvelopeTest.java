@@ -141,6 +141,36 @@ final class ActorCausalEnvelopeTest {
     }
 
     @Test
+    void twoInboxMessagesNeverShareAMutableTraceOrLeakItToHostCaller()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            java.util.concurrent.ConcurrentLinkedQueue<OresAsyncTrace.Trace> seen =
+                    new java.util.concurrent.ConcurrentLinkedQueue<>();
+            java.util.concurrent.CountDownLatch handled =
+                    new java.util.concurrent.CountDownLatch(2);
+            ActorRuntime.ActorRef<String> actor = runtime.spawnPrivateTrusted(
+                    ignored -> (message, context) -> {
+                        OresAsyncTrace.Trace trace = OresAsyncTrace.current();
+                        assertNotNull(trace);
+                        seen.add(trace);
+                        handled.countDown();
+                    });
+            assertNull(OresAsyncTrace.current());
+            actor.send("one");
+            actor.send("two");
+            assertTrue(handled.await(5, TimeUnit.SECONDS));
+            assertEquals(2, seen.size());
+            OresAsyncTrace.Trace first = seen.poll();
+            OresAsyncTrace.Trace second = seen.poll();
+            assertNotSame(first, second);
+            assertEquals(1, first.actorVisits().size());
+            assertEquals(1, second.actorVisits().size());
+            assertNull(OresAsyncTrace.current(),
+                    "runtime actor carrier scopes must not leak to the host test thread");
+        }
+    }
+
+    @Test
     void hostSendCreatesFreshLineageRatherThanReusingLastMailTurn() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorRef<String> first = runtime.spawnPrivateTrusted(
