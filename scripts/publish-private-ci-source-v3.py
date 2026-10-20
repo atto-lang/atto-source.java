@@ -349,6 +349,11 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     if not isinstance(source_pr, int) or isinstance(source_pr, bool) or source_pr <= 0:
         raise Denied("invalid source PR number")
 
+    # Temporary global stop shared with the legacy publisher. This must run
+    # before destination preflight, protected-policy reads, source traversal,
+    # or any GitHub API call. Security #962 controls eventual removal.
+    legacy.require_independent_source_authorization()
+
     # Authorize before reading private source bytes.
     legacy.require_preflight(repository, trusted_root)
     approved_policy = legacy.checked_policy_fingerprint(trusted_root, repository)
