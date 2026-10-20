@@ -223,4 +223,37 @@ final class OresFutureConstructorsTest {
         assertInstanceOf(NullPointerException.class, observed.getCause());
     }
 
+
+    @Test
+    void synchronousCallbackCannotPublishWithoutValidDetachRegistration()
+            throws Exception {
+        OresFuture<Integer> future = OresFutureConstructors.fromCancellableRunCallback(
+                cb -> {
+                    cb.resolve(40);
+                    return null;
+                });
+
+        var failed = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> future.get(5, TimeUnit.SECONDS));
+        assertInstanceOf(NullPointerException.class, failed.getCause(),
+                "invalid registration must fail, not expose the early success");
+    }
+
+    @Test
+    void registrarFailureOverridesUnpublishedSynchronousResolution()
+            throws Exception {
+        IllegalArgumentException broken = new IllegalArgumentException("registration rollback");
+        OresFuture<Integer> future = OresFutureConstructors.fromCancellableRunCallback(
+                cb -> {
+                    cb.resolve(40);
+                    throw broken;
+                });
+
+        var failed = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> future.get(5, TimeUnit.SECONDS));
+        assertSame(broken, failed.getCause(),
+                "callbacks from a failed registrar must never escape registration");
+    }
+
+
 }
