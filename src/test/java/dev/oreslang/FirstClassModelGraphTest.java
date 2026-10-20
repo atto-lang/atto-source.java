@@ -117,6 +117,76 @@ final class FirstClassModelGraphTest {
     }
 
     @Test
+    void negativeI64ConfigurationMatchesNativeCanonicalIdentity() throws Exception {
+        String source = """
+                fnc Identity(int input): int {
+                  return input;
+                }
+
+                fnc AddDelta(int delta, int input): int {
+                  return input + delta;
+                }
+
+                pub define model PriceAdjust(delta: int = -2) as
+                  Identity()
+                  AddDelta(delta)
+                end
+                """;
+
+        ModelGraphCompiler.CompiledModel model =
+                ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(source))
+                        .find("PriceAdjust");
+        assertNotNull(model);
+        assertEquals(
+                "dec8b5f587a47648fa8973f5901e9c25e049b08179a44dc682439ee0dab8f53e",
+                model.graphDigest(),
+                "negative i64 defaults must share the native canonical graph formula");
+        assertEquals(
+                "e52dd64a55cdf48bbe33c2d50a7c3beb9685c6ad0aeb030a44dbac4796bb7f56",
+                model.configuredGraphDigest(model.bindConfiguration(java.util.List.of())),
+                "negative default configuration must share native configured identity");
+
+        String output = run(source + """
+                pub routine main(): void {
+                  stdio.stdout.write(PriceAdjust().run(40));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(PriceAdjust(-3).run(40));
+                  return;
+                }
+                """);
+        assertEquals("38|37", output);
+    }
+
+    @Test
+    void negativeLiteralStaticArgumentsAreAdmittedButExpressionsRemainClosed() throws Exception {
+        String output = run("""
+                fnc AddDelta(int delta, int input): int {
+                  return input + delta;
+                }
+
+                define model Fixed as
+                  AddDelta(-2)
+                end
+
+                pub routine main(): void {
+                  stdio.stdout.write(Fixed().run(5));
+                  return;
+                }
+                """);
+        assertEquals("3", output);
+
+        assertThrowsMessage("MODEL_NONCONSTANT_CONFIG", () ->
+                OresCompiler.parseAndTypeCheck("""
+                        fnc AddDelta(int delta, int input): int {
+                          return input + delta;
+                        }
+                        define model Bad as
+                          AddDelta(-(1 + 1))
+                        end
+                        """));
+    }
+
+    @Test
     void commonI64SubsetHasPinnedJavaLlvmGraphIdentity() {
         String source = """
                 fnc Identity(int input): int {
