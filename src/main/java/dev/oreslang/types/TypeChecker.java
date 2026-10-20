@@ -2857,6 +2857,28 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.MemberExpr factoryCall
                     && factoryCall.receiver() instanceof Ast.NameExpr factory
+                    && Set.of("Box", "Arc", "Rc", "RefCell").contains(factory.name())
+                    && findClass(factory.name()) == null
+                    && factoryCall.member().equals("new")) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            factory.name() + ".new does not accept call-site type arguments");
+                }
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            factory.name() + ".new expects exactly one owned value");
+                }
+                Type element = typeOf(
+                        call.arguments().getFirst(), env, generics, self);
+                if (element instanceof Borrow) {
+                    throw new IllegalArgumentException(
+                            factory.name()
+                                    + ".new requires owned data; borrowed values cannot be stored");
+                }
+                return new Named(factory.name(), List.of(element));
+            }
+            if (call.callee() instanceof Ast.MemberExpr factoryCall
+                    && factoryCall.receiver() instanceof Ast.NameExpr factory
                     && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
                     && factoryCall.member().equals("new")) {
                 if (call.typeArgumentsPresent()) throw new IllegalArgumentException(factory.name() + ".new does not accept call-site type arguments");
@@ -3109,6 +3131,35 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "unknown ActorOutputStream callable member '"
                                     + member.member() + "'");
+                }
+
+                Type smartPointerBuiltin =
+                        builtinSmartPointerMember(receiver, member.member());
+                if (smartPointerBuiltin != null) {
+                    if (!(smartPointerBuiltin instanceof Function builtin)) {
+                        throw new IllegalArgumentException(
+                                "smart-pointer member '" + member.member()
+                                        + "' is not callable");
+                    }
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "smart-pointer member '" + member.member()
+                                        + "' does not accept call-site type arguments");
+                    }
+                    if (builtin.parameters().size() != call.arguments().size()) {
+                        throw new IllegalArgumentException(
+                                "smart-pointer member '" + member.member()
+                                        + "' call arity mismatch");
+                    }
+                    for (int i = 0; i < builtin.parameters().size(); i++) {
+                        Type actualArgument =
+                                typeOf(call.arguments().get(i), env, generics, self);
+                        requireAssignable(
+                                actualArgument,
+                                builtin.parameters().get(i),
+                                "smart-pointer argument " + (i + 1));
+                    }
+                    return builtin.result();
                 }
 
                 Type collectionBuiltin = builtinCollectionMember(receiver, member.member());
@@ -3685,6 +3736,16 @@ public final class TypeChecker {
                     && (sumNamed.name().equals("Option") || sumNamed.name().equals("Result"))) {
                 throw new IllegalArgumentException(
                         "unknown " + sumNamed.name() + " member '" + member.member() + "'");
+            }
+            Type smartPointerMember =
+                    builtinSmartPointerMember(sumReceiver, member.member());
+            if (smartPointerMember != null) return smartPointerMember;
+            if (sumReceiver instanceof Named smartNamed
+                    && Set.of("Box", "Arc", "Weak", "Rc", "RcWeak", "RefCell")
+                            .contains(smartNamed.name())) {
+                throw new IllegalArgumentException(
+                        "unknown " + smartNamed.name()
+                                + " member '" + member.member() + "'");
             }
             Type mutexMember = builtinMutexMember(receiver, member.member());
             if (mutexMember != null) return mutexMember;
@@ -6639,6 +6700,75 @@ public final class TypeChecker {
             case "IteratorResult" -> switch (member) {
                 case "done" -> Primitive.BOOL;
                 case "value" -> new Named("Option", List.of(element));
+                default -> null;
+            };
+            default -> null;
+        };
+    }
+
+    private Type builtinSmartPointerMember(Type receiver, String member) {
+        receiver = deref(receiver);
+        if (!(receiver instanceof Named named)
+                || named.arguments().size() != 1) {
+            return null;
+        }
+        Type element = named.arguments().getFirst();
+        return switch (named.name()) {
+            case "Box" -> switch (member) {
+                case "take" -> new Function(List.of(), element);
+                case "is_live" -> new Function(List.of(), Primitive.BOOL);
+                default -> null;
+            };
+            case "Arc" -> switch (member) {
+                case "clone" -> new Function(List.of(), named);
+                case "downgrade" ->
+                        new Function(
+                                List.of(),
+                                new Named("Weak", List.of(element)));
+                case "strong_count", "weak_count" ->
+                        new Function(List.of(), Primitive.INT);
+                case "is_closed" ->
+                        new Function(List.of(), Primitive.BOOL);
+                default -> null;
+            };
+            case "Weak" -> switch (member) {
+                case "upgrade" ->
+                        new Function(
+                                List.of(),
+                                new Named(
+                                        "Option",
+                                        List.of(new Named(
+                                                "Arc",
+                                                List.of(element)))));
+                case "strong_count", "weak_count" ->
+                        new Function(List.of(), Primitive.INT);
+                case "is_closed" ->
+                        new Function(List.of(), Primitive.BOOL);
+                default -> null;
+            };
+            case "Rc" -> switch (member) {
+                case "clone" -> new Function(List.of(), named);
+                case "downgrade" ->
+                        new Function(
+                                List.of(),
+                                new Named("RcWeak", List.of(element)));
+                case "strong_count", "weak_count" ->
+                        new Function(List.of(), Primitive.INT);
+                case "is_closed" ->
+                        new Function(List.of(), Primitive.BOOL);
+                default -> null;
+            };
+            case "RcWeak" -> switch (member) {
+                case "upgrade" ->
+                        new Function(
+                                List.of(),
+                                new Named(
+                                        "Option",
+                                        List.of(new Named(
+                                                "Rc",
+                                                List.of(element)))));
+                case "strong_count", "weak_count" ->
+                        new Function(List.of(), Primitive.INT);
                 default -> null;
             };
             default -> null;
