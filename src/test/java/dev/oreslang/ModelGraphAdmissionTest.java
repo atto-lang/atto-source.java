@@ -110,4 +110,27 @@ final class ModelGraphAdmissionTest {
         rejected("MODEL_INVALID_PORT", s,
                 Map.of("A", op("A", null, new Port("f64", List.of(1L), "bad unit"), false)), DEFAULT);
     }
+    @Test
+    void staticConfigurationParticipatesInGraphIdentity() {
+        Map<String, Signature> trusted = Map.of(
+                "Apply", op("Apply", USD, USD, false));
+        ModelGraph literalA = ModelGraphAdmission.admit(
+                source("define model X as Apply(1) end"), trusted, DEFAULT);
+        ModelGraph literalB = ModelGraphAdmission.admit(
+                source("define model X as Apply(2) end"), trusted, DEFAULT);
+        assertNotEquals(literalA, literalB);
+        assertNotEquals(literalA.nodes().getFirst().config(),
+                literalB.nodes().getFirst().config());
+
+        ModelGraph defaultA = ModelGraphAdmission.admit(
+                source("define model X(rate: float = 0.15) as Apply(rate) end"),
+                trusted, DEFAULT);
+        ModelGraph defaultB = ModelGraphAdmission.admit(
+                source("define model X(rate: float = 0.20) as Apply(rate) end"),
+                trusted, DEFAULT);
+        assertNotEquals(defaultA, defaultB);
+        assertNotEquals(defaultA.formals(), defaultB.formals());
+    }
+
+
 }
