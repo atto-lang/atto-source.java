@@ -1599,7 +1599,10 @@ public final class OwnershipChecker {
             if (call.arguments().size() != 1) {
                 throw error("Map.from_entries expects exactly one Entry sequence");
             }
-            ValueInfo sequence = checkExpr(call.arguments().getFirst(), scope, true);
+            // Construction snapshots immutable Entry/scalar values. Do not
+            // consume the caller's source sequence: validation may fail and V1
+            // has no compiler-proven transactional move/rollback protocol.
+            ValueInfo sequence = checkExpr(call.arguments().getFirst(), scope, false);
             Ast.TypeRef mapType;
             if (call.typeArgumentsPresent() && !call.typeArguments().isEmpty()) {
                 if (call.typeArguments().size() != 2) {
