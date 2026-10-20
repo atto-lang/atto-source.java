@@ -119,6 +119,86 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         }
     }
 
+    private static final class BlockingAbortOutputStream extends OutputStream {
+        private final CountDownLatch writeEntered;
+        private final CountDownLatch abortWrite;
+        private volatile boolean aborted;
+
+        BlockingAbortOutputStream(
+                CountDownLatch writeEntered,
+                CountDownLatch abortWrite) {
+            this.writeEntered = writeEntered;
+            this.abortWrite = abortWrite;
+        }
+
+        void abort() {
+            aborted = true;
+            abortWrite.countDown();
+        }
+
+        private void awaitAbort() throws IOException {
+            writeEntered.countDown();
+            try {
+                if (!abortWrite.await(5, TimeUnit.SECONDS)) {
+                    throw new IOException("test physical write did not receive abort");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IOException("test physical write interrupted", interrupted);
+            }
+            if (aborted) throw new IOException("test physical write aborted");
+        }
+
+        @Override public void write(int value) throws IOException {
+            awaitAbort();
+        }
+
+        @Override
+        public void write(byte[] source, int offset, int length) throws IOException {
+            if (length == 0) return;
+            awaitAbort();
+        }
+    }
+
+    private static final class AbortControlledSocket extends Socket {
+        private final InputStream input = new ByteArrayInputStream(new byte[0]);
+        private final BlockingAbortOutputStream output;
+        private final CountDownLatch firstCloseEntered;
+        private final CountDownLatch releaseFirstClose;
+        private final AtomicInteger closeCount = new AtomicInteger();
+
+        AbortControlledSocket(
+                BlockingAbortOutputStream output,
+                CountDownLatch firstCloseEntered,
+                CountDownLatch releaseFirstClose) {
+            this.output = output;
+            this.firstCloseEntered = firstCloseEntered;
+            this.releaseFirstClose = releaseFirstClose;
+        }
+
+        @Override public InputStream getInputStream() { return input; }
+        @Override public OutputStream getOutputStream() { return output; }
+
+        @Override
+        public void close() throws IOException {
+            int count = closeCount.incrementAndGet();
+            if (count == 1) {
+                firstCloseEntered.countDown();
+                try {
+                    if (!releaseFirstClose.await(5, TimeUnit.SECONDS)) {
+                        throw new IOException("test first physical close did not release");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("test first physical close interrupted", interrupted);
+                }
+            }
+            output.abort();
+        }
+
+        int closeCount() { return closeCount.get(); }
+    }
+
     private static final class ControlledSocket extends Socket {
         private final InputStream input;
         private final ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -536,6 +616,135 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             drainCleanup.shutdownNow();
             drainCleanup.awaitTermination(2, TimeUnit.SECONDS);
         }
+
+        // A partially-enqueued physical abort from attempt N must become
+        // inert after explicit retry N+1. Once N+1 atomically claims Socket.close,
+        // another retry is rejected until that descriptor operation finishes.
+        byte[] abortPayload = "physical abort retry".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var abortMessage = envelope(1, "physicalAbortRetry", 3, 4, abortPayload);
+        CountDownLatch abortWriteEntered = new CountDownLatch(1);
+        CountDownLatch abortWriteRelease = new CountDownLatch(1);
+        CountDownLatch firstAbortCloseEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirstAbortClose = new CountDownLatch(1);
+        var abortOutput = new BlockingAbortOutputStream(
+                abortWriteEntered, abortWriteRelease);
+        var abortSocket = new AbortControlledSocket(
+                abortOutput, firstAbortCloseEntered, releaseFirstAbortClose);
+        AtomicInteger abortSchedules = new AtomicInteger();
+        AtomicReference<Runnable> staleAbort = new AtomicReference<>();
+        AtomicReference<Runnable> currentAbort = new AtomicReference<>();
+        AtomicReference<Runnable> finalClose = new AtomicReference<>();
+        IpcTransportSessionLease.CleanupScheduler abortScheduler = cleanup -> {
+            int schedule = abortSchedules.incrementAndGet();
+            if (schedule == 1) {
+                staleAbort.set(cleanup);
+                throw new IllegalStateException("abort enqueue admission uncertain");
+            }
+            if (schedule == 2) {
+                currentAbort.set(cleanup);
+                return;
+            }
+            if (schedule == 3) {
+                finalClose.set(cleanup);
+                return;
+            }
+            throw new IllegalStateException("unexpected abort cleanup schedule " + schedule);
+        };
+
+        var abortBridge = new IpcReceiptCompletionBridge(1);
+        var abortTransport = new IpcAuthenticatedSocketTransport(
+                abortSocket, abortBridge, abortMessage, 14, 1,
+                key, connectionBinding, abortScheduler);
+        AtomicReference<IpcAuthenticatedSocketTransport.SendSubmission> abortSubmission =
+                new AtomicReference<>();
+        AtomicReference<Throwable> abortSenderFailure = new AtomicReference<>();
+        Thread abortSender = new Thread(() -> {
+            try {
+                abortSubmission.set(abortTransport.send(abortMessage, abortPayload));
+            } catch (Throwable failure) {
+                abortSenderFailure.set(failure);
+            }
+        }, "ipc-test-physical-abort-sender");
+        abortSender.start();
+        check(abortWriteEntered.await(2, TimeUnit.SECONDS));
+
+        abortTransport.requestClose();
+        check(abortTransport.snapshot().phase()
+                == IpcTransportSessionLease.Phase.QUARANTINED);
+        check(abortTransport.snapshot().activeWrites() == 1);
+        check(staleAbort.get() != null);
+        check(abortSocket.closeCount() == 0);
+
+        abortTransport.retryQuarantinedAbort();
+        check(currentAbort.get() != null);
+
+        Thread staleAbortWorker = new Thread(
+                staleAbort.get(), "ipc-test-stale-physical-abort");
+        staleAbortWorker.start();
+        staleAbortWorker.join(1000);
+        check(!staleAbortWorker.isAlive());
+        check(abortSocket.closeCount() == 0);
+        check(abortSender.isAlive());
+
+        AtomicReference<Throwable> currentAbortFailure = new AtomicReference<>();
+        Thread currentAbortWorker = new Thread(() -> {
+            try {
+                currentAbort.get().run();
+            } catch (Throwable failure) {
+                currentAbortFailure.set(failure);
+            }
+        }, "ipc-test-current-physical-abort");
+        currentAbortWorker.start();
+        check(firstAbortCloseEntered.await(2, TimeUnit.SECONDS));
+        check(abortSocket.closeCount() == 1);
+
+        try {
+            abortTransport.retryQuarantinedAbort();
+            throw new AssertionError("retry superseded executing physical abort");
+        } catch (IllegalStateException expected) {
+            check(expected.getMessage().contains("already executing"));
+        }
+
+        releaseFirstAbortClose.countDown();
+        currentAbortWorker.join(3000);
+        check(!currentAbortWorker.isAlive());
+        check(currentAbortFailure.get() == null);
+        abortSender.join(3000);
+        check(!abortSender.isAlive());
+        check(abortSenderFailure.get() == null);
+        check(abortSubmission.get() != null);
+        check(abortSubmission.get().writeAttemptFailed());
+        check(abortTransport.snapshot().phase()
+                == IpcTransportSessionLease.Phase.QUARANTINED);
+        check(abortTransport.snapshot().activeWrites() == 0);
+        check(!abortSubmission.get().outcome().toCompletableFuture().isDone());
+
+        abortTransport.retryQuarantinedClose();
+        check(finalClose.get() != null);
+        AtomicReference<Throwable> finalCloseFailure = new AtomicReference<>();
+        Thread finalCloseWorker = new Thread(() -> {
+            try {
+                finalClose.get().run();
+            } catch (Throwable failure) {
+                finalCloseFailure.set(failure);
+            }
+        }, "ipc-test-finalize-after-abort");
+        finalCloseWorker.start();
+        finalCloseWorker.join(3000);
+        check(!finalCloseWorker.isAlive());
+        check(finalCloseFailure.get() == null);
+        check(abortTransport.snapshot().phase()
+                == IpcTransportSessionLease.Phase.RETIRED);
+        check(abortSocket.closeCount() == 2);
+        check(abortTransport.keyCloneZeroized());
+        check(abortSubmission.get().outcome().toCompletableFuture().join()
+                == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+        check(abortBridge.invariant());
+
+        // A delayed copy of attempt 1 stays inert even after retirement.
+        staleAbort.get().run();
+        check(abortSocket.closeCount() == 2);
 
         // Full route/grant epoch must be validated before receipt admission or wire I/O.
         byte[] epochPayload = "epoch".getBytes(java.nio.charset.StandardCharsets.UTF_8);
