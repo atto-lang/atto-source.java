@@ -943,8 +943,11 @@ public final class TreeShaker {
                         member.member());
             }
             if (expression instanceof Ast.IndexExpr indexed) {
+                Ast.Expr rewrittenReceiver =
+                        rewriteExpression(indexed.receiver(), module, locals);
+                Ast.CheckedClassView.copy(indexed.receiver(), rewrittenReceiver);
                 return new Ast.IndexExpr(
-                        rewriteExpression(indexed.receiver(), module, locals),
+                        rewrittenReceiver,
                         rewriteExpression(indexed.index(), module, locals));
             }
             if (expression instanceof Ast.NewExpr created) {
