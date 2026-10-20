@@ -40,9 +40,9 @@ git -C "$repo" -c user.name=CI-Feature -c user.email=ci-feature@example.invalid 
 head="$(git -C "$repo" rev-parse HEAD)"
 tree="$(git -C "$repo" rev-parse HEAD^{tree})"
 dest_branch="ci/oreslang-test"
-dest_base_commit="c5f5155259aa37b808f4e96dbe09cddded4c04ed"
-dest_base_tree="15fcb558350a2965d9edf1f503d45a6d8e7f98df"
-dest_workflow_blob="ef7b0caaa1aedb56864f01fad14bfe88321f1ab1"
+dest_base_commit="cd99139738c4a94b226c10b18b92adafb650eda0"
+dest_base_tree="a149a45a540db82b19f202ef697c099767e96db9"
+dest_workflow_blob="3107feea0215ae9874ff35a2249c69ab6b9e7ffe"
 
 cat > "$tmp/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -144,13 +144,21 @@ case "$endpoint" in
       exit 1
     fi
     ;;
-  "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/git/commits/c5f5155259aa37b808f4e96dbe09cddded4c04ed")
-    printf '%s\t%s\n' \
-      "${SYNTH_DEST_BASE_COMMIT:-c5f5155259aa37b808f4e96dbe09cddded4c04ed}" \
-      "${SYNTH_DEST_BASE_TREE:-15fcb558350a2965d9edf1f503d45a6d8e7f98df}"
+  "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/branches/main")
+    jq=""
+    while [[ "$#" -gt 0 ]]; do
+      if [[ "$1" == "--jq" ]]; then jq="$2"; shift 2; else shift; fi
+    done
+    [[ "$jq" == ".commit.sha" ]] || exit 65
+    printf '%s\n' "${SYNTH_DEST_MAIN_COMMIT:-cd99139738c4a94b226c10b18b92adafb650eda0}"
     ;;
-  "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/contents/.github/workflows/private-oreslang-exact-tree.yml?ref=c5f5155259aa37b808f4e96dbe09cddded4c04ed")
-    printf '%s\n' "${SYNTH_DEST_WORKFLOW_BLOB:-ef7b0caaa1aedb56864f01fad14bfe88321f1ab1}"
+  "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/git/commits/cd99139738c4a94b226c10b18b92adafb650eda0")
+    printf '%s\t%s\n' \
+      "${SYNTH_DEST_BASE_COMMIT:-cd99139738c4a94b226c10b18b92adafb650eda0}" \
+      "${SYNTH_DEST_BASE_TREE:-a149a45a540db82b19f202ef697c099767e96db9}"
+    ;;
+  "repos/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/contents/.github/workflows/private-oreslang-exact-tree.yml?ref=cd99139738c4a94b226c10b18b92adafb650eda0")
+    printf '%s\n' "${SYNTH_DEST_WORKFLOW_BLOB:-3107feea0215ae9874ff35a2249c69ab6b9e7ffe}"
     ;;
   *)
     printf 'unexpected synthetic gh endpoint: %s\n' "$endpoint" >&2
@@ -236,7 +244,11 @@ assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   SYNTH_DEST_WORKFLOW_BLOB=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 
-# Authorization is bound to the exact reviewed destination carrier base.
+# Authorization is bound to the exact reviewed destination carrier base and it
+# must still be the live carrier main required by connector authorization.
+assert_exit 1 run_preflight SYNTH_PROTECTED=false \
+  SYNTH_DEST_MAIN_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   SYNTH_DEST_BASE_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102

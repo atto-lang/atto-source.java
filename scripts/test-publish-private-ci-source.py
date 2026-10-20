@@ -61,10 +61,24 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == "repos/trusted/ci/git/trees":
             # A fresh file tree and its parent root tree must be distinct.
             return {"sha": E if "base_tree" in payload else D}
+        if route == "repos/trusted/ci/git/refs":
+            ref = payload["ref"]
+            return {"ref": ref, "object": {"type": "commit", "sha": A}}
         mapping = {
+            "repos/trusted/ci/git/ref/heads/main": {
+                "ref": "refs/heads/main",
+                "object": {"type": "commit", "sha": A},
+            },
             "repos/trusted/ci/git/commits/"+A: {"sha": A, "tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": A},
-            "repos/trusted/ci/git/refs": {"ref": "refs/heads/ci/oreslang-test"},
+            "repos/trusted/ci/git/ref/heads/ci/oreslang-test": {
+                "ref": "refs/heads/ci/oreslang-test",
+                "object": {"type": "commit", "sha": A},
+            },
+            "repos/trusted/ci/git/ref/heads/ci/authorized-"+A: {
+                "ref": "refs/heads/ci/authorized-"+A,
+                "object": {"type": "commit", "sha": A},
+            },
         }
         if route not in mapping:
             raise AssertionError("unexpected or cross-repository GitHub API route " + route)
@@ -100,8 +114,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual([r for _, r, _ in writes], [
             "repos/trusted/ci/git/blobs", "repos/trusted/ci/git/trees",
             "repos/trusted/ci/git/trees", "repos/trusted/ci/git/commits",
-            "repos/trusted/ci/git/refs"])
-        self.assertEqual(writes[-1][2]["ref"], "refs/heads/ci/oreslang-test")
+            "repos/trusted/ci/git/refs", "repos/trusted/ci/git/refs"])
+        self.assertEqual(writes[-2][2]["ref"], "refs/heads/ci/oreslang-test")
+        self.assertEqual(
+            writes[-1][2]["ref"], "refs/heads/ci/authorized-" + A)
+        self.assertEqual(writes[-2][2]["sha"], A)
+        self.assertEqual(writes[-1][2]["sha"], A)
         self.assertEqual(writes[1][2]["tree"][0]["path"], "hello.ores")
         self.assertNotIn("base_tree", writes[1][2])
         self.assertEqual(writes[2][2]["tree"], [
@@ -112,7 +130,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(
             writes[3][2]["message"],
             f"ci: exact private Oreslang tree {C} tree {D}\n"
-            f"carrier-base {A} tree {B}")
+            f"carrier-base {A} tree {B}\n"
+            f"connector-authorized source-repository {pub.SOURCE_REPO} id {pub.SOURCE_ID}")
         self.assertEqual(writes[3][2]["parents"], [A])
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
 
@@ -146,10 +165,26 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": D}])
         self.assertEqual(tree_writes[1]["base_tree"], B)
 
-    def test_mutable_destination_default_branch_is_not_an_authorization_input(self):
+    def test_live_destination_main_is_bound_to_reviewed_carrier(self):
         self.publish()
-        self.assertFalse(any("/git/ref/heads/" in route
-                             for _, route, _ in self.route_calls))
+        self.assertTrue(any(route == "repos/trusted/ci/git/ref/heads/main"
+                            for _, route, _ in self.route_calls))
+
+    def test_stale_live_destination_main_aborts_before_upload(self):
+        original = self.fake_api
+        def stale(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/ref/heads/main":
+                return {
+                    "ref": "refs/heads/main",
+                    "object": {"type": "commit", "sha": C},
+                }
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=stale):
+            with self.assertRaisesRegex(pub.Denied, "no longer current main"):
+                pub.publish(
+                    "trusted/ci", self.source, "ci/oreslang-test", self.root,
+                    source_selector="pr:1425", source_commit=C, source_tree=D)
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_reviewed_carrier_commit_identity_mismatch_aborts_before_source_upload(self):
         original = self.fake_api

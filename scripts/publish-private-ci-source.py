@@ -27,9 +27,10 @@ MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
 MIRROR_DESTINATION = "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra"
-DEST_BASE_COMMIT = "c5f5155259aa37b808f4e96dbe09cddded4c04ed"
-DEST_BASE_TREE = "15fcb558350a2965d9edf1f503d45a6d8e7f98df"
+DEST_BASE_COMMIT = "cd99139738c4a94b226c10b18b92adafb650eda0"
+DEST_BASE_TREE = "a149a45a540db82b19f202ef697c099767e96db9"
 SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
+SOURCE_ID = 1400792274
 SOURCE_SELECTOR = re.compile(r"^(?:main|pr:[1-9][0-9]{0,8})$")
 TRUSTED_PATH = "/usr/local/bin:/usr/bin:/bin"
 
@@ -117,7 +118,14 @@ def checked_repo(repository, expected_id):
 
 
 def checked_carrier(repository):
-    """Resolve only the immutable reviewed carrier object, never a mutable ref."""
+    """Require the reviewed immutable carrier object to remain live main."""
+    live = gh_api(f"repos/{repository}/git/ref/heads/main")
+    obj = live.get("object") if isinstance(live, dict) else None
+    if (live.get("ref") != "refs/heads/main"
+            or not isinstance(obj, dict)
+            or obj.get("type") != "commit"
+            or valid_sha(obj.get("sha")) != DEST_BASE_COMMIT):
+        raise Denied("reviewed destination carrier is no longer current main")
     result = gh_api(f"repos/{repository}/git/commits/{DEST_BASE_COMMIT}")
     commit_sha = valid_sha(result.get("sha"))
     tree_sha = valid_sha(result.get("tree", {}).get("sha"))
@@ -480,6 +488,9 @@ def publish(repository, source, branch, trusted_root, source_selector=None,
         if current_policy != approved_policy or current_id != expected_id:
             raise Denied("private CI destination approval policy changed during transfer")
         checked_repo(repository, expected_id)
+        current_base_sha, current_base_tree = checked_carrier(repository)
+        if current_base_sha != base_sha or current_base_tree != base_tree:
+            raise Denied("reviewed destination carrier changed during transfer")
 
     elements = []
     for rel, data, mode in files:
@@ -519,7 +530,8 @@ def publish(repository, source, branch, trusted_root, source_selector=None,
     commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
         "message": (
             f"ci: exact private Oreslang tree {source_commit} tree {source_tree}\n"
-            f"carrier-base {base_sha} tree {base_tree}"
+            f"carrier-base {base_sha} tree {base_tree}\n"
+            f"connector-authorized source-repository {SOURCE_REPO} id {SOURCE_ID}"
         ),
         "tree": new_tree_sha, "parents": [base_sha]
     })
@@ -537,8 +549,45 @@ def publish(repository, source, branch, trusted_root, source_selector=None,
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
         "ref": "refs/heads/" + branch, "sha": commit_sha
     })
-    if created.get("ref") != "refs/heads/" + branch:
-        raise Denied("GitHub did not confirm creation of requested isolated CI branch")
+    created_obj = created.get("object") if isinstance(created, dict) else None
+    if (created.get("ref") != "refs/heads/" + branch
+            or not isinstance(created_obj, dict)
+            or created_obj.get("type") != "commit"
+            or created_obj.get("sha") != commit_sha):
+        raise Denied("GitHub did not confirm exact isolated CI payload ref")
+    payload = gh_api(f"repos/{repository}/git/ref/heads/{branch}")
+    payload_obj = payload.get("object") if isinstance(payload, dict) else None
+    if (payload.get("ref") != "refs/heads/" + branch
+            or not isinstance(payload_obj, dict)
+            or payload_obj.get("type") != "commit"
+            or payload_obj.get("sha") != commit_sha):
+        raise Denied("isolated CI payload ref readback mismatch")
+
+    # The carrier refuses checkout until this exact, non-triggering handoff ref
+    # exists. Creating it only after payload readback preserves the reviewed
+    # two-phase protocol; the precheckout job waits for this exact commit.
+    authorize_write()
+    authorization_branch = "ci/authorized-" + commit_sha
+    authorized = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
+        "ref": "refs/heads/" + authorization_branch, "sha": commit_sha
+    })
+    authorized_obj = authorized.get("object") if isinstance(authorized, dict) else None
+    if (authorized.get("ref") != "refs/heads/" + authorization_branch
+            or not isinstance(authorized_obj, dict)
+            or authorized_obj.get("type") != "commit"
+            or authorized_obj.get("sha") != commit_sha):
+        raise Denied("GitHub did not confirm exact connector authorization ref")
+    authorization = gh_api(
+        f"repos/{repository}/git/ref/heads/{authorization_branch}")
+    authorization_obj = authorization.get("object") if isinstance(authorization, dict) else None
+    if (authorization.get("ref") != "refs/heads/" + authorization_branch
+            or not isinstance(authorization_obj, dict)
+            or authorization_obj.get("type") != "commit"
+            or authorization_obj.get("sha") != commit_sha):
+        raise Denied("connector authorization ref readback mismatch")
+    payload = gh_api(f"repos/{repository}/git/ref/heads/{branch}")
+    if payload.get("object", {}).get("sha") != commit_sha:
+        raise Denied("isolated CI payload ref moved during connector handoff")
     return commit_sha, len(files)
 
 

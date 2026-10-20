@@ -30,10 +30,10 @@ export GIT_CONFIG_VALUE_1=/dev/null
 readonly SOURCE_REPO="ores-truffle-oreslang/oreslang-source.java"
 readonly DEST_REPO="ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra"
 readonly DEST_ID="1412142815"
-readonly DEST_BASE_COMMIT="c5f5155259aa37b808f4e96dbe09cddded4c04ed"
-readonly DEST_BASE_TREE="15fcb558350a2965d9edf1f503d45a6d8e7f98df"
+readonly DEST_BASE_COMMIT="cd99139738c4a94b226c10b18b92adafb650eda0"
+readonly DEST_BASE_TREE="a149a45a540db82b19f202ef697c099767e96db9"
 readonly DEST_WORKFLOW_PATH=".github/workflows/private-oreslang-exact-tree.yml"
-readonly DEST_WORKFLOW_BLOB="ef7b0caaa1aedb56864f01fad14bfe88321f1ab1"
+readonly DEST_WORKFLOW_BLOB="3107feea0215ae9874ff35a2249c69ab6b9e7ffe"
 readonly SOURCE_ID="1400792274"
 readonly POLICY_PATH=".github/private-ci-approved-repositories.txt"
 readonly PREFLIGHT_PATH="scripts/preflight-private-ci-mirror.sh"
@@ -245,6 +245,10 @@ IFS=$'\t' read -r actual_id actual_name actual_private actual_push < <(
 [[ "$actual_id" == "$DEST_ID" && "$actual_name" == "$DEST_REPO" \
     && "$actual_private" == "true" && "$actual_push" == "true" ]] \
   || die "destination identity, privacy or permissions mismatch"
+dest_main_commit="$(gh_api "repos/$DEST_REPO/branches/main" --jq '.commit.sha')" \
+  || die "cannot resolve live destination main"
+[[ "$dest_main_commit" == "$DEST_BASE_COMMIT" ]] \
+  || die "reviewed destination carrier is no longer current main"
 IFS=$'\t' read -r dest_base_commit dest_base_tree < <(
   gh_api "repos/$DEST_REPO/git/commits/$DEST_BASE_COMMIT" --jq '[.sha, .tree.sha] | @tsv'
 ) || die "cannot resolve reviewed destination carrier commit"
@@ -354,6 +358,11 @@ IFS=$'\t' read -r final_id final_name final_private final_push < <(
 [[ "$final_id" == "$actual_id" && "$final_id" == "$DEST_ID" \
     && "$final_name" == "$DEST_REPO" && "$final_private" == "true" && "$final_push" == "true" ]] \
   || die "destination identity, privacy or permissions changed during authorization"
+final_dest_main_commit="$(gh_api "repos/$DEST_REPO/branches/main" --jq '.commit.sha')" \
+  || die "cannot re-resolve live destination main"
+[[ "$final_dest_main_commit" == "$dest_main_commit" \
+    && "$final_dest_main_commit" == "$DEST_BASE_COMMIT" ]] \
+  || die "reviewed destination carrier moved during authorization"
 IFS=$'\t' read -r final_base_commit final_base_tree < <(
   gh_api "repos/$DEST_REPO/git/commits/$DEST_BASE_COMMIT" --jq '[.sha, .tree.sha] | @tsv'
 ) || die "cannot re-resolve reviewed destination carrier commit"
