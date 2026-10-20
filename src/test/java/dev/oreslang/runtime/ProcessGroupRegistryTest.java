@@ -24,10 +24,13 @@ final class ProcessGroupRegistryTest {
                         try {
                             ProcessGroupRegistry.Membership<Integer> first =
                                     pg.joinCurrent("local", "workers");
-                            pg.joinCurrent("local", "workers");
+                            ProcessGroupRegistry.Membership<Integer> duplicate =
+                                    pg.joinCurrent("local", "workers");
                             assertEquals(1, pg.memberCount("local", "workers"));
                             first.leave();
                             assertEquals(0, pg.memberCount("local", "workers"));
+                            assertDoesNotThrow(duplicate::leave);
+                            assertTrue(duplicate.left());
                         } catch (Throwable problem) {
                             failure.set(problem);
                         } finally {
