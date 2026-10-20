@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.types.EffectContracts;
 import dev.oreslang.types.SourceEffectAudit;
+import dev.oreslang.compiler.OresCompiler;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
@@ -52,4 +53,35 @@ final class SourceEffectAuditTest {
         assertThrows(IllegalArgumentException.class,
                 () -> SourceEffectAudit.inspect("pub fnc broken(): int { return nope; }"));
     }
+
+    @Test void compilerGateAcceptsOnlyTrivialVerifiedSource() {
+        var admitted = OresCompiler.requireConservativelyEffectFree("""
+                pub fnc answer(): int {
+                    return 42;
+                }
+                """);
+        assertTrue(admitted.conservativelyEffectFree());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.requireConservativelyEffectFree("""
+                        pub fnc answer(): int {
+                            return 40 + 2;
+                        }
+                        """));
+    }
+
+    @Test void compilerGateRejectsUnknownCallEvenWhenNamedAsKnownPureFunction() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.requireConservativelyEffectFree("""
+                        pub fnc answer(): int { return 42; }
+                        pub fnc run(): int { return answer(); }
+                        """));
+    }
+
+    @Test void emptySourceCannotForgeVacuousEffectPurity() {
+        assertFalse(SourceEffectAudit.inspect("").conservativelyEffectFree());
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.requireConservativelyEffectFree(""));
+    }
+
 }
