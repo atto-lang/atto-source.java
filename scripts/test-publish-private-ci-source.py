@@ -26,7 +26,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.source.mkdir()
         (self.root / ".github").mkdir()
         self.approval = self.root / ".github" / "private-ci-approved-repositories.txt"
-        self.approval.write_text("trusted/ci\n")
+        self.approval.write_text("trusted/ci 246810\n")
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.route_calls = []
         self.visibility = ["private"] * 100
@@ -48,7 +48,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
         if route == "repos/trusted/ci":
-            return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
+            return dict(id=246810, full_name="trusted/ci", visibility=self.visibility.pop(0),
                         private=True, default_branch="main")
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
@@ -71,7 +71,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, A)
 
-    def verified_origin_api(self, protected=True, policy=b"trusted/ci\n",
+    def verified_origin_api(self, protected=True, policy=b"trusted/ci 246810\n",
                             codeowners=True, stale=True, admins=True,
                             approvals=1, force=False, deletions=False,
                             bypasses=None):
@@ -103,12 +103,34 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_origin_verification_returns_the_authenticated_main_commit(self):
         api, _ = self.verified_origin_api(protected=True)
-        digest = hashlib.sha256(b"trusted/ci\n").digest()
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
         with patch.object(pub, "gh_api", side_effect=api):
             self.assertEqual(
                 ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest),
                 A,
             )
+
+    def test_policy_approval_returns_reviewed_numeric_repository_id(self):
+        digest, repository_id = pub.checked_policy_approval(
+            self.root, "trusted/ci"
+        )
+        self.assertEqual(
+            digest, hashlib.sha256(b"trusted/ci 246810\n").digest()
+        )
+        self.assertEqual(repository_id, 246810)
+
+    def test_repository_id_substitution_rejected_before_private_write(self):
+        original = self.fake_api
+        def replaced(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci":
+                result = dict(result, id=246811)
+            return result
+        with patch.object(pub, "gh_api", side_effect=replaced):
+            with self.assertRaisesRegex(pub.Denied, "numeric repository ID"):
+                pub.publish("trusted/ci", self.source,
+                            "ci/oreslang-test", self.root, A)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_origin_main_must_be_protected_before_export(self):
         api, routes = self.verified_origin_api(protected=False)
@@ -471,7 +493,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_policy_symlink_swap_between_check_and_read_rejected(self):
         outside = self.root / "outside-approved-policy"
-        outside.write_text("trusted/ci\n")
+        outside.write_text("trusted/ci 246810\n")
         self.approval.write_text("# no approval\n")
         original_read = Path.read_bytes
         def malicious_read(path):
@@ -492,7 +514,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_policy_parent_directory_swap_rejected(self):
         outside = self.root / "external-approved-dir"
         outside.mkdir()
-        (outside / "private-ci-approved-repositories.txt").write_text("trusted/ci\n")
+        (outside / "private-ci-approved-repositories.txt").write_text("trusted/ci 246810\n")
         self.approval.write_text("# no approval\n")
         original_open = pub.os.open
         replaced = [False]
@@ -581,7 +603,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         import os
         import threading
         outside = self.root / "outside-policy"
-        outside.write_text("trusted/ci\n")
+        outside.write_text("trusted/ci 246810\n")
         self.approval.write_text("# no approval\n")
         stop = threading.Event()
         def attacker():
