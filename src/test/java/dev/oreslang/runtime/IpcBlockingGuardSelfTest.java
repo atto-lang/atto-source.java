@@ -8,9 +8,12 @@ import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.security.MessageDigest;
 import java.util.HexFormat;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Real-socket proof that actor carriers cannot enter blocking IPC host APIs. */
 public final class IpcBlockingGuardSelfTest {
@@ -73,6 +76,72 @@ public final class IpcBlockingGuardSelfTest {
     public static void main(String[] ignored) throws Exception {
         byte[] key = key();
         byte[] binding = binding();
+
+        // Replay admission/diagnostics are host protocol operations too.
+        // Hold the replay gate monitor and prove actor carriers fail before
+        // monitor entry rather than parking behind a host parser.
+        {
+            byte[] payload = "guard-replay".getBytes(
+                    java.nio.charset.StandardCharsets.UTF_8);
+            var message = envelope("guardReplay", payload);
+            var replay = new IpcAuthenticatedSocketTransport.InboundReplayGate();
+            CountDownLatch held = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicReference<Throwable> holderFailure = new AtomicReference<>();
+            Thread holder = new Thread(() -> {
+                synchronized (replay) {
+                    held.countDown();
+                    try {
+                        if (!release.await(3, TimeUnit.SECONDS)) {
+                            throw new AssertionError("replay monitor hold timed out");
+                        }
+                    } catch (Throwable failure) {
+                        holderFailure.set(failure);
+                    }
+                }
+            }, "ipc-test-replay-monitor-holder");
+            holder.start();
+            check(held.await(3, TimeUnit.SECONDS));
+
+            AtomicInteger denials = new AtomicInteger();
+            AtomicReference<Throwable> carrierFailure = new AtomicReference<>();
+            Thread carrier = new Thread(() -> {
+                RuntimeBlockingGuard.enterActorCarrier();
+                try {
+                    Runnable[] probes = {
+                            () -> replay.accept(message),
+                            () -> replay.lastMessageSequence(),
+                            () -> replay.lastFrameSequence()
+                    };
+                    for (Runnable probe : probes) {
+                        try {
+                            probe.run();
+                            throw new AssertionError(
+                                    "actor carrier entered IPC replay monitor");
+                        } catch (IllegalStateException expected) {
+                            denials.incrementAndGet();
+                        }
+                    }
+                } catch (Throwable failure) {
+                    carrierFailure.set(failure);
+                } finally {
+                    RuntimeBlockingGuard.exitActorCarrier();
+                }
+            }, "ipc-test-replay-actor-carrier");
+            carrier.start();
+            carrier.join(500);
+            check(!carrier.isAlive());
+            check(carrierFailure.get() == null);
+            check(denials.get() == 3);
+
+            release.countDown();
+            holder.join(3000);
+            check(!holder.isAlive());
+            check(holderFailure.get() == null);
+            replay.accept(message);
+            check(replay.lastMessageSequence() == 1);
+            check(replay.lastFrameSequence() == 1);
+        }
 
         {
             byte[] payload = "guard-construction".getBytes(
