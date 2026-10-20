@@ -21,6 +21,7 @@ public final class TaskLoanAdmission
         SCOPE_BOUND,
         OWNER_BOUND,
         SCHEDULER_BOUND,
+        RETIRING,
         RETIRED
     }
 
@@ -90,8 +91,7 @@ public final class TaskLoanAdmission
             throw new IllegalStateException(
                     "pre-child Task loan retirement requires scope-only binding");
         }
-        verifier.retireNeverStarted(ticket);
-        state = State.RETIRED;
+        retireOnce(() -> verifier.retireNeverStarted(ticket));
     }
 
     @Override
@@ -105,8 +105,7 @@ public final class TaskLoanAdmission
             throw new IllegalArgumentException(
                     "pre-scheduler Task loan retirement requires the exact owner and no scheduler child");
         }
-        verifier.retireNeverStarted(ticket);
-        state = State.RETIRED;
+        retireOnce(() -> verifier.retireNeverStarted(ticket));
         runtimeOwner = null;
     }
 
@@ -117,8 +116,7 @@ public final class TaskLoanAdmission
             OresScheduler.CompilerTaskHandle<?> exactSchedulerChild) {
         requireExactSchedulerChild(
                 scopeEpoch, child, exactSchedulerChild, "never-started");
-        verifier.retireNeverStarted(ticket);
-        state = State.RETIRED;
+        retireOnce(() -> verifier.retireNeverStarted(ticket));
         runtimeOwner = null;
         schedulerChild = null;
     }
@@ -130,10 +128,25 @@ public final class TaskLoanAdmission
             OresScheduler.CompilerTaskHandle<?> exactSchedulerChild) {
         requireExactSchedulerChild(
                 scopeEpoch, child, exactSchedulerChild, "physical");
-        verifier.retireAfterPhysicalQuiescence(ticket);
-        state = State.RETIRED;
+        retireOnce(() -> verifier.retireAfterPhysicalQuiescence(ticket));
         runtimeOwner = null;
         schedulerChild = null;
+    }
+
+    /**
+     * Claim a retirement edge before invoking the ledger. A failed ledger
+     * transition must poison the admission, not permit a second callback
+     * which could otherwise retry partially released provenance.
+     * The source owner/supervisor must quarantine this failure.
+     */
+    private void retireOnce(Runnable ledgerRetirement) {
+        state = State.RETIRING;
+        ledgerRetirement.run();
+        state = State.RETIRED;
+    }
+
+    synchronized boolean poisonedForTesting() {
+        return state == State.RETIRING;
     }
 
     synchronized boolean retiredForTesting() {
@@ -164,7 +177,8 @@ public final class TaskLoanAdmission
             throw new IllegalArgumentException(
                     "Task loan admission belongs to a different runtime scope epoch");
         }
-        if (state == State.MINTED || state == State.RETIRED) {
+        if (state == State.MINTED || state == State.RETIRING
+                || state == State.RETIRED) {
             throw new IllegalStateException(
                     "Task loan admission is not live for this lifecycle event");
         }
