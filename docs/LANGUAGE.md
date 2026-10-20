@@ -1610,9 +1610,10 @@ The structural marker never weakens actor isolation or ownership rules. An actor
 method may carry structural callable metadata, but the actor itself remains a nominal,
 mailbox-mediated identity.
 
-`structural` remains contextual. Ordinary declarations such as a method named
-`structural()` remain legal because the parser consumes the word as a modifier only
-where the following syntax makes that interpretation unambiguous.
+`over` is a reserved match delimiter. `structural` remains contextual: ordinary
+declarations such as a method named `structural()` remain legal because the parser
+consumes the word as a modifier only where the following syntax makes that
+interpretation unambiguous. Match-arm words such as `on` and `when` remain contextual.
 
 ## Receiver identity and method calls
 

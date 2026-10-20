@@ -219,9 +219,16 @@ condition_head  = condition
 condition       = condition_and { "|" condition_and } ;
 condition_and   = equality { "," equality } ;
 
-match_stmt      = [ "do" ] "match" [ "first" ] expression [ ";" ]
-                  match_arm { match_arm } "end" ;
+match_stmt      = [ "do" ] "match" [ "first" ] expression
+                  ( "over"
+                    ( "{" canonical_match_arm { canonical_match_arm } "}"
+                    | canonical_match_arm { canonical_match_arm } "end" )
+                  | [ ";" ] match_arm { match_arm } "end" ) ;
+canonical_match_arm
+                = "on" pattern [ "when" expression ] [ "->" ] block ;
 match_arm       = ( pattern | "else" ) [ "when" expression ] "->" block ;
+(* "over" is reserved. "on" and "when" remain contextual arm words.
+   "structural" remains contextual and is consumed only where grammar requires it. *)
 pattern         = "_"
                 | literal
                 | IDENT
