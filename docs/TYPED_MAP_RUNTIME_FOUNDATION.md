@@ -37,7 +37,8 @@ Unicode-normalized into a different key.
 - lookup and take represent absence explicitly and do not flatten a stored
   Option-like value;
 - exported snapshots are detached and unmodifiable;
-- entry validators cannot re-enter mutation of the Map being validated;
+- entry validators cannot re-enter mutation of the Map being validated and are required to be deterministic/side-effect free;
+- `take` validates its key-byte refund before mutating live storage, so accounting corruption fails closed;
 - mutable typed Maps fail closed at actor and untrusted boundaries.
 
 The runtime intentionally does not make nested values immutable merely because
