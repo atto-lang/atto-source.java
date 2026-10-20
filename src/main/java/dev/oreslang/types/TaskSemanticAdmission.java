@@ -83,7 +83,11 @@ public final class TaskSemanticAdmission {
     }
 
     public List<Entry> entriesFor(Ast.Stmt boundary) {
-        return entriesForIdentity(boundary);
+        Objects.requireNonNull(boundary, "boundary");
+        // Executable Task boundaries are expressions. Retain the legacy
+        // read-only statement accessor only as a fail-closed compatibility
+        // surface; semantic authority can never be minted for a statement.
+        return List.of();
     }
 
     public List<Entry> entriesFor(Ast.Expr boundary) {
