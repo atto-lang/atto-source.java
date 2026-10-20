@@ -193,10 +193,9 @@ final class StructuredComputeSyntaxTest {
 
     @Test
     void namedConstructorMustFailBeforeUnknownClassOrFieldInference() {
-        // Previously the type checker returned resolve(...) for an unknown
-        // class before inspecting arguments. Ownership checking must also
-        // reject independently rather than silently inferring a move-only
-        // object from an unsupported label expression.
+        // Regression for the existing early type and ownership admission.
+        // Neither an unknown type nor a known constructor may bypass the
+        // checked named-argument lowering gate.
         assertTypeDenied("""
                 pub fnc main(): void {
                     let candidate = new MissingClass(value: 1);
