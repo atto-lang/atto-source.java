@@ -4080,6 +4080,31 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        private boolean guestHasFuture(OresObject object) {
+            Ast.InterfaceDecl trait = object.owner.findInterface("HasFuture");
+            return trait != null && !trait.moduleContract()
+                    && object.owner.classImplements(
+                            object.klass, trait, new LinkedHashSet<>(),
+                            new LinkedHashSet<>());
+        }
+
+        private OresFuture<?> guestFuture(OresObject object, Env env) {
+            // The synchronous projection may run guest code. Guard checks
+            // precede invocation, so side effects cannot bypass borrow rules.
+            if (env.hasLiveMutexGuards()) {
+                throw new IllegalStateException(
+                        "cannot project HasFuture while holding a live MutexGuard");
+            }
+            Object result = object.owner.invoke(
+                    object.owner.prepareBoundMethodInvocation(
+                            object, "get_future", List.of(), env.accessClass()));
+            if (!(result instanceof OresFuture<?> future)) {
+                throw new IllegalStateException(
+                        "HasFuture.get_future() must return a native Future<T>");
+            }
+            return future;
+        }
+
         private void suspendOnAwaitable(
                 SourceTask task,
                 Object value,
@@ -4091,6 +4116,13 @@ public final class OresEvalRootNode extends RootNode {
             } else if (value instanceof ActorRuntime.ActorRef<?> actorRef) {
                 // Preserve the reference result; await only actor initialization.
                 future = actorRef.readyRef();
+            } else if (value instanceof OresObject object && guestHasFuture(object)) {
+                try {
+                    future = guestFuture(object, env);
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(task, null, failure);
+                    return;
+                }
             } else if (value instanceof Awaitable<?> awaitable) {
                 // The host projection itself may have side effects: preflight
                 // must happen before getAwaited(), not just before Task.await.
@@ -6965,6 +6997,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (value instanceof OresFuture<?> future) {
                     return AsyncRuntime.await(future);
+                }
+                if (value instanceof OresObject object && guestHasFuture(object)) {
+                    return AsyncRuntime.await(guestFuture(object, env));
                 }
                 if (value instanceof CompletionStage<?> stage) {
                     return AsyncRuntime.await(stage);

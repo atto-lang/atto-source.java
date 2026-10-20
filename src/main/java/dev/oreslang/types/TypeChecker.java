@@ -525,6 +525,25 @@ public final class TypeChecker {
 
     private void checkInterface(Ast.InterfaceDecl iface) {
         Set<String> generics = uniqueGenerics(iface.genericParameters(), "interface " + iface.name());
+        // Awaitability is nominal, never inferred from an arbitrary method
+        // named get_future. Reserve the precise generic trait contract.
+        if (iface.name().equals("HasFuture") && !iface.moduleContract()) {
+            boolean valid = iface.genericParameters().size() == 1
+                    && iface.parents().isEmpty() && iface.members().size() == 1
+                    && iface.members().getFirst() instanceof Ast.InterfaceFunctionDecl method
+                    && method.name().equals("get_future")
+                    && method.parameters().isEmpty()
+                    && method.genericParameters().isEmpty()
+                    && method.returnType().name().equals("Future")
+                    && method.returnType().arguments().size() == 1
+                    && method.returnType().arguments().getFirst().name()
+                            .equals(iface.genericParameters().getFirst())
+                    && method.returnType().arguments().getFirst().arguments().isEmpty();
+            if (!valid) {
+                throw new IllegalArgumentException(
+                        "HasFuture<T> must declare exactly get_future(): Future<T>");
+            }
+        }
         Type interfaceSelf = iface.moduleContract() ? null : new SelfType(nominalInterfaceType(iface));
 
         Set<String> interfaceFieldNames = new LinkedHashSet<>();
@@ -4019,6 +4038,8 @@ public final class TypeChecker {
                     && named.arguments().size() == 1) {
                 return named.arguments().getFirst();
             }
+            Type projectedResult = hasFutureResult(awaitedType, new LinkedHashSet<>());
+            if (projectedResult != null) return projectedResult;
             if (awaitedType instanceof Named actorRef
                     && actorRef.name().equals("ActorRef")) {
                 // await spawn Actor() is a readiness barrier, not a termination
@@ -4027,7 +4048,7 @@ public final class TypeChecker {
                 return actorRef;
             }
             throw new IllegalArgumentException(
-                    "await requires Future<T> or ActorRef<T>; got " + awaitedType);
+                    "await requires Future<T>, HasFuture<T>, or ActorRef<T>; got " + awaitedType);
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
             Type element = channelElementType(
@@ -8759,6 +8780,55 @@ public final class TypeChecker {
             }
         }
         return false;
+    }
+
+    /**
+     * Resolve the generic result of a nominal HasFuture<T> capability.
+     * Follow instantiated class/interface parent edges rather than
+     * guessing a result from a method name, and reject ambiguous paths.
+     */
+    private Type hasFutureResult(Type candidate, Set<Named> seen) {
+        if (!(candidate instanceof Named named) || !seen.add(named)) return null;
+        if (named.name().equals("HasFuture")) {
+            Ast.InterfaceDecl capability = findInterface(named.name());
+            if (capability == null || capability.moduleContract()
+                    || named.arguments().size() != 1) return null;
+            return named.arguments().getFirst();
+        }
+        Type result = null;
+        Ast.ClassDecl klass = findClass(named.name());
+        if (klass != null) {
+            for (Ast.TypeRef ref : klass.interfaces()) {
+                Type discovered = hasFutureResult(
+                        concreteClassReference(ref, klass, named), seen);
+                result = mergeAwaitResult(result, discovered);
+            }
+            for (Ast.TypeRef ref : klass.parents()) {
+                Ast.ClassDecl parent = resolveClassParent(ref, klass);
+                if (parent == null) continue;
+                Type discovered = hasFutureResult(
+                        concreteClassReference(ref, klass, named), seen);
+                result = mergeAwaitResult(result, discovered);
+            }
+        }
+        Ast.InterfaceDecl iface = findInterface(named.name());
+        if (iface != null && !iface.moduleContract()) {
+            for (Ast.TypeRef ref : iface.parents()) {
+                Type discovered = hasFutureResult(
+                        concreteInterfaceParentType(ref, iface, named), seen);
+                result = mergeAwaitResult(result, discovered);
+            }
+        }
+        return result;
+    }
+
+    private Type mergeAwaitResult(Type prior, Type next) {
+        if (next == null) return prior;
+        if (prior != null && !prior.equals(next)) {
+            throw new IllegalArgumentException(
+                    "ambiguous HasFuture<T> result types: " + prior + " and " + next);
+        }
+        return next;
     }
 
     private boolean classTypeImplements(Named actualType, Named expectedInterfaceType, Set<Named> seen) {
