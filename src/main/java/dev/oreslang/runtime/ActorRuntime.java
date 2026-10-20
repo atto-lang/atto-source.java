@@ -8677,7 +8677,6 @@ public final class ActorRuntime implements AutoCloseable {
                     || !children.isEmpty()) return;
             finalizationActive = true;
             ref.physicalFinalizationOwnerThread = Thread.currentThread();
-            boolean completed = false;
             try {
                 OresScheduler scheduler = sourceScheduler;
                 sourceScheduler = null;
@@ -8734,17 +8733,10 @@ public final class ActorRuntime implements AutoCloseable {
                 // instead of certifying retirement from an absent registry entry.
                 ref.physicallyFinalized.set(true);
                 ref.physicalFinalizationLatch.countDown();
-                completed = true;
             } finally {
                 finalizationActive = false;
                 ref.physicalFinalizationOwnerThread = null;
                 lifecycleLock.notifyAll();
-                // completed is intentionally only diagnostic for invariants:
-                // finalized/physicallyFinalized are the durable success proof.
-                if (!completed && finalized) {
-                    throw new IllegalStateException(
-                            "actor finalization published before teardown completed");
-                }
             }
         }
 
