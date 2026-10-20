@@ -101,6 +101,40 @@ present. The source-bearing commit may change only that source subtree plus
 the receipt; carrier workflow and test-plan bytes remain inherited from the
 pinned base.
 
+## Carrier checkout and execution isolation
+
+A private carrier repository may contain unrelated private project files. Those
+bytes are **not** implicitly authorized for disclosure to Oreslang code under
+test. The pinned carrier workflow therefore has to enforce a separate
+confidentiality boundary in addition to source-transfer authorization.
+
+The source-executing job must have read-only repository permissions and must
+materialize only the exact carrier control files, receipt/test plan, and
+`private-oreslang-source/` subtree needed for the run. When the carrier shares
+a repository with unrelated private material, use a blob-filtered partial clone
+plus sparse checkout; a sparse worktree alone is insufficient because omitted
+blobs may still exist in `.git/objects`. Authentication must be command-scoped
+for the fetch/checkout only, and the Git remote / credential configuration must
+be removed before any source-under-test command runs. The test subprocess gets
+a fresh HOME/XDG config domain and no token/secret/authentication environment.
+
+The reviewed workflow must prove before test execution that representative
+unrelated carrier paths are absent both from the worktree and from the local Git
+object database. The pinned workflow blob is part of the protected carrier
+contract, so replacing this isolation logic requires a new source-policy review.
+
+Reference cleanup is deliberately privilege-separated: the source-executing job
+does **not** receive write permission. A separate no-checkout cleanup job may
+receive narrowly scoped `contents: write` solely to verify and remove the exact
+`ci/authorized-<COMMIT>` and `ci/oreslang-<TREE>` refs after the run, including
+failed runs. Moving either ref causes cleanup to fail closed rather than delete
+an unexpected target.
+
+Deleting refs is hygiene, not erasure. Uploaded Git objects can remain retained
+and recoverable after the refs disappear. Destination authorization therefore
+authorizes a potential persistent private-source copy in the carrier repository;
+administrators must not describe ref cleanup as secure deletion.
+
 An explicitly supplied `--source-commit` now pins the **exact original
 private Git commit**. Before uploading, the publisher retrieves that commit's
 source-tree hash and its complete, non-truncated recursive tree from the
