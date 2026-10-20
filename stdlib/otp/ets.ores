@@ -1,0 +1,75 @@
+// Oreslang-native ETS policy surface.
+//
+// FIRST EXECUTABLE SOURCE SLICE ONLY.
+//
+// This module deliberately does NOT emulate a table with guest collections and
+// does not expose numeric table handles. The privileged runtime owns the table
+// domain and must preserve typed K/V values, explicit access policy, bounded
+// capacity, atomic point operations, owner lifecycle and isolation.
+//
+// Planned table kinds retain the useful ETS model: set, ordered set, bag and
+// duplicate bag. Match-spec syntax is intentionally not inherited; Oreslang
+// patterns/typed predicates should lower to bounded query plans instead.
+define module OtpEts as
+
+  // Pure preflight for a bounded table. Real insertion must combine this check
+  // with the atomic mutation in the table provider.
+  pub fnc entry_capacity_allows(
+    int entries,
+    int capacity
+  ): Result<bool, String> {
+    if entries < 0; do
+      return Err("ETS entry count cannot be negative");
+    fi
+    if capacity < 1 || capacity > 1000000; do
+      return Err("ETS capacity must be 1..1000000");
+    fi
+    if entries > capacity; do
+      return Err("ETS entry count exceeds configured capacity");
+    fi
+    return Ok(entries < capacity);
+  }
+
+  // Replacing an existing SET key consumes no new slot, including when the
+  // table is at capacity. A new key requires one free slot. This helper is
+  // policy only; the runtime provider must perform lookup+mutation atomically.
+  pub fnc insert_capacity_allows(
+    int entries,
+    int capacity,
+    bool key_exists
+  ): Result<bool, String> {
+    if entries < 0; do
+      return Err("ETS entry count cannot be negative");
+    fi
+    if capacity < 1 || capacity > 1000000; do
+      return Err("ETS capacity must be 1..1000000");
+    fi
+    if entries > capacity; do
+      return Err("ETS entry count exceeds configured capacity");
+    fi
+    if key_exists; do
+      return Ok(true);
+    fi
+    return Ok(entries < capacity);
+  }
+
+  // Query/snapshot APIs must remain bounded. A caller may request at most the
+  // configured limit and never more than the live table cardinality.
+  pub fnc query_limit_valid(
+    int requested,
+    int entries,
+    int maximum
+  ): Result<bool, String> {
+    if requested < 0 || entries < 0; do
+      return Err("ETS query counts cannot be negative");
+    fi
+    if maximum < 1 || maximum > 1000000; do
+      return Err("ETS query maximum must be 1..1000000");
+    fi
+    if entries > maximum; do
+      return Err("ETS entry count exceeds query maximum");
+    fi
+    return Ok(requested <= entries && requested <= maximum);
+  }
+
+end
