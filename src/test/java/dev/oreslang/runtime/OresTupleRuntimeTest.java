@@ -80,6 +80,31 @@ final class OresTupleRuntimeTest {
     }
 
     @Test
+    void hostileListCannotAliasTupleBackingArrayThroughToArray() {
+        Object[] leaked = {1, 2};
+        List<Object> hostile = new java.util.AbstractList<>() {
+            @Override public Object get(int index) {
+                return leaked[index];
+            }
+
+            @Override public int size() {
+                return leaked.length;
+            }
+
+            // Intentionally violates the List freshness guarantee, as a
+            // hostile host implementation might.
+            @Override public Object[] toArray() {
+                return leaked;
+            }
+        };
+        OresTuple tuple = new OresTuple(hostile);
+        leaked[0] = 999;
+        assertEquals(1, tuple.get(0));
+        assertEquals(2, tuple.get(1));
+        assertArrayEquals(new Object[] {1, 2}, tuple.elements().toArray());
+    }
+
+    @Test
     void hostCallbacksNeverDefineTupleEqualityHashOrLogging() {
         OresTuple a = new OresTuple(List.of(new Hostile()));
         OresTuple b = new OresTuple(List.of(new Hostile()));
