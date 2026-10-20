@@ -267,6 +267,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     return_value=SOURCE_TREE,
                 ),
                 patch.object(v3, "authorize_write"),
+                patch.object(v3, "require_exact_ref") as require_exact_ref,
                 patch.object(v3.legacy, "gh_api", side_effect=api),
             ):
                 result = v3.publish(
@@ -317,6 +318,14 @@ class PrivateCiV3Test(unittest.TestCase):
             ],
         )
         self.assertEqual(verify_source_pr.call_count, 2)
+        self.assertEqual(
+            [call.args for call in require_exact_ref.call_args_list],
+            [
+                ("trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT),
+                ("trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT),
+                ("trusted/ci", "ci/authorized-" + COMMIT, COMMIT),
+            ],
+        )
 
     def test_publish_rolls_back_payload_if_pr_head_moves_before_authorization(self):
         carrier = contract()
@@ -362,6 +371,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
@@ -373,7 +383,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     )
 
         delete_ref.assert_called_once_with(
-            "trusted/ci", "ci/oreslang-" + SOURCE_TREE
+            "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT
         )
         ref_posts = [
             payload["ref"]
@@ -425,6 +435,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
@@ -435,8 +446,12 @@ class PrivateCiV3Test(unittest.TestCase):
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
 
-        delete_ref.assert_called_once_with(
-            "trusted/ci", "ci/oreslang-" + SOURCE_TREE
+        self.assertEqual(
+            [call.args for call in delete_ref.call_args_list],
+            [
+                ("trusted/ci", "ci/authorized-" + COMMIT, COMMIT),
+                ("trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT),
+            ],
         )
 
     def test_publish_rolls_back_both_refs_on_authorization_confirmation_mismatch(self):
@@ -482,6 +497,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
@@ -495,10 +511,47 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(
             [call.args for call in delete_ref.call_args_list],
             [
-                ("trusted/ci", "ci/authorized-" + COMMIT),
-                ("trusted/ci", "ci/oreslang-" + SOURCE_TREE),
+                ("trusted/ci", "ci/authorized-" + COMMIT, COMMIT),
+                ("trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT),
             ],
         )
+
+    def test_delete_exact_ref_missing_is_idempotent(self):
+        with patch.object(v3, "live_ref_sha", return_value=None):
+            self.assertFalse(
+                v3.delete_exact_ref("trusted/ci", "ci/oreslang-test", COMMIT)
+            )
+
+    def test_delete_exact_ref_refuses_moved_ref(self):
+        with patch.object(v3, "live_ref_sha", return_value="9" * 40):
+            with self.assertRaisesRegex(v3.Denied, "moved"):
+                v3.delete_exact_ref(
+                    "trusted/ci", "ci/oreslang-test", COMMIT
+                )
+
+    def test_delete_exact_ref_verifies_absence_after_delete(self):
+        response = type("Result", (), {"returncode": 0, "stderr": ""})()
+        with (
+            patch.object(v3, "live_ref_sha", side_effect=[COMMIT, None]),
+            patch.object(v3, "_gh_ref_request", return_value=response) as request,
+        ):
+            self.assertTrue(
+                v3.delete_exact_ref("trusted/ci", "ci/oreslang-test", COMMIT)
+            )
+        request.assert_called_once_with(
+            "trusted/ci", "ci/oreslang-test", "DELETE"
+        )
+
+    def test_delete_exact_ref_rejects_still_present_after_delete(self):
+        response = type("Result", (), {"returncode": 0, "stderr": ""})()
+        with (
+            patch.object(v3, "live_ref_sha", side_effect=[COMMIT, COMMIT]),
+            patch.object(v3, "_gh_ref_request", return_value=response),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "still exists"):
+                v3.delete_exact_ref(
+                    "trusted/ci", "ci/oreslang-test", COMMIT
+                )
 
     def test_manifest_matches_carrier_row_shape(self):
         rows, digest = v3.manifest(
