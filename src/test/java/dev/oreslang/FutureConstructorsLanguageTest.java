@@ -106,4 +106,60 @@ final class FutureConstructorsLanguageTest {
                   }
                 """)));
     }
+    @Test
+    void statelessProviderGateRejectsMutableReceiverCrossTaskAlias() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                define module app
+                  define class Stateful as
+                    pub let int value = 5;
+                    pub async run(): int { return self.value; }
+                  end
+                  pub fnc main(): void {
+                    let Future<int> pending = new Future<int>(new Stateful());
+                    return;
+                  }
+                end
+                """));
+    }
+
+    @Test
+    void constructorRejectsPrivateAsyncRun() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                define module app
+                  define class PrivateProducer as
+                    async run(): int { return 5; }
+                  end
+                  pub fnc main(): void {
+                    let Future<int> pending = new Future<int>(new PrivateProducer());
+                    return;
+                  }
+                end
+                """));
+    }
+
+    @Test
+    void typedAsyncRunConstructorPreservesStringResult() throws Exception {
+        String sourceText = """
+                define module app
+                  define class StringProducer as
+                    pub async run(): String { return "accepted"; }
+                  end
+                  pub async fnc main(): void {
+                    let Future<String> pending = new Future<String>(new StringProducer());
+                    let String result = await pending;
+                    stdio.println(result);
+                    return;
+                  }
+                end
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, sourceText, "future-string-run.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("accepted"));
+    }
+
 }
