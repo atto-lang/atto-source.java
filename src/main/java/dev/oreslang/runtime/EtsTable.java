@@ -132,8 +132,6 @@ public final class EtsTable<K, V> implements AutoCloseable {
                 return false;
             }
             if (entries.size() >= capacity) {
-                frozenKey.reservation().close();
-                frozenValue.reservation().close();
                 throw new IllegalStateException(
                         "ETS table capacity exceeded: maximum " + capacity);
             }
