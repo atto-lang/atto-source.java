@@ -43,7 +43,7 @@ public final class TypeChecker {
             "decimal", "complex64", "complex128", "complex",
             "bool", "Bool", "string", "String", "void", "null",
             "Symbol", "Array", "List", "Vector", "Slice",
-            "Tuple", "FixedArray", "FixedList",
+            "Tuple", "Entry", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Mutex",
             "SharedMutex", "Channel", "Future", "Fnc", "Function");
@@ -218,6 +218,7 @@ public final class TypeChecker {
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
+                "Entry",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
                 "self", "null"));
 
@@ -1707,7 +1708,7 @@ public final class TypeChecker {
         }
         String name = ref.name();
         if (generics.contains(name) || GENERIC_DEFAULT_BUILTINS.contains(name)
-                || Set.of("Object", "Any", "Unknown", "Error", "Symbol",
+                || Set.of("Object", "Any", "Unknown", "Error", "Symbol", "Entry",
                         "Ref", "WeakRef", "Map", "OrderedMap", "DynamicStruct").contains(name)
                 || findClass(name) != null || findInterface(name) != null
                 || findTypeAlias(name) != null || modules.containsKey(name)
@@ -1809,7 +1810,7 @@ public final class TypeChecker {
                                 "int", "uint", "bigint", "f32", "f64", "float", "decimal",
                                 "complex64", "complex128", "complex", "bool", "Bool",
                                 "boolean", "string", "String", "void", "null", "self",
-                                "Tuple", "Array", "List", "Vector", "Slice",
+                                "Tuple", "Entry", "Array", "List", "Vector", "Slice",
                                 "FixedArray", "FixedList", "DynamicStruct", "Option",
                                 "Result", "Future", "ActorId", "ActorKind",
                                 "ActorMail", "ActorOutput", "ActorOutputStream",
@@ -2219,6 +2220,7 @@ public final class TypeChecker {
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
                     || name.name().equals("Channel") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
+            if (name.name().equals("Entry")) return new Named("$EntryFactory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
             if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                 return new Named("$BooleanOps", List.of());
@@ -2817,6 +2819,25 @@ public final class TypeChecker {
                 }
                 typeOf(call.arguments().getFirst(), env, generics, self);
                 return new Named("SelectSet", List.of());
+            }
+
+            if (call.callee() instanceof Ast.MemberExpr entryCall
+                    && entryCall.receiver() instanceof Ast.NameExpr entryFactory
+                    && entryFactory.name().equals("Entry")
+                    && entryCall.member().equals("of")) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "Entry.of infers K and V and does not accept call-site type arguments");
+                }
+                if (call.arguments().size() != 2) {
+                    throw new IllegalArgumentException(
+                            "Entry.of expects exactly two arguments: key, value");
+                }
+                Type key = widenCollectionElement(
+                        typeOf(call.arguments().get(0), env, generics, self));
+                Type value = widenCollectionElement(
+                        typeOf(call.arguments().get(1), env, generics, self));
+                return entryProductType(key, value);
             }
 
             if (call.callee() instanceof Ast.MemberExpr futureCall
@@ -6419,6 +6440,13 @@ public final class TypeChecker {
         return null;
     }
 
+    private Record entryProductType(Type key, Type value) {
+        LinkedHashMap<String, Type> members = new LinkedHashMap<>();
+        members.put("key", widenCollectionElement(key));
+        members.put("value", widenCollectionElement(value));
+        return new Record(members, true, AggregateKind.RECORD);
+    }
+
     private Type builtinCollectionMember(Type receiver, String member) {
         receiver = deref(receiver);
         if (receiver instanceof ListType list) {
@@ -8441,6 +8469,18 @@ public final class TypeChecker {
                 yield new Named("$builtin$Symbol", List.of());
             }
             case "void" -> Primitive.VOID;
+            case "Entry" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 2) {
+                    throw new IllegalArgumentException(
+                            "Entry requires exactly two explicit type arguments");
+                }
+                Type key = resolve(ref.arguments().get(0), generics, self, allowNullMarker);
+                Type value = resolve(ref.arguments().get(1), generics, self, allowNullMarker);
+                if (key == Primitive.VOID || value == Primitive.VOID) {
+                    throw new IllegalArgumentException("Entry<void,...> and Entry<...,void> are invalid");
+                }
+                yield entryProductType(key, value);
+            }
             case "Array", "List", "Vector", "Slice", "Tuple", "FixedArray", "FixedList" -> {
                 Ast.ClassDecl declared = findClass(ref.name());
                 if (!Set.of("Array", "List").contains(ref.name()) && declared != null
