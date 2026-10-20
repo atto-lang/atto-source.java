@@ -104,6 +104,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     /** Released at terminal CAS so retained settled Futures cannot pin actor/channel state. */
     private volatile BooleanSupplier cancelAdmission;
+    /** One-shot runtime callback after terminal authority is final, before subscriber drain. */
+    private volatile Runnable onTerminalReady;
     /** One-shot release after terminal subscribers complete; never retain owners afterwards. */
     private volatile Runnable onNotificationDrained;
     private final AtomicReference<Runnable> cancelHook;
@@ -145,10 +147,17 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
             Runnable onNotificationDrained) {
+        this(cancelAdmission, cancelHook, () -> { }, onNotificationDrained);
+    }
+
+    OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
+            Runnable onTerminalReady, Runnable onNotificationDrained) {
         this.cancelAdmission = Objects.requireNonNull(
                 cancelAdmission, "cancelAdmission");
         this.cancelHook = new AtomicReference<>(
                 Objects.requireNonNull(cancelHook, "cancelHook"));
+        this.onTerminalReady = Objects.requireNonNull(
+                onTerminalReady, "onTerminalReady");
         this.onNotificationDrained = Objects.requireNonNull(
                 onNotificationDrained, "onNotificationDrained");
     }
@@ -613,6 +622,48 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 // misbehaving host hook nor arbitrary Future subscribers
                 // may restore the operation or prevent waiter delivery.
             }
+        }
+    }
+
+    private void invokeTerminalReady() {
+        Runnable ready = onTerminalReady;
+        onTerminalReady = null;
+        if (ready == null) return;
+        try {
+            ready.run();
+        } catch (RuntimeException | Error ignored) {
+            // Runtime lifetime/accounting hooks cannot roll back a terminal
+            // Future or prevent ordinary subscribers from being delivered.
+        }
+    }
+
+    static final class RuntimeCancellation<T> {
+        private final OresFuture<T> owner;
+        private final Cancelled terminal;
+        private boolean revoked;
+        private boolean published;
+
+        private RuntimeCancellation(OresFuture<T> owner, Cancelled terminal) {
+            this.owner = owner;
+            this.terminal = terminal;
+        }
+
+        void revoke() {
+            if (revoked) return;
+            owner.invokeCancelHook();
+            owner.cancelRevocationComplete.set(true);
+            owner.invokeTerminalReady();
+            revoked = true;
+        }
+
+        void publish() {
+            if (published) return;
+            if (!revoked) {
+                throw new IllegalStateException(
+                        "runtime cancellation must be revoked before publication");
+            }
+            published = true;
+            owner.drainTerminalNotifications(terminal);
         }
     }
 
