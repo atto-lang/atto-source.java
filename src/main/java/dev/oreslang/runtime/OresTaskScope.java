@@ -400,8 +400,13 @@ public final class OresTaskScope {
     }
 
     private void poisonScopeLocked(Throwable failure) {
+        Objects.requireNonNull(failure, "failure");
         if (poisonFailure == null) {
-            poisonFailure = Objects.requireNonNull(failure, "failure");
+            poisonFailure = failure instanceof StructuredTaskScopePoisonException
+                    ? failure
+                    : new StructuredTaskScopePoisonException(
+                            "structured Task scope authority accounting poisoned",
+                            failure);
         } else if (poisonFailure != failure) {
             poisonFailure.addSuppressed(failure);
         }
