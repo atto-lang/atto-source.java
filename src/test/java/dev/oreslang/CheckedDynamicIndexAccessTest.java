@@ -317,6 +317,25 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void constructorSelfGuardRecognizesCompositeReceiverShapes() throws Exception {
+        java.lang.reflect.Method guard = TypeChecker.class.getDeclaredMethod(
+                "referencesConstructorSelf", Ast.Expr.class);
+        guard.setAccessible(true);
+        Ast.Expr self = new Ast.NameExpr("self");
+        for (Ast.Expr receiver : java.util.List.of(
+                new Ast.TrapExpr(self),
+                new Ast.SpreadExpr(self),
+                new Ast.BinaryExpr("+", new Ast.LiteralExpr(1L), self),
+                new Ast.AssignExpr(new Ast.NameExpr("other"), self),
+                new Ast.TupleExpr(java.util.List.of(new Ast.LiteralExpr(1L), self)),
+                new Ast.ListExpr(java.util.List.of(self)))) {
+            assertEquals(true, guard.invoke(null, receiver));
+        }
+        assertEquals(false, guard.invoke(null,
+                new Ast.TupleExpr(java.util.List.of(new Ast.LiteralExpr(1L)))));
+    }
+
+    @Test
     void constructorSelfCannotUseComputedFieldReadBeforeInitializationProof() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse("""
                 define class Box as
