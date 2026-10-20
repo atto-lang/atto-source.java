@@ -117,6 +117,40 @@ final class FirstClassModelGraphTest {
     }
 
     @Test
+    void modelStringIdentityUsesValidatedUtf8Bytes() {
+        String source = """
+                fnc Append(string suffix, string input): string {
+                  return input + suffix;
+                }
+
+                define model Label(string suffix = "ok") as
+                  Append(suffix)
+                end
+                """;
+        ModelGraphCompiler.CompiledModel model =
+                ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(source)).find("Label");
+        assertNotNull(model);
+
+        String emoji = "\uD83D\uDE80";
+        Map<String, Object> configured = model.bindConfiguration(java.util.List.of(emoji));
+        assertDoesNotThrow(() -> model.configuredGraphDigest(configured),
+                "valid Unicode scalar values must canonicalize as UTF-8");
+
+        IllegalArgumentException nul = assertThrows(
+                IllegalArgumentException.class,
+                () -> model.configuredGraphDigest(
+                        model.bindConfiguration(java.util.List.of("a\0b"))));
+        assertTrue(nul.getMessage().contains("MODEL_INVALID_CONST"));
+
+        String unpaired = String.valueOf('\uD800');
+        IllegalArgumentException surrogate = assertThrows(
+                IllegalArgumentException.class,
+                () -> model.configuredGraphDigest(
+                        model.bindConfiguration(java.util.List.of(unpaired))));
+        assertTrue(surrogate.getMessage().contains("MODEL_INVALID_CONST"));
+    }
+
+    @Test
     void realGuestExecutesNonMlModelWithDefaultAndExplicitStaticConfiguration() throws Exception {
         String output = run(PRICE_MODEL + """
                 pub routine main(): void {
