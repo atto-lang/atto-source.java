@@ -24,6 +24,12 @@ public final class RealtimeClassfileAudit {
     private static final int ACC_STATIC = 0x0008;
     private static final int ACC_SYNCHRONIZED = 0x0020;
     private static final int MAX_CODE_BYTES = 1_000_000;
+    private static final int MAX_CLASS_BYTES = 1_500_000;
+    private static final int ACC_NATIVE = 0x0100;
+    private static final int ACC_ABSTRACT = 0x0400;
+    private static final int ACC_INTERFACE = 0x0200;
+    private static final int ACC_ANNOTATION = 0x2000;
+    private static final int ACC_ENUM = 0x4000;
 
     public record Report(
             String className,
@@ -41,6 +47,8 @@ public final class RealtimeClassfileAudit {
     private record CodeAttribute(byte[] code, int exceptionHandlers) { }
 
     public static Report audit(Path classFile) throws IOException {
+        long length = Files.size(classFile);
+        if (length < 24 || length > MAX_CLASS_BYTES) deny("invalid or oversized classfile");
         byte[] bytes = Files.readAllBytes(classFile);
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
             if (in.readInt() != 0xCAFEBABE) deny("bad classfile magic");
@@ -51,10 +59,16 @@ public final class RealtimeClassfileAudit {
             }
 
             Cp[] cp = readConstantPool(in);
-            in.readUnsignedShort(); // class access
+            int classAccess = in.readUnsignedShort();
+            if ((classAccess & (ACC_INTERFACE | ACC_ANNOTATION | ACC_ENUM)) != 0) {
+                deny("only an ordinary final class is permitted");
+            }
             int thisClass = in.readUnsignedShort();
-            in.readUnsignedShort(); // super
+            int superClass = in.readUnsignedShort();
             String className = className(cp, thisClass);
+            if (!"java.lang.Object".equals(className(cp, superClass))) {
+                deny("unexpected superclass; only Object is admitted");
+            }
             if (!RealtimePrimitiveCompiler.CLASS_NAME.equals(className)) {
                 deny("unexpected generated class " + className);
             }
@@ -79,27 +93,27 @@ public final class RealtimeClassfileAudit {
                 int attributes = in.readUnsignedShort();
 
                 CodeAttribute codeAttribute = null;
+                if (attributes != 1) deny("unexpected method attributes");
                 for (int a = 0; a < attributes; a++) {
                     String attributeName = utf8(cp, in.readUnsignedShort());
                     int length = in.readInt();
                     if (length < 0) deny("negative attribute length");
                     byte[] payload = in.readNBytes(length);
                     if (payload.length != length) deny("truncated method attribute");
-                    if ("Code".equals(attributeName)) {
-                        if (codeAttribute != null) deny("duplicate Code attribute");
-                        codeAttribute = parseCodeAttribute(payload, cp);
-                    }
+                    if (!"Code".equals(attributeName)) deny("unknown method attribute");
+                    if (codeAttribute != null) deny("duplicate Code attribute");
+                    codeAttribute = parseCodeAttribute(payload, cp);
                 }
 
                 if ("<init>".equals(name)) {
+                    if (constructorSeen) deny("duplicate constructors");
                     constructorSeen = true;
-                    // javac emits an unused Object constructor. It is never part
-                    // of the static critical call graph and cannot be invoked by
-                    // an admitted instruction.
+                    verifyConstructor(access, descriptor, codeAttribute, cp);
                     continue;
                 }
                 if ("<clinit>".equals(name)) deny("class initialization is forbidden");
                 if ((access & ACC_STATIC) == 0) deny("critical method is not static: " + name);
+                if ((access & (ACC_NATIVE | ACC_ABSTRACT)) != 0) deny("native/abstract method forbidden");
                 if ((access & ACC_SYNCHRONIZED) != 0) {
                     deny("synchronized critical methods are forbidden: " + name);
                 }
@@ -126,7 +140,9 @@ public final class RealtimeClassfileAudit {
                 String name = utf8(cp, in.readUnsignedShort());
                 int length = in.readInt();
                 if (length < 0) deny("negative class attribute length");
-                if ("BootstrapMethods".equals(name)) deny("dynamic bootstrap methods are forbidden");
+                if (!"SourceFile".equals(name) || length != 2) {
+                    deny("unsupported class-level attribute: " + name);
+                }
                 skipFully(in, length);
             }
             if (in.available() != 0) deny("trailing classfile bytes");
@@ -153,9 +169,32 @@ public final class RealtimeClassfileAudit {
                 codeIn.readUnsignedShort();
                 codeIn.readUnsignedShort();
             }
-            skipAttributes(codeIn, cp);
+            skipCodeAttributes(codeIn, cp);
             if (codeIn.available() != 0) deny("Code attribute length mismatch");
             return new CodeAttribute(code, exceptionHandlers);
+        }
+    }
+
+    private static void verifyConstructor(int access, String descriptor, CodeAttribute code, Cp[] cp) {
+        if ((access & (ACC_STATIC | ACC_NATIVE | ACC_ABSTRACT | ACC_SYNCHRONIZED)) != 0
+                || !"()V".equals(descriptor) || code == null
+                || code.exceptionHandlers() != 0) deny("invalid Object constructor");
+        byte[] b = code.code();
+        if (b.length != 5 || (b[0] & 0xff) != 0x2a || (b[1] & 0xff) != 0xb7
+                || (b[4] & 0xff) != 0xb1) deny("constructor contains unqualified effects");
+        int index = u2(b, 2);
+        Cp item = cpAt(cp, index);
+        if (!(item instanceof MethodRefCp ref)
+                || !"java.lang.Object".equals(className(cp, ref.classIndex()))) {
+            deny("constructor must only invoke Object.<init>");
+        }
+        MethodRefCp ref = (MethodRefCp) item;
+        Cp ntItem = cpAt(cp, ref.nameAndTypeIndex());
+        if (!(ntItem instanceof NameAndTypeCp)) deny("bad Object constructor descriptor");
+        NameAndTypeCp nt = (NameAndTypeCp) ntItem;
+        if (!"<init>".equals(utf8(cp, nt.nameIndex()))
+                || !"()V".equals(utf8(cp, nt.descriptorIndex()))) {
+            deny("constructor must only call Object.<init>()V");
         }
     }
 
@@ -342,6 +381,20 @@ public final class RealtimeClassfileAudit {
         in.readUnsignedShort();
         in.readUnsignedShort();
         skipAttributes(in, cp);
+    }
+
+    private static void skipCodeAttributes(DataInputStream in, Cp[] cp) throws IOException {
+        int count = in.readUnsignedShort();
+        boolean stackMap = false;
+        for (int i = 0; i < count; i++) {
+            String name = utf8(cp, in.readUnsignedShort());
+            int length = in.readInt();
+            if (!"StackMapTable".equals(name) || stackMap) {
+                deny("unsupported or duplicate code attribute: " + name);
+            }
+            stackMap = true;
+            skipFully(in, length);
+        }
     }
 
     private static void skipAttributes(DataInputStream in, Cp[] cp) throws IOException {
