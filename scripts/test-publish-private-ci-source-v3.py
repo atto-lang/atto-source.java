@@ -776,6 +776,42 @@ class PrivateCiV3Test(unittest.TestCase):
             {"GH_TOKEN": "fixture", "PATH": "/usr/bin:/bin"},
         )
 
+    def test_ref_request_rejects_oversized_or_nontext_output(self):
+        ref_name = "ci/authorized-" + COMMIT
+        payloads = (
+            Mock(returncode=0, stdout="x" * 129, stderr=""),
+            Mock(returncode=0, stdout="", stderr="x" * 129),
+            Mock(returncode=0, stdout=None, stderr=""),
+            Mock(returncode=0, stdout="", stderr=None),
+        )
+        with (
+            patch.object(v3.legacy, "MAX_GH_API_RESPONSE_CHARS", 128),
+            patch.object(v3.legacy, "trusted_github_cli", return_value="/usr/bin/gh"),
+            patch.object(
+                v3.legacy, "github_api_environment",
+                return_value={"GH_TOKEN": "fixture", "PATH": "/usr/bin:/bin"},
+            ),
+        ):
+            for response in payloads:
+                with self.subTest(stdout=response.stdout, stderr=response.stderr):
+                    with patch.object(v3.subprocess, "run", return_value=response):
+                        with self.assertRaisesRegex(v3.Denied, "exceeds size limit"):
+                            v3._gh_ref_request("trusted/ci", ref_name, "GET")
+
+    def test_ref_request_accepts_bounded_text_output(self):
+        response = Mock(returncode=0, stdout="{}", stderr="")
+        ref_name = "ci/authorized-" + COMMIT
+        with (
+            patch.object(v3.legacy, "MAX_GH_API_RESPONSE_CHARS", 128),
+            patch.object(v3.legacy, "trusted_github_cli", return_value="/usr/bin/gh"),
+            patch.object(
+                v3.legacy, "github_api_environment",
+                return_value={"GH_TOKEN": "fixture", "PATH": "/usr/bin:/bin"},
+            ),
+            patch.object(v3.subprocess, "run", return_value=response),
+        ):
+            self.assertIs(v3._gh_ref_request("trusted/ci", ref_name, "GET"), response)
+
     def test_live_ref_rejects_duplicate_or_nonfinite_json(self):
         payloads = (
             '{"ref":"refs/heads/ci/authorized-' + COMMIT +
