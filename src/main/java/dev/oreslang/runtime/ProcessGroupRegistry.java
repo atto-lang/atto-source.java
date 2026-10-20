@@ -102,8 +102,13 @@ public final class ProcessGroupRegistry implements AutoCloseable {
                 new SecurityException("pg.joinCurrent requires actor execution"));
         synchronized (lock) {
             Entry entry = entryForJoinLocked(key);
-            entry.group.joinCurrent(entry.join);
-            return new Membership<>(key, actorId, entry.group);
+            try {
+                entry.group.joinCurrent(entry.join);
+                return new Membership<>(key, actorId, entry.group);
+            } catch (RuntimeException | Error failure) {
+                reclaimIfEmptyLocked(key, entry);
+                throw failure;
+            }
         }
     }
 
@@ -118,7 +123,12 @@ public final class ProcessGroupRegistry implements AutoCloseable {
         Key key = key(scope, name);
         synchronized (lock) {
             Entry entry = entryForJoinLocked(key);
-            entry.group.join(ref, entry.join);
+            try {
+                entry.group.join(ref, entry.join);
+            } catch (RuntimeException | Error failure) {
+                reclaimIfEmptyLocked(key, entry);
+                throw failure;
+            }
         }
     }
 
@@ -129,7 +139,7 @@ public final class ProcessGroupRegistry implements AutoCloseable {
         synchronized (lock) {
             Entry entry = existingLocked(key);
             if (entry == null) throw new IllegalStateException("unknown pg group");
-            leaveMembershipLocked(key, actorId, entry.group);
+            leaveMembershipLocked(key, actorId, entry.group, false);
         }
     }
 
@@ -180,13 +190,10 @@ public final class ProcessGroupRegistry implements AutoCloseable {
     public void delete(String scope, String name) {
         requireHostManager("delete pg groups");
         Key key = key(scope, name);
-        Entry entry;
         synchronized (lock) {
-            entry = groups.get(key);
-        }
-        if (entry == null) return;
-        entry.group.runtimeClose();
-        synchronized (lock) {
+            Entry entry = groups.get(key);
+            if (entry == null) return;
+            entry.group.runtimeClose();
             groups.remove(key, entry);
         }
     }
@@ -278,14 +285,15 @@ public final class ProcessGroupRegistry implements AutoCloseable {
             ActorRuntime.ActorId actorId,
             ActorRuntime.ActorGroup group) {
         synchronized (lock) {
-            leaveMembershipLocked(key, actorId, group);
+            leaveMembershipLocked(key, actorId, group, true);
         }
     }
 
     private void leaveMembershipLocked(
             Key key,
             ActorRuntime.ActorId actorId,
-            ActorRuntime.ActorGroup group) {
+            ActorRuntime.ActorGroup group,
+            boolean idempotentHandle) {
         requireOpen();
         ActorRuntime.ActorId current = ActorRuntime.currentActorId().orElseThrow(() ->
                 new SecurityException("pg membership leave requires actor execution"));
@@ -295,12 +303,28 @@ public final class ProcessGroupRegistry implements AutoCloseable {
         }
         Entry entry = groups.get(key);
         if (entry == null || entry.group != group) {
+            if (idempotentHandle) return;
             throw new IllegalStateException("stale pg membership");
+        }
+        if (!group.runtimeContains(actorId)) {
+            if (idempotentHandle) return;
+            throw new IllegalStateException("actor is not a member of pg group");
         }
         group.leaveCurrent();
         if (group.runtimeMemberCount() == 0) {
             groups.remove(key, entry);
             group.runtimeClose();
+        }
+    }
+
+    private void reclaimIfEmptyLocked(Key key, Entry entry) {
+        if (entry.group.closed()) {
+            groups.remove(key, entry);
+            return;
+        }
+        if (entry.group.runtimeMemberCount() == 0) {
+            groups.remove(key, entry);
+            entry.group.runtimeClose();
         }
     }
 
