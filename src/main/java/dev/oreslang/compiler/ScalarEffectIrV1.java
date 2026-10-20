@@ -25,7 +25,8 @@ public final class ScalarEffectIrV1 {
     private static final int MAX_DEPTH = 64;
 
     public static String fromSource(String source) {
-        if (source == null || source.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 1024 * 1024) {
+        if (source == null || source.length() > 1024 * 1024 ||
+                source.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 1024 * 1024) {
             throw new IllegalArgumentException("scalar effect IR source exceeds byte budget");
         }
         // The same full compiler type and ownership admission used for builds.
