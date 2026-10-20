@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * GUEST execution gate for the actual Oreslang ML scalar actor-state fixture.
  *
  * The .ores fixture was copied byte-for-byte from oreslang-ml's stacked
- * actor-state PR #7 (Git blob d9addeb0279b3c4023665b551c487adf7405903b).
+ * actor-state PR #7 (Git blob d5ce8ea58245751a5d814f3866a8d109ab80671d).
  * This JUnit class requires an actual GraalVM Oreslang context evaluation;
  * pure host-side arithmetic is explicitly NOT accepted as execution evidence.
  *
@@ -47,7 +47,7 @@ final class MlActorStateScalarGuestTest {
 
     @Test void compiledActorStageHasOneStateSchemaAndDeclaredEffects() throws Exception {
         String text = source();
-        assertEquals("d9addeb0279b3c4023665b551c487adf7405903b",
+        assertEquals("d5ce8ea58245751a5d814f3866a8d109ab80671d",
                 gitBlobSha(text), "ML fixture drifted from pinned source Git blob");
         assertDoesNotThrow(() -> verify(text));
         assertEquals(1, count(text, "    state {"));
@@ -105,6 +105,16 @@ final class MlActorStateScalarGuestTest {
         assertTrue(text.contains("using state.write(critical "));
         assertTrue(text.contains("self.handle_state(critical read "));
         assertTrue(text.contains("self.handle_state(critical write "));
+        assertTrue(text.contains("state_snapshot("));
+        assertTrue(text.contains("prepare_scalar_publication("));
+        assertTrue(text.contains("publish_scalar_publication("));
+        assertTrue(text.contains("val int candidate_weight = weight - accumulated_gradient"));
+        String commitSection = text.substring(
+                text.indexOf("    private commit("),
+                text.indexOf("    // A controlled recovery path"));
+        assertFalse(commitSection.contains("s.weight = candidate_weight"));
+        assertFalse(commitSection.contains("s.version = s.version + 1"));
+        assertFalse(commitSection.contains("s.step = s.step + 1"));
     }
 
     @Test void actualGuestForwardBackwardDuplicateAndCommitMatchPinnedOutput() throws Exception {
