@@ -487,6 +487,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
+    private final ActorPhysicalTurnGate physicalTurnGate;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final AtomicLong watchdogOverruns = new AtomicLong();
     private final AtomicLong watchdogNoticesDropped = new AtomicLong();
@@ -543,6 +544,12 @@ public final class ActorRuntime implements AutoCloseable {
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
+        int physicalLimit = Integer.getInteger("ores.runtime.actor.max-active-turns", 0);
+        if (physicalLimit < 0) {
+            throw new IllegalArgumentException("ores.runtime.actor.max-active-turns must be >= 0");
+        }
+        this.physicalTurnGate = physicalLimit == 0
+                ? null : new ActorPhysicalTurnGate(physicalLimit, dispatcherConfig.maxActors());
         ExecutorService privatePool = null;
         ExecutorService sharedPool = null;
         ExecutorService untrustedPool;
@@ -1101,6 +1108,229 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public void close() {
             if (released.compareAndSet(false, true)) slice.release(bytes);
+        }
+    }
+
+    /**
+     * Host-only shard reservation tied to one actor's physical lifetime.
+     * PRIVATE backing is the existing owner-checked direct memory block.
+     * SHARED backing is an ordinary Java array charged to the aggregate
+     * runtime heap limit. No raw direct buffer or cross-actor permit escapes.
+     */
+    final class ActorShardLease implements AutoCloseable {
+        private final ActorCell<?> cell;
+        private final PrivateMemoryBlock privateBlock;
+        private final long sharedBytes;
+        private final AtomicBoolean revoked = new AtomicBoolean();
+        private ActorShardColumns attachedShard;
+
+        private ActorShardLease(ActorCell<?> cell, PrivateMemoryBlock block, long bytes) {
+            this.cell = cell;
+            this.privateBlock = block;
+            this.sharedBytes = block == null ? bytes : 0L;
+        }
+        boolean privateBacking() { return privateBlock != null; }
+        void attach(ActorShardColumns shard) {
+            synchronized (cell.lifecycleLock) {
+                requireOwner();
+                if (attachedShard != null) {
+                    throw new IllegalStateException("actor shard already attached");
+                }
+                attachedShard = Objects.requireNonNull(shard, "shard");
+            }
+        }
+        boolean ownedBy(ActorRuntime runtime, ActorId actor) {
+            return runtime == ActorRuntime.this && cell.ref.id().equals(actor);
+        }
+        void requireOwner() {
+            if (currentActor.get() != cell) {
+                throw new SecurityException("shard accessible only during its owning actor turn");
+            }
+            if (revoked.get() || cell.finalized) {
+                throw new IllegalStateException("shard region has been revoked");
+            }
+        }
+        double read(int element) {
+            requireOwner();
+            return privateBlock.readDouble(Math.multiplyExact(element, Double.BYTES));
+        }
+        void write(int element, double value) {
+            requireOwner();
+            privateBlock.writeDouble(Math.multiplyExact(element, Double.BYTES), value);
+        }
+        private void release(boolean ownerTurn) {
+            synchronized (cell.lifecycleLock) {
+                // Close/stop, backing detachment, and byte refund must have
+                // one lifecycle linearization point. In particular, finalizer
+                // and close must not both believe they own the same quota.
+                if (!revoked.compareAndSet(false, true)) return;
+                ActorShardColumns shard = attachedShard;
+                attachedShard = null;
+                if (shard != null) shard.revokeBackingFromLease();
+                cell.shardLeases.remove(this);
+                final long charged = privateBlock != null
+                        ? privateBlock.capacity() : sharedBytes;
+                if (cell.shardReservedBytes < charged) {
+                    throw new IllegalStateException("actor shard reservation underflow");
+                }
+                if (privateBlock != null) {
+                    // On finalization, ActorMemorySlice.close() revokes all
+                    // remaining blocks while still holding lifecycleLock.
+                    if (ownerTurn) privateBlock.close();
+                } else {
+                    // Only release the shared quota after its backing array
+                    // has been scrubbed and detached from the shard.
+                    releaseSharedRuntimeBytes(sharedBytes);
+                }
+                cell.shardReservedBytes -= charged;
+            }
+        }
+        @Override public void close() {
+            if (currentActor.get() != cell) {
+                throw new SecurityException("shard close requires its owning actor turn");
+            }
+            release(true); // idempotent; no second budget decrement
+        }
+        private void revokeFromActorStop() { release(false); }
+    }
+
+    ActorShardLease reserveActorShard(int bytes) {
+        if (bytes < 1) throw new IllegalArgumentException("invalid shard byte count");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || cell.kind == ActorKind.UNTRUSTED) {
+            throw new SecurityException("actor shard allocation requires a trusted actor turn");
+        }
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized || closed.get()) {
+                throw terminated(cell.ref);
+            }
+            long total;
+            try {
+                total = Math.addExact(cell.shardReservedBytes, bytes);
+            } catch (ArithmeticException overflow) {
+                throw new IllegalStateException("actor shard reservation overflow", overflow);
+            }
+            if (total > cell.policy.maxHeapBytes()) {
+                throw new IllegalStateException("per-actor shard heap limit exceeded");
+            }
+            PrivateMemoryBlock block = null;
+            if (cell.memorySlice != null) {
+                block = cell.memorySlice.allocatePrivateBytes(bytes);
+            } else {
+                reserveSharedRuntimeBytes(bytes, "shared actor shard");
+            }
+            ActorShardLease lease = new ActorShardLease(cell, block, bytes);
+            cell.shardReservedBytes = total;
+            cell.shardLeases.add(lease);
+            return lease;
+        }
+    }
+
+    /**
+     * Opaque, detached snapshot backed by a JVM array whose full byte length
+     * remains charged to its originating actor AND this runtime until closed
+     * or the actor's physical finalization. Access never exposes the array.
+     */
+    final class ActorShardSnapshotLease implements AutoCloseable {
+        private final ActorCell<?> cell;
+        // Cleared and detached under lifecycleLock on revocation so a
+        // retained lease handle does not pin the JVM array after refund.
+        private double[] values;
+        private final long bytes;
+        private boolean revoked; // guarded by cell.lifecycleLock
+
+        private ActorShardSnapshotLease(ActorCell<?> cell, double[] values, long bytes) {
+            this.cell = cell;
+            this.values = values;
+            this.bytes = bytes;
+        }
+
+        private void checkCaller() {
+            ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+            if (current != null
+                    && (current.runtime() != ActorRuntime.this
+                            || !current.actorId().equals(cell.ref.id()))) {
+                throw new SecurityException("foreign actor cannot access shard snapshot");
+            }
+        }
+
+        int length() {
+            synchronized (cell.lifecycleLock) {
+                checkCaller();
+                if (revoked || cell.finalized) throw new IllegalStateException("shard snapshot revoked");
+                return values.length;
+            }
+        }
+
+        double read(int index) {
+            synchronized (cell.lifecycleLock) {
+                checkCaller();
+                if (revoked || cell.finalized) {
+                    throw new IllegalStateException("shard snapshot revoked");
+                }
+                return values[index];
+            }
+        }
+
+        void writeFromOwner(int index, double value) {
+            synchronized (cell.lifecycleLock) {
+                if (currentActor.get() != cell || revoked || cell.finalized) {
+                    throw new SecurityException("snapshot initialization requires owner turn");
+                }
+                values[index] = value;
+            }
+        }
+
+        private void revoke() {
+            synchronized (cell.lifecycleLock) {
+                if (revoked) return;
+                revoked = true;
+                double[] old = values;
+                java.util.Arrays.fill(old, 0.0);
+                values = null; // no reachable mutable buffer retained by this lease
+                cell.shardSnapshotLeases.remove(this);
+                if (cell.shardReservedBytes < bytes) {
+                    throw new IllegalStateException("snapshot accounting underflow");
+                }
+                cell.shardReservedBytes -= bytes;
+                releaseSharedRuntimeBytes(bytes);
+            }
+        }
+
+        @Override public void close() {
+            checkCaller();
+            revoke();
+        }
+        private void revokeFromActorStop() { revoke(); }
+    }
+
+    ActorShardSnapshotLease reserveActorShardSnapshot(int rows) {
+        if (rows <= 0) throw new IllegalArgumentException("snapshot must be nonempty");
+        final long bytes = Math.multiplyExact((long) rows, Double.BYTES);
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || cell.kind == ActorKind.UNTRUSTED) {
+            throw new SecurityException("snapshot creation requires trusted owning actor");
+        }
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized || closed.get()) {
+                throw terminated(cell.ref);
+            }
+            final long total = Math.addExact(cell.shardReservedBytes, bytes);
+            if (total > cell.policy.maxHeapBytes()) {
+                throw new IllegalStateException("actor snapshot quota exceeded");
+            }
+            reserveSharedRuntimeBytes(bytes, "actor column snapshot");
+            final double[] contents;
+            try {
+                contents = new double[rows];
+            } catch (RuntimeException | Error failure) {
+                releaseSharedRuntimeBytes(bytes);
+                throw failure;
+            }
+            ActorShardSnapshotLease lease = new ActorShardSnapshotLease(cell, contents, bytes);
+            cell.shardReservedBytes = total;
+            cell.shardSnapshotLeases.add(lease);
+            return lease;
         }
     }
 
@@ -4062,6 +4292,13 @@ public final class ActorRuntime implements AutoCloseable {
     private void validatePrivateBehaviorCapture(ActorId owner, String fieldName, Object value) {
         if (value == null || isScalar(value) || value instanceof Class<?>) return;
 
+        if (value instanceof ActorShardColumns shard) {
+            if (!shard.ownedBy(this, owner) || !shard.isPrivateBacked()) {
+                throw new SecurityException(
+                        "private actor behavior cannot capture a foreign or shared shard in " + fieldName);
+            }
+            return;
+        }
         if (value instanceof PrivateMemoryBlock block) {
             if (!block.owner().equals(owner)) {
                 throw new SecurityException(
@@ -6555,6 +6792,7 @@ public final class ActorRuntime implements AutoCloseable {
             snapshot = List.copyOf(actors.values());
         }
         for (ActorCell<?> cell : snapshot) cell.stop();
+        if (firstClose && physicalTurnGate != null) physicalTurnGate.close();
 
         if (firstClose) {
             // Stop executor carriers so queued work is rejected/removed and
@@ -6764,6 +7002,10 @@ public final class ActorRuntime implements AutoCloseable {
         private final ChannelRuntime.Channel<ActorOutputEnvelope> outputChannel;
         private final ActorOutputStream<Object> outputStream;
         private final ActorMemorySlice memorySlice;
+        private final Set<ActorShardLease> shardLeases = ConcurrentHashMap.newKeySet();
+        private final Set<ActorShardSnapshotLease> shardSnapshotLeases = ConcurrentHashMap.newKeySet();
+        /** Guarded by lifecycleLock; private and shared shard bytes both counted. */
+        private long shardReservedBytes;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         /** Per-dispatch identity, guarded by lifecycleLock. A stale queued
          * runnable can never consume a newer scheduled=false->true claim. */
@@ -7125,6 +7367,14 @@ public final class ActorRuntime implements AutoCloseable {
             codeActorState = null;
             Throwable terminalOutput = ref.terminationCause.get();
             outputStream.close(terminalOutput);
+            for (ActorShardLease lease : List.copyOf(shardLeases)) {
+                lease.revokeFromActorStop();
+            }
+            shardLeases.clear();
+            for (ActorShardSnapshotLease snapshot : List.copyOf(shardSnapshotLeases)) {
+                snapshot.revokeFromActorStop();
+            }
+            shardSnapshotLeases.clear();
             if (memorySlice != null) memorySlice.close();
             try {
                 actorExitHook.accept(executionDomain);
@@ -7300,10 +7550,25 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 ExecutorService dispatcher = dispatcherFor(kind);
                 Runnable dispatch = () -> runBatch(dispatchTicket);
-                if (dispatcher instanceof ActorAffinityDispatcher lanes) {
-                    lanes.executeOnLane(dispatchLane, dispatch);
+                java.util.function.Consumer<Runnable> submit = runnable -> {
+                    if (dispatcher instanceof ActorAffinityDispatcher lanes) {
+                        lanes.executeOnLane(dispatchLane, runnable);
+                    } else {
+                        dispatcher.execute(runnable);
+                    }
+                };
+                if (physicalTurnGate != null) {
+                    physicalTurnGate.dispatch(dispatch, submit, failure -> {
+                        synchronized (lifecycleLock) {
+                            if (scheduledDispatchToken == dispatchTicket && !carrierActive) {
+                                scheduledDispatchToken = null;
+                                scheduled.set(false);
+                            }
+                        }
+                        stop();
+                    });
                 } else {
-                    dispatcher.execute(dispatch);
+                    submit.accept(dispatch);
                 }
             } catch (RejectedExecutionException rejected) {
                 synchronized (lifecycleLock) {
