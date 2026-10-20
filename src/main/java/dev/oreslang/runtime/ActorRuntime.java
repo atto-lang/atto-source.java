@@ -6801,8 +6801,14 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Boolean || value instanceof Byte || value instanceof Short
                 || value instanceof Character || value instanceof Integer || value instanceof Float) return 16L;
         if (value instanceof Long || value instanceof Double) return 24L;
-        if (value instanceof BigInteger integer) return 32L + integer.toByteArray().length;
-        if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
+        if (value != null && value.getClass() == BigInteger.class) {
+            BigInteger integer = (BigInteger) value;
+            return 32L + integer.toByteArray().length;
+        }
+        if (value != null && value.getClass() == BigDecimal.class) {
+            BigDecimal decimal = (BigDecimal) value;
+            return 48L + decimal.unscaledValue().toByteArray().length;
+        }
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
         if (value instanceof OresSymbol symbol) return 56L + symbol.name().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
         if (value instanceof UUID || value instanceof ActorId || value instanceof ActorGroupId) return 40L;
@@ -6853,8 +6859,14 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Boolean || value instanceof Byte || value instanceof Short
                 || value instanceof Character || value instanceof Integer || value instanceof Float) return 16L;
         if (value instanceof Long || value instanceof Double) return 24L;
-        if (value instanceof BigInteger integer) return 32L + integer.toByteArray().length;
-        if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
+        if (value != null && value.getClass() == BigInteger.class) {
+            BigInteger integer = (BigInteger) value;
+            return 32L + integer.toByteArray().length;
+        }
+        if (value != null && value.getClass() == BigDecimal.class) {
+            BigDecimal decimal = (BigDecimal) value;
+            return 48L + decimal.unscaledValue().toByteArray().length;
+        }
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
         if (value instanceof OresSymbol symbol) return 56L + symbol.name().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
         if (value instanceof UUID || value instanceof ActorId) return 40L;
@@ -6914,7 +6926,9 @@ public final class ActorRuntime implements AutoCloseable {
         return value == null || value instanceof String || value instanceof OresSymbol
                 || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
-                || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
+                || value instanceof Float || value instanceof Double
+                || (value != null && value.getClass() == BigInteger.class)
+                || (value != null && value.getClass() == BigDecimal.class)
                 || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId
                 || value instanceof ActorGroupId;
     }
