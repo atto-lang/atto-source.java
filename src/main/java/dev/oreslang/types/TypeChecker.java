@@ -43,7 +43,7 @@ public final class TypeChecker {
             "decimal", "complex64", "complex128", "complex",
             "bool", "Bool", "string", "String", "void", "null",
             "Symbol", "Array", "List", "Vector", "Slice",
-            "Tuple", "Entry", "FixedArray", "FixedList",
+            "Tuple", "Entry", "Map", "DuplicateKey", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Mutex",
             "SharedMutex", "Channel", "Future", "Fnc", "Function");
@@ -218,7 +218,7 @@ public final class TypeChecker {
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
-                "Entry",
+                "Entry", "Map", "DuplicateKey",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
                 "self", "null"));
 
@@ -268,9 +268,9 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
-            if (module.name().equals("Entry")) {
+            if (Set.of("Entry", "Map", "DuplicateKey").contains(module.name())) {
                 throw new IllegalArgumentException(
-                        "Entry is a built-in key/value product namespace and cannot be shadowed by a module");
+                        module.name() + " is a built-in collection namespace and cannot be shadowed by a module");
             }
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
@@ -280,9 +280,9 @@ public final class TypeChecker {
                         : decl instanceof Ast.TypeAliasDecl alias ? alias.name()
                         : decl instanceof Ast.FieldDecl field ? field.name()
                         : null;
-                if ("Entry".equals(reservedName)) {
+                if (Set.of("Entry", "Map", "DuplicateKey").contains(reservedName)) {
                     throw new IllegalArgumentException(
-                            "Entry is a built-in key/value product namespace and cannot be shadowed");
+                            reservedName + " is a built-in collection namespace and cannot be shadowed");
                 }
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
@@ -1723,7 +1723,7 @@ public final class TypeChecker {
         String name = ref.name();
         if (generics.contains(name) || GENERIC_DEFAULT_BUILTINS.contains(name)
                 || Set.of("Object", "Any", "Unknown", "Error", "Symbol", "Entry",
-                        "Ref", "WeakRef", "Map", "OrderedMap", "DynamicStruct").contains(name)
+                        "Map", "DuplicateKey", "Ref", "WeakRef", "OrderedMap", "DynamicStruct").contains(name)
                 || findClass(name) != null || findInterface(name) != null
                 || findTypeAlias(name) != null || modules.containsKey(name)
                 || importedNames.contains(name)
@@ -2235,6 +2235,7 @@ public final class TypeChecker {
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
                     || name.name().equals("Channel") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("Entry")) return new Named("$EntryFactory", List.of());
+            if (name.name().equals("Map")) return new Named("$MapFactory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
             if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                 return new Named("$BooleanOps", List.of());
@@ -6551,6 +6552,38 @@ public final class TypeChecker {
         return null;
     }
 
+    private static boolean isTypedMapType(Type type) {
+        return type instanceof Named named
+                && named.name().equals("$builtin$Map")
+                && named.arguments().size() == 2;
+    }
+
+    private Type typedMapKeyType(Type type) {
+        if (!isTypedMapType(type)) {
+            throw new IllegalArgumentException("malformed typed Map type");
+        }
+        return ((Named) type).arguments().get(0);
+    }
+
+    private Type typedMapValueType(Type type) {
+        if (!isTypedMapType(type)) {
+            throw new IllegalArgumentException("malformed typed Map type");
+        }
+        return ((Named) type).arguments().get(1);
+    }
+
+    private void requireMapKeyType(Type key, String where) {
+        Type concrete = deref(key);
+        if (concrete == Primitive.INT || concrete == Primitive.STRING
+                || concrete instanceof Named named
+                    && named.name().equals("$builtin$Symbol")
+                    && named.arguments().isEmpty()) {
+            return;
+        }
+        throw new IllegalArgumentException(
+                where + " requires int, String, or Symbol key type; got " + key);
+    }
+
     private Named entryProductType(Type key, Type value) {
         return new Named(
                 "Entry",
@@ -8598,6 +8631,28 @@ public final class TypeChecker {
                 yield new Named("$builtin$Symbol", List.of());
             }
             case "void" -> Primitive.VOID;
+            case "Map" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 2) {
+                    throw new IllegalArgumentException(
+                            "Map requires exactly two explicit type arguments");
+                }
+                Type key = resolve(ref.arguments().get(0), generics, self, allowNullMarker);
+                Type value = resolve(ref.arguments().get(1), generics, self, allowNullMarker);
+                requireMapKeyType(key, "Map<K,V>");
+                if (value == Primitive.VOID) {
+                    throw new IllegalArgumentException("Map<K,void> is invalid");
+                }
+                yield new Named("$builtin$Map", List.of(key, value));
+            }
+            case "DuplicateKey" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "DuplicateKey requires exactly one explicit key type");
+                }
+                Type key = resolve(ref.arguments().getFirst(), generics, self, allowNullMarker);
+                requireMapKeyType(key, "DuplicateKey<K>");
+                yield new Named("DuplicateKey", List.of(key));
+            }
             case "Entry" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 2) {
                     throw new IllegalArgumentException(
@@ -9041,9 +9096,9 @@ public final class TypeChecker {
     private Set<String> uniqueGenerics(List<String> names, String owner) {
         Set<String> result = new HashSet<>();
         for (String name : names) {
-            if (name.equals("Entry")) {
+            if (Set.of("Entry", "Map", "DuplicateKey").contains(name)) {
                 throw new IllegalArgumentException(
-                        "generic parameter 'Entry' cannot shadow the built-in Entry<K,V> type");
+                        "generic parameter '" + name + "' cannot shadow a built-in collection type");
             }
             if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
         }
