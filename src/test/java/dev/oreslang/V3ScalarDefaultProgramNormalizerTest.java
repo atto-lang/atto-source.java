@@ -47,16 +47,25 @@ final class V3ScalarDefaultProgramNormalizerTest {
     }
 
     @Test
-    void parameterLocalDefaultNormalizesIdenticallyToDeclarationAnnotation() {
-        var legacy = V3ScalarDefaultProgramNormalizer.parseNormalizeAndAnalyze("""
+    void parameterLocalDefaultIsAlsoRunnableThroughTheCheckedPolyglotHost() throws Exception {
+        String source = """
                 pub fnc add(int a, @Default(10) int b, int c): int {
                     return a + b + c;
                 }
                 pub fnc main(): int {
                     return add(a: 5, c: 3);
                 }
-                """);
-        assertEquals(2, legacy.modules().getFirst().declarations().size());
+                """;
+        var normalized = V3ScalarDefaultProgramNormalizer.parseNormalizeAndAnalyze(source);
+        assertEquals(2, normalized.modules().getFirst().declarations().size());
+        Source polyglot = Source.newBuilder(OresLanguage.ID, source, "v3-formal.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build();
+             OresLanguage.PrecheckedProgramScope ignored =
+                     OresLanguage.openPrecheckedProgram("v3-formal.ores", source, normalized)) {
+            assertEquals(18L, context.eval(polyglot).asLong());
+        }
     }
 
     @Test
