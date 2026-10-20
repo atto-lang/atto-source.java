@@ -45,6 +45,30 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.source_tree_mock = self.source_tree_guard.start()
         self.addCleanup(self.source_tree_guard.stop)
 
+    def test_descriptor_safety_flags_require_distinct_positive_integers(self):
+        with (
+            patch.object(pub.os, "O_DIRECTORY", 1, create=True),
+            patch.object(pub.os, "O_NOFOLLOW", 2, create=True),
+            patch.object(pub.os, "O_NONBLOCK", 4, create=True),
+        ):
+            self.assertTrue(pub.safe_descriptor_flags_available())
+
+        invalid = (
+            (0, 2, 4),
+            (1, 1, 4),
+            (1, 2, 3),
+            ("1", 2, 4),
+            (True, 2, 4),
+        )
+        for directory, nofollow, nonblock in invalid:
+            with self.subTest(flags=(directory, nofollow, nonblock)):
+                with (
+                    patch.object(pub.os, "O_DIRECTORY", directory, create=True),
+                    patch.object(pub.os, "O_NOFOLLOW", nofollow, create=True),
+                    patch.object(pub.os, "O_NONBLOCK", nonblock, create=True),
+                ):
+                    self.assertFalse(pub.safe_descriptor_flags_available())
+
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
         if route == "repos/trusted/ci":
