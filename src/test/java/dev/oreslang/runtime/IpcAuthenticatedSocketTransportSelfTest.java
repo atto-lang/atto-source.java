@@ -1168,7 +1168,10 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         Arrays.fill(failedAbortPayload, (byte) 0x33);
         var failedAbortMessage = envelope(
                 1, "failedAbortClose", 3, 4, failedAbortPayload);
-        var failingOutput = new BlockingAbortOutputStream();
+        CountDownLatch failedWriteEntered = new CountDownLatch(1);
+        CountDownLatch failedAbortWrite = new CountDownLatch(1);
+        var failingOutput = new BlockingAbortOutputStream(
+                failedWriteEntered, failedAbortWrite);
         var failingSocket = new FailingAbortSocket(failingOutput);
         ExecutorService failingCleanup = Executors.newSingleThreadExecutor(
                 r -> new Thread(r, "ipc-test-failing-abort-close"));
@@ -1190,7 +1193,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 }
             }, "ipc-test-failing-abort-writer");
             sender.start();
-            check(failingOutput.writeEntered.await(2, TimeUnit.SECONDS));
+            check(failedWriteEntered.await(2, TimeUnit.SECONDS));
 
             check(!transport.requestCloseAndAwait(3000));
             sender.join(3000);
