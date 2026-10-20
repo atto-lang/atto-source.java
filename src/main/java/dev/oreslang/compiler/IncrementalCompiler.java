@@ -136,7 +136,8 @@ public final class IncrementalCompiler {
                     dependencies.get(id),
                     normalized.get(id),
                     checked,
-                    new OresCompiler.CheckedProgram(checked));
+                    new OresCompiler.CheckedProgram(
+                            id, normalized.get(id), checked));
             next.put(id, unit);
             rebuilt.add(id);
         }
