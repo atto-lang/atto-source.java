@@ -63,6 +63,27 @@ class ClassifierTests(unittest.TestCase):
                 self.assertEqual(m.classify(RUN, [job(steps=[step(name, "failure")])], SHA),
                                  "setup_only_failure")
 
+    def test_dependency_setup_never_claims_compiler_or_test_failure(self):
+        # A step *name* may mention tests while only installing prerequisites.
+        for name in (
+            "Install test dependencies", "Restore build cache",
+            "Download test artifacts", "Fetch test fixtures",
+            "Prepare build workspace", "Bootstrap test tools",
+            "Configure test runners", "Initialize test workspace",
+            "Set up test harness", "Provision test runners",
+            "Cache build dependencies", "Run install test dependencies",
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    m.classify(RUN, [job(steps=[step(name, "failure")])], SHA),
+                    "setup_only_failure",
+                )
+                success = dict(RUN, conclusion="success")
+                self.assertEqual(
+                    m.classify(success, [job("success", steps=[step(name)])], SHA),
+                    "success_without_substantive_evidence",
+                )
+
     def test_completed_build_and_test_failures(self):
         for name in ("Run unit tests", "Compile Oreslang", "Build backend",
                      "Run conformance tests"):
