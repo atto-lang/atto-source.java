@@ -2705,15 +2705,15 @@ public final class OresEvalRootNode extends RootNode {
                                 "cannot arm select while holding a live MutexGuard")));
                 return;
             }
-            ChannelRuntime.SelectSet set =
-                    buildStaticSelectSet(select, env);
+            StaticSelectInvocation invocation =
+                    buildStaticSelectInvocation(select, env);
             ChannelRuntime.SelectPolicy policy =
                     runtimeSelectPolicy(select.policy());
 
             if (select.mode() == Ast.WaitMode.IMMEDIATE) {
                 java.util.Optional<ChannelRuntime.SelectResult> result;
                 try {
-                    result = set.trySelect(policy);
+                    result = invocation.trySelect(policy);
                 } catch (RuntimeException | Error failure) {
                     continuation.accept(task, SourceFlow.throwing(failure));
                     return;
@@ -2728,7 +2728,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             OresFuture<ChannelRuntime.SelectResult> future =
-                    set.selectAsync(policy);
+                    invocation.selectAsync(policy);
             if (select.mode() == Ast.WaitMode.NONBLOCKING) {
                 // Actor admission was checked before buildStaticSelectSet.
                 ActorRuntime.ContinuationTarget target =
@@ -5967,12 +5967,12 @@ public final class OresEvalRootNode extends RootNode {
                         "static nb select branches require an actor execution context; "
                                 + "use 'nb select from cases' when you only need a Future");
             }
-            ChannelRuntime.SelectSet set = buildStaticSelectSet(selected, env);
+            StaticSelectInvocation invocation = buildStaticSelectInvocation(selected, env);
             ChannelRuntime.SelectPolicy policy = runtimeSelectPolicy(selected.policy());
 
             if (selected.mode() == Ast.WaitMode.IMMEDIATE) {
                 java.util.Optional<ChannelRuntime.SelectResult> result =
-                        set.trySelect(policy);
+                        invocation.trySelect(policy);
                 if (result.isPresent()) {
                     executeSelectedArm(
                             selected,
@@ -5985,7 +5985,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             OresFuture<ChannelRuntime.SelectResult> future =
-                    set.selectAsync(policy);
+                    invocation.selectAsync(policy);
 
             if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
                 // Execution-domain admission occurred before selectAsync().
@@ -6011,6 +6011,70 @@ public final class OresEvalRootNode extends RootNode {
                     (ChannelRuntime.SelectResult)
                             awaitBlockingChannelFuture(future, "select");
             executeSelectedArm(selected, result, env, tailBarrier, false);
+        }
+
+        /**
+         * Reuse descriptor cases for provably stable lexical READ channel
+         * operands. Fresh selection/winner registrations and source-site FAIR
+         * ticket generation are never hoisted.
+         */
+        private record StaticSelectInvocation(
+                ChannelRuntime.SelectSet set, boolean hoisted, long staticTicket) {
+            private java.util.Optional<ChannelRuntime.SelectResult> trySelect(
+                    ChannelRuntime.SelectPolicy policy) {
+                return hoisted
+                        ? set.tryStaticSelect(policy, staticTicket)
+                        : set.trySelect(policy);
+            }
+            private OresFuture<ChannelRuntime.SelectResult> selectAsync(
+                    ChannelRuntime.SelectPolicy policy) {
+                return hoisted
+                        ? set.selectStaticAsync(policy, staticTicket)
+                        : set.selectAsync(policy);
+            }
+        }
+
+        private StaticSelectInvocation buildStaticSelectInvocation(
+                Ast.SelectStmt selected, Env env) {
+            ChannelRuntime.SelectSet reusable = cachedLoopSelectSet(selected, env);
+            if (reusable != null) {
+                return new StaticSelectInvocation(reusable, true, staticSelectTicket(selected));
+            }
+            return new StaticSelectInvocation(buildStaticSelectSet(selected, env), false, 0L);
+        }
+
+        private ChannelRuntime.SelectSet cachedLoopSelectSet(
+                Ast.SelectStmt selected, Env env) {
+            Env anchor = env.nearestSelectPlanAnchor();
+            if (anchor == null) return null;
+            // WRITE payloads, future operands, callable expressions and
+            // per-iteration/shadowing variables must still be evaluated.
+            for (Ast.SelectArm arm : selected.arms()) {
+                if (arm.operation() == Ast.ChannelOperation.WRITE
+                        || arm.operation() == Ast.ChannelOperation.AWAIT) return null;
+                if (arm.operation() == Ast.ChannelOperation.READ) {
+                    if (!(arm.channel() instanceof Ast.NameExpr name)
+                            || env.immutableLoopChannel(name.name(), anchor) == null) {
+                        return null;
+                    }
+                }
+            }
+            ChannelRuntime.SelectSet cached = anchor.loopSelectPlans.get(selected);
+            if (cached != null) return cached;
+            ArrayList<ChannelRuntime.SelectCase> cases =
+                    new ArrayList<>(selected.arms().size());
+            for (Ast.SelectArm arm : selected.arms()) {
+                if (arm.operation() == Ast.ChannelOperation.DEFAULT) {
+                    cases.add(ChannelRuntime.defaultCase());
+                } else {
+                    Ast.NameExpr name = (Ast.NameExpr) arm.channel();
+                    cases.add(ChannelRuntime.read(
+                            env.immutableLoopChannel(name.name(), anchor)));
+                }
+            }
+            ChannelRuntime.SelectSet result = new ChannelRuntime.SelectSet(cases);
+            anchor.loopSelectPlans.put(selected, result);
+            return result;
         }
 
         private ChannelRuntime.SelectSet buildStaticSelectSet(
