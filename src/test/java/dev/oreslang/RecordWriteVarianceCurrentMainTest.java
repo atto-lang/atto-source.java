@@ -144,4 +144,54 @@ final class RecordWriteVarianceCurrentMainTest {
                 """)));
     }
 
+    @Test void namedStructuralPatternRejectsMutationAfterSuccessfulParse() {
+        var parsed = assertDoesNotThrow(() -> Parser.parse("""
+                define trait Readable as
+                  bar: string;
+                end
+                fnc bad({ bar: string } input): void {
+                  match input over
+                    on structural Readable narrowed -> {
+                      narrowed.bar = "changed";
+                    }
+                    on _ -> { return; }
+                  end
+                  return;
+                }
+                """), "nominal structural contract fixture must parse");
+        var rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(rejected.getMessage() != null
+                        && rejected.getMessage().toLowerCase(java.util.Locale.ROOT)
+                                .contains("readonly"),
+                "the checker must reject mutation, not unrelated syntax: " + rejected);
+    }
+
+    @Test void namedReadonlyStructuralPatternRetainsCallableContractMethods() {
+        var parsed = assertDoesNotThrow(() -> Parser.parse("""
+                define module app
+                  define trait Readable as
+                    bar: string;
+                    fnc show(string value) => void;
+                  end
+                  define class Base as end
+                  define class Candidate extends Base as
+                    pub val string bar = "ok";
+                    pub show(string value): void { return; }
+                  end
+                  fnc inspect(Base value): int {
+                    match value over
+                      on structural Readable view -> {
+                        view.show(view.bar);
+                        return 1;
+                      }
+                      on _ -> { return 0; }
+                    end
+                  }
+                end
+                """), "structural trait method-dispatch fixture must parse");
+        assertDoesNotThrow(() -> TypeChecker.check(parsed),
+                "readonly structural contract must not erase callable method slots");
+    }
+
 }
