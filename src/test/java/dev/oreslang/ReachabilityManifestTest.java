@@ -8,6 +8,7 @@ import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -103,6 +104,51 @@ final class ReachabilityManifestTest {
 
         assertThrows(IllegalArgumentException.class,
                 () -> ReachabilityManifest.from(result, options));
+    }
+
+
+    @Test
+    void retainedSymbolsUseUnicodeCodePointOrderNotUtf16Order() {
+        BuildOptions options = BuildOptions.executable();
+        TreeShaker.Result base = OresCompiler.compileForBuild(
+                "pub routine main(): void { return; }", options);
+        String root = Parser.ROOT_MODULE;
+        String bmpPrivateUse = root + ".\uE000";
+        String supplementary = root + ".\uD83D\uDE00";
+
+        TreeShaker.Result forged = new TreeShaker.Result(
+                base.program(),
+                Set.of(root + ".main", supplementary, bmpPrivateUse),
+                Set.of(),
+                base.compileTimeConstants());
+
+        ReachabilityManifest manifest = ReachabilityManifest.from(forged, options);
+        assertTrue(manifest.retainedSymbols().indexOf(bmpPrivateUse)
+                < manifest.retainedSymbols().indexOf(supplementary));
+    }
+
+    @Test
+    void invalidOrOversizedSemanticSymbolsFailClosed() {
+        BuildOptions options = BuildOptions.executable();
+        TreeShaker.Result base = OresCompiler.compileForBuild(
+                "pub routine main(): void { return; }", options);
+        String root = Parser.ROOT_MODULE;
+
+        TreeShaker.Result control = new TreeShaker.Result(
+                base.program(),
+                Set.of(root + ".main", root + ".bad\nname"),
+                Set.of(),
+                base.compileTimeConstants());
+        assertThrows(IllegalArgumentException.class,
+                () -> ReachabilityManifest.from(control, options));
+
+        TreeShaker.Result oversized = new TreeShaker.Result(
+                base.program(),
+                Set.of(root + ".main", root + "." + "a".repeat(1025)),
+                Set.of(),
+                base.compileTimeConstants());
+        assertThrows(IllegalArgumentException.class,
+                () -> ReachabilityManifest.from(oversized, options));
     }
 
     @Test
