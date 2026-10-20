@@ -29,7 +29,7 @@ public final class TaskAdmissionProof {
     }
 
     private final Ast.Program programIdentity;
-    private final IdentityHashMap<Object, List<AdmittedTransfer>> byBoundary =
+    private final IdentityHashMap<Ast.TaskExpr, List<AdmittedTransfer>> byBoundary =
             new IdentityHashMap<>();
     private final ReleaseBarrier releaseBarrier;
 
