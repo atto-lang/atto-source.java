@@ -11,6 +11,9 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class TrapFailurePolicyTest {
     private static final class GuestPanic extends RuntimeException { }
+    private static final class TrustedCastError extends RuntimeException { }
+    private static class SameShapeHostCast extends RuntimeException { }
+    private static final class ForgedSubtype extends SameShapeHostCast { }
 
     @Test void onlyExplicitGuestFailuresHaveAuthenticatedTrapOrigin() {
         // A JDK exception's mutable stack trace is NOT a runtime-origin proof.
@@ -152,6 +155,56 @@ final class TrapFailurePolicyTest {
                 new GuestControlSignal.Raise("nontrappable CONTROL")));
         assertFalse(TrapFailurePolicy.isTrappable(failure, GuestPanic.class));
         assertFalse(TrapFailurePolicy.isGuestCatchable(failure, GuestPanic.class));
+    }
+
+    @Test void maliciousHostCannotForgeGuestOriginByRewritingStackTrace() {
+        RuntimeException forged = new IllegalStateException("looks like an Oreslang error");
+        forged.setStackTrace(new StackTraceElement[] {
+                new StackTraceElement("dev.oreslang.nodes.OresEvalRootNode",
+                        "evaluate", "OresEvalRootNode.java", 101),
+                new StackTraceElement("dev.oreslang.runtime.GuestControlSignal",
+                        "throwing", "GuestControlSignal.java", 12)
+        });
+        assertFalse(TrapFailurePolicy.isTrappable(
+                forged, GuestPanic.class, TrustedCastError.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(
+                forged, GuestPanic.class, TrustedCastError.class));
+        assertFalse(TrapFailurePolicy.isTrappable(
+                new CompletionException(forged), GuestPanic.class, TrustedCastError.class));
+    }
+
+    @Test void exactlyTypedInterpreterErrorSurvivesTransparentWrappersOnly() {
+        var cast = new TrustedCastError();
+        assertTrue(TrapFailurePolicy.isTrappable(
+                cast, GuestPanic.class, TrustedCastError.class));
+        assertTrue(TrapFailurePolicy.isTrappable(
+                new CompletionException(cast), GuestPanic.class, TrustedCastError.class));
+        assertTrue(TrapFailurePolicy.isGuestCatchable(
+                cast, GuestPanic.class, TrustedCastError.class));
+        assertFalse(TrapFailurePolicy.isTrappable(
+                cast, GuestPanic.class),
+                "two-argument boundary grants no implicit cast-error authority");
+        assertFalse(TrapFailurePolicy.isTrappable(
+                new SameShapeHostCast(), GuestPanic.class, TrustedCastError.class));
+        assertFalse(TrapFailurePolicy.isTrappable(
+                new ForgedSubtype(), GuestPanic.class, SameShapeHostCast.class),
+                "subclasses cannot inherit interpreter-only provenance");
+        var hostWrapper = new RuntimeException("untrusted host wrapper", cast);
+        assertFalse(TrapFailurePolicy.isTrappable(
+                hostWrapper, GuestPanic.class, TrustedCastError.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(
+                hostWrapper, GuestPanic.class, TrustedCastError.class));
+    }
+
+    @Test void opaqueHostCleanupCannotLaunderSuppressedGuestThrow() {
+        RuntimeException failure = new RuntimeException("host failure");
+        failure.addSuppressed(new GuestControlSignal.Throw("not primary"));
+        assertFalse(TrapFailurePolicy.isTrappable(
+                failure, GuestPanic.class, TrustedCastError.class));
+        var wrapped = new CompletionException(new GuestControlSignal.Throw("source"));
+        wrapped.addSuppressed(new IllegalStateException("uncertified host cleanup"));
+        assertFalse(TrapFailurePolicy.isTrappable(
+                wrapped, GuestPanic.class, TrustedCastError.class));
     }
 
 }
