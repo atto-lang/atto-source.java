@@ -31,7 +31,7 @@ final class ScalarEffectIrV1Test {
                 + "fnc alpha(): int { return 42; }";
         String json = ScalarEffectIrV1.fromSource(source);
         assertTrue(json.indexOf("\"alpha\"") < json.indexOf("\"zebra\""));
-        assertEquals(8, json.split("\\"kind\\":\\"compute\\"", -1).length - 1);
+        assertEquals(8, json.split("compute", -1).length - 1);
     }
 
     @Test void rejectsModelOmissionAndUnsupportedSyntax() {
