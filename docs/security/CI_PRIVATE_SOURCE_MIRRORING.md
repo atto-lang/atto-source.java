@@ -56,7 +56,19 @@ pathname. Local publisher bytes are never executed before this attestation.
 
 The expected publisher blob SHA is approval data and must come from an
 independent security review / protected carrier trust boundary, never from the
-source checkout being authenticated. Carrier CODEOWNERS must terminally cover
+source checkout being authenticated. The production `publish()` path itself
+now requires the bootstrap attestation before consulting local approval policy,
+calling GitHub, reading the source snapshot, or creating Git objects; importing
+the module and calling `publish()` directly cannot skip the `main()` gate.
+The trusted-checkout verifier additionally requires the bootstrap-supplied
+publisher blob SHA to equal the `scripts/publish-private-ci-source.py` Git blob
+recorded by the authenticated protected-source `main` commit.
+
+The injected Python globals are defense-in-depth state, **not a root of trust**:
+arbitrary code in the same process could assign them. They are authoritative
+only because the independently reviewed external carrier bootstrap authenticates
+the exact publisher bytes before execution and injects the attestation into that
+already verified execution context. Carrier CODEOWNERS must terminally cover
 the bootstrap launcher, and source-side admission verifies that coverage.
 Until carrier `main` itself is independently protected and reviewed, the
 bootstrap remains test scaffolding and does not authorize publication.
