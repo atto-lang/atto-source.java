@@ -914,16 +914,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Ast.ClassDecl staticClassView(Ast.Expr expression, Env env) {
-            String checkedClassName = Ast.CheckedClassView.lookup(expression);
-            if (checkedClassName != null) {
-                Ast.ClassDecl checked = findClass(checkedClassName);
-                if (checked == null) {
-                    throw new IllegalStateException(
-                            "statically checked computed-access class '"
-                                    + checkedClassName + "' is unavailable at runtime");
-                }
-                return checked;
-            }
+            // General expression-view tracking is independent from the
+            // computed-index proof tables. Indexing consumes those proofs only
+            // at indexValue/assignIndexValue; importing them here would make an
+            // unrelated binding/destructure path depend on caller-local class
+            // lookup and could mis-handle a checked imported class.
             if (expression instanceof Ast.NameExpr name) {
                 return env == null ? null : env.lookupStaticClassView(name.name());
             }
