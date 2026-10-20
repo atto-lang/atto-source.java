@@ -90,6 +90,19 @@ public final class IpcReceiptCompletionBridge {
         }
     }
 
+    /**
+     * Internal futures are never exposed directly, so every terminal owner
+     * must be able to settle exactly once. A false return means host
+     * bookkeeping has violated its own removal/ownership protocol.
+     */
+    private static void completeExactlyOnce(
+            CompletableFuture<IpcReceiptCorrelation.Stage> future,
+            IpcReceiptCorrelation.Stage stage) {
+        if (!future.complete(stage)) {
+            throw new IllegalStateException("IPC host completion settled more than once");
+        }
+    }
+
     public CompletionStage<IpcReceiptCorrelation.Stage> admit(
             IpcReceiptCorrelation.Envelope envelope) {
         Objects.requireNonNull(envelope, "envelope");
@@ -218,7 +231,7 @@ public final class IpcReceiptCompletionBridge {
         }
         // An arbitrary dependent callback may synchronously reenter the actor:
         // never invoke it from within the admission/correlation monitor.
-        if (done != null) done.complete(stage);
+        if (done != null) completeExactlyOnce(done, stage);
     }
 
     void acceptVerified(Object owner,
@@ -258,7 +271,7 @@ public final class IpcReceiptCompletionBridge {
                 throw new IllegalStateException("missing host completion");
             }
         }
-        done.complete(IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
+        completeExactlyOnce(done, IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
     }
 
     void rejectBeforeRemote(Object owner,
@@ -321,7 +334,7 @@ public final class IpcReceiptCompletionBridge {
             }
         }
         for (var future : done) {
-            future.complete(IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            completeExactlyOnce(future, IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
         }
         return done.size();
     }
