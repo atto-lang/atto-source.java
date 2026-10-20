@@ -9284,6 +9284,9 @@ public final class TypeChecker {
             return expected instanceof Generic expectedGeneric
                     && actualGeneric.name().equals(expectedGeneric.name());
         }
+        // A union/wrapper must not launder an unconstrained value into a positional proof.
+        if ((actual == Unknown.INSTANCE || actual instanceof Generic)
+                && Types.containsPatternedList(expected)) return false;
         if (actual instanceof Union source) {
             return source.options().stream().allMatch(option -> assignable(option, expected));
         }
