@@ -165,7 +165,8 @@ public final class OresTaskScope {
                                 scopeBoundRetirement
                                         .retireAfterPhysicalQuiescence(handle);
                             }
-                        });
+                        },
+                        () -> childTerminal(child));
             } catch (RuntimeException | Error failure) {
                 // The exact compiler lifecycle path may already have reported
                 // never-started retirement before throwing (for example a
