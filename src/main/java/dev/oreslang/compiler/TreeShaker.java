@@ -400,6 +400,11 @@ public final class TreeShaker {
                 }
                 return new Ast.ObjectExpr(fields, object.kind(), object.declaredFields());
             }
+            if (expression instanceof Ast.TaskExpr task) {
+                // A Task is an execution/capture boundary. Never substitute
+                // caller expressions through it during constant inlining.
+                return task;
+            }
             if (expression instanceof Ast.LambdaExpr lambda) {
                 LinkedHashSet<String> nestedShadowed = new LinkedHashSet<>(shadowed);
                 for (Ast.Param parameter : lambda.parameters()) nestedShadowed.add(parameter.name());
@@ -1009,6 +1014,12 @@ public final class TreeShaker {
                 }
                 return new Ast.ObjectExpr(fields, object.kind(), object.declaredFields());
             }
+            if (expression instanceof Ast.TaskExpr task) {
+                // Task spawns have observable effects and ownership moves.
+                // Keep the exact checked body; reachability scanner below
+                // still discovers every referenced callable.
+                return task;
+            }
             if (expression instanceof Ast.LambdaExpr lambda) {
                 LinkedHashMap<String, Object> lambdaLocals = new LinkedHashMap<>(locals);
                 for (Ast.Param parameter : lambda.parameters()) lambdaLocals.put(parameter.name(), UNKNOWN);
@@ -1399,6 +1410,8 @@ public final class TreeShaker {
                 for (Ast.ObjectField field : object.fields()) {
                     scanExpression(module, field.value(), locals);
                 }
+            } else if (expression instanceof Ast.TaskExpr task) {
+                scanStatements(module, task.body(), new LinkedHashSet<>(locals));
             } else if (expression instanceof Ast.LambdaExpr lambda) {
                 LinkedHashSet<String> nested = new LinkedHashSet<>(locals);
                 for (Ast.Param parameter : lambda.parameters()) {
