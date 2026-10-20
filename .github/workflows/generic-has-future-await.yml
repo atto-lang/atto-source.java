@@ -21,7 +21,7 @@ jobs:
   guest-regressions:
     name: Real GraalVM guest tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 60
     steps:
       - name: Checkout exact PR source without persisted credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -45,3 +45,5 @@ jobs:
         run: mvn -B -ntp -Dtest=GenericHasFutureAwaitTest test
       - name: Verify adjacent async and generic behavior
         run: mvn -B -ntp '-Dtest=AsyncAwaitLanguageTest,GenericsAndOperatorsHardeningTest,SuspendsContractLanguageTest,BindingMutableReceiverContractTest' test
+      - name: Full Maven regression verification
+        run: mvn -B -ntp verify
