@@ -5002,6 +5002,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return value;
             }
+            if (receiver instanceof OresKeyedMap<?, ?> map) {
+                return map.getRequired(index);
+            }
             if (receiver instanceof Map<?, ?> map) {
                 if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
                     throw new IllegalArgumentException(
@@ -5035,6 +5038,18 @@ public final class OresEvalRootNode extends RootNode {
                 Object value,
                 Env env,
                 Ast.Expr receiverExpression) {
+            if (receiver instanceof OresKeyedMap<?, ?> map) {
+                if (!(receiverExpression instanceof Ast.NameExpr owner)
+                        || !env.canWriteMap(owner.name(), map)) {
+                    throw new SecurityException(
+                            "typed Map indexed write requires a directly owned mutable binding");
+                }
+                @SuppressWarnings("unchecked")
+                OresKeyedMap<Object, Object> typed =
+                        (OresKeyedMap<Object, Object>) map;
+                typed.put(key, value);
+                return value;
+            }
             if (receiver instanceof OresObject object) {
                 if (!object.klass.actorKind().equals(Ast.ActorKind.NONE)) {
                     throw new IllegalArgumentException(
@@ -5164,6 +5179,13 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.NewExpr created,
                 List<Object> args,
                 Env env) {
+            if (created.type().name().equals("Map")) {
+                if (!args.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "new Map<K,V>() takes no constructor arguments");
+                }
+                return newGuestMap(created.type());
+            }
             if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
                 if (created.type().inferArguments() || !created.type().arguments().isEmpty() || args.size() > 1)
                     throw new IllegalArgumentException("HttpResponse requires zero or one string body");
@@ -7182,6 +7204,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof OresKeyedMap<?, ?>) {
+                throw new IllegalArgumentException(
+                        "typed Map members are sealed runtime operations and cannot be reified");
+            }
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
