@@ -200,14 +200,15 @@ public final class AsyncRuntime implements AutoCloseable {
      * await to a continuation. It preserves interruption/cancellation and
      * unwraps the original failure instead of leaking CompletionException.
      *
-     * <p>An actor carrier is never allowed to park here. Actor await must be
-     * lowered to mailbox-turn suspension/resumption.</p>
+     * <p>An Ores scheduler or actor carrier is never allowed to park here.
+     * Source await must be lowered to logical-turn suspension/resumption.</p>
      */
     public static <T> T await(OresFuture<T> future) {
         Objects.requireNonNull(future, "future");
-        if (ActorRuntime.inActorExecution() && !future.isDone()) {
+        if (!future.isDone()
+                && (ActorRuntime.inActorExecution() || OresScheduler.current() != null)) {
             throw new IllegalStateException(
-                    "await would block an actor dispatcher carrier; actor continuation lowering must suspend/resume the mailbox turn");
+                    "await would block an Ores scheduler/actor carrier; continuation lowering must suspend/resume the logical turn");
         }
         return blockingGet(future);
     }
