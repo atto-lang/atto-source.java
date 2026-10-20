@@ -67,15 +67,23 @@ final class OrestraBootstrapNativeHttpTest {
                         .connectTimeout(Duration.ofSeconds(3)).build()) {
                     int port = portFuture.get(12, TimeUnit.SECONDS);
                     assertTrue(port > 0 && port <= 65535);
-                    for (int round = 0; round < 4; ++round) {
-                        assertReply(http, port, "/healthz", 200,
+                    for (int round = 0; round < 2; ++round) {
+                        assertReply(http, port, "GET", "/healthz", 200,
                                 "{\"status\":\"ok\",\"component\":\"orestra-bootstrap\"}");
-                        assertReply(http, port, "/readyz", 503,
+                        assertReply(http, port, "GET", "/readyz", 503,
                                 "{\"status\":\"not_ready\",\"reason\":\"native_backend_and_storage_unverified\"}");
-                        assertReply(http, port, "/v1alpha1/default/workload", 401,
+                        assertReply(http, port, "GET", "/v1alpha1/default/workload", 401,
                                 "{\"error\":\"authentication_required\"}");
-                        assertReply(http, port, "/missing", 404,
+                        assertReply(http, port, "GET", "/missing", 404,
                                 "{\"error\":\"not_found\"}");
+                        assertReply(http, port, "PUT", "/v1alpha1/default/workload/x", 401,
+                                "{\"error\":\"authentication_required\"}");
+                        assertReply(http, port, "DELETE", "/v1alpha1/default/workload/x", 401,
+                                "{\"error\":\"authentication_required\"}");
+                        assertReply(http, port, "POST", "/healthz", 404,
+                                "{\"error\":\"not_found\"}");
+                        assertReply(http, port, "GET", "/readyz", 503,
+                                "{\"status\":\"not_ready\",\"reason\":\"native_backend_and_storage_unverified\"}");
                     }
                 } catch (Exception exception) {
                     throw new CompletionException(exception);
@@ -91,10 +99,11 @@ final class OrestraBootstrapNativeHttpTest {
         }
     }
 
-    private static void assertReply(HttpClient client, int port, String path,
+    private static void assertReply(HttpClient client, int port, String method, String path,
                                     int expectedStatus, String expectedJson) throws Exception {
         var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path))
-                .timeout(Duration.ofSeconds(4)).GET().build();
+                .timeout(Duration.ofSeconds(4))
+                .method(method, HttpRequest.BodyPublishers.noBody()).build();
         HttpResponse<String> response = client.send(
                 request, HttpResponse.BodyHandlers.ofString());
         assertEquals(expectedStatus, response.statusCode(), path);
