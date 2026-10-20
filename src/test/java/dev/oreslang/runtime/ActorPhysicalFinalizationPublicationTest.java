@@ -732,4 +732,57 @@ final class ActorPhysicalFinalizationPublicationTest {
     }
 
 
+
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void registryRemovalAfterMutationCompletesFinalizationAndDebitsSlotOnce()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+
+            var registryField = ActorRuntime.class.getDeclaredField("actors");
+            registryField.setAccessible(true);
+            var original = (java.util.Map<Object, Object>) registryField.get(runtime);
+            var faultedRemoval = new AtomicBoolean();
+            var faulty = new java.util.concurrent.ConcurrentHashMap<Object, Object>() {
+                @Override public boolean remove(Object key, Object value) {
+                    boolean removed = super.remove(key, value);
+                    if (removed && faultedRemoval.compareAndSet(false, true)) {
+                        throw new OutOfMemoryError(
+                                "injected physical unregister after removal");
+                    }
+                    return removed;
+                }
+            };
+            faulty.putAll(original);
+            registryField.set(runtime, faulty);
+            try {
+                actor.stop();
+                assertTrue(faultedRemoval.get(),
+                        "fixture must inject a failure after exact registry deletion");
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
+                        "a verified after-removal error cannot strand physical completion");
+                assertTrue(runtime.physicallyFinalizedForHotUpgrade(actor));
+                assertTrue(faulty.isEmpty(),
+                        "physical actor identity must be absent after finalization");
+                var slotField = ActorRuntime.class.getDeclaredField("actorCount");
+                slotField.setAccessible(true);
+                var count = (AtomicInteger) slotField.get(runtime);
+                assertEquals(0, count.get(),
+                        "the physical actor's slot is debited exactly once");
+                actor.stop();
+                assertEquals(0, count.get(),
+                        "repeated host stop cannot double-debit the actor slot");
+            } finally {
+                // Preserve all surviving registry identities if the injected
+                // fixture fails an assertion; do not restore a stale copy.
+                original.clear();
+                original.putAll(faulty);
+                registryField.set(runtime, original);
+            }
+        }
+    }
 }
