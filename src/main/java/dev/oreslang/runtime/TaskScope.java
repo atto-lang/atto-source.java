@@ -33,6 +33,12 @@ package dev.oreslang.runtime;
          * Caller must pass the logical child continuation's own ticket.
          */
         public synchronized Registration reserve(Registration parent) {
+            // Parent cancellation seals admissions completely; permitting even
+            // a previously executing child to spawn here after revocation can
+            // create work that escaped the cancellation snapshot.
+            if (cancellationRequested) {
+                throw new IllegalStateException("Task spawned into cancelled scope");
+            }
             if (closing && (parent == null || !parent.maySpawnInto(this))) {
                 throw new IllegalStateException(
                         "Task spawned into closing scope without a live child permit");
