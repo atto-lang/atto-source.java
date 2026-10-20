@@ -63,9 +63,14 @@ It rejects:
 - unknown FFI;
 - unbounded allocation/blocking/loops/cleanup;
 - page-fault risk;
-- missing/impossible timing budgets.
+- missing WCET/deadline/period budgets;
+- deadline values greater than the period under the current constrained-deadline task model;
+- a missing (zero) memory-cap budget;
+- response bounds where WCET + blocking + jitter overflows or exceeds the deadline.
 
-The next compiler step is transitive effect inference from guest source into this model.
+A nonzero `maxMemoryBytes` is currently a required configured cap, not yet a proof that the reachable program fits inside it. The compiler/runtime must eventually supply a peak-footprint witness and compare it to that cap before this can become artifact-level hard-RT evidence.
+
+The next compiler step is transitive effect inference from guest source into this model, followed by a compiler-derived peak-memory witness.
 
 ## Vendor/runtime work
 
