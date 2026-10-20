@@ -122,6 +122,28 @@ public final class PortableModelGraphDigestV1 {
             out.u8(1); out.string(n.typeAbi()); out.u64(n.bytes()); return;
         }
         if (!(port instanceof BufferPort b) || b.shape().size() > 8) fail("MODEL_INVALID_PORT");
+        // Hashing cannot certify a model with unrepresentable physical storage.
+        long elemBytes = switch (b.dtype()) {
+            case "bool" -> 1L;
+            case "i32", "f32" -> 4L;
+            case "i64", "f64" -> 8L;
+            default -> throw new IllegalArgumentException("MODEL_INVALID_PORT");
+        };
+        boolean zeroExtent = false;
+        for (long extent : b.shape()) {
+            if (extent < 0) fail("MODEL_INVALID_PORT");
+            if (extent == 0) zeroExtent = true;
+        }
+        if (!zeroExtent) {
+            try {
+                for (long extent : b.shape()) elemBytes = Math.multiplyExact(elemBytes, extent);
+            } catch (ArithmeticException overflow) {
+                fail("MODEL_SIZE_OVERFLOW");
+            }
+        }
+        if (b.unit() != null && (b.unit().length() > 40
+                || !b.unit().matches("[A-Za-z0-9_/^-]*")))
+            fail("MODEL_INVALID_PORT");
         out.u8(0);
         out.u8(ordinal(b.dtype(), new String[]{"bool","i32","i64","f32","f64"}, "MODEL_INVALID_PORT"));
         out.u8(b.shape().size());
@@ -150,6 +172,8 @@ public final class PortableModelGraphDigestV1 {
     public static byte[] canonicalBytes(Graph graph) {
         if (graph.version() != 1 || graph.nodes().isEmpty() || graph.outputs().isEmpty())
             fail("MODEL_INVALID_RESOLVED_GRAPH");
+        if (graph.nodes().size() > 65536 || graph.outputs().size() > 65536)
+            fail("MODEL_GRAPH_BUDGET");
         Bytes out = new Bytes();
         out.raw("ORESLANG-MODEL-GRAPH-V1\0".getBytes(StandardCharsets.US_ASCII));
         out.u32(1);
