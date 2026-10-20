@@ -62,6 +62,92 @@ final class OresTaskPhysicalExitOnceTest {
     }
 
     @Test
+    void malformedSchedulerOrFrameStillRetiresPreacquiredPin() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(1);
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            AtomicInteger releases = new AtomicInteger();
+            assertThrows(NullPointerException.class,
+                    () -> scope.startCompilerFrame(null,
+                            resume -> new OresScheduler.Done<>(1),
+                            releases::incrementAndGet));
+            assertThrows(NullPointerException.class,
+                    () -> scope.startCompilerFrame(scheduler, null,
+                            releases::incrementAndGet));
+            assertEquals(2, releases.get(),
+                    "both rejected admissions must retire their pins");
+            assertDoesNotThrow(scope::close);
+            assertEquals(2, releases.get(),
+                    "closed scope must not retry already retired pins");
+        }
+    }
+
+    @Test
+    void malformedFrameKeepsCleanupFailureAttachedToOriginalError() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            AtomicInteger releases = new AtomicInteger();
+            NullPointerException invalid = assertThrows(NullPointerException.class,
+                    () -> scope.startCompilerFrame(null,
+                            resume -> new OresScheduler.Done<>(1),
+                            () -> {
+                                releases.incrementAndGet();
+                                throw new IllegalStateException("cleanup rejected");
+                            }));
+            assertEquals(1, releases.get());
+            assertEquals(1, invalid.getSuppressed().length);
+            assertTrue(invalid.getSuppressed()[0].toString().contains("cleanup rejected"));
+        }
+    }
+
+    @Test
+    void duplicateWhileRetirementIsRunningFailsClosedInsteadOfCompletingFence()
+            throws Exception {
+        CountDownLatch retiring = new CountDownLatch(1);
+        CountDownLatch mayRetire = new CountDownLatch(1);
+        AtomicInteger callbacks = new AtomicInteger();
+        var once = new OresTaskScope.PhysicalExitOnce(() -> {
+            callbacks.incrementAndGet();
+            retiring.countDown();
+            try {
+                assertTrue(mayRetire.await(5, TimeUnit.SECONDS));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(interrupted);
+            }
+        });
+        Thread owner = new Thread(once::run, "test-physical-exit-owner");
+        owner.start();
+        try {
+            assertTrue(retiring.await(5, TimeUnit.SECONDS));
+            IllegalStateException incomplete =
+                    assertThrows(IllegalStateException.class, once::run);
+            assertTrue(incomplete.getMessage().contains("not yet completed"));
+            assertEquals(1, callbacks.get());
+        } finally {
+            mayRetire.countDown();
+            owner.join(5_000);
+        }
+        assertFalse(owner.isAlive());
+        assertDoesNotThrow(once::run);
+        assertEquals(1, callbacks.get(), "successful retirement must be idempotent");
+    }
+
+    @Test
+    void failedRetirementCannotLaterBeMistakenForSuccess() {
+        AtomicInteger invocations = new AtomicInteger();
+        var failure = new IllegalStateException("resource still pinned");
+        var once = new OresTaskScope.PhysicalExitOnce(() -> {
+            invocations.incrementAndGet();
+            throw failure;
+        });
+        assertSame(failure, assertThrows(IllegalStateException.class, once::run));
+        var repeat = assertThrows(IllegalStateException.class, once::run);
+        assertSame(failure, repeat.getCause());
+        assertEquals(1, invocations.get(), "failed retirement cannot be replayed");
+    }
+
+    @Test
     void failedPhysicalRetirementIsObservedAndNeverRetried() throws Exception {
         try (AsyncRuntime runtime = new AsyncRuntime();
              OresScheduler scheduler = new OresScheduler(1)) {
