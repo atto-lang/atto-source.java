@@ -33,6 +33,9 @@ public final class LatentEffectRows {
             this.kind = Objects.requireNonNull(kind, "kind");
             Objects.requireNonNull(latent, "latent effects");
             this.capture = Objects.requireNonNull(capture, "capture");
+            if (kind != Kind.CALLABLE && capture != Capture.OWNED) {
+                throw new IllegalArgumentException("non-owned capture in deferred operation");
+            }
             EnumSet<Effect> safe = EnumSet.noneOf(Effect.class);
             safe.addAll(latent);
             // A missing dynamic target is never a certificate of no effects.
