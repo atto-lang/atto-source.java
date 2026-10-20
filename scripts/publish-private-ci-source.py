@@ -53,6 +53,9 @@ def gh_api(route, method="GET", payload=None):
     if p.returncode != 0:
         # Never echo stderr: a client can include private file bytes in errors.
         raise Denied("authenticated GitHub API request failed")
+    if method == "DELETE" and not p.stdout.strip():
+        # GitHub successful ref deletion is HTTP 204 with an empty body.
+        return {}
     try:
         data = json.loads(p.stdout)
     except json.JSONDecodeError as exc:
