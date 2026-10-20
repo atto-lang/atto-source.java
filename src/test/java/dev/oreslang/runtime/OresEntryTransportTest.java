@@ -102,6 +102,42 @@ final class OresEntryTransportTest {
                 rejected.getMessage());
     }
     @Test
+    void subclassedBigIntegerCannotMasqueradeAsActorScalar() {
+        java.util.concurrent.atomic.AtomicInteger callbacks =
+                new java.util.concurrent.atomic.AtomicInteger();
+        final class HostileBigInteger extends java.math.BigInteger {
+            HostileBigInteger() {
+                super("7");
+            }
+
+            @Override
+            public byte[] toByteArray() {
+                callbacks.incrementAndGet();
+                throw new AssertionError("host BigInteger.toByteArray invoked");
+            }
+        }
+
+        OresEntry entry = new OresEntry("number", new HostileBigInteger());
+        IllegalArgumentException frozen = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(entry));
+        assertTrue(frozen.getMessage().contains("not Sendable"), frozen.getMessage());
+        assertEquals(0, callbacks.get());
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var target = runtime.<OresEntry>spawnPrivate(
+                    IsolatePolicy.strictFaas(),
+                    context -> (message, actor) -> actor.self().stop());
+            IllegalArgumentException sent = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> target.send(entry));
+            assertTrue(sent.getMessage().contains("not Sendable"), sent.getMessage());
+            assertEquals(0, callbacks.get());
+            target.stop();
+        }
+    }
+
+    @Test
     void cyclicHostPayloadIsRejectedBeforeActorFreezeRatherThanOverflowing() {
         ArrayList<Object> cyclic = new ArrayList<>();
         OresEntry entry = new OresEntry(cyclic, "payload");
