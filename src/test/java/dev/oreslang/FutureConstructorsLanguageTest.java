@@ -167,24 +167,28 @@ final class FutureConstructorsLanguageTest {
         // The constructor currently aliases the provider method's existing
         // Future<int>, so it cannot claim to have produced Future<float>
         // merely because an int expression can be assigned to a float.
-        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
                 program("""
                   pub fnc main(): void {
                     let Future<float> f = new Future<float>(new Producer());
                     return;
                   }
                 """)));
+        assertTrue(error.getMessage().contains("Future<T> constructor requires exact async run() result type"),
+                () -> "wrong diagnostic: " + error.getMessage());
     }
 
     @Test
     void constructorRejectsAnyTypedResultWithoutPayloadMapping() {
-        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
                 program("""
                   pub fnc main(): void {
                     let Future<Any> f = new Future<Any>(new Producer());
                     return;
                   }
                 """)));
+        assertTrue(error.getMessage().contains("Future<T> constructor requires exact async run() result type"),
+                () -> "wrong diagnostic: " + error.getMessage());
     }
 
 
