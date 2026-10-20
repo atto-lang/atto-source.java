@@ -2263,6 +2263,15 @@ public final class OwnershipChecker {
     private BorrowPlace borrowPlace(Ast.Expr operand, Scope scope) {
         if (operand instanceof Ast.NameExpr name) {
             VarState owner = borrowOwner(operand, scope);
+            if (initializingClass != null) {
+                VarState constructorSelf = scope.lookup("self");
+                if (constructorSelf != null
+                        && ownershipRoot(owner) == ownershipRoot(constructorSelf)) {
+                    throw error(
+                            "constructor cannot borrow partially initialized self "
+                                    + "or a projection rooted in self");
+                }
+            }
             return new BorrowPlace(owner, owner.type);
         }
         if (operand instanceof Ast.MemberExpr member) {
