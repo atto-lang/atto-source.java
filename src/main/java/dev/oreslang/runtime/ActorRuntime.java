@@ -6427,12 +6427,13 @@ public final class ActorRuntime implements AutoCloseable {
                         freeze(entry.value(), visiting, depth + 1));
             }
             if (value instanceof OresTuple tuple) {
+                // Never route a nominal Tuple through generic List freezing:
+                // that would discard its product kind during actor transport.
                 List<Object> frozen = new ArrayList<>(tuple.size());
                 for (Object item : tuple) frozen.add(freeze(item, visiting, depth + 1));
                 return new OresTuple(frozen);
             }
-            if (value instanceof List<?> || value instanceof OresTuple) {
-                List<?> list = value instanceof OresTuple tuple ? tuple.elements() : (List<?>) value;
+            if (value instanceof List<?> list) {
                 List<Object> frozen = new ArrayList<>(list.size());
                 for (Object item : list) frozen.add(freeze(item, visiting, depth + 1));
                 return List.copyOf(frozen);
@@ -6501,12 +6502,13 @@ public final class ActorRuntime implements AutoCloseable {
                         isolateCopy(entry.value(), visiting, depth + 1));
             }
             if (value instanceof OresTuple tuple) {
+                // Private actor copies must reconstruct the nominal carrier,
+                // never widen a Tuple to the generic List transport path.
                 List<Object> copy = new ArrayList<>(tuple.size());
                 for (Object item : tuple) copy.add(isolateCopy(item, visiting, depth + 1));
                 return new OresTuple(copy);
             }
-            if (value instanceof List<?> || value instanceof OresTuple) {
-                List<?> list = value instanceof OresTuple tuple ? tuple.elements() : (List<?>) value;
+            if (value instanceof List<?> list) {
                 List<Object> copy = new ArrayList<>(list.size());
                 for (Object item : list) copy.add(isolateCopy(item, visiting, depth + 1));
                 return Collections.unmodifiableList(copy);
