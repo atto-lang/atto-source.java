@@ -40,10 +40,21 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     private static final ThreadLocal<PrecheckedProgramLease> PRECHECKED_PROGRAM =
             new ThreadLocal<>();
 
-    private record PrecheckedProgramLease(
-            String codeUnitId,
-            String sourceText,
-            Ast.Program program) { }
+    private static final class PrecheckedProgramLease {
+        private final String codeUnitId;
+        private final String sourceText;
+        private final Ast.Program program;
+        private boolean consumed;
+
+        private PrecheckedProgramLease(
+                String codeUnitId,
+                String sourceText,
+                Ast.Program program) {
+            this.codeUnitId = codeUnitId;
+            this.sourceText = sourceText;
+            this.program = program;
+        }
+    }
 
     public static final class PrecheckedProgramScope implements AutoCloseable {
         private final Thread owner = Thread.currentThread();
@@ -61,12 +72,11 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
                 throw new IllegalStateException(
                         "prechecked Oreslang program lease must close on its owning thread");
             }
-            // parse() consumes its lease before returning. If trusted host code
-            // has already opened the next one-shot lease on this thread, an
-            // older scope must never erase that newer lease.
-            if (PRECHECKED_PROGRAM.get() == lease) {
-                PRECHECKED_PROGRAM.remove();
+            if (PRECHECKED_PROGRAM.get() != lease) {
+                throw new IllegalStateException(
+                        "prechecked Oreslang program lease ownership changed before scope close");
             }
+            PRECHECKED_PROGRAM.remove();
             closed = true;
         }
     }
@@ -96,18 +106,26 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         return new PrecheckedProgramScope(lease);
     }
 
-    private static Ast.Program consumePrecheckedProgram(
+    static Ast.Program consumePrecheckedProgram(
             String codeUnitId,
             String sourceText) {
         PrecheckedProgramLease lease = PRECHECKED_PROGRAM.get();
         if (lease == null) return null;
-        PRECHECKED_PROGRAM.remove();
-        if (!lease.codeUnitId().equals(codeUnitId)
-                || !lease.sourceText().equals(sourceText)) {
+        if (lease.consumed) {
+            throw new IllegalStateException(
+                    "prechecked Oreslang program lease was already consumed");
+        }
+
+        // A mismatched parse request is terminal for this one-shot lease.
+        // Mark it consumed before checking identity/content so trusted host
+        // code cannot retry the same checked AST against a different source.
+        lease.consumed = true;
+        if (!lease.codeUnitId.equals(codeUnitId)
+                || !lease.sourceText.equals(sourceText)) {
             throw new IllegalStateException(
                     "prechecked Oreslang program lease does not match parsed source identity/content");
         }
-        return lease.program();
+        return lease.program;
     }
 
     @Override
