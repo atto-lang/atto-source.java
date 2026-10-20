@@ -18,6 +18,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
@@ -66,6 +67,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     // physical connection object. It is never serialized or guest-visible.
     private final Object physicalOwner = new Object();
     private final AtomicBoolean abortScheduled = new AtomicBoolean();
+    private final AtomicLong abortAttempt = new AtomicLong();
     private final Object sendGate = new Object();
     private final Object readGate = new Object();
     private final Object writeGate = new Object();
@@ -290,16 +292,24 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
 
     private void schedulePhysicalAbort() {
         if (!abortScheduled.compareAndSet(false, true)) return;
+        long attempt = abortAttempt.incrementAndGet();
+        if (attempt <= 0) {
+            abortScheduled.set(false);
+            sessionLease.quarantineIfUnsettled(new IllegalStateException(
+                    "IPC abort scheduler attempt overflow"));
+            return;
+        }
         Thread caller = Thread.currentThread();
         try {
             cleanupScheduler.enqueue(() -> {
+                if (abortAttempt.get() != attempt) return;
                 if (Thread.currentThread() == caller) {
                     sessionLease.quarantineIfUnsettled(new IllegalStateException(
                             "IPC abort scheduler executed inline on requesting carrier"));
                     return;
                 }
                 if (RuntimeBlockingGuard.actorCarrierMarked()) {
-                    sessionLease.deferSchedulerFailure(new IllegalStateException(
+                    sessionLease.deferExternalSchedulerFailure(new IllegalStateException(
                             "IPC abort scheduler executed on an actor carrier"));
                     return;
                 }
