@@ -15,6 +15,9 @@ final class OresTaskScopeLoanBindingTest {
             implements OresTaskScope.CompilerLoanRetirement {
         OresTaskScope.CompilerScopeEpoch scopeEpoch;
         OresTask<?> child;
+        OresScheduler.CompilerTaskHandle<?> schedulerChild;
+        final AtomicInteger preChild = new AtomicInteger();
+        final AtomicInteger preScheduler = new AtomicInteger();
         final AtomicInteger neverStarted = new AtomicInteger();
         final AtomicInteger physical = new AtomicInteger();
 
@@ -34,30 +37,59 @@ final class OresTaskScopeLoanBindingTest {
         }
 
         @Override
+        public synchronized void bindSchedulerChild(
+                OresTaskScope.CompilerScopeEpoch epoch,
+                OresTask<?> task,
+                OresScheduler.CompilerTaskHandle<?> exactSchedulerChild) {
+            assertSame(scopeEpoch, epoch);
+            assertSame(child, task);
+            assertNull(schedulerChild, "scheduler child may be bound once");
+            schedulerChild = exactSchedulerChild;
+        }
+
+        @Override
         public synchronized void retireBeforeChildBound(
                 OresTaskScope.CompilerScopeEpoch epoch) {
             assertSame(scopeEpoch, epoch);
             assertNull(child,
                     "pre-child retirement is valid only before child binding");
             assertEquals(0, physical.get());
-            neverStarted.incrementAndGet();
+            preChild.incrementAndGet();
+        }
+
+        @Override
+        public synchronized void retireBeforeSchedulerChildBound(
+                OresTaskScope.CompilerScopeEpoch epoch, OresTask<?> task) {
+            assertSame(scopeEpoch, epoch);
+            assertSame(child, task);
+            assertNull(schedulerChild,
+                    "pre-scheduler retirement cannot own a scheduler child");
+            assertEquals(0, physical.get());
+            preScheduler.incrementAndGet();
         }
 
         @Override
         public synchronized void retireNeverStarted(
-                OresTaskScope.CompilerScopeEpoch epoch, OresTask<?> task) {
+                OresTaskScope.CompilerScopeEpoch epoch,
+                OresTask<?> task,
+                OresScheduler.CompilerTaskHandle<?> exactSchedulerChild) {
             assertSame(scopeEpoch, epoch);
-            assertSame(child, task,
-                    "never-started retirement must carry the exact provisional child");
+            assertSame(child, task);
+            assertSame(schedulerChild, exactSchedulerChild,
+                    "never-started retirement must carry the exact scheduler child");
             assertEquals(0, physical.get());
             neverStarted.incrementAndGet();
         }
 
         @Override
         public synchronized void retireAfterPhysicalQuiescence(
-                OresTaskScope.CompilerScopeEpoch epoch, OresTask<?> task) {
+                OresTaskScope.CompilerScopeEpoch epoch,
+                OresTask<?> task,
+                OresScheduler.CompilerTaskHandle<?> exactSchedulerChild) {
             assertSame(scopeEpoch, epoch);
             assertSame(child, task);
+            assertSame(schedulerChild, exactSchedulerChild,
+                    "physical retirement must carry the exact scheduler child");
             assertEquals(0, neverStarted.get());
             physical.incrementAndGet();
         }
@@ -77,6 +109,7 @@ final class OresTaskScopeLoanBindingTest {
                     loan);
 
             assertSame(child, loan.child);
+            assertNotNull(loan.schedulerChild);
             assertNull(AsyncRuntime.await(child.getDone()));
             assertEquals(0, loan.neverStarted.get());
             assertEquals(1, loan.physical.get());
@@ -101,6 +134,9 @@ final class OresTaskScopeLoanBindingTest {
 
             assertNotNull(loan.child,
                     "provisional child identity is bound before scheduler admission");
+            assertNotNull(loan.schedulerChild);
+            assertEquals(0, loan.preChild.get());
+            assertEquals(0, loan.preScheduler.get());
             assertEquals(1, loan.neverStarted.get());
             assertEquals(0, loan.physical.get());
             assertTrue(scope.physicallyQuiescent());
@@ -130,6 +166,7 @@ final class OresTaskScopeLoanBindingTest {
                     () -> AsyncRuntime.await(child.getAwaited()));
             assertNull(AsyncRuntime.await(child.getDone()));
             assertEquals(0, entered.get());
+            assertNotNull(loan.schedulerChild);
             assertEquals(0, loan.neverStarted.get(),
                     "registered TaskRunner rejection is not the direct start-throw edge");
             assertEquals(1, loan.physical.get(),
