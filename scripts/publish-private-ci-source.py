@@ -68,7 +68,7 @@ CARRIER_BUILD_IMAGE_ENTRY = re.compile(
 CARRIER_WORKFLOW_ENTRY = re.compile(
     r"^(\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml) ([a-f0-9]{40})$"
 )
-CARRIER_EXECUTION_PROFILE = "bwrap-offline-maven-v1"
+CARRIER_EXECUTION_PROFILE = "docker-networkless-maven-v1"
 CARRIER_PRIVATE_WORKFLOW = ".github/workflows/oreslang-private-ci-gate.yml"
 PROTECTED_REVIEWS_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection/required_pull_request_reviews"
 CODEOWNERS_ROUTE = SOURCE_METADATA_ROUTE + "/contents/.github/CODEOWNERS"
