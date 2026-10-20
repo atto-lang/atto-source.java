@@ -3986,6 +3986,7 @@ public final class TypeChecker {
             return new Record(members, object.inferredStruct());
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
+            rejectConstructorSelfLambdaCapture(lambda);
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
             Env lambdaEnv = new Env(nonLexical ? null : env, nonLexical, !nonLexical);
             List<Type> parameters = new ArrayList<>();
@@ -4657,7 +4658,16 @@ public final class TypeChecker {
                 "object rest destructuring requires a statically known record type");
     }
 
+    private void rejectConstructorSelfLambdaCapture(Ast.LambdaExpr lambda) {
+        if (currentConstructorOwner != null && referencesConstructorSelf(lambda)) {
+            throw new IllegalArgumentException(
+                    "constructor self cannot be captured by a lambda before "
+                            + "definite class-field initialization and non-escaping capture are proven");
+        }
+    }
+
     private void validateMutexCallback(Ast.LambdaExpr lambda, Type expectedParameter, Env parent, Set<String> generics, Type self) {
+        rejectConstructorSelfLambdaCapture(lambda);
         if (lambda.parameters().size() != 1) {
             throw new IllegalArgumentException("mutex callback must accept exactly one protected-value parameter");
         }
@@ -4695,6 +4705,7 @@ public final class TypeChecker {
     }
 
     private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
+        rejectConstructorSelfLambdaCapture(lambda);
         if (lambda.parameters().size() != expected.parameters().size()) {
             throw new IllegalArgumentException("lambda arity " + lambda.parameters().size() + " does not match expected function arity " + expected.parameters().size());
         }
