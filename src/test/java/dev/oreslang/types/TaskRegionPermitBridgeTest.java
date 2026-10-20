@@ -113,6 +113,8 @@ final class TaskRegionPermitBridgeTest {
         exit.run(); // scheduler's physical-exit callback in production
         assertTrue(own.retired());
         assertDoesNotThrow(exit::run);
+        assertThrows(IllegalStateException.class, own::abortBeforeScheduling,
+                "physical retirement must not impersonate pre-scheduling abandonment");
         assertThrows(IllegalStateException.class, own::requestCancel);
         bridge.finishScope();
     }
