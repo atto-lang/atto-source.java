@@ -75,6 +75,33 @@ final class ResolvedModelGraphLoweringV1Test {
                                 wrong, "finance.PriceEstimate@v1", registry(), Map.of())).getMessage());
     }
     @Test
+    void namedConfigurationCannotAliasPositionalGraphDigest() {
+        Ast.ModelDecl positional = source(
+                "define model PriceEstimate as PriceInput() ApplyTaxBps(1500) RoundCents() end");
+        Ast.ModelDecl labelled = source(
+                "define model PriceEstimate as PriceInput() ApplyTaxBps(tax_bps: 1500) RoundCents() end");
+        assertEquals(64, PortableModelGraphDigestV1.digest(
+                ResolvedModelGraphLoweringV1.lower(
+                        positional, "finance.PriceEstimate@v1", registry(), Map.of())).length());
+        assertEquals("MODEL_NAMED_ARGUMENT_UNRESOLVED",
+                assertThrows(IllegalArgumentException.class,
+                        () -> ResolvedModelGraphLoweringV1.lower(
+                                labelled, "finance.PriceEstimate@v1", registry(), Map.of())).getMessage());
+    }
+
+    @Test
+    void directAstCannotSmuggleDuplicateFormalBindings() {
+        Ast.ModelDecl valid = source(
+                "define model PriceEstimate(rate: int = 1500) as PriceInput() ApplyTaxBps(rate) RoundCents() end");
+        Ast.ModelDecl forged = new Ast.ModelDecl(valid.name(), valid.visibility(),
+                List.of(valid.formals().getFirst(), valid.formals().getFirst()), valid.operations());
+        assertEquals("MODEL_DUPLICATE_FORMAL",
+                assertThrows(IllegalArgumentException.class,
+                        () -> ResolvedModelGraphLoweringV1.lower(
+                                forged, "finance.PriceEstimate@v1", registry(), Map.of())).getMessage());
+    }
+
+    @Test
     void unaryExternalRunInputMatchesSharedDigestVector() {
         Map<String, Signature> external = Map.of(
                 "ValidatePrice", sig("1".repeat(64), List.of(), List.of(PRICE)),
