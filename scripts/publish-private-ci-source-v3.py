@@ -17,6 +17,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
+import subprocess
 import sys
 
 SCRIPT_DIR = Path(__file__).resolve().parent
