@@ -554,6 +554,45 @@ public final class TypeChecker {
                 mentionsEffectGeneric(argument, generics));
     }
 
+    /**
+     * Checked terminal effects cross a control-flow/runtime boundary. Only
+     * stable owned payloads may be described by v1 effect signatures.
+     * A concrete ActorRef/Future/Function is not safe merely because its
+     * TypeRef is structurally well formed. Broader type families require
+     * checked ownership, runtime unwinding and serialization proofs.
+     */
+    private static boolean unsupportedCheckedEffectPayload(Type type) {
+        if (type == Primitive.VOID || type == Primitive.NULL
+                || type == Unknown.INSTANCE
+                || type instanceof Borrow || type instanceof Function
+                || type instanceof Generic || type instanceof SelfType
+                || type instanceof ClassNamespace || type instanceof Types.Not
+                || type instanceof ListType || type instanceof Record) return true;
+        if (type instanceof Named named) {
+            String leaf = named.name();
+            int dot = leaf.lastIndexOf('.');
+            if (dot >= 0) leaf = leaf.substring(dot + 1);
+            if (switch (leaf) {
+                case "any", "unknown", "Any", "Unknown", "ActorRef",
+                     "ActorMail", "ActorOutput", "Channel", "Future",
+                     "Generator", "AsyncGenerator", "Iterator", "AsyncIterator",
+                     "Mutex", "MutexGuard", "SharedMutex", "TcpConnection",
+                     "HttpExchange", "HttpServer", "Socket", "File",
+                     "Pointer", "Ref", "WeakRef" -> true;
+                default -> false;
+            }) return true;
+            return named.arguments().stream().anyMatch(
+                    TypeChecker::unsupportedCheckedEffectPayload);
+        }
+        if (type instanceof Tuple tuple)
+            return tuple.elements().stream().anyMatch(
+                    TypeChecker::unsupportedCheckedEffectPayload);
+        if (type instanceof Union union)
+            return union.options().stream().anyMatch(
+                    TypeChecker::unsupportedCheckedEffectPayload);
+        return false;
+    }
+
     private void validateCheckedEffects(Ast.FunctionDecl fn, Set<String> generics) {
         Ast.EffectSpec effects = fn.effects();
         if (effects.isEmpty()) return;
@@ -579,9 +618,9 @@ public final class TypeChecker {
                         "checked effect types must be concrete at declaration time: " + type);
             }
             Type resolved = resolve(type, generics, null);
-            if (resolved == Primitive.VOID || resolved instanceof Borrow) {
+            if (unsupportedCheckedEffectPayload(resolved)) {
                 throw new IllegalArgumentException(
-                        "checked effect type must be an owned non-void value: " + type);
+                        "checked effect payload must be owned, stable and non-opaque: " + type);
             }
         }
     }
