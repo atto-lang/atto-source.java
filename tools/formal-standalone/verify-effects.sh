@@ -6,5 +6,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 javac -d "$tmp" \
   "$root/src/main/java/dev/oreslang/types/EffectContracts.java" \
+  "$root/src/main/java/dev/oreslang/types/EffectAbiV1.java" \
+  "$root/src/main/java/dev/oreslang/types/LatentEffectRows.java" \
   "$root/tools/formal-standalone/VerifyEffectClosure.java"
 java -cp "$tmp" VerifyEffectClosure
