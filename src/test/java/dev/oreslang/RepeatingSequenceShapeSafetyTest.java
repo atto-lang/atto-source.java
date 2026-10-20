@@ -276,6 +276,20 @@ final class RepeatingSequenceShapeSafetyTest {
     }
 
     @Test
+    void sharedMutexAdmissionRetainsThePatternedPayloadSafetyContract() {
+        accepts("""
+                fnc good(SharedMutex<Array[...(int, string, bool)]> values): void {
+                  return;
+                }
+                """);
+        rejectsAtTypecheck("""
+                fnc bad(SharedMutex<Array[...(int, Mutex<int>, bool)]> values): void {
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void nestedUnresolvedAndMismatchedGenericSlotsCannotForgeShapeProofs() {
         var unknownBox = new Types.Named("Box", List.of(Types.Unknown.INSTANCE));
         var intBox = new Types.Named("Box", List.of(Types.Primitive.INT));
