@@ -7005,6 +7005,10 @@ public final class TypeChecker {
     private void requireEqualityComparable(Type left, Type right) {
         Type a = deref(left);
         Type b = deref(right);
+        if (isTypedMapType(a) || isTypedMapType(b)) {
+            throw new IllegalArgumentException(
+                    "typed Map equality is not defined in v1; compare keys/values explicitly");
+        }
         if (Types.isNumeric(a) && Types.isNumeric(b)) return;
         if (isStringLike(a) && isStringLike(b)) return;
         if (typesMayOverlap(a, b) || assignable(a, b) || assignable(b, a)) return;
