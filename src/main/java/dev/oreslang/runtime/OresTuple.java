@@ -1,25 +1,25 @@
 package dev.oreslang.runtime;
 
-import java.util.AbstractList;
+import java.util.AbstractCollection;
+import java.util.Arrays;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.RandomAccess;
 
 /**
- * Immutable, nominal runtime carrier of an Oreslang positional Tuple.
+ * Immutable nominal carrier for Oreslang's fixed positional Tuple.
  *
- * <p>The List interface is only a read-only host adapter for existing
- * indexed/iterable lowering. The dedicated Java class is the runtime-kind
- * witness: a general Array/List must not match a Tuple, even at equal arity.
- * A checked callable/pattern supplies the per-position type proof; the
- * carrier retains the value positions and their exact arity.</p>
+ * <p>Intentionally NOT a java.util.List. Otherwise ArrayList/List.of could
+ * compare equal to a Tuple by calling their own list equality, even if the
+ * tuple overrides equals(). Existing sequence lowering must adapt explicitly
+ * using {@link #elements()} where a read-only positional view is needed.</p>
  *
- * <p>Host equality/hash and logging deliberately do NOT traverse elements.
- * Oreslang value equality and display use the evaluator's separate bounded
- * guest semantics. This prevents hostile host callback execution, recursive
- * cycles and accidental Array/Tuple equality in Java collections.</p>
+ * <p>TypeChecker and checked callable/pattern boundaries supply precise
+ * positional type proofs; this runtime kind tag and immutable arity must be
+ * retained through every copy, actor, and async boundary.</p>
  */
-public final class OresTuple extends AbstractList<Object>
+public final class OresTuple extends AbstractCollection<Object>
         implements RandomAccess, OresMutex.SharedState {
     private final Object[] elements;
 
@@ -31,33 +31,39 @@ public final class OresTuple extends AbstractList<Object>
         }
     }
 
-    @Override
     public Object get(int index) {
         return elements[index];
     }
 
-    @Override
-    public int size() {
+    @Override public int size() {
         return elements.length;
     }
 
-    @Override
-    public boolean equals(Object other) {
+    /**
+     * Read-only sequence adapter: never a runtime Tuple kind witness.
+     * This must not escape in place of the actual OresTuple across a boundary.
+     */
+    public List<Object> elements() {
+        return java.util.Collections.unmodifiableList(Arrays.asList(elements));
+    }
+
+    @Override public Iterator<Object> iterator() {
+        return elements().iterator();
+    }
+
+    @Override public boolean equals(Object other) {
         return this == other;
     }
 
-    @Override
-    public int hashCode() {
+    @Override public int hashCode() {
         return System.identityHashCode(this);
     }
 
-    @Override
-    public String toString() {
+    @Override public String toString() {
         return "OresTuple<opaque>";
     }
 
-    @Override
-    public Iterable<?> sharedStateChildren() {
+    @Override public Iterable<?> sharedStateChildren() {
         return this;
     }
 }
