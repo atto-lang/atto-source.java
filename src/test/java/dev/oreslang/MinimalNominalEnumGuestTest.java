@@ -267,6 +267,124 @@ final class MinimalNominalEnumGuestTest {
                 () -> TypeChecker.check(Parser.parse(indirect)));
     }
 
+    @Test void guardedOrPartialPayloadCasesDoNotFakeExhaustiveness() {
+        String guarded = ERRORS + """
+                fnc incomplete(TrainingError value): int {
+                    match value over
+                        on TrainingError.INVALID_INPUT when true -> { return 1; }
+                        on TrainingError.STALE_GRAPH -> { return 2; }
+                    end
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(guarded));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(guarded)));
+
+        String partialPayload = """
+                define enum DetailError as
+                    CODE: int = 1
+                    END = 2
+                end
+                fnc incomplete(DetailError value): int {
+                    match value over
+                        on DetailError.CODE(7) -> { return 7; }
+                        on DetailError.END -> { return 0; }
+                    end
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(partialPayload));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(partialPayload)));
+    }
+
+    @Test void wildcardCanCloseEnumMatchButDuplicateCaseIsUnreachable() {
+        String wildcard = ERRORS + """
+                fnc render(TrainingError value): int {
+                    match value over
+                        on TrainingError.INVALID_INPUT -> { return 1; }
+                        on _ -> { return 2; }
+                    end
+                }
+                """;
+        assertDoesNotThrow(
+                () -> TypeChecker.check(Parser.parse(wildcard)));
+
+        String duplicate = ERRORS + """
+                fnc bad(TrainingError value): int {
+                    match value over
+                        on TrainingError.INVALID_INPUT -> { return 1; }
+                        on TrainingError.INVALID_INPUT -> { return 2; }
+                        on TrainingError.STALE_GRAPH -> { return 3; }
+                    end
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(duplicate));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(duplicate)));
+    }
+
+    @Test void enumConstructorAndPatternArityAreExact() {
+        String extraArgument = ERRORS + """
+                fnc bad(): TrainingError {
+                    return TrainingError.INVALID_INPUT(1);
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(extraArgument));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(extraArgument)));
+
+        String missingArgument = """
+                define enum DetailError as
+                    CODE: int = 1
+                end
+                fnc bad(): DetailError {
+                    return DetailError.CODE();
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(missingArgument));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(missingArgument)));
+
+        String patternMissingArgument = """
+                define enum DetailError as
+                    CODE: int = 1
+                end
+                fnc bad(DetailError value): int {
+                    match value over
+                        on DetailError.CODE -> { return 1; }
+                    end
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(patternMissingArgument));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(patternMissingArgument)));
+    }
+
+    @Test void foreignEnumCaseCannotAppearInNominalMatch() {
+        String program = ERRORS + """
+                define enum ForeignTrainingError as
+                    INVALID_INPUT = 1
+                    STALE_GRAPH = 2
+                end
+                fnc bad(TrainingError value): int {
+                    match value over
+                        on ForeignTrainingError.INVALID_INPUT -> { return 1; }
+                        on TrainingError.STALE_GRAPH -> { return 2; }
+                    end
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(program));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+    }
+
     @Test void tagsArePositiveUniqueAndMonotonic() {
         assertThrows(
                 IllegalArgumentException.class,
