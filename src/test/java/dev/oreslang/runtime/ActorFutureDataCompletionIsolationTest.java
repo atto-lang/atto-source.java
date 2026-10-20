@@ -2,8 +2,11 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -129,6 +132,59 @@ final class ActorFutureDataCompletionIsolationTest {
             actor.getDone().get(5, TimeUnit.SECONDS);
         } finally {
             release.countDown();
+        }
+    }
+
+    @Test
+    void privateDataContinuationOverflowDrainsEveryQueuedReservation()
+            throws Exception {
+        List<OresFuture<OresBytes>> producers = new ArrayList<>();
+        for (int i = 0; i < 1_025; i++) producers.add(new OresFuture<>());
+
+        CountDownLatch registered = new CountDownLatch(1);
+        CountDownLatch releaseActorTurn = new CountDownLatch(1);
+        AtomicInteger callbacks = new AtomicInteger();
+        OresBytes payload = OresBytes.copyOf(new byte[] {7});
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnPrivateTrusted(
+                    context -> (message, turnContext) -> {
+                        ActorRuntime.ContinuationTarget target =
+                                runtime.captureCurrentContinuationTarget();
+                        for (OresFuture<OresBytes> producer : producers) {
+                            runtime.enqueueDataOnCompletion(
+                                    producer,
+                                    target,
+                                    (value, terminal) -> callbacks.incrementAndGet());
+                        }
+                        registered.countDown();
+                        await(releaseActorTurn);
+                    });
+
+            actor.send("register");
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            long baseline = runtime.privateMemoryBytes();
+
+            for (OresFuture<OresBytes> producer : producers) {
+                producer.completeFromRuntime(payload);
+            }
+
+            assertEquals(0, callbacks.get(),
+                    "blocked actor turn must not execute queued data continuations");
+            assertEquals(baseline, runtime.privateMemoryBytes(),
+                    "overflow fail-stop must drain every queued data reservation");
+            Throwable terminal = actor.failure().orElseThrow(
+                    () -> new AssertionError("continuation overflow did not fail actor"));
+            assertInstanceOf(IllegalStateException.class, terminal);
+            assertTrue(terminal.getMessage().contains("continuation queue overflow"));
+
+            releaseActorTurn.countDown();
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> actor.getDone().get(5, TimeUnit.SECONDS));
+            assertEquals(0, runtime.privateMemoryBytes());
+        } finally {
+            releaseActorTurn.countDown();
         }
     }
 
