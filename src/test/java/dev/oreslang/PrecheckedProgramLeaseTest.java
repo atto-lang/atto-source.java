@@ -1,6 +1,5 @@
 package dev.oreslang;
 
-import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
@@ -21,7 +20,7 @@ final class PrecheckedProgramLeaseTest {
 
     @Test
     void exactLeaseIsOneShotAndNestedLeaseIsRejected() {
-        Ast.Program program = OresCompiler.parseAndTypeCheck(SOURCE);
+        OresCompiler.CheckedProgram program = OresCompiler.parseAndTypeCheckChecked(SOURCE);
         Source source = assertDoesNotThrow(() ->
                 Source.newBuilder(OresLanguage.ID, SOURCE, "lease.ores")
                         .mimeType(OresLanguage.MIME_TYPE)
@@ -61,7 +60,7 @@ final class PrecheckedProgramLeaseTest {
 
     @Test
     void leaseFailsClosedOnIdentityOrContentMismatchAndDoesNotLeak() {
-        Ast.Program program = OresCompiler.parseAndTypeCheck(SOURCE);
+        OresCompiler.CheckedProgram program = OresCompiler.parseAndTypeCheckChecked(SOURCE);
 
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false)
@@ -114,7 +113,7 @@ final class PrecheckedProgramLeaseTest {
 
     @Test
     void scopeCannotCloseFromAnotherThread() throws Exception {
-        Ast.Program program = OresCompiler.parseAndTypeCheck(SOURCE);
+        OresCompiler.CheckedProgram program = OresCompiler.parseAndTypeCheckChecked(SOURCE);
         OresLanguage.PrecheckedProgramScope scope =
                 OresLanguage.openPrecheckedProgram("lease.ores", SOURCE, program);
         AtomicReference<Throwable> failure = new AtomicReference<>();
