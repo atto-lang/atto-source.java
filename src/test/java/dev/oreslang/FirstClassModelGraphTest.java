@@ -221,6 +221,29 @@ final class FirstClassModelGraphTest {
     }
 
     @Test
+    void modelOwnsBothValueAndNominalTypeNames() {
+        assertThrowsMessage("MODEL_TYPE_NAME_COLLISION", () ->
+                OresCompiler.parseAndTypeCheck("""
+                        type PriceEstimate = float;
+                        fnc Identity(float input): float { return input; }
+                        define model PriceEstimate as
+                          Identity()
+                        end
+                        """));
+
+        assertThrowsMessage("MODEL_TYPE_NAME_COLLISION", () ->
+                OresCompiler.parseAndTypeCheck("""
+                        define interface PriceEstimate as
+                          fnc read(): float;
+                        end
+                        fnc Identity(float input): float { return input; }
+                        define model PriceEstimate as
+                          Identity()
+                        end
+                        """));
+    }
+
+    @Test
     void treeShakerRetainsModelAndItsVerifiedOperations() {
         TreeShaker.Result result = OresCompiler.compileForBuild(PRICE_MODEL + """
                 fnc dead(float input): float { return input + 99.0; }
