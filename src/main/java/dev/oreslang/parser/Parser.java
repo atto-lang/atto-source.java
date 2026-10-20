@@ -132,7 +132,13 @@ public final class Parser {
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, or trait after 'define'");
+                if (match(ENUM)) {
+                    validateNoModifiers(modifiers, "enums");
+                    rejectCallableStructuralAnnotation(annotations, "enum declarations");
+                    rootDeclarations.add(parseTaggedEnum());
+                    continue;
+                }
+                throw error(previous(), "expected module, class, interface, trait, or enum after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -295,7 +301,12 @@ public final class Parser {
                 rejectCallableStructuralAnnotation(annotations, "interface declarations");
                 return parseInterface(modifiers.visibility);
             }
-            throw error(previous(), "expected class, interface, or trait after 'define'");
+            if (match(ENUM)) {
+                validateNoModifiers(modifiers, "enums");
+                rejectCallableStructuralAnnotation(annotations, "enum declarations");
+                return parseTaggedEnum();
+            }
+            throw error(previous(), "expected class, interface, trait, or enum after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -1051,6 +1062,67 @@ public final class Parser {
             return namespace + "." + symbol;
         }
         return consumeCallableName("expected method name (methods omit 'fnc')");
+    }
+
+    private Ast.EnumDecl parseTaggedEnum() {
+        String name = consume(IDENT, "expected enum name").lexeme();
+        consume(AS, "expected 'as' after enum name");
+
+        List<Ast.EnumCase> cases = new ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
+        java.util.Set<Integer> tags = new java.util.HashSet<>();
+        int nextTag = 1;
+
+        while (!check(END) && !check(EOF)) {
+            Token start = consume(IDENT, "expected enum case name");
+            if (!names.add(start.lexeme())) {
+                throw error(start, "duplicate enum case " + start.lexeme());
+            }
+
+            Ast.TypeRef payload = match(COLON) ? parseTypeRef() : null;
+            int tag;
+            if (match(EQUAL)) {
+                Token raw = consume(INT, "expected positive enum tag");
+                long parsed;
+                try {
+                    parsed = Long.parseLong(raw.lexeme().replace("_", ""));
+                } catch (NumberFormatException failure) {
+                    throw error(raw, "enum tag is outside the supported integer range");
+                }
+                if (parsed < 1 || parsed > Integer.MAX_VALUE) {
+                    throw error(raw, "enum tags must be positive 32-bit integers");
+                }
+                tag = (int) parsed;
+            } else {
+                tag = nextTag;
+            }
+
+            if (tag < nextTag) {
+                throw error(start,
+                        "enum tags must increase monotonically; retired tags cannot be reused");
+            }
+            if (!tags.add(tag)) {
+                throw error(start, "duplicate enum tag " + tag);
+            }
+            nextTag = tag == Integer.MAX_VALUE ? tag : tag + 1;
+            cases.add(new Ast.EnumCase(start.lexeme(), payload, tag));
+
+            boolean separator = match(COMMA, SEMICOLON);
+            if (tag == Integer.MAX_VALUE && !check(END)) {
+                throw error(start, "cannot implicitly increment enum tag after INT32_MAX");
+            }
+            if (!separator && !check(END)
+                    && peek().line() <= previous().line()) {
+                throw error(peek(),
+                        "enum cases require separate lines, commas or semicolons");
+            }
+        }
+
+        consume(END, "expected 'end' after enum " + name);
+        if (cases.isEmpty()) {
+            throw error(previous(), "enum must declare at least one case");
+        }
+        return new Ast.EnumDecl(name, cases);
     }
 
     private Ast.TypeAliasDecl parseTypeAlias() {
@@ -2607,6 +2679,11 @@ public final class Parser {
 
         if (check(IDENT)) {
             String name = advance().lexeme();
+            if (match(DOT)) {
+                name += "." + consume(
+                        IDENT,
+                        "expected enum case name after '.' in match pattern").lexeme();
+            }
             if (match(LPAREN)) {
                 List<Ast.Pattern> args = new ArrayList<>();
                 if (!check(RPAREN)) {
