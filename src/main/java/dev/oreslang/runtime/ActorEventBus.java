@@ -752,6 +752,10 @@ public final class ActorEventBus implements AutoCloseable {
         private final AtomicInteger pendingReads = new AtomicInteger();
         private final int pendingReadLimit;
         private final AtomicBoolean subscriptionClosed = new AtomicBoolean();
+        /** Guarded by this: exact dequeued delivery retained across failed cleanup. */
+        private Event<T> closePendingDelivery;
+        /** Guarded by this: admission seal is distinct from completed drain. */
+        private boolean closeCleanupComplete;
 
         private Subscription(
                 TopicState topic,
@@ -945,31 +949,39 @@ public final class ActorEventBus implements AutoCloseable {
                         "an actor may only close its own ActorGroup event subscription");
             }
             synchronized (topic.deliveryLock) {
-                if (topic.subscriptions.remove(subscriber, this)) {
+                if (topic.subscriptions.get(subscriber) == this) {
                     closeChannelOnly();
+                    topic.subscriptions.remove(subscriber, this);
                 }
             }
         }
 
-        private void closeChannelOnly() {
-            if (!subscriptionClosed.compareAndSet(false, true)) return;
+        private synchronized void closeChannelOnly() {
+            if (closeCleanupComplete) return;
+            subscriptionClosed.set(true);
             channel.close();
 
-            // Use the runtime-only drain primitive rather than re-entering the
-            // guest-visible tryRead() path while holding the channel monitor.
-            // That keeps closed-and-empty teardown terminal rather than
-            // exceptional and releases delivery/accounting callbacks outside
-            // the channel lock.
+            releasePendingCloseDelivery();
+
             while (channel.drainOne(buffered -> {
-                if (topic.policy == DeliveryPolicy.RELIABLE) {
-                    releaseReliableEvent();
-                }
-                buffered.releaseDelivery();
+                closePendingDelivery = buffered;
+                releasePendingCloseDelivery();
             })) {
                 // Drain every already-buffered immutable delivery. Pending
                 // writers were failed by channel.close() and release their own
                 // delivery/accounting reservations from completion callbacks.
             }
+            closeCleanupComplete = true;
+        }
+
+        private void releasePendingCloseDelivery() {
+            Event<T> pending = closePendingDelivery;
+            if (pending == null) return;
+            pending.releaseDelivery();
+            if (topic.policy == DeliveryPolicy.RELIABLE) {
+                releaseReliableEvent();
+            }
+            closePendingDelivery = null;
         }
     }
 }
