@@ -40,6 +40,25 @@ Local independent Java 21 compilation checked a matching transport-epoch lease a
 
 No PR is production-ready until these gates are independently reviewed and executed.
 
+### Source-free single-close supporting evidence
+
+A separate private funded runner executed an independently authored source-free
+model of the descriptor-close ownership state machine. This did **not** copy or
+compile Oreslang private source and is therefore supporting model evidence only.
+
+- carrier: `usa-acc/usa-acc-e2e`
+- run: `39362506997`
+- carrier commit: `733356bddb02c8b32f3cc7c6399c655f9c880165`
+- GraalVM/JDK: Oracle GraalVM 25.3.4.1 / Java 25.0.4.1
+- compile: `javac -Xlint:all -Werror`
+- result: `SOURCE_FREE_IPC_SINGLE_CLOSE_PASS checks=60014 races=20000 exact_source=false`
+
+The model covers retry after scheduler rejection **before** close ownership,
+permanent quarantine after an unconfirmed close invocation, finalizer-only
+close, and writer-drain racing an in-flight external close. Every path asserts
+at most one descriptor-close invocation. Exact-head source execution remains
+required separately.
+
 
 ## Follow-up close scheduler and epoch hardening
 
