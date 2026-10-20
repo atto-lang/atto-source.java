@@ -477,7 +477,10 @@ Selecting with zero cases fails fast; at most one default is permitted.
 on every source-level `select from plan` iteration. Declare a `SelectPlan`
 outside a hot `for`/actor loop and select from that same plan inside it.
 A dynamic plan likewise retains the same immutable case snapshot until
-`put` or `remove` changes its version. Neither plan re-evaluates its
+`put` or `remove` changes its version. Its unchanged-generation snapshot
+lookup is a lock-free volatile read on the Java runtime; version changes are
+serialized, publishing new immutable snapshots without stealing old pending
+selections. Neither plan re-evaluates its
 case expressions on each iteration. Ordinary inline static select *does*
 still evaluate each arm's operands on every iteration; auto-hoisting is
 not implemented and cannot be assumed.
