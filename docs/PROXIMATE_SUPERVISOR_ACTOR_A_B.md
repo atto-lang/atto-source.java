@@ -111,8 +111,8 @@ to a supervisor.
 
 Existing Java host branch `hardening/supervisor-group-binding-20261011`
 implements root/child supervisor registration and `createActorGroup(S)`,
-plus `group.spawnWorker`. The accompanying JUnit proves that A cannot use
-those supervisor-only APIs; the privileged host stand-in can start B through
+plus a restricted `S.startChildHost(group, ...)` host/CONTROL bridge. The accompanying JUnit proves that A cannot use
+those supervisor-only APIs; the privileged host bridge can start B through
 S's already-bound group; A's clean stop leaves B alive until S's group closes.
 It does **not** prove compiler-generated supervisor dispatch or real restart.
 
