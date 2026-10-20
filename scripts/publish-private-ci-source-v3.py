@@ -309,7 +309,38 @@ def validate_test_plan(plan_bytes, source_pr):
             or any(not isinstance(x, int) or isinstance(x, bool) or x <= 0
                    for x in allowed)):
         raise Denied("reviewed test plan does not authorize source PR")
-    return hashlib.sha256(plan_bytes).hexdigest()
+
+    required = plan.get("required_source_blobs")
+    if not isinstance(required, dict) or not required:
+        raise Denied("reviewed test plan must bind required source blobs")
+    checked_required = {}
+    for path, sha in required.items():
+        if (not isinstance(path, str) or not path
+                or path.startswith("/") or "\\" in path
+                or ".." in PurePosixPath(path).parts
+                or ".git" in PurePosixPath(path).parts):
+            raise Denied("reviewed test plan has unsafe required source path")
+        checked_required[path] = valid_sha(
+            sha, "reviewed test plan required source blob invalid")
+
+    commands = plan.get("commands")
+    if not isinstance(commands, list) or not commands:
+        raise Denied("reviewed test plan commands missing")
+    uses_maven = any(
+        isinstance(command, dict)
+        and isinstance(command.get("argv"), list)
+        and command["argv"]
+        and command["argv"][0] == "mvn"
+        for command in commands
+    )
+    if uses_maven and "pom.xml" not in checked_required:
+        raise Denied("Maven test plan must bind exact pom.xml blob")
+
+    return {
+        "sha256": hashlib.sha256(plan_bytes).hexdigest(),
+        "required_source_blobs": checked_required,
+        "uses_maven": uses_maven,
+    }
 
 
 def manifest(files):
@@ -359,7 +390,8 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     )
     source_repo_id = verify_source_pr(source_pr, source_commit)
     destination, base_tree, plan_bytes = checked_destination(repository, contract)
-    plan_sha256 = validate_test_plan(plan_bytes, source_pr)
+    plan_contract = validate_test_plan(plan_bytes, source_pr)
+    plan_sha256 = plan_contract["sha256"]
 
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
@@ -369,6 +401,15 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         raise Denied("source directory escapes trusted checkout") from exc
     files = legacy.collect_source(source, trusted_root)
     source_tree = legacy.verified_exact_source_tree(files, source_commit)
+
+    source_blobs = {path: git_blob_sha(data) for path, data, _mode in files}
+    for path, expected_blob in plan_contract["required_source_blobs"].items():
+        if source_blobs.get(path) != expected_blob:
+            raise Denied("source snapshot violates reviewed test-plan blob binding: " + path)
+    if plan_contract["uses_maven"] and any(
+            path == ".mvn" or path.startswith(".mvn/") for path in source_blobs):
+        raise Denied("reviewed Maven plan forbids source-controlled .mvn control plane")
+
     rows, manifest_sha256 = manifest(files)
     branch = "ci/oreslang-" + source_tree
 
