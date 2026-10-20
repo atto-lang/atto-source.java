@@ -239,6 +239,115 @@ final class ScopedTaskBorrowPermitTest {
         assertEquals("", proof.accessPath());
     }
 
+
+    @Test
+    void uncapturedSiblingBorrowOfSameRegionCannotRideAnotherPermit() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub routine main(): void {
+                            let int value = 42;
+                            val permitted = rt borrow value;
+                            val ordinary = rt borrow value;
+                            nb scope {
+                                let worker = nb {
+                                    stdio.stdout.write(permitted);
+                                };
+                            }
+                            stdio.stdout.write(ordinary);
+                            return;
+                        }
+                        """));
+
+        String message = failure.getMessage().toLowerCase();
+        assertTrue(message.contains("uncaptured")
+                || message.contains("ordinary borrow")
+                || message.contains("scope"), message);
+    }
+
+    @Test
+    void parentCannotMutateRegionWhileScopedReadChildMayStillUseIt() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub routine main(): void {
+                            let int value = 41;
+                            val ref = rt borrow value;
+                            nb scope {
+                                let worker = nb {
+                                    stdio.stdout.write(ref);
+                                };
+                                value = 42;
+                            }
+                            return;
+                        }
+                        """));
+
+        String message = failure.getMessage().toLowerCase();
+        assertTrue(message.contains("borrow"), message);
+    }
+
+    @Test
+    void deferredLambdaCannotInheritLexicalScopeBorrowAuthority() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub routine main(): void {
+                            nb scope {
+                                val (() => void) later = || -> {
+                                    let int value = 42;
+                                    val ref = rt borrow value;
+                                    let worker = nb {
+                                        stdio.stdout.write(ref);
+                                    };
+                                    return;
+                                };
+                            }
+                            return;
+                        }
+                        """));
+
+        String message = failure.getMessage().toLowerCase();
+        assertTrue(message.contains("deferred")
+                || message.contains("escaping")
+                || message.contains("scope"), message);
+    }
+
+    @Test
+    void regionIdsAreDeterministicPerCompilationTraversal() {
+        String source = """
+                pub routine main(): void {
+                    let int value = 42;
+                    val ref = rt borrow value;
+                    nb scope {
+                        let worker = nb {
+                            stdio.stdout.write(ref);
+                        };
+                    }
+                    return;
+                }
+                """;
+
+        Ast.Program firstProgram = OresCompiler.parseAndTypeCheck(source);
+        Ast.Program secondProgram = OresCompiler.parseAndTypeCheck(source);
+
+        Ast.TaskCaptureProof first = firstCapture(firstProgram);
+        Ast.TaskCaptureProof second = firstCapture(secondProgram);
+
+        assertEquals(first.regionId(), second.regionId());
+        assertEquals(1L, first.regionId());
+        assertEquals(first.regionGeneration(), second.regionGeneration());
+    }
+
+    private static Ast.TaskCaptureProof firstCapture(Ast.Program program) {
+        Ast.FunctionDecl main = (Ast.FunctionDecl) program.modules()
+                .getFirst().declarations().getFirst();
+        Ast.TaskScopeStmt scope = (Ast.TaskScopeStmt) main.body().get(2);
+        Ast.TaskExpr task = (Ast.TaskExpr) ((Ast.BindingStmt)
+                scope.body().getFirst()).initializer();
+        return task.captureProofs().getFirst();
+    }
+
     private static String run(String text) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(
