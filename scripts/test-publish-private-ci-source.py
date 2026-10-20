@@ -64,6 +64,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 "object": {"sha": A, "type": "commit"}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": A},
+            "repos/trusted/ci/git/trees/"+E: {
+                "sha": E, "truncated": False, "tree": [
+                    {"path": pub.PREFIX, "type": "tree", "mode": "040000", "sha": D}]},
             "repos/trusted/ci/git/refs": {
                 "ref": "refs/heads/ci/oreslang-test",
                 "object": {"sha": A}},
@@ -377,6 +380,59 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "readback differs"):
                 pub.publish("trusted/ci", self.source,
                             "ci/oreslang-test", self.root, A)
+
+    def test_destination_root_tree_is_read_back_before_publishing(self):
+        sha, count = self.publish()
+        self.assertEqual((sha, count), (A, 1))
+        tree_reads = [i for i, (method, route, _) in enumerate(self.route_calls)
+                      if method == "GET" and route ==
+                      "repos/trusted/ci/git/trees/"+E]
+        commits = [i for i, (method, route, _) in enumerate(self.route_calls)
+                   if method == "POST" and route ==
+                   "repos/trusted/ci/git/commits"]
+        self.assertEqual(len(tree_reads), 1)
+        self.assertEqual(len(commits), 1)
+        self.assertLess(tree_reads[0], commits[0])
+
+    def test_root_tree_rejects_replaced_subtree_before_commit(self):
+        original = self.fake_api
+        def swapped(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/trees/"+E:
+                return {"sha": E, "truncated": False, "tree": [
+                    {"path": pub.PREFIX, "type": "tree",
+                     "mode": "040000", "sha": B}]}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=swapped):
+            with self.assertRaisesRegex(pub.Denied, "exact source subtree"):
+                pub.publish("trusted/ci", self.source,
+                            "ci/oreslang-test", self.root, A)
+        self.assertNotIn("repos/trusted/ci/git/commits",
+                         [route for method, route, _ in self.route_calls
+                          if method == "POST"])
+
+    def test_root_tree_rejects_truncation_and_duplicate_prefix(self):
+        original = self.fake_api
+        for fake_tree in (
+                {"sha": E, "truncated": True, "tree": []},
+                {"sha": E, "truncated": False, "tree": [
+                    {"path": pub.PREFIX, "type": "tree",
+                     "mode": "040000", "sha": D},
+                    {"path": pub.PREFIX, "type": "tree",
+                     "mode": "040000", "sha": D}]}):
+            with self.subTest(fake_tree=fake_tree):
+                self.route_calls.clear()
+                self.visibility = ["private"] * 100
+                def override(route, method="GET", payload=None):
+                    if route == "repos/trusted/ci/git/trees/"+E:
+                        return fake_tree
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=override):
+                    with self.assertRaises(pub.Denied):
+                        pub.publish("trusted/ci", self.source,
+                                    "ci/oreslang-test", self.root, A)
+                self.assertNotIn("repos/trusted/ci/git/commits",
+                                 [route for method, route, _ in self.route_calls
+                                  if method == "POST"])
 
     def test_existing_stale_files_cannot_survive_clean_source_snapshot(self):
         # Assume base_tree contains a stale private-oreslang-source/secret.ores.
