@@ -242,6 +242,7 @@ public final class TypeChecker {
             currentLexicalModule = module.name();
             try {
                 validateModuleValueNamespace(module);
+                validateModuleTypeNamespace(module);
                 checkModuleAdherence(module);
                 for (Ast.Decl decl : module.declarations()) {
                     if (decl instanceof Ast.FunctionDecl fn) checkFunction(module.name(), fn);
@@ -293,6 +294,35 @@ public final class TypeChecker {
                         "module value member '" + module.name() + "." + name
                                 + "' is ambiguous between " + previous + " and " + category
                                 + "; callable/class/binding names share one runtime value namespace");
+            }
+        }
+    }
+
+    private void validateModuleTypeNamespace(Ast.ModuleDecl module) {
+        Map<String, String> categories = new LinkedHashMap<>();
+        for (Ast.Decl decl : module.declarations()) {
+            String name;
+            String category;
+            if (decl instanceof Ast.ClassDecl klass) {
+                name = klass.name();
+                category = "class";
+            } else if (decl instanceof Ast.InterfaceDecl iface) {
+                name = iface.name();
+                category = iface.moduleContract() ? "contract" : "interface";
+            } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                name = alias.name();
+                category = "type alias";
+            } else if (decl instanceof Ast.EnumDecl enumeration) {
+                name = enumeration.name();
+                category = "enum";
+            } else {
+                continue;
+            }
+            String previous = categories.putIfAbsent(name, category);
+            if (previous != null) {
+                throw new IllegalArgumentException(
+                        "module type name '" + module.name() + "." + name
+                                + "' is ambiguous between " + previous + " and " + category);
             }
         }
     }
