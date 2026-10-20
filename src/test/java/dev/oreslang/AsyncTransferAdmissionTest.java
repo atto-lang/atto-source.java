@@ -58,6 +58,9 @@ final class AsyncTransferAdmissionTest {
                 OresCompiler.analyzeForAsyncLowering(program);
         AsyncTransferProvenance proof = checked.asyncTransfers();
 
+        assertEquals(
+                OresCompiler.AsyncReleaseBarrier.TASK_SCOPE_GET_DONE,
+                checked.releaseBarrier());
         assertTrue(proof.sealed());
         assertEquals(1, proof.callCount());
         assertEquals(2, proof.transferCount());
@@ -99,6 +102,38 @@ final class AsyncTransferAdmissionTest {
 
         assertEquals(
                 AsyncTransferProvenance.TransferKind.OWNED_RVALUE,
+                checked.asyncTransfers().transfersFor(call).getFirst().kind());
+    }
+
+    @Test
+    void staticAsyncMethodMintsTheSameExactCallProof() {
+        Ast.Program program = Parser.parse("""
+                define module app
+                  define class Box as
+                    pub let int value = 1;
+                  end
+
+                  define class Ops as
+                    pub static async fnc consume(Box box): int {
+                      return box.value;
+                    }
+                  end
+
+                  pub fnc main(): void {
+                    let original = new Box();
+                    val pending = Ops.consume(original);
+                    return;
+                  }
+                end
+                """);
+        Ast.CallExpr call = bindingCall(program, "main", 1);
+
+        OresCompiler.AsyncAdmissionResult checked =
+                OresCompiler.analyzeForAsyncLowering(program);
+
+        assertEquals(1, checked.asyncTransfers().callCount());
+        assertEquals(
+                AsyncTransferProvenance.TransferKind.UNIQUE_MOVE,
                 checked.asyncTransfers().transfersFor(call).getFirst().kind());
     }
 
