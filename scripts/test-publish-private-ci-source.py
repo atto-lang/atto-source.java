@@ -63,6 +63,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.repository_ids = [123] * 100
         self.archived = [False] * 100
         self.disabled = [False] * 100
+        self.carrier_is_fork = [False] * 100
         self.carrier_allow_forking = [False] * 100
         self.carrier_actions_enabled = [True] * 100
         self.carrier_sha_pinning_required = [True] * 100
@@ -211,6 +212,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         id=self.repository_ids.pop(0),
                         archived=self.archived.pop(0),
                         disabled=self.disabled.pop(0),
+                        fork=self.carrier_is_fork.pop(0),
                         allow_forking=self.carrier_allow_forking.pop(0))
         if route == "repos/trusted/ci/actions/permissions":
             return {"enabled": self.carrier_actions_enabled.pop(0),
@@ -3009,6 +3011,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
 
 
+
+
+    def test_carrier_fork_denied_before_source_read(self):
+        self.carrier_is_fork = [True] * 100
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read too early")):
+            with self.assertRaisesRegex(pub.Denied, "standalone repository"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_carrier_missing_action_sha_pinning_denied_before_source_read(self):
         self.carrier_sha_pinning_required = [False] * 100
