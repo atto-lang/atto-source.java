@@ -102,6 +102,33 @@ public final class IpcReceiptCompletionBridgeSelfTest {
         check(result(boundFuture) == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
         check(boundBridge.invariant());
 
+        // Production receipt application is two-phase: mutate the ordered
+        // ledger first, then publish the host future only after the outer
+        // transport receive gate has been released.
+        var deferredBridge = new IpcReceiptCompletionBridge(1);
+        var deferredEpoch = env(1, "deferred-publish");
+        Object deferredOwner = new Object();
+        deferredBridge.claimPhysicalTransport(deferredOwner, deferredEpoch, 34);
+        var deferredFuture = deferredBridge.admitAndCommit(
+                deferredOwner, deferredEpoch, 34);
+        var deferredAck = deferredBridge.applyVerified(
+                deferredOwner, deferredEpoch, 34,
+                IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+        deferredAck.publish();
+        check(!deferredFuture.toCompletableFuture().isDone());
+        var deferredTerminal = deferredBridge.applyVerified(
+                deferredOwner, deferredEpoch, 34,
+                IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+        check(!deferredFuture.toCompletableFuture().isDone());
+        check(deferredBridge.counters().equals(
+                new IpcReceiptCorrelation.Counters(0, 0)));
+        check(deferredBridge.invariant());
+        deferredTerminal.publish();
+        check(result(deferredFuture)
+                == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+        denied(deferredTerminal::publish);
+        check(deferredBridge.invariant());
+
         var boundLost = new IpcReceiptCompletionBridge(1);
         var lostEpoch = env(1, "bound-loss");
         Object lostOwner = new Object();
