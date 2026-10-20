@@ -5,7 +5,6 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
-import java.util.RandomAccess;
 
 /**
  * Immutable nominal carrier for Oreslang's fixed positional Tuple.
@@ -20,7 +19,7 @@ import java.util.RandomAccess;
  * retained through every copy, actor, and async boundary.</p>
  */
 public final class OresTuple extends AbstractCollection<Object>
-        implements RandomAccess, OresMutex.SharedState {
+        implements OresMutex.SharedState {
     private final Object[] elements;
 
     public OresTuple(List<?> values) {
