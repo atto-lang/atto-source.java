@@ -1,6 +1,7 @@
 """Adversarial offline regressions for read-only exact-head CI triage."""
 import importlib.util
 import unittest
+from unittest import mock
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location(
@@ -43,6 +44,25 @@ class ClassifierTests(unittest.TestCase):
                     damaged = dict(RUN, **{field: bad})
                     with self.assertRaises(m.TriageError):
                         m.classify(damaged, [job(steps=[])], SHA)
+
+    def test_gh_fetch_is_read_only_and_omits_api_error_text(self):
+        reply = m.subprocess.CompletedProcess(
+            ["gh"], returncode=0, stdout='{"status": "ok"}', stderr="")
+        with mock.patch.object(m.subprocess, "run", return_value=reply) as runner:
+            self.assertEqual(m.get_json("repos/org/repo/actions/runs/42"), {"status": "ok"})
+            args, kwargs = runner.call_args
+            self.assertEqual(args[0], ["gh", "api", "--method", "GET",
+                                       "repos/org/repo/actions/runs/42"])
+            self.assertTrue(kwargs["capture_output"])
+            self.assertFalse(kwargs["check"])
+
+    def test_gh_fetch_does_not_echo_private_api_errors(self):
+        failure = m.subprocess.CompletedProcess(
+            ["gh"], returncode=1, stdout="", stderr="PRIVATE_TOKEN_VALUE")
+        with mock.patch.object(m.subprocess, "run", return_value=failure):
+            with self.assertRaisesRegex(m.TriageError, "GitHub API request failed") as err:
+                m.get_json("repos/org/repo/actions/runs/42")
+            self.assertNotIn("PRIVATE_TOKEN_VALUE", str(err.exception))
 
     def test_explicit_empty_vs_null_vs_missing(self):
         self.assertEqual(m.classify(RUN, [job(steps=[])], SHA),
