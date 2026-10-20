@@ -54,21 +54,38 @@ public final class OresTaskScope implements AutoCloseable {
         void bindChild(CompilerScopeEpoch scopeEpoch, OresTask<?> child);
 
         /**
-         * No provisional runtime child was ever created. This edge is valid
-         * only before bindChild and carries no authority for a child that
-         * already has an exact runtime identity.
+         * Bind the scope-owned provisional owner to the exact runtime-minted
+         * scheduler child. This is the final live authority transition before
+         * executable admission.
          */
+        void bindSchedulerChild(
+                CompilerScopeEpoch scopeEpoch,
+                OresTask<?> child,
+                OresScheduler.CompilerTaskHandle<?> schedulerChild);
+
+        /** No provisional owner binding ever committed. */
         void retireBeforeChildBound(CompilerScopeEpoch scopeEpoch);
 
         /**
-         * An exact provisional child exists, but executable scheduler
-         * admission never happened. The exact child identity is mandatory.
+         * The provisional owner exists, but scheduler-child binding never
+         * committed. This cannot retire a scheduler-bound loan.
          */
-        void retireNeverStarted(
+        void retireBeforeSchedulerChildBound(
                 CompilerScopeEpoch scopeEpoch, OresTask<?> child);
 
+        /**
+         * Exact scheduler child was bound, but registration/admission failed.
+         * Both owner and scheduler identities are required.
+         */
+        void retireNeverStarted(
+                CompilerScopeEpoch scopeEpoch,
+                OresTask<?> child,
+                OresScheduler.CompilerTaskHandle<?> schedulerChild);
+
         void retireAfterPhysicalQuiescence(
-                CompilerScopeEpoch scopeEpoch, OresTask<?> child);
+                CompilerScopeEpoch scopeEpoch,
+                OresTask<?> child,
+                OresScheduler.CompilerTaskHandle<?> schedulerChild);
     }
 
     private static final CompilerLoanRetirement NO_COMPILER_LOAN =
@@ -76,12 +93,22 @@ public final class OresTaskScope implements AutoCloseable {
                 @Override public void bindScope(CompilerScopeEpoch scopeEpoch) { }
                 @Override public void bindChild(
                         CompilerScopeEpoch scopeEpoch, OresTask<?> child) { }
+                @Override public void bindSchedulerChild(
+                        CompilerScopeEpoch scopeEpoch,
+                        OresTask<?> child,
+                        OresScheduler.CompilerTaskHandle<?> schedulerChild) { }
                 @Override public void retireBeforeChildBound(
                         CompilerScopeEpoch scopeEpoch) { }
+                @Override public void retireBeforeSchedulerChildBound(
+                        CompilerScopeEpoch scopeEpoch, OresTask<?> child) { }
                 @Override public void retireNeverStarted(
-                        CompilerScopeEpoch scopeEpoch, OresTask<?> child) { }
+                        CompilerScopeEpoch scopeEpoch,
+                        OresTask<?> child,
+                        OresScheduler.CompilerTaskHandle<?> schedulerChild) { }
                 @Override public void retireAfterPhysicalQuiescence(
-                        CompilerScopeEpoch scopeEpoch, OresTask<?> child) { }
+                        CompilerScopeEpoch scopeEpoch,
+                        OresTask<?> child,
+                        OresScheduler.CompilerTaskHandle<?> schedulerChild) { }
             };
 
     // All members of one owned tree share a strict admission/plan monitor.
