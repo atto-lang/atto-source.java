@@ -300,6 +300,28 @@ final class OresKeyedMapTest {
         assertEquals(Map.of("original", 9), map.shallowSnapshot());
     }
 
+    @Test void inconsistentHostMapSizeDoesNotInvokeEntryValidator() {
+        java.util.concurrent.atomic.AtomicInteger validations =
+                new java.util.concurrent.atomic.AtomicInteger();
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys(
+                OresKeyedMap.ValueDomain.INT,
+                (key, value) -> validations.incrementAndGet());
+
+        Map<String, Integer> inconsistent = new java.util.AbstractMap<>() {
+            @Override public int size() { return 0; }
+            @Override public java.util.Set<Entry<String, Integer>> entrySet() {
+                return java.util.Set.of(Map.entry("smuggled", 5));
+            }
+        };
+
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class, () -> map.putAll(inconsistent));
+        assertTrue(denied.getMessage().contains("size changed"));
+        assertEquals(0, validations.get(),
+                "rejected hostile collection shape must not trigger semantic validator callbacks");
+        assertTrue(map.isEmpty());
+    }
+
     @Test void aggregateWireKeyBudgetRejectsOversizedKeySetAndRefundsOnRemove() {
         OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
         String prefix = "x".repeat(OresKeyedMap.MAX_TEXT_KEY_BYTES - 2);
@@ -348,22 +370,31 @@ final class OresKeyedMapTest {
         assertEquals(2, map.size());
     }
 
-    @Test void equalTypedMapsUseValueEqualityAndMatchingHash() {
-        OresKeyedMap<String, Integer> a =
-                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
-        OresKeyedMap<String, Integer> b =
-                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
-        a.put("x", 1);
-        a.put("y", 2);
-        b.put("x", 1);
-        b.put("y", 2);
+    @Test void typedMapHostIdentityNeverDispatchesStoredValueCallbacks() {
+        Object hostile = new Object() {
+            @Override public boolean equals(Object other) {
+                throw new AssertionError("Map host equality must not dispatch stored value equality");
+            }
+            @Override public int hashCode() {
+                throw new AssertionError("Map host hash must not dispatch stored value hashCode");
+            }
+            @Override public String toString() {
+                throw new AssertionError("Map host rendering must not dispatch stored value toString");
+            }
+        };
 
-        assertNotSame(a, b);
-        assertEquals(a, b);
-        assertEquals(a.hashCode(), b.hashCode());
+        OresKeyedMap<String, Object> a =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.ANY);
+        OresKeyedMap<String, Object> b =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.ANY);
+        a.put("x", hostile);
+        b.put("x", hostile);
 
-        b.put("y", 3);
-        assertNotEquals(a, b);
+        assertSame(a, a);
+        assertNotEquals(a, b,
+                "mutable host carriers use identity; guest Map equality is a separate checked operation");
+        assertDoesNotThrow(a::hashCode);
+        assertEquals("OresKeyedMap<opaque>", a.toString());
     }
 
     @Test void hostileHostBatchCannotMutateDestinationDuringSizeOrIteration() {
