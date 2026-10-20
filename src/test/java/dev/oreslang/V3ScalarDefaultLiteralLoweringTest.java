@@ -131,6 +131,43 @@ final class V3ScalarDefaultLiteralLoweringTest {
     }
 
     @Test
+    void producedFullArityScalarCallPassesActualTypeAndOwnershipCheckersWhenNormalized() {
+        var sourceSignature = function("""
+                @DefaultArgVals(port: 7)
+                pub fnc connect(int host, int port?): int { return host + port; }
+                """);
+        var candidate = V3ScalarDefaultLiteralLowering.lower(sourceSignature,
+                call(named("host", 35L)));
+        // This deliberately constructs an *ordinary, fully supplied* guest
+        // program. The staging metadata is NOT silently admitted into the
+        // runtime. The compiler checks the lowered call using its real passes.
+        Ast.Program normal = Parser.parse("""
+                pub fnc connect(int host, int port): int { return host + port; }
+                pub fnc entry(): int { return connect(0, 0); }
+                """);
+        Ast.ModuleDecl module = normal.modules().getFirst();
+        var changed = new java.util.ArrayList<Ast.Decl>();
+        for (Ast.Decl decl : module.declarations()) {
+            if (decl instanceof Ast.FunctionDecl fn && fn.name().equals("entry")) {
+                changed.add(new Ast.FunctionDecl(
+                        fn.name(), fn.kind(), fn.visibility(), fn.async(),
+                        fn.suspends(), fn.generator(), fn.structural(),
+                        fn.nonLexical(), fn.trapped(), fn.actorKind(),
+                        fn.genericParameters(), fn.parameters(), fn.returnType(),
+                        fn.annotations(), List.of(new Ast.ReturnStmt(
+                                candidate.fullArityCall())), fn.genericSpecs()));
+            } else {
+                changed.add(decl);
+            }
+        }
+        var rewritten = new Ast.Program(normal.namespace(), normal.imports(), List.of(
+                new Ast.ModuleDecl(module.name(), module.annotations(),
+                        module.contracts(), changed)));
+        assertDoesNotThrow(() -> dev.oreslang.types.TypeChecker.check(rewritten));
+        assertDoesNotThrow(() -> dev.oreslang.types.OwnershipChecker.check(rewritten));
+    }
+
+    @Test
     void returnedOrdinaryCallIsNotALanguageAdmissionCapability() {
         var f = function("""
                 @DefaultArgVals(port: 80)
