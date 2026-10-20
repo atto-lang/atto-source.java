@@ -79,6 +79,29 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertNotIn("PYTHONPATH", env)
         self.assertNotIn("GH_CONFIG_DIR", env)
 
+    def test_github_api_classifies_ref_create_422_as_definite_rejection(self):
+        response = Mock(
+            returncode=1,
+            stdout="",
+            stderr="gh: Reference already exists (HTTP 422)\n",
+        )
+        with (
+            patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"),
+            patch.dict(pub.os.environ, {"GH_TOKEN": "fixture"}, clear=True),
+            patch.object(pub.subprocess, "run", return_value=response),
+        ):
+            with self.assertRaises(pub.GitHubWriteRejected):
+                pub.gh_api(
+                    "repos/trusted/ci/git/refs",
+                    method="POST",
+                    payload={
+                        "ref": "refs/heads/ci/oreslang-test",
+                        "sha": "a" * 40,
+                    },
+                )
+            with self.assertRaisesRegex(pub.Denied, "request failed"):
+                pub.gh_api("repos/trusted/ci", method="GET")
+
     def test_github_api_requires_exactly_one_explicit_token(self):
         with patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"):
             for env in ({}, {"GH_TOKEN": "a", "GITHUB_TOKEN": "b"}):
