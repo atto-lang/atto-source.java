@@ -15,6 +15,14 @@ public final class OresCompiler {
         return analyze(Parser.parse(source));
     }
 
+    /**
+     * Inspect member-selection syntax only after normal type/ownership admission.
+     * No physical layout or performance conclusion is implied.
+     */
+    public static TypedLayoutAccessEvidence.Report inspectLayoutAccesses(String source) {
+        return TypedLayoutAccessEvidence.inspectSource(source);
+    }
+
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
