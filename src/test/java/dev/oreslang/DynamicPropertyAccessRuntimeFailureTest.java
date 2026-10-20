@@ -225,4 +225,26 @@ final class DynamicPropertyAccessRuntimeFailureTest {
                 """, "dynamic-tuple-index-overflow.ores", "array/list index outside supported signed 32-bit range: 2147483648");
     }
 
+
+    @Test
+    void structuralClassDynamicAccessCannotEscapeCheckedFieldDomain() {
+        runtimeRejected("""
+                define class Product as
+                    pub val float x = 3.0;
+                    pub val float y = 4.0;
+                    private val string hidden = "secret";
+                end
+
+                fnc read(structural Product value, string key): float {
+                    return value[key];
+                }
+
+                pub fnc main(): void {
+                    stdio.println(read(new Product(), "hidden"));
+                    return;
+                }
+                """,
+                "dynamic-structural-class-hidden-field.ores",
+                "structural computed field key outside checked domain: hidden");
+    }
 }
