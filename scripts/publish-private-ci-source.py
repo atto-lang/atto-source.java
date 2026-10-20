@@ -16,6 +16,7 @@ import subprocess
 import sys
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
+REPOSITORY_ID = re.compile(r"^[1-9][0-9]*$")
 BRANCH = re.compile(r"^ci/oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}$")
 SHA = re.compile(r"^[a-f0-9]{40}$")
 MAX_FILES = 1024
@@ -27,6 +28,7 @@ PREFIX = "private-oreslang-source"
 SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
+CARRIER_WORKFLOW_PATH = ".github/workflows/private-oreslang-exact-tree.yml"
 
 
 class Denied(RuntimeError):
@@ -62,14 +64,31 @@ def gh_api(route, method="GET", payload=None):
     return data
 
 
-def checked_repo(repository):
+def checked_repo(repository, expected_id):
     result = gh_api("repos/" + repository)
+    actual_id = result.get("id")
     if (not isinstance(result.get("full_name"), str)
             or result["full_name"].casefold() != repository.casefold()
+            or not isinstance(actual_id, int)
+            or isinstance(actual_id, bool)
+            or actual_id != expected_id
             or result.get("visibility") != "private"
             or result.get("private") is not True):
-        raise Denied("destination identity or private visibility changed")
+        raise Denied(
+            "destination identity, immutable repository ID, or private visibility changed")
     return result
+
+
+def checked_carrier_workflow(repository, ref, expected_sha):
+    response = gh_api(
+        f"repos/{repository}/contents/{CARRIER_WORKFLOW_PATH}?ref={ref}")
+    if response.get("type") != "file":
+        raise Denied("reviewed carrier workflow has unexpected shape")
+    actual_sha = valid_sha(response.get("sha"))
+    if actual_sha != expected_sha:
+        raise Denied(
+            "destination exact-tree workflow differs from reviewed policy")
+    return actual_sha
 
 
 def require_preflight(repository, root):
@@ -83,7 +102,37 @@ def require_preflight(repository, root):
         raise Denied("destination policy check unavailable") from exc
     if p.returncode != 0:
         raise Denied("destination not approved by checked-in private policy")
-    checked_repo(repository)
+
+
+def _policy_authorization(contents, repository):
+    if len(contents) > 16 * 1024:
+        raise Denied("private CI approval policy exceeds size limit")
+    try:
+        lines = contents.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise Denied("private CI approval policy cannot be decoded") from exc
+
+    approved = None
+    for line in lines:
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(" ")
+        if (len(parts) != 3
+                or not NAME.fullmatch(parts[0])
+                or not REPOSITORY_ID.fullmatch(parts[1])
+                or not SHA.fullmatch(parts[2])):
+            raise Denied("private CI approval policy contains an invalid entry")
+        if line != " ".join(parts):
+            raise Denied(
+                "private CI approval policy entries require exactly one ASCII space")
+        if parts[0].casefold() == repository.casefold():
+            if approved is not None:
+                raise Denied(
+                    "private CI approval policy contains duplicate destination entries")
+            approved = (int(parts[1]), parts[2])
+    if approved is None:
+        raise Denied("destination approval was revoked or absent")
+    return (hashlib.sha256(contents).digest(), approved[0], approved[1])
 
 
 def checked_policy_fingerprint(root, repository):
@@ -120,25 +169,9 @@ def checked_policy_fingerprint(root, repository):
             os.close(root_fd)
     except OSError as exc:
         raise Denied("private CI approval policy cannot be opened safely") from exc
-    if len(contents) > 16 * 1024:
-        raise Denied("private CI approval policy exceeds size limit")
-    try:
-        lines = contents.decode("utf-8").splitlines()
-    except UnicodeDecodeError as exc:
-        raise Denied("private CI approval policy cannot be decoded") from exc
-    approved = False
-    for line in lines:
-        if not line or line.startswith("#"):
-            continue
-        if not NAME.fullmatch(line):
-            raise Denied("private CI approval policy contains an invalid entry")
-        if line.casefold() == repository.casefold():
-            approved = True
-    if not approved:
-        raise Denied("destination approval was revoked or absent")
-    return hashlib.sha256(contents).digest()
+    return _policy_authorization(contents, repository)
 
-def verify_protected_origin(repository, expected_policy_digest):
+def verify_protected_origin(repository, expected_authorization):
     """Fail closed unless local policy matches CODEOWNER-controlled protected main.
 
     An unreviewed test checkout can add its own allowlist line; consulting
@@ -204,22 +237,15 @@ def verify_protected_origin(repository, expected_policy_digest):
         raise Denied("protected origin approval policy has invalid base64") from exc
     if len(remote_contents) > 16 * 1024:
         raise Denied("protected origin approval policy exceeds size limit")
-    if hashlib.sha256(remote_contents).digest() != expected_policy_digest:
-        raise Denied("source policy diverges from reviewed protected main")
     try:
-        lines = remote_contents.decode("utf-8").splitlines()
-    except UnicodeDecodeError as exc:
-        raise Denied("protected origin approval policy is not UTF-8") from exc
-    approved = False
-    for line in lines:
-        if not line or line.startswith("#"):
-            continue
-        if not NAME.fullmatch(line):
-            raise Denied("protected origin approval policy has an invalid entry")
-        if line.casefold() == repository.casefold():
-            approved = True
-    if not approved:
-        raise Denied("destination absent from protected origin allowlist")
+        remote_authorization = _policy_authorization(
+            remote_contents, repository)
+    except Denied as exc:
+        raise Denied(
+            "protected origin approval policy is invalid: " + str(exc)) from exc
+    if remote_authorization != expected_authorization:
+        raise Denied(
+            "source policy diverges from reviewed protected main")
 
 
 def collect_source(root, trusted_root):
@@ -386,18 +412,18 @@ def publish(repository, source, branch, trusted_root, source_commit):
     source_commit = valid_sha(source_commit)
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
-    approved_policy = checked_policy_fingerprint(trusted_root, repository)
+    approved_policy = checked_policy_fingerprint(
+        trusted_root, repository)
+    approved_repo_id = approved_policy[1]
+    approved_workflow_sha = approved_policy[2]
+
     # Must check the GitHub origin's protected main before reading private bytes.
     verify_protected_origin(repository, approved_policy)
-    trusted = trusted_root.resolve(strict=True)
-    checked_source = source.resolve(strict=True)
-    try:
-        checked_source.relative_to(trusted)
-    except ValueError as exc:
-        raise Denied("source directory escapes the trusted checkout") from exc
-    files = collect_source(source, trusted_root)
-    expected_source_tree = verified_exact_source_tree(files, source_commit)
-    base = checked_repo(repository)
+
+    # Pin the destination identity and the exact destination-owned workflow
+    # before reading source bytes. The carrier commit below overlays only
+    # PREFIX onto this immutable base tree.
+    base = checked_repo(repository, approved_repo_id)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
         raise Denied("destination default branch is invalid")
@@ -405,10 +431,25 @@ def publish(repository, source, branch, trusted_root, source_commit):
     base_sha = valid_sha(base_ref.get("object", {}).get("sha"))
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
+    checked_carrier_workflow(
+        repository, base_sha, approved_workflow_sha)
+
+    trusted = trusted_root.resolve(strict=True)
+    checked_source = source.resolve(strict=True)
+    try:
+        checked_source.relative_to(trusted)
+    except ValueError as exc:
+        raise Denied("source directory escapes the trusted checkout") from exc
+    files = collect_source(source, trusted_root)
+    expected_source_tree = verified_exact_source_tree(
+        files, source_commit)
+
     def authorize_write():
-        if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
-            raise Denied("private CI destination approval policy changed during transfer")
-        checked_repo(repository)
+        if checked_policy_fingerprint(
+                trusted_root, repository) != approved_policy:
+            raise Denied(
+                "private CI destination approval policy changed during transfer")
+        checked_repo(repository, approved_repo_id)
 
     elements = []
     for rel, data, mode in files:
@@ -442,7 +483,10 @@ def publish(repository, source, branch, trusted_root, source_commit):
     new_tree_sha = valid_sha(new_tree.get("sha"))
     authorize_write()
     commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
-        "message": "ci: source snapshot from approved private Oreslang checkout",
+        "message": (
+            "ci: exact private Oreslang tree "
+            + source_commit + " tree " + expected_source_tree
+        ),
         "tree": new_tree_sha, "parents": [base_sha]
     })
     commit_sha = valid_sha(commit.get("sha"))
