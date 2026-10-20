@@ -1,5 +1,7 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.AnnotationExpander;
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
@@ -7,6 +9,77 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class StaticContractSignatureV1Test {
+    @Test
+    void parserKeepsStaticContractDomainSeparateFromInstanceImplements() {
+        Ast.Program program = Parser.parse("""
+                define static contract Factory as
+                    fnc create(int id) -> int;
+                end
+
+                interface Named
+                    fnc name() => string;
+                end
+
+                define class Widget implements Named, static Factory as
+                    pub name() -> string {
+                        return "widget";
+                    }
+
+                    pub static fnc create(int id) -> int {
+                        return id;
+                    }
+                end
+                """);
+
+        Ast.InterfaceDecl factory = program.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.InterfaceDecl.class::isInstance)
+                .map(Ast.InterfaceDecl.class::cast)
+                .filter(decl -> decl.name().equals("Factory"))
+                .findFirst()
+                .orElseThrow();
+        Ast.ClassDecl widget = program.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .filter(decl -> decl.name().equals("Widget"))
+                .findFirst()
+                .orElseThrow();
+
+        assertTrue(factory.moduleContract());
+        assertTrue(factory.staticContract());
+        assertEquals(1, widget.interfaces().size());
+        assertEquals("Named", widget.interfaces().getFirst().name());
+        assertEquals(1, widget.staticContracts().size());
+        assertEquals("Factory", widget.staticContracts().getFirst().name());
+    }
+
+    @Test
+    void annotationExpansionPreservesStaticContractMetadata() {
+        Ast.Program parsed = Parser.parse("""
+                define static contract Factory as
+                    fnc create(int id) -> int;
+                end
+
+                define class Widget implements static Factory as
+                    pub static fnc create(int id) -> int {
+                        return id;
+                    }
+                end
+                """);
+        Ast.Program expanded = AnnotationExpander.expand(parsed);
+
+        Ast.ClassDecl widget = expanded.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .filter(decl -> decl.name().equals("Widget"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(1, widget.staticContracts().size());
+        assertEquals("Factory", widget.staticContracts().getFirst().name());
+    }
+
     @Test
     void publicStaticFunctionSatisfiesStaticContract() {
         String source = """
