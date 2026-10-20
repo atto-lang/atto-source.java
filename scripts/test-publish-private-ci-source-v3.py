@@ -327,6 +327,66 @@ class PrivateCiV3Test(unittest.TestCase):
             ],
         )
 
+    def test_publish_rolls_back_payload_if_protection_changes_before_authorization(self):
+        carrier = contract()
+
+        def api(route, method="GET", payload=None):
+            if method == "POST" and route.endswith("/git/blobs"):
+                data = base64.b64decode(payload["content"], validate=True)
+                return {"sha": v3.git_blob_sha(data)}
+            if method == "POST" and route.endswith("/git/trees"):
+                return {"sha": SOURCE_TREE if payload.get("base_tree") is None else ROOT_TREE}
+            if method == "POST" and route.endswith("/git/commits"):
+                return {"sha": COMMIT}
+            if method == "POST" and route.endswith("/git/refs"):
+                return {"ref": payload["ref"], "object": {"sha": payload["sha"]}}
+            raise AssertionError((method, route))
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "snapshot"
+            source.mkdir()
+            (source / "hello.ores").write_text("synthetic\n")
+            with (
+                patch.object(v3.legacy, "require_preflight"),
+                patch.object(v3.legacy, "checked_policy_fingerprint", return_value=POLICY),
+                patch.object(
+                    v3.legacy,
+                    "verify_protected_origin",
+                    side_effect=[None, None, v3.Denied("protection revoked")],
+                ),
+                patch.object(v3, "protected_main_sha", return_value=PROTECTED),
+                patch.object(v3, "checked_contract", return_value=carrier),
+                patch.object(v3, "verify_source_pr", return_value=v3.SOURCE_REPOSITORY_ID),
+                patch.object(
+                    v3, "checked_destination",
+                    return_value=(
+                        {"id": carrier["repository_id"], "private": True, "visibility": "private"},
+                        "3" * 40,
+                        PLAN,
+                    ),
+                ),
+                patch.object(
+                    v3.legacy, "collect_source",
+                    return_value=[("hello.ores", b"synthetic\n", "100644")],
+                ),
+                patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
+                patch.object(v3, "authorize_write"),
+                patch.object(v3, "require_exact_ref"),
+                patch.object(v3.legacy, "gh_api", side_effect=api),
+                patch.object(v3, "delete_exact_ref") as delete_ref,
+            ):
+                with self.assertRaisesRegex(v3.Denied, "protection revoked"):
+                    v3.publish(
+                        "trusted/ci", source, "4" * 40, 1482,
+                        "ci/test-plans/java-pr1482.json", root,
+                        now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
+                    )
+
+        delete_ref.assert_called_once_with(
+            "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT
+        )
+
     def test_publish_rolls_back_payload_if_pr_head_moves_before_authorization(self):
         carrier = contract()
         writes = []
