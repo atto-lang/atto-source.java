@@ -159,8 +159,8 @@ public final class OresContext implements AutoCloseable {
      * and fuel accounting. Both deliberately fail closed here instead of
      * giving guest code a new unrestricted scheduling domain.
      *
-     * The source compiler currently cannot construct safe Task frames,
-     * so its TaskExpr/TaskLambdaExpr type gate MUST remain in place.
+     * General guest TaskExpr/TaskLambdaExpr remain fail-closed; only the
+     * separate scalar-copy immediate-await lowering is admitted.
      */
     public <T> OresTask<T> startCompilerTaskFrame(OresScheduler.Task<T> frame) {
         java.util.Objects.requireNonNull(frame, "frame");
@@ -185,6 +185,39 @@ public final class OresContext implements AutoCloseable {
         // Future that might settle before the physical Task frame exits.
         return compilerTaskScope.startCompilerFrame(vm.rootScheduler(), frame);
     }
+    /**
+     * Narrow guest lowering target for `await task { return scalar; }`.
+     *
+     * <p>The frontend admits only this immediately awaited, scalar-copy-only
+     * expression in trusted VM root main. Although that main executes inside
+     * the root scheduler, its child owns no parent pointers, borrows or code
+     * closures: the context's structured Task scope retains its independent
+     * frame through physical completion. Root cancellation does not yet
+     * propagate to child Task scope cancellation: this v0 frame owns no guest
+     * memory or borrowed state, and context teardown must still drain it.
+     *
+     * <p>This method is not a general nested Task or detached spawn API.
+     */
+    public OresTask<Object> startCompilerScalarAwait(Object value) {
+        if (ActorRuntime.inActorExecution()) {
+            throw new IllegalStateException(
+                    "actor-private scalar Task execution is not enabled");
+        }
+        if (isolatePolicy.adversarial()) {
+            throw new SecurityException(
+                    "untrusted scalar Task execution needs inherited quotas");
+        }
+        if (OresScheduler.current() != vm.rootScheduler()) {
+            throw new IllegalStateException(
+                    "scalar Task immediate await requires the VM root scheduler");
+        }
+        // Validate/copy the value BEFORE enqueuing, never carry a mutable Env
+        // or source AST into another carrier. The host-owned context scope
+        // drains even if the waiting root source Task is cancelled.
+        OresScalarTaskFrame frame = OresScalarTaskFrame.returnConstant(value);
+        return compilerTaskScope.startCompilerFrame(vm.rootScheduler(), frame);
+    }
+
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
     public IsolatePolicy isolatePolicy() { return isolatePolicy; }

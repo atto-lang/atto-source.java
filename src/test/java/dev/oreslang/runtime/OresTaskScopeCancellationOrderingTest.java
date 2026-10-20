@@ -34,6 +34,92 @@ final class OresTaskScopeCancellationOrderingTest {
     }
 
     @Test
+    void deferredFutureCancellationRevokesBeforeDeliveringOldAndLateWaiters() {
+        var revoked = new java.util.concurrent.atomic.AtomicInteger();
+        var delivered = new java.util.concurrent.atomic.AtomicInteger();
+        var future = new OresFuture<Integer>(revoked::incrementAndGet);
+
+        future.whenCompleteRuntime((ignored, failure) -> {
+            assertInstanceOf(java.util.concurrent.CancellationException.class, failure);
+            assertEquals(1, revoked.get(), "producer must be revoked first");
+            delivered.incrementAndGet();
+        });
+
+        Runnable notify = future.cancelDeferredNotification();
+        assertNotNull(notify);
+        assertTrue(future.isCancelled());
+        assertEquals(1, revoked.get());
+        assertEquals(0, delivered.get(), "early subscriber must be deferred");
+        future.whenCompleteRuntime((ignored, failure) -> {
+            assertInstanceOf(java.util.concurrent.CancellationException.class, failure);
+            assertEquals(1, revoked.get());
+            delivered.incrementAndGet();
+        });
+        assertEquals(0, delivered.get(), "late subscriber must also be deferred");
+
+        notify.run();
+        assertEquals(2, delivered.get());
+        notify.run();
+        assertEquals(2, delivered.get(), "delivery must be single-shot");
+        assertNull(future.cancelDeferredNotification(),
+                "terminal cancellation cannot mint another notification");
+    }
+
+    @Test
+    void concurrentCancellationCannotDeliverEarlyOrLateSubscriberBeforeProducerRevocation()
+            throws Exception {
+        var hookEntered = new java.util.concurrent.CountDownLatch(1);
+        var releaseHook = new java.util.concurrent.CountDownLatch(1);
+        var hookRuns = new java.util.concurrent.atomic.AtomicInteger();
+        var observerCalls = new java.util.concurrent.atomic.AtomicInteger();
+        var failed = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var future = new OresFuture<Integer>(() -> {
+            hookRuns.incrementAndGet();
+            hookEntered.countDown();
+            try {
+                if (!releaseHook.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    throw new AssertionError("producer revocation timed out");
+                }
+            } catch (InterruptedException interruption) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interruption);
+            }
+        });
+        future.whenCompleteRuntime((ignored, failure) -> {
+            assertInstanceOf(java.util.concurrent.CancellationException.class, failure);
+            assertEquals(1, hookRuns.get());
+            observerCalls.incrementAndGet();
+        });
+        Thread canceller = Thread.ofPlatform().start(() -> {
+            try {
+                assertTrue(future.cancel(false));
+            } catch (Throwable problem) {
+                failed.compareAndSet(null, problem);
+            }
+        });
+        try {
+            assertTrue(hookEntered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertTrue(future.isCancelled());
+            assertNull(future.runtimeTerminalStateOrNull(),
+                    "runtime consumers must await completion of producer revocation");
+            future.whenCompleteRuntime((ignored, failure) -> {
+                assertInstanceOf(java.util.concurrent.CancellationException.class, failure);
+                observerCalls.incrementAndGet();
+            });
+            assertEquals(0, observerCalls.get(),
+                    "a late subscriber must not bypass the cancellation barrier");
+        } finally {
+            releaseHook.countDown();
+            canceller.join(7000);
+        }
+        assertFalse(canceller.isAlive());
+        assertNull(failed.get());
+        assertNotNull(future.runtimeTerminalStateOrNull());
+        assertEquals(1, hookRuns.get(), "revocation must run exactly once");
+        assertEquals(2, observerCalls.get(), "both observers must run once after revocation");
+    }
+
+    @Test
     void parentCancellationHookCannotCreateTaskInGrandchild() throws Exception {
         try (var runtime = new AsyncRuntime();
              var root = new OresTaskScope(runtime)) {

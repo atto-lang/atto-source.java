@@ -11,7 +11,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * primitive. It does not capture an Env, AST closure, ActorRef, arbitrary
  * object, borrow, runtime handle, or guest callback. Only the compiler may
  * decide whether a guest expression maps to one of these pure operations.
- * Guest Task execution remains gated by TypeChecker.
+ * Only the narrowly validated immediate root scalar await is admitted;
+ * all other guest Task shapes remain gated by TypeChecker.
  *
  * <p>Scalar values are snapshotted before scheduling, so subsequent changes
  * to the parent's variable bindings cannot change the worker's input.
@@ -20,6 +21,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 final class OresScalarTaskFrame implements OresScheduler.Task<Object> {
     private static final int MAX_CAPTURES = 16;
+    // Temporary guest scalar v0 bound until compiler-issued memory quotas exist.
+    private static final int MAX_STRING_CODE_UNITS = 1_048_576;
     private enum Operation { RETURN_CAPTURE, ADD_INTS, RETURN_CONSTANT }
 
     private final Object[] captures;
@@ -87,7 +90,11 @@ final class OresScalarTaskFrame implements OresScheduler.Task<Object> {
             return value; // immutable final Java value; not an owned guest pointer
         }
         if (kind == String.class) {
-            return new String((String) value);
+            String scalar = (String) value;
+            if (scalar.length() > MAX_STRING_CODE_UNITS) {
+                throw new IllegalArgumentException("scalar Task string exceeds copy quota");
+            }
+            return new String(scalar);
         }
         throw new IllegalArgumentException("scalar Task capture requires an owned primitive or string");
     }

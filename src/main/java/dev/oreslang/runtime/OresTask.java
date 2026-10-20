@@ -19,6 +19,10 @@ import java.util.Objects;
 public final class OresTask<T> implements Awaitable<T> {
     private volatile OresFuture<T> completion;
     private final OresFuture<?> quiescence;
+    // A parent scope can be cancelled after reserving this shell but before
+    // scheduler.start returns its Future. Preserve the cancellation request
+    // through that unbound interval rather than treating it as an error.
+    private boolean cancelDuringAdmission;
 
     OresTask(OresFuture<T> completion) {
         this.completion = Objects.requireNonNull(completion, "completion");
@@ -36,16 +40,34 @@ public final class OresTask<T> implements Awaitable<T> {
      * Pre-admission owner shell. The scope allocates this before scheduler
      * admission so OOME cannot create an executable Task with no owner record.
      */
-    OresTask(OresFuture<?> quiescence) {
+    private OresTask(OresFuture<?> quiescence, boolean provisional) {
+        if (!provisional)
+            throw new IllegalArgumentException("Task shell requires provisional admission");
         this.completion = null;
         this.quiescence = Objects.requireNonNull(quiescence, "quiescence");
     }
 
+    /** No erased-constructor overload ambiguity with OresTask(OresFuture<T>). */
+    static <T> OresTask<T> provisional(OresFuture<?> exitFence) {
+        return new OresTask<>(exitFence, true);
+    }
+
     void attachCompletion(OresFuture<T> admitted) {
         Objects.requireNonNull(admitted, "admitted");
-        if (completion != null)
-            throw new IllegalStateException("Task completion already attached");
-        completion = admitted;
+        boolean cancelPending;
+        synchronized (this) {
+            if (completion != null)
+                throw new IllegalStateException("Task completion already attached");
+            completion = admitted;
+            cancelPending = cancelDuringAdmission;
+        }
+        // A cancellation racing publication either observes the bound
+        // Future itself or is replayed here. Future's terminal CAS makes
+        // duplicate cancellation harmless. Run waiters outside all locks.
+        if (cancelPending) {
+            Runnable notify = admitted.cancelDeferredNotification();
+            if (notify != null) notify.run();
+        }
     }
 
     OresFuture<?> quiescenceFence() {
@@ -92,7 +114,15 @@ public final class OresTask<T> implements Awaitable<T> {
 
     /** Internal scope path: revoke now, deliver host waiters after siblings. */
     Runnable cancelDeferredNotification() {
-        return completion().cancelDeferredNotification();
+        OresFuture<T> bound;
+        synchronized (this) {
+            bound = completion;
+            if (bound == null) {
+                cancelDuringAdmission = true;
+                return null;
+            }
+        }
+        return bound.cancelDeferredNotification();
     }
 
     /**

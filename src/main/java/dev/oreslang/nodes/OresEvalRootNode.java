@@ -6,6 +6,7 @@ import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.types.ScalarTaskPlan;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
@@ -181,6 +182,10 @@ public final class OresEvalRootNode extends RootNode {
         private StartupPhase startupPhase = StartupPhase.CREATED;
         private final ThreadLocal<GeneratorRuntime.Emitter<Object>> activeGeneratorEmitter = new ThreadLocal<>();
         private final ThreadLocal<Boolean> activeGeneratorAsync = new ThreadLocal<>();
+        // Minted exclusively by the VM's MAIN_ONLY/Context.eval entrypoint
+        // launch, not by any normal root-scheduler invocation of fnc main.
+        private final ThreadLocal<Ast.FunctionDecl> launchingRootMain =
+                new ThreadLocal<>();
         private static final int TAIL_SAFEPOINT_INTERVAL = 64;
         private static final Object UNINITIALIZED_FIELD = new Object();
 
@@ -758,7 +763,14 @@ public final class OresEvalRootNode extends RootNode {
             // MAIN_ONLY is already executing inside OresVM's ROOT_TASK.
             // Never park the CONTROL carrier on an async result here; the
             // enclosing root Task owns the wait and fresh-resume transition.
-            return callFunction(main, List.of(arguments));
+            Ast.FunctionDecl previousLaunch = launchingRootMain.get();
+            launchingRootMain.set(main);
+            try {
+                return callFunction(main, List.of(arguments));
+            } finally {
+                if (previousLaunch == null) launchingRootMain.remove();
+                else launchingRootMain.set(previousLaunch);
+            }
         }
 
         private Object invokePublic(String name, Object[] arguments) {
@@ -964,6 +976,7 @@ public final class OresEvalRootNode extends RootNode {
             private SourceValueCont pendingLoopContinuation;
             private Env pendingLoopGuardEnv;
             private final Ast.FunctionDecl function;
+            private final boolean provenRootMainLaunch;
             private final Ast.MethodDecl method;
             private final OresObject receiver;
             private final List<Ast.Stmt> blockBody;
@@ -977,6 +990,11 @@ public final class OresEvalRootNode extends RootNode {
                     Ast.FunctionDecl function,
                     List<?> arguments) {
                 this.function = Objects.requireNonNull(function, "function");
+                // Consume the VM launch mark exactly once. A nested/reentrant
+                // call to an exported fnc named main must never reuse the
+                // initial source frame's Task authority.
+                this.provenRootMainLaunch = launchingRootMain.get() == function;
+                if (this.provenRootMainLaunch) launchingRootMain.remove();
                 this.method = null;
                 this.receiver = null;
                 this.blockBody = null;
@@ -988,6 +1006,7 @@ public final class OresEvalRootNode extends RootNode {
                     OresObject receiver,
                     List<?> arguments) {
                 this.function = null;
+                this.provenRootMainLaunch = false;
                 this.method = Objects.requireNonNull(method, "method");
                 this.receiver = receiver;
                 this.blockBody = null;
@@ -996,6 +1015,7 @@ public final class OresEvalRootNode extends RootNode {
 
             private SourceTask(List<Ast.Stmt> blockBody) {
                 this.function = null;
+                this.provenRootMainLaunch = false;
                 this.method = null;
                 this.receiver = null;
                 this.blockBody = List.copyOf(
@@ -3108,6 +3128,43 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.AwaitExpr awaited) {
+                    if (awaited.expression() instanceof Ast.TaskExpr scalarTask) {
+                        // Defense in depth: the context scheduler alone does NOT
+                        // identify the VM entrypoint. Other root-scheduled
+                        // source functions must not inherit main's privilege.
+                        if (!task.provenRootMainLaunch
+                                || task.function == null
+                                || !"main".equals(task.function.name())
+                                || !Parser.ROOT_MODULE.equals(
+                                        declarationModules.get(task.function))
+                                || !task.function.parameters().isEmpty()
+                                || task.function.kind() != Ast.CallableKind.FNC
+                                || task.function.visibility() != Ast.Visibility.PUBLIC
+                                || !task.function.genericParameters().isEmpty()
+                                || task.function.async()
+                                || task.function.generator()
+                                || task.function.trapped()
+                                || task.function.nonLexical()
+                                || task.function.actorKind() != Ast.ActorKind.NONE) {
+                            throw new SecurityException(
+                                    "guest scalar task must execute in VM root main");
+                        }
+                        // Only the frontend-approved immediate scalar await
+                        // may enter the guest Task execution path. Never
+                        // snapshot the Env or execute guest AST on the child.
+                        Ast.Expr capturedExpression = ScalarTaskPlan.returnedScalar(scalarTask);
+                        if (env.hasLiveMutexGuards()) {
+                            throw new IllegalStateException(
+                                    "scalar Task cannot launch while a MutexGuard is live");
+                        }
+                        Object copiedValue = eval(capturedExpression, env);
+                        // startCompilerScalarAwait verifies actor/trust/root
+                        // authority and copies only immutable host scalars.
+                        // The context retains a physical-completion fence.
+                        var child = context.startCompilerScalarAwait(copiedValue);
+                        suspendOnAwaitable(task, child, env, continuation);
+                        return;
+                    }
                     evalSuspendableExpr(
                             task,
                             awaited.expression(),

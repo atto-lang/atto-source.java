@@ -7,11 +7,14 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Exact-source host-side execution tests; this does not open guest nb syntax. */
+/** Exact-source host-side execution tests; this does not open general guest Task syntax. */
 final class OresScalarTaskFrameTest {
     @Test
     void scalarCaptureIsIndependentOfParentBindingAndAwaitsOnRealScheduler() {
@@ -87,6 +90,57 @@ final class OresScalarTaskFrameTest {
         OresScalarTaskFrame once = OresScalarTaskFrame.returnConstant(1L);
         assertInstanceOf(OresScheduler.Done.class, once.resume(null));
         assertThrows(IllegalStateException.class, () -> once.resume(null));
+    }
+
+    @Test
+    void hugeScalarStringsFailBeforeSchedulerAdmission() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresScalarTaskFrame.returnConstant("x".repeat(1_048_577)));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresScalarTaskFrame.returnCapture(
+                        List.of("x".repeat(1_048_577)), 0));
+        assertDoesNotThrow(() ->
+                OresScalarTaskFrame.returnConstant("x".repeat(1_048_576)));
+    }
+
+    @Test
+    void competingResumeAttemptsCannotDuplicateScalarExecution() throws Exception {
+        final int contenders = 12;
+        OresScalarTaskFrame frame = OresScalarTaskFrame.returnConstant(42L);
+        CountDownLatch ready = new CountDownLatch(contenders);
+        CountDownLatch start = new CountDownLatch(1);
+        AtomicInteger finished = new AtomicInteger();
+        AtomicInteger rejected = new AtomicInteger();
+        AtomicReference<Throwable> unexpected = new AtomicReference<>();
+        Thread[] workers = new Thread[contenders];
+        for (int i = 0; i < contenders; i++) {
+            workers[i] = Thread.ofVirtual().start(() -> {
+                ready.countDown();
+                try {
+                    if (!start.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("simultaneous Task resume test timed out");
+                    }
+                    assertInstanceOf(OresScheduler.Done.class, frame.resume(null));
+                    finished.incrementAndGet();
+                } catch (IllegalStateException replayDenied) {
+                    rejected.incrementAndGet();
+                } catch (Throwable failure) {
+                    unexpected.compareAndSet(null, failure);
+                }
+            });
+        }
+        try {
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+        } finally {
+            start.countDown();
+        }
+        for (Thread worker : workers) {
+            worker.join(5_000);
+            assertFalse(worker.isAlive(), "resumer must terminate without parking");
+        }
+        assertNull(unexpected.get(), "unexpected competing-resume failure");
+        assertEquals(1, finished.get(), "one and only one frame may execute");
+        assertEquals(contenders - 1, rejected.get(), "all competing resumes must fail");
     }
 
     @Test
