@@ -148,44 +148,44 @@ public final class StaticFactsV0Exporter {
         private void visitStatements(List<Ast.Stmt> body, String caller, List<Loop> loops) {
             enterTraversal();
             try {
-            for (Ast.Stmt stmt : body) {
-                if (stmt instanceof Ast.ReturnStmt ret) {
-                    visitExpr(ret.value(), caller);
-                } else if (stmt instanceof Ast.BindingStmt binding) {
-                    scalarType(binding.declaredType(), false);
-                    if (functionNames.contains(binding.name())) {
-                        throw unsupported("function name shadowed by local " + binding.name());
+                for (Ast.Stmt stmt : body) {
+                    if (stmt instanceof Ast.ReturnStmt ret) {
+                        visitExpr(ret.value(), caller);
+                    } else if (stmt instanceof Ast.BindingStmt binding) {
+                        scalarType(binding.declaredType(), false);
+                        if (functionNames.contains(binding.name())) {
+                            throw unsupported("function name shadowed by local " + binding.name());
+                        }
+                        visitExpr(binding.initializer(), caller);
+                    } else if (stmt instanceof Ast.ExprStmt expression) {
+                        visitExpr(expression.expression(), caller);
+                    } else if (stmt instanceof Ast.BlockStmt block) {
+                        visitStatements(block.body(), caller, loops);
+                    } else if (stmt instanceof Ast.IfStmt conditional) {
+                        for (Ast.IfBranch branch : conditional.branches()) {
+                            visitExpr(branch.condition(), caller);
+                            visitStatements(branch.body(), caller, loops);
+                        }
+                        visitStatements(conditional.elseBody(), caller, loops);
+                    } else if (stmt instanceof Ast.ForStmt loop) {
+                        addLoop(loops);
+                        if (loop.initializer() != null) {
+                            visitStatements(List.of(loop.initializer()), caller, loops);
+                        }
+                        visitExpr(loop.condition(), caller);
+                        visitExpr(loop.update(), caller);
+                        visitStatements(loop.body(), caller, loops);
+                    } else if (stmt instanceof Ast.DoWhileStmt loop) {
+                        addLoop(loops);
+                        visitStatements(loop.body(), caller, loops);
+                        visitExpr(loop.condition(), caller);
+                    } else if (stmt instanceof Ast.LoopStmt loop) {
+                        addLoop(loops);
+                        visitStatements(loop.body(), caller, loops);
+                    } else if (!(stmt instanceof Ast.BreakStmt || stmt instanceof Ast.ContinueStmt)) {
+                        throw unsupported("statement " + stmt.getClass().getSimpleName());
                     }
-                    visitExpr(binding.initializer(), caller);
-                } else if (stmt instanceof Ast.ExprStmt expression) {
-                    visitExpr(expression.expression(), caller);
-                } else if (stmt instanceof Ast.BlockStmt block) {
-                    visitStatements(block.body(), caller, loops);
-                } else if (stmt instanceof Ast.IfStmt conditional) {
-                    for (Ast.IfBranch branch : conditional.branches()) {
-                        visitExpr(branch.condition(), caller);
-                        visitStatements(branch.body(), caller, loops);
-                    }
-                    visitStatements(conditional.elseBody(), caller, loops);
-                } else if (stmt instanceof Ast.ForStmt loop) {
-                    addLoop(loops);
-                    if (loop.initializer() != null) {
-                        visitStatements(List.of(loop.initializer()), caller, loops);
-                    }
-                    visitExpr(loop.condition(), caller);
-                    visitExpr(loop.update(), caller);
-                    visitStatements(loop.body(), caller, loops);
-                } else if (stmt instanceof Ast.DoWhileStmt loop) {
-                    addLoop(loops);
-                    visitStatements(loop.body(), caller, loops);
-                    visitExpr(loop.condition(), caller);
-                } else if (stmt instanceof Ast.LoopStmt loop) {
-                    addLoop(loops);
-                    visitStatements(loop.body(), caller, loops);
-                } else if (!(stmt instanceof Ast.BreakStmt || stmt instanceof Ast.ContinueStmt)) {
-                    throw unsupported("statement " + stmt.getClass().getSimpleName());
                 }
-            }
             } finally {
                 traversalDepth--;
             }
@@ -203,41 +203,41 @@ public final class StaticFactsV0Exporter {
             if (expr == null) return;
             enterTraversal();
             try {
-            if (expr instanceof Ast.NameExpr) return;
-            if (expr instanceof Ast.LiteralExpr literal) {
-                if (!(literal.value() instanceof Long || literal.value() instanceof Boolean)) {
-                    throw unsupported("non-scalar literal");
+                if (expr instanceof Ast.NameExpr) return;
+                if (expr instanceof Ast.LiteralExpr literal) {
+                    if (!(literal.value() instanceof Long || literal.value() instanceof Boolean)) {
+                        throw unsupported("non-scalar literal");
+                    }
+                    return;
                 }
-                return;
-            }
-            if (expr instanceof Ast.BinaryExpr binary) {
-                visitExpr(binary.left(), caller);
-                visitExpr(binary.right(), caller);
-            } else if (expr instanceof Ast.UnaryExpr unary) {
-                visitExpr(unary.operand(), caller);
-            } else if (expr instanceof Ast.AssignExpr assignment) {
-                if (!(assignment.target() instanceof Ast.NameExpr)) {
-                    throw unsupported("non-scalar assignment target");
+                if (expr instanceof Ast.BinaryExpr binary) {
+                    visitExpr(binary.left(), caller);
+                    visitExpr(binary.right(), caller);
+                } else if (expr instanceof Ast.UnaryExpr unary) {
+                    visitExpr(unary.operand(), caller);
+                } else if (expr instanceof Ast.AssignExpr assignment) {
+                    if (!(assignment.target() instanceof Ast.NameExpr)) {
+                        throw unsupported("non-scalar assignment target");
+                    }
+                    visitExpr(assignment.value(), caller);
+                } else if (expr instanceof Ast.ConditionalExpr conditional) {
+                    visitExpr(conditional.condition(), caller);
+                    visitExpr(conditional.whenTrue(), caller);
+                    visitExpr(conditional.whenFalse(), caller);
+                } else if (expr instanceof Ast.CallExpr call) {
+                    if (!(call.callee() instanceof Ast.NameExpr target) || call.typeArgumentsPresent()) {
+                        throw unsupported("indirect, member or generic call");
+                    }
+                    String callee = symbols.get(target.name() + "/" + call.arguments().size());
+                    if (callee == null) throw unsupported("unresolved or external call " + target.name());
+                    for (Ast.Expr arg : call.arguments()) visitExpr(arg, caller);
+                    if (!edges.add(new Edge(caller, callee))) {
+                        throw unsupported("multiple static call sites with one caller/callee need callsite facts");
+                    }
+                    if (edges.size() > MAX_CALL_EDGES) throw unsupported("too many call edges");
+                } else {
+                    throw unsupported("expression " + expr.getClass().getSimpleName());
                 }
-                visitExpr(assignment.value(), caller);
-            } else if (expr instanceof Ast.ConditionalExpr conditional) {
-                visitExpr(conditional.condition(), caller);
-                visitExpr(conditional.whenTrue(), caller);
-                visitExpr(conditional.whenFalse(), caller);
-            } else if (expr instanceof Ast.CallExpr call) {
-                if (!(call.callee() instanceof Ast.NameExpr target) || call.typeArgumentsPresent()) {
-                    throw unsupported("indirect, member or generic call");
-                }
-                String callee = symbols.get(target.name() + "/" + call.arguments().size());
-                if (callee == null) throw unsupported("unresolved or external call " + target.name());
-                for (Ast.Expr arg : call.arguments()) visitExpr(arg, caller);
-                if (!edges.add(new Edge(caller, callee))) {
-                    throw unsupported("multiple static call sites with one caller/callee need callsite facts");
-                }
-                if (edges.size() > MAX_CALL_EDGES) throw unsupported("too many call edges");
-            } else {
-                throw unsupported("expression " + expr.getClass().getSimpleName());
-            }
             } finally {
                 traversalDepth--;
             }
