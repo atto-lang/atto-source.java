@@ -1335,9 +1335,16 @@ public final class ActorRuntime implements AutoCloseable {
                 if (closed.get()) throw new IllegalStateException("actor runtime is closed");
                 long nextBytes = estimateFrozenBytes(frozen);
                 long delta = nextBytes - reservedBytes;
-                if (delta > 0) reserveSharedRuntimeBytes(delta, "shared SyncCell update");
+                if (delta > 0) {
+                    reserveSharedRuntimeBytes(delta, "shared SyncCell update");
+                } else if (delta < 0) {
+                    // Refund aggregate accounting BEFORE publishing the smaller
+                    // value. If the refund fails, update() must throw without
+                    // committing a state change that its caller cannot observe
+                    // as successful.
+                    releaseSharedRuntimeBytes(-delta);
+                }
                 value = (T) frozen;
-                if (delta < 0) releaseSharedRuntimeBytes(-delta);
                 reservedBytes = nextBytes;
                 return value;
             } finally {
@@ -9082,8 +9089,11 @@ public final class ActorRuntime implements AutoCloseable {
                             "actor output memory accounting underflow for "
                                     + ref.id());
                 }
-                outputBytes.set(current - bytes);
+                // Aggregate refund owns the fallible boundary. Keep the
+                // actor-local debit unchanged until it succeeds so a retry
+                // retains exact release authority.
                 releaseSharedRuntimeBytes(bytes);
+                outputBytes.set(current - bytes);
             }
         }
 
@@ -9118,8 +9128,11 @@ public final class ActorRuntime implements AutoCloseable {
                                     + ref.id()
                                     + ": release=" + bytes + " used=" + current);
                 }
-                sharedMailboxBytes.set(current - bytes);
+                // Preserve the actor-local debit until the aggregate
+                // refund returns normally; otherwise teardown/retry would lose
+                // the exact outstanding mailbox accounting owner.
                 releaseSharedRuntimeBytes(bytes);
+                sharedMailboxBytes.set(current - bytes);
             }
         }
 
