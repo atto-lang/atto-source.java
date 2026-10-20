@@ -1780,6 +1780,10 @@ public final class TypeChecker {
             checkBlock(block.body(), env, generics, expectedReturn, self);
             return;
         }
+        if (stmt instanceof Ast.TaskScopeStmt taskScope) {
+            checkBlock(taskScope.body(), env, generics, expectedReturn, self);
+            return;
+        }
         if (stmt instanceof Ast.BreakStmt) {
             if (loopDepth == 0) throw new IllegalArgumentException("'break' may only appear inside loop or for");
             return;
