@@ -82,13 +82,15 @@ public final class LinkedProgramRunner {
         Map<String, String> sources = oresSources(units);
         IncrementalCompiler.BuildResult build =
                 new IncrementalCompiler().compile(sources, importResolutions);
-        Map<String, Ast.Program> programs = parsePrograms(sources);
+        Map<String, Ast.Program> checkedPrograms = checkedPrograms(build);
         if (policy != null) {
-            for (Ast.Program program : programs.values()) {
+            for (Ast.Program program : checkedPrograms.values()) {
                 CapabilityChecker.check(program, policy, permissionCheckMode);
             }
         }
-        try (MixedJavaCompiler.Compilation ignored = MixedJavaCompiler.compile(new ArrayList<>(units.values()), programs)) {
+        Map<String, Ast.Program> facadePrograms = parsePrograms(sources);
+        try (MixedJavaCompiler.Compilation ignored =
+                MixedJavaCompiler.compile(new ArrayList<>(units.values()), facadePrograms)) {
             return build;
         }
     }
@@ -196,13 +198,18 @@ public final class LinkedProgramRunner {
         Map<String, String> sources = oresSources(units);
         IncrementalCompiler.BuildResult build =
                 new IncrementalCompiler().compile(sources, importResolutions);
-        Map<String, Ast.Program> programs = parsePrograms(sources);
+        Map<String, Ast.Program> checkedPrograms = checkedPrograms(build);
+        for (Ast.Program program : checkedPrograms.values()) {
+            CapabilityChecker.check(program, policy, permissionCheckMode);
+        }
+        Map<String, Ast.Program> facadePrograms = parsePrograms(sources);
         int exitStatus = 0;
         String entryId = unitId(entry);
         MixedSourceUnit entryUnit = units.get(entryId);
         if (entryUnit == null) throw new IllegalStateException("entry source unit was not collected: " + entryId);
 
-        try (MixedJavaCompiler.Compilation javaCompilation = MixedJavaCompiler.compile(new ArrayList<>(units.values()), programs)) {
+        try (MixedJavaCompiler.Compilation javaCompilation =
+                MixedJavaCompiler.compile(new ArrayList<>(units.values()), facadePrograms)) {
             LinkedHashSet<String> effectiveHostClasses = new LinkedHashSet<>(allowedHostClasses);
             effectiveHostClasses.addAll(javaCompilation.hostClasses());
 
@@ -354,6 +361,16 @@ public final class LinkedProgramRunner {
         if (unit != null && unit.primaryLanguage() == MixedSourceUnit.PrimaryLanguage.JAVA && unit.foreignIslands().isEmpty()) {
             throw new IllegalArgumentException("a .java Oreslang entry must contain at least one ores { ... } island");
         }
+    }
+
+    private static Map<String, Ast.Program> checkedPrograms(
+            IncrementalCompiler.BuildResult build) {
+        LinkedHashMap<String, Ast.Program> programs = new LinkedHashMap<>();
+        for (Map.Entry<String, IncrementalCompiler.CompiledUnit> unit
+                : build.units().entrySet()) {
+            programs.put(unit.getKey(), unit.getValue().program());
+        }
+        return Map.copyOf(programs);
     }
 
     private static Map<String, Ast.Program> parsePrograms(Map<String, String> sources) {

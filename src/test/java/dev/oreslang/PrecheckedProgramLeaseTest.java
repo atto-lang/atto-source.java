@@ -6,6 +6,8 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.atomic.AtomicReference;
+
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -23,6 +25,7 @@ final class PrecheckedProgramLeaseTest {
         Source source = assertDoesNotThrow(() ->
                 Source.newBuilder(OresLanguage.ID, SOURCE, "lease.ores")
                         .mimeType(OresLanguage.MIME_TYPE)
+                        .cached(false)
                         .buildLiteral());
 
         try (Context context = Context.newBuilder(OresLanguage.ID)
@@ -38,6 +41,11 @@ final class PrecheckedProgramLeaseTest {
             assertTrue(nested.getMessage().contains("nested prechecked"));
 
             assertDoesNotThrow(() -> context.parse(source));
+
+            RuntimeException reused = assertThrows(
+                    RuntimeException.class,
+                    () -> context.parse(source));
+            assertTrue(reused.getMessage().contains("already consumed"));
         }
 
         // The consumed/closed lease must leave no thread-local residue.
@@ -70,6 +78,15 @@ final class PrecheckedProgramLeaseTest {
                         () -> context.parse(wrongIdentity));
                 assertTrue(failure.getMessage().contains(
                         "does not match parsed source identity/content"));
+
+                RuntimeException retry = assertThrows(
+                        RuntimeException.class,
+                        () -> context.parse(Source.newBuilder(
+                                OresLanguage.ID, SOURCE, "expected.ores")
+                                .mimeType(OresLanguage.MIME_TYPE)
+                                .cached(false)
+                                .buildLiteral()));
+                assertTrue(retry.getMessage().contains("already consumed"));
             }
 
             String changed = SOURCE + "\n";
@@ -93,5 +110,26 @@ final class PrecheckedProgramLeaseTest {
                             .buildLiteral());
             assertDoesNotThrow(() -> context.parse(ordinary));
         }
+    }
+
+    @Test
+    void scopeCannotCloseFromAnotherThread() throws Exception {
+        Ast.Program program = OresCompiler.parseAndTypeCheck(SOURCE);
+        OresLanguage.PrecheckedProgramScope scope =
+                OresLanguage.openPrecheckedProgram("lease.ores", SOURCE, program);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread other = Thread.ofPlatform().start(() -> {
+            try {
+                scope.close();
+            } catch (Throwable thrown) {
+                failure.set(thrown);
+            }
+        });
+        other.join();
+
+        assertTrue(failure.get() instanceof IllegalStateException);
+        assertTrue(failure.get().getMessage().contains("owning thread"));
+        scope.close();
     }
 }

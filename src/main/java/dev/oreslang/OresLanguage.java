@@ -106,7 +106,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         return new PrecheckedProgramScope(lease);
     }
 
-    static Ast.Program consumePrecheckedProgram(
+    private static Ast.Program consumePrecheckedProgram(
             String codeUnitId,
             String sourceText) {
         PrecheckedProgramLease lease = PRECHECKED_PROGRAM.get();
