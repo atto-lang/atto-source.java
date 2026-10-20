@@ -38,7 +38,7 @@ public final class EcsAccessPlanner {
         private AllocationIdentity() { }
     }
 
-    static AllocationIdentity newAllocationIdentity() {
+    public static AllocationIdentity newCompilerAllocationIdentity() {
         return new AllocationIdentity();
     }
 
