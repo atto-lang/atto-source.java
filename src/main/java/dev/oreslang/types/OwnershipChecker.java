@@ -2,6 +2,8 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.ModelGraphCompiler;
+import dev.oreslang.parser.Parser;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -40,6 +42,8 @@ public final class OwnershipChecker {
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
+    private ModelGraphCompiler.Catalog modelCatalog;
+    private String currentLexicalModule;
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     /** Only bindings admitted as new short aliases by the type checker. */
@@ -116,6 +120,7 @@ public final class OwnershipChecker {
                 else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
             }
         }
+        modelCatalog = ModelGraphCompiler.compile(program);
     }
 
     private void indexFunction(String module, Ast.FunctionDecl fn) {
@@ -151,9 +156,15 @@ public final class OwnershipChecker {
 
     private void validate(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
-            for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.FunctionDecl fn) checkFunction(fn);
-                else if (decl instanceof Ast.ClassDecl klass) checkClass(klass);
+            String previousModule = currentLexicalModule;
+            currentLexicalModule = module.name();
+            try {
+                for (Ast.Decl decl : module.declarations()) {
+                    if (decl instanceof Ast.FunctionDecl fn) checkFunction(fn);
+                    else if (decl instanceof Ast.ClassDecl klass) checkClass(klass);
+                }
+            } finally {
+                currentLexicalModule = previousModule;
             }
         }
     }
@@ -1499,6 +1510,24 @@ public final class OwnershipChecker {
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
 
+        if (call.callee() instanceof Ast.NameExpr modelName
+                && scope.lookup(modelName.name()) == null
+                && modelCatalog != null) {
+            ModelGraphCompiler.CompiledModel model = findModel(modelName.name());
+            if (model != null) {
+                if (call.arguments().size() > model.parameters().size()) {
+                    throw error("MODEL_CONFIG_ARITY: too many model configuration arguments");
+                }
+                for (Ast.Expr argument : call.arguments()) {
+                    checkExpr(argument, scope, false);
+                }
+                return new ValueInfo(
+                        Ast.TypeRef.simple(model.modelTypeName()),
+                        ValueKind.MOVE_ONLY,
+                        null);
+            }
+        }
+
         if (call.callee() instanceof Ast.NameExpr name
                 && scope.lookup(name.name()) == null) {
             Ast.FunctionDecl fn = findFunction(
@@ -1511,6 +1540,26 @@ public final class OwnershipChecker {
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
+            }
+        }
+
+        if (call.callee() instanceof Ast.MemberExpr qualifiedModel
+                && qualifiedModel.receiver() instanceof Ast.NameExpr namespace
+                && scope.lookup(namespace.name()) == null
+                && modelCatalog != null) {
+            ModelGraphCompiler.CompiledModel model =
+                    modelCatalog.find(namespace.name() + "." + qualifiedModel.member());
+            if (model != null) {
+                if (call.arguments().size() > model.parameters().size()) {
+                    throw error("MODEL_CONFIG_ARITY: too many model configuration arguments");
+                }
+                for (Ast.Expr argument : call.arguments()) {
+                    checkExpr(argument, scope, false);
+                }
+                return new ValueInfo(
+                        Ast.TypeRef.simple(model.modelTypeName()),
+                        ValueKind.MOVE_ONLY,
+                        null);
             }
         }
 
@@ -1535,6 +1584,8 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.MemberExpr member) {
+            ValueInfo modelReceiver = checkModelRunReceiver(member, call.arguments(), scope);
+            if (modelReceiver != null) return modelReceiver;
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
             ValueInfo stringCall = checkBuiltinStringCall(member, call.arguments(), scope);
@@ -3331,6 +3382,37 @@ public final class OwnershipChecker {
         }
         seen.remove(klass);
         return false;
+    }
+
+    private ModelGraphCompiler.CompiledModel findModel(String name) {
+        if (modelCatalog == null) return null;
+        if (name.indexOf('.') >= 0) return modelCatalog.find(name);
+        if (currentLexicalModule != null && !currentLexicalModule.equals(Parser.ROOT_MODULE)) {
+            ModelGraphCompiler.CompiledModel local =
+                    modelCatalog.find(currentLexicalModule + "." + name);
+            if (local != null) return local;
+        }
+        return modelCatalog.find(name);
+    }
+
+    private ValueInfo checkModelRunReceiver(
+            Ast.MemberExpr member,
+            List<Ast.Expr> arguments,
+            Scope scope) {
+        if (modelCatalog == null || !member.member().equals("run")) return null;
+        Ast.TypeRef receiverType = receiverType(member.receiver(), scope);
+        if (receiverType == null || receiverType.isBorrow()) return null;
+        ModelGraphCompiler.CompiledModel model =
+                modelCatalog.findByTypeName(receiverType.name());
+        if (model == null) return null;
+
+        checkExpr(member.receiver(), scope, false);
+        if (arguments.size() != 1) {
+            throw error("MODEL_RUN_ARITY: model.run expects exactly one input");
+        }
+        checkExpr(arguments.getFirst(), scope, true);
+        Ast.TypeRef output = model.outputType();
+        return new ValueInfo(output, kindOfType(output), null);
     }
 
     private Ast.FunctionDecl findFunction(String name, int arity) {
