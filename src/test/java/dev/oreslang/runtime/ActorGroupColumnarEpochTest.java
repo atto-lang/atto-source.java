@@ -182,11 +182,11 @@ final class ActorGroupColumnarEpochTest {
     void rejectsMalformedUtf8AndOversizeColumnNamesBeforeAllocation() {
         var id = ActorRuntime.ActorId.create();
         assertThrows(IllegalArgumentException.class, () ->
-                new ActorGroupColumnarEpoch(1, List.of(id), List.of("bad\uD800")));
+                new ActorGroupColumnarEpoch(1, List.of(id), List.of("bad" + ((char) 0xD800))));
         assertThrows(IllegalArgumentException.class, () ->
                 new ActorGroupColumnarEpoch(1, List.of(id), List.of("x".repeat(257))));
         assertThrows(IllegalArgumentException.class, () ->
-                new ActorGroupColumnarEpoch(1, List.of(id), List.of("a\u0000b")));
+                new ActorGroupColumnarEpoch(1, List.of(id), List.of("a" + ((char) 0) + "b")));
         assertThrows(IllegalArgumentException.class, () ->
                 new ActorGroupColumnarEpoch(1, List.of(id), List.of("score", "score")));
         assertThrows(IllegalArgumentException.class, () ->
