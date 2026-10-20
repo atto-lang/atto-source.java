@@ -164,6 +164,9 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     protected CallTarget parse(ParsingRequest request) {
         var source = request.getSource();
         String text = source.getCharacters().toString();
+        OresCompiler.ExecutionAnalysis analysis =
+                OresCompiler.parseAndProveForExecution(text);
+        Ast.Program program = analysis.program();
         String codeUnitId = source.getPath();
         if (codeUnitId == null || codeUnitId.isBlank()) {
             codeUnitId = source.getName();
