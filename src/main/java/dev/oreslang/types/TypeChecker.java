@@ -5585,6 +5585,11 @@ public final class TypeChecker {
                 .contains(named.name())) {
             return false;
         }
+        if (named.name().equals("Entry")) {
+            return named.arguments().size() == 2
+                    && isSharedMutexPayloadSafe(named.arguments().get(0), seen, genericBindings)
+                    && isSharedMutexPayloadSafe(named.arguments().get(1), seen, genericBindings);
+        }
         if (named.name().equals("OptionUnwrapError")) {
             return named.arguments().isEmpty();
         }
@@ -5597,18 +5602,6 @@ public final class TypeChecker {
                             genericBindings);
         }
         if (named.name().equals("Result")) {
-            return named.arguments().size() == 2
-                    && isSharedMutexPayloadSafe(
-                            named.arguments().get(0),
-                            seen,
-                            genericBindings)
-                    && isSharedMutexPayloadSafe(
-                            named.arguments().get(1),
-                            seen,
-                            genericBindings);
-        }
-
-        if (named.name().equals("Entry")) {
             return named.arguments().size() == 2
                     && isSharedMutexPayloadSafe(
                             named.arguments().get(0),
@@ -9086,6 +9079,22 @@ public final class TypeChecker {
             return structuralRecordAssignable(sourceShape, targetShape);
         }
 
+        if (actual instanceof Tuple sourceTuple && expected instanceof Tuple targetTuple) {
+            if (sourceTuple.kind() != targetTuple.kind()
+                    || sourceTuple.elements().size() != targetTuple.elements().size()) return false;
+            for (int i = 0; i < sourceTuple.elements().size(); i++) {
+                Type actualSlot = sourceTuple.elements().get(i);
+                Type expectedSlot = targetTuple.elements().get(i);
+                // Keep readonly positional slots representation preserving,
+                // while permitting proven nominal subtype elements through
+                // this checker's declaration-aware relation.
+                if (!readonlyStructuralMemberAssignable(actualSlot, expectedSlot)) return false;
+                if (sourceTuple.kind() != TupleKind.TUPLE
+                        && !readonlyStructuralMemberAssignable(expectedSlot, actualSlot)) return false;
+            }
+            return true;
+        }
+
         if (Types.isAssignable(actual, expected)) return true;
 
         if (actual instanceof Named actualNamed && expected instanceof Record targetShape) {
@@ -9246,7 +9255,11 @@ public final class TypeChecker {
         if (source instanceof Tuple from && target instanceof Tuple to) {
             if (from.kind() != to.kind() || from.elements().size() != to.elements().size()) return false;
             for (int i = 0; i < from.elements().size(); i++) {
-                if (!readonlyStructuralMemberAssignable(from.elements().get(i), to.elements().get(i))) return false;
+                Type actualSlot = from.elements().get(i);
+                Type expectedSlot = to.elements().get(i);
+                if (!readonlyStructuralMemberAssignable(actualSlot, expectedSlot)) return false;
+                if (from.kind() != TupleKind.TUPLE
+                        && !readonlyStructuralMemberAssignable(expectedSlot, actualSlot)) return false;
             }
             return true;
         }

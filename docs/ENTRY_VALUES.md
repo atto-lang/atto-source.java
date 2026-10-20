@@ -19,31 +19,6 @@ const entry = Entry.of(1, 2);     // Entry<int,int>
 
 `Entry.of(key, value)` infers both type arguments. Entry fields are immutable and preserve their names through member and checked computed access. A structural record or struct with fields named `key` and `value` is **not** assignable to `Entry<K,V>`; callers must construct an Entry explicitly.
 
-Standalone `null` is not an Entry component value. Oreslang represents optional absence with `Option<T>`, so use `Entry<Option<K>, V>` / `Entry<K, Option<V>>` when either component may be absent. The host `OresEntry` carrier enforces the same non-null invariant.
-
-
-### Equality and host-runtime boundary
-
-Oreslang `Entry` equality compares `key` and `value` recursively using **guest-language**
-value equality. The Java host carrier uses **identity-based** `equals`/`hashCode`
-and an opaque `toString`; those Java operations intentionally cannot invoke
-payload callbacks or traverse cyclic/hostile object graphs. Code implementing
-future typed Maps must use the explicit Oreslang key equality/hash contract,
-**not** `java.util.Map<OresEntry, ...>` or Java `Object.equals` as a semantic shortcut.
-The built-in `Entry` is immutable at its top level; ownership and actor
-isolation rules still govern mutable nested payloads.
-
-Guest equality is alias-insensitive structural/value comparison: distinct
-`Entry` carriers with equal key/value graphs compare equal, regardless of
-sharing. Cyclic value graphs are compared using an identity-pair visited set
-(coinductive graph traversal); cyclic structure must not recurse through the
-Java call stack. The evaluator uses a bounded worklist (65,536 comparison
-steps), raising a language-level error if the limit is exceeded rather than
-silently treating an incomplete comparison as equal or unequal. A guest
-Map key hash must eventually agree with these equality semantics; the Java
-identity hash is not a valid substitute.
-
-
 An array of entries is distinct from an array of arrays or tuples:
 
 ```ores

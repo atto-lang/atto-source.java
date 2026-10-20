@@ -4,21 +4,26 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+/**
+ * The Java record carrier must not define Oreslang equality, hashing,
+ * serialization, or diagnostic formatting policies.
+ */
 final class OresEntryHostCarrierBoundaryTest {
     @Test
     void hostContainersCannotConflateDistinctNominalEntryCarriers() {
         OresEntry first = new OresEntry("key", List.of(1, 2));
         OresEntry second = new OresEntry("key", List.of(1, 2));
 
+        assertSame(first, first);
         assertNotSame(first, second);
         assertNotEquals(first, second);
         assertEquals(first, first);
@@ -37,61 +42,63 @@ final class OresEntryHostCarrierBoundaryTest {
     }
 
     @Test
-    void hostEqualityHashingAndTextNeverInvokePayloadCallbacks() {
+    void hostEqualityAndHashingNeverInvokePayloadCallbacks() {
         Object hostile = new Object() {
             @Override public boolean equals(Object other) {
-                throw new AssertionError("payload equals() invoked");
+                throw new AssertionError("guest payload host equals() invoked");
             }
             @Override public int hashCode() {
-                throw new AssertionError("payload hashCode() invoked");
+                throw new AssertionError("guest payload host hashCode() invoked");
             }
             @Override public String toString() {
-                throw new AssertionError("payload toString() invoked");
+                throw new AssertionError("guest payload host toString() invoked");
             }
         };
 
-        OresEntry first = new OresEntry(hostile, hostile);
-        OresEntry second = new OresEntry(hostile, hostile);
-        assertFalse(first.equals(second));
-        assertDoesNotThrow(first::hashCode);
-        assertEquals("OresEntry<opaque>", assertDoesNotThrow(first::toString));
+        OresEntry a = new OresEntry(hostile, hostile);
+        OresEntry b = new OresEntry(hostile, hostile);
+        assertFalse(a.equals(b));
+        assertEquals(System.identityHashCode(a), a.hashCode());
+        assertEquals("OresEntry<opaque>", a.toString());
     }
 
     @Test
-    void cyclicPayloadDoesNotRecurseThroughHostCarrierMethods() {
-        List<Object> cycle = new ArrayList<>();
-        OresEntry entry = new OresEntry(cycle, "secret");
-        cycle.add(entry);
+    void cyclicMutablePayloadDoesNotRecurseThroughHostRecordMethods() {
+        List<Object> key = new ArrayList<>();
+        OresEntry first = new OresEntry(key, "secret-value");
+        key.add(first);
+        List<Object> otherKey = new ArrayList<>();
+        OresEntry second = new OresEntry(otherKey, "secret-value");
+        otherKey.add(second);
 
-        assertDoesNotThrow(entry::hashCode);
-        assertEquals("OresEntry<opaque>", entry.toString());
-        assertFalse(entry.toString().contains("secret"));
+        assertNotEquals(first, second);
+        assertEquals(System.identityHashCode(first), first.hashCode());
+        assertEquals("OresEntry<opaque>", first.toString());
+        assertFalse(first.toString().contains("secret-value"));
 
-        assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(entry));
+        // Identity-safe host carriers do not authorize cyclic actor transport.
+        assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(first));
     }
-
     @Test
-    void actorFreezeDoesNotCollapseDistinctHostEntryCarriers() {
+    void actorFreezeNeverSilentlyCollapsesDistinctHostEntryCarriers() {
         OresEntry first = new OresEntry("same", List.of(1, 2));
         OresEntry second = new OresEntry("same", List.of(1, 2));
-
-        Set<Object> identitySet =
-                Collections.newSetFromMap(new IdentityHashMap<>());
+        Set<Object> identitySet = Collections.newSetFromMap(new IdentityHashMap<>());
         identitySet.add(first);
         identitySet.add(second);
 
-        Set<?> frozenSet =
-                assertInstanceOf(Set.class, ActorRuntime.freeze(identitySet));
-        assertEquals(2, frozenSet.size());
+        Set<?> frozenSet = assertInstanceOf(Set.class, ActorRuntime.freeze(identitySet));
+        assertEquals(2, frozenSet.size(),
+                "transport must not coalesce host-distinct Entry carriers");
 
         Map<OresEntry, String> identityMap = new IdentityHashMap<>();
         identityMap.put(first, "a");
         identityMap.put(second, "b");
-
-        Map<?, ?> frozenMap =
-                assertInstanceOf(Map.class, ActorRuntime.freeze(identityMap));
-        assertEquals(2, frozenMap.size());
+        Map<?, ?> frozenMap = assertInstanceOf(Map.class, ActorRuntime.freeze(identityMap));
+        assertEquals(2, frozenMap.size(),
+                "transport must not coalesce host-distinct Entry keys");
         assertTrue(frozenMap.containsValue("a"));
         assertTrue(frozenMap.containsValue("b"));
     }
+
 }

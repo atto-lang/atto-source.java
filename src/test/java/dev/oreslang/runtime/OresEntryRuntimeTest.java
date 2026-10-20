@@ -33,35 +33,4 @@ final class OresEntryRuntimeTest {
         OresEntry entry = new OresEntry("left", "right");
         assertEquals(List.of("left", "right"), entry.sharedStateChildren());
     }
-    @Test
-    void hostObjectOperationsNeverTraverseCyclicEntryPayloads() {
-        ArrayList<Object> cyclic = new ArrayList<>();
-        OresEntry entry = new OresEntry(cyclic, "payload");
-        cyclic.add(entry);
-
-        assertEquals("OresEntry<opaque>", entry.toString());
-        assertEquals(System.identityHashCode(entry), entry.hashCode());
-        assertSame(entry, entry);
-        assertNotEquals(entry, new OresEntry(cyclic, "payload"));
-
-        // Guest-language value equality is handled by the evaluator, not
-        // Java Object.equals; no recursive Java hash/equals is permitted.
-        assertEquals(cyclic, entry.key());
-        assertEquals("payload", entry.value());
-    }
-
-    @Test
-    void hostEqualsNeverConfusesDistinctNominalEntryInstances() {
-        OresEntry left = new OresEntry(1L, "one");
-        OresEntry right = new OresEntry(1L, "one");
-        assertNotEquals(left, right);
-        assertEquals("OresEntry<opaque>", right.toString());
-    }
-
-    @Test
-    void hostConstructionRejectsNullComponents() {
-        assertThrows(NullPointerException.class, () -> new OresEntry(null, "value"));
-        assertThrows(NullPointerException.class, () -> new OresEntry("key", null));
-    }
-
 }

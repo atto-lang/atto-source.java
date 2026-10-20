@@ -194,40 +194,11 @@ public final class Types {
                 || second instanceof ListType && first instanceof Primitive) return true;
         if (first instanceof Tuple && second instanceof Primitive
                 || second instanceof Tuple && first instanceof Primitive) return true;
-
-        // Entry<K,V> has a dedicated nominal runtime tag (OresEntry). A
-        // structural {key,value} record, sequence/tuple, or unrelated nominal
-        // value cannot inhabit that domain merely by sharing its visible
-        // fields. Two Entry domains are disjoint when either corresponding
-        // component domain is itself provably disjoint. Unknown/generic
-        // components remain conservative through the recursive proof.
-        if (isEntryNamed(first) && isEntryNamed(second)) {
-            Named a = (Named) first;
-            Named b = (Named) second;
-            return areProvablyDisjoint(a.arguments().get(0), b.arguments().get(0))
-                    || areProvablyDisjoint(a.arguments().get(1), b.arguments().get(1));
-        }
-        if (isEntryNamed(first)) {
-            return second instanceof Record
-                    || second instanceof ListType
-                    || second instanceof Tuple
-                    || second instanceof Named named && !isEntryNamed(named);
-        }
-        if (isEntryNamed(second)) {
-            return first instanceof Record
-                    || first instanceof ListType
-                    || first instanceof Tuple
-                    || first instanceof Named named && !isEntryNamed(named);
-        }
         return false; // Not knowing if types overlap is NOT proof of exclusion.
     }
 
-    private static boolean isEntryNamed(Type type) {
-        return type instanceof Named named
-                && named.name().equals("Entry")
-                && named.arguments().size() == 2;
-    }
-
+    // Package-visible so TypeChecker can apply the same proof rule to
+    // declaration-aware structural relations.
     static boolean containsUncertainType(Type type) {
         if (type == Unknown.INSTANCE || type instanceof Generic) return true;
         if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUncertainType);
@@ -324,7 +295,16 @@ public final class Types {
             if (source.kind() != target.kind()) return false;
             if (source.elements().size() != target.elements().size()) return false;
             for (int i = 0; i < source.elements().size(); i++) {
-                if (!isAssignable(source.elements().get(i), target.elements().get(i))) return false;
+                Type actualSlot = source.elements().get(i);
+                Type expectedSlot = target.elements().get(i);
+                // Positional products are passed by their existing physical
+                // slots. No implicit numeric representation change may be
+                // smuggled through an immutable Tuple/structural pair view.
+                if (!readonlyViewMemberCompatible(actualSlot, expectedSlot)) return false;
+                // Fixed Array/List slots also have write-capable storage:
+                // require invariance rather than unsound covariant writes.
+                if (source.kind() != TupleKind.TUPLE
+                        && !readonlyViewMemberCompatible(expectedSlot, actualSlot)) return false;
             }
             return true;
         }
