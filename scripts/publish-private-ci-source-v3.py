@@ -789,245 +789,269 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     def auth():
         authorize_write(trusted_root, repository, approved_policy, contract)
 
-    elements = []
-    for rel, data, mode in files:
+    # GitHub exposes no object-deletion API for blobs/trees/commits. Once the
+    # first private object write is attempted, any later failure can leave
+    # source-bearing objects retained in the private carrier even when refs are
+    # successfully rolled back. Preserve the original exception type for
+    # callers/tests, but tag it so the CLI and incident tooling can fail closed.
+    private_object_write_attempted = False
+    try:
+        elements = []
+        for rel, data, mode in files:
+            auth()
+            private_object_write_attempted = True
+            blob = legacy.gh_api(
+                f"repos/{repository}/git/blobs", method="POST",
+                payload={
+                    "content": base64.b64encode(data).decode("ascii"),
+                    "encoding": "base64",
+                },
+            )
+            uploaded = valid_sha(blob.get("sha"), "uploaded blob SHA invalid")
+            if uploaded != git_blob_sha(data):
+                raise Denied("uploaded blob digest differs from exact source")
+            elements.append({
+                "path": rel, "mode": mode, "type": "blob", "sha": uploaded
+            })
+
         auth()
-        blob = legacy.gh_api(
+        isolated = legacy.gh_api(
+            f"repos/{repository}/git/trees", method="POST",
+            payload={"tree": elements},
+        )
+        isolated_sha = valid_sha(
+            isolated.get("sha"), "uploaded source tree SHA invalid"
+        )
+        if isolated_sha != source_tree:
+            raise Denied("uploaded source tree differs from pinned PR tree")
+
+        now = now or dt.datetime.now(dt.timezone.utc)
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise Denied("publisher clock must be timezone-aware")
+        expires = (now.astimezone(dt.timezone.utc) + RECEIPT_TTL).replace(microsecond=0)
+        receipt = {
+            "schema": RECEIPT_SCHEMA,
+            "expires_at": expires.isoformat().replace("+00:00", "Z"),
+            "carrier": {
+                "workflow_blob_sha": contract["workflow_blob_sha"],
+            },
+            "destination": {
+                "repo": repository,
+                "repo_id": contract["repository_id"],
+                "base_sha": contract["base_sha"],
+            },
+            "mirror": {
+                "root_tree_sha": source_tree,
+            },
+            "source": {
+                "repo": legacy.SOURCE_REPO,
+                "repo_id": source_repo_id,
+                "pr": source_pr,
+                "head_sha": source_commit,
+                "root_tree_sha": source_tree,
+                "manifest_sha256": manifest_sha256,
+            },
+            "test_plan": {
+                "path": contract["test_plan_path"],
+                "sha256": plan_sha256,
+            },
+        }
+        receipt_bytes = canonical_bytes(receipt) + b"\n"
+        receipt_digest = canonical_digest(receipt)
+
+        auth()
+        receipt_blob = legacy.gh_api(
             f"repos/{repository}/git/blobs", method="POST",
             payload={
-                "content": base64.b64encode(data).decode("ascii"),
+                "content": base64.b64encode(receipt_bytes).decode("ascii"),
                 "encoding": "base64",
             },
         )
-        uploaded = valid_sha(blob.get("sha"), "uploaded blob SHA invalid")
-        if uploaded != git_blob_sha(data):
-            raise Denied("uploaded blob digest differs from exact source")
-        elements.append({
-            "path": rel, "mode": mode, "type": "blob", "sha": uploaded
-        })
+        receipt_blob_sha = valid_sha(
+            receipt_blob.get("sha"), "uploaded receipt blob SHA invalid"
+        )
+        if receipt_blob_sha != git_blob_sha(receipt_bytes):
+            raise Denied("uploaded receipt digest mismatch")
 
-    auth()
-    isolated = legacy.gh_api(
-        f"repos/{repository}/git/trees", method="POST",
-        payload={"tree": elements},
-    )
-    isolated_sha = valid_sha(
-        isolated.get("sha"), "uploaded source tree SHA invalid"
-    )
-    if isolated_sha != source_tree:
-        raise Denied("uploaded source tree differs from pinned PR tree")
-
-    now = now or dt.datetime.now(dt.timezone.utc)
-    if now.tzinfo is None or now.utcoffset() is None:
-        raise Denied("publisher clock must be timezone-aware")
-    expires = (now.astimezone(dt.timezone.utc) + RECEIPT_TTL).replace(microsecond=0)
-    receipt = {
-        "schema": RECEIPT_SCHEMA,
-        "expires_at": expires.isoformat().replace("+00:00", "Z"),
-        "carrier": {
-            "workflow_blob_sha": contract["workflow_blob_sha"],
-        },
-        "destination": {
-            "repo": repository,
-            "repo_id": contract["repository_id"],
-            "base_sha": contract["base_sha"],
-        },
-        "mirror": {
-            "root_tree_sha": source_tree,
-        },
-        "source": {
-            "repo": legacy.SOURCE_REPO,
-            "repo_id": source_repo_id,
-            "pr": source_pr,
-            "head_sha": source_commit,
-            "root_tree_sha": source_tree,
-            "manifest_sha256": manifest_sha256,
-        },
-        "test_plan": {
-            "path": contract["test_plan_path"],
-            "sha256": plan_sha256,
-        },
-    }
-    receipt_bytes = canonical_bytes(receipt) + b"\n"
-    receipt_digest = canonical_digest(receipt)
-
-    auth()
-    receipt_blob = legacy.gh_api(
-        f"repos/{repository}/git/blobs", method="POST",
-        payload={
-            "content": base64.b64encode(receipt_bytes).decode("ascii"),
-            "encoding": "base64",
-        },
-    )
-    receipt_blob_sha = valid_sha(
-        receipt_blob.get("sha"), "uploaded receipt blob SHA invalid"
-    )
-    if receipt_blob_sha != git_blob_sha(receipt_bytes):
-        raise Denied("uploaded receipt digest mismatch")
-
-    auth()
-    root_tree = legacy.gh_api(
-        f"repos/{repository}/git/trees", method="POST",
-        payload={
-            "base_tree": base_tree,
-            "tree": [
-                {
-                    "path": legacy.PREFIX,
-                    "mode": "040000",
-                    "type": "tree",
-                    "sha": source_tree,
-                },
-                {
-                    "path": RECEIPT_PATH,
-                    "mode": "100644",
-                    "type": "blob",
-                    "sha": receipt_blob_sha,
-                },
-            ],
-        },
-    )
-    root_tree_sha = valid_sha(
-        root_tree.get("sha"), "carrier root tree SHA invalid"
-    )
-
-    auth()
-    commit_message = (
-        f"ci: exact private Oreslang tree {source_commit} tree {source_tree}\n"
-        f"carrier-base {contract['base_sha']} tree {base_tree}\n"
-        f"receipt-sha256 {receipt_digest}\n"
-        f"connector-authorized source-repository "
-        f"{legacy.SOURCE_REPO} id {source_repo_id}"
-    )
-    commit = legacy.gh_api(
-        f"repos/{repository}/git/commits", method="POST",
-        payload={
-            "message": commit_message,
-            "tree": root_tree_sha,
-            "parents": [contract["base_sha"]],
-        },
-    )
-    commit_sha = valid_sha(commit.get("sha"), "carrier commit SHA invalid")
-    verify_published_root_and_commit(
-        repository,
-        base_tree,
-        contract["base_sha"],
-        source_tree,
-        elements,
-        receipt_blob_sha,
-        root_tree_sha,
-        commit_sha,
-    )
-
-    # Recheck both source policy/protection and the immutable carrier contract
-    # immediately before making the source-bearing commit executable.
-    if legacy.verify_protected_origin(repository, approved_policy) != protected_sha:
-        raise Denied("source protected main advanced before publication")
-    checked_control_plane(trusted_root, protected_sha)
-    checked_contract(
-        trusted_root, repository, source_pr,
-        contract["test_plan_path"], protected_sha
-    )
-    checked_destination(repository, contract)
-    if verify_source_pr(source_pr, source_commit) != source_repo_id:
-        raise Denied("source repository identity changed before publication")
-
-    # Create the source-bearing branch first. The carrier workflow fails closed
-    # while it waits for the exact authorization ref below. Treat a create call
-    # as potentially successful before it returns: transport ambiguity must not
-    # strand a source-bearing ref.
-    authorization = "ci/authorized-" + commit_sha
-    require_handoff_refs_absent(
-        repository, branch, authorization, contract["repository_id"]
-    )
-    payload_attempted = False
-    authorization_attempted = False
-    try:
         auth()
-        payload_attempted = True
-        try:
-            create_handoff_ref(
-                repository, branch, commit_sha, contract["repository_id"]
-            )
-        except RefCreateRejected:
-            payload_attempted = False
-            raise
-        require_exact_ref(
-            repository, branch, commit_sha, contract["repository_id"]
+        root_tree = legacy.gh_api(
+            f"repos/{repository}/git/trees", method="POST",
+            payload={
+                "base_tree": base_tree,
+                "tree": [
+                    {
+                        "path": legacy.PREFIX,
+                        "mode": "040000",
+                        "type": "tree",
+                        "sha": source_tree,
+                    },
+                    {
+                        "path": RECEIPT_PATH,
+                        "mode": "100644",
+                        "type": "blob",
+                        "sha": receipt_blob_sha,
+                    },
+                ],
+            },
+        )
+        root_tree_sha = valid_sha(
+            root_tree.get("sha"), "carrier root tree SHA invalid"
         )
 
-        # The payload ref is inert without the authorization ref. Re-run every
-        # mutable governance check in that safe window so protection, policy,
-        # contract or carrier-base drift cannot be authorized.
+        auth()
+        commit_message = (
+            f"ci: exact private Oreslang tree {source_commit} tree {source_tree}\n"
+            f"carrier-base {contract['base_sha']} tree {base_tree}\n"
+            f"receipt-sha256 {receipt_digest}\n"
+            f"connector-authorized source-repository "
+            f"{legacy.SOURCE_REPO} id {source_repo_id}"
+        )
+        commit = legacy.gh_api(
+            f"repos/{repository}/git/commits", method="POST",
+            payload={
+                "message": commit_message,
+                "tree": root_tree_sha,
+                "parents": [contract["base_sha"]],
+            },
+        )
+        commit_sha = valid_sha(commit.get("sha"), "carrier commit SHA invalid")
+        verify_published_root_and_commit(
+            repository,
+            base_tree,
+            contract["base_sha"],
+            source_tree,
+            elements,
+            receipt_blob_sha,
+            root_tree_sha,
+            commit_sha,
+        )
+
+        # Recheck both source policy/protection and the immutable carrier contract
+        # immediately before making the source-bearing commit executable.
         if legacy.verify_protected_origin(repository, approved_policy) != protected_sha:
-            raise Denied("source protected main advanced before authorization")
+            raise Denied("source protected main advanced before publication")
         checked_control_plane(trusted_root, protected_sha)
         checked_contract(
             trusted_root, repository, source_pr,
             contract["test_plan_path"], protected_sha
         )
         checked_destination(repository, contract)
-
-        # Revalidate the exact open PR head last, immediately before making the
-        # carrier executable.
         if verify_source_pr(source_pr, source_commit) != source_repo_id:
-            raise Denied("source repository identity changed before authorization")
+            raise Denied("source repository identity changed before publication")
 
-        auth()
-        authorization_attempted = True
+        # Create the source-bearing branch first. The carrier workflow fails closed
+        # while it waits for the exact authorization ref below. Treat a create call
+        # as potentially successful before it returns: transport ambiguity must not
+        # strand a source-bearing ref.
+        authorization = "ci/authorized-" + commit_sha
+        require_handoff_refs_absent(
+            repository, branch, authorization, contract["repository_id"]
+        )
+        payload_attempted = False
+        authorization_attempted = False
         try:
-            create_handoff_ref(
+            auth()
+            payload_attempted = True
+            try:
+                create_handoff_ref(
+                    repository, branch, commit_sha, contract["repository_id"]
+                )
+            except RefCreateRejected:
+                payload_attempted = False
+                raise
+            require_exact_ref(
+                repository, branch, commit_sha, contract["repository_id"]
+            )
+
+            # The payload ref is inert without the authorization ref. Re-run every
+            # mutable governance check in that safe window so protection, policy,
+            # contract or carrier-base drift cannot be authorized.
+            if legacy.verify_protected_origin(repository, approved_policy) != protected_sha:
+                raise Denied("source protected main advanced before authorization")
+            checked_control_plane(trusted_root, protected_sha)
+            checked_contract(
+                trusted_root, repository, source_pr,
+                contract["test_plan_path"], protected_sha
+            )
+            checked_destination(repository, contract)
+
+            # Revalidate the exact open PR head last, immediately before making the
+            # carrier executable.
+            if verify_source_pr(source_pr, source_commit) != source_repo_id:
+                raise Denied("source repository identity changed before authorization")
+
+            auth()
+            authorization_attempted = True
+            try:
+                create_handoff_ref(
+                    repository, authorization, commit_sha, contract["repository_id"]
+                )
+            except RefCreateRejected:
+                authorization_attempted = False
+                raise
+
+            # Do not trust create responses alone. Re-read both live refs before
+            # reporting a successful handoff.
+            require_exact_ref(
+                repository, branch, commit_sha, contract["repository_id"]
+            )
+            require_exact_ref(
                 repository, authorization, commit_sha, contract["repository_id"]
             )
-        except RefCreateRejected:
-            authorization_attempted = False
+        # Ref creation can succeed remotely before any local exception is raised.
+        # Do not limit cleanup to expected Denied exceptions: a malformed GitHub
+        # response, subprocess failure or operator interruption must also trigger
+        # best-effort cleanup of every possibly-created ref. Preserve the original
+        # exception/traceback if cleanup succeeds.
+        except BaseException:
+            rollback_error = None
+            if authorization_attempted:
+                try:
+                    delete_exact_ref(
+                        repository, authorization, commit_sha,
+                        contract["repository_id"],
+                    )
+                except BaseException as rollback_exc:
+                    rollback_error = rollback_exc
+            if payload_attempted:
+                try:
+                    delete_exact_ref(
+                        repository, branch, commit_sha,
+                        contract["repository_id"],
+                    )
+                except BaseException as rollback_exc:
+                    rollback_error = rollback_error or rollback_exc
+            if rollback_error is not None:
+                raise Denied(
+                    "private CI handoff failed and carrier ref rollback was incomplete"
+                ) from rollback_error
             raise
 
-        # Do not trust create responses alone. Re-read both live refs before
-        # reporting a successful handoff.
-        require_exact_ref(
-            repository, branch, commit_sha, contract["repository_id"]
-        )
-        require_exact_ref(
-            repository, authorization, commit_sha, contract["repository_id"]
-        )
-    # Ref creation can succeed remotely before any local exception is raised.
-    # Do not limit cleanup to expected Denied exceptions: a malformed GitHub
-    # response, subprocess failure or operator interruption must also trigger
-    # best-effort cleanup of every possibly-created ref. Preserve the original
-    # exception/traceback if cleanup succeeds.
-    except BaseException:
-        rollback_error = None
-        if authorization_attempted:
-            try:
-                delete_exact_ref(
-                    repository, authorization, commit_sha,
-                    contract["repository_id"],
-                )
-            except BaseException as rollback_exc:
-                rollback_error = rollback_exc
-        if payload_attempted:
-            try:
-                delete_exact_ref(
-                    repository, branch, commit_sha,
-                    contract["repository_id"],
-                )
-            except BaseException as rollback_exc:
-                rollback_error = rollback_error or rollback_exc
-        if rollback_error is not None:
-            raise Denied(
-                "private CI handoff failed and carrier ref rollback was incomplete"
-            ) from rollback_error
-        raise
+        return {
+            "commit": commit_sha,
+            "branch": branch,
+            "authorization_ref": authorization,
+            "source_tree": source_tree,
+            "manifest_sha256": manifest_sha256,
+            "receipt_sha256": receipt_digest,
+            "files": len(files),
+        }
 
-    return {
-        "commit": commit_sha,
-        "branch": branch,
-        "authorization_ref": authorization,
-        "source_tree": source_tree,
-        "manifest_sha256": manifest_sha256,
-        "receipt_sha256": receipt_digest,
-        "files": len(files),
-    }
+    except BaseException as exc:
+        if private_object_write_attempted:
+            try:
+                setattr(exc, "_ores_private_ci_retention_incident", True)
+            except BaseException:
+                pass
+            try:
+                exc.add_note(
+                    "PRIVATE_CI_RETENTION_INCIDENT: private Git object upload "
+                    "was attempted before failure; quarantine the carrier and "
+                    "follow the reviewed retention/purge procedure before reuse"
+                )
+            except (AttributeError, TypeError):
+                pass
+        raise
 
 
 def main(argv=None):
@@ -1048,9 +1072,19 @@ def main(argv=None):
             args.test_plan,
             root,
         )
-    except (Denied, OSError, ValueError) as exc:
-        print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
-        return 1
+    except BaseException as exc:
+        if getattr(exc, "_ores_private_ci_retention_incident", False):
+            print(
+                "PRIVATE_CI_RETENTION_INCIDENT: transfer failed after private "
+                "Git object upload was attempted; quarantine the carrier and "
+                "complete reviewed retention/purge handling before reuse",
+                file=sys.stderr,
+            )
+            return 2
+        if isinstance(exc, (Denied, OSError, ValueError)):
+            print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
+            return 1
+        raise
     print(
         "PRIVATE_CI_V3_CREATED: "
         + " ".join(f"{key}={value}" for key, value in result.items())
