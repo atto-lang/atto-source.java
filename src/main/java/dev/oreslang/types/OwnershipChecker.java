@@ -2590,6 +2590,12 @@ public final class OwnershipChecker {
                 throw error("actor-confined borrow '" + capture.name
                         + "' cannot become scoped Task region authority");
             }
+            if (!taskCaptureSync(source.type, new HashSet<>(), 0)) {
+                throw error("nb Task borrowed capture '" + capture.name
+                        + "' is not Sync; shared cross-Task borrows require "
+                        + "compiler-proven Sync referents and cannot expose "
+                        + "thread-affine, future, raw/native, actor, or interior-mutable capabilities");
+            }
 
             VarState region = ownershipRoot(source.borrowSource);
             requireUsable(region, region.debugName, false);
@@ -2813,6 +2819,128 @@ public final class OwnershipChecker {
      * Later versions will reuse canonical compiler Send derivation under
      * resolved imported/monomorphized signatures.
      */
+    /**
+     * Canonical Send/Sync proof for shared scoped Task borrows.
+     *
+     * <p>The ownership pass intentionally accepts a narrower nominal subset
+     * than the full type checker when generic substitution or inherited layouts
+     * are unavailable here. Unknown shapes fail closed rather than inventing a
+     * second auto-trait system.</p>
+     */
+    private boolean taskCaptureSync(
+            Ast.TypeRef type, Set<String> active, int depth) {
+        if (type == null || depth > 64) return false;
+        Types.Type traitType = taskTraitType(type, depth);
+        if (traitType == null) return false;
+        return SendSyncTraits.isSync(
+                traitType,
+                (nominal, trait) ->
+                        trait == SendSyncTraits.Trait.SYNC
+                                && taskNominalSync(nominal, active, depth + 1));
+    }
+
+    private boolean taskNominalSync(
+            Types.Named nominal, Set<String> active, int depth) {
+        if (depth > 64 || !nominal.arguments().isEmpty()) return false;
+        Ast.ClassDecl klass = classes.get(nominal.name());
+        if (klass == null
+                || !klass.genericParameters().isEmpty()
+                || klass.actorKind() != Ast.ActorKind.NONE
+                || !klass.parents().isEmpty()
+                || !active.add(nominal.name())) {
+            return false;
+        }
+        try {
+            for (Ast.FieldDecl field : klass.fields()) {
+                if (!taskCaptureSync(field.type(), active, depth + 1)) {
+                    return false;
+                }
+            }
+            return true;
+        } finally {
+            active.remove(nominal.name());
+        }
+    }
+
+    private Types.Type taskTraitType(Ast.TypeRef type, int depth) {
+        if (type == null || depth > 64 || type.inferArguments()
+                || type.isComplement() || type.isNamedParameter()
+                || type.isSequenceShape() || type.isRepeatExact()
+                || type.isRepeatMany()) {
+            return null;
+        }
+        if (type.isBorrow()) {
+            if (type.arguments().size() != 1) return null;
+            Types.Type target = taskTraitType(type.borrowedTarget(), depth + 1);
+            return target == null
+                    ? null
+                    : new Types.Borrow(target, type.mutableBorrow());
+        }
+        if (type.isRecordType()) {
+            Map<String, Types.Type> members = new LinkedHashMap<>();
+            for (Map.Entry<String, Ast.TypeRef> entry :
+                    type.recordMembers().entrySet()) {
+                Types.Type member = taskTraitType(entry.getValue(), depth + 1);
+                if (member == null) return null;
+                members.put(entry.getKey(), member);
+            }
+            return new Types.Record(members, type.isReadonlyRecordType());
+        }
+        if (type.isTupleType()) {
+            ArrayList<Types.Type> parts = new ArrayList<>(type.arguments().size());
+            for (Ast.TypeRef part : type.arguments()) {
+                Types.Type converted = taskTraitType(part, depth + 1);
+                if (converted == null) return null;
+                parts.add(converted);
+            }
+            return new Types.Tuple(parts);
+        }
+        if (type.isUnion()) {
+            ArrayList<Types.Type> options = new ArrayList<>(type.arguments().size());
+            for (Ast.TypeRef option : type.arguments()) {
+                Types.Type converted = taskTraitType(option, depth + 1);
+                if (converted == null) return null;
+                options.add(converted);
+            }
+            return options.size() < 2 ? null : new Types.Union(options);
+        }
+        if (type.isStringLiteral()) {
+            return new Types.StringLiteral(type.stringLiteralValue());
+        }
+        if (type.isBoolLiteral()) {
+            return new Types.BoolLiteral(type.boolLiteralValue());
+        }
+        if (type.isIntLiteral()) {
+            return Types.Primitive.INT;
+        }
+
+        String name = type.name();
+        Types.Primitive primitive = switch (name) {
+            case "int", "uint", "i8", "i16", "i32", "i64",
+                    "u8", "u16", "u32", "u64" -> Types.Primitive.INT;
+            case "float", "f32", "f64" -> Types.Primitive.FLOAT;
+            case "decimal" -> Types.Primitive.DECIMAL;
+            case "complex" -> Types.Primitive.COMPLEX;
+            case "bool" -> Types.Primitive.BOOL;
+            case "String", "string", "Symbol" -> Types.Primitive.STRING;
+            case "void" -> Types.Primitive.VOID;
+            case "null" -> Types.Primitive.NULL;
+            default -> null;
+        };
+        if (primitive != null) {
+            return type.arguments().isEmpty() ? primitive : null;
+        }
+        if (name.equals("$infer$") || name.equals("Fnc")) return null;
+
+        ArrayList<Types.Type> arguments = new ArrayList<>(type.arguments().size());
+        for (Ast.TypeRef argument : type.arguments()) {
+            Types.Type converted = taskTraitType(argument, depth + 1);
+            if (converted == null) return null;
+            arguments.add(converted);
+        }
+        return new Types.Named(name, arguments);
+    }
+
     private boolean taskCaptureSend(Ast.TypeRef type, Set<String> active, int depth) {
         if (type == null || depth > 64 || type.isBorrow()
                 || type.isComplement() || type.inferArguments()) return false;
