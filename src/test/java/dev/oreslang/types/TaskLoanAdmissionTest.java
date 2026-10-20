@@ -230,4 +230,29 @@ final class TaskLoanAdmissionTest {
         }
         assertEquals(0, verifier.activeChildren());
     }
+    @Test
+    void failedLedgerRetirementPoisonsAuthorityInsteadOfAllowingRetry()
+            throws Exception {
+        TaskAccessVerifier verifier = new TaskAccessVerifier();
+        TaskLoanAdmission admission = admission(verifier);
+        OresTaskScope.CompilerScopeEpoch epoch = epochForTest();
+        admission.bindScope(epoch);
+
+        // Fault injection: the checker ledger has already discarded this
+        // ticket. Its runtime admission still looks live, as may happen
+        // after a bug in physical cleanup sequencing.
+        var field = TaskLoanAdmission.class.getDeclaredField("ticket");
+        field.setAccessible(true);
+        var ticket = (TaskAccessVerifier.Ticket) field.get(admission);
+        verifier.retireNeverStarted(ticket);
+
+        assertThrows(IllegalStateException.class,
+                () -> admission.retireBeforeChildBound(epoch));
+        assertTrue(admission.poisonedForTesting());
+        assertFalse(admission.retiredForTesting());
+        assertThrows(IllegalStateException.class,
+                () -> admission.retireBeforeChildBound(epoch),
+                "a failed callback may not mint a second retirement attempt");
+    }
+
 }
