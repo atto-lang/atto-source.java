@@ -256,6 +256,71 @@ final class StructuralKeywordMatrixTest {
     }
 
     @Test
+    void genericStructuralPatternsCompareMethodBindersByPosition() throws Exception {
+        String program = """
+                define module app
+                  define class Root as end
+
+                  define interface GenericEcho
+                    fnc echo<T>(T input) => T;
+                  end
+                  define interface NestedEcho
+                    fnc echo<T>(Option<T> input) => Option<T>;
+                  end
+
+                  define class Renamed extends Root as
+                    pub echo<U>(U input): U { return input; }
+                  end
+                  define class WrongResult extends Root as
+                    pub echo<U>(U input): int { return 1; }
+                  end
+                  define class NestedRenamed extends Root as
+                    pub echo<U>(Option<U> input): Option<U> { return input; }
+                  end
+                  define class WrongArity extends Root as
+                    pub echo<X, Y>(X input): X { return input; }
+                  end
+
+                  fnc has_echo(Root value): int {
+                    match value over
+                      on structural GenericEcho result -> { return 1; }
+                      on _ -> { return 0; }
+                    end
+                  }
+                  fnc has_nested(Root value): int {
+                    match value over
+                      on structural NestedEcho result -> { return 1; }
+                      on _ -> { return 0; }
+                    end
+                  }
+                  pub fnc main(): void {
+                    stdio.println(has_echo(new Renamed()));
+                    stdio.println(has_echo(new WrongResult()));
+                    stdio.println(has_nested(new NestedRenamed()));
+                    stdio.println(has_echo(new WrongArity()));
+                    return;
+                  }
+                end
+                """;
+
+        var typed = TypeChecker.check(Parser.parse(program));
+        OwnershipChecker.check(typed);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                        OresLanguage.ID, program, "structural-generic-method-alpha.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        assertEquals("1\n0\n1\n0",
+                output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n").strip());
+    }
+
+    @Test
     void runtimeMatchesClassStructEntryTraitAndTupleComposition() throws Exception {
         String program = """
                 define module app
