@@ -322,17 +322,38 @@ final class CheckedDynamicIndexAccessTest {
                 "referencesConstructorSelf", Ast.Expr.class);
         guard.setAccessible(true);
         Ast.Expr self = new Ast.NameExpr("self");
+        Ast.MatchValueArm matchArm = new Ast.MatchValueArm(
+                new Ast.WildcardPattern(), null, self);
         for (Ast.Expr receiver : java.util.List.of(
                 new Ast.TrapExpr(self),
                 new Ast.SpreadExpr(self),
                 new Ast.BinaryExpr("+", new Ast.LiteralExpr(1L), self),
                 new Ast.AssignExpr(new Ast.NameExpr("other"), self),
                 new Ast.TupleExpr(java.util.List.of(new Ast.LiteralExpr(1L), self)),
-                new Ast.ListExpr(java.util.List.of(self)))) {
+                new Ast.ListExpr(java.util.List.of(self)),
+                new Ast.ConditionalExpr(
+                        self, new Ast.LiteralExpr(1L), new Ast.LiteralExpr(2L)),
+                new Ast.MatchExpr(
+                        new Ast.LiteralExpr(0L), java.util.List.of(matchArm)),
+                new Ast.TypeTestExpr(self, Ast.TypeRef.simple("int"), null),
+                new Ast.PatternTestExpr(self, new Ast.WildcardPattern()),
+                new Ast.IndexExpr(new Ast.NameExpr("values"), self),
+                new Ast.NewExpr(Ast.TypeRef.simple("Box"), java.util.List.of(self)),
+                new Ast.AwaitExpr(self),
+                new Ast.DynamicSelectExpr(
+                        Ast.WaitMode.BLOCKING, Ast.SelectPolicy.FAIR, self),
+                new Ast.LambdaExpr(java.util.List.of(), self, null),
+                new Ast.LambdaExpr(
+                        java.util.List.of(), null,
+                        java.util.List.of(new Ast.ReturnStmt(self))))) {
             assertEquals(true, guard.invoke(null, receiver));
         }
         assertEquals(false, guard.invoke(null,
                 new Ast.TupleExpr(java.util.List.of(new Ast.LiteralExpr(1L)))));
+        assertEquals(false, guard.invoke(null,
+                new Ast.LambdaExpr(
+                        java.util.List.of(), null,
+                        java.util.List.of(new Ast.ReturnStmt(new Ast.LiteralExpr(1L))))));
     }
 
     @Test
