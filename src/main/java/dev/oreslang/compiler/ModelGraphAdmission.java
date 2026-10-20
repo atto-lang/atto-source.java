@@ -154,12 +154,14 @@ public final class ModelGraphAdmission {
         Objects.requireNonNull(trusted);
         Objects.requireNonNull(limits);
         if (source.operations().isEmpty()) throw new IllegalArgumentException("MODEL_EMPTY_BODY");
-        if (source.operations().size() > limits.maxNodes())
+        if (source.operations().size() > 64 || source.operations().size() > limits.maxNodes())
             throw new IllegalArgumentException("MODEL_NODE_BUDGET");
         if (source.operations().size() > limits.maxDepth())
             throw new IllegalArgumentException("MODEL_DEPTH_BUDGET");
         if (source.formals().size() > 16)
             throw new IllegalArgumentException("MODEL_FORMAL_BUDGET");
+        if (!source.name().matches("[A-Za-z][A-Za-z0-9_]{0,127}"))
+            throw new IllegalArgumentException("MODEL_NONCONSTANT_CONFIG");
         Set<String> formals = new HashSet<>();
         List<String> formalConfig = new ArrayList<>();
         for (Ast.ModelFormal formal : source.formals()) {
@@ -179,6 +181,8 @@ public final class ModelGraphAdmission {
         Port prior = null;
         long used = 0L;
         for (Ast.ModelOperation op : source.operations()) {
+            if (!op.name().matches("[A-Za-z][A-Za-z0-9_]{0,127}"))
+                throw new IllegalArgumentException("MODEL_INVALID_OP_ID");
             if (op.arguments().size() > 16)
                 throw new IllegalArgumentException("MODEL_ARGUMENT_BUDGET");
             Signature signature = trusted.get(op.name());
