@@ -308,7 +308,10 @@ final class IpcTransportSessionLease {
             }
             physicalCloseExecuting = false;
             if (failure != null) {
-                if (closeFailure == null) closeFailure = failure;
+                // The descriptor-close result outranks an earlier scheduling
+                // or timeout diagnostic: this is the failure that determines
+                // whether physical reuse can ever be considered safe.
+                closeFailure = failure;
                 phase = Phase.QUARANTINED;
                 notifyAll();
                 return;
