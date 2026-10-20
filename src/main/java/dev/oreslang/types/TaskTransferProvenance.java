@@ -93,9 +93,9 @@ public final class TaskTransferProvenance {
     }
 
     private final Ast.Program programIdentity;
-    private final IdentityHashMap<Object, List<Transfer>> byBoundary =
+    private final IdentityHashMap<Ast.TaskExpr, List<Transfer>> byBoundary =
             new IdentityHashMap<>();
-    private final IdentityHashMap<Object, LexicalTypeContext>
+    private final IdentityHashMap<Ast.TaskExpr, LexicalTypeContext>
             lexicalContextByBoundary = new IdentityHashMap<>();
     private int totalTransfers;
     private boolean sealed;
@@ -108,12 +108,12 @@ public final class TaskTransferProvenance {
 
     Ast.Program programIdentity() { return programIdentity; }
 
-    void record(Object boundary, List<Transfer> transfers) {
+    void record(Ast.TaskExpr boundary, List<Transfer> transfers) {
         record(boundary, transfers, LexicalTypeContext.none());
     }
 
     void record(
-            Object boundary,
+            Ast.TaskExpr boundary,
             List<Transfer> transfers,
             LexicalTypeContext lexicalContext) {
         if (sealed) {
@@ -160,7 +160,7 @@ public final class TaskTransferProvenance {
         return transfers == null ? List.of() : transfers;
     }
 
-    LexicalTypeContext lexicalContextForIdentity(Object boundary) {
+    LexicalTypeContext lexicalContextForIdentity(Ast.TaskExpr boundary) {
         LexicalTypeContext context = lexicalContextByBoundary.get(boundary);
         if (context == null && byBoundary.containsKey(boundary)) {
             throw new IllegalStateException(
@@ -170,7 +170,7 @@ public final class TaskTransferProvenance {
     }
 
     void forEachBoundary(
-            java.util.function.BiConsumer<Object, List<Transfer>> consumer) {
+            java.util.function.BiConsumer<Ast.TaskExpr, List<Transfer>> consumer) {
         Objects.requireNonNull(consumer, "consumer");
         if (!sealed) {
             throw new IllegalStateException(
