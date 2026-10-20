@@ -18,9 +18,14 @@ placement or GPU execution.
   match is observed within that budget, it falls back to the ordinary
   affinity lane; this can sacrifice affinity quality but bounds per-Task
   scheduling overhead. Never infer page residency from the preference.
-- Existing bounded soft spill to same-cache/NUMA peers and then global
-  queue, aging/steal fallback, cancellation, shutdown and actor execution
-  ownership are unchanged.
+- Soft spill probes at most 64 nearby peers per locality rank before
+  falling back to the global queue. Stealing examines at most eight distinct
+  candidate victims per rank (four locality ranks) in a rotating window.
+  This avoids O(carrier count) admission or idle-steal work on large pools.
+  The rotating start still gives distant lanes eventual consideration; a
+  bounded window is a placement preference, not a fairness guarantee.
+- The bounded global queue, aging/steal grace, cancellation, shutdown and
+  exclusive actor execution ownership remain authoritative.
 - The CPU target lookup is prebound once at executor construction; it does
   not create a per-turn array or read sysfs inside the scheduling hot path.
 - The kernel may still migrate threads after CPU hotplug/cpuset changes.
