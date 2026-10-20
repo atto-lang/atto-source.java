@@ -3295,7 +3295,11 @@ public final class ActorRuntime implements AutoCloseable {
                         actorGroups.remove(id, this);
                     }
                 }
-                completed = true;
+                // A live worker whose cancellation failed is still owned by
+                // this closed group. Do not discard the durable worker snapshot
+                // merely because Mailman/event-bus teardown completed: a later
+                // supervisor retry must be able to issue cancellation again.
+                completed = cancellationFailure == null;
             } finally {
                 synchronized (authorityLock) {
                     if (completed) {
