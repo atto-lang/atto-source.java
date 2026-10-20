@@ -49,7 +49,14 @@ public final class ThreadSafetyTraits {
             "SelectCase", "SelectSet", "SelectResult",
             "Iterator", "AsyncIterator", "TcpConnection", "HttpExchange",
             "HttpServer", "HttpHandler", "ExecutionPermit",
-            "ReadLoan", "WriteLoan", "PartitionLoan");
+            "ReadLoan", "WriteLoan", "PartitionLoan",
+            // Guest lowering, allocation-domain and physical lifetime proofs
+            // for these shared/task capabilities are not yet established.
+            "Arc", "Weak", "Rc", "RefCell", "Cell",
+            "RwLock", "RwLockReadGuard", "RwLockWriteGuard",
+            "Ref", "TRef", "EtsTable", "TableId",
+            "Task", "TaskHandle", "TaskScope", "TaskCancellation",
+            "ThreadBound", "NativeHandle", "Pointer", "RawPointer");
 
     public enum Trait { SEND, SYNC }
 
