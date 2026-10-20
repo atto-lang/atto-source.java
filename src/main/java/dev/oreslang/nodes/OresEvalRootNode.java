@@ -1276,13 +1276,19 @@ public final class OresEvalRootNode extends RootNode {
             // instances and MUST NOT be used directly for cross-Task moves.
             Env captured = caller.taskProjection(task.captures());
             TaskScope scope = caller.taskScope;
+            if (scope != null && ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "scoped Task execution inside actors is disabled until actor quota/hot-reload integration is proven");
+            }
             TaskScope.Registration child = scope == null
                     ? null : scope.reserve(caller.taskScopeParent);
             captured.taskScopeParent = child;
             try {
                 OresFuture<Object> future = startSourceBlockTask(
-                        task.body(), captured,
-                        child == null ? () -> { } : child::quiesced);
+                        task.body(),
+                        captured,
+                        child == null ? () -> { } : child::quiesced,
+                        child == null ? ignored -> { } : child::terminalReady);
                 if (child != null) child.attach(future);
                 return future;
             } catch (RuntimeException | Error failure) {
@@ -1294,7 +1300,8 @@ public final class OresEvalRootNode extends RootNode {
         private OresFuture<Object> startSourceBlockTask(
                 List<Ast.Stmt> body,
                 Env env,
-                Runnable onQuiescent) {
+                Runnable onQuiescent,
+                java.util.function.Consumer<OresFuture<Object>> onTerminalReady) {
             SourceTask task = new SourceTask(body);
             task.scopeRegistration = env.taskScopeParent;
             // Lexically snapshot at spawn time. Captured owned values were
@@ -1310,7 +1317,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             OresScheduler current = OresScheduler.current();
             return (current != null ? current : context.vm().rootScheduler())
-                    .start(task, onQuiescent);
+                    .start(task, onQuiescent, onTerminalReady);
         }
 
         private OresFuture<Object> startSourceMethodTask(
@@ -2110,14 +2117,26 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (stmt instanceof Ast.BlockStmt block) {
                     if (block.taskScope()) {
+                        if (ActorRuntime.inActorExecution()) {
+                            continuation.accept(
+                                    task,
+                                    SourceFlow.throwing(new IllegalStateException(
+                                            "task scope inside actor execution is disabled until actor quota/hot-reload integration is proven")));
+                            return;
+                        }
                         TaskScope scope = new TaskScope();
                         Env scopedEnv = new Env(env);
                         scopedEnv.taskScope = scope;
                         scopedEnv.taskScopeParent = null;
                         runBlock(task, block.body(), scopedEnv, (t, flow) -> {
-                            // The barrier waits for both terminal notification
-                            // AND physical scheduler quiescence of every child.
-                            OresFuture<Void> joined = scope.close();
+                            // Exceptional scope exit revokes children first;
+                            // normal exit seals without cancellation. Both
+                            // barriers wait for terminal authority + physical
+                            // scheduler quiescence.
+                            OresFuture<Void> joined =
+                                    flow.kind() == SourceFlowKind.THROW
+                                            ? scope.cancelAndDrain()
+                                            : scope.close();
                             t.suspend(joined, (resumed, ignored, failure) ->
                                     continuation.accept(resumed, failure == null
                                             ? flow : mergeCleanupFailure(flow, failure)));
