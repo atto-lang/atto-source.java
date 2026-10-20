@@ -42,6 +42,12 @@ The opt-in AST pass also runs `CallbackOrderingAnalyzer`:
   or that async code cannot race the registration.
 - A listener passed directly to an `on` registration is not treated
   as immediately invoked by that act of subscription.
+- `ORES-CB-006`: a subscriber appears textually before callback
+  publication, but its synchronous installation, failure handling, and lease
+  lifetime have not been proven. A source-level `on()` method name is not
+  an effect certification.
+- A wildcard event name cannot establish a definite installed subscription.
+
 - Complex aliasing, method callbacks, explicit listener detachment,
   host FFI, multi-actor scheduling, hot reload, async registration,
   and interprocedural effect summaries still require compiler integration.
