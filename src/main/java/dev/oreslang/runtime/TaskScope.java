@@ -35,6 +35,12 @@ public final class TaskScope {
      * ticket to this exact scope. The ticket is runtime-only authority.
      */
     public synchronized Registration reserve(Registration parent) {
+        // Cancellation is stronger than ordinary close: once the cancellation
+        // snapshot is published, no descendant may enter behind it even if a
+        // previously executing parent still holds an otherwise-live permit.
+        if (cancellationRequested) {
+            throw new IllegalStateException("Task spawned into cancelled scope");
+        }
         if (closing && (parent == null || !parent.maySpawnInto(this))) {
             throw new IllegalStateException(
                     "Task spawned into closing scope without a live child permit");
