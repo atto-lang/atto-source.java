@@ -295,7 +295,16 @@ public final class Types {
             if (source.kind() != target.kind()) return false;
             if (source.elements().size() != target.elements().size()) return false;
             for (int i = 0; i < source.elements().size(); i++) {
-                if (!isAssignable(source.elements().get(i), target.elements().get(i))) return false;
+                Type actualSlot = source.elements().get(i);
+                Type expectedSlot = target.elements().get(i);
+                // Positional products are passed by their existing physical
+                // slots. No implicit numeric representation change may be
+                // smuggled through an immutable Tuple/structural pair view.
+                if (!readonlyViewMemberCompatible(actualSlot, expectedSlot)) return false;
+                // Fixed Array/List slots also have write-capable storage:
+                // require invariance rather than unsound covariant writes.
+                if (source.kind() != TupleKind.TUPLE
+                        && !readonlyViewMemberCompatible(expectedSlot, actualSlot)) return false;
             }
             return true;
         }
