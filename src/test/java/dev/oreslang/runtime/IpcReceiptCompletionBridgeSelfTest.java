@@ -82,6 +82,24 @@ public final class IpcReceiptCompletionBridgeSelfTest {
         }
     }
 
+    /**
+     * Wait for ALL prior asynchronous completion dependents to release their
+     * process-wide reservations before comparing absolute permit counts.
+     * A completed CompletableFuture is not proof its dependents have returned.
+     * A timed atomic multi-permit acquire avoids poll/sleep test races under
+     * Native Image, while also detecting a genuine leaked permit.
+     */
+    private static void awaitGlobalBudgetQuiescence() throws InterruptedException {
+        Semaphore budget = globalBudgetForTest();
+        final int allPermits = 16_384;
+        if (!budget.tryAcquire(allPermits, 5, TimeUnit.SECONDS)) {
+            throw new AssertionError(
+                    "IPC terminal completion permits did not quiesce: available="
+                    + budget.availablePermits());
+        }
+        budget.release(allPermits);
+    }
+
     private static Object removeCompletionForTest(
             IpcReceiptCompletionBridge bridge, long sequence) {
         try {
@@ -265,6 +283,7 @@ public final class IpcReceiptCompletionBridgeSelfTest {
         // user dependents block, are refunded after delivery, and are not
         // leaked by a rejected duplicate/over-capacity admission.
         {
+            awaitGlobalBudgetQuiescence();
             Semaphore budget = globalBudgetForTest();
             int before = budget.availablePermits();
             var firstMessage = env(1, "global-terminal-budget");
@@ -305,11 +324,7 @@ public final class IpcReceiptCompletionBridgeSelfTest {
                 releaseCallback.countDown();
             }
             check(callbackReturned.await(2, TimeUnit.SECONDS));
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-            while (budget.availablePermits() != before
-                    && System.nanoTime() < deadline) {
-                Thread.sleep(1);
-            }
+            awaitGlobalBudgetQuiescence();
             check(budget.availablePermits() == before);
             check(transport.bridge().invariant());
         }
@@ -422,6 +437,7 @@ public final class IpcReceiptCompletionBridgeSelfTest {
         // corruption after ACK, verify terminal transition is rejected without
         // consuming the ledger entry, then restore parity and commit normally.
         {
+            awaitGlobalBudgetQuiescence();
             Semaphore budget = globalBudgetForTest();
             int before = budget.availablePermits();
             var message = env(1, "terminal-preflight");
@@ -444,12 +460,7 @@ public final class IpcReceiptCompletionBridgeSelfTest {
                     message, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
             check(result(future)
                     == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
-            long budgetDeadline =
-                    System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-            while (budget.availablePermits() != before
-                    && System.nanoTime() < budgetDeadline) {
-                Thread.sleep(1);
-            }
+            awaitGlobalBudgetQuiescence();
             check(budget.availablePermits() == before);
             check(transport.bridge().invariant());
         }
