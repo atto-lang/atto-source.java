@@ -40,7 +40,7 @@ public final class TypeChecker {
             "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
             "int", "uint", "bigint", "f32", "f64", "float",
             "decimal", "complex64", "complex128", "complex",
-            "bool", "Bool", "string", "String", "void", "null",
+            "bool", "Bool", "string", "String", "Bytes", "void", "null",
             "Symbol", "Array", "List", "Vector", "Slice",
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
@@ -2219,6 +2219,15 @@ public final class TypeChecker {
             requireRuntimeReifiableType(cast.targetType(), cast.mode() == Ast.CastMode.OPTIONAL ? "as?" : "as");
             Type source = deref(typeOf(cast.value(), env, generics, self));
             Type target = deref(resolve(cast.targetType(), generics, self));
+            if (isBytesType(target)) {
+                if (!isBytesCastSource(source)) {
+                    throw new IllegalArgumentException(
+                            "Bytes cast requires Bytes or an integer array/list; got " + source);
+                }
+                return cast.mode() == Ast.CastMode.OPTIONAL
+                        ? new Named("Option", List.of(target))
+                        : target;
+            }
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible cast: " + source + " cannot be cast to " + target);
             }
@@ -3417,7 +3426,8 @@ public final class TypeChecker {
             // Array/list and tuple lengths are native integer properties.
             // Returning Unknown here makes safe bounds checks and subtraction
             // fail typechecking even when the receiver is statically typed.
-            if ((sumReceiver instanceof ListType || sumReceiver instanceof Tuple)
+            if ((sumReceiver instanceof ListType || sumReceiver instanceof Tuple
+                    || isBytesType(sumReceiver))
                     && member.member().equals("length")) {
                 return Primitive.INT;
             }
@@ -3577,6 +3587,7 @@ public final class TypeChecker {
                 return indexedElementUnion(record.members().values());
             }
             requireAssignable(index, Primitive.INT, "array/list index");
+            if (isBytesType(receiver)) return Primitive.INT;
             if (receiver instanceof ListType list) return list.element();
             if (receiver instanceof Tuple tuple) {
                 Long constant = constantTupleIndex(indexed.index());
@@ -5885,7 +5896,7 @@ public final class TypeChecker {
         String name = ref.name();
         if (Set.of(
                 "int", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "uint", "bigint",
-                "float", "f32", "f64", "decimal", "bool", "Bool", "string", "String",
+                "float", "f32", "f64", "decimal", "bool", "Bool", "string", "String", "Bytes",
                 "Symbol", "complex", "complex64", "complex128",
                 "Option", "Result", "Array", "List", "Generator", "Iterator",
                 "AsyncGenerator", "AsyncIterator", "IteratorResult").contains(name)
@@ -6313,6 +6324,21 @@ public final class TypeChecker {
         return type == Primitive.STRING || type instanceof StringLiteral;
     }
 
+    private static boolean isBytesType(Type type) {
+        return type instanceof Named named
+                && named.name().equals("Bytes")
+                && named.arguments().isEmpty();
+    }
+
+    private boolean isBytesCastSource(Type source) {
+        source = deref(source);
+        if (isBytesType(source)) return true;
+        if (source instanceof ListType list) {
+            return assignable(deref(list.element()), Primitive.INT);
+        }
+        return false;
+    }
+
     private void requireEqualityComparable(Type left, Type right) {
         Type a = deref(left);
         Type b = deref(right);
@@ -6334,7 +6360,8 @@ public final class TypeChecker {
                 || value instanceof Tuple
                 || value instanceof Function;
         boolean valueSemanticNamed = value instanceof Named named
-                && (named.name().equals("Option")
+                && (named.name().equals("Bytes")
+                    || named.name().equals("Option")
                     || named.name().equals("Result")
                     || named.name().equals("IteratorResult"));
 
@@ -8055,6 +8082,12 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
+            case "Bytes" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Bytes does not accept type arguments");
+                }
+                yield new Named("Bytes", List.of());
+            }
             case "Symbol" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException("Symbol does not accept type arguments");
