@@ -1233,10 +1233,18 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                 }
             }
 
+            // The callback runs before restoration or registry admission.
+            // Pre-register the exact candidate in both existing cleanup
+            // owners, including when spawn throws without returning a ref.
+            SupervisorUpgradeTxn stagingOwner = txn;
             ActorRuntime.ActorRef<Object> replacement =
                     candidate.runtime().spawnCodeActorFromTransfer(
                             txn.transfer,
-                            candidate.executor());
+                            candidate.executor(),
+                            ref -> {
+                                stagingOwner.replacement = ref;
+                                stagingOwner.candidateRetirement.physical = ref;
+                            });
             synchronized (routeLock) {
                 // The physical candidate exists now. Store it into BOTH cleanup
                 // owners before any validation that can fail; otherwise a
