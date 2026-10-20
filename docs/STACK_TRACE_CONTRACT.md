@@ -103,6 +103,19 @@ The real Throwable remains the authoritative failure; source markers are
 diagnostic-only and excluded from `TrapFailurePolicy`'s classification-node
 budget.
 
+## Host-fatal emergency path
+
+Java source diagnostic capture is intentionally **best effort** for fatal JVM
+failures. `SourceBoundaryTrace.record` returns the **same** `VirtualMachineError`,
+`ThreadDeath`, or `LinkageError` without creating source markers or allocating
+additional diagnostic strings. This avoids multiplying allocation and
+stack-use failures during VM out-of-memory, stack overflow, or linkage faults.
+Such failures are terminal host conditions, not ordinary `throw` values.
+
+This emergency fast path does **not** suppress Oreslang guest panic source
+markers, which remain typed and non-trappable. The compiler must never treat a
+fatal host exception as an ordinary guest `throw` or convert it to `None`.
+
 ## Admission matrix
 
 Before shipping common guest stack traces on both backends:
