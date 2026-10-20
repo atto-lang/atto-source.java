@@ -161,6 +161,38 @@ final class DynamicSelectPlanTest {
     }
 
     @Test
+    void longRunningLoopReusesPlansAndKeepsFairPriorityAndRandomSemantics() {
+        var first = new ChannelRuntime.Channel<Integer>(4096);
+        var second = new ChannelRuntime.Channel<Integer>(4096);
+        var plan = ChannelRuntime.SelectPlan.of(
+                ChannelRuntime.read(first),
+                ChannelRuntime.read(second));
+        var descriptors = plan.selectSetSnapshot();
+        var firstCase = descriptors.cases().get(0);
+        var secondCase = descriptors.cases().get(1);
+        for (int i = 0; i < 2048; i++) {
+            assertTrue(first.tryWrite(i));
+            assertTrue(second.tryWrite(i));
+            var result = plan.trySelect(ChannelRuntime.SelectPolicy.FAIR).orElseThrow();
+            assertEquals(i % 2, result.index(), "reused FAIR plan should rotate");
+            assertSame(descriptors, plan.selectSetSnapshot());
+            assertSame(firstCase, descriptors.cases().get(0));
+            assertSame(secondCase, descriptors.cases().get(1));
+        }
+        for (int i = 0; i < 128; i++) {
+            assertEquals(0, plan.trySelect(ChannelRuntime.SelectPolicy.PRIORITY)
+                    .orElseThrow().index());
+        }
+        var randomPlan = ChannelRuntime.SelectPlan.of(
+                ChannelRuntime.read(first), ChannelRuntime.read(second));
+        for (int i = 0; i < 256; i++) {
+            int index = randomPlan.trySelect(ChannelRuntime.SelectPolicy.RANDOM)
+                    .orElseThrow().index();
+            assertTrue(index == 0 || index == 1);
+        }
+    }
+
+    @Test
     void concurrentMutationAndReadinessPreserveSnapshotKeysAndVersions() throws Exception {
         var stable = new ChannelRuntime.Channel<Integer>(128);
         var changing = new ChannelRuntime.Channel<Integer>(128);
