@@ -94,6 +94,7 @@ final class ActorPipelineRouteSession {
     private boolean closed;
     // VM-owned nonblocking mailbox publication scope, not a guest state loan.
     private boolean publicationInProgress;
+    private MailFrame publicationSource;
 
     ActorPipelineRouteSession(ActorPipelineRoutePlan graph,
                                      long generation, int maxActiveFrames) {
@@ -216,6 +217,7 @@ final class ActorPipelineRouteSession {
      * This is NOT an actor-controlled named destination or reverse broadcast. */
     synchronized MailFrame returnOneHop(MailFrame current) {
         requireActive(current);
+        requireNotPublishingSource(current);
         if (current.receiverIndex == 0)
             throw new IllegalStateException("pipeline origin has no upstream return hop");
         reserveRouteIds(1);
@@ -239,6 +241,7 @@ final class ActorPipelineRouteSession {
      */
     synchronized MailFrame returnToOrigin(MailFrame current) {
         requireForward(current);
+        requireNotPublishingSource(current);
         if (current.receiverIndex == 0)
             throw new IllegalStateException("pipeline origin cannot reply to itself");
         reserveRouteIds(1);
@@ -253,6 +256,7 @@ final class ActorPipelineRouteSession {
     /** Send to the immediate authenticated sender of the current message. */
     public synchronized ReturnPath backward(MailFrame current) {
         requireForward(current);
+        requireNotPublishingSource(current);
         requireReplyable(current);
         List<String> path = current.actorPath;
         ReturnPath result = new ReturnPath(generation, current.flowId,
@@ -264,6 +268,7 @@ final class ActorPipelineRouteSession {
     /** Return through the authenticated reverse path, not a guessed actor ID. */
     public synchronized ReturnPath reply(MailFrame current) {
         requireForward(current);
+        requireNotPublishingSource(current);
         requireReplyable(current);
         List<String> reversed = new ArrayList<>(current.actorPath);
         java.util.Collections.reverse(reversed);
@@ -276,6 +281,7 @@ final class ActorPipelineRouteSession {
     /** Complete a one-way message without a reply; never replay a terminal. */
     public synchronized void complete(MailFrame current) {
         requireActive(current);
+        requireNotPublishingSource(current);
         active.remove(current);
     }
 
@@ -292,6 +298,10 @@ final class ActorPipelineRouteSession {
 
     private synchronized void retireIfActive(MailFrame frame) {
         if (!closed && frame.session == this && frame.generation == generation) {
+            // Independent rejected child envelopes may be cleaned up under
+            // the barrier, but its already-authenticated SOURCE frame must
+            // remain live until the whole batch admission returns.
+            if (publicationInProgress && publicationSource == frame) return;
             active.remove(frame);
         }
     }
@@ -307,9 +317,11 @@ final class ActorPipelineRouteSession {
             throw new IllegalStateException("nested pipeline mailbox publication");
         }
         publicationInProgress = true;
+        publicationSource = source;
         try {
             return action.get();
         } finally {
+            publicationSource = null;
             publicationInProgress = false;
         }
     }
@@ -338,6 +350,12 @@ final class ActorPipelineRouteSession {
         roundRobin.clear();
         generation = successor;
         return cancelled;
+    }
+
+    private void requireNotPublishingSource(MailFrame current) {
+        if (publicationInProgress && publicationSource == current)
+            throw new IllegalStateException(
+                    "cannot retire route source during mailbox batch publication");
     }
 
     private void rejectPublicationFence() {
