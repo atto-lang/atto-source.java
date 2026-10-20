@@ -236,6 +236,135 @@ final class ActorSharedRuntimeAccountingTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void actorLocalSharedDebitsRemainOwnedWhenAggregateRefundFails()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            var accountingField =
+                    ActorRuntime.class.getDeclaredField("sharedMemoryBytes");
+            actorsField.setAccessible(true);
+            accountingField.setAccessible(true);
+
+            var actors = (java.util.Map<Object, Object>) actorsField.get(runtime);
+            Object actorCell = actors.get(actor.id());
+            assertNotNull(actorCell);
+            var accounting = (java.util.concurrent.atomic.AtomicLong)
+                    accountingField.get(runtime);
+
+            var outputField = actorCell.getClass().getDeclaredField("outputBytes");
+            var mailboxField = actorCell.getClass().getDeclaredField(
+                    "sharedMailboxBytes");
+            var releaseOutput = actorCell.getClass().getDeclaredMethod(
+                    "releaseOutput", long.class);
+            var releaseMailbox = actorCell.getClass().getDeclaredMethod(
+                    "releaseSharedMailbox", long.class);
+            outputField.setAccessible(true);
+            mailboxField.setAccessible(true);
+            releaseOutput.setAccessible(true);
+            releaseMailbox.setAccessible(true);
+
+            var output = (java.util.concurrent.atomic.AtomicLong)
+                    outputField.get(actorCell);
+            var mailbox = (java.util.concurrent.atomic.AtomicLong)
+                    mailboxField.get(actorCell);
+
+            output.set(64L);
+            accounting.set(0L);
+            var outputFailure = assertThrows(
+                    InvocationTargetException.class,
+                    () -> releaseOutput.invoke(actorCell, 64L));
+            assertInstanceOf(IllegalStateException.class, outputFailure.getCause());
+            assertEquals(64L, output.get(),
+                    "failed aggregate refund must retain exact output debit");
+
+            accounting.set(64L);
+            releaseOutput.invoke(actorCell, 64L);
+            assertEquals(0L, output.get());
+            assertEquals(0L, accounting.get());
+
+            mailbox.set(96L);
+            accounting.set(0L);
+            var mailboxFailure = assertThrows(
+                    InvocationTargetException.class,
+                    () -> releaseMailbox.invoke(actorCell, 96L));
+            assertInstanceOf(IllegalStateException.class, mailboxFailure.getCause());
+            assertEquals(96L, mailbox.get(),
+                    "failed aggregate refund must retain exact mailbox debit");
+
+            accounting.set(96L);
+            releaseMailbox.invoke(actorCell, 96L);
+            assertEquals(0L, mailbox.get());
+            assertEquals(0L, accounting.get());
+
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void syncCellShrinkRefundFailureDoesNotCommitNewValue() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var original = new java.util.ArrayList<Integer>();
+            for (int i = 0; i < 64; i++) original.add(i);
+            var cell = runtime.syncCell(original);
+            long reserved = runtime.sharedMemoryBytes();
+            assertTrue(reserved > 0L);
+
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            var currentActorField =
+                    ActorRuntime.class.getDeclaredField("currentActor");
+            var accountingField =
+                    ActorRuntime.class.getDeclaredField("sharedMemoryBytes");
+            actorsField.setAccessible(true);
+            currentActorField.setAccessible(true);
+            accountingField.setAccessible(true);
+
+            var actors = (java.util.Map<Object, Object>) actorsField.get(runtime);
+            Object actorCell = actors.get(actor.id());
+            assertNotNull(actorCell);
+            var currentActor = (ThreadLocal<Object>)
+                    currentActorField.get(runtime);
+            var accounting = (java.util.concurrent.atomic.AtomicLong)
+                    accountingField.get(runtime);
+
+            // Make the shrink refund impossible while preserving the original
+            // local reservation. update() must fail before publishing value.
+            accounting.set(0L);
+            currentActor.set(actorCell);
+            try {
+                var failure = assertThrows(
+                        IllegalStateException.class,
+                        () -> cell.update(ignored -> java.util.List.of(1)));
+                assertTrue(failure.getMessage().contains(
+                        "shared actor memory accounting underflow"));
+            } finally {
+                currentActor.remove();
+            }
+
+            assertEquals(64, cell.snapshot().size(),
+                    "failed shrink refund must not commit the replacement value");
+
+            // Restore the exact aggregate owner, then close normally.
+            accounting.set(reserved);
+            cell.close();
+            assertEquals(0L, runtime.sharedMemoryBytes());
+
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void concurrentBalancedReservationsDoNotLoseRuntimeAccounting() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             Method reserve = operation(
