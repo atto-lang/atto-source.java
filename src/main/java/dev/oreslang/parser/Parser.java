@@ -2817,7 +2817,7 @@ public final class Parser {
             suppressRefinementOperators = previousSuppression;
         }
 
-        boolean canonicalOver = matchContextualIdentifier("over");
+        boolean canonicalOver = match(OVER) || matchContextualIdentifier("over");
         if (!canonicalOver) match(SEMICOLON);
         // "over { ... }" owns the outer braces, while "over ... end"
         // retains its established terminator. Neither form may consume the
