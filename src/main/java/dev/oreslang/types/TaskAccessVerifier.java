@@ -282,7 +282,7 @@ final class TaskAccessVerifier {
             throw new IllegalStateException("TaskScope allocation tracking capacity exceeded");
         }
         if (nextId == Long.MAX_VALUE) throw new IllegalStateException("Task ticket overflow");
-        Ticket ticket = new Ticket(nextId++);
+        Ticket ticket = new Ticket(scopeEpoch, nextId++);
         // Only now commit the scope domain, claims and allocation generations.
         scopeDomain = requestedDomain;
         live.put(ticket, new Child(claims));
