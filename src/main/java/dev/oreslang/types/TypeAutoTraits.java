@@ -102,6 +102,7 @@ public final class TypeAutoTraits {
             case "Arc" -> Optional.of(wrapped(named, Kind.ARC, true, nested));
             case "Weak" -> Optional.of(wrapped(named, Kind.WEAK, true, nested));
             case "Rc" -> Optional.of(wrapped(named, Kind.RC, false, nested));
+            case "RcWeak" -> Optional.of(NONE);
             case "RefCell" -> Optional.of(wrapped(named, Kind.REFCELL, false, nested));
             case "Mutex" -> Optional.of(wrapped(named, Kind.MUTEX, false, nested));
             case "RwLock" -> Optional.of(wrapped(named, Kind.RWLOCK, false, nested));
