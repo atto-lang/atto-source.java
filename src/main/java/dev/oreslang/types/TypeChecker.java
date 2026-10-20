@@ -2459,7 +2459,9 @@ public final class TypeChecker {
             Type source = deref(typeOf(cast.value(), env, generics, self));
             Type target = deref(resolve(cast.targetType(), generics, self));
             if (isBytesType(target)) {
-                if (!isBytesCastSource(source)) {
+                boolean emptyBytesLiteral = cast.value() instanceof Ast.ListExpr list
+                        && list.elements().isEmpty();
+                if (!emptyBytesLiteral && !isBytesCastSource(source)) {
                     throw new IllegalArgumentException(
                             "Bytes cast requires Bytes or an integer array/list; got " + source);
                 }
