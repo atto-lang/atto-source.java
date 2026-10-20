@@ -22,7 +22,7 @@ final class FirstClassModelGraphTest {
     // Pinned to common-source contracts/v1/model-graph/executable-v1-conformance.json.
     // A common corpus revision bump requires an explicit backend review/update.
     private static final String SHARED_EXECUTABLE_CORPUS_REVISION =
-            "model-core-i64-v1.2026-10-20.1";
+            "model-core-i64-v1.2026-10-20.2";
 
     private static final String PRICE_MODEL = """
             fnc ValidatePrice(float input): float {
@@ -48,7 +48,7 @@ final class FirstClassModelGraphTest {
 
     @Test
     void sharedExecutableCorpusRevisionIsExplicitlyPinned() {
-        assertEquals("model-core-i64-v1.2026-10-20.1",
+        assertEquals("model-core-i64-v1.2026-10-20.2",
                 SHARED_EXECUTABLE_CORPUS_REVISION);
     }
 
@@ -208,6 +208,38 @@ final class FirstClassModelGraphTest {
                 }
                 """);
         assertEquals("-9223372036854775808", output);
+    }
+
+    @Test
+    void signedI64OverflowUsesStableModelDiagnostic() {
+        assertThrowsMessage("MODEL_CONST_OVERFLOW", () ->
+                OresCompiler.parseAndTypeCheck("""
+                        fnc AddDelta(int delta, int input): int { return input + delta; }
+                        define model Bad(delta: int = 9223372036854775808) as
+                          AddDelta(delta)
+                        end
+                        """));
+        assertThrowsMessage("MODEL_CONST_OVERFLOW", () ->
+                OresCompiler.parseAndTypeCheck("""
+                        fnc AddDelta(int delta, int input): int { return input + delta; }
+                        define model Bad(delta: int = -9223372036854775809) as
+                          AddDelta(delta)
+                        end
+                        """));
+        assertThrowsMessage("MODEL_CONST_OVERFLOW", () ->
+                OresCompiler.parseAndTypeCheck("""
+                        fnc AddDelta(int delta, int input): int { return input + delta; }
+                        define model Bad as
+                          AddDelta(9223372036854775808)
+                        end
+                        """));
+        assertThrowsMessage("MODEL_CONST_OVERFLOW", () ->
+                OresCompiler.parseAndTypeCheck("""
+                        fnc AddDelta(int delta, int input): int { return input + delta; }
+                        define model Bad as
+                          AddDelta(-9223372036854775809)
+                        end
+                        """));
     }
 
     @Test
