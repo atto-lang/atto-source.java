@@ -1157,24 +1157,28 @@ public final class Ast {
                 }
             }
 
-            // The proof is for a statically typed receiver view, not for an
-            // arbitrary object with the same key names. A rewrite that changes
-            // the receiver expression must obtain a fresh type/ownership check,
-            // not inherit another receiver's field visibility or tuple slot.
-            // Lexically distinct receivers can be structurally equal while
-            // resolving to different bindings or static views. Proof transfer
-            // requires the identical checked receiver AST node; a rewrite
-            // that creates a new receiver must be fully re-typechecked.
+            // The proof is for one exact statically typed projection,
+            // not merely for any expression that happens to resolve to the same
+            // receiver/key values. A post-check optimizer that replaces either
+            // side has not re-run type, visibility, ownership, or constructor
+            // admission for the replacement. Preserve authority only when both
+            // the receiver and selector are the identical checked AST nodes.
+            // Any future rewrite that wants to change either expression must
+            // obtain a fresh proof from the front-end instead of cloning this one.
             if ((visible != null || fixed != null)
                     && original.receiver() != rewritten.receiver()) {
                 throw new IllegalStateException(
                         "optimizer changed receiver of a certified indexed projection");
             }
+            if ((visible != null || fixed != null)
+                    && original.index() != rewritten.index()) {
+                throw new IllegalStateException(
+                        "optimizer changed selector of a certified indexed projection");
+            }
 
-            // Even trusted optimizers may fold a computed index into a literal.
-            // The rewritten literal cannot contradict a previously proved
-            // closed-view key or positional slot. Validate *before* installing
-            // either proof, so a denied rewrite cannot leave partial authority.
+            // Retain contradiction checks as defense in depth for an exact-node
+            // clone. They should be redundant after the identity gate, but keep
+            // proof installation fail-closed if the representation changes.
             if (rewritten.index() instanceof LiteralExpr literal) {
                 Object candidate = literal.value();
                 if (visible != null && (!(candidate instanceof String key)
