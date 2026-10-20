@@ -23,7 +23,7 @@ change exit status. Invalid invocations return usage status 2.
 `--static-safety` rejects runtime, permission, build and strict-isolate
 options rather than allowing their names to imply enforced proof.
 The renderer rejects >10,000 findings, >16,384 characters per field, and
->8 MiB of JSON. It intentionally does not invent source spans or SARIF
+>8,388,608 UTF-16 code units of JSON text. It intentionally does not invent source spans or SARIF
 locations; these require compiler-authenticated typed IR source metadata.
 
 
