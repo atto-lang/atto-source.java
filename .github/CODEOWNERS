@@ -1,5 +1,6 @@
 # Security review for all changes that can authorize private-source exports.
-# Enforcement requires branch protection to require code-owner reviews.
+# Enforcement is provided by protected-main review rules when available, or
+# by the v3 publisher's exact review-attested fallback on plans without them.
 /.github/CODEOWNERS @ORESoftware
 /.github/private-ci-approved-repositories.txt @ORESoftware
 /.github/private-ci-carrier-contracts.json @ORESoftware
@@ -13,7 +14,7 @@
 /scripts/test-publish-private-ci-source-v3.py @ORESoftware
 /scripts/test-publish-private-ci-source.py @ORESoftware
 # Critical build and CI control plane. Broad ownership complements the
-# security-specific entries above; enforcement still requires repository policy.
+# security-specific entries above; export still requires exact reviewed policy.
 /.github/workflows/ @ORESoftware
 /scripts/ @ORESoftware
 /pom.xml @ORESoftware
