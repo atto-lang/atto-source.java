@@ -256,4 +256,60 @@ final class OresFutureConstructorsTest {
     }
 
 
+    @Test
+    void cancellableResolverCannotResurrectCompletedFuture() throws Exception {
+        AtomicReference<OresFuture.Callback<Integer>> external = new AtomicReference<>();
+        java.util.concurrent.atomic.AtomicInteger detaches = new java.util.concurrent.atomic.AtomicInteger();
+        OresFuture<Integer> future = OresFutureConstructors.fromCancellableRunCallback(
+                cb -> {
+                    external.set(cb);
+                    return detaches::incrementAndGet;
+                });
+
+        external.get().resolve(40);
+        assertEquals(40, future.get(5, TimeUnit.SECONDS));
+        assertTrue(external.get().isDone());
+        assertEquals(1, detaches.get());
+        assertThrows(OresFuture.AlreadySettledException.class,
+                () -> external.get().reject(new IllegalStateException("too late")));
+        assertEquals(1, detaches.get());
+    }
+
+    @Test
+    void cancelledCancellableResolverDiscardsFirstLateSettlementThenRejectsDuplicate() {
+        AtomicReference<OresFuture.Callback<Integer>> external = new AtomicReference<>();
+        java.util.concurrent.atomic.AtomicInteger detaches = new java.util.concurrent.atomic.AtomicInteger();
+        OresFuture<Integer> future = OresFutureConstructors.fromCancellableRunCallback(
+                cb -> {
+                    external.set(cb);
+                    return detaches::incrementAndGet;
+                });
+        assertTrue(future.cancel(false));
+        assertTrue(external.get().isDone());
+        assertDoesNotThrow(() -> external.get().resolve(40));
+        assertThrows(OresFuture.AlreadySettledException.class,
+                () -> external.get().resolve(41));
+        assertTrue(future.isCancelled());
+        assertEquals(1, detaches.get());
+    }
+
+    @Test
+    void failedCancellableRegistrarRevokesEscapedResolver() throws Exception {
+        AtomicReference<OresFuture.Callback<Integer>> external = new AtomicReference<>();
+        IllegalStateException failure = new IllegalStateException("partial registration rolled back");
+        OresFuture<Integer> future = OresFutureConstructors.fromCancellableRunCallback(
+                cb -> {
+                    external.set(cb);
+                    throw failure;
+                });
+        var observed = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> future.get(5, TimeUnit.SECONDS));
+        assertSame(failure, observed.getCause());
+        assertTrue(external.get().isDone());
+        assertDoesNotThrow(() -> external.get().resolve(40));
+        assertThrows(OresFuture.AlreadySettledException.class,
+                () -> external.get().resolve(41));
+    }
+
+
 }
