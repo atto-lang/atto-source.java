@@ -1222,6 +1222,11 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                                         rollbackFailure);
                             }
                             pendingProxyRollbackTicket = txn.proxyTicket;
+                            // Transfer sole rollback authority out of the
+                            // transaction. The outer finalizer must not retry
+                            // and consume this ticket behind the supervisor
+                            // owner's back, leaving a stale pending handle.
+                            txn.proxyTicket = null;
                             retirementQuarantined = true;
                             if (rollbackFailure != setupFailure)
                                 setupFailure.addSuppressed(rollbackFailure);
@@ -1499,6 +1504,10 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                                         rollbackFailure);
                             }
                             pendingProxyRollbackTicket = txn.proxyTicket;
+                            // Ownership has moved to the supervisor recovery
+                            // ledger. Keep the transaction from retaining a
+                            // second logical owner for the same freeze ticket.
+                            txn.proxyTicket = null;
                             retirementQuarantined = true;
                             if (cleanupFailure == null) {
                                 cleanupFailure = rollbackFailure;
