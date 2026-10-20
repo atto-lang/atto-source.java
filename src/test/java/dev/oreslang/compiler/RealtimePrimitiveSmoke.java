@@ -104,6 +104,31 @@ public final class RealtimePrimitiveSmoke {
                 if (actual != (input > 0 ? 4 : 3)) throw new AssertionError("bad branch output");
             }
         }
-        System.out.println("PASS: portable Java 8 Oreslang AST primitive subset, execution, and 9 negative/budget checks and branch execution");
+
+        rejects("missing return", () -> RealtimePrimitiveCompiler.analyze(
+                program(fn("missing", List.of(), List.of(new Ast.ExprStmt(num(1))))),
+                "missing", 0, budget));
+        rejects("unreachable statement after return", () -> RealtimePrimitiveCompiler.analyze(
+                program(fn("dead", List.of(), List.of(ret(num(1)), ret(num(2))))),
+                "dead", 0, budget));
+        rejects("unreturned else path", () -> RealtimePrimitiveCompiler.analyze(
+                program(fn("branch", List.of(param("x")), List.of(
+                        new Ast.IfStmt(List.of(new Ast.IfBranch(
+                                new Ast.BinaryExpr(">", name("x"), num(0)), List.of(ret(num(1))))),
+                                List.of(new Ast.ExprStmt(num(3)))))),
+                "branch", 1, budget));
+        rejects("excessive expression nesting", () -> {
+            Ast.Expr nested = num(0);
+            for (int k = 0; k < 70; k++) nested = new Ast.UnaryExpr("-", nested);
+            RealtimePrimitiveCompiler.analyze(program(fn("deep", List.of(), List.of(ret(nested)))),
+                    "deep", 0, budget);
+        });
+        rejects("excessive parameter count", () -> {
+            java.util.ArrayList<Ast.Param> params = new java.util.ArrayList<>();
+            for (int k = 0; k < 33; k++) params.add(param("p" + k));
+            RealtimePrimitiveCompiler.analyze(program(fn("many", params, List.of(ret(num(1))))),
+                    "many", 33, budget);
+        });
+        System.out.println("PASS: primitive compiler, branches, negative cases, and independent admission");
     }
 }
