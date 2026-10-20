@@ -121,7 +121,9 @@ public final class PortableModelGraphDigestV1 {
         if (port instanceof NominalPort n) {
             out.u8(1); out.string(n.typeAbi()); out.u64(n.bytes()); return;
         }
-        if (!(port instanceof BufferPort b) || b.shape().size() > 8) fail("MODEL_INVALID_PORT");
+        if (!(port instanceof BufferPort)) fail("MODEL_INVALID_PORT");
+        BufferPort b = (BufferPort) port;
+        if (b.shape().size() > 8) fail("MODEL_INVALID_PORT");
         // Hashing cannot certify a model with unrepresentable physical storage.
         long elemBytes = switch (b.dtype()) {
             case "bool" -> 1L;
