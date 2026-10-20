@@ -431,10 +431,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
                     authenticate(head);
                     switch (head.kind()) {
                         case REQUEST -> receiveRequest(head, frameRead);
-                        case CANCEL -> {
-                            frameRead.close();
-                            receiveCancel(head.correlationId());
-                        }
+                        case CANCEL -> receiveCancel(head.correlationId());
                         case REPLY, ERROR -> throw new IOException(
                                 "client sent server-terminal unary frame");
                     }
@@ -791,6 +788,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
         }
     }
 
+    @SuppressWarnings("removal")
     static void rethrowJvmFatal(Throwable failure) {
         if (failure instanceof VirtualMachineError fatal) throw fatal;
         if (failure instanceof ThreadDeath fatal) throw fatal;
