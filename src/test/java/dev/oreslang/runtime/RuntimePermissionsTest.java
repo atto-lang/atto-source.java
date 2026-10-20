@@ -129,6 +129,35 @@ final class RuntimePermissionsTest {
     }
 
     @Test
+    void anyLocalListenerBindCannotBypassSpecificDenies() {
+        RuntimePermissions ipv4Open = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "0.0.0.0:8443");
+        assertTrue(ipv4Open.allowsNetworkBind("0.0.0.0", 8443));
+
+        RuntimePermissions ipv4Narrowed = ipv4Open.withDenied(
+                RuntimePermissions.Permission.NET, "127.0.0.1:8443");
+        assertFalse(ipv4Narrowed.allowsNetworkBind("0.0.0.0", 8443),
+                "any-local IPv4 bind covers an explicitly denied interface");
+
+        RuntimePermissions ipv4Ephemeral = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "0.0.0.0")
+                .withDenied(RuntimePermissions.Permission.NET, "127.0.0.1:22");
+        assertFalse(ipv4Ephemeral.allowsNetworkBind("0.0.0.0", 0),
+                "ephemeral any-local IPv4 bind cannot prove disjointness from a deny");
+
+        RuntimePermissions ipv6Open = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "::");
+        assertTrue(ipv6Open.allowsNetworkBind("::", 0));
+
+        RuntimePermissions ipv6Narrowed = ipv6Open.withDenied(
+                RuntimePermissions.Permission.NET, "[::1]:22");
+        assertFalse(ipv6Narrowed.allowsNetworkBind("::", 0),
+                "any-local IPv6 bind covers an explicitly denied interface");
+        assertFalse(ipv6Narrowed.allowsNetworkBind("::", 8443),
+                "fixed-port any-local IPv6 bind must also preserve explicit denies");
+    }
+
+    @Test
     void requireNetworkBindEnforcesExactAndEphemeralScopes() {
         RuntimePermissions exact = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "127.0.0.1:8443");
