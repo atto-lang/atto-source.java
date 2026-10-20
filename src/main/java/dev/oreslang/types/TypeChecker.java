@@ -1316,6 +1316,14 @@ public final class TypeChecker {
                             + "' cannot use same-file type alias '" + name
                             + "'; move the type to another source unit and import it explicitly");
         }
+
+        if (nominalEnums != null
+                && nominalEnums.enums().containsKey(name)) {
+            throw new IllegalArgumentException(
+                    "actor '" + lexicalClassOrigin.name()
+                            + "' cannot use same-file nominal enum '" + name
+                            + "'; move the enum to another source unit and import it explicitly");
+        }
     }
 
     /**
@@ -2034,6 +2042,7 @@ public final class TypeChecker {
                         nominalEnums.caseOrNull(
                                 enumOwner.name() + "." + enumMember.member());
                 if (enumCase != null) {
+                    rejectUnimportedTypeDependency(enumCase.owner());
                     if (call.typeArgumentsPresent()) {
                         throw new IllegalArgumentException(
                                 "enum constructors do not accept type arguments");
