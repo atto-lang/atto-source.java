@@ -106,7 +106,7 @@ final class CheckedEffectsTest {
     @Test
     void rejectsAliasIndirectionToRuntimeAffineTypes() {
         assertThrows(IllegalArgumentException.class, () -> checked(
-                "define type Alias as Future<int> end "
+                "define type Alias = Future<int>; "
                 + "fnc risky(): int throws Alias { return 1; }"));
     }
 
