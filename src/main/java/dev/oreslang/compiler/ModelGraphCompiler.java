@@ -31,7 +31,10 @@ public final class ModelGraphCompiler {
     public static final String MODEL_TYPE_PREFIX = "$model$";
     private static final int MAX_MODELS = 1024;
     private static final int MAX_NODES = 4096;
+    private static final int MAX_CONFIG_PARAMS = 64;
     private static final int MAX_STATIC_ARGS = 32;
+    private static final int MAX_TOTAL_STATIC_ARGS = 16384;
+    private static final int MAX_MODEL_IDENTIFIER_LENGTH = 128;
 
     public record StaticArg(
             String parameterName,
@@ -360,10 +363,18 @@ public final class ModelGraphCompiler {
                     "model '" + qualifiedName + "' exceeds " + MAX_NODES + " operations");
         }
 
+        validateModelIdentifier(declaration.name(), "model");
+        if (declaration.parameters().size() > MAX_CONFIG_PARAMS) {
+            fail("MODEL_CONFIG_BUDGET",
+                    "model '" + qualifiedName + "' exceeds "
+                            + MAX_CONFIG_PARAMS + " configuration parameters");
+        }
+
         LinkedHashMap<String, Ast.ModelParam> sourceParameters = new LinkedHashMap<>();
         ArrayList<Parameter> parameters = new ArrayList<>();
         boolean seenDefault = false;
         for (Ast.ModelParam parameter : declaration.parameters()) {
+            validateModelIdentifier(parameter.name(), "model parameter");
             if (sourceParameters.putIfAbsent(parameter.name(), parameter) != null) {
                 fail("MODEL_DUPLICATE_PARAMETER",
                         "duplicate model parameter '" + parameter.name() + "'");
@@ -391,7 +402,15 @@ public final class ModelGraphCompiler {
         ArrayList<Node> nodes = new ArrayList<>();
         Ast.TypeRef previousOutput = null;
         int nodeIndex = 0;
+        int totalStaticArgs = 0;
         for (Ast.ModelOp sourceOperation : declaration.operations()) {
+            validateModelIdentifier(sourceOperation.name(), "model operation");
+            totalStaticArgs = Math.addExact(totalStaticArgs, sourceOperation.arguments().size());
+            if (totalStaticArgs > MAX_TOTAL_STATIC_ARGS) {
+                fail("MODEL_STATIC_ARG_BUDGET",
+                        "model '" + qualifiedName + "' exceeds "
+                                + MAX_TOTAL_STATIC_ARGS + " total static arguments");
+            }
             if (sourceOperation.arguments().size() > MAX_STATIC_ARGS) {
                 fail("MODEL_STATIC_ARG_BUDGET",
                         "operation '" + sourceOperation.name() + "' has too many static arguments");
@@ -493,6 +512,23 @@ public final class ModelGraphCompiler {
                 false,
                 false,
                 true);
+    }
+
+    private static void validateModelIdentifier(String name, String label) {
+        if (name == null || name.isBlank()
+                || name.length() > MAX_MODEL_IDENTIFIER_LENGTH
+                || !Character.isLetter(name.charAt(0))) {
+            fail("MODEL_INVALID_IDENTIFIER",
+                    label + " identifier is invalid or exceeds "
+                            + MAX_MODEL_IDENTIFIER_LENGTH + " UTF-16 code units");
+        }
+        for (int i = 1; i < name.length(); i++) {
+            char ch = name.charAt(i);
+            if (!(Character.isLetterOrDigit(ch) || ch == '_')) {
+                fail("MODEL_INVALID_IDENTIFIER",
+                        label + " identifier '" + name + "' is not canonical");
+            }
+        }
     }
 
     private static Ast.FunctionDecl findFunction(
@@ -644,14 +680,6 @@ public final class ModelGraphCompiler {
         }
         if (type.inferArguments()) result.append("<>");
         return result.toString();
-    }
-
-    private static int fixedScalarBytes(Ast.TypeRef type) {
-        return switch (canonicalType(type)) {
-            case "bool" -> 1;
-            case "int", "float" -> 8;
-            default -> -1;
-        };
     }
 
     private static String operationAbi(Ast.FunctionDecl operation) {
