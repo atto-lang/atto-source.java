@@ -172,6 +172,11 @@ public final class RealtimeActorSourceEffects {
                 || !actor.interfaces().isEmpty() || !actor.genericParameters().isEmpty()) {
             reject("actor class requires unverified construction, state, inheritance or trust effects");
         }
+        // Other methods or lifecycle hooks can allocate/throw before or
+        // during this callback. Stage 0 only admits a single-method actor.
+        if (actor.methods().size() != 1) {
+            reject("additional actor methods and lifecycle callbacks are unverified");
+        }
         Ast.MethodDecl method = null;
         for (Ast.MethodDecl candidate : actor.methods()) {
             if (candidate.name().equals(callbackName) && candidate.arity() == arity) {
