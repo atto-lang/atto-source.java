@@ -599,13 +599,23 @@ def create_handoff_ref(repository, ref_name, commit_sha, expected_repository_id)
         raise Denied("carrier did not confirm exact ref creation")
     return payload
 
+def is_github_ref_absent_response(result):
+    """Only a CLI-status HTTP 404, never incidental error text, proves absence."""
+    if result.returncode == 0 or not isinstance(result.stderr, str):
+        return False
+    first_line = result.stderr.split("\n", 1)[0]
+    return re.fullmatch(
+        r"gh: [^\r\n]{1,4096} \(HTTP 404\)", first_line
+    ) is not None
+
+
 def live_ref_sha(repository, ref_name, expected_repository_id):
     repo = legacy.checked_repo(repository)
     if repo.get("id") != expected_repository_id:
         raise Denied("carrier repository identity changed during ref verification")
     result = _gh_ref_request(repository, ref_name, "GET")
     if result.returncode != 0:
-        if "HTTP 404" in result.stderr:
+        if is_github_ref_absent_response(result):
             # GitHub can mask private-resource authorization failures as 404.
             # The numeric carrier identity was just revalidated above, so this
             # 404 can be treated as evidence that this exact ref is absent.
@@ -655,7 +665,7 @@ def delete_exact_ref(repository, ref_name, expected_sha, expected_repository_id)
         raise Denied("carrier ref moved; refusing rollback")
 
     result = _gh_ref_request(repository, ref_name, "DELETE")
-    if result.returncode != 0 and "HTTP 404" not in result.stderr:
+    if result.returncode != 0 and not is_github_ref_absent_response(result):
         raise Denied("carrier ref rollback failed")
     if live_ref_sha(repository, ref_name, expected_repository_id) is not None:
         raise Denied("carrier ref still exists after rollback")
