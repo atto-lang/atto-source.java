@@ -45,6 +45,30 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
 public final class OresEvalRootNode extends RootNode {
+    static record ReservedTaskTransfer<T>(
+            TaskScope.Registration child,
+            T transferred) { }
+
+    /**
+     * Acquire structured lifetime authority before any move/copy projection is
+     * executed. Cancellation/close denial therefore cannot consume the caller's
+     * ownership slots. If projection itself fails after reservation, the ticket
+     * is retired through the never-started path.
+     */
+    static <T> ReservedTaskTransfer<T> reserveBeforeTaskTransfer(
+            TaskScope scope,
+            TaskScope.Registration parent,
+            java.util.function.Supplier<T> transfer) {
+        Objects.requireNonNull(transfer, "Task transfer");
+        TaskScope.Registration child =
+                scope == null ? null : scope.reserve(parent);
+        try {
+            return new ReservedTaskTransfer<>(child, transfer.get());
+        } catch (RuntimeException | Error failure) {
+            if (child != null) child.failedAdmission(failure);
+            throw failure;
+        }
+    }
     public static final String LINK_ONLY_COMMAND = "__ores_internal_link_only__";
     public static final String INIT_ONLY_COMMAND = "__ores_internal_init_only__";
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
@@ -1383,18 +1407,32 @@ public final class OresEvalRootNode extends RootNode {
                         "scoped Task execution inside actors is disabled until actor quota/hot-reload integration is proven");
             }
 
-            Env captured = caller.taskProjection(admitted);
-            TaskTransferLease lease = TaskTransferLease.retain(admitted, captured);
-            TaskScope.Registration child = scope == null
-                    ? null : scope.reserve(caller.taskScopeParent);
+            ReservedTaskTransfer<Env> reserved =
+                    reserveBeforeTaskTransfer(
+                            scope,
+                            caller.taskScopeParent,
+                            () -> caller.taskProjection(admitted));
+            TaskScope.Registration child = reserved.child();
+            Env captured = reserved.transferred();
+
+            final TaskTransferLease lease;
+            try {
+                lease = TaskTransferLease.retain(admitted, captured);
+            } catch (RuntimeException | Error failure) {
+                // Projection already transferred ownership, but no runtime
+                // child exists yet. Retire only the reserved lifetime ticket.
+                if (child != null) child.failedAdmission(failure);
+                throw failure;
+            }
+
             captured.taskScopeParent = child;
             Runnable physicalRetirement = () -> {
-                // Ownership release is the stronger authority. A future
-                // implementation that can fail retirement must fail closed
-                // before publishing the scope-quiescence witness.
+                // Ownership release is the stronger authority. Do not publish
+                // scope quiescence until the transfer lease has retired.
                 lease.retire();
                 if (child != null) child.quiesced();
             };
+
             final OresFuture<Object> future;
             try {
                 future = startSourceBlockTask(
@@ -1404,8 +1442,8 @@ public final class OresEvalRootNode extends RootNode {
                         child == null ? ignored -> { } : child::terminalReady);
             } catch (RuntimeException | Error failure) {
                 // start(...) did not return a Future, so no runtime child can
-                // be observed by the caller. Retire through the never-started
-                // path. Do not reuse this path for post-start bookkeeping.
+                // own the transfer. This is the only post-projection path that
+                // may use failedAdmission/never-started retirement.
                 lease.retire();
                 if (child != null) child.failedAdmission(failure);
                 throw failure;
@@ -1415,11 +1453,9 @@ public final class OresEvalRootNode extends RootNode {
                 try {
                     child.attach(future);
                 } catch (RuntimeException | Error attachFailure) {
-                    // A Future now exists and owns the physical retirement
-                    // callback. Never classify this as failed admission or
-                    // release the transfer early. Revoke the orphaned child
-                    // logically; its normal terminal + physical callbacks
-                    // remain the only authority that can retire the ticket.
+                    // A Future exists and owns physical retirement. Never
+                    // reclassify post-start bookkeeping failure as failed
+                    // admission or release the transfer early.
                     future.cancel(false);
                     throw attachFailure;
                 }
