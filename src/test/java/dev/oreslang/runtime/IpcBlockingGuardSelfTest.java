@@ -141,6 +141,11 @@ public final class IpcBlockingGuardSelfTest {
                 var transport = new IpcAuthenticatedSocketTransport(
                         client, bridge, message, 303, 1, key, cleanup::execute);
 
+                actorCarrierDenied(
+                        transport::requestClose,
+                        "IPC transport close request");
+                check(transport.snapshot().phase()
+                        == IpcTransportSessionLease.Phase.OPEN);
                 actorCarrierDenied(() -> {
                     try {
                         transport.requestCloseAndAwait(100);
