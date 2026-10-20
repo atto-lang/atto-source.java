@@ -40,7 +40,8 @@ public final class ResolvedModelGraphLoweringV1 {
             if (value == null) throw new IllegalArgumentException("MODEL_NONCONSTANT_CONFIG");
             if (value.kind() == Ast.ModelValueKind.FORMAL)
                 throw new IllegalArgumentException("MODEL_NONCONSTANT_CONFIG");
-            config.put(formal.name(), value);
+            if (config.putIfAbsent(formal.name(), value) != null)
+                throw new IllegalArgumentException("MODEL_DUPLICATE_FORMAL");
         }
         for (String name : overrides.keySet())
             if (!config.containsKey(name)) throw new IllegalArgumentException("MODEL_UNKNOWN_FORMAL");
@@ -61,6 +62,12 @@ public final class ResolvedModelGraphLoweringV1 {
 
             List<Constant> constants = new ArrayList<>();
             for (int i = 0; i < op.arguments().size(); i++) {
+                // No compiler-owned configuration parameter names are attached
+                // to the portable v1 signature yet. Dropping a source label
+                // would make differently labelled calls hash identically.
+                // Do not silently treat named arguments as positional.
+                if (op.arguments().get(i).label() != null)
+                    throw new IllegalArgumentException("MODEL_NAMED_ARGUMENT_UNRESOLVED");
                 Ast.ModelValue value = op.arguments().get(i).value();
                 if (value.kind() == Ast.ModelValueKind.FORMAL) {
                     value = config.get(value.source());
