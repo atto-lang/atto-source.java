@@ -330,5 +330,33 @@ class PrivateCiV3Test(unittest.TestCase):
         )
 
 
+    def test_checked_in_contract_pins_pr616_private_carrier_exactly(self):
+        path = SCRIPT.parent.parent / ".github" / "private-ci-carrier-contracts.json"
+        doc = json.loads(path.read_text())
+        carrier = doc["carriers"][
+            "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra"
+        ]
+        self.assertEqual(carrier["repository_id"], 1412142815)
+        self.assertEqual(
+            carrier["base_sha"],
+            "90ab94fc768be6b2acae313b5537f642f63321cf",
+        )
+        self.assertEqual(
+            carrier["workflow_path"],
+            ".github/workflows/private-oreslang-exact-tree.yml",
+        )
+        self.assertEqual(
+            carrier["workflow_blob_sha"],
+            "3107feea0215ae9874ff35a2249c69ab6b9e7ffe",
+        )
+        self.assertEqual(
+            carrier["test_plans"]["ci/test-plans/java-pr616.json"],
+            {
+                "blob_sha": "4728c2ecb583a809f6978db7a0235cef771a89f7",
+                "allowed_prs": [616],
+            },
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
