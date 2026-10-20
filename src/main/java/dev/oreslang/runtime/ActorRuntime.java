@@ -6049,12 +6049,30 @@ public final class ActorRuntime implements AutoCloseable {
                             candidate,
                             transfer.actorTypeName,
                             payload,
-                            onAllocated);
-                    transfer.bindStagedCandidateLocked(this, nextCode, restored);
+                            preallocated -> {
+                                // Freeze ownership must cover the candidate
+                                // from its first allocated physical identity,
+                                // NOT only after registry admission returns.
+                                // A registry put can insert then throw, leaving
+                                // a still-registered child without a returned
+                                // reference. The exact transfer must retain
+                                // it until physical finalization is proven.
+                                transfer.bindStagedCandidateLocked(
+                                        this, nextCode, preallocated);
+                                if (onAllocated != null)
+                                    onAllocated.accept(preallocated);
+                            });
                     return restored;
                 } catch (RuntimeException | Error failure) {
-                    transfer.rollbackFailedRestoreLocked(this, nextCode);
-                    rollbackFreeze = true;
+                    // A failed restore with NO allocated candidate can safely
+                    // reopen old ingress. When a staged physical identity
+                    // exists, only SourceActorTransfer.close() can discharge
+                    // that lifetime and release the freeze, after verifying
+                    // actual physical retirement. Do not mask this failure.
+                    if (transfer.stagedCandidate == null) {
+                        transfer.rollbackFailedRestoreLocked(this, nextCode);
+                        rollbackFreeze = true;
+                    }
                     throw failure;
                 }
             }
