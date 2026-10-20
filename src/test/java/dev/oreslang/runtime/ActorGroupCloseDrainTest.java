@@ -61,6 +61,79 @@ final class ActorGroupCloseDrainTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void liveWorkerCancellationFailureRetainsCloseOwnerUntilRetry() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorRef<Integer> worker = group.spawnWorker(
+                    ActorRuntime.ActorKind.SHARED,
+                    IsolatePolicy.developer(),
+                    context -> (message, actorContext) -> { });
+            worker.getReady().get(5, TimeUnit.SECONDS);
+
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            var original = (java.util.Map<Object, Object>) actorsField.get(runtime);
+            var injected = new java.util.concurrent.atomic.AtomicBoolean();
+            var faulty = new java.util.concurrent.ConcurrentHashMap<Object, Object>() {
+                @Override
+                public Object get(Object key) {
+                    if (worker.id().equals(key)
+                            && injected.compareAndSet(false, true)) {
+                        throw new IllegalStateException(
+                                "injected live worker cancellation lookup failure");
+                    }
+                    return super.get(key);
+                }
+            };
+            faulty.putAll(original);
+            actorsField.set(runtime, faulty);
+
+            var completeField = group.getClass().getDeclaredField("groupCloseComplete");
+            var ownedField = group.getClass().getDeclaredField(
+                    "groupCloseOwnedWorkers");
+            var activeField = group.getClass().getDeclaredField("groupCloseActive");
+            completeField.setAccessible(true);
+            ownedField.setAccessible(true);
+            activeField.setAccessible(true);
+
+            try {
+                var failure = assertThrows(
+                        IllegalStateException.class, group::closeAsync);
+                assertTrue(failure.getMessage().contains(
+                        "injected live worker cancellation lookup failure"));
+                assertTrue(injected.get());
+                assertTrue(group.closed());
+                assertFalse(completeField.getBoolean(group),
+                        "a still-live worker cancellation failure cannot complete group cleanup");
+                assertFalse(activeField.getBoolean(group),
+                        "failed close must release its retry claim");
+                Object retained = ownedField.get(group);
+                assertInstanceOf(java.util.List.class, retained);
+                assertTrue(((java.util.List<?>) retained).contains(worker),
+                        "closed group must retain the exact worker authority for retry");
+                assertFalse(group.closedDone().isDone(),
+                        "live worker remains part of the close drain barrier");
+
+                OresFuture<Void> done = group.closeAsync();
+                assertTrue(completeField.getBoolean(group));
+                assertNull(ownedField.get(group),
+                        "successful cancellation retry releases close ownership");
+                assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS));
+                try {
+                    done.get(5, TimeUnit.SECONDS);
+                } catch (ExecutionException expectedCancellation) {
+                    // Structured cancellation may reject actor.done.
+                }
+            } finally {
+                original.clear();
+                original.putAll(faulty);
+                actorsField.set(runtime, original);
+            }
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void failedCloseAfterSealRetainsExactRecoveryOwnerForRetry() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
