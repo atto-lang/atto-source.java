@@ -31,6 +31,7 @@ public final class OresTaskScope {
         OPEN,
         QUIESCING,
         CANCELLING,
+        POISONED,
         CLOSED
     }
 
@@ -109,6 +110,7 @@ public final class OresTaskScope {
         private boolean terminal;
         private List<ScopedReadClaim> readClaims = List.of();
         private boolean readClaimsReleased;
+        private boolean retirementClaimed;
     }
 
     private final OresScheduler scheduler;
@@ -136,6 +138,9 @@ public final class OresTaskScope {
     private final OresFuture<Void> drained =
             new OresFuture<>(() -> false, () -> { });
     private State state = State.OPEN;
+    // A scoped-read retirement failure means region authority was not proven
+    // released. Keep the join slot live and never publish a drain witness.
+    private Throwable scopedReadRetirementFailure;
 
     public OresTaskScope(OresScheduler scheduler) {
         this(scheduler, ignored -> { }, ignored -> { });
@@ -185,6 +190,11 @@ public final class OresTaskScope {
         Objects.requireNonNull(task, "task");
         Objects.requireNonNull(readClaims, "readClaims");
         List<ScopedReadClaim> claims = List.copyOf(readClaims);
+
+        OresFuture<T> future = null;
+        Throwable admissionFailure = null;
+        List<OresFuture<?>> cancelAfterFailure = List.of();
+
         synchronized (lock) {
             if (state != State.OPEN) {
                 throw new IllegalStateException("Task scope is already sealed");
@@ -193,24 +203,41 @@ public final class OresTaskScope {
             Child child = new Child();
             reserveScopedReadsLocked(child, claims);
             children.add(child);
-            final OresFuture<T> future;
             try {
                 future = scheduler.start(
                         task,
                         () -> childQuiescent(child),
                         () -> childTerminal(child));
             } catch (RuntimeException | Error failure) {
-                // Admission can fail before TaskRunner ownership exists, in which
-                // case no onQuiescent callback will arrive.
-                children.remove(child);
-                releaseScopedReadsLocked(child);
-                rollbackScopedReadIssuesLocked(child);
-                throw failure;
+                // Admission can fail before TaskRunner ownership exists. Roll
+                // back every authority table before removing the synthetic
+                // child. If rollback fails, keep its join slot pinned forever.
+                admissionFailure = failure;
+                try {
+                    releaseScopedReadsLocked(child);
+                    rollbackScopedReadIssuesLocked(child);
+                    if (!children.remove(child)) {
+                        throw new IllegalStateException(
+                                "never-started Task child disappeared during rollback");
+                    }
+                } catch (RuntimeException | Error retirementFailure) {
+                    failure.addSuppressed(retirementFailure);
+                    poisonScopedReadRetirementLocked(retirementFailure);
+                    cancelAfterFailure = liveChildFuturesLocked();
+                }
             }
 
-            child.future = future;
-            return future;
+            if (admissionFailure == null) {
+                child.future = Objects.requireNonNull(
+                        future, "scheduler returned null Task Future");
+            }
         }
+
+        if (admissionFailure != null) {
+            cancelFutures(cancelAfterFailure);
+            throw rethrowAdmissionFailure(admissionFailure);
+        }
+        return Objects.requireNonNull(future, "Task child Future");
     }
 
     /**
@@ -220,10 +247,13 @@ public final class OresTaskScope {
     public OresFuture<Void> quiesce() {
         boolean complete = false;
         synchronized (lock) {
+            if (state == State.POISONED || state == State.CLOSED) {
+                return drained;
+            }
             if (state == State.OPEN) {
                 state = State.QUIESCING;
             }
-            if (state != State.OPEN && children.isEmpty() && state != State.CLOSED) {
+            if (children.isEmpty()) {
                 state = State.CLOSED;
                 complete = true;
             }
@@ -246,59 +276,19 @@ public final class OresTaskScope {
         boolean complete = false;
         synchronized (lock) {
             if (state == State.CLOSED) return drained;
-            if (state != State.CANCELLING) {
+            if (state == State.POISONED) {
+                cancel = liveChildFuturesLocked();
+            } else if (state != State.CANCELLING) {
                 state = State.CANCELLING;
-                ArrayList<OresFuture<?>> snapshot = new ArrayList<>(children.size());
-                for (Child child : children) {
-                    // fork() holds the same lock through start + Future binding,
-                    // so every child visible here has a handle.
-                    snapshot.add(Objects.requireNonNull(
-                            child.future, "Task scope child missing Future"));
-                }
-                cancel = List.copyOf(snapshot);
+                cancel = liveChildFuturesLocked();
             }
-            if (children.isEmpty()) {
+            if (state != State.POISONED && children.isEmpty()) {
                 state = State.CLOSED;
                 complete = true;
             }
         }
 
-        // Two-phase structured cancellation: first claim every still-pending
-        // child, then revoke every claimed child before publishing any ordinary
-        // Future subscribers. A blocking subscriber on child A must never
-        // prevent revocation of child B.
-        ArrayList<OresFuture.RuntimeCancellation<?>> claimed =
-                new ArrayList<>(cancel.size());
-        for (OresFuture<?> child : cancel) {
-            OresFuture.RuntimeCancellation<?> cancellation =
-                    child.claimCancellationFromRuntime();
-            if (cancellation != null) claimed.add(cancellation);
-        }
-        for (OresFuture.RuntimeCancellation<?> cancellation : claimed) {
-            cancellation.revoke();
-        }
-        if (!claimed.isEmpty()) {
-            List<OresFuture.RuntimeCancellation<?>> fallback = new ArrayList<>();
-            // Ordinary Future subscribers are not part of the structured
-            // lifetime proof. After every child is revoked, publish each
-            // Future independently so a blocking subscriber on child A cannot
-            // pin the parent carrier or starve notifications for child B.
-            for (OresFuture.RuntimeCancellation<?> cancellation : claimed) {
-                try {
-                    Thread.ofVirtual()
-                            .name("ores-task-scope-cancel-publish")
-                            .start(cancellation::publish);
-                } catch (RuntimeException | Error unavailable) {
-                    fallback.add(cancellation);
-                }
-            }
-            // Attempt every asynchronous publication before a synchronous
-            // fallback can block. Revocation is already complete for all
-            // children, so this path cannot weaken the reclamation invariant.
-            for (OresFuture.RuntimeCancellation<?> cancellation : fallback) {
-                cancellation.publish();
-            }
-        }
+        cancelFutures(cancel);
 
         if (complete) completeDrain();
         return drained;
@@ -355,38 +345,119 @@ public final class OresTaskScope {
         }
     }
 
+    Throwable scopedReadRetirementFailure() {
+        synchronized (lock) {
+            return scopedReadRetirementFailure;
+        }
+    }
+
     private void childQuiescent(Child child) {
-        boolean complete;
         synchronized (lock) {
             child.quiescent = true;
-            complete = retireChildIfReadyLocked(child);
         }
-        if (complete) completeDrain();
+        retireChildIfReady(child);
     }
 
     private void childTerminal(Child child) {
-        boolean complete;
         synchronized (lock) {
             child.terminal = true;
-            complete = retireChildIfReadyLocked(child);
         }
+        retireChildIfReady(child);
+    }
+
+    private void retireChildIfReady(Child child) {
+        boolean complete = false;
+        List<OresFuture<?>> cancel = List.of();
+
+        synchronized (lock) {
+            if (!child.quiescent
+                    || !child.terminal
+                    || child.retirementClaimed
+                    || !children.contains(child)) {
+                return;
+            }
+            child.retirementClaimed = true;
+
+            try {
+                // Retire region authority before the child can disappear from
+                // the structured join set.
+                releaseScopedReadsLocked(child);
+            } catch (RuntimeException | Error failure) {
+                poisonScopedReadRetirementLocked(failure);
+                cancel = liveChildFuturesLocked();
+            }
+
+            if (state != State.POISONED) {
+                if (!children.remove(child)) {
+                    throw new IllegalStateException(
+                            "Task scope child disappeared during retirement");
+                }
+                if (state != State.OPEN
+                        && children.isEmpty()
+                        && state != State.CLOSED) {
+                    state = State.CLOSED;
+                    complete = true;
+                }
+            }
+        }
+
+        cancelFutures(cancel);
         if (complete) completeDrain();
     }
 
-    /**
-     * @return true when this transition closes the entire scope and the barrier
-     *         must be completed after releasing the lock.
-     */
-    private boolean retireChildIfReadyLocked(Child child) {
-        if (!child.quiescent || !child.terminal || !children.remove(child)) {
-            return false;
+    private void poisonScopedReadRetirementLocked(Throwable failure) {
+        Objects.requireNonNull(failure, "failure");
+        if (scopedReadRetirementFailure == null) {
+            scopedReadRetirementFailure = failure;
+        } else if (scopedReadRetirementFailure != failure) {
+            scopedReadRetirementFailure.addSuppressed(failure);
         }
-        releaseScopedReadsLocked(child);
-        if (state != State.OPEN && children.isEmpty() && state != State.CLOSED) {
-            state = State.CLOSED;
-            return true;
+        state = State.POISONED;
+    }
+
+    private List<OresFuture<?>> liveChildFuturesLocked() {
+        ArrayList<OresFuture<?>> snapshot = new ArrayList<>(children.size());
+        for (Child child : children) {
+            // A poisoned never-started child deliberately has no Future; its
+            // join slot remains live as the reclamation witness.
+            if (child.future != null) snapshot.add(child.future);
         }
-        return false;
+        return List.copyOf(snapshot);
+    }
+
+    private void cancelFutures(List<OresFuture<?>> cancel) {
+        ArrayList<OresFuture.RuntimeCancellation<?>> claimed =
+                new ArrayList<>(cancel.size());
+        for (OresFuture<?> child : cancel) {
+            OresFuture.RuntimeCancellation<?> cancellation =
+                    child.claimCancellationFromRuntime();
+            if (cancellation != null) claimed.add(cancellation);
+        }
+        for (OresFuture.RuntimeCancellation<?> cancellation : claimed) {
+            cancellation.revoke();
+        }
+        if (claimed.isEmpty()) return;
+
+        List<OresFuture.RuntimeCancellation<?>> fallback = new ArrayList<>();
+        for (OresFuture.RuntimeCancellation<?> cancellation : claimed) {
+            try {
+                Thread.ofVirtual()
+                        .name("ores-task-scope-cancel-publish")
+                        .start(cancellation::publish);
+            } catch (RuntimeException | Error unavailable) {
+                fallback.add(cancellation);
+            }
+        }
+        for (OresFuture.RuntimeCancellation<?> cancellation : fallback) {
+            cancellation.publish();
+        }
+    }
+
+    private static RuntimeException rethrowAdmissionFailure(Throwable failure) {
+        if (failure instanceof RuntimeException runtime) return runtime;
+        if (failure instanceof Error error) throw error;
+        throw new IllegalStateException(
+                "unexpected checked Task admission failure", failure);
     }
 
     private void reserveScopedReadsLocked(
