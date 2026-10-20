@@ -264,7 +264,7 @@ final class TypedMapEntryLanguageTest {
         String[] nested = {
                 "fnc bad(): void { val m = new Map<String, int>(); const xs = [m]; return; }",
                 "fnc bad(): void { val m = new Map<String, int>(); const pair = (m, 1); return; }",
-                "fnc bad(): void { val m = new Map<String, int>(); const e = Entry.of("m", m); return; }",
+                "fnc bad(): void { val m = new Map<String, int>(); const e = Entry.of(\"m\", m); return; }",
                 "fnc bad(): void { val m = new Map<String, int>(); const s = Some(m); return; }",
                 "fnc bad(): void { val m = new Map<String, int>(); const r = Ok(m); return; }",
                 "fnc bad(): void { val m = new Map<String, int>(); const x = record{map: m}; return; }",
@@ -310,6 +310,53 @@ final class TypedMapEntryLanguageTest {
                 IllegalArgumentException.class,
                 () -> OwnershipChecker.check(raw));
         assertTrue(failure.getMessage().contains("Map"), failure.getMessage());
+    }
+
+
+    @Test
+    void fromEntriesSnapshotsWithoutConsumingSourceSequence() throws Exception {
+        String output = execute("""
+                pub fnc main(): void {
+                  val entries = [
+                    Entry.of("answer", 42)
+                  ];
+                  val map = Map.from_entries(entries);
+                  const first = entries[0];
+                  stdio.println(first.value + map["answer"]);
+                  return;
+                }
+                """);
+        assertEquals("84\n", output);
+    }
+
+    @Test
+    void guestFromEntriesRejectsCanonicalUnicodeDuplicates() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  val entries = [
+                    Entry.of("caf\u00e9", 1),
+                    Entry.of("cafe\u0301", 2)
+                  ];
+                  val map = Map.from_entries(entries);
+                  stdio.println(map.size());
+                  return;
+                }
+                """;
+        checked(source);
+
+        Source guest = Source.newBuilder(
+                        OresLanguage.ID, source, "typed-map-nfc-duplicate.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .build()) {
+            PolyglotException failure =
+                    assertThrows(PolyglotException.class, () -> context.eval(guest));
+            assertTrue(
+                    failure.getMessage().contains("duplicate logical key"),
+                    failure.getMessage());
+        }
     }
 
 
