@@ -377,6 +377,32 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /**
+     * Read-only cooperative cancellation poll for a compiler-generated safe
+     * point inside the CURRENT tracked Task turn. It grants no cancellation
+     * authority and never interrupts a physical carrier.
+     *
+     * Ordinary scheduler tasks without a tracked cancellation owner report
+     * false; nested inline Task turns restore the previous owner's token.
+     */
+    public static boolean cancellationRequested() {
+        return TaskHandle.currentCancellationRequested();
+    }
+
+    /**
+     * Explicit cancellation checkpoint for compiler-lowered loops and
+     * carefully selected synchronous boundaries. A pending cancellation
+     * raises a private runtime marker, unwinding ordinary Java finally blocks
+     * before the Task reaches its terminal quiescence barrier.
+     *
+     * Never lower this inside an ownership-critical or non-reentrant section;
+     * do not insert it automatically into every ordinary watchdog poll.
+     * Async finally/defer lowering requires a separate cleanup state machine.
+     */
+    public static void cancellationCheckpoint() {
+        TaskHandle.checkCurrentCancellationCheckpoint();
+    }
+
+    /**
      * Start one compiler-lowered async task on this scheduler.
      *
      * <p>The returned Future represents the whole task. Awaiting it from another
@@ -384,6 +410,27 @@ public final class OresScheduler implements AutoCloseable {
      */
     public <T> OresFuture<T> start(Task<T> task) {
         return start(task, () -> { });
+    }
+
+    /**
+     * Host-runtime opt-in for a cancellable Task with a distinct physical
+     * quiescence barrier. This does not change existing Future semantics.
+     * Source Task syntax and structured actor scopes require separate lowering.
+     */
+    public <T> TaskHandle<T> startTracked(Task<T> task) {
+        return TaskHandle.start(this, task);
+    }
+
+    /**
+     * Create an explicit host/runtime Task scope. The caller must seal or
+     * close it and await its getDone() barrier when physical quiescence matters.
+     * Guest actor/tenant authority is not exposed by this staging API.
+     */
+    public TaskScope newTaskScope() {
+        synchronized (taskAdmissionLock) {
+            ensureOpen();
+            return new TaskScope(this);
+        }
     }
 
     /**
@@ -611,6 +658,12 @@ public final class OresScheduler implements AutoCloseable {
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
+        /**
+         * Guest cancellation checkpoints are observed during the turn, but
+         * host Future subscribers must be notified after the guest execution
+         * boundary unwinds. Only the RUNNING -> TERMINAL winner owns this.
+         */
+        private final AtomicBoolean checkpointCancellationPending = new AtomicBoolean();
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -754,6 +807,18 @@ public final class OresScheduler implements AutoCloseable {
                             task.resume(resume),
                             "OresScheduler task returned null Step");
                 } catch (Throwable failure) {
+                    if (TaskHandle.isAuthenticatedCheckpointCancellation(failure)) {
+                        // Only the winning checkpoint may change RUNNING to
+                        // TERMINAL. A wall deadline or forced cancellation
+                        // that already won keeps its existing terminal cause.
+                        if (phase.compareAndSet(RUNNING, TERMINAL)) {
+                            checkpointCancellationPending.set(true);
+                        }
+                        // Never invoke arbitrary synchronous Future listeners
+                        // while the guest turn/Truffle context is still bound.
+                        // afterCarrierTurn() will publish cancellation.
+                        return;
+                    }
                     failTerminal(failure);
                     if (failure instanceof VirtualMachineError fatal) throw fatal;
                     if (failure instanceof ThreadDeath fatal) throw fatal;
@@ -818,6 +883,13 @@ public final class OresScheduler implements AutoCloseable {
             try {
                 retireWhenQuiescent();
             } finally {
+                // runBound() and the guest turn have fully unwound. At this
+                // point Future subscribers may run without observing a live
+                // guest context. A competing wall deadline retains precedence
+                // because only the RUNNING -> TERMINAL winner set this bit.
+                if (checkpointCancellationPending.getAndSet(false)) {
+                    completion.cancel(false);
+                }
                 publishTerminalIfReady();
                 scheduleReadyResume();
             }

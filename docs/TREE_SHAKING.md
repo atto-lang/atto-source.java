@@ -124,3 +124,23 @@ Further optimizer work can build on the same symbolic reachability graph:
 - build reports with retained-byte attribution once the code-emission backend exposes sizes.
 
 Those additions should not change the build-switch contract introduced here.
+
+## Cross-backend reachability report
+
+`--build-analysis` can emit the versioned semantic report used by the shared
+Oreslang tree-shaking contract:
+
+```bash
+oreslang-compiler --build-analysis \\
+  --reachability-report=reachability.json \\
+  app.ores
+```
+
+The report uses schema version `1.0.0` and records build roots, retained
+symbols, and the total removed-symbol count. It is deliberately semantic
+evidence: the current analysis command is not yet the per-application Native
+Image emitter, so it does not invent final executable byte attribution.
+
+Library-mode reporting remains conservative until the tree shaker records
+per-symbol retention reasons; public-API preservation is never weakened merely
+to make a size report smaller.
