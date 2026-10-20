@@ -88,7 +88,7 @@ public final class ModelGraphAdmission {
 
     // Parser checks are not a trust boundary: the compiler also accepts
     // programmatically built ASTs, which must not bypass syntax/budget rules.
-    private static void validScalar(Ast.ModelValue value, boolean allowFormal) {
+    static void validScalar(Ast.ModelValue value, boolean allowFormal) {
         String raw = value.source();
         if (raw.length() > 256)
             throw new IllegalArgumentException("MODEL_NONCONSTANT_CONFIG");
@@ -128,7 +128,7 @@ public final class ModelGraphAdmission {
         }
     }
 
-    private static void validDefault(Ast.ModelFormal formal) {
+    static void validDefault(Ast.ModelFormal formal) {
         if (formal.defaultValue() == null) return;
         String type = formal.type().name();
         Ast.ModelValueKind literal = formal.defaultValue().kind();
