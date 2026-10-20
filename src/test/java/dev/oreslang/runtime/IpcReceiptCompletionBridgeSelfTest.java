@@ -272,6 +272,8 @@ public final class IpcReceiptCompletionBridgeSelfTest {
             var transport = bound(1, firstMessage, 51);
             var first = transport.admit(firstMessage);
             check(budget.availablePermits() == before - 1);
+            denied(() -> transport.admit(firstMessage));
+            check(budget.availablePermits() == before - 1);
             denied(() -> transport.admit(secondMessage));
             check(budget.availablePermits() == before - 1);
             CountDownLatch callbackEntered = new CountDownLatch(1);
@@ -420,15 +422,21 @@ public final class IpcReceiptCompletionBridgeSelfTest {
         // corruption after ACK, verify terminal transition is rejected without
         // consuming the ledger entry, then restore parity and commit normally.
         {
+            Semaphore budget = globalBudgetForTest();
+            int before = budget.availablePermits();
             var message = env(1, "terminal-preflight");
             var transport = bound(1, message, 55);
             var future = transport.admit(message);
+            check(budget.availablePermits() == before - 1);
             transport.accept(
                     message, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
             Object removed = removeCompletionForTest(
                     transport.bridge(), message.messageSequence());
             denied(() -> transport.accept(
                     message, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED));
+            // A rejected terminal transition must preserve both retry authority
+            // and the global completion slot owned by the still-pending receipt.
+            check(budget.availablePermits() == before - 1);
             check(!future.toCompletableFuture().isDone());
             restoreCompletionForTest(
                     transport.bridge(), message.messageSequence(), removed);
@@ -436,6 +444,13 @@ public final class IpcReceiptCompletionBridgeSelfTest {
                     message, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
             check(result(future)
                     == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            long budgetDeadline =
+                    System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (budget.availablePermits() != before
+                    && System.nanoTime() < budgetDeadline) {
+                Thread.sleep(1);
+            }
+            check(budget.availablePermits() == before);
             check(transport.bridge().invariant());
         }
 
