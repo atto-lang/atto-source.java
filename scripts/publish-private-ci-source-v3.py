@@ -523,22 +523,25 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
 
     try:
         auth()
+        # A transport failure can occur after GitHub creates the ref but before
+        # the client receives a trustworthy response. Treat an attempted write
+        # as potentially source-bearing until rollback proves otherwise.
+        created_refs.append(branch_ref)
         created = legacy.gh_api(
             f"repos/{repository}/git/refs", method="POST",
             payload={"ref": branch_ref, "sha": commit_sha},
         )
         if created.get("ref") != branch_ref:
             raise Denied("carrier did not confirm exact-tree CI branch creation")
-        created_refs.append(branch_ref)
 
         auth()
+        created_refs.append(authorization_ref)
         approved = legacy.gh_api(
             f"repos/{repository}/git/refs", method="POST",
             payload={"ref": authorization_ref, "sha": commit_sha},
         )
         if approved.get("ref") != authorization_ref:
             raise Denied("carrier did not confirm dispatcher authorization ref")
-        created_refs.append(authorization_ref)
     except BaseException as publication_failure:
         cleanup_failures = rollback_created_refs()
         if cleanup_failures:
