@@ -470,17 +470,17 @@ final class OresTaskScopeTest {
         OresTaskScope scope = new OresTaskScope(scheduler);
         scheduler.close();
 
+        OresTaskScope.ScopedReadClaim claim =
+                new OresTaskScope.ScopedReadClaim("view", 31L, 2L, "$");
         assertThrows(
                 java.util.concurrent.RejectedExecutionException.class,
                 () -> scope.fork(
                         resume -> OresScheduler.done(1),
-                        java.util.List.of(
-                                new OresTaskScope.ScopedReadClaim(
-                                        "view", 31L, 2L, "$"))));
+                        java.util.List.of(claim)));
         assertEquals(0, scope.activeChildren());
         assertEquals(0, scope.activeScopedReadClaims());
         assertEquals(0, scope.activeScopedReadRegions());
-        assertEquals(0, scope.issuedScopedReadClaims(),
+        assertFalse(claim.issued(),
                 "failed scheduler admission must roll back one-shot issuance");
         assertFalse(scope.hasScopedReadLease(31L, 2L));
     }
@@ -525,10 +525,13 @@ final class OresTaskScopeTest {
             OresTaskScope.ScopedReadClaim rightClaim =
                     new OresTaskScope.ScopedReadClaim("view", 53L, 7L, "$");
 
-            // Records are structurally equal by design, but lifetime authority
-            // is claim-object identity, not structural equality.
-            assertEquals(leftClaim, rightClaim);
+            // The two claims intentionally carry identical metadata, but
+            // lifetime authority is claim-object identity.
             assertNotSame(leftClaim, rightClaim);
+            assertEquals(leftClaim.bindingName(), rightClaim.bindingName());
+            assertEquals(leftClaim.regionId(), rightClaim.regionId());
+            assertEquals(leftClaim.generation(), rightClaim.generation());
+            assertEquals(leftClaim.accessPath(), rightClaim.accessPath());
 
             OresFuture<Integer> left = scope.fork(resume -> {
                 entered.countDown();
@@ -629,7 +632,7 @@ final class OresTaskScopeTest {
             assertTrue(scope.isOpen(),
                     "child retirement alone must not seal the lexical scope");
             assertFalse(scope.hasScopedReadLease(claim));
-            assertEquals(1, scope.issuedScopedReadClaims(),
+            assertTrue(claim.issued(),
                     "retired successful claim identity stays consumed");
 
             IllegalStateException reused = assertThrows(
@@ -640,7 +643,7 @@ final class OresTaskScopeTest {
             assertTrue(reused.getMessage().contains("already issued"));
             assertEquals(0, scope.activeChildren());
             assertEquals(0, scope.activeScopedReadClaims());
-            assertEquals(1, scope.issuedScopedReadClaims());
+            assertTrue(claim.issued());
 
             assertNull(scope.quiesce().get(5, TimeUnit.SECONDS));
         }
@@ -677,8 +680,10 @@ final class OresTaskScopeTest {
             assertFalse(scope.hasScopedReadLease(fresh));
             assertFalse(scope.hasScopedReadLease(72L, 0L));
             assertEquals(0, scope.activeScopedReadClaims());
-            assertEquals(1, scope.issuedScopedReadClaims(),
+            assertFalse(fresh.issued(),
                     "fresh claim must remain unissued after atomic rejection");
+            assertTrue(used.issued(),
+                    "previously successful claim remains consumed");
 
             assertNull(scope.quiesce().get(5, TimeUnit.SECONDS));
         }
