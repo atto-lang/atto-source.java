@@ -5,6 +5,7 @@ on:
     types: [opened, synchronize, reopened]
     paths:
       - 'scripts/publish-private-ci-source.py'
+      - 'scripts/publish-private-ci-source-v3.py'
       - 'scripts/test-publish-private-ci-source.py'
       - 'scripts/test-publish-private-ci-source-v3.py'
       - 'scripts/test-private-ci-destination.sh'
@@ -15,6 +16,7 @@ on:
       - security/private-ci-fail-closed-current-main-20261020
     paths:
       - 'scripts/publish-private-ci-source.py'
+      - 'scripts/publish-private-ci-source-v3.py'
       - 'scripts/test-publish-private-ci-source.py'
       - 'scripts/test-publish-private-ci-source-v3.py'
       - 'scripts/test-private-ci-destination.sh'
@@ -64,3 +66,4 @@ jobs:
           python3 -I -S scripts/test-publish-private-ci-source.py
           python3 -I -S scripts/test-publish-private-ci-source-v3.py
           bash scripts/test-private-ci-destination.sh
+
