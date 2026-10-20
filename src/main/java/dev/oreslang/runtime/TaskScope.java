@@ -26,6 +26,32 @@ public final class TaskScope implements AutoCloseable {
     // retired, but we also stop admitting fresh children and revoke siblings.
     private Throwable retirementFailure;
 
+    /**
+     * Trusted compiler/runtime bridge for one pre-admitted memory reservation.
+     * The two lifecycle edges are deliberately distinct: scheduler rejection
+     * proves that no Task ever existed, while physical retirement receives the
+     * exact scope and exact TaskHandle whose getDone() witness fired.
+     */
+    interface RetirementHook<T> {
+        void retireNeverStarted(TaskScope scope);
+        void retireAfterPhysicalQuiescence(TaskScope scope, TaskHandle<T> child);
+    }
+
+    private static final RetirementHook<Object> NOOP_RETIREMENT =
+            new RetirementHook<>() {
+                @Override
+                public void retireNeverStarted(TaskScope scope) { }
+
+                @Override
+                public void retireAfterPhysicalQuiescence(
+                        TaskScope scope, TaskHandle<Object> child) { }
+            };
+
+    @SuppressWarnings("unchecked")
+    private static <T> RetirementHook<T> noopRetirement() {
+        return (RetirementHook<T>) NOOP_RETIREMENT;
+    }
+
     TaskScope(OresScheduler scheduler) {
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
     }
