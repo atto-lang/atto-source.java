@@ -776,6 +776,13 @@ public final class OwnershipChecker {
             loopScope.close();
             return;
         }
+        if (stmt instanceof Ast.DoWhileStmt loop) {
+            Map<VarState,Boolean> before = movedSnapshot(scope);
+            checkLoopBlock(loop.body(), scope, returnType);
+            checkExpr(loop.condition(), scope, false);
+            rejectLoopMoves(before, scope);
+            return;
+        }
         if (stmt instanceof Ast.LoopStmt loop) {
             Map<VarState,Boolean> before = movedSnapshot(scope);
             checkLoopBlock(loop.body(), scope, returnType);
@@ -2776,6 +2783,9 @@ public final class OwnershipChecker {
                 if (s.condition() != null) scanExpr(s.condition(), blockLocals, outer, recursiveBinding, captures, false);
                 if (s.update() != null) scanExpr(s.update(), blockLocals, outer, recursiveBinding, captures, false);
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.DoWhileStmt s) {
+                scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+                scanExpr(s.condition(), blockLocals, outer, recursiveBinding, captures, false);
             }
         }
     }

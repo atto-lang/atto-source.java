@@ -620,7 +620,7 @@ public final class Ast {
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
             BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
-            ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
+            ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt { }
 
     /**
      * Binding rebinding and mutable access to the referent are independent capabilities.
@@ -866,6 +866,13 @@ public final class Ast {
         public ForStmt { body = List.copyOf(body); }
     }
 
+    public record DoWhileStmt(List<Stmt> body, Expr condition) implements Stmt {
+        public DoWhileStmt {
+            body = List.copyOf(body);
+            if (condition == null) throw new IllegalArgumentException("do-while condition cannot be null");
+        }
+    }
+
     public record LoopStmt(List<Stmt> body) implements Stmt {
         public LoopStmt { body = List.copyOf(body); }
     }
@@ -1095,6 +1102,14 @@ public final class Ast {
             }
             return depth;
         }
+
+        public static synchronized void copy(CallExpr source, CallExpr target) {
+            java.util.Objects.requireNonNull(source, "source checked Option call");
+            java.util.Objects.requireNonNull(target, "target checked Option call");
+            expunge();
+            Integer depth = DEPTHS.get(new IdentityKey(source, null));
+            if (depth != null) record(target, depth);
+        }
     }
 
     /**
@@ -1241,6 +1256,62 @@ public final class Ast {
             java.util.Set<String> domain = lookup(source);
             if (domain != null) record(target, domain);
         }
+    }
+
+    /**
+     * Central preservation policy for checker-owned, identity-bound AST metadata.
+     *
+     * <p>Optimizers that replace an expression must use this method instead of
+     * copying individual side tables. Metadata whose node shape is incompatible
+     * with the replacement is deliberately not transferred, so authorization
+     * fails closed rather than being projected onto an unrelated AST kind.
+     */
+    private enum CheckedMetadataTransfer {
+        OPTION_DEPTH("CheckedOptionDepth") {
+            @Override void copy(Expr source, Expr target) {
+                if (source instanceof CallExpr sourceCall
+                        && target instanceof CallExpr targetCall) {
+                    CheckedOptionDepth.copy(sourceCall, targetCall);
+                }
+            }
+        },
+        CLASS_VIEW("CheckedClassView") {
+            @Override void copy(Expr source, Expr target) {
+                CheckedClassView.copy(source, target);
+            }
+        },
+        STRUCTURAL_FIELD_DOMAIN("CheckedStructuralFieldDomain") {
+            @Override void copy(Expr source, Expr target) {
+                CheckedStructuralFieldDomain.copy(source, target);
+            }
+        };
+
+        private final String tableName;
+
+        CheckedMetadataTransfer(String tableName) {
+            this.tableName = tableName;
+        }
+
+        abstract void copy(Expr source, Expr target);
+    }
+
+    public static void copyCheckedMetadata(Expr source, Expr target) {
+        java.util.Objects.requireNonNull(source, "source expression");
+        java.util.Objects.requireNonNull(target, "target expression");
+        for (CheckedMetadataTransfer transfer : CheckedMetadataTransfer.values()) {
+            transfer.copy(source, target);
+        }
+    }
+
+    static java.util.Set<String> checkedMetadataTransferPolicy() {
+        java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
+        for (CheckedMetadataTransfer transfer : CheckedMetadataTransfer.values()) {
+            if (!names.add(transfer.tableName)) {
+                throw new IllegalStateException(
+                        "duplicate checked metadata transfer table: " + transfer.tableName);
+            }
+        }
+        return java.util.Set.copyOf(names);
     }
 
     public record MemberExpr(Expr receiver, String member) implements Expr { }
