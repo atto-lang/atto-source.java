@@ -17,8 +17,14 @@ class instance argument. That class must be non-actor and expose a public
 non-abstract non-generic `async run(): T` method taking zero arguments.
 The first slice is deliberately **stateless**: provider instance fields,
 inheritance, and explicit constructors are rejected until the compiler proves
-exclusive receiver movement/pinning across the Task boundary. Return type
-compatibility is checked with concrete generic substitutions.
+exclusive receiver movement/pinning across the Task boundary. The
+method's return type must match the requested `Future<T>` parameter
+**exactly**, after concrete generic substitutions. Ordinary assignment
+compatibility is insufficient because the evaluator currently reuses the
+provider method's `OresFuture<T>` without a value-mapping/coercion
+continuation. Thus `async run(): int` cannot be wrapped as
+`new Future<float>(...)` or `new Future<Any>(...)` in this first slice;
+a future explicit result-map operation can admit such conversions safely.
 Private, sync, suspends-only, actor, dynamic/unknown and incompatible run
 providers are rejected. The evaluator invokes `run()` through its existing
 async source Task path and returns the resulting `OresFuture` **without
