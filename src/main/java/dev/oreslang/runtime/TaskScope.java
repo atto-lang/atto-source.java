@@ -198,6 +198,12 @@ public final class TaskScope {
                 cancel = scope.isCancellationRequested() && !terminal;
             }
 
+            // Fallback for host/runtime tests or legacy callers that bind a
+            // Future not created with the scheduler terminal-ready hook. Real
+            // source Task children receive terminalReady(...) before ordinary
+            // subscriber drain; this waiter is therefore redundant there.
+            future.whenCompleteRuntime((value, cause) -> terminalReady(future));
+
             // A cancellation racing start/attach may have missed this child in
             // the initial snapshot. Revoking it here is safe because all older
             // snapshot children were already revoked before publication.
