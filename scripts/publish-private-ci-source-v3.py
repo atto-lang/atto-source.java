@@ -17,6 +17,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
+import subprocess
 import sys
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -29,6 +30,9 @@ SPEC.loader.exec_module(legacy)
 
 Denied = legacy.Denied
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+HANDOFF_REF = re.compile(
+    r"^ci/(?:oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}|authorized-[0-9a-f]{40})$"
+)
 CONTRACT_PATH = ".github/private-ci-carrier-contracts.json"
 RECEIPT_PATH = "ci/oreslang-receipt.json"
 RECEIPT_SCHEMA = "ores-private-ci-receipt-v3"
@@ -342,6 +346,76 @@ def authorize_write(root, repository, approved_policy, contract):
         raise Denied("carrier identity/state changed during transfer")
 
 
+def _gh_ref_request(repository, ref_name, method):
+    if not isinstance(ref_name, str) or not HANDOFF_REF.fullmatch(ref_name):
+        raise Denied("ref cleanup target is invalid")
+    if method not in ("GET", "DELETE"):
+        raise Denied("ref cleanup method is invalid")
+    encoded = ref_name.replace("/", "%2F")
+    family = "ref" if method == "GET" else "refs"
+    argv = [
+        "gh", "api", "--method", method,
+        f"repos/{repository}/git/{family}/heads/{encoded}",
+        "--header", "Accept: application/vnd.github+json",
+    ]
+    env = dict(os.environ, GH_HOST="github.com", GH_PROMPT_DISABLED="1")
+    try:
+        return subprocess.run(
+            argv, capture_output=True, text=True, env=env,
+            timeout=30, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Denied("carrier ref rollback is unavailable") from exc
+
+
+def live_ref_sha(repository, ref_name, expected_repository_id):
+    repo = legacy.checked_repo(repository)
+    if repo.get("id") != expected_repository_id:
+        raise Denied("carrier repository identity changed during ref verification")
+    result = _gh_ref_request(repository, ref_name, "GET")
+    if result.returncode != 0:
+        if "HTTP 404" in result.stderr:
+            # GitHub can mask private-resource authorization failures as 404.
+            # The numeric carrier identity was just revalidated above, so this
+            # 404 can be treated as evidence that this exact ref is absent.
+            return None
+        raise Denied("carrier ref lookup failed")
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise Denied("carrier ref lookup returned invalid JSON") from exc
+    if (not isinstance(payload, dict)
+            or payload.get("ref") != "refs/heads/" + ref_name
+            or payload.get("object", {}).get("type") != "commit"):
+        raise Denied("carrier ref lookup returned unexpected identity")
+    return valid_sha(
+        payload.get("object", {}).get("sha"),
+        "carrier ref lookup returned invalid SHA",
+    )
+
+
+def require_exact_ref(repository, ref_name, expected_sha, expected_repository_id):
+    actual = live_ref_sha(repository, ref_name, expected_repository_id)
+    if actual != expected_sha:
+        raise Denied("carrier ref does not point to exact handoff commit")
+
+
+def delete_exact_ref(repository, ref_name, expected_sha, expected_repository_id):
+    expected_sha = valid_sha(expected_sha, "invalid rollback commit SHA")
+    actual = live_ref_sha(repository, ref_name, expected_repository_id)
+    if actual is None:
+        return False
+    if actual != expected_sha:
+        raise Denied("carrier ref moved; refusing rollback")
+
+    result = _gh_ref_request(repository, ref_name, "DELETE")
+    if result.returncode != 0 and "HTTP 404" not in result.stderr:
+        raise Denied("carrier ref rollback failed")
+    if live_ref_sha(repository, ref_name, expected_repository_id) is not None:
+        raise Denied("carrier ref still exists after rollback")
+    return True
+
+
 def publish(repository, source, source_commit, source_pr, test_plan, trusted_root, now=None):
     if not legacy.NAME.fullmatch(repository):
         raise Denied("invalid destination repository")
@@ -477,13 +551,16 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     )
 
     auth()
+    commit_message = (
+        f"ci: exact private Oreslang tree {source_commit} tree {source_tree}\n"
+        f"carrier-base {contract['base_sha']} tree {base_tree}\n"
+        f"connector-authorized source-repository "
+        f"{legacy.SOURCE_REPO} id {source_repo_id}"
+    )
     commit = legacy.gh_api(
         f"repos/{repository}/git/commits", method="POST",
         payload={
-            "message": (
-                "ci: exact private Oreslang PR tree\n\n"
-                "Oreslang-CI-Receipt-SHA256: " + receipt_digest
-            ),
+            "message": commit_message,
             "tree": root_tree_sha,
             "parents": [contract["base_sha"]],
         },
@@ -502,21 +579,82 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     checked_destination(repository, contract)
 
     # Create the source-bearing branch first. The carrier workflow fails closed
-    # while it waits for the exact authorization ref below.
-    created = legacy.gh_api(
-        f"repos/{repository}/git/refs", method="POST",
-        payload={"ref": "refs/heads/" + branch, "sha": commit_sha},
-    )
-    if created.get("ref") != "refs/heads/" + branch:
-        raise Denied("carrier did not confirm exact-tree CI branch creation")
-
+    # while it waits for the exact authorization ref below. Treat a create call
+    # as potentially successful before it returns: transport ambiguity must not
+    # strand a source-bearing ref.
     authorization = "ci/authorized-" + commit_sha
-    approved = legacy.gh_api(
-        f"repos/{repository}/git/refs", method="POST",
-        payload={"ref": "refs/heads/" + authorization, "sha": commit_sha},
-    )
-    if approved.get("ref") != "refs/heads/" + authorization:
-        raise Denied("carrier did not confirm dispatcher authorization ref")
+    payload_attempted = False
+    authorization_attempted = False
+    try:
+        payload_attempted = True
+        created = legacy.gh_api(
+            f"repos/{repository}/git/refs", method="POST",
+            payload={"ref": "refs/heads/" + branch, "sha": commit_sha},
+        )
+        if (created.get("ref") != "refs/heads/" + branch
+                or created.get("object", {}).get("sha") not in (None, commit_sha)):
+            raise Denied("carrier did not confirm exact-tree CI branch creation")
+        require_exact_ref(
+            repository, branch, commit_sha, contract["repository_id"]
+        )
+
+        # The payload ref is inert without the authorization ref. Re-run every
+        # mutable governance check in that safe window so protection, policy,
+        # contract or carrier-base drift cannot be authorized.
+        legacy.verify_protected_origin(repository, approved_policy)
+        if protected_main_sha() != protected_sha:
+            raise Denied("source protected main advanced before authorization")
+        checked_contract(
+            trusted_root, repository, source_pr,
+            contract["test_plan_path"], protected_sha
+        )
+        checked_destination(repository, contract)
+
+        # Revalidate the exact open PR head last, immediately before making the
+        # carrier executable.
+        if verify_source_pr(source_pr, source_commit) != source_repo_id:
+            raise Denied("source repository identity changed before authorization")
+
+        authorization_attempted = True
+        approved = legacy.gh_api(
+            f"repos/{repository}/git/refs", method="POST",
+            payload={"ref": "refs/heads/" + authorization, "sha": commit_sha},
+        )
+        if (approved.get("ref") != "refs/heads/" + authorization
+                or approved.get("object", {}).get("sha") not in (None, commit_sha)):
+            raise Denied("carrier did not confirm dispatcher authorization ref")
+
+        # Do not trust create responses alone. Re-read both live refs before
+        # reporting a successful handoff.
+        require_exact_ref(
+            repository, branch, commit_sha, contract["repository_id"]
+        )
+        require_exact_ref(
+            repository, authorization, commit_sha, contract["repository_id"]
+        )
+    except Denied as exc:
+        rollback_error = None
+        if authorization_attempted:
+            try:
+                delete_exact_ref(
+                    repository, authorization, commit_sha,
+                    contract["repository_id"],
+                )
+            except Denied as rollback_exc:
+                rollback_error = rollback_exc
+        if payload_attempted:
+            try:
+                delete_exact_ref(
+                    repository, branch, commit_sha,
+                    contract["repository_id"],
+                )
+            except Denied as rollback_exc:
+                rollback_error = rollback_error or rollback_exc
+        if rollback_error is not None:
+            raise Denied(
+                "private CI handoff failed and carrier ref rollback was incomplete"
+            ) from rollback_error
+        raise exc
 
     return {
         "commit": commit_sha,
