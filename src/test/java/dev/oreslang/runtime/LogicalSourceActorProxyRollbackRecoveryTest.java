@@ -72,6 +72,15 @@ final class LogicalSourceActorProxyRollbackRecoveryTest {
                     assertSame(ticket, pending.get(router),
                             "failed retry must retain the exact ticket");
                     assertTrue(quarantine.getBoolean(router));
+                    assertEquals(1L, router.ref().routeEpoch(),
+                            "failed rollback retry must not publish another epoch");
+                    assertTrue(mailbox.snapshot().dispatchFrozen(),
+                            "failed rollback retry must not reopen dispatch");
+                    assertThrows(IllegalStateException.class,
+                            router::reconcileFailedProxyRollback,
+                            "repeated failed reconciliation must remain fail-closed");
+                    assertSame(ticket, pending.get(router),
+                            "repeated failure must never replace the freeze owner");
                     assertThrows(IllegalStateException.class, router::close,
                             "a pending mailbox freeze cannot be abandoned by close");
 
