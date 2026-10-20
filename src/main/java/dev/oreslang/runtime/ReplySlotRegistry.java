@@ -25,7 +25,7 @@ final class ReplySlotRegistry implements AutoCloseable {
 
     record Endpoint(String id, long incarnation, long routeEpoch) {
         Endpoint {
-            if (id == null || id.isBlank()) {
+            if (id == null || id.isBlank() || id.length() > 256) {
                 throw new IllegalArgumentException("reply endpoint id must not be blank");
             }
             if (incarnation < 0 || routeEpoch < 0) {
@@ -63,6 +63,8 @@ final class ReplySlotRegistry implements AutoCloseable {
     }
 
     private final Endpoint origin;
+    /** Secret minted once per origin incarnation. */
+    private final ReplyTicketAuthenticator tickets = new ReplyTicketAuthenticator();
     private final Slot[] slots;
     private final int[] freeIndices;
     private int nextUnused;
@@ -87,7 +89,7 @@ final class ReplySlotRegistry implements AutoCloseable {
         if (responseClass.isPrimitive() || responseClass == Object.class) {
             throw new IllegalArgumentException("response must have a concrete boxed/nominal type");
         }
-        if (schemaDigest == null || schemaDigest.isBlank()) {
+        if (schemaDigest == null || schemaDigest.isBlank() || schemaDigest.length() > 128) {
             throw new IllegalArgumentException("response schema ABI digest required");
         }
         if (closed) throw new IllegalStateException("reply registry is closed");
@@ -118,6 +120,52 @@ final class ReplySlotRegistry implements AutoCloseable {
         return new Pending<>(encode(index, generation), future);
     }
 
+
+    /**
+     * Mint request-specific authority only for a currently outstanding slot.
+     * Include these bytes in the outbound remote request; a numeric handle
+     * alone must never authorize a remotely supplied reply.
+     */
+    synchronized byte[] issueRemoteTicket(
+            long handle, AuthenticatedPeer responder, String schemaDigest) {
+        Slot slot = authorize(origin, handle, responder, schemaDigest);
+        if (slot == null) {
+            throw new IllegalStateException("no outstanding request for remote reply ticket");
+        }
+        return tickets.issue(handle, origin, responder, schemaDigest);
+    }
+
+    /**
+     * For authenticated transport adapters only. Peer identity MUST come from
+     * the connection, never from the packet. The entire reply payload must be
+     * authenticated and decoded under a trusted, schema-specific codec first.
+     */
+    synchronized boolean completeRemote(
+            Endpoint destination, long handle, AuthenticatedPeer peer,
+            String schemaDigest, byte[] replyTicket, Object value) {
+        Slot slot = authorize(destination, handle, peer, schemaDigest);
+        if (slot == null || !tickets.valid(replyTicket, handle, origin, peer, schemaDigest)
+                || value == null || !slot.responseClass.isInstance(value)) {
+            return false;
+        }
+        @SuppressWarnings("unchecked")
+        OresFuture<Object> future = (OresFuture<Object>) slot.future;
+        return future.completeFromRuntime(value);
+    }
+
+    /** Remote failure must carry the same request-specific reply authority. */
+    synchronized boolean failRemote(
+            Endpoint destination, long handle, AuthenticatedPeer peer,
+            String schemaDigest, byte[] replyTicket, Throwable failure) {
+        Objects.requireNonNull(failure, "failure");
+        Slot slot = authorize(destination, handle, peer, schemaDigest);
+        return slot != null
+                && tickets.valid(replyTicket, handle, origin, peer, schemaDigest)
+                && slot.future.failFromRuntime(failure);
+    }
+
+    /** Trusted in-runtime use only; NEVER dispatch untrusted IPC replies here. */
+
     /**
      * False means dropped: stale, duplicate, cancelled, timed out, wrong
      * authority, wrong schema/type, wrong origin epoch, or closed registry.
@@ -135,7 +183,7 @@ final class ReplySlotRegistry implements AutoCloseable {
         return future.completeFromRuntime(value);
     }
 
-    /** Authenticated remote failure is also bound to this specific request. */
+    /** Trusted in-runtime failure only; not an IPC/remote entrypoint. */
     synchronized boolean fail(
             Endpoint destination, long handle, AuthenticatedPeer authenticatedPeer,
             String schemaDigest, Throwable failure) {
