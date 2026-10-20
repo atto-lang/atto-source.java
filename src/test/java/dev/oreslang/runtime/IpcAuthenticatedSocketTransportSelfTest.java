@@ -526,6 +526,92 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             check(peerFailure.get() == null);
         }
 
+        // Terminal completion callbacks must not execute while readGate is
+        // held. The callback performs a full close-and-wait; if publication
+        // still occurred under readGate, physical close would block trying to
+        // acquire that same gate for key/binding destruction and this callback
+        // would time out instead of observing RETIRED.
+        byte[] callbackPayload = "callback outside read gate".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var callbackMessage = envelope(
+                1, "callbackOutsideReadGate", 3, 4, callbackPayload);
+        ByteArrayOutputStream callbackWire = new ByteArrayOutputStream();
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                callbackWire,
+                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                        callbackMessage, 111,
+                        IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED,
+                        connectionBinding, key));
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                callbackWire,
+                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                        callbackMessage, 111,
+                        IpcReceiptCorrelation.Stage.HANDLER_COMMITTED,
+                        connectionBinding, key));
+        CountDownLatch callbackCloseCalled = new CountDownLatch(1);
+        var callbackSocket = new ControlledSocket(
+                new ByteArrayInputStream(callbackWire.toByteArray()),
+                callbackCloseCalled);
+        ExecutorService callbackCleanup = Executors.newSingleThreadExecutor(
+                r -> new Thread(r, "ipc-test-callback-close-cleanup"));
+        try {
+            var callbackBridge = new IpcReceiptCompletionBridge(1);
+            var callbackTransport = new IpcAuthenticatedSocketTransport(
+                    callbackSocket, callbackBridge, callbackMessage, 111, 1,
+                    key, connectionBinding, callbackCleanup::execute);
+            var callbackSubmission =
+                    callbackTransport.send(callbackMessage, callbackPayload);
+            check(!callbackSubmission.writeAttemptFailed());
+
+            CountDownLatch callbackDone = new CountDownLatch(1);
+            AtomicReference<Boolean> callbackCloseResult = new AtomicReference<>();
+            AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+            callbackSubmission.outcome().thenAccept(stage -> {
+                Thread closer = new Thread(() -> {
+                    try {
+                        callbackCloseResult.set(
+                                callbackTransport.requestCloseAndAwait(1500));
+                    } catch (Throwable failure) {
+                        callbackFailure.compareAndSet(null, failure);
+                    }
+                }, "ipc-test-close-from-terminal-callback");
+                closer.start();
+                try {
+                    closer.join(2500);
+                    if (closer.isAlive()) {
+                        callbackFailure.compareAndSet(null,
+                                new AssertionError(
+                                        "terminal callback close blocked on readGate"));
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    callbackFailure.compareAndSet(null, interrupted);
+                } finally {
+                    callbackDone.countDown();
+                }
+            });
+
+            check(callbackTransport.readVerifiedReceipt()
+                    == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+            check(callbackTransport.readVerifiedReceipt()
+                    == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(callbackDone.await(3, TimeUnit.SECONDS));
+            check(callbackFailure.get() == null);
+            check(Boolean.TRUE.equals(callbackCloseResult.get()));
+            check(callbackCloseCalled.getCount() == 0);
+            check(callbackTransport.snapshot().phase()
+                    == IpcTransportSessionLease.Phase.RETIRED);
+            check(callbackTransport.keyCloneZeroized());
+            check(callbackTransport.connectionBindingCloneZeroized());
+            check(callbackSubmission.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(callbackBridge.invariant());
+        } finally {
+            callbackSocket.close();
+            callbackCleanup.shutdownNow();
+            callbackCleanup.awaitTermination(2, TimeUnit.SECONDS);
+        }
+
         // Concurrent host receipt readers must preserve TCP protocol order
         // through ledger application, not merely through socket consumption.
         // Each peer response is ACK -> COMMIT; two racing readers may return
