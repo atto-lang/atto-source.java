@@ -80,6 +80,8 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             int maxOutstandingWrites,
             IpcPhysicalConnectionBroker.Authority authority,
             IpcTransportSessionLease.CleanupScheduler cleanupScheduler) throws IOException {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC socket transport construction");
         this.socket = Objects.requireNonNull(socket, "socket");
         this.receipts = Objects.requireNonNull(receipts, "receipts");
         this.trustedEpoch = Objects.requireNonNull(trustedEpoch, "trustedEpoch");
