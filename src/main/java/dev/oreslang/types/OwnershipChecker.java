@@ -2600,7 +2600,12 @@ public final class OwnershipChecker {
             VarState region = ownershipRoot(source.borrowSource);
             requireUsable(region, region.debugName, false);
             if (region.regionId == 0L) {
-                region.regionId = ++nextRegionId;
+                try {
+                    nextRegionId = Math.incrementExact(nextRegionId);
+                } catch (ArithmeticException exhausted) {
+                    throw error("scoped Task compiler region identity space exhausted");
+                }
+                region.regionId = nextRegionId;
             }
             structured.readRegions.add(region);
             structured.readBorrowStates.add(source);
