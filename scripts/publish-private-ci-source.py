@@ -44,7 +44,11 @@ PROTECTED_POLICY_ROUTE = (
 SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
 PINNED_DESTINATION_IDS = {
+    # Identity pins are necessary but never sufficient authorization.
+    # The reviewed protected-main allowlist must separately approve a destination.
     "chapter-publishing-test/zed-pkg-integration-e2e": 1344442382,
+    "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra": 1412142815,
+    "sagitta-stack/sagitta-infra": 1357615104,
 }
 
 
