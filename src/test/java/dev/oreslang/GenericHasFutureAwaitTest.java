@@ -225,6 +225,35 @@ final class GenericHasFutureAwaitTest {
     }
 
     @Test
+    void inheritedGenericCapabilityRunsThroughGuestScheduler() throws Exception {
+        String source = """
+                define trait HasFuture<T> as
+                    get_future(): Future<T>;
+                end
+                async fnc answer(): int { return 33; }
+                define class Parent<T> implements HasFuture<T> as
+                    pub val Future<T> pending;
+                    pub get_future(): Future<T> { return self.pending; }
+                end
+                define class Child extends Parent<int> as
+                end
+                pub fnc main(): void {
+                    val int number = await new Child(answer());
+                    stdio.stdout.write(number);
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(stdout).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, "has-future-inherited.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("33", stdout.toString(StandardCharsets.UTF_8).trim());
+    }
+
+    @Test
     void specializesGenericCapabilityThroughTraitExtension() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 define trait HasFuture<T> as
