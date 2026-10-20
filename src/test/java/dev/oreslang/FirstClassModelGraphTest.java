@@ -19,6 +19,11 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class FirstClassModelGraphTest {
+    // Pinned to common-source contracts/v1/model-graph/executable-v1-conformance.json.
+    // A common corpus revision bump requires an explicit backend review/update.
+    private static final String SHARED_EXECUTABLE_CORPUS_REVISION =
+            "model-core-i64-v1.2026-10-20.1";
+
     private static final String PRICE_MODEL = """
             fnc ValidatePrice(float input): float {
               return input;
@@ -40,6 +45,12 @@ final class FirstClassModelGraphTest {
               RoundCurrency()
             end
             """;
+
+    @Test
+    void sharedExecutableCorpusRevisionIsExplicitlyPinned() {
+        assertEquals("model-core-i64-v1.2026-10-20.1",
+                SHARED_EXECUTABLE_CORPUS_REVISION);
+    }
 
     @Test
     void parserKeepsModelContextualAndBuildsDedicatedAst() {
