@@ -374,27 +374,48 @@ public final class OresTaskScope {
 
     private void releaseScopedReadsLocked(Child child) {
         if (child.readClaimsReleased) return;
-        child.readClaimsReleased = true;
 
+        Map<Long, Integer> releases = new HashMap<>();
+        Map<Long, Long> generations = new HashMap<>();
         for (ScopedReadClaim claim : child.readClaims) {
-            RegionReadState region = scopedReadRegions.get(claim.regionId());
-            if (region == null
-                    || region.generation != claim.generation()
-                    || region.readers <= 0) {
+            releases.merge(claim.regionId(), 1, Integer::sum);
+            Long prior = generations.putIfAbsent(
+                    claim.regionId(), claim.generation());
+            if (prior != null && prior.longValue() != claim.generation()) {
                 throw new IllegalStateException(
-                        "structured Task scoped-read accounting corrupted for region "
+                        "structured Task child contains mixed generations for region "
                                 + claim.regionId());
             }
-            region.readers--;
-            activeScopedReadClaims--;
-            if (region.readers == 0) {
-                scopedReadRegions.remove(claim.regionId());
-            }
         }
-        if (activeScopedReadClaims < 0) {
+
+        // Validate the complete retirement before mutating any live authority.
+        if (activeScopedReadClaims < child.readClaims.size()) {
             throw new IllegalStateException(
                     "structured Task scoped-read claim count underflow");
         }
+        for (Map.Entry<Long, Integer> release : releases.entrySet()) {
+            long regionId = release.getKey();
+            RegionReadState region = scopedReadRegions.get(regionId);
+            long generation = generations.get(regionId);
+            if (region == null
+                    || region.generation != generation
+                    || region.readers < release.getValue()) {
+                throw new IllegalStateException(
+                        "structured Task scoped-read accounting corrupted for region "
+                                + regionId);
+            }
+        }
+
+        for (Map.Entry<Long, Integer> release : releases.entrySet()) {
+            long regionId = release.getKey();
+            RegionReadState region = scopedReadRegions.get(regionId);
+            region.readers -= release.getValue();
+            if (region.readers == 0) {
+                scopedReadRegions.remove(regionId);
+            }
+        }
+        activeScopedReadClaims -= child.readClaims.size();
+        child.readClaimsReleased = true;
     }
 
     private void completeDrain() {
