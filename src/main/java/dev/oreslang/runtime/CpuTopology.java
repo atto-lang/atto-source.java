@@ -73,6 +73,8 @@ final class CpuTopology {
         Location candidate = locations.get(candidateCpu);
         if (preferred == null || candidate == null) return 3;
         if (preferred.llc() >= 0 && candidate.llc() >= 0
+                && preferred.llcLevel() >= 2 && candidate.llcLevel() >= 2
+                && preferred.packageId() >= 0 && candidate.packageId() >= 0
                 && preferred.llc() == candidate.llc()
                 && preferred.llcLevel() == candidate.llcLevel()
                 && preferred.packageId() == candidate.packageId()) return 1;
