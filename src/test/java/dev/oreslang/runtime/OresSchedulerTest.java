@@ -434,6 +434,47 @@ final class OresSchedulerTest {
     }
 
     @Test
+    void logicalExecutionSurvivesTwoAwaitsAndFailureOnSeparateDispatches() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresFuture<Integer> gateOne = new OresFuture<>();
+            OresFuture<Integer> gateTwo = new OresFuture<>();
+            java.util.List<ExecutionContext> contexts =
+                    new java.util.concurrent.CopyOnWriteArrayList<>();
+            java.util.List<Long> dispatches =
+                    new java.util.concurrent.CopyOnWriteArrayList<>();
+            AtomicInteger phase = new AtomicInteger();
+
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                ExecutionContext current = OresScheduler.currentExecutionContext();
+                assertNotNull(current);
+                contexts.add(current);
+                dispatches.add(OresScheduler.currentDispatchId());
+                int step = phase.getAndIncrement();
+                if (step == 0) return OresScheduler.await(gateOne);
+                if (step == 1) return OresScheduler.await(gateTwo);
+                if (step == 2) throw new IllegalStateException("two-await-trace-marker");
+                throw new AssertionError("task must never resume after failure");
+            });
+
+            gateOne.completeFromRuntime(1);
+            gateTwo.completeFromRuntime(2);
+            java.util.concurrent.ExecutionException failure = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> result.get(5, TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof IllegalStateException);
+            assertEquals("two-await-trace-marker", failure.getCause().getMessage());
+            assertEquals(3, contexts.size());
+            assertEquals(3, dispatches.size());
+            assertSame(contexts.get(0), contexts.get(1));
+            assertSame(contexts.get(1), contexts.get(2));
+            assertNotEquals(dispatches.get(0), dispatches.get(1));
+            assertNotEquals(dispatches.get(1), dispatches.get(2));
+            assertEquals(ExecutionContext.AllocationKind.NONE,
+                    contexts.get(2).allocationDomain().kind());
+        }
+    }
+
+    @Test
     void actorAllocationDomainPermitsZeroBasedOwnerWithoutBecomingExecutionIdentity() {
         ExecutionContext context = ExecutionContext.actor(
                 11, 22, 11, 0, 3, 0, 0);
