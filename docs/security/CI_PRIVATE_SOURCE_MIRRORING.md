@@ -47,6 +47,20 @@ could not independently establish an equivalent enforced ruleset.
 Until that prerequisite is met, do not mirror private blobs even if an
 allowlist pull request is approved. Source-free test suites are permissible.
 
+
+**Destination protection is independently mandatory.** Before reading source
+bytes, v3 also verifies that the private carrier's live `main` commit equals
+the immutable reviewed `base_sha` and that its branch protection API requires
+CODEOWNER approvals, stale-review dismissal, at least one approval, administrator
+enforcement, no review bypass actors, and no force pushes or branch deletion.
+The carrier's reviewed base must contain an authenticated `.github/CODEOWNERS`
+blob with the exact effective rules `* @ORESoftware`,
+`/.github/ @ORESoftware`, and `/.github/CODEOWNERS @ORESoftware`, in that
+order. Both protection and CODEOWNERS checks are repeated through the existing
+`checked_destination` gates before source-bearing refs are made executable.
+Missing GitHub branch-protection API access or an unprotected carrier main
+must fail closed, regardless of Actions minutes or successful source-free tests.
+
 Do **not** accept a CI destination allowlist from environment variables or
 unreviewed workflow inputs: a caller must not be able to grant its own approval.
 Run the checked transfer from trusted, reviewed source, not an untrusted PR
