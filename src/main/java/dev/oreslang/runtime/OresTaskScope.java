@@ -2,8 +2,11 @@ package dev.oreslang.runtime;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
@@ -30,11 +33,52 @@ public final class OresTaskScope {
         CLOSED
     }
 
+    /**
+     * Runtime-only immutable region authority attached to one structured child.
+     *
+     * <p>Current scoped borrowing admits only whole-region reads. Path-sensitive
+     * claims stay fail-closed until the compiler/runtime can prove disjoint
+     * projections end-to-end.</p>
+     */
+    public record ScopedReadClaim(
+            String bindingName,
+            long regionId,
+            long generation,
+            String accessPath) {
+        public ScopedReadClaim {
+            Objects.requireNonNull(bindingName, "bindingName");
+            Objects.requireNonNull(accessPath, "accessPath");
+            if (bindingName.isBlank()) {
+                throw new IllegalArgumentException(
+                        "scoped read binding name cannot be blank");
+            }
+            if (regionId <= 0L || generation < 0L) {
+                throw new IllegalArgumentException(
+                        "scoped read claim requires a positive region id and non-negative generation");
+            }
+            if (!accessPath.equals("$")) {
+                throw new IllegalArgumentException(
+                        "only whole-region scoped read claims are enabled");
+            }
+        }
+    }
+
+    private static final class RegionReadState {
+        private final long generation;
+        private int readers;
+
+        private RegionReadState(long generation) {
+            this.generation = generation;
+        }
+    }
+
     private static final class Child {
         private volatile OresFuture<?> future;
         // Guarded by the enclosing scope lock.
         private boolean quiescent;
         private boolean terminal;
+        private List<ScopedReadClaim> readClaims = List.of();
+        private boolean readClaimsReleased;
     }
 
     private final OresScheduler scheduler;
@@ -42,6 +86,14 @@ public final class OresTaskScope {
     private final Object lock = new Object();
     private final Set<Child> children =
             Collections.newSetFromMap(new IdentityHashMap<>());
+    /**
+     * Scope-local live read authority. A compiler region id is only meaningful
+     * inside this lexical scope instance: distinct invocations may reuse the
+     * same compile-time id, while this table prevents concurrent children in
+     * one live scope from disagreeing about the region generation.
+     */
+    private final Map<Long, RegionReadState> scopedReadRegions = new HashMap<>();
+    private int activeScopedReadClaims;
     // Runtime barrier: it is intentionally non-cancellable. Cancelling the
     // barrier itself must never manufacture a false reclamation witness.
     private final OresFuture<Void> drained =
@@ -79,13 +131,30 @@ public final class OresTaskScope {
      * proof and may finish later.</p>
      */
     public <T> OresFuture<T> fork(OresScheduler.Task<T> task) {
+        return fork(task, List.of());
+    }
+
+    /**
+     * Trusted compiler/runtime admission for a child that carries immutable
+     * scoped-region authority. Guest code never receives these claims.
+     *
+     * <p>Claims are reserved before scheduler admission and are released only
+     * when the child is both terminal and physically quiescent. Future
+     * settlement alone therefore cannot restore parent region authority.</p>
+     */
+    public <T> OresFuture<T> fork(
+            OresScheduler.Task<T> task,
+            List<ScopedReadClaim> readClaims) {
         Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(readClaims, "readClaims");
+        List<ScopedReadClaim> claims = List.copyOf(readClaims);
         synchronized (lock) {
             if (state != State.OPEN) {
                 throw new IllegalStateException("Task scope is already sealed");
             }
 
             Child child = new Child();
+            reserveScopedReadsLocked(child, claims);
             children.add(child);
             final OresFuture<T> future;
             try {
@@ -97,6 +166,7 @@ public final class OresTaskScope {
                 // Admission can fail before TaskRunner ownership exists, in which
                 // case no onQuiescent callback will arrive.
                 children.remove(child);
+                releaseScopedReadsLocked(child);
                 throw failure;
             }
 
@@ -208,6 +278,28 @@ public final class OresTaskScope {
         }
     }
 
+    /** Runtime continuity check used by hidden scoped-read tickets. */
+    public boolean hasScopedReadLease(long regionId, long generation) {
+        synchronized (lock) {
+            RegionReadState region = scopedReadRegions.get(regionId);
+            return region != null
+                    && region.generation == generation
+                    && region.readers > 0;
+        }
+    }
+
+    int activeScopedReadClaims() {
+        synchronized (lock) {
+            return activeScopedReadClaims;
+        }
+    }
+
+    int activeScopedReadRegions() {
+        synchronized (lock) {
+            return scopedReadRegions.size();
+        }
+    }
+
     private void childQuiescent(Child child) {
         boolean complete;
         synchronized (lock) {
@@ -234,11 +326,75 @@ public final class OresTaskScope {
         if (!child.quiescent || !child.terminal || !children.remove(child)) {
             return false;
         }
+        releaseScopedReadsLocked(child);
         if (state != State.OPEN && children.isEmpty() && state != State.CLOSED) {
             state = State.CLOSED;
             return true;
         }
         return false;
+    }
+
+    private void reserveScopedReadsLocked(
+            Child child, List<ScopedReadClaim> claims) {
+        Set<String> bindings = new HashSet<>();
+        Map<Long, Long> requestedGenerations = new HashMap<>();
+
+        // Validate the complete claim set before mutating live authority.
+        for (ScopedReadClaim claim : claims) {
+            if (!bindings.add(claim.bindingName())) {
+                throw new IllegalArgumentException(
+                        "duplicate scoped read claim for binding '"
+                                + claim.bindingName() + "'");
+            }
+            Long requested = requestedGenerations.putIfAbsent(
+                    claim.regionId(), claim.generation());
+            if (requested != null && requested.longValue() != claim.generation()) {
+                throw new IllegalArgumentException(
+                        "one child cannot claim multiple generations of region "
+                                + claim.regionId());
+            }
+            RegionReadState live = scopedReadRegions.get(claim.regionId());
+            if (live != null && live.generation != claim.generation()) {
+                throw new IllegalStateException(
+                        "stale scoped read generation for region "
+                                + claim.regionId() + ": live=" + live.generation
+                                + ", requested=" + claim.generation());
+            }
+        }
+
+        child.readClaims = claims;
+        for (ScopedReadClaim claim : claims) {
+            RegionReadState region = scopedReadRegions.computeIfAbsent(
+                    claim.regionId(),
+                    ignored -> new RegionReadState(claim.generation()));
+            region.readers++;
+            activeScopedReadClaims++;
+        }
+    }
+
+    private void releaseScopedReadsLocked(Child child) {
+        if (child.readClaimsReleased) return;
+        child.readClaimsReleased = true;
+
+        for (ScopedReadClaim claim : child.readClaims) {
+            RegionReadState region = scopedReadRegions.get(claim.regionId());
+            if (region == null
+                    || region.generation != claim.generation()
+                    || region.readers <= 0) {
+                throw new IllegalStateException(
+                        "structured Task scoped-read accounting corrupted for region "
+                                + claim.regionId());
+            }
+            region.readers--;
+            activeScopedReadClaims--;
+            if (region.readers == 0) {
+                scopedReadRegions.remove(claim.regionId());
+            }
+        }
+        if (activeScopedReadClaims < 0) {
+            throw new IllegalStateException(
+                    "structured Task scoped-read claim count underflow");
+        }
     }
 
     private void completeDrain() {
