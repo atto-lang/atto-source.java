@@ -101,6 +101,10 @@ public final class RealtimeRegionEffectModel {
         // Destination region -> source regions whose addresses remain stored.
         // A Drop/Move of the source binding does NOT erase a stored pointer.
         private final Map<String, Set<String>> retainedRegions = new HashMap<>();
+        // Track *value bindings* too: Drop may run a destructor and invalidate
+        // an object even while its owning arena remains allocated. A transfer
+        // of a retained binding requires a dedicated proven relocation rule.
+        private final Map<String, Set<String>> retainedBindings = new HashMap<>();
         private final Set<String> ended = new HashSet<>();
         private final ArrayDeque<String> active = new ArrayDeque<>();
         private long allocated;
@@ -176,6 +180,15 @@ public final class RealtimeRegionEffectModel {
             return loans.values().stream().anyMatch(l -> l.binding().equals(binding));
         }
 
+        private boolean isRetained(String binding) {
+            for (var entry : retainedBindings.entrySet()) {
+                if (!ended.contains(entry.getKey()) && entry.getValue().contains(binding)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         private void apply(Op op) {
             Objects.requireNonNull(op, "unverified null operation");
             if (op instanceof Allocate a) {
@@ -214,11 +227,13 @@ public final class RealtimeRegionEffectModel {
             } else if (op instanceof Move m) {
                 Binding source = binding(m.source());
                 if (hasLoan(m.source())) deny("move with live borrow");
+                if (isRetained(m.source())) deny("move while another region retains its address");
                 put(m.destination(), source);
                 bindings.remove(m.source());
             } else if (op instanceof Drop d) {
                 binding(d.binding());
                 if (hasLoan(d.binding())) deny("drop with live borrow");
+                if (isRetained(d.binding())) deny("drop could destroy a retained reference");
                 bindings.remove(d.binding());
             } else if (op instanceof Store store) {
                 Binding value = binding(store.binding());
@@ -242,6 +257,8 @@ public final class RealtimeRegionEffectModel {
                 // source binding. Its lifetime must be checked at scope close.
                 retainedRegions.computeIfAbsent(destination.id(), ignored -> new HashSet<>())
                         .add(source.id());
+                retainedBindings.computeIfAbsent(destination.id(), ignored -> new HashSet<>())
+                        .add(store.binding());
             } else if (op instanceof Send send) {
                 Binding value = binding(send.binding());
                 Region source = region(value.region());
@@ -277,6 +294,7 @@ public final class RealtimeRegionEffectModel {
                 }
                 // References stored *inside* this scope die with that scope.
                 retainedRegions.remove(r.id());
+                retainedBindings.remove(r.id());
                 ended.add(r.id());
                 used.put(r.id(), 0L);
             } else if (op instanceof Call call) {
