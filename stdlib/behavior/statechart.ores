@@ -24,7 +24,7 @@ fnc index_of(Array<Symbol> states, Symbol target): int {
   return -1;
 }
 
-pub fnc validate(Chart chart): void {
+pub fnc validate(&Chart chart): void {
   val int count = chart.states.size;
   val int edges = chart.sources.size;
 
@@ -84,12 +84,12 @@ pub fnc checked(
   Array<Symbol> targets
 ): Chart {
   val Chart chart = new Chart(states, parent_index, sources, event_keys, targets);
-  validate(chart);
+  validate(&chart);
   return chart;
 }
 
-pub fnc step(Chart chart, Symbol active, Symbol event): Symbol {
-  validate(chart); // fail closed even when raw arrays are mutated after checked()
+pub fnc step(&Chart chart, Symbol active, Symbol event): Symbol {
+  validate(&chart); // fail closed even when raw arrays are mutated after checked()
   let cursor = index_of(chart.states, active);
   if cursor == -1 {
     rt fail("Statechart: active state is undeclared");
