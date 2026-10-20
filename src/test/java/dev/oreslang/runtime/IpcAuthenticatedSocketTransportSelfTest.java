@@ -228,6 +228,11 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             int count = closeCount.incrementAndGet();
             if (count == 1) {
                 firstCloseEntered.countDown();
+                // Wake the pinned writer before this close invocation returns.
+                // This deliberately creates the writer-drain vs close-in-flight
+                // interleaving that previously allowed finalization to invoke
+                // Socket.close() a second time.
+                output.abort();
                 try {
                     if (!releaseFirstClose.await(5, TimeUnit.SECONDS)) {
                         throw new IOException("test first physical close did not release");
@@ -236,11 +241,34 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                     Thread.currentThread().interrupt();
                     throw new IOException("test first physical close interrupted", interrupted);
                 }
+                return;
             }
             output.abort();
         }
 
         int closeCount() { return closeCount.get(); }
+    }
+
+    private static final class FailingAbortSocket extends Socket {
+        private final InputStream input = new ByteArrayInputStream(new byte[0]);
+        private final BlockingAbortOutputStream output;
+        private final AtomicInteger closes = new AtomicInteger();
+
+        FailingAbortSocket(BlockingAbortOutputStream output) {
+            this.output = output;
+        }
+
+        @Override public InputStream getInputStream() { return input; }
+        @Override public OutputStream getOutputStream() { return output; }
+
+        @Override
+        public void close() throws IOException {
+            closes.incrementAndGet();
+            output.abort();
+            throw new IOException("test physical close outcome unconfirmed");
+        }
+
+        int closeCount() { return closes.get(); }
     }
 
     private static final class ControlledSocket extends Socket {
@@ -1064,19 +1092,33 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         check(firstAbortCloseEntered.await(2, TimeUnit.SECONDS));
         check(abortSocket.closeCount() == 1);
 
+        // The descriptor close is deliberately still blocked, but it has
+        // already woken the writer. Writer drain must not let finalization
+        // steal physical-close ownership.
+        abortSender.join(1500);
+        check(!abortSender.isAlive());
+        check(currentAbortWorker.isAlive());
+        check(abortTransport.snapshot().activeWrites() == 0);
+        check(abortSocket.closeCount() == 1);
+
         try {
             abortTransport.retryQuarantinedAbort();
             throw new AssertionError("retry superseded executing physical abort");
         } catch (IllegalStateException expected) {
             check(expected.getMessage().contains("already executing"));
         }
+        try {
+            abortTransport.retryQuarantinedClose();
+            throw new AssertionError("finalization retried an executing physical close");
+        } catch (IllegalStateException expected) {
+            check(expected.getMessage().contains("unconfirmed"));
+        }
+        check(abortSocket.closeCount() == 1);
 
         releaseFirstAbortClose.countDown();
         currentAbortWorker.join(3000);
         check(!currentAbortWorker.isAlive());
         check(currentAbortFailure.get() == null);
-        abortSender.join(3000);
-        check(!abortSender.isAlive());
         check(abortSenderFailure.get() == null);
         check(abortSubmission.get() != null);
         check(abortSubmission.get().writeAttemptFailed());
@@ -1117,6 +1159,72 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         // A delayed copy of attempt 1 stays inert even after retirement.
         staleAbort.get().run();
         check(abortSocket.closeCount() == 1);
+
+        // If the one actual abort close invocation throws after waking the
+        // writer, the physical descriptor outcome is ambiguous. The generation
+        // stays quarantined permanently and neither abort retry nor finalization
+        // may invoke Socket.close() again.
+        byte[] failedAbortPayload = new byte[8 * 1024 * 1024];
+        Arrays.fill(failedAbortPayload, (byte) 0x33);
+        var failedAbortMessage = envelope(
+                1, "failedAbortClose", 3, 4, failedAbortPayload);
+        var failingOutput = new BlockingAbortOutputStream();
+        var failingSocket = new FailingAbortSocket(failingOutput);
+        ExecutorService failingCleanup = Executors.newSingleThreadExecutor(
+                r -> new Thread(r, "ipc-test-failing-abort-close"));
+        try {
+            var bridge = new IpcReceiptCompletionBridge(1);
+            var transport = new IpcAuthenticatedSocketTransport(
+                    failingSocket, bridge, failedAbortMessage, 1,
+                    authority(141, key, connectionBinding),
+                    failingCleanup::execute);
+            AtomicReference<IpcAuthenticatedSocketTransport.SendSubmission> result =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> senderFailure = new AtomicReference<>();
+            Thread sender = new Thread(() -> {
+                try {
+                    result.set(transport.send(
+                            failedAbortMessage, failedAbortPayload));
+                } catch (Throwable failure) {
+                    senderFailure.set(failure);
+                }
+            }, "ipc-test-failing-abort-writer");
+            sender.start();
+            check(failingOutput.writeEntered.await(2, TimeUnit.SECONDS));
+
+            check(!transport.requestCloseAndAwait(3000));
+            sender.join(3000);
+            check(!sender.isAlive());
+            check(senderFailure.get() == null);
+            check(result.get() != null && result.get().writeAttemptFailed());
+            check(failingSocket.closeCount() == 1);
+            check(transport.snapshot().phase()
+                    == IpcTransportSessionLease.Phase.QUARANTINED);
+            check(transport.snapshot().activeWrites() == 0);
+            check(transport.keyCloneZeroized());
+            check(transport.connectionBindingCloneZeroized());
+            check(!result.get().outcome().toCompletableFuture().isDone());
+
+            try {
+                transport.retryQuarantinedAbort();
+                throw new AssertionError(
+                        "abort retry repeated an unconfirmed physical close");
+            } catch (IllegalStateException expected) {
+                ++checks;
+            }
+            try {
+                transport.retryQuarantinedClose();
+                throw new AssertionError(
+                        "close retry repeated an unconfirmed physical close");
+            } catch (IllegalStateException expected) {
+                check(expected.getMessage().contains("unconfirmed"));
+            }
+            check(failingSocket.closeCount() == 1);
+            check(bridge.invariant());
+        } finally {
+            failingCleanup.shutdownNow();
+            failingCleanup.awaitTermination(2, TimeUnit.SECONDS);
+        }
 
         // Full route/grant epoch must be validated before receipt admission or wire I/O.
         byte[] epochPayload = "epoch".getBytes(java.nio.charset.StandardCharsets.UTF_8);
