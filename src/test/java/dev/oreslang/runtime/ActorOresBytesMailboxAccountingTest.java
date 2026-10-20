@@ -100,25 +100,38 @@ final class ActorOresBytesMailboxAccountingTest {
     }
 
     @Test
-    void privateResultDeepCopyDoesNotRetainNestedActorStorage() {
+    void privateMailboxDeepCopiesNestedCompactByteStorage() throws Exception {
         OresBytes source = OresBytes.copyOf(new byte[] {3, 4, 5});
         java.util.List<Object> nested = java.util.List.of(source);
-        java.util.Map<String, Object> result = java.util.Map.of("nested", nested);
+        java.util.Map<String, Object> message = java.util.Map.of("nested", nested);
+        CountDownLatch observed = new CountDownLatch(1);
+        AtomicReference<java.util.Map<?, ?>> received = new AtomicReference<>();
 
-        Object exportedValue = ActorRuntime.copyPrivateResultForSupervisor(result);
-        java.util.Map<?, ?> exported = assertInstanceOf(
-                java.util.Map.class, exportedValue);
-        assertNotSame(result, exported);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<java.util.Map<String, Object>>spawnPrivateTrusted(
+                    context -> (delivered, selfContext) -> {
+                        received.set(delivered);
+                        observed.countDown();
+                    });
+            actor.send(message);
+            assertTrue(observed.await(5, TimeUnit.SECONDS));
+            actor.drain().get(5, TimeUnit.SECONDS);
 
-        java.util.List<?> exportedNested = assertInstanceOf(
-                java.util.List.class, exported.get("nested"));
-        assertNotSame(nested, exportedNested);
+            java.util.Map<?, ?> isolated = received.get();
+            assertNotNull(isolated);
+            assertNotSame(message, isolated);
+            java.util.List<?> isolatedNested = assertInstanceOf(
+                    java.util.List.class, isolated.get("nested"));
+            assertNotSame(nested, isolatedNested);
+            OresBytes isolatedBytes = assertInstanceOf(
+                    OresBytes.class, isolatedNested.get(0));
+            assertNotSame(source, isolatedBytes,
+                    "nested PRIVATE mailbox bytes must own actor-local storage");
+            assertEquals(source, isolatedBytes);
 
-        OresBytes exportedBytes = assertInstanceOf(
-                OresBytes.class, exportedNested.get(0));
-        assertNotSame(source, exportedBytes,
-                "nested PRIVATE byte storage must not remain supervisor-reachable");
-        assertEquals(source, exportedBytes);
+            actor.stop();
+            actor.getDone().get(5, TimeUnit.SECONDS);
+        }
     }
 
     @Test
