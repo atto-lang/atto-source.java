@@ -310,8 +310,9 @@ final class TaskTransferProvenanceTest {
         assertEquals(
                 TaskTransferProvenance.SelfMode.RECEIVER_POLYMORPHIC,
                 context.selfMode());
-        assertNull(provenance.lexicalContextForIdentity(
-                new Ast.TaskBlockStmt(List.of())));
+        assertThrows(IllegalArgumentException.class,
+                () -> provenance.lexicalContextForIdentity(
+                        new Ast.TaskBlockStmt(List.of())));
     }
 
     @Test
