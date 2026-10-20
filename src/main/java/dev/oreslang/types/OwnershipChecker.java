@@ -2199,9 +2199,29 @@ public final class OwnershipChecker {
         asyncTransferProvenance.record(call, transfers);
     }
 
+    private static final int MAX_ASYNC_PROVENANCE_DEPTH = 64;
+    private static final int MAX_ASYNC_PROVENANCE_NODES = 4_096;
+
     private boolean isProvenAsyncOwnedRvalue(
             Ast.Expr expression, Scope scope) {
-        if (expression == null) return false;
+        return isProvenAsyncOwnedRvalue(
+                expression,
+                scope,
+                0,
+                new int[] {MAX_ASYNC_PROVENANCE_NODES});
+    }
+
+    private boolean isProvenAsyncOwnedRvalue(
+            Ast.Expr expression,
+            Scope scope,
+            int depth,
+            int[] remaining) {
+        if (expression == null
+                || depth > MAX_ASYNC_PROVENANCE_DEPTH
+                || --remaining[0] < 0) {
+            return false;
+        }
+        int nextDepth = depth + 1;
         if (expression instanceof Ast.LiteralExpr) return true;
         if (expression instanceof Ast.NameExpr name) {
             VarState state = scope.lookup(name.name());
@@ -2213,23 +2233,33 @@ public final class OwnershipChecker {
                         && !root.mutableBorrowed);
         }
         if (expression instanceof Ast.CastExpr cast) {
-            return isProvenAsyncOwnedRvalue(cast.value(), scope);
+            return isProvenAsyncOwnedRvalue(
+                    cast.value(), scope, nextDepth, remaining);
         }
         if (expression instanceof Ast.SpreadExpr spread) {
-            return isProvenAsyncOwnedRvalue(spread.expression(), scope);
+            return isProvenAsyncOwnedRvalue(
+                    spread.expression(), scope, nextDepth, remaining);
         }
         if (expression instanceof Ast.TrapExpr trapped) {
-            return isProvenAsyncOwnedRvalue(trapped.expression(), scope);
+            return isProvenAsyncOwnedRvalue(
+                    trapped.expression(), scope, nextDepth, remaining);
         }
         if (expression instanceof Ast.ConditionalExpr conditional) {
             return isProvenAsyncOwnedRvalue(
-                            conditional.whenTrue(), scope)
+                            conditional.whenTrue(),
+                            scope,
+                            nextDepth,
+                            remaining)
                     && isProvenAsyncOwnedRvalue(
-                            conditional.whenFalse(), scope);
+                            conditional.whenFalse(),
+                            scope,
+                            nextDepth,
+                            remaining);
         }
         if (expression instanceof Ast.MatchExpr match) {
             for (Ast.MatchValueArm arm : match.arms()) {
-                if (!isProvenAsyncOwnedRvalue(arm.value(), scope)) {
+                if (!isProvenAsyncOwnedRvalue(
+                        arm.value(), scope, nextDepth, remaining)) {
                     return false;
                 }
             }
@@ -2251,7 +2281,8 @@ public final class OwnershipChecker {
         }
         if (expression instanceof Ast.NewExpr created) {
             for (Ast.Expr argument : created.arguments()) {
-                if (!isProvenAsyncOwnedRvalue(argument, scope)) {
+                if (!isProvenAsyncOwnedRvalue(
+                        argument, scope, nextDepth, remaining)) {
                     return false;
                 }
             }
@@ -2259,19 +2290,26 @@ public final class OwnershipChecker {
         }
         if (expression instanceof Ast.ListExpr list) {
             for (Ast.Expr element : list.elements()) {
-                if (!isProvenAsyncOwnedRvalue(element, scope)) return false;
+                if (!isProvenAsyncOwnedRvalue(
+                        element, scope, nextDepth, remaining)) {
+                    return false;
+                }
             }
             return true;
         }
         if (expression instanceof Ast.TupleExpr tuple) {
             for (Ast.Expr element : tuple.elements()) {
-                if (!isProvenAsyncOwnedRvalue(element, scope)) return false;
+                if (!isProvenAsyncOwnedRvalue(
+                        element, scope, nextDepth, remaining)) {
+                    return false;
+                }
             }
             return true;
         }
         if (expression instanceof Ast.ObjectExpr object) {
             for (Ast.ObjectField field : object.fields()) {
-                if (!isProvenAsyncOwnedRvalue(field.value(), scope)) {
+                if (!isProvenAsyncOwnedRvalue(
+                        field.value(), scope, nextDepth, remaining)) {
                     return false;
                 }
             }
@@ -2283,7 +2321,8 @@ public final class OwnershipChecker {
                         || constructor.name().equals("Ok")
                         || constructor.name().equals("Err"))) {
                 for (Ast.Expr argument : nested.arguments()) {
-                    if (!isProvenAsyncOwnedRvalue(argument, scope)) {
+                    if (!isProvenAsyncOwnedRvalue(
+                            argument, scope, nextDepth, remaining)) {
                         return false;
                     }
                 }
@@ -2305,7 +2344,8 @@ public final class OwnershipChecker {
                     return false;
                 }
                 for (Ast.Expr argument : nested.arguments()) {
-                    if (!isProvenAsyncOwnedRvalue(argument, scope)) {
+                    if (!isProvenAsyncOwnedRvalue(
+                            argument, scope, nextDepth, remaining)) {
                         return false;
                     }
                 }
