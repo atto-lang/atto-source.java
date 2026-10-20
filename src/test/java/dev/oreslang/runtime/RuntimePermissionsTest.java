@@ -90,6 +90,41 @@ final class RuntimePermissionsTest {
     }
 
     @Test
+    void ephemeralListenerBindRequiresHostWideAuthority() {
+        assertEquals("127.0.0.1",
+                RuntimePermissions.networkBindResource("127.0.0.1", 0));
+        assertEquals("::1",
+                RuntimePermissions.networkBindResource("[::1]", 0));
+        assertEquals("[::1]:8443",
+                RuntimePermissions.networkBindResource("::1", 8443));
+
+        RuntimePermissions exactZero = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "127.0.0.1:0");
+        assertFalse(exactZero.allows(
+                RuntimePermissions.Permission.NET,
+                RuntimePermissions.networkBindResource("127.0.0.1", 0)),
+                "host:0 must not authorize an OS-selected arbitrary port");
+
+        RuntimePermissions hostWide = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "127.0.0.1");
+        assertTrue(hostWide.allows(
+                RuntimePermissions.Permission.NET,
+                RuntimePermissions.networkBindResource("127.0.0.1", 0)));
+
+        RuntimePermissions ipv6ExactZero = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "[::1]:0");
+        assertFalse(ipv6ExactZero.allows(
+                RuntimePermissions.Permission.NET,
+                RuntimePermissions.networkBindResource("::1", 0)));
+
+        RuntimePermissions ipv6HostWide = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "::1");
+        assertTrue(ipv6HostWide.allows(
+                RuntimePermissions.Permission.NET,
+                RuntimePermissions.networkBindResource("::1", 0)));
+    }
+
+    @Test
     void applicationArgumentsRoundTripScopedRules() throws Exception {
         Path root = Files.createTempDirectory("ores-perm-roundtrip-");
         RuntimePermissions original = RuntimePermissions.denyAll()
