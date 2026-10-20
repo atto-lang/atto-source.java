@@ -2208,6 +2208,13 @@ public final class ActorRuntime implements AutoCloseable {
         // Stop may settle receipt/cancellation callbacks before the finalizer
         // can run. A synchronous callback must not join its own stop thread.
         private volatile Thread terminalSettlementOwnerThread;
+        /**
+         * Non-allocating retry owner retained across primary-registry removal.
+         * A teardown fault after unregisterActor() must still leave an exact
+         * ActorCell handle that a later supervisor stop can resume until
+         * physicallyFinalized is published.
+         */
+        private volatile ActorCell<?> physicalFinalizationRecoveryCell;
         private volatile ActorOutputStream<Object> outputStream;
 
         private ActorRef(ActorId id, ActorKind kind, long generation) {
@@ -5221,6 +5228,14 @@ public final class ActorRuntime implements AutoCloseable {
             throw new SecurityException("untrusted actors cannot stop other actors");
         }
         ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) {
+            // unregisterActor() intentionally precedes terminal observers.
+            // If one of those later teardown steps fails, the primary registry
+            // no longer owns the cell but physical retirement is still false.
+            // Resume through the exact non-allocating recovery owner retained
+            // on ActorRef rather than silently treating absence as completion.
+            cell = ref.physicalFinalizationRecoveryCell;
+        }
         if (cell == null) return;
 
         cell.stop();
@@ -8248,9 +8263,16 @@ public final class ActorRuntime implements AutoCloseable {
          * a completed retirement.
          */
         private boolean finalizationActive;
-        // Package-runtime fault injection at the finalization boundary. Product
-        // code never installs this; regressions use it to prove retryability.
+        /**
+         * actorExitHook is documented as exactly-once. Finalization itself may
+         * retry after a later teardown fault, so hook invocation needs its own
+         * durable fence independent of the retryable finalizationActive claim.
+         */
+        private boolean actorExitHookInvoked;
+        // Package-runtime fault injection at the finalization boundaries. Product
+        // code never installs these; regressions use them to prove retryability.
         private Runnable finalizationFaultForTesting;
+        private Runnable finalizationAfterUnregisterFaultForTesting;
         /** Teardown receipt/cancellation observers must settle before
          * external physical finalization can certify code retirement. */
         private boolean terminalSettlementPending;
@@ -8676,6 +8698,10 @@ public final class ActorRuntime implements AutoCloseable {
                     || carrierActive
                     || !children.isEmpty()) return;
             finalizationActive = true;
+            // Publish a non-allocating recovery handle before any destructive
+            // teardown. It survives unregisterActor() and is cleared only after
+            // the final physical-retirement witness has been published.
+            ref.physicalFinalizationRecoveryCell = this;
             ref.physicalFinalizationOwnerThread = Thread.currentThread();
             try {
                 OresScheduler scheduler = sourceScheduler;
@@ -8694,13 +8720,19 @@ public final class ActorRuntime implements AutoCloseable {
                 Throwable terminalOutput = ref.terminationCause.get();
                 outputStream.close(terminalOutput);
                 if (memorySlice != null) memorySlice.close();
-                try {
-                    actorExitHook.accept(executionDomain);
-                } catch (VirtualMachineError | ThreadDeath fatal) {
-                    throw fatal;
-                } catch (Throwable ignored) {
-                    // Actor termination must still complete. Runtime cleanup hooks
-                    // are best-effort and retryable by the process collector.
+                if (!actorExitHookInvoked) {
+                    // Fence BEFORE invocation. A hook may have externally visible
+                    // one-shot effects even if a later finalization step fails.
+                    // Retrying physical teardown must never invoke it twice.
+                    actorExitHookInvoked = true;
+                    try {
+                        actorExitHook.accept(executionDomain);
+                    } catch (VirtualMachineError | ThreadDeath fatal) {
+                        throw fatal;
+                    } catch (Throwable ignored) {
+                        // Actor termination must still complete. Runtime cleanup
+                        // hooks are best-effort; external collectors own retries.
+                    }
                 }
                 Runnable injected = finalizationFaultForTesting;
                 if (injected != null) injected.run();
@@ -8708,6 +8740,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // registry removal precedes user terminal Future notifications.
                 // A missing registry entry is NOT physical completion authority.
                 unregisterActor(this);
+                Runnable afterUnregister = finalizationAfterUnregisterFaultForTesting;
+                if (afterUnregister != null) afterUnregister.run();
                 if (parent != null) parent.childFinalized(this);
                 Throwable terminal = ref.terminationCause.get();
                 if (!ref.readyFuture.isDone()) {
@@ -8733,6 +8767,10 @@ public final class ActorRuntime implements AutoCloseable {
                 // instead of certifying retirement from an absent registry entry.
                 ref.physicallyFinalized.set(true);
                 ref.physicalFinalizationLatch.countDown();
+                // No fallible work follows this assignment. Once the physical
+                // witness is visible, retaining the cell would only leak the
+                // emergency recovery owner.
+                ref.physicalFinalizationRecoveryCell = null;
             } finally {
                 finalizationActive = false;
                 ref.physicalFinalizationOwnerThread = null;
