@@ -322,4 +322,48 @@ final class InvertedColumnStoreTest {
             }
         }
     }
+    @Test
+    void floatingColumnsPreserveSignedZeroAndRejectNaNOnlyWhenABISpecRequiresIt() {
+        // Storage must not silently convert -0.0 into +0.0. This is a
+        // correctness prerequisite for any future compiler SIMD lowering.
+        try (var store = new InvertedColumnStore(
+                InvertedColumnStore.Kind.F32, InvertedColumnStore.Kind.F64)) {
+            var row = store.push(-0.0f, -0.0d);
+            assertEquals(Float.floatToRawIntBits(-0.0f),
+                    Float.floatToRawIntBits((Float) store.get(row, 0)));
+            assertEquals(Double.doubleToRawLongBits(-0.0d),
+                    Double.doubleToRawLongBits((Double) store.get(row, 1)));
+            store.updateRow(row, Float.NaN, Double.NaN);
+            assertTrue(Float.isNaN((Float) store.get(row, 0)));
+            assertTrue(Double.isNaN((Double) store.get(row, 1)));
+            try (var write = store.borrowWrite(0)) {
+                write.set(0, -0.0f);
+            }
+            assertEquals(Float.floatToRawIntBits(-0.0f),
+                    Float.floatToRawIntBits((Float) store.get(row, 0)));
+            store.eraseSwap(row);
+            assertThrows(IllegalArgumentException.class, () -> store.get(row, 1));
+        }
+    }
+
+    @Test
+    void structuralMutationDoesNotProceedWithAnyLiveReadLoan() {
+        try (var store = new InvertedColumnStore(
+                InvertedColumnStore.Kind.I32, InvertedColumnStore.Kind.I32)) {
+            var old = store.push(1, 2);
+            var loan = store.borrowRead(0);
+            try {
+                assertThrows(IllegalStateException.class, () -> store.reserve(32));
+                assertThrows(IllegalStateException.class, () -> store.eraseSwap(old));
+                assertThrows(IllegalStateException.class, () -> store.push(3, 4));
+                assertArrayEquals(new Object[] {1, 2}, store.snapshot(old));
+            } finally {
+                loan.close();
+            }
+            store.eraseSwap(old);
+            assertThrows(IllegalArgumentException.class, () -> store.get(old, 0));
+            assertEquals(0, store.size());
+        }
+    }
+
 }
