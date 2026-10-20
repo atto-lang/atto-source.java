@@ -27,7 +27,7 @@ final class ProximateSupervisorSeparationTest {
 
             CountDownLatch aRequestedB = new CountDownLatch(1);
             AtomicReference<Throwable> privilegeFailure = new AtomicReference<>();
-            ActorRuntime.ActorRef<String> a = runtime.spawnPrivate(factory ->
+            ActorRuntime.ActorRef<String> a = runtime.spawnPrivateTrusted(factory ->
                     (message, context) -> {
                         if (!"launch-B".equals(message)) return;
                         // Ordinary A must not gain S's CONTROL authority by
@@ -61,6 +61,8 @@ final class ProximateSupervisorSeparationTest {
             a.send("launch-B");
             assertTrue(aRequestedB.await(5, TimeUnit.SECONDS));
             assertNull(privilegeFailure.get(), "actor A must not be supervisor-authorized");
+            assertEquals(0, sWorkers.workerCount(),
+                    "A's denied CONTROL calls must not create an orphaned B");
 
             // Today's executable host bridge: S's already-bound lifecycle group
             // launches B. A has no ownership/cancellation authority over B.
@@ -94,6 +96,25 @@ final class ProximateSupervisorSeparationTest {
     }
 
     @Test
+    void failedChildInitializationDoesNotRemainManaged() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var s = runtime.createSupervisor();
+            var group = runtime.createActorGroup(s);
+            ActorRuntime.ActorRef<String> failed = s.startChildHost(
+                    group,
+                    ActorRuntime.ActorKind.PRIVATE,
+                    IsolatePolicy.developer(),
+                    factory -> { throw new IllegalStateException("child initialization failed"); });
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> failed.getReady().get(5, TimeUnit.SECONDS));
+            assertTrue(failed.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, group.workerCount(),
+                    "failed child must leave no retained managed worker");
+            group.close();
+        }
+    }
+
+    @Test
     void aCannotMintChildSupervisorsAndForeignSIsRejected() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime();
              ActorRuntime other = new ActorRuntime()) {
@@ -104,7 +125,7 @@ final class ProximateSupervisorSeparationTest {
 
             CountDownLatch attempted = new CountDownLatch(1);
             AtomicReference<Throwable> unexpected = new AtomicReference<>();
-            ActorRuntime.ActorRef<String> a = runtime.spawnPrivate(factory ->
+            ActorRuntime.ActorRef<String> a = runtime.spawnPrivateTrusted(factory ->
                     (message, context) -> {
                         try {
                             context.runtime().createChildSupervisor(s);
@@ -135,6 +156,12 @@ final class ProximateSupervisorSeparationTest {
                             IsolatePolicy.developer(),
                             factory -> (message, context) -> { }));
             unrelated.close();
+            assertThrows(IllegalStateException.class, () ->
+                    s.startChildHost(unrelated,
+                            ActorRuntime.ActorKind.PRIVATE,
+                            IsolatePolicy.developer(),
+                            factory -> (message, context) -> { }),
+                    "closed group must not accept a late child");
             a.stop();
             a.done().get(5, TimeUnit.SECONDS);
         }
