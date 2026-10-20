@@ -79,6 +79,35 @@ final class OresTaskOrdinaryRetirementTest {
     }
 
     @Test
+    void sealedScopeRejectsWithoutAttemptingNeverRegisteredOwnerRemoval()
+            throws Exception {
+        try (var runtime = new AsyncRuntime();
+             var scope = new OresTaskScope(runtime)) {
+            scope.cancel();
+            Field field = OresTaskScope.class.getDeclaredField("tasks");
+            field.setAccessible(true);
+            Object original = field.get(scope);
+            AtomicInteger removalAttempts = new AtomicInteger();
+            Set<Object> corruptOnRemove = new HashSet<>() {
+                @Override public boolean remove(Object slot) {
+                    removalAttempts.incrementAndGet();
+                    throw new IllegalStateException("unregistered slot was removed");
+                }
+            };
+            field.set(scope, corruptOnRemove);
+            try {
+                assertThrows(RejectedExecutionException.class,
+                        () -> scope.submit(() -> 3));
+                assertEquals(0, removalAttempts.get(),
+                        "a sealed scope never registered this provisional owner");
+                assertTrue(scope.physicallyQuiescent());
+            } finally {
+                field.set(scope, original);
+            }
+        }
+    }
+
+    @Test
     void insertThenThrowReservationDoesNotStrandAnUnboundOwner() throws Exception {
         var runtime = new AsyncRuntime();
         var scope = new OresTaskScope(runtime);
