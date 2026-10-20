@@ -70,6 +70,41 @@ public final class IpcReceiptCompletionBridgeSelfTest {
         return stage.toCompletableFuture().join();
     }
 
+    private static Object removeCompletionForTest(
+            IpcReceiptCompletionBridge bridge, long sequence) {
+        try {
+            var field = IpcReceiptCompletionBridge.class.getDeclaredField("completions");
+            field.setAccessible(true);
+            Object map = field.get(bridge);
+            Object removed = java.util.Map.class
+                    .getMethod("remove", Object.class)
+                    .invoke(map, Long.valueOf(sequence));
+            if (removed == null) {
+                throw new AssertionError("test corruption found no completion");
+            }
+            return removed;
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError(failure);
+        }
+    }
+
+    private static void restoreCompletionForTest(
+            IpcReceiptCompletionBridge bridge, long sequence, Object completion) {
+        try {
+            var field = IpcReceiptCompletionBridge.class.getDeclaredField("completions");
+            field.setAccessible(true);
+            Object map = field.get(bridge);
+            Object previous = java.util.Map.class
+                    .getMethod("put", Object.class, Object.class)
+                    .invoke(map, Long.valueOf(sequence), completion);
+            if (previous != null) {
+                throw new AssertionError("test restore replaced a live completion");
+            }
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError(failure);
+        }
+    }
+
     public static void main(String[] args) throws InterruptedException {
         // The bridge is host-only from initial physical binding onward.
         {
@@ -207,6 +242,30 @@ public final class IpcReceiptCompletionBridgeSelfTest {
                     == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
             check(callbackFailure.get() == null);
             check(observed.get() == 1);
+            check(transport.bridge().invariant());
+        }
+
+        // Terminal receipt application must preflight completion-table parity
+        // before mutating the receipt ledger. Simulate internal completion-map
+        // corruption after ACK, verify terminal transition is rejected without
+        // consuming the ledger entry, then restore parity and commit normally.
+        {
+            var message = env(1, "terminal-preflight");
+            var transport = bound(1, message, 55);
+            var future = transport.admit(message);
+            transport.accept(
+                    message, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+            Object removed = removeCompletionForTest(
+                    transport.bridge(), message.messageSequence());
+            denied(() -> transport.accept(
+                    message, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED));
+            check(!future.toCompletableFuture().isDone());
+            restoreCompletionForTest(
+                    transport.bridge(), message.messageSequence(), removed);
+            transport.accept(
+                    message, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(result(future)
+                    == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
             check(transport.bridge().invariant());
         }
 
