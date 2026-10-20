@@ -50,3 +50,13 @@ The strict initial profile admits one private trusted actor class without fields
 It returns a conservative source-AST worst-path step count and the explicit assurance `CHECKED_ACTOR_AST_SCALAR_ONLY;ACTOR_REGION_AND_VM_UNVERIFIED`. This is a **semantic/effect exclusion preflight** only. It does not call `RealtimeRegionEffectModel.check` to justify actual allocation ownership or certify actor scheduling. The physical class instance, actor runtime, constructor/callback dispatch, implementation-dependent safepoints and GC behavior remain unverified.
 
 Synthetic `RealtimeActorSourceEffectsSelfTest` cases exercise this gate against the actual `Ast` record interfaces; a source CI job compiles both self-tests. Real source-parser/typechecker end-to-end conformance remains a separate integration gate, particularly before enabling actor fields or scoped memory.
+
+## Offline compiler-check command
+
+The exact source tree now includes a deterministic JDK-only command, independent of GitHub Actions admission:
+
+```sh
+bash tools/test_realtime_region_model.sh
+```
+
+It uses JDK 21 to compile the real Oreslang `Ast.java` plus the checked-actor gate and symbolic region model, runs both self-tests with assertions enabled, and cleans up its temporary class directory. It is intentionally separate from full GraalVM/Native Image/Maven integration. Bash syntax has been checked locally; do **not** record the Java tests as passed until this command actually completes on the exact source tree.
