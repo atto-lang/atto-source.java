@@ -471,7 +471,7 @@ final class OresTaskScopeTest {
         scheduler.close();
 
         assertThrows(
-                IllegalStateException.class,
+                java.util.concurrent.RejectedExecutionException.class,
                 () -> scope.fork(
                         resume -> OresScheduler.done(1),
                         java.util.List.of(
