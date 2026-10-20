@@ -22,6 +22,7 @@ BASE = "d" * 40
 WORKFLOW = "e" * 40
 PLAN_BLOB = "f" * 40
 PROTECTED = "1" * 40
+NONCE = "0" * 32
 POLICY = b"p" * 32
 PLAN = (
     json.dumps(
@@ -334,7 +335,7 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3.subprocess, "run", return_value=response) as run,
         ):
             self.assertIs(
-                v3._gh_ref_request("trusted/ci", "ci/authorized-" + COMMIT, "GET"),
+                v3._gh_ref_request("trusted/ci", "ci/authorized-" + COMMIT + "-" + NONCE, "GET"),
                 response,
             )
         self.assertEqual(run.call_args.args[0][0], "/usr/bin/gh")
@@ -349,7 +350,7 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3.subprocess, "run", return_value=invalid),
         ):
             with self.assertRaisesRegex(v3.Denied, "response exceeds size limit"):
-                v3._gh_ref_request("trusted/ci", "ci/authorized-" + COMMIT, "GET")
+                v3._gh_ref_request("trusted/ci", "ci/authorized-" + COMMIT + "-" + NONCE, "GET")
 
     def test_source_pr_requires_latest_independent_exact_head_review(self):
         approved = {
@@ -1104,13 +1105,13 @@ class PrivateCiV3Test(unittest.TestCase):
         directory_proof.assert_called_once()
         commit_proof.assert_called_once()
         absent_guard.assert_called_once_with(
-            "trusted/ci", "ci/oreslang-" + SOURCE_TREE,
-            "ci/authorized-" + COMMIT, carrier["repository_id"]
+            "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE,
+            "ci/authorized-" + COMMIT + "-" + NONCE, carrier["repository_id"]
         )
 
-        self.assertEqual(result["branch"], "ci/oreslang-" + SOURCE_TREE)
+        self.assertEqual(result["branch"], "ci/oreslang-" + SOURCE_TREE + "-" + NONCE)
         self.assertEqual(
-            result["authorization_ref"], "ci/authorized-" + COMMIT
+            result["authorization_ref"], "ci/authorized-" + COMMIT + "-" + NONCE
         )
         receipt_bytes = next(
             item for item in blob_payloads if b'"schema":"ores-private-ci-receipt-v3"' in item
@@ -1123,6 +1124,8 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(receipt["source"]["head_sha"], "4" * 40)
         self.assertEqual(receipt["source"]["root_tree_sha"], SOURCE_TREE)
         self.assertEqual(receipt["mirror"]["root_tree_sha"], SOURCE_TREE)
+        self.assertEqual(receipt["handoff"]["nonce"], NONCE)
+        self.assertEqual(result["handoff_nonce"], NONCE)
         self.assertEqual(receipt["destination"]["repo_id"], 1323598177)
         self.assertEqual(receipt["test_plan"]["path"], carrier["test_plan_path"])
         self.assertEqual(
@@ -1157,8 +1160,8 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(
             refs,
             [
-                "refs/heads/ci/oreslang-" + SOURCE_TREE,
-                "refs/heads/ci/authorized-" + COMMIT,
+                "refs/heads/ci/oreslang-" + SOURCE_TREE + "-" + NONCE,
+                "refs/heads/ci/authorized-" + COMMIT + "-" + NONCE,
             ],
         )
         self.assertEqual(verify_source_pr.call_count, 3)
@@ -1166,15 +1169,15 @@ class PrivateCiV3Test(unittest.TestCase):
             [call.args for call in require_exact_ref.call_args_list],
             [
                 (
-                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT,
+                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE, COMMIT,
                     carrier["repository_id"],
                 ),
                 (
-                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT,
+                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE, COMMIT,
                     carrier["repository_id"],
                 ),
                 (
-                    "trusted/ci", "ci/authorized-" + COMMIT, COMMIT,
+                    "trusted/ci", "ci/authorized-" + COMMIT + "-" + NONCE, COMMIT,
                     carrier["repository_id"],
                 ),
             ],
@@ -1247,10 +1250,7 @@ class PrivateCiV3Test(unittest.TestCase):
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
 
-        delete_ref.assert_called_once_with(
-            "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT,
-            carrier["repository_id"]
-        )
+        delete_ref.assert_not_called()
 
     def test_publish_rolls_back_payload_if_pr_head_moves_before_authorization(self):
         carrier = contract()
@@ -1319,7 +1319,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     )
 
         delete_ref.assert_called_once_with(
-            "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT,
+            "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE, COMMIT,
             carrier["repository_id"]
         )
         ref_posts = [
@@ -1327,7 +1327,11 @@ class PrivateCiV3Test(unittest.TestCase):
             for method, route, payload in writes
             if method == "POST" and route.endswith("/git/refs")
         ]
-        self.assertEqual(ref_posts, ["refs/heads/ci/oreslang-" + SOURCE_TREE])
+        self.assertEqual(len(ref_posts), 1)
+        self.assertRegex(
+            ref_posts[0],
+            r"^refs/heads/ci/oreslang-" + SOURCE_TREE + r"-[0-9a-f]{32}$",
+        )
 
     def test_publish_rolls_back_payload_if_authorization_creation_fails(self):
         carrier = contract()
@@ -1394,19 +1398,7 @@ class PrivateCiV3Test(unittest.TestCase):
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
 
-        self.assertEqual(
-            [call.args for call in delete_ref.call_args_list],
-            [
-                (
-                    "trusted/ci", "ci/authorized-" + COMMIT, COMMIT,
-                    carrier["repository_id"],
-                ),
-                (
-                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT,
-                    carrier["repository_id"],
-                ),
-            ],
-        )
+        delete_ref.assert_not_called()
 
     def test_publish_rolls_back_both_attempts_on_keyboard_interrupt(self):
         carrier = contract()
@@ -1477,11 +1469,11 @@ class PrivateCiV3Test(unittest.TestCase):
             [call.args for call in delete_ref.call_args_list],
             [
                 (
-                    "trusted/ci", "ci/authorized-" + COMMIT, COMMIT,
+                    "trusted/ci", "ci/authorized-" + COMMIT + "-" + NONCE, COMMIT,
                     carrier["repository_id"],
                 ),
                 (
-                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT,
+                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE, COMMIT,
                     carrier["repository_id"],
                 ),
             ],
@@ -1556,22 +1548,26 @@ class PrivateCiV3Test(unittest.TestCase):
             [call.args for call in delete_ref.call_args_list],
             [
                 (
-                    "trusted/ci", "ci/authorized-" + COMMIT, COMMIT,
+                    "trusted/ci", "ci/authorized-" + COMMIT + "-" + NONCE, COMMIT,
                     carrier["repository_id"],
                 ),
                 (
-                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT,
+                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE, COMMIT,
                     carrier["repository_id"],
                 ),
             ],
         )
+
+    def test_publisher_failure_path_never_calls_destructive_ref_delete(self):
+        source = v3.publish.__code__.co_names
+        self.assertNotIn("delete_exact_ref", source)
 
     def test_ref_request_accepts_exact_authorization_ref_and_uses_get_route(self):
         response = type(
             "Result", (),
             {"returncode": 0, "stderr": "", "stdout": "{}"},
         )()
-        ref_name = "ci/authorized-" + COMMIT
+        ref_name = "ci/authorized-" + COMMIT + "-" + NONCE
         with (
             patch.object(v3.legacy, "trusted_github_cli", return_value="/usr/bin/gh"),
             patch.object(
@@ -1595,7 +1591,7 @@ class PrivateCiV3Test(unittest.TestCase):
             "Result", (),
             {"returncode": 0, "stderr": "", "stdout": ""},
         )()
-        ref_name = "ci/authorized-" + COMMIT
+        ref_name = "ci/authorized-" + COMMIT + "-" + NONCE
         with (
             patch.object(v3.legacy, "trusted_github_cli", return_value="/usr/bin/gh"),
             patch.object(
@@ -1656,7 +1652,7 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             with self.assertRaisesRegex(v3.Denied, "no longer visible"):
                 v3.live_ref_sha(
-                    "trusted/ci", "ci/authorized-" + COMMIT, 1323598177
+                    "trusted/ci", "ci/authorized-" + COMMIT + "-" + NONCE, 1323598177
                 )
 
     def test_live_ref_rejects_carrier_repository_id_replacement(self):
@@ -1679,7 +1675,7 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             with self.assertRaisesRegex(v3.Denied, "repository identity changed"):
                 v3.live_ref_sha(
-                    "trusted/ci", "ci/authorized-" + COMMIT, 1323598177
+                    "trusted/ci", "ci/authorized-" + COMMIT + "-" + NONCE, 1323598177
                 )
 
     def test_live_ref_404_is_absent_only_after_private_carrier_recheck(self):
@@ -1702,13 +1698,13 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             self.assertIsNone(
                 v3.live_ref_sha(
-                    "trusted/ci", "ci/authorized-" + COMMIT, 1323598177
+                    "trusted/ci", "ci/authorized-" + COMMIT + "-" + NONCE, 1323598177
                 )
             )
         checked_repo.assert_called_once_with("trusted/ci", 1323598177)
 
     def test_existing_handoff_refs_are_never_adopted_or_deleted(self):
-        branches = ("ci/oreslang-" + SOURCE_TREE, "ci/authorized-" + COMMIT)
+        branches = ("ci/oreslang-" + SOURCE_TREE + "-" + NONCE, "ci/authorized-" + COMMIT + "-" + NONCE)
         for result_sequence in ((COMMIT,), (None, COMMIT)):
             with (
                 patch.object(v3, "live_ref_sha", side_effect=result_sequence) as read,
@@ -1745,7 +1741,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 v3.fresh_handoff_nonce()
 
     def test_create_handoff_ref_requires_live_numeric_identity(self):
-        ref = "ci/oreslang-" + SOURCE_TREE
+        ref = "ci/oreslang-" + SOURCE_TREE + "-" + NONCE
         with (
             patch.object(
                 v3.legacy, "checked_repo",
@@ -1760,7 +1756,7 @@ class PrivateCiV3Test(unittest.TestCase):
         api.assert_not_called()
 
     def test_create_handoff_ref_requires_exact_post_response(self):
-        ref = "ci/oreslang-" + SOURCE_TREE
+        ref = "ci/oreslang-" + SOURCE_TREE + "-" + NONCE
         exact = {"ref": "refs/heads/" + ref, "object": {"type": "commit", "sha": COMMIT}}
         poisoned = (
             {},
@@ -1805,7 +1801,7 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             with self.assertRaisesRegex(v3.Denied, "moved"):
                 v3.delete_exact_ref(
-                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE,
+                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE,
                     COMMIT, 1323598177
                 )
         request.assert_not_called()
@@ -1814,7 +1810,7 @@ class PrivateCiV3Test(unittest.TestCase):
         with patch.object(v3, "live_ref_sha", return_value=None):
             self.assertFalse(
                 v3.delete_exact_ref(
-                    "trusted/ci", "ci/oreslang-test", COMMIT, 1323598177
+                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE, COMMIT, 1323598177
                 )
             )
 
@@ -1822,7 +1818,7 @@ class PrivateCiV3Test(unittest.TestCase):
         with patch.object(v3, "live_ref_sha", return_value="9" * 40):
             with self.assertRaisesRegex(v3.Denied, "moved"):
                 v3.delete_exact_ref(
-                    "trusted/ci", "ci/oreslang-test", COMMIT, 1323598177
+                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE, COMMIT, 1323598177
                 )
 
     def test_delete_exact_ref_verifies_absence_after_delete(self):
@@ -1833,11 +1829,11 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             self.assertTrue(
                 v3.delete_exact_ref(
-                    "trusted/ci", "ci/oreslang-test", COMMIT, 1323598177
+                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE, COMMIT, 1323598177
                 )
             )
         request.assert_called_once_with(
-            "trusted/ci", "ci/oreslang-test", "DELETE"
+            "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE, "DELETE"
         )
 
     def test_delete_exact_ref_rejects_still_present_after_delete(self):
@@ -1848,7 +1844,7 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             with self.assertRaisesRegex(v3.Denied, "still exists"):
                 v3.delete_exact_ref(
-                    "trusted/ci", "ci/oreslang-test", COMMIT, 1323598177
+                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE + "-" + NONCE, COMMIT, 1323598177
                 )
 
     def test_manifest_matches_carrier_row_shape(self):
