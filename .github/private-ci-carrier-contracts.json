@@ -3,7 +3,7 @@
   "carriers": {
     "usa-acc/usa-acc-e2e": {
       "repository_id": 1346346666,
-      "base_sha": "960e700542a1b95d7ea680d4dbf12c381546defc",
+      "base_sha": "459e4c24d71a20c37a598660231773cb9f015036",
       "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
       "workflow_blob_sha": "25588ce4bcf0c00077399a4b5bd37f2d13ef1dfb",
       "test_plans": {
@@ -14,7 +14,7 @@
           ]
         },
         "ci/test-plans/java-pr1586.json": {
-          "blob_sha": "7977a2fdf94650c57140dcb29544521da4a9ef23",
+          "blob_sha": "3d4ae20f7306a12581e8f08087f3f5ed62272152",
           "allowed_prs": [
             1586
           ]
