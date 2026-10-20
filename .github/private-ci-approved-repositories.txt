@@ -1,6 +1,7 @@
 # Private CI destinations explicitly approved for source transfers.
 # No repositories are approved by default.
 # Changes must be reviewed by maintainers and security owners on a protected branch.
-# Format: one exact owner/repo per uncommented line, no whitespace or wildcards.
-# Proposed narrow private carrier for v3 exact-tree tests; requires CODEOWNER review and protected merge.
-# Review-only candidate (NOT an approved destination): ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra
+# Format: exact owner/repo, one ASCII space, immutable numeric repository ID,
+# one ASCII space, reviewed destination exact-tree workflow Git blob SHA.
+# No wildcards, aliases, redirects, slug-only approvals, or floating workflow refs.
+ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra 1412142815 2d4b412ca8480d02fcd122a9cb7ee3a5d7d45227
