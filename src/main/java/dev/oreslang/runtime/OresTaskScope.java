@@ -296,7 +296,13 @@ public final class OresTaskScope implements AutoCloseable {
             }
             if (releaseFailure == null) {
                 try {
-                    loanRetirement.retireNeverStarted(compilerScopeEpoch);
+                    if (pendingOwner == null) {
+                        loanRetirement.retireBeforeChildBound(
+                                compilerScopeEpoch);
+                    } else {
+                        loanRetirement.retireNeverStarted(
+                                compilerScopeEpoch, pendingOwner);
+                    }
                 } catch (RuntimeException | Error failure) {
                     releaseFailure = failure;
                     poisonCompilerLoan(loanRetirement, failure);
@@ -399,7 +405,8 @@ public final class OresTaskScope implements AutoCloseable {
             }
             if (releaseFailure == null) {
                 try {
-                    loanRetirement.retireNeverStarted(compilerScopeEpoch);
+                    loanRetirement.retireNeverStarted(
+                            compilerScopeEpoch, ownedChild);
                 } catch (RuntimeException | Error failure) {
                     releaseFailure = failure;
                     poisonCompilerLoan(loanRetirement, failure);
