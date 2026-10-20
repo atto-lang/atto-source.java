@@ -665,6 +665,16 @@ public final class Ast {
     public record BlockStmt(List<Stmt> body) implements Stmt {
         public BlockStmt { body = List.copyOf(body); }
     }
+
+    /**
+     * Lexical structured Task scope. The runtime lowers scope exit to an
+     * asynchronous physical-quiescence barrier; this is never a blocking
+     * Java/OS-thread join.
+     */
+    public record TaskScopeStmt(List<Stmt> body) implements Stmt {
+        public TaskScopeStmt { body = List.copyOf(body); }
+    }
+
     public record BreakStmt() implements Stmt { }
     public record ContinueStmt() implements Stmt { }
 
@@ -1383,6 +1393,66 @@ public final class Ast {
         /** Compatibility helper: structural records carry the readonly record capability. */
         public boolean readonlyInferredAggregate() { return structuralRecord(); }
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
+    }
+
+    /**
+     * Lightweight Task expression (nb { ... }), returning Task<void>.
+     * Captures are proved at the ownership pass and materialized when
+     * execution is scheduled, not rebound to a physical Java carrier.
+     *
+     * The Phase-1 Task is void-returning. Scoped borrowed captures and
+     * value-returning Task<T> need additional checked lowering.
+     */
+    public static final class TaskExpr implements Expr {
+        private final List<Stmt> body;
+        // Bound only by the ownership pass, before lowering/execution. null
+        // means an unchecked AST and MUST NOT be treated as empty captures.
+        private volatile List<String> capturedNames;
+        // Established by the type checker before the ownership checker runs.
+        // Only compiler-checked Task results can flow into a Task handle.
+        private volatile TypeRef checkedResultType;
+
+        public TaskExpr(List<Stmt> body) {
+            this.body = List.copyOf(body);
+        }
+
+        public List<Stmt> body() { return body; }
+
+        public synchronized void bindCaptures(List<String> captures) {
+            java.util.Objects.requireNonNull(captures, "Task captures");
+            List<String> copy = List.copyOf(captures);
+            if (new java.util.HashSet<>(copy).size() != copy.size()) {
+                throw new IllegalArgumentException("duplicate Task capture");
+            }
+            if (capturedNames != null && !capturedNames.equals(copy)) {
+                throw new IllegalStateException("Task capture metadata changed after ownership checking");
+            }
+            capturedNames = copy;
+        }
+
+        public synchronized void bindResultType(TypeRef result) {
+            java.util.Objects.requireNonNull(result, "Task result");
+            if (checkedResultType != null && !checkedResultType.equals(result)) {
+                throw new IllegalStateException("Task result changed after type checking");
+            }
+            checkedResultType = result;
+        }
+
+        public TypeRef checkedResultType() {
+            TypeRef type = checkedResultType;
+            if (type == null) {
+                throw new IllegalStateException("Task reached ownership checking without result type");
+            }
+            return type;
+        }
+
+        public List<String> captures() {
+            List<String> proof = capturedNames;
+            if (proof == null) {
+                throw new IllegalStateException("nb Task reached runtime without ownership proof");
+            }
+            return proof;
+        }
     }
 
     public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) implements Expr {
