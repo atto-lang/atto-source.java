@@ -446,11 +446,16 @@ public final class OresTaskScope {
     private List<OresFuture<?>> childFuturesLocked() {
         ArrayList<OresFuture<?>> snapshot = new ArrayList<>(children.size());
         for (Child child : children) {
-            // fork() holds the same lock through start + Future binding, so
-            // every child visible to a lifecycle/cancellation transition has a
-            // stable handle.
-            snapshot.add(Objects.requireNonNull(
-                    child.future, "Task scope child missing Future"));
+            OresFuture<?> future = child.future;
+            if (future == null) {
+                // scheduler.start(...) may synchronously establish terminal +
+                // quiescent state before fork() publishes the returned Future
+                // into Child. Such a child has no remaining authority to revoke.
+                if (child.terminal && child.quiescent) continue;
+                throw new IllegalStateException(
+                        "live Task scope child is missing its Future handle");
+            }
+            snapshot.add(future);
         }
         return List.copyOf(snapshot);
     }
