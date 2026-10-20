@@ -406,6 +406,8 @@ class PrivateCiV3Test(unittest.TestCase):
                 + BASE
                 + " tree "
                 + "3" * 40
+                + "\nreceipt-sha256 "
+                + digest
                 + "\nconnector-authorized source-repository "
                 + v3.legacy.SOURCE_REPO
                 + " id "
