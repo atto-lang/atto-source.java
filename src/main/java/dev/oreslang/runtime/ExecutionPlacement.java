@@ -26,10 +26,24 @@ public final class ExecutionPlacement {
         THREAD_BOUND
     }
 
-    public record Hint(Kind kind, Affinity affinity, int affinityKey) {
+    public record Hint(Kind kind, Affinity affinity, int affinityKey,
+                       int preferredNuma) {
+        /* Existing callers still have no NUMA promise. */
+        public Hint(Kind kind, Affinity affinity, int affinityKey) {
+            this(kind, affinity, affinityKey, CpuTopology.UNKNOWN);
+        }
+
         public Hint {
             Objects.requireNonNull(kind, "kind");
             Objects.requireNonNull(affinity, "affinity");
+            if (preferredNuma < CpuTopology.UNKNOWN || preferredNuma > 65535) {
+                throw new IllegalArgumentException("invalid NUMA node hint");
+            }
+            if (preferredNuma != CpuTopology.UNKNOWN
+                    && (kind != Kind.TASK || affinity != Affinity.SOFT)) {
+                throw new IllegalArgumentException(
+                        "NUMA region hints require a soft Task placement");
+            }
         }
 
         public static Hint unbound(Kind kind) {
@@ -38,6 +52,13 @@ public final class ExecutionPlacement {
 
         public static Hint soft(Kind kind, int affinityKey) {
             return new Hint(kind, Affinity.SOFT, affinityKey);
+        }
+
+        /** Region-locality advice from the trusted host allocation ledger.
+         * This cannot authorize a borrow, infer actual NUMA page residence,
+         * or override the scheduler's bounded spill/steal and cancellation. */
+        public static Hint regionTask(int affinityKey, int preferredNuma) {
+            return new Hint(Kind.TASK, Affinity.SOFT, affinityKey, preferredNuma);
         }
 
         /**
