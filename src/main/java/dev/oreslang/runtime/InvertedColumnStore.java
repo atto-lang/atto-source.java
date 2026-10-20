@@ -416,6 +416,11 @@ public final class InvertedColumnStore implements AutoCloseable {
     /** Revokes all handles and live loans; never exposes a mutable backing buffer. */
     @Override
     public synchronized void close() {
+        // close() does not use open(), so guard against reentrant teardown
+        // during the detached snapshot evaluation explicitly.
+        if (transforming) {
+            throw new IllegalStateException("cannot close an inverted store during row transform");
+        }
         if (closed) return;
         closed = true;
         for (int i = 0; i < kinds.length; i++) {
