@@ -299,7 +299,7 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                     return;
                 }
                 if (RuntimeBlockingGuard.actorCarrierMarked()) {
-                    sessionLease.quarantineIfUnsettled(new IllegalStateException(
+                    sessionLease.deferSchedulerFailure(new IllegalStateException(
                             "IPC abort scheduler executed on an actor carrier"));
                     return;
                 }
