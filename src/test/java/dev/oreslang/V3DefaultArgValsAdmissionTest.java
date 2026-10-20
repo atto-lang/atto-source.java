@@ -765,6 +765,13 @@ final class V3DefaultArgValsAdmissionTest {
                 List.of(new Ast.NamedDefault("missing", Ast.TypeRef.intLiteral("2"))));
         assertThrows(IllegalArgumentException.class,
                 () -> V3SourceContractFingerprint.sha256Hex(List.of(required), List.of(unknown)));
+        Ast.Param stringFormal = new Ast.Param(Ast.TypeRef.simple("string"), "message");
+        Ast.Annotation malformedUtf16 = new Ast.Annotation("DefaultArgVals", List.of(),
+                List.of(new Ast.NamedDefault("message",
+                        Ast.TypeRef.stringLiteral("prefix" + (char) 0xD800))));
+        assertThrows(IllegalArgumentException.class,
+                () -> V3SourceContractFingerprint.sha256Hex(
+                        List.of(stringFormal), List.of(malformedUtf16)));
     }
 
 }
