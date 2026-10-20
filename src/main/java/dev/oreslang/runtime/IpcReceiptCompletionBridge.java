@@ -103,6 +103,54 @@ public final class IpcReceiptCompletionBridge {
         }
     }
 
+    /**
+     * Opaque two-phase publication token for authenticated receipts.
+     *
+     * <p>The token is allocated before ledger mutation so an allocation
+     * failure cannot remove a terminal correlation without a publication
+     * object. The trusted socket adapter applies the ordered ledger transition
+     * under its receive gate, releases that gate, then publishes the terminal
+     * host future. REMOTE_ACCEPTED carries no terminal completion.</p>
+     */
+    static final class VerifiedCompletion {
+        private final IpcReceiptCorrelation.Stage stage;
+        private CompletableFuture<IpcReceiptCorrelation.Stage> future;
+        private boolean published;
+
+        VerifiedCompletion(IpcReceiptCorrelation.Stage stage) {
+            this.stage = Objects.requireNonNull(stage, "stage");
+        }
+
+        void attach(CompletableFuture<IpcReceiptCorrelation.Stage> future) {
+            if (stage == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED
+                    || this.future != null || published) {
+                throw new IllegalStateException(
+                        "invalid IPC verified completion attachment");
+            }
+            this.future = Objects.requireNonNull(future, "future");
+        }
+
+        void publish() {
+            if (published) {
+                throw new IllegalStateException(
+                        "IPC verified completion published more than once");
+            }
+            published = true;
+            if (stage == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED) {
+                if (future != null) {
+                    throw new IllegalStateException(
+                            "REMOTE_ACCEPTED carried terminal host completion");
+                }
+                return;
+            }
+            if (future == null) {
+                throw new IllegalStateException(
+                        "terminal IPC receipt missing host completion");
+            }
+            completeExactlyOnce(future, stage);
+        }
+    }
+
     public CompletionStage<IpcReceiptCorrelation.Stage> admit(
             IpcReceiptCorrelation.Envelope envelope) {
         Objects.requireNonNull(envelope, "envelope");
@@ -238,21 +286,38 @@ public final class IpcReceiptCompletionBridge {
                         IpcReceiptCorrelation.Envelope envelope,
                         long generation,
                         IpcReceiptCorrelation.Stage stage) {
+        VerifiedCompletion completion = applyVerified(
+                owner, envelope, generation, stage);
+        completion.publish();
+    }
+
+    /**
+     * Apply one authenticated peer receipt without invoking dependent future
+     * callbacks. The caller must publish the returned token after releasing
+     * any outer transport-ordering lock.
+     */
+    VerifiedCompletion applyVerified(
+            Object owner,
+            IpcReceiptCorrelation.Envelope envelope,
+            long generation,
+            IpcReceiptCorrelation.Stage stage) {
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(envelope, "envelope");
         Objects.requireNonNull(stage, "stage");
-        CompletableFuture<IpcReceiptCorrelation.Stage> done = null;
+        // Allocate before any irreversible ledger mutation.
+        VerifiedCompletion publication = new VerifiedCompletion(stage);
         synchronized (gate) {
             requirePhysicalTransport(owner, envelope, generation);
             correlations.acceptVerified(envelope, stage);
             if (stage != IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED) {
-                done = completions.remove(envelope.messageSequence());
+                var done = completions.remove(envelope.messageSequence());
                 if (done == null) {
                     throw new IllegalStateException("missing host completion");
                 }
+                publication.attach(done);
             }
         }
-        if (done != null) completeExactlyOnce(done, stage);
+        return publication;
     }
 
     /**
