@@ -432,7 +432,7 @@ detaches once. A subsequent settlement attempt is still a duplicate.
 
 Two staged host JUnit cases cover asynchronous and synchronous invalid
 rejection. The host suite now contains **23** tests and the guest
-Future-constructor suite **19** tests. A Java 21 **isolated surrogate**
+Future-constructor suite **20** tests. A Java 21 **isolated surrogate**
 with a copied `StagedCallback` state machine passed null rejection,
 terminal reference clearing, duplicate rejection and 5,000 concurrent
 arm/revoke/settle races; these are **not** Maven/JUnit results from the
