@@ -4089,6 +4089,21 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private OresFuture<?> guestFuture(OresObject object, Env env) {
+            if (object.klass.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalStateException(
+                        "actor state may not be projected as HasFuture; await an ActorRef instead");
+            }
+            // Recheck the effective runtime override. A base implementation
+            // cannot prove that an inherited dynamic override remains pure.
+            Ast.MethodDecl projection = object.owner.findMethod(
+                    object.klass, CallableSelector.instance("get_future", 0));
+            if (projection == null || projection.isStatic()
+                    || projection.async() || projection.suspends()
+                    || projection.isAbstract()
+                    || projection.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalStateException(
+                        "HasFuture.get_future() must be a public synchronous method");
+            }
             // The synchronous projection may run guest code. Guard checks
             // precede invocation, so side effects cannot bypass borrow rules.
             if (env.hasLiveMutexGuards()) {
