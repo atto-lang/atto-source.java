@@ -2453,6 +2453,20 @@ public final class OwnershipChecker {
         if (constructor.equals("Err") && subjectType.name().equals("Result") && subjectType.arguments().size() == 2) {
             return List.of(subjectType.arguments().get(1));
         }
+
+        int dot = constructor.lastIndexOf('.');
+        if (dot > 0 && dot < constructor.length() - 1) {
+            Ast.EnumDecl enumeration = findEnum(constructor.substring(0, dot));
+            if (enumeration == null
+                    || !subjectType.name().equals(qualifiedEnumName(enumeration))) {
+                return List.of();
+            }
+            Ast.EnumCase variant =
+                    enumCase(enumeration, constructor.substring(dot + 1));
+            if (variant != null && variant.payload() != null) {
+                return List.of(variant.payload());
+            }
+        }
         return List.of();
     }
 
