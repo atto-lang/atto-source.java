@@ -5052,6 +5052,33 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.NewExpr created,
                 List<Object> args,
                 Env env) {
+            if (created.type().name().equals("Future") && findClass("Future") == null) {
+                if (created.type().inferArguments() || created.type().arguments().size() != 1
+                        || args.size() != 1 || !(args.getFirst() instanceof OresObject provider)
+                        || provider.klass.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "new Future<T> requires exactly one non-actor async provider");
+                }
+                Ast.MethodDecl run = provider.owner.findMethod(
+                        provider.klass, CallableSelector.instance("run", 0));
+                if (run == null || !run.async() || run.suspends()
+                        || run.isAbstract() || run.isStatic()
+                        || run.visibility() != Ast.Visibility.PUBLIC
+                        || !run.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "Future<T> provider must have public async run(): T");
+                }
+                // Running an async source method already yields one owned
+                // OresFuture<T>. Reuse that completion directly: never
+                // materialize Future<Future<T>> or execute run() inline on a
+                // foreign callback thread.
+                Object result = provider.owner.callMethod(provider, run, List.of());
+                if (!(result instanceof OresFuture<?> pending)) {
+                    throw new IllegalStateException(
+                            "async Future constructor provider did not return an OresFuture");
+                }
+                return pending;
+            }
             if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
                 if (created.type().inferArguments() || !created.type().arguments().isEmpty() || args.size() > 1)
                     throw new IllegalArgumentException("HttpResponse requires zero or one string body");
