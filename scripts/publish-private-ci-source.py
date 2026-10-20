@@ -9,6 +9,7 @@ import base64
 from datetime import datetime
 import hashlib
 import json
+import math
 import os
 import stat
 from pathlib import Path
@@ -155,9 +156,16 @@ def gh_api(route, method="GET", payload=None):
     def reject_constant(value):
         raise Denied("authenticated GitHub API JSON contains a nonfinite constant")
 
+    def finite_float(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise Denied("authenticated GitHub API JSON contains a nonfinite number")
+        return number
+
     try:
         data = json.loads(p.stdout, object_pairs_hook=unique_fields,
-                          parse_constant=reject_constant)
+                          parse_constant=reject_constant,
+                          parse_float=finite_float)
     except json.JSONDecodeError as exc:
         raise Denied("invalid GitHub API JSON response") from exc
     # The documented PR reviews endpoint returns a list, not a JSON object.
