@@ -90,6 +90,52 @@ final class EntryStructuralGuestSafetyTest {
     }
 
     @Test
+    void structuralMatchersNeverCallForeignMapCallbacks() throws Exception {
+        GuestEquality g = guest();
+        Class<?> evaluatorType = g.evaluator().getClass();
+        Method carrier = evaluatorType.getDeclaredMethod(
+                "isStructuralValueCarrier", Object.class);
+        Method lookup = evaluatorType.getDeclaredMethod(
+                "publicStructuralMember", Object.class, String.class);
+        Method structural = evaluatorType.getDeclaredMethod(
+                "structuralAggregateMatches", Object.class, Map.class);
+        carrier.setAccessible(true);
+        lookup.setAccessible(true);
+        structural.setAccessible(true);
+        java.util.concurrent.atomic.AtomicInteger calls =
+                new java.util.concurrent.atomic.AtomicInteger();
+        Map<Object, Object> hostileMap = new AbstractMap<>() {
+            @Override public boolean containsKey(Object key) {
+                calls.incrementAndGet();
+                throw new AssertionError("foreign map containsKey callback");
+            }
+            @Override public Object get(Object key) {
+                calls.incrementAndGet();
+                throw new AssertionError("foreign map get callback");
+            }
+            @Override public Set<Entry<Object, Object>> entrySet() {
+                calls.incrementAndGet();
+                throw new AssertionError("foreign map entrySet callback");
+            }
+        };
+        assertFalse((boolean) carrier.invoke(g.evaluator(), hostileMap));
+        assertFalse((boolean) structural.invoke(g.evaluator(), hostileMap, Map.of()));
+        LinkedHashMap<String, Ast.TypeRef> required = new LinkedHashMap<>();
+        // An invalid type must never be read: the foreign Map is rejected
+        // before the matcher can inspect any member or call a callback.
+        required.put("id", null);
+        assertFalse((boolean) structural.invoke(g.evaluator(), hostileMap, required));
+        assertNotNull(lookup.invoke(g.evaluator(), hostileMap, "id"));
+        assertEquals(0, calls.get());
+
+        LinkedHashMap<String, Object> trusted = new LinkedHashMap<>();
+        trusted.put("id", 1L);
+        assertTrue((boolean) carrier.invoke(g.evaluator(), trusted));
+        assertTrue((boolean) structural.invoke(g.evaluator(), trusted, Map.of()));
+        assertTrue((boolean) carrier.invoke(g.evaluator(), ActorRuntime.freeze(trusted)));
+    }
+
+    @Test
     void actorFrozenMapsRemainReadonlyAndComparable() throws Exception {
         GuestEquality g = guest();
         LinkedHashMap<Object, Object> original = new LinkedHashMap<>();
