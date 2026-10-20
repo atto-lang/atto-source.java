@@ -624,8 +624,24 @@ val first = values[0];
 
 Tuples preserve per-position static types. Parenthesized tuple literals and
 list-backed values returned against a finite tuple type both retain the declared
-positional types. Bare finite tuple syntax remains the compact form; the named
-`Tuple<...>[...]` form is used when storage metadata is needed.
+positional types. `tuple {x, y}` is the explicit positional tuple literal;
+`(x, y)` is its compact equivalent. `()` and `tuple {}` are empty tuples;
+`(x,)` and `tuple {x}` are singleton tuples. By contrast, `(x)` is grouping,
+not a tuple, and `tuple(x)` is an ordinary callable invocation (subject to the
+legacy direct-call compatibility builtin when no user callable named `tuple`
+exists). The named `Tuple<...>[...]` form is used when storage metadata is needed.
+
+Tuple match patterns mirror the literal forms: `tuple {a, b}` or `(a, b)`;
+the singleton requires `(a,)` when using parentheses. Both `()` and
+`tuple {}` match only a zero-arity tuple. Tuple patterns are statically
+restricted to tuples and must not silently match Array/List or nominal Entry
+values. Parenthesized groupings remain unaffected.
+
+A zero-arity tuple has no element type. Until the compiler supports an explicit
+bottom/`Never` type for zero-iteration loops, `for ... of ()` and
+`for ... of tuple {}` are rejected at type checking rather than exposing a
+permissive `Unknown` element binding. Use an explicitly typed empty Array/List
+when an iterable of known element type is required.
 
 ```ores
 val pair = (1, "one");

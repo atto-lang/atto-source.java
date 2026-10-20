@@ -6672,6 +6672,15 @@ public final class TypeChecker {
         iterable = receiverDispatchType(iterable);
         if (iterable instanceof ListType list) return list.element();
         if (iterable instanceof Tuple tuple) {
+            // A zero-arity tuple has no element type. Returning permissive
+            // Unknown lets an unreachable for-of body silently typecheck
+            // invalid narrowing and capability-sensitive operations.
+            // Reject until the compiler represents empty iteration with
+            // a bottom/Never element type.
+            if (tuple.elements().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "for-of cannot infer an element type from an empty tuple; use a typed empty array/list");
+            }
             Type result = Unknown.INSTANCE;
             for (Type element : tuple.elements()) {
                 result = result == Unknown.INSTANCE

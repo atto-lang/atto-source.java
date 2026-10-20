@@ -2964,11 +2964,22 @@ public final class Parser {
             return new Ast.TypePattern(target, binding);
         }
 
+        // A tuple pattern uses the same finite arity as a tuple literal.
+        // Braces are explicit; parentheses require a comma except for ().
+        if (isContextualIdentifier("tuple") && checkNext(LBRACE)) {
+            advance();
+            consume(LBRACE, "expected '{' after tuple pattern");
+            List<Ast.Pattern> elements = parseTuplePatternItemsUntil(RBRACE);
+            consume(RBRACE, "expected '}' after tuple pattern");
+            return new Ast.TuplePattern(elements);
+        }
         if (match(LPAREN)) {
+            if (match(RPAREN)) return new Ast.TuplePattern(List.of());
+            Ast.Pattern first = parsePattern();
+            consume(COMMA, "parenthesized tuple patterns require a comma; use (x,) for a singleton");
             List<Ast.Pattern> elements = new ArrayList<>();
-            elements.add(parsePattern());
-            consume(COMMA, "tuple match patterns require at least two elements");
-            do elements.add(parsePattern()); while (match(COMMA));
+            elements.add(first);
+            if (!check(RPAREN)) elements.addAll(parseTuplePatternItemsUntil(RPAREN));
             consume(RPAREN, "expected ')' after tuple match pattern");
             return new Ast.TuplePattern(elements);
         }
@@ -3665,6 +3676,9 @@ public final class Parser {
         if (check(PIPE)) return parsePipeLambda(false);
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
         if (match(LPAREN)) {
+            // In expression position () is the zero-element tuple. Lambda
+            // lookahead above still owns () -> ... before this fallback.
+            if (match(RPAREN)) return new Ast.TupleExpr(List.of());
             Ast.Expr first = parseExpression();
             if (match(COMMA)) {
                 List<Ast.Expr> items = new ArrayList<>();
@@ -3844,6 +3858,17 @@ public final class Parser {
         List<Ast.Expr> items = new ArrayList<>();
         while (true) {
             items.add(parseExpression());
+            if (!match(COMMA) || check(terminator)) break;
+        }
+        return items;
+    }
+
+    /** Tuple patterns admit zero elements, singletons, and trailing commas. */
+    private List<Ast.Pattern> parseTuplePatternItemsUntil(Token.Type terminator) {
+        if (check(terminator)) return List.of();
+        List<Ast.Pattern> items = new ArrayList<>();
+        while (true) {
+            items.add(parsePattern());
             if (!match(COMMA) || check(terminator)) break;
         }
         return items;
