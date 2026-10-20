@@ -30,17 +30,35 @@ public final class TrapFailurePolicy {
 
     public static boolean isTrappable(
             RuntimeException failure, Class<? extends Throwable> panicType) {
-        return permits(failure, panicType, false);
+        return isTrappable(failure, panicType, null);
+    }
+
+    /**
+     * Only the evaluator may pass its dedicated, final cast-error class as
+     * guest-origin evidence. In contrast, public Throwable stack traces and
+     * ordinary JDK exception classes never prove interpreter provenance.
+     */
+    public static boolean isTrappable(
+            RuntimeException failure, Class<? extends Throwable> panicType,
+            Class<? extends Throwable> guestCastErrorType) {
+        return permits(failure, panicType, guestCastErrorType, false);
     }
 
     public static boolean isGuestCatchable(
             Throwable failure, Class<? extends Throwable> panicType) {
-        return permits(failure, panicType, true);
+        return isGuestCatchable(failure, panicType, null);
+    }
+
+    public static boolean isGuestCatchable(
+            Throwable failure, Class<? extends Throwable> panicType,
+            Class<? extends Throwable> guestCastErrorType) {
+        return permits(failure, panicType, guestCastErrorType, true);
     }
 
     private static boolean permits(
             Throwable failure,
             Class<? extends Throwable> panicType,
+            Class<? extends Throwable> guestCastErrorType,
             boolean explicitGuestCatch) {
         if (failure == null) return false;
 
@@ -75,7 +93,7 @@ public final class TrapFailurePolicy {
                     || current instanceof java.util.concurrent.CompletionException
                     || current instanceof java.util.concurrent.ExecutionException
                     || (explicitGuestCatch && current instanceof SecurityException)
-                    || isMappedGuestFailure(current))) {
+                    || isMappedGuestFailure(current, guestCastErrorType))) {
                 return false;
             }
             if (current.getCause() != null) pending.addLast(current.getCause());
@@ -90,25 +108,19 @@ public final class TrapFailurePolicy {
                 current = current.getCause()) {
             if (current instanceof GuestControlSignal.Throw) return true;
             if (current instanceof SecurityException) return explicitGuestCatch;
-            if (isMappedGuestFailure(current)) return true;
+            if (isMappedGuestFailure(current, guestCastErrorType)) return true;
         }
         return false;
     }
 
-    private static boolean isMappedGuestFailure(Throwable failure) {
-        // Throwable.setStackTrace() is public. A host/FFI exception can forge
-        // dev.oreslang.* frame names, and cannot become a guest throw merely
-        // because a Java exception's mutable diagnostic text says so.
-        // Ordinary JDK exceptions must be explicitly wrapped by a future
-        // trusted interpreter-origin mapper with real sealed provenance.
-        //
-        // Keep only the interpreter's dedicated cast-error type, and verify
-        // its actual runtime ClassLoader rather than trusting its string
-        // name alone. This intentional fail-closed restriction temporarily
-        // excludes unclassified host-JDK-like failures from trap/catch.
-        return failure.getClass().getName()
-                    .equals("dev.oreslang.nodes.OresEvalRootNode$OresCastError")
-                && failure.getClass().getClassLoader()
-                    == TrapFailurePolicy.class.getClassLoader();
+    private static boolean isMappedGuestFailure(
+            Throwable failure, Class<? extends Throwable> guestCastErrorType) {
+        // Exact JVM Class object identity is not user-controlled diagnostic
+        // text. A same-named class loaded elsewhere, a subclass, or a forged
+        // StackTraceElement cannot authorize trapping. Normal host/JDK
+        // exceptions require a distinct trusted mapper, not a frame-name
+        // prefix or a catch-all IllegalStateException classifier.
+        return guestCastErrorType != null
+                && failure.getClass() == guestCastErrorType;
     }
 }
