@@ -109,6 +109,25 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         with self.assertRaises(pub.Denied):
                             pub.gh_api("repos/trusted/ci")
 
+    def test_github_api_accepts_only_fixed_source_review_list_route(self):
+        route = (
+            f"repos/{pub.SOURCE_REPO}/pulls/1482/reviews?per_page=100"
+        )
+        response = Mock(
+            returncode=0,
+            stdout='[{"id":1,"state":"APPROVED"}]',
+            stderr="",
+        )
+        with (
+            patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"),
+            patch.dict(pub.os.environ, {"GH_TOKEN": "fixture"}, clear=True),
+            patch.object(pub.subprocess, "run", return_value=response),
+        ):
+            reviews = pub.gh_api(route)["reviews"]
+            self.assertEqual(reviews[0]["id"], 1)
+            with self.assertRaisesRegex(pub.Denied, "unexpected GitHub response shape"):
+                pub.gh_api("repos/trusted/ci")
+
     def test_preflight_is_data_only_and_never_executes_checkout_shell(self):
         with (
             patch.object(pub, "checked_repo", return_value={
