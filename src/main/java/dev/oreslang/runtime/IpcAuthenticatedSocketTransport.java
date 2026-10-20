@@ -221,20 +221,23 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     IpcReceiptCorrelation.Stage readVerifiedReceipt() throws IOException {
         RuntimeBlockingGuard.requireBlockingHostThread("IPC receipt read");
         try {
-            final byte[] frame;
+            // TCP receipt order is protocol order. Keep frame consumption,
+            // authentication, epoch validation and ledger transition under
+            // one receive gate so concurrent host readers cannot read ACK then
+            // COMMIT in order but apply those state transitions out of order.
             synchronized (readGate) {
-                frame = readReceiptWireFrame(input);
+                byte[] frame = readReceiptWireFrame(input);
+                DecodedReceipt receipt = decodeReceiptFrame(
+                        frame, connectionBinding, macKey);
+                if (receipt.physicalGeneration() != physicalGeneration) {
+                    throw new IOException("stale IPC physical transport generation");
+                }
+                requireTrustedEpoch(receipt.envelope());
+                receipts.acceptVerified(
+                        physicalOwner, receipt.envelope(),
+                        physicalGeneration, receipt.stage());
+                return receipt.stage();
             }
-            DecodedReceipt receipt = decodeReceiptFrame(
-                    frame, connectionBinding, macKey);
-            if (receipt.physicalGeneration() != physicalGeneration) {
-                throw new IOException("stale IPC physical transport generation");
-            }
-            requireTrustedEpoch(receipt.envelope());
-            receipts.acceptVerified(
-                    physicalOwner, receipt.envelope(),
-                    physicalGeneration, receipt.stage());
-            return receipt.stage();
         } catch (IOException | RuntimeException | Error failure) {
             // Authentication, framing, EOF and state-machine violations are
             // fatal to this physical session. Never continue parsing a
