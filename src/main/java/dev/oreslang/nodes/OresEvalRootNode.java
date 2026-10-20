@@ -5799,6 +5799,23 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
+            if (call.callee() instanceof Ast.MemberExpr qualifiedModel
+                    && qualifiedModel.receiver() instanceof Ast.NameExpr namespace
+                    && env.lookup(namespace.name()) == Env.MISSING) {
+                ModelGraphCompiler.CompiledModel model =
+                        modelCatalog.find(namespace.name() + "." + qualifiedModel.member());
+                if (model != null) {
+                    List<Object> configuration = evaluateArguments(call.arguments(), env);
+                    return invokableInvocation(
+                            ignored -> new ModelInstance(
+                                    this,
+                                    model,
+                                    model.bindConfiguration(configuration),
+                                    modelInstanceSequence.incrementAndGet()),
+                            List.of());
+                }
+            }
+
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 ModelGraphCompiler.CompiledModel model = modelCatalog.find(directName.name());
