@@ -223,4 +223,84 @@ final class ActorRuntimeSpawnLineageRollbackTest {
         }
     }
 
+
+    @Test
+    void failedRegistryRemovalBeforeMutationRetainsLiveChildLineage()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var observed = new CompletableFuture<Boolean>();
+            var parent = runtime.<Integer>spawnShared(
+                    IsolatePolicy.developer(), () -> (message, context) -> {
+                        try {
+                            context.runtime().<Integer>spawnShared(
+                                    child -> (value, childContext) -> { });
+                            observed.completeExceptionally(
+                                    new AssertionError("child admission must fail"));
+                        } catch (OutOfMemoryError expected) {
+                            observed.complete("after registered child put"
+                                    .equals(expected.getMessage()));
+                        }
+                    });
+            parent.getReady().get(5, TimeUnit.SECONDS);
+            Field registryField = access(ActorRuntime.class, "actors");
+            @SuppressWarnings("unchecked")
+            Map<Object, Object> original =
+                    (Map<Object, Object>) registryField.get(runtime);
+            var failPut = new AtomicBoolean(false);
+            var failRemove = new AtomicBoolean(false);
+            var registry = new ConcurrentHashMap<Object, Object>() {
+                @Override public Object put(Object key, Object value) {
+                    Object previous = super.put(key, value);
+                    if (failPut.compareAndSet(true, false))
+                        throw new OutOfMemoryError("after registered child put");
+                    return previous;
+                }
+
+                @Override public boolean remove(Object key, Object value) {
+                    if (failRemove.compareAndSet(true, false))
+                        throw new OutOfMemoryError("before registered child removal");
+                    return super.remove(key, value);
+                }
+            };
+            registry.putAll(original);
+            failPut.set(true);
+            failRemove.set(true);
+            registryField.set(runtime, registry);
+            try {
+                parent.send(1);
+                assertTrue(observed.get(5, TimeUnit.SECONDS));
+                assertFalse(failRemove.get(),
+                        "runtime cleanup must attempt exact registry removal");
+                assertEquals(2, registry.size(),
+                        "failed pre-mutation removal must retain child registry owner");
+                assertEquals(1, parent.childIds().size(),
+                        "live registered child must remain in parent's lifecycle set");
+                AtomicInteger count = (AtomicInteger) access(
+                        ActorRuntime.class, "actorCount").get(runtime);
+                assertEquals(2, count.get(),
+                        "registered child must retain its runtime actor slot");
+
+                ActorRuntime.ActorRef<?> child = null;
+                for (Object cell : registry.values()) {
+                    ActorRuntime.ActorRef<?> candidate =
+                            (ActorRuntime.ActorRef<?>) access(
+                                    cell.getClass(), "ref").get(cell);
+                    if (!candidate.id().equals(parent.id())) child = candidate;
+                }
+                assertNotNull(child, "retain exact unreturned physical child");
+                child.stop();
+                assertTrue(child.awaitTermination(5, TimeUnit.SECONDS));
+                assertEquals(1, count.get(),
+                        "physical finalization refunds the child slot once");
+                assertTrue(parent.childIds().isEmpty(),
+                        "physical finalization owns parent unlink");
+                assertEquals(1, registry.size());
+            } finally {
+                registryField.set(runtime, original);
+            }
+            parent.stop();
+            assertTrue(parent.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
 }
