@@ -66,6 +66,18 @@ public final class TrapFailurePolicy {
             if (!explicitGuestCatch && current instanceof SecurityException) {
                 return false;
             }
+            // The presence of one authentic guest Throw elsewhere in the
+            // cause graph cannot launder an unrelated HOST exception through
+            // a suppressed cleanup edge. Only known transparent wrappers,
+            // an explicit guest signal, or a trusted mapped interpreter
+            // error may cross this boundary. Fail closed on everything else.
+            if (!(current instanceof GuestControlSignal.Throw
+                    || current instanceof java.util.concurrent.CompletionException
+                    || current instanceof java.util.concurrent.ExecutionException
+                    || (explicitGuestCatch && current instanceof SecurityException)
+                    || isMappedGuestFailure(current))) {
+                return false;
+            }
             if (current.getCause() != null) pending.addLast(current.getCause());
             for (Throwable suppressed : current.getSuppressed()) pending.addLast(suppressed);
         }
