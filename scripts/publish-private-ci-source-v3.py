@@ -30,6 +30,9 @@ SPEC.loader.exec_module(legacy)
 
 Denied = legacy.Denied
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+HANDOFF_REF = re.compile(
+    r"^ci/(?:oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}|authorized-[0-9a-f]{40})$"
+)
 CONTRACT_PATH = ".github/private-ci-carrier-contracts.json"
 RECEIPT_PATH = "ci/oreslang-receipt.json"
 RECEIPT_SCHEMA = "ores-private-ci-receipt-v3"
@@ -344,13 +347,15 @@ def authorize_write(root, repository, approved_policy, contract):
 
 
 def _gh_ref_request(repository, ref_name, method):
-    if (not isinstance(ref_name, str) or not ref_name.startswith("ci/")
-            or not legacy.BRANCH.fullmatch(ref_name)):
+    if not isinstance(ref_name, str) or not HANDOFF_REF.fullmatch(ref_name):
         raise Denied("ref cleanup target is invalid")
+    if method not in ("GET", "DELETE"):
+        raise Denied("ref cleanup method is invalid")
     encoded = ref_name.replace("/", "%2F")
+    family = "ref" if method == "GET" else "refs"
     argv = [
         "gh", "api", "--method", method,
-        f"repos/{repository}/git/ref/heads/{encoded}",
+        f"repos/{repository}/git/{family}/heads/{encoded}",
         "--header", "Accept: application/vnd.github+json",
     ]
     env = dict(os.environ, GH_HOST="github.com", GH_PROMPT_DISABLED="1")
