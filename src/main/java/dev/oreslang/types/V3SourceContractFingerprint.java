@@ -59,12 +59,22 @@ public final class V3SourceContractFingerprint {
                     DefaultArgumentPolicy.Literal value = formal.defaultValue();
                     out.writeBoolean(value != null);
                     if (value != null) {
-                        out.writeByte(value.kind().ordinal());
+                        // Fixed wire tags, never enum.ordinal(): a Java enum
+                        // reorder must not silently change this contract.
                         switch (value.kind()) {
-                            case INT -> out.writeLong((Long) value.value());
-                            case BOOL -> out.writeBoolean((Boolean) value.value());
-                            case STRING -> string(out, (String) value.value());
-                            case NONE -> { } // None is not an absent default
+                            case INT -> {
+                                out.writeByte(1);
+                                out.writeLong((Long) value.value());
+                            }
+                            case BOOL -> {
+                                out.writeByte(2);
+                                out.writeBoolean((Boolean) value.value());
+                            }
+                            case STRING -> {
+                                out.writeByte(3);
+                                string(out, (String) value.value());
+                            }
+                            case NONE -> out.writeByte(4); // not an absent default
                         }
                     }
                 }
@@ -88,6 +98,19 @@ public final class V3SourceContractFingerprint {
     }
 
     private static void string(DataOutputStream out, String value) throws IOException {
+        // String#getBytes silently replaces malformed UTF-16. Reject it
+        // instead: two distinct source strings must not hash to one byte form.
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (Character.isHighSurrogate(ch)) {
+                if (i + 1 >= value.length() || !Character.isLowSurrogate(value.charAt(i + 1))) {
+                    throw new IllegalArgumentException("unpaired UTF-16 high surrogate in v3 contract");
+                }
+                i++;
+            } else if (Character.isLowSurrogate(ch)) {
+                throw new IllegalArgumentException("unpaired UTF-16 low surrogate in v3 contract");
+            }
+        }
         byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
         out.writeInt(bytes.length);
         out.write(bytes);
