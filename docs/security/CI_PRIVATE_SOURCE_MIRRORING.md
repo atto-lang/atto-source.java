@@ -73,8 +73,9 @@ scripts/run-in-private-ci-destination.sh opto-sync-test/go-java-validation \
 ```
 
 The caller does not choose the executable carrier branch. After proving the
-complete source Git tree, the dispatcher derives exactly
-`ci/oreslang-<SOURCE_ROOT_TREE_SHA>`. The exact source commit must also be
+complete source Git tree, the dispatcher generates a fresh 128-bit handoff
+nonce and derives exactly
+`ci/oreslang-<SOURCE_ROOT_TREE_SHA>-<HANDOFF_NONCE>`. The exact source commit must also be
 the current head of the named open PR against source `main`. V3 validates
 that relationship both before reading/uploading the source and again immediately
 before creating executable carrier refs, so a PR that advances or closes during
@@ -93,11 +94,13 @@ snapshots while preserving unrelated destination workflows and files.
 The v3 dispatcher creates a canonical `ores-private-ci-receipt-v3` that
 binds source repository ID, PR number/head SHA/root-tree SHA, manifest SHA-256,
 destination repository ID and reviewed base commit, immutable carrier workflow
-blob, reviewed test-plan digest, and a 24-hour expiry. The receipt digest is
-bound into the carrier commit message. It then creates a **new**
-`ci/oreslang-<SOURCE_ROOT_TREE_SHA>` ref and the exact
-`ci/authorized-<CARRIER_COMMIT_SHA>` dispatcher authorization ref required
-by the carrier. Existing branches, including `main`, are never updated.
+blob, reviewed test-plan digest, and a 24-hour expiry. The receipt includes the same handoff nonce, and both the receipt digest and
+nonce are bound into the carrier commit message. It then creates a **new**
+`ci/oreslang-<SOURCE_ROOT_TREE_SHA>-<HANDOFF_NONCE>` payload ref and the exact
+`ci/authorized-<CARRIER_COMMIT_SHA>-<HANDOFF_NONCE>` dispatcher authorization
+ref required by the carrier. Existing branches, including `main`, are never
+updated. Reusing a deterministic source-tree ref is forbidden: retries receive
+a new nonce-scoped namespace.
 
 The reviewed carrier base must itself be source-free: neither
 `private-oreslang-source/` nor `ci/oreslang-receipt.json` may already be
@@ -127,12 +130,20 @@ unrelated carrier paths are absent both from the worktree and from the local Git
 object database. The pinned workflow blob is part of the protected carrier
 contract, so replacing this isolation logic requires a new source-policy review.
 
-Reference cleanup is deliberately privilege-separated: the source-executing job
-does **not** receive write permission. A separate no-checkout cleanup job may
-receive narrowly scoped `contents: write` solely to verify and remove the exact
-`ci/authorized-<COMMIT>` and `ci/oreslang-<TREE>` refs after the run, including
-failed runs. Moving either ref causes cleanup to fail closed rather than delete
-an unexpected target.
+The publisher itself has **no ref-delete capability**. GitHub's ref DELETE API
+does not support compare-and-delete, so an inline `GET exact SHA -> DELETE`
+rollback has an unavoidable race and is not an authorization primitive. A
+failed handoff can therefore leave a nonce-scoped payload ref; without its
+matching authorization ref it is inert.
+
+Reference cleanup, if enabled, is deliberately privilege-separated: the
+source-executing job does **not** receive write permission. A separate
+no-checkout cleanup path may receive narrowly scoped `contents: write` only
+under an independently controlled/exclusive writer policy and only for the
+exact nonce-scoped
+`ci/authorized-<COMMIT>-<NONCE>` and
+`ci/oreslang-<TREE>-<NONCE>` pair. Cleanup must treat any identity/SHA/nonce
+drift as an incident rather than attempting a destructive recovery.
 
 Deleting refs is hygiene, not erasure. Uploaded Git objects can remain retained
 and recoverable after the refs disappear. Destination authorization therefore
