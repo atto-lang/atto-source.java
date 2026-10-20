@@ -134,7 +134,19 @@ public class TaskScopeTest {
                     new IllegalStateException("loan retirement failed");
             TaskHandle<Integer> child = scope.startTask(
                     resume -> OresScheduler.done(3),
-                    () -> { throw retirementFailure; });
+                    new TaskScope.RetirementHook<>() {
+                        @Override
+                        public void retireNeverStarted(TaskScope actualScope) {
+                            fail("completed child must use physical retirement");
+                        }
+
+                        @Override
+                        public void retireAfterPhysicalQuiescence(
+                                TaskScope actualScope, TaskHandle<Integer> actualChild) {
+                            assertSame(scope, actualScope);
+                            throw retirementFailure;
+                        }
+                    });
 
             assertEquals(new TaskHandle.Success<>(3),
                     child.getDone().get(3, TimeUnit.SECONDS));
