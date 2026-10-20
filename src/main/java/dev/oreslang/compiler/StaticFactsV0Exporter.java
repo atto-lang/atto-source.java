@@ -61,7 +61,9 @@ public final class StaticFactsV0Exporter {
             if (!module.annotations().isEmpty() || !module.contracts().isEmpty()) {
                 throw unsupported("module annotations and contracts");
             }
-            if (module.declarations().size() > 10_000) throw unsupported("too many procedures");
+            if (module.declarations().isEmpty() || module.declarations().size() > 10_000) {
+                throw unsupported("empty or oversized procedure collection");
+            }
             for (Ast.Decl decl : module.declarations()) {
                 if (!(decl instanceof Ast.FunctionDecl fn)) {
                     throw unsupported("non-function declaration " + decl.getClass().getSimpleName());
