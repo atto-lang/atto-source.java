@@ -563,9 +563,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      * scheduler suspension ABI rather than calling join on a carrier.
      */
     public T join() {
-        Object observed = state.get();
+        Object observed = runtimeTerminalStateOrNull();
         boolean interrupted = false;
-        if (observed == PENDING) {
+        if (observed == null) {
             requireBlockingAllowed();
             java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
             whenCompleteRuntime((value, failure) -> done.countDown());
@@ -577,7 +577,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                     interrupted = true;
                 }
             }
-            observed = state.get();
+            observed = runtimeTerminalStateOrNull();
+            if (observed == null) {
+                throw new IllegalStateException(
+                        "Future notification ran before cancellation revocation completed");
+            }
         }
         if (interrupted) Thread.currentThread().interrupt();
         return reportJoin(observed);
@@ -687,10 +691,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     private Object awaitState(long timeout, TimeUnit unit) throws InterruptedException {
-        Object observed = state.get();
-        if (observed != PENDING) return observed;
-        // Zero-timeout polling observes state without registering an actor waiter.
-        // The public timed-get API rejects negative timeouts.
+        Object observed = runtimeTerminalStateOrNull();
+        if (observed != null) return observed;
+        // Zero-timeout polling observes only a fully usable terminal state.
+        // A cancellation CAS whose producer revoker is still running remains
+        // unavailable, just like scheduler/select readiness.
         if (unit != null && timeout == 0L) return PENDING;
         requireBlockingAllowed();
 
@@ -702,10 +707,17 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 done.await();
             } else if (!done.await(timeout, unit)) {
                 // Timed polling must not retain one producer waiter per
-                // timeout until the producer eventually settles.
-                return state.get();
+                // timeout until the producer eventually settles. Cancellation
+                // is not terminally observable until revocation is complete.
+                Object terminal = runtimeTerminalStateOrNull();
+                return terminal == null ? PENDING : terminal;
             }
-            return state.get();
+            Object terminal = runtimeTerminalStateOrNull();
+            if (terminal == null) {
+                throw new IllegalStateException(
+                        "Future notification ran before cancellation revocation completed");
+            }
+            return terminal;
         } finally {
             // An interrupted host waiter is also no longer interested in
             // settlement. The claimed flag arbitrates with completion drain.

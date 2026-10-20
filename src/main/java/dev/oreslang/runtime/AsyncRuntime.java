@@ -205,7 +205,7 @@ public final class AsyncRuntime implements AutoCloseable {
      */
     public static <T> T await(OresFuture<T> future) {
         Objects.requireNonNull(future, "future");
-        if (!future.isDone()
+        if (future.runtimeTerminalStateOrNull() == null
                 && (ActorRuntime.inActorExecution() || OresScheduler.current() != null)) {
             throw new IllegalStateException(
                     "await would block an Ores scheduler/actor carrier; continuation lowering must suspend/resume the logical turn");
