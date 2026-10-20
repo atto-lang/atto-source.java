@@ -190,7 +190,7 @@ final class OresTaskScopeTest {
             OresTaskScope scope = new OresTaskScope(scheduler);
             CountDownLatch childEntered = new CountDownLatch(1);
             CountDownLatch releaseChild = new CountDownLatch(1);
-            CountDownLatch subscriberEntered = new CountDownLatch(3);
+            CountDownLatch subscriberEntered = new CountDownLatch(1);
             CountDownLatch releaseSubscriber = new CountDownLatch(1);
 
             OresFuture<Integer> child = scope.fork(resume -> {
@@ -228,7 +228,7 @@ final class OresTaskScopeTest {
             OresTaskScope scope = new OresTaskScope(scheduler);
             CountDownLatch entered = new CountDownLatch(3);
             CountDownLatch releaseTasks = new CountDownLatch(1);
-            CountDownLatch subscriberEntered = new CountDownLatch(1);
+            CountDownLatch subscriberEntered = new CountDownLatch(3);
             CountDownLatch releaseSubscribers = new CountDownLatch(1);
             java.util.List<OresFuture<Integer>> children = new java.util.ArrayList<>();
 
