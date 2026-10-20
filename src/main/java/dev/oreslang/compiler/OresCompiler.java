@@ -15,6 +15,15 @@ public final class OresCompiler {
         return analyze(Parser.parse(source));
     }
 
+    /**
+     * Inspects field-selection syntax from genuine parsed and type/ownership-
+     * checked Oreslang. The result is deliberately incomplete for performance
+     * decisions: real physical layout, loop hotness and alias proofs are absent.
+     */
+    public static TypedLayoutAccessEvidence.Report inspectLayoutAccesses(String source) {
+        return TypedLayoutAccessEvidence.inspectSource(source);
+    }
+
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
