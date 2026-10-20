@@ -1383,19 +1383,24 @@ public final class OresEvalRootNode extends RootNode {
                         "scoped Task execution inside actors is disabled until actor quota/hot-reload integration is proven");
             }
 
-            Env captured = caller.taskProjection(admitted);
-            TaskTransferLease lease = TaskTransferLease.retain(admitted, captured);
+            // Reserve structured-lifetime authority before consuming any
+            // runtime ownership slots. A cancellation/close race can reject
+            // reserve(); that must leave the caller's values untouched.
             TaskScope.Registration child = scope == null
                     ? null : scope.reserve(caller.taskScopeParent);
-            captured.taskScopeParent = child;
-            Runnable physicalRetirement = () -> {
-                // Ownership release is the stronger authority. A future
-                // implementation that can fail retirement must fail closed
-                // before publishing the scope-quiescence witness.
-                lease.retire();
-                if (child != null) child.quiesced();
-            };
+            TaskTransferLease lease = null;
             try {
+                Env captured = caller.taskProjection(admitted);
+                lease = TaskTransferLease.retain(admitted, captured);
+                captured.taskScopeParent = child;
+                TaskTransferLease retainedLease = lease;
+                Runnable physicalRetirement = () -> {
+                    // Ownership release is the stronger authority. A future
+                    // implementation that can fail retirement must fail closed
+                    // before publishing the scope-quiescence witness.
+                    retainedLease.retire();
+                    if (child != null) child.quiesced();
+                };
                 OresFuture<Object> future = startSourceBlockTask(
                         task.body(),
                         captured,
@@ -1404,9 +1409,9 @@ public final class OresEvalRootNode extends RootNode {
                 if (child != null) child.attach(future);
                 return future;
             } catch (RuntimeException | Error failure) {
-                // No runtime child can retain this transfer after a
-                // pre-admission failure. Both operations are idempotent.
-                lease.retire();
+                // reserve() succeeded, so every later pre-admission failure
+                // must retire both the transfer retention and the scope ticket.
+                if (lease != null) lease.retire();
                 if (child != null) child.failedAdmission(failure);
                 throw failure;
             }
