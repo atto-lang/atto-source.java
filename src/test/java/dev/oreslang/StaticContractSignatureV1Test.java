@@ -291,6 +291,22 @@ final class StaticContractSignatureV1Test {
     }
 
     @Test
+    void staticContractsAreSameSourceUnitOnlyInV1() {
+        String source = """
+                import contract Factory from "./factory.ores";
+
+                define class Widget implements static Factory as
+                    pub static fnc create(int id) -> int {
+                        return id;
+                    }
+                end
+                """;
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void inheritedStaticFunctionDoesNotImplicitlySatisfyV1Contract() {
         String source = """
                 define static contract Factory as
