@@ -1322,7 +1322,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 v3.legacy, "github_api_environment",
                 return_value={"GH_TOKEN": "fixture", "PATH": "/usr/bin:/bin"},
             ),
-            patch.object(v3.subprocess, "run", return_value=response) as run,
+            patch.object(v3.legacy, "run_bounded_gh", return_value=response) as run,
         ):
             self.assertIs(
                 v3._gh_ref_request("trusted/ci", ref_name, "GET"),
@@ -1346,7 +1346,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 v3.legacy, "github_api_environment",
                 return_value={"GH_TOKEN": "fixture", "PATH": "/usr/bin:/bin"},
             ),
-            patch.object(v3.subprocess, "run", return_value=response) as run,
+            patch.object(v3.legacy, "run_bounded_gh", return_value=response) as run,
         ):
             self.assertIs(
                 v3._gh_ref_request("trusted/ci", ref_name, "DELETE"),
@@ -1371,7 +1371,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 v3.legacy, "github_api_environment",
                 return_value={"GH_TOKEN": "fixture", "PATH": "/usr/bin:/bin"},
             ),
-            patch.object(v3.subprocess, "run", return_value=response) as run,
+            patch.object(v3.legacy, "run_bounded_gh", return_value=response) as run,
         ):
             v3._gh_ref_request("trusted/ci", ref_name, "GET")
         self.assertEqual(run.call_args.args[0][0], "/usr/bin/gh")
@@ -1398,7 +1398,7 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             for response in payloads:
                 with self.subTest(stdout=response.stdout, stderr=response.stderr):
-                    with patch.object(v3.subprocess, "run", return_value=response):
+                    with patch.object(v3.legacy, "run_bounded_gh", return_value=response):
                         with self.assertRaisesRegex(v3.Denied, "exceeds size limit"):
                             v3._gh_ref_request("trusted/ci", ref_name, "GET")
 
@@ -1412,7 +1412,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 v3.legacy, "github_api_environment",
                 return_value={"GH_TOKEN": "fixture", "PATH": "/usr/bin:/bin"},
             ),
-            patch.object(v3.subprocess, "run", return_value=response),
+            patch.object(v3.legacy, "run_bounded_gh", return_value=response),
         ):
             self.assertIs(v3._gh_ref_request("trusted/ci", ref_name, "GET"), response)
 
