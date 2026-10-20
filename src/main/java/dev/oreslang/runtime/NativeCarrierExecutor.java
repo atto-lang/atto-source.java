@@ -49,6 +49,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private static final long AFFINITY_STEAL_GRACE_NANOS = TimeUnit.MILLISECONDS.toNanos(5);
     private static final int LOCAL_AFFINITY_BURST = 8;
     private static final int MAX_STEAL_PROBES = 8;
+    private static final int MAX_LOCALITY_PEER_PROBES = 64;
 
     private final ArrayBlockingQueue<Runnable> queue;
     private final List<ArrayBlockingQueue<Runnable>> affinityQueues;
@@ -326,20 +327,21 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         int enabled = Math.max(1, corePoolSize.get());
         if (enabled <= 1) return null;
 
-        int maxProbes = Math.min(enabled - 1, MAX_STEAL_PROBES);
+        int maxProbes = boundedCandidateCount(enabled, MAX_STEAL_PROBES);
         int start = Math.floorMod(nextStealVictim.getAndIncrement(), enabled);
         int thiefCpu = carrierAffinityTargets.get(thiefSlot);
-        int probes = 0;
 
-        // Preserve locality when possible: same logical CPU/cache domain, same
-        // NUMA node, then remote/unknown. This remains a preference only.
-        for (int rank = 0; rank <= 3 && probes < maxProbes; rank++) {
-            for (int examined = 0; examined < enabled && probes < maxProbes; examined++) {
-                int victimSlot = (start + examined) % enabled;
+        // Inspect the SAME bounded rotating candidate window at each rank.
+        // Counting only matching victims made the old loop O(pool size) for
+        // a rare locality rank, despite the nominal eight-probe limit.
+        for (int rank = 0; rank <= 3; rank++) {
+            int examined = 0;
+            for (int offset = 0; examined < maxProbes; offset++) {
+                int victimSlot = wrappedSlot(start, offset, enabled);
                 if (victimSlot == thiefSlot) continue;
+                examined++;
                 int victimCpu = carrierAffinityTargets.get(victimSlot);
                 if (topology.localityRank(thiefCpu, victimCpu) != rank) continue;
-                probes++;
 
                 ArrayBlockingQueue<Runnable> victim = affinityQueues.get(victimSlot);
                 if (victim.peek() == null) continue;
@@ -361,6 +363,21 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         return null;
     }
 
+    static int boundedCandidateCount(int enabled, int limit) {
+        if (enabled < 1 || limit < 1) {
+            throw new IllegalArgumentException("invalid carrier probe budget");
+        }
+        return Math.min(enabled - 1, limit);
+    }
+
+    static int wrappedSlot(int first, int offset, int enabled) {
+        if (enabled < 1 || first < 0 || first >= enabled
+                || offset < 0 || offset > enabled) {
+            throw new IllegalArgumentException("invalid carrier slot offset");
+        }
+        return (int) (((long) first + offset) % enabled);
+    }
+
     private int tryEnqueueLocalityPeer(Runnable task, int preferredSlot) {
         int enabled = Math.max(1, corePoolSize.get());
         if (enabled <= 1 || preferredSlot < 0 || preferredSlot >= enabled) return -1;
@@ -368,9 +385,10 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         if (!topology.hasKnownLocality(preferredCpu)) return -1;
 
         int threshold = localBacklogEscapeThreshold();
+        int maxPeers = boundedCandidateCount(enabled, MAX_LOCALITY_PEER_PROBES);
         for (int rank = 1; rank <= 2; rank++) {
-            for (int offset = 1; offset < enabled; offset++) {
-                int candidate = (preferredSlot + offset) % enabled;
+            for (int offset = 1; offset <= maxPeers; offset++) {
+                int candidate = wrappedSlot(preferredSlot, offset, enabled);
                 int candidateCpu = carrierAffinityTargets.get(candidate);
                 if (topology.localityRank(preferredCpu, candidateCpu) != rank) continue;
                 ArrayBlockingQueue<Runnable> lane = affinityQueues.get(candidate);
