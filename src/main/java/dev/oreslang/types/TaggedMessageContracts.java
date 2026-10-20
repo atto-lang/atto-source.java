@@ -63,6 +63,24 @@ public final class TaggedMessageContracts {
         Map<String, EnumType> enums = new LinkedHashMap<>();
         Map<String, Ast.PatternDecl> pending = new LinkedHashMap<>();
         Set<String> taken = new HashSet<>();
+
+        // Root-level nominal names are currently simple (not package-qualified)
+        // runtime/type symbols. Fail closed on any ordinary declaration that
+        // could shadow or be shadowed by that simple name.
+        Set<String> ordinaryNames = new HashSet<>();
+        for (Ast.ModuleDecl module : program.modules()) {
+            if (!module.name().equals(Parser.ROOT_MODULE)) ordinaryNames.add(module.name());
+            for (Ast.Decl other : module.declarations()) {
+                String ordinary = null;
+                if (other instanceof Ast.ClassDecl value) ordinary = value.name();
+                else if (other instanceof Ast.InterfaceDecl value) ordinary = value.name();
+                else if (other instanceof Ast.TypeAliasDecl value) ordinary = value.name();
+                else if (other instanceof Ast.FunctionDecl value) ordinary = value.name();
+                else if (other instanceof Ast.FieldDecl value) ordinary = value.name();
+                if (ordinary != null) ordinaryNames.add(ordinary);
+            }
+        }
+
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (!(declaration instanceof Ast.EnumDecl) && !(declaration instanceof Ast.PatternDecl)) continue;
@@ -70,12 +88,18 @@ public final class TaggedMessageContracts {
                     throw new IllegalArgumentException("enum/pattern declarations must currently be top-level");
                 }
                 String name = declaration instanceof Ast.EnumDecl e ? e.name() : ((Ast.PatternDecl) declaration).name();
-                if (!taken.add(name)) throw new IllegalArgumentException("duplicate enum/pattern name " + name);
+                if (!taken.add(name) || ordinaryNames.contains(name)) {
+                    throw new IllegalArgumentException(
+                            "ambiguous enum/pattern name conflicts with another declaration: " + name);
+                }
                 if (declaration instanceof Ast.PatternDecl p) {
                     pending.put(p.name(), p);
                     continue;
                 }
                 Ast.EnumDecl e = (Ast.EnumDecl) declaration;
+                if (e.cases().isEmpty() || e.cases().size() > 4096) {
+                    throw new IllegalArgumentException("enum must declare 1..4096 cases");
+                }
                 ArrayList<Case> cases = new ArrayList<>();
                 Set<String> caseNames = new HashSet<>();
                 Set<Integer> tags = new HashSet<>();
@@ -86,7 +110,15 @@ public final class TaggedMessageContracts {
                         throw new IllegalArgumentException("enum tags must be unique positive monotonically increasing integers");
                     }
                     previous = item.tag();
-                    cases.add(new Case(e.name(), item.name(), item.tag(), item.payload()));
+                    // This extraction exists only to unblock the closed
+                    // TrainingError<Result> fixture. Payload-bearing enums stay
+                    // disabled until the fuller #623 local-value guards and
+                    // ownership/runtime boundary are reconciled.
+                    if (item.payload() != null) {
+                        throw new IllegalArgumentException(
+                                "payload-bearing enums are not enabled by the minimal local nominal slice");
+                    }
+                    cases.add(new Case(e.name(), item.name(), item.tag(), null));
                 }
                 enums.put(e.name(), new EnumType(e.name(), cases));
             }
@@ -94,6 +126,9 @@ public final class TaggedMessageContracts {
         Registry stage = new Registry(enums, Map.of());
         Map<String, Domain> patterns = new LinkedHashMap<>();
         for (Ast.PatternDecl p : pending.values()) {
+            if (p.alternatives().isEmpty() || p.alternatives().size() > 4096) {
+                throw new IllegalArgumentException("pattern must declare 1..4096 alternatives");
+            }
             ArrayList<Case> cases = new ArrayList<>();
             Set<String> seen = new HashSet<>();
             for (String q : p.alternatives()) {

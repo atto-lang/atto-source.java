@@ -141,8 +141,18 @@ public final class TypeChecker {
                 else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
                 else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
                 else if (declaration instanceof Ast.TypeAliasDecl alias) localNames.add(alias.name());
-                else if (declaration instanceof Ast.EnumDecl enumDecl) localNames.add(enumDecl.name());
-                else if (declaration instanceof Ast.PatternDecl patternDecl) localNames.add(patternDecl.name());
+                else if (declaration instanceof Ast.EnumDecl enumDecl) {
+                    if (!localNames.add(enumDecl.name())) {
+                        throw new IllegalArgumentException(
+                                "enum name conflicts with a local, module, or builtin name: " + enumDecl.name());
+                    }
+                }
+                else if (declaration instanceof Ast.PatternDecl patternDecl) {
+                    if (!localNames.add(patternDecl.name())) {
+                        throw new IllegalArgumentException(
+                                "pattern name conflicts with a local, module, or builtin name: " + patternDecl.name());
+                    }
+                }
             }
         }
 
@@ -7661,6 +7671,15 @@ public final class TypeChecker {
                 yield new Function(args.subList(0, args.size() - 1), args.getLast());
             }
             default -> {
+                if (taggedMessages != null
+                        && (taggedMessages.enums().containsKey(ref.name())
+                            || taggedMessages.patterns().containsKey(ref.name()))) {
+                    if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "enum/match pattern type '" + ref.name() + "' is not generic");
+                    }
+                    yield new Named(ref.name(), List.of());
+                }
                 Ast.ClassDecl knownClass = findClass(ref.name());
                 if (knownClass != null) {
                     validateGenericArity(ref, knownClass.genericParameters(), "class " + knownClass.name());

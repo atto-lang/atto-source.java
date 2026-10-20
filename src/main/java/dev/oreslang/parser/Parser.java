@@ -945,6 +945,9 @@ public final class Parser {
         java.util.Set<Integer> tags = new java.util.HashSet<>();
         int nextTag = 1;
         while (!check(END) && !check(EOF)) {
+            if (cases.size() >= 4096) {
+                throw error(peek(), "enum may declare at most 4096 cases");
+            }
             Token start = consume(IDENT, "expected enum case name");
             if (!names.add(start.lexeme())) throw error(start, "duplicate enum case " + start.lexeme());
             Ast.TypeRef payload = match(COLON) ? parseTypeRef() : null;
@@ -983,6 +986,9 @@ public final class Parser {
         List<String> alternatives = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
         while (!check(END) && !check(EOF)) {
+            if (alternatives.size() >= 4096) {
+                throw error(peek(), "pattern may declare at most 4096 alternatives");
+            }
             Token owner = consume(IDENT, "pattern alternatives must be qualified enum cases");
             consume(DOT, "expected '.' between enum and case");
             String variant = consume(IDENT, "expected enum case name").lexeme();
