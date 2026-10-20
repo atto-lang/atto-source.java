@@ -49,7 +49,7 @@ final class ActorSourceTaskMemoryQuiescenceTest {
                             }
                         };
                         OresFuture<Void> future = runtime.startActorTask(child);
-                        sourceTask.set(context.runtime().ownCurrentActorFuture(future));
+                        sourceTask.set(future); // startActorTask now registers actor ownership itself
                     };
             ActorRuntime.ActorRef<String> actor = untrusted
                     ? runtime.spawnUntrusted(factory)
@@ -91,6 +91,29 @@ final class ActorSourceTaskMemoryQuiescenceTest {
             actor.send("stop");
             assertTrue(refused.await(5, TimeUnit.SECONDS));
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, runtime.actorCount());
+        }
+    }
+
+    @Test
+    void actorStopCancelsSuspendedSourceTaskWithoutExplicitFutureOwnership() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch admitted = new CountDownLatch(1);
+            AtomicReference<OresFuture<Void>> source = new AtomicReference<>();
+            ActorRuntime.ActorRef<String> actor = runtime.spawnShared(
+                    () -> (message, context) -> {
+                        // Deliberately do not call ownCurrentActorFuture().
+                        OresFuture<Void> future = runtime.startActorTask(
+                                resume -> OresScheduler.await(new OresFuture<>()));
+                        source.set(future);
+                        admitted.countDown();
+                    });
+            actor.send("launch");
+            assertTrue(admitted.await(5, TimeUnit.SECONDS));
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(source.get().isCancelled(),
+                    "actor-owned source Task must be revoked on actor shutdown");
             assertEquals(0, runtime.actorCount());
         }
     }
