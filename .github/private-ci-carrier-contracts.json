@@ -17,12 +17,12 @@
     },
     "fiducia-cloud-test/java-client-consumer": {
       "repository_id": 1323679401,
-      "base_sha": "79b351de1fcf7fc2b1ad592b5804eabb585201b9",
+      "base_sha": "fa1dedaa99cc8842d43242be49aa6720eea8012d",
       "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
-      "workflow_blob_sha": "856971655263c6bf5ade6e184c2f988f9fad7241",
+      "workflow_blob_sha": "4fe940ce625415327ac9e52107a191d5cce8f99f",
       "test_plans": {
         "ci/test-plans/java-pr1690.json": {
-          "blob_sha": "b29f72c70184ffca84cc0616fccc1034fa401c40",
+          "blob_sha": "569e3b1a17384126084c105e8666ee73d4230304",
           "allowed_prs": [
             1690
           ]
