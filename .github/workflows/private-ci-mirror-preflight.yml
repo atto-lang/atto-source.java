@@ -77,7 +77,9 @@ jobs:
           clean_bash=(/usr/bin/env -i PATH=/usr/bin:/bin HOME=/ /bin/bash --noprofile --norc)
           clean_python=(/usr/bin/env -i PATH=/usr/bin:/bin HOME=/ /usr/bin/python3 -I -B)
           "${clean_bash[@]}" -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
-          "${clean_python[@]}" -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py scripts/publish-private-ci-source-v3.py scripts/test-publish-private-ci-source-v3.py
+          # py_compile writes __pycache__ even with -B, defeating the clean-tree receipt.
+          # Compile source in memory without executing it or emitting any .pyc.
+          "${clean_python[@]}" -c 'import pathlib,sys; [compile(pathlib.Path(p).read_bytes(), p, "exec") for p in sys.argv[1:]]' scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py scripts/publish-private-ci-source-v3.py scripts/test-publish-private-ci-source-v3.py
           "${clean_bash[@]}" scripts/test-private-ci-destination.sh
           "${clean_bash[@]}" -n tools/verify-exact-source-tree.sh tools/test-verify-exact-source-tree.sh
           "${clean_bash[@]}" tools/test-verify-exact-source-tree.sh
