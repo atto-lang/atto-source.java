@@ -14,6 +14,7 @@ SCRIPT = Path(__file__).with_name("publish-private-ci-source-v3.py")
 SPEC = importlib.util.spec_from_file_location("private_ci_v3", SCRIPT)
 v3 = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(v3)
+REAL_EXPORT_GATE = v3.legacy.require_independent_source_authorization
 
 SOURCE_TREE = "a" * 40
 ROOT_TREE = "b" * 40
@@ -56,6 +57,39 @@ def contract():
 
 
 class PrivateCiV3Test(unittest.TestCase):
+    def setUp(self):
+        # Existing v3 tests exercise the downstream carrier protocol after
+        # authorization. Production-gate tests restore the real fail-closed gate.
+        self.synthetic_authorization = patch.object(
+            v3.legacy, "require_independent_source_authorization"
+        )
+        self.synthetic_authorization.start()
+        self.addCleanup(self.synthetic_authorization.stop)
+
+    def test_real_gate_rejects_v3_before_any_policy_source_or_api_probe(self):
+        with patch.object(
+            v3.legacy, "require_independent_source_authorization", REAL_EXPORT_GATE
+        ), patch.object(
+            v3.legacy, "require_preflight", side_effect=AssertionError("preflight called")
+        ), patch.object(
+            v3, "protected_main_sha", side_effect=AssertionError("protected main probed")
+        ), patch.object(
+            v3.legacy, "gh_api", side_effect=AssertionError("GitHub API called")
+        ), tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "snapshot"
+            source.mkdir()
+            (source / "hello.ores").write_text("synthetic\n")
+            with self.assertRaisesRegex(v3.Denied, "security #962"):
+                v3.publish(
+                    "trusted/ci",
+                    source,
+                    "4" * 40,
+                    1482,
+                    "ci/test-plans/java-pr1482.json",
+                    root,
+                )
+
     def test_parse_contract_requires_exact_pr_and_pinned_fields(self):
         raw = json.dumps(
             {
