@@ -2324,6 +2324,11 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "Entry<K,V> is immutable; indexed assignment is not allowed");
                 }
+                if (isTypedMapType(receiver)) {
+                    requireAssignable(index, typedMapKeyType(receiver), "Map key");
+                    throw new IllegalArgumentException(
+                            "Map.from_entries produces an immutable Map in typed Map v1");
+                }
                 if (receiver instanceof Record record) {
                     requireAssignable(index, Primitive.STRING, "record/struct field key");
                     Map<String, Type> indexableMembers = indexableRecordMembers(record);
@@ -2859,6 +2864,40 @@ public final class TypeChecker {
                 }
                 typeOf(call.arguments().getFirst(), env, generics, self);
                 return new Named("SelectSet", List.of());
+            }
+
+            if (call.callee() instanceof Ast.MemberExpr mapCall
+                    && mapCall.receiver() instanceof Ast.NameExpr mapFactory
+                    && mapFactory.name().equals("Map")
+                    && env.lookup("Map") == null
+                    && mapCall.member().equals("from_entries")) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "Map.from_entries infers K and V and does not accept call-site type arguments");
+                }
+                if (call.arguments().size() != 1
+                        || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                    throw new IllegalArgumentException(
+                            "Map.from_entries expects exactly one Array<Entry<K,V>> argument");
+                }
+                Type entriesType = deref(
+                        typeOf(call.arguments().getFirst(), env, generics, self));
+                if (!(entriesType instanceof ListType list)
+                        || !(deref(list.element()) instanceof Named entry)
+                        || !isEntryType(entry)) {
+                    throw new IllegalArgumentException(
+                            "Map.from_entries requires Array<Entry<K,V>>; got " + entriesType);
+                }
+                Type key = entry.arguments().get(0);
+                Type value = entry.arguments().get(1);
+                requireMapKeyType(key, "Map.from_entries key");
+                if (value == Primitive.VOID) {
+                    throw new IllegalArgumentException(
+                            "Map.from_entries cannot construct Map<K,void>");
+                }
+                Type map = new Named("$builtin$Map", List.of(key, value));
+                Type duplicate = new Named("DuplicateKey", List.of(key));
+                return new Named("Result", List.of(map, duplicate));
             }
 
             if (call.callee() instanceof Ast.MemberExpr entryCall
@@ -3878,6 +3917,10 @@ public final class TypeChecker {
             String constantKey = constantStringKey(indexed.index(), env);
             Env.Binding indexedOwner = indexed.receiver() instanceof Ast.NameExpr ownerName
                     ? env.lookup(ownerName.name()) : null;
+            if (isTypedMapType(receiver)) {
+                requireAssignable(index, typedMapKeyType(receiver), "Map key");
+                return typedMapValueType(receiver);
+            }
             if (receiver instanceof Named entry && isEntryType(entry)) {
                 requireAssignable(index, Primitive.STRING, "Entry field key");
                 if (constantKey == null) {
@@ -5338,6 +5381,25 @@ public final class TypeChecker {
             if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
             return result;
         }
+        if (receiver instanceof Named duplicate
+                && duplicate.name().equals("DuplicateKey")
+                && duplicate.arguments().size() == 1) {
+            if (writing) {
+                throw new IllegalArgumentException("DuplicateKey<K> is immutable");
+            }
+            if (member.member().equals("key")) return duplicate.arguments().getFirst();
+            throw new IllegalArgumentException(
+                    "unknown DuplicateKey member '" + member.member() + "'");
+        }
+        if (receiver instanceof Named named
+                && named.name().equals("$MapFactory")) {
+            if (member.member().equals("from_entries")) {
+                throw new IllegalArgumentException(
+                        "Map.from_entries is an inferred factory and is direct-call-only");
+            }
+            throw new IllegalArgumentException(
+                    "unknown Map static member '" + member.member() + "'");
+        }
         if (receiver instanceof Named named
                 && named.name().equals("$EntryFactory")) {
             if (member.member().equals("of")) {
@@ -5447,7 +5509,8 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
-        if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
+        if (named.name().equals("$builtin$Map")
+                || named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
@@ -5532,7 +5595,8 @@ public final class TypeChecker {
         }
         if (!(type instanceof Named named)) return false;
 
-        if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
+        if (named.name().equals("$builtin$Map")
+                || named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("Iterator")
                 || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("Entry")) {
@@ -6611,6 +6675,21 @@ public final class TypeChecker {
 
     private Type builtinCollectionMember(Type receiver, String member) {
         receiver = deref(receiver);
+        if (isTypedMapType(receiver)) {
+            Type key = typedMapKeyType(receiver);
+            Type value = typedMapValueType(receiver);
+            return switch (member) {
+                case "size" -> Primitive.INT;
+                case "has" -> new Function(List.of(key), Primitive.BOOL);
+                case "get" -> new Function(
+                        List.of(key),
+                        new Named("Option", List.of(value)));
+                case "entries" -> new Function(
+                        List.of(),
+                        new ListType(entryProductType(key, value)));
+                default -> null;
+            };
+        }
         if (receiver instanceof ListType list) {
             return switch (member) {
                 case "size" -> Primitive.INT;
@@ -6699,6 +6778,11 @@ public final class TypeChecker {
 
     private Type iterableElementType(Type iterable) {
         iterable = receiverDispatchType(iterable);
+        if (isTypedMapType(iterable)) {
+            return entryProductType(
+                    typedMapKeyType(iterable),
+                    typedMapValueType(iterable));
+        }
         if (iterable instanceof ListType list) return list.element();
         if (iterable instanceof Tuple tuple) {
             Type result = Unknown.INSTANCE;
