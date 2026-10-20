@@ -55,6 +55,26 @@ final class EntryGuestEqualityGraphTest {
         return new GuestComparator(evaluator, equality);
     }
 
+    private static Object complex(double real, double imaginary) throws Exception {
+        Class<?> complexClass =
+                Class.forName("dev.oreslang.nodes.OresEvalRootNode$Complex");
+        Constructor<?> constructor =
+                complexClass.getDeclaredConstructor(double.class, double.class);
+        constructor.setAccessible(true);
+        return constructor.newInstance(real, imaginary);
+    }
+
+    @Test
+    void trustedNumberHardeningPreservesRealComplexEquality() throws Exception {
+        GuestComparator guest = comparator();
+        Object one = complex(1.0, 0.0);
+        Object two = complex(2.0, 0.0);
+
+        assertTrue(guest.equal(new OresEntry(1L, "v"), new OresEntry(one, "v")));
+        assertTrue(guest.equal(new OresEntry(one, "v"), new OresEntry(1L, "v")));
+        assertFalse(guest.equal(new OresEntry(1L, "v"), new OresEntry(two, "v")));
+    }
+
     @Test
     void recursiveEntryAndListGraphsTerminateAndDetectLateMismatches() throws Exception {
         GuestComparator guest = comparator();
