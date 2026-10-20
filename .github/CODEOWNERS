@@ -13,3 +13,8 @@
 /scripts/test-publish-private-ci-source.py @ORESoftware
 /tools/verify-exact-source-tree.sh @ORESoftware
 /tools/test-verify-exact-source-tree.sh @ORESoftware
+# Critical build and CI control plane. Broad ownership complements the
+# security-specific entries above; enforcement still requires repository policy.
+/.github/workflows/ @ORESoftware
+/scripts/ @ORESoftware
+/pom.xml @ORESoftware
