@@ -4523,6 +4523,7 @@ public final class OresEvalRootNode extends RootNode {
                     return nominal.payload() == null
                             ? nominal
                             : new NominalEnumValue(
+                                    nominal.ownerUnitId(),
                                     nominal.enumName(),
                                     nominal.variant(),
                                     nominal.tag(),
@@ -5685,6 +5686,7 @@ public final class OresEvalRootNode extends RootNode {
                             args.getFirst(),
                             "enum constructor " + enumCase.qualifiedName());
             return new NominalEnumValue(
+                    codeUnitId,
                     enumCase.owner(),
                     enumCase.name(),
                     enumCase.tag(),
@@ -8000,6 +8002,7 @@ public final class OresEvalRootNode extends RootNode {
                         nominalEnums.caseOrNull(name);
                 if (enumCase != null) {
                     if (!(value instanceof NominalEnumValue nominal)
+                            || !nominal.ownerUnitId().equals(codeUnitId)
                             || !nominal.enumName().equals(enumCase.owner())
                             || !nominal.variant().equals(enumCase.name())
                             || nominal.tag() != enumCase.tag()) {
@@ -8223,6 +8226,7 @@ public final class OresEvalRootNode extends RootNode {
                     nominalEnums.enums().get(name);
             if (enumeration != null) {
                 if (!(value instanceof NominalEnumValue nominal)
+                        || !nominal.ownerUnitId().equals(codeUnitId)
                         || !nominal.enumName().equals(name)) {
                     return false;
                 }
@@ -8407,7 +8411,8 @@ public final class OresEvalRootNode extends RootNode {
                         || !(right instanceof NominalEnumValue b)) {
                     return false;
                 }
-                if (!a.enumName().equals(b.enumName())
+                if (!a.ownerUnitId().equals(b.ownerUnitId())
+                        || !a.enumName().equals(b.enumName())
                         || !a.variant().equals(b.variant())
                         || a.tag() != b.tag()) {
                     return false;
@@ -8643,6 +8648,7 @@ public final class OresEvalRootNode extends RootNode {
                     nominalEnums.enums().get(declared.name());
             if (enumType != null) {
                 if (!(value instanceof NominalEnumValue nominal)
+                        || !nominal.ownerUnitId().equals(codeUnitId)
                         || !nominal.enumName().equals(enumType.name())) {
                     throw returnTypeMismatch(callable, declared, value);
                 }
@@ -8667,6 +8673,7 @@ public final class OresEvalRootNode extends RootNode {
                         callable + " enum payload",
                         resolving);
                 return new NominalEnumValue(
+                        nominal.ownerUnitId(),
                         nominal.enumName(),
                         nominal.variant(),
                         nominal.tag(),
@@ -9314,11 +9321,13 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
     private record NominalEnumValue(
+            String ownerUnitId,
             String enumName,
             String variant,
             int tag,
             Object payload) implements OresMutex.SharedState {
         private NominalEnumValue {
+            Objects.requireNonNull(ownerUnitId, "ownerUnitId");
             Objects.requireNonNull(enumName, "enumName");
             Objects.requireNonNull(variant, "variant");
             if (tag < 1) {
