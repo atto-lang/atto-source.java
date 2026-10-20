@@ -48,6 +48,16 @@ jobs:
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-semantics.ores" | tee /tmp/ores-testing-semantics-jit.out
           grep -F "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-jit.out
           grep -F "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-jit.out
+      - name: Run Orestra integration smoke under JVM/JIT
+        run: |
+          set -euo pipefail
+          for case in placement-smoke edge-guards workload-state-smoke control-plane-smoke; do
+            mvn -B -ntp -DskipTests exec:java -Dexec.args="integration/orestra/examples/${case}.ores" | tee "/tmp/${case}-jit.out"
+          done
+          grep -x "orestra-placement-ok" /tmp/placement-smoke-jit.out
+          grep -x "orestra-edge-guards-ok" /tmp/edge-guards-jit.out
+          grep -x "orestra-workload-state-ok" /tmp/workload-state-smoke-jit.out
+          grep -x "orestra-control-plane-ok" /tmp/control-plane-smoke-jit.out
 
   native-aot:
     runs-on: ubuntu-latest
@@ -84,6 +94,16 @@ jobs:
           ./target/ores-aot --mode=aot --platform=linux examples/native-testing-semantics.ores | tee /tmp/ores-testing-semantics-aot.out
           grep -F "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-aot.out
           grep -F "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-aot.out
+      - name: Run Orestra integration smoke under native AOT
+        run: |
+          set -euo pipefail
+          for case in placement-smoke edge-guards workload-state-smoke control-plane-smoke; do
+            ./target/ores-aot --mode=aot --platform=linux "integration/orestra/examples/${case}.ores" | tee "/tmp/${case}-aot.out"
+          done
+          grep -x "orestra-placement-ok" /tmp/placement-smoke-aot.out
+          grep -x "orestra-edge-guards-ok" /tmp/edge-guards-aot.out
+          grep -x "orestra-workload-state-ok" /tmp/workload-state-smoke-aot.out
+          grep -x "orestra-control-plane-ok" /tmp/control-plane-smoke-aot.out
 
   native-hybrid:
     runs-on: ubuntu-latest
@@ -120,6 +140,16 @@ jobs:
           ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-semantics.ores | tee /tmp/ores-testing-semantics-hybrid.out
           grep -F "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-hybrid.out
           grep -F "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-hybrid.out
+      - name: Run Orestra integration smoke under native hybrid
+        run: |
+          set -euo pipefail
+          for case in placement-smoke edge-guards workload-state-smoke control-plane-smoke; do
+            ./target/ores-hybrid --mode=hybrid --platform=linux "integration/orestra/examples/${case}.ores" | tee "/tmp/${case}-hybrid.out"
+          done
+          grep -x "orestra-placement-ok" /tmp/placement-smoke-hybrid.out
+          grep -x "orestra-edge-guards-ok" /tmp/edge-guards-hybrid.out
+          grep -x "orestra-workload-state-ok" /tmp/workload-state-smoke-hybrid.out
+          grep -x "orestra-control-plane-ok" /tmp/control-plane-smoke-hybrid.out
 
   polyglot-isolate:
     runs-on: ubuntu-latest
