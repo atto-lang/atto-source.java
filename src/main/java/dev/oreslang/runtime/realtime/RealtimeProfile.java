@@ -18,6 +18,7 @@ public final class RealtimeProfile {
     public enum Failure {
         NONE,
         MISSING_TIMING_BUDGET,
+        MISSING_MEMORY_BUDGET,
         MANAGED_HEAP_ACCESS,
         TRACING_GC_INTERFERENCE,
         RUNTIME_CODE_GENERATION,
@@ -66,6 +67,7 @@ public final class RealtimeProfile {
             return switch (failure) {
                 case NONE -> "OK";
                 case MISSING_TIMING_BUDGET -> "RT003_WCET_UNPROVEN";
+                case MISSING_MEMORY_BUDGET -> "RT009_SCHEDULING_UNPROVEN";
                 case MANAGED_HEAP_ACCESS -> "RT004_MANAGED_HEAP_ESCAPE";
                 case TRACING_GC_INTERFERENCE -> "RT011_COLLECTOR_INTERFERENCE";
                 case RUNTIME_CODE_GENERATION -> "RT005_DYNAMIC_CODE";
@@ -85,8 +87,19 @@ public final class RealtimeProfile {
         Objects.requireNonNull(effects, "effects");
         Objects.requireNonNull(budget, "budget");
 
-        if (budget.deadlineNs() == 0 || budget.wcetNs() == 0) {
+        // This scaffold intentionally uses a constrained-deadline periodic-task
+        // model. A zero period or deadline > period would require a different
+        // schedulability proof, so it fails closed here rather than silently
+        // changing the execution model.
+        if (budget.deadlineNs() == 0 || budget.wcetNs() == 0
+                || budget.periodNs() == 0 || budget.deadlineNs() > budget.periodNs()) {
             return new Result(Failure.MISSING_TIMING_BUDGET);
+        }
+        // A hard-RT path needs an explicit finite memory cap even before the
+        // compiler can provide a proven peak-footprint witness. Zero means the
+        // resource bound is absent, not "unlimited".
+        if (budget.maxMemoryBytes() == 0) {
+            return new Result(Failure.MISSING_MEMORY_BUDGET);
         }
         if (effects.managedHeapAccess()) {
             return new Result(Failure.MANAGED_HEAP_ACCESS);
