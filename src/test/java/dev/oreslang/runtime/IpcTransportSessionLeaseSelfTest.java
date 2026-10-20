@@ -270,6 +270,46 @@ public final class IpcTransportSessionLeaseSelfTest {
         check(inline.closeFailure() instanceof IllegalStateException);
         check(inline.invariant());
 
+        // A scheduler can violate the host-worker contract without running
+        // inline: executing later on a different actor carrier is equally
+        // forbidden. The lease must quarantine before physical close.
+        var carrierCleanupBridge = new IpcReceiptCompletionBridge(1);
+        var carrierCleanupMessage = message(1, "carrierCleanup");
+        var carrierCleanupFuture = carrierCleanupBridge.admit(carrierCleanupMessage);
+        AtomicReference<Runnable> actorCarrierCleanup = new AtomicReference<>();
+        AtomicInteger actorCarrierCloses = new AtomicInteger();
+        var carrierCleanup = new IpcTransportSessionLease(
+                carrierCleanupMessage, 581, 1,
+                carrierCleanupBridge, (value, preparedFrame) -> { },
+                actorCarrierCloses::incrementAndGet,
+                cleanup -> {
+                    if (!actorCarrierCleanup.compareAndSet(null, cleanup)) {
+                        throw new IllegalStateException("cleanup queue overflow");
+                    }
+                });
+        carrierCleanup.writeFrame(581, carrierCleanupMessage, new byte[] { 1 });
+        carrierCleanup.requestClose();
+        check(carrierCleanup.snapshot().phase()
+                == IpcTransportSessionLease.Phase.FINALIZING);
+        Thread actorCleanupWorker = new Thread(() -> {
+            RuntimeBlockingGuard.enterActorCarrier();
+            try {
+                actorCarrierCleanup.get().run();
+            } finally {
+                RuntimeBlockingGuard.exitActorCarrier();
+            }
+        }, "ipc-test-illegal-actor-cleanup");
+        actorCleanupWorker.start();
+        actorCleanupWorker.join(3000);
+        check(!actorCleanupWorker.isAlive());
+        check(actorCarrierCloses.get() == 0);
+        check(carrierCleanup.snapshot().phase()
+                == IpcTransportSessionLease.Phase.QUARANTINED);
+        check(!carrierCleanupFuture.toCompletableFuture().isDone());
+        check(carrierCleanup.closeFailure() instanceof IllegalStateException);
+        check(carrierCleanup.closeFailure().getMessage().contains("actor carrier"));
+        check(carrierCleanup.invariant());
+
         var deferredBridge = new IpcReceiptCompletionBridge(1);
         var deferredMessage = message(1, "deferred");
         var deferredResult = deferredBridge.admit(deferredMessage);
