@@ -139,6 +139,36 @@ and recoverable after the refs disappear. Destination authorization therefore
 authorizes a potential persistent private-source copy in the carrier repository;
 administrators must not describe ref cleanup as secure deletion.
 
+### Network and build-tool isolation
+
+The source under test is treated as potentially hostile even after an exact-tree
+handoff. It must never receive the carrier token, the runner user's HOME, the
+carrier's unrelated private files, or normal outbound Internet access.
+
+For Maven plans, the reviewed test plan must bind the exact `pom.xml` Git blob
+and every Maven command must use `-o` / `--offline`. Dependency preparation
+runs before source execution in a separate read-only job that materializes only
+the receipt, plan, carrier dependency controller, and the reviewed `pom.xml`.
+That controller uses a fresh HOME, rejects project-defined Maven repositories,
+plugin repositories, distribution management, and build extensions, forces
+`mirrorOf=*` to Maven Central, enables strict checksum verification, and invokes
+an exact `maven-dependency-plugin` coordinate. The resulting local repository is
+the only dependency artifact passed to the source-execution job.
+
+The source-execution job verifies the complete receipt/tree first, then copies
+the already-verified source into a dedicated gitless sandbox. The untrusted
+process runs as a newly-created non-sudo account under Linux `unshare --net`
+with `no_new_privs` and all inheritable, ambient, and bounding capabilities
+removed. It receives a fresh HOME/TMPDIR and a narrow environment with no
+credential-like variables. The trusted plan runner and receipt/plan copies are
+read-only and live outside the writable source directory. The carrier workflow
+must fail if the untrusted account can read the original Actions workspace.
+
+This split is intentional: the one networked phase can resolve dependencies but
+cannot see the private source tree beyond an exact reviewed build descriptor;
+the phase that can execute arbitrary private source has no external network and
+no privilege path back to the runner.
+
 An explicitly supplied `--source-commit` now pins the **exact original
 private Git commit**. Before uploading, the publisher retrieves that commit's
 source-tree hash and its complete, non-truncated recursive tree from the
