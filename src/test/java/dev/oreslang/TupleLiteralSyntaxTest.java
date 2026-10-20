@@ -233,4 +233,35 @@ final class TupleLiteralSyntaxTest {
                 """)));
     }
 
+    @Test
+    void heterogeneousTupleIterationUsesUnionInsteadOfUnknown() {
+        assertDoesNotThrow(() -> {
+            Ast.Program typed = TypeChecker.check(Parser.parse("""
+                    fnc good(): void {
+                      for let value of (1, "two") {
+                        const int | string joined = value;
+                      }
+                      return;
+                    }
+                    """));
+            OwnershipChecker.check(typed);
+        });
+
+        IllegalArgumentException unsafeNarrowing = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(): void {
+                          for let value of (1, "two") {
+                            const int narrowed = value;
+                          }
+                          return;
+                        }
+                        """)));
+        assertTrue(
+                unsafeNarrowing.getMessage().contains("expected int")
+                        || unsafeNarrowing.getMessage().contains("type"),
+                unsafeNarrowing.getMessage());
+    }
+
+
 }
