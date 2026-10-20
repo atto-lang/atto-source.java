@@ -206,7 +206,15 @@ public final class PortableModelGraphDigestV1 {
                     fail("MODEL_CONST_TYPE_MISMATCH");
                 encodeConstant(out, node.constArgs().get(i));
             }
-            if (node.inputs().size() != sig.inputs().size())
+            // Ordered v1 permits exactly one unmatched signature input on
+            // the first node: that slot is the model's external run(input)
+            // boundary. Every later signature input must have a graph parent.
+            boolean externalUnaryInput = index == 0
+                    && node.inputs().isEmpty()
+                    && sig.inputs().size() == 1;
+            if (!externalUnaryInput && node.inputs().size() != sig.inputs().size())
+                fail("MODEL_PORT_ARITY_MISMATCH");
+            if (index == 0 && node.inputs().isEmpty() && sig.inputs().size() > 1)
                 fail("MODEL_PORT_ARITY_MISMATCH");
             out.u32(node.inputs().size());
             for (int edge = 0; edge < node.inputs().size(); edge++) {
