@@ -440,7 +440,9 @@ public final class ChannelRuntime {
         // arbitration never takes the plan monitor while holding COORDINATOR.
         private AtomicLong fairness = new AtomicLong();
         private long version;
-        private Snapshot<K> cached;
+        // Volatile publication permits lock-free repeated selections while
+        // synchronized mutations invalidate the generation.
+        private volatile Snapshot<K> cached;
 
         private record Snapshot<K>(long version, List<K> keys, SelectSet set) { }
 
@@ -503,17 +505,28 @@ public final class ChannelRuntime {
             return List.copyOf(entries.keySet());
         }
 
-        /** A single immutable snapshot per successful mutation generation. */
-        private synchronized Snapshot<K> snapshot() {
-            if (cached != null) return cached;
-            if (entries.isEmpty()) {
-                throw new IllegalStateException("cannot select from an empty dynamic plan");
+        /**
+         * A single immutable snapshot per mutation generation. The fast path
+         * does not take the mutable plan monitor on every loop iteration.
+         * Observing the previous snapshot concurrently with a put/remove is
+         * valid: that selection linearizes before the generation change.
+         */
+        private Snapshot<K> snapshot() {
+            Snapshot<K> published = cached;
+            if (published != null) return published;
+            synchronized (this) {
+                published = cached;
+                if (published != null) return published;
+                if (entries.isEmpty()) {
+                    throw new IllegalStateException("cannot select from an empty dynamic plan");
+                }
+                published = new Snapshot<>(
+                        version,
+                        List.copyOf(entries.keySet()),
+                        new SelectSet(entries.values(), fairness));
+                cached = published;
+                return published;
             }
-            cached = new Snapshot<>(
-                    version,
-                    List.copyOf(entries.keySet()),
-                    new SelectSet(entries.values(), fairness));
-            return cached;
         }
 
         public OresFuture<SelectResult> selectAsync() {
