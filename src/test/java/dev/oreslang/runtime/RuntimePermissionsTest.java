@@ -201,8 +201,34 @@ final class RuntimePermissionsTest {
         assertFalse(wildcard.allows(
                 RuntimePermissions.Permission.NET, "example.com.:443"));
 
+        RuntimePermissions idn = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.NET)
+                .withDenied(
+                        RuntimePermissions.Permission.NET,
+                        "xn--bcher-kva.example:443");
+        assertFalse(idn.allows(
+                RuntimePermissions.Permission.NET,
+                "BÜCHER.EXAMPLE.:443"),
+                "Unicode DNS spelling must not bypass a punycode deny");
+        assertEquals(
+                "xn--bcher-kva.example:443",
+                RuntimePermissions.networkEndpoint("BÜCHER.EXAMPLE.", 443));
+
+        RuntimePermissions idnWildcard = RuntimePermissions.denyAll()
+                .withAllowed(
+                        RuntimePermissions.Permission.NET,
+                        "*.BÜCHER.EXAMPLE.");
+        assertTrue(idnWildcard.allows(
+                RuntimePermissions.Permission.NET,
+                "api.xn--bcher-kva.example:443"));
+        assertFalse(idnWildcard.allows(
+                RuntimePermissions.Permission.NET,
+                "xn--bcher-kva.example:443"));
+
         for (String ambiguous : java.util.List.of(
-                "127.1", "127.0.1", "::1%lo0", "[::1%1]")) {
+                "127.1", "127.0.1", "::1%lo0", "[::1%1]",
+                "bad_host.example",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example")) {
             assertThrows(
                     IllegalArgumentException.class,
                     () -> RuntimePermissions.networkEndpoint(ambiguous, 443),
