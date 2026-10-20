@@ -69,3 +69,36 @@ After this focused suite, run complete JDK25/GraalVM Maven tests, source positiv
   zero independently approved source-export destinations. Do not mirror
   any private source tree just because another organization has runners.
 
+
+## October 20 update: token subscription failure and current runner evidence
+
+- `cancelWhen()` used to register a callback on an upstream token **before**
+  appending its registration to `externalCancellation`. On allocation failure
+  during that append, the upstream callback could remain attached, keeping the
+  scope reachable and later cancelling a scope that rejected the link.
+- The admission failure branch now rolls back any partially inserted external
+  registration and always detaches its upstream token outside the owner/tree
+  monitors, preserving the original exception while suppressing cleanup faults.
+- `OresTaskScopeUnlinkOrderingTest` now covers a throwing list `add` and an
+  adversarial insert-then-throw. Both assert upstream
+  `OresFuture.pendingRuntimeWaiterCount() == 0`, restored scope admission,
+  and no late scope cancellation when the token source cancels.
+- **Locally executed Java 21 `javac --release 21 -Xlint:all -Werror`
+  reflection-fixture test:** `REFLECTION_FINAL_LIST_INJECTION_PASS`.
+  This validates that the injected private-final-field collection replacement
+  actually runs on this JDK, **not** that the Oreslang JUnit suite passed.
+- **20/20 exact-head source-text invariant assertions passed.** These are
+  static structural inspections, not compiler, runtime or memory-safety proofs.
+- A targeted **source-local** retry of concurrency job `118398702873`
+  succeeded as an API request but [run #39352194984](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39352194984)
+  attempt 2 failed with no runner, no steps and no downloadable job log.
+  A subsequent exact-head source [run #39363191965](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39363191965)
+  also failed with `runner=null` and `steps=null`.
+- The alternate org's most recent *exact-tree* runs also report failed
+  workflow jobs with no verified source-compiler log; neither source budget
+  exhaustion nor real Java test results are confirmed by those statuses.
+- **No private cross-org mirroring was performed.** Security #962 remains
+  open and source `main`'s reviewed destination policy has zero active
+  approvals. An authorized exact-head JDK25/GraalVM Maven/JUnit run, later
+  native-image conformance and branch-protection enforcement remain mandatory.
+
