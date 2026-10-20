@@ -1510,8 +1510,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
                            "sha": isolated_sha}]})
     new_tree_sha = valid_sha(new_tree.get("sha"))
     authorize_write()
-    provenance_message = "
-".join([
+    provenance_message = "\n".join([
         f"ci: exact private Oreslang tree {expected_source_commit} tree {expected_source_tree}",
         f"carrier-base {base_sha} tree {base_tree}",
         f"source-approval-blob {reviewed_snapshot_sha}",
@@ -1570,16 +1569,10 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     # but skip only its pre-write absence assertion.
     authorize_write(require_absent_ref=False)
 
-    # Carrier CI performs no source checkout until this second, non-triggering
-    # handoff ref exists. The same no-bypass immutable ruleset must govern it,
-    # and the name is uniquely bound to the already-read-back payload commit.
     authorization_branch = "ci/authorized-" + commit_sha
     require_effective_carrier_source_rules(
         repository, authorization_branch, carrier_ruleset_id)
     require_absent_carrier_source_ref(repository, authorization_branch)
-    # Recheck all protected source/carrier approvals immediately before the
-    # handoff write. The payload is already immutable; no further source Git
-    # objects are created after this point.
     authorize_write(require_absent_ref=False)
     require_effective_carrier_source_rules(
         repository, authorization_branch, carrier_ruleset_id)
@@ -1597,9 +1590,6 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
             or authorization_readback.get("object", {}).get("type") != "commit"
             or nested_sha(authorization_readback, "object") != commit_sha):
         raise Denied("private CI authorization ref readback is invalid")
-    # One final full authorization pass proves no protected approval moved
-    # during the handoff itself. Neither payload nor handoff ref is deleted:
-    # immutable retention prevents name reuse/replay.
     authorize_write(require_absent_ref=False)
     require_effective_carrier_source_rules(
         repository, authorization_branch, carrier_ruleset_id)
