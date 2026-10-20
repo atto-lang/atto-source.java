@@ -80,6 +80,14 @@ public final class OresKeyedMap<K, V> {
         }
     }
 
+    /**
+     * Runtime policy hook used by compiler-owned typed Map descriptors.
+     *
+     * <p>Validators must be deterministic and side-effect free. The container
+     * runs all structural/domain/quota preflight checks before invoking this
+     * hook, but a later validator in the same batch may still reject the
+     * operation. Guest callbacks must never be installed here.
+     */
     @FunctionalInterface
     public interface EntryValidator {
         void validate(Object key, Object value);
@@ -278,7 +286,7 @@ public final class OresKeyedMap<K, V> {
         return entries.get(key);
     }
 
-    private void checkValue(Object key, Object value) {
+    private void checkValueDomain(Object value) {
         Objects.requireNonNull(value, "map value");
         boolean valid = switch (valueDomain) {
             case ANY -> true;
@@ -293,6 +301,9 @@ public final class OresKeyedMap<K, V> {
             throw new IllegalArgumentException(
                     "value is incompatible with Map value domain " + valueDomain);
         }
+    }
+
+    private void runEntryValidator(Object key, Object value) {
         if (entryValidationActive) {
             throw new IllegalStateException(
                     "typed Map entry validator cannot recursively validate the same map");
@@ -321,7 +332,7 @@ public final class OresKeyedMap<K, V> {
     public synchronized V put(K key, V value) {
         rejectReentrantMutation();
         checkKey(key);
-        checkValue(key, value);
+        checkValueDomain(value);
         long addedBytes = 0L;
         if (!entries.containsKey(key)) {
             if (entries.size() >= MAX_ENTRIES) {
@@ -332,6 +343,9 @@ public final class OresKeyedMap<K, V> {
                 throw new IllegalArgumentException("typed Map exceeds aggregate key byte budget");
             }
         }
+        // Policy hooks are last in preflight: structurally impossible writes
+        // must not trigger validator callbacks.
+        runEntryValidator(key, value);
         V previous = entries.put(key, value);
         storedKeyWireBytes += addedBytes;
         return previous;
@@ -382,7 +396,7 @@ public final class OresKeyedMap<K, V> {
             K key = entry.getKey();
             V value = entry.getValue();
             checkKey(key);
-            checkValue(key, value);
+            checkValueDomain(value);
             if (!incomingKeys.add(key)) {
                 throw new IllegalArgumentException("duplicate logical key in Map batch");
             }
@@ -402,12 +416,22 @@ public final class OresKeyedMap<K, V> {
         if (additions.size() > MAX_ENTRIES - entries.size()) {
             throw new IllegalArgumentException("typed Map exceeds maximum key count");
         }
-        // Stage every host allocation/hash-table expansion in a detached map.
-        // Publishing entry-by-entry can leave a partial batch on OOME.
+
+        // Stage every host allocation/hash-table expansion before policy hooks.
+        // Keys are already restricted to immutable String/Symbol values, so
+        // staging cannot dispatch arbitrary guest equality/hash callbacks.
         LinkedHashMap<K, V> staged = new LinkedHashMap<>(entries);
         for (Map.Entry<K, V> entry : prepared) {
             staged.put(entry.getKey(), entry.getValue());
         }
+
+        // Only a structurally admissible, fully staged candidate may invoke
+        // compiler-owned policy validators. The live map remains unchanged if
+        // any policy check rejects the candidate.
+        for (Map.Entry<K, V> entry : prepared) {
+            runEntryValidator(entry.getKey(), entry.getValue());
+        }
+
         entries = staged;
         storedKeyWireBytes += additionalKeyWireBytes;
         } finally {
