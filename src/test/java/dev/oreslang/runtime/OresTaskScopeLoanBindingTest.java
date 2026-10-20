@@ -96,6 +96,30 @@ final class OresTaskScopeLoanBindingTest {
     }
 
     @Test
+    void resourceCleanupFailureDoesNotReleaseCompilerLoan() {
+        RecordingLoan loan = new RecordingLoan();
+        OresScheduler scheduler = new OresScheduler(1);
+        AsyncRuntime runtime = new AsyncRuntime();
+        OresTaskScope scope = new OresTaskScope(runtime);
+        OresTask<Integer> child = scope.startCompilerFrame(
+                scheduler,
+                resume -> new OresScheduler.Done<>(11),
+                () -> { throw new IllegalStateException("resource retirement failed"); },
+                loan);
+
+        assertThrows(IllegalStateException.class,
+                () -> AsyncRuntime.await(child.getDone()));
+        assertEquals(0, loan.neverStarted.get());
+        assertEquals(0, loan.physical.get(),
+                "failed external retirement cannot return borrowed memory");
+        assertFalse(scope.physicallyQuiescent(),
+                "failed retirement retains the runtime owner slot");
+        assertThrows(IllegalStateException.class, scope::close);
+        scheduler.close();
+        runtime.close();
+    }
+
+    @Test
     void cancellationRequestCannotRetireLoanWhileGuestTurnStillRuns()
             throws Exception {
         RecordingLoan loan = new RecordingLoan();
