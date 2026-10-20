@@ -26,7 +26,7 @@ public final class BehaviorLayoutModel {
         final int[] parent;
         final Map<Key, Integer> edges = new HashMap<>();
         Chart(List<OresSymbol> states, Map<OresSymbol, OresSymbol> parents, List<Edge> rules) {
-            require(!states.isEmpty(), "empty states");
+            require(!states.isEmpty() && states.size() <= 4096, "empty or excessive states");
             for (OresSymbol state : states) {
                 require(state != null, "null state Symbol");
                 require(ids.putIfAbsent(state, ids.size()) == null, "duplicate state");
@@ -55,6 +55,7 @@ public final class BehaviorLayoutModel {
         }
         int step(int active, OresSymbol event) {
             require(active >= 0 && active < parent.length, "state out of range");
+            require(event != null, "null chart event");
             for (int p = active; p != -1; p = parent[p]) {
                 Integer target = edges.get(new Key(p, event));
                 if (target != null) return target;
@@ -233,7 +234,12 @@ public final class BehaviorLayoutModel {
             }
             this.placeIds = Map.copyOf(ids);
             this.places = namedPlaces.size(); this.rules = List.copyOf(rules);
+            require(invariants != null && invariants.length <= 256, "invalid invariant count");
             this.invariants = Arrays.stream(invariants).map(int[]::clone).toArray(int[][]::new);
+            // Invariants must be validated even when the net has no transitions.
+            for (int[] invariant : this.invariants)
+                require(invariant != null && invariant.length == places,
+                        "bad invariant dimension");
             Set<OresSymbol> names = new HashSet<>();
             for (Rule rule : rules) {
                 require(rule.name() != null && names.add(rule.name()), "duplicate/invalid net transition Symbol");
@@ -340,6 +346,7 @@ public final class BehaviorLayoutModel {
         ok(!s("private_state").publicToUntrustedCoreV1(), "private Symbol was auto-exported");
         rejects(() -> new Chart(List.of(idle, busy), Map.of(), List.of(
                 new Edge(idle, null, busy))), "null event Symbol admitted");
+        rejects(() -> chart.step(chart.id(idle), null), "null event accepted at chart step");
         System.out.println("chart: " + operations + " identical cohort updates across layouts");
     }
 
@@ -378,6 +385,10 @@ public final class BehaviorLayoutModel {
                 List.of(new Arc(0, 1), new Arc(0, 2)), List.of())), new int[0][]), "duplicate arc accepted");
         rejects(() -> new Net(List.of(s("free"), s("free")), List.of(), new int[0][]),
                 "duplicate Petri place Symbol admitted");
+        rejects(() -> new Net(List.of(s("free"), s("held")), List.of(),
+                new int[][]{{1}}), "empty-rule net admitted wrong invariant dimension");
+        rejects(() -> new Net(List.of(s("free"), s("held")), List.of(),
+                new int[][]{null}), "empty-rule net admitted null invariant row");
         Net overflow = new Net(List.of(s("free")), List.of(new Rule(s("over"), List.of(), List.of(new Arc(0, 1)))), new int[0][]);
         rejects(() -> overflow.fire(new int[]{Integer.MAX_VALUE}, overflow.rules.getFirst()), "token overflow accepted");
         ok(net.fire(new int[]{0, 1, 1, 0}, acquireA) == null, "disabled transition fired");
