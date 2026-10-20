@@ -11,8 +11,30 @@ import dev.oreslang.types.OwnershipChecker;
 public final class OresCompiler {
     private OresCompiler() { }
 
+    /**
+     * Opaque proof that this exact AST completed Oreslang type and ownership
+     * admission. Its constructor is package-private so only compiler-package
+     * code can mint a proof; host callers may carry a proof but cannot wrap an
+     * arbitrary parsed/manually-constructed Ast.Program.
+     */
+    public static final class CheckedProgram {
+        private final Ast.Program program;
+
+        CheckedProgram(Ast.Program program) {
+            this.program = java.util.Objects.requireNonNull(program, "checked program");
+        }
+
+        public Ast.Program program() {
+            return program;
+        }
+    }
+
     public static Ast.Program parseAndTypeCheck(String source) {
         return analyze(Parser.parse(source));
+    }
+
+    public static CheckedProgram parseAndTypeCheckChecked(String source) {
+        return new CheckedProgram(parseAndTypeCheck(source));
     }
 
     /** Runs the complete front-end admission policy on an already parsed program. */
