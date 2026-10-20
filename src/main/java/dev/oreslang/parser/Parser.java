@@ -127,6 +127,12 @@ public final class Parser {
                     modules.add(parseModule(annotations));
                     continue;
                 }
+                if (matchContextualKeyword("model")) {
+                    validateOnlyVisibilityModifiers(modifiers, "models");
+                    rejectDiscardedDeclarationAnnotations(annotations, "model declarations");
+                    rootDeclarations.add(parseModelDecl(modifiers.visibility));
+                    continue;
+                }
                 if (match(CONTRACT)) {
                     modifiers = mergeModifiers(modifiers, parseModifiers());
                     validateOnlyVisibilityModifiers(modifiers, "contracts");
@@ -310,6 +316,11 @@ public final class Parser {
             if (modifiers.shared || modifiers.untrusted) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
+            if (matchContextualKeyword("model")) {
+                validateOnlyVisibilityModifiers(modifiers, "models");
+                rejectDiscardedDeclarationAnnotations(annotations, "model declarations");
+                return parseModelDecl(modifiers.visibility);
+            }
             if (match(CONTRACT)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 validateOnlyVisibilityModifiers(modifiers, "contracts");
@@ -345,6 +356,85 @@ public final class Parser {
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
         if (declaration != null) return declaration;
         throw error(peek(), "expected function, routine, class, interface, trait, type, or binding declaration");
+    }
+
+    /**
+     * Parse the deliberately bounded v1 model declaration grammar. This produces
+     * syntactic AST only: operation names, types, effects, parameter storage and
+     * VJPs are NOT trusted or resolved here. TypeChecker rejects execution until
+     * the typed model graph and CPU backend exist.
+     */
+    private Ast.ModelDecl parseModelDecl(Ast.Visibility visibility) {
+        String name = consume(IDENT, "expected nominal model name").lexeme();
+        if (check(DOT)) throw error(peek(), "models cannot use dotted declaration names");
+        java.util.Set<String> names = new java.util.HashSet<>();
+        List<Ast.ModelFormal> formals = new ArrayList<>();
+        if (match(LPAREN)) {
+            if (!check(RPAREN)) {
+                do {
+                    if (formals.size() >= 16)
+                        throw error(peek(), "MODEL_FORMAL_BUDGET: at most 16 model formals");
+                    String formal = consume(IDENT, "expected model formal name").lexeme();
+                    if (!names.add(formal))
+                        throw error(previous(), "MODEL_DUPLICATE_FORMAL: " + formal);
+                    consume(COLON, "expected ':' after model formal");
+                    Ast.TypeRef type = parseTypeRef();
+                    Ast.ModelValue defaultValue = match(EQUAL) ? parseModelValue(null) : null;
+                    formals.add(new Ast.ModelFormal(formal, type, defaultValue));
+                } while (match(COMMA));
+            }
+            consume(RPAREN, "expected ')' after model formals");
+        }
+        consume(AS, "expected 'as' before model operation sequence");
+        List<Ast.ModelOperation> operations = new ArrayList<>();
+        while (!check(END) && !check(EOF)) {
+            if (operations.size() >= 64)
+                throw error(peek(), "MODEL_NODE_BUDGET: at most 64 model operations");
+            String operation = consume(IDENT, "MODEL_INVALID_OP: expected nominal operation name").lexeme();
+            if (check(DOT) || check(DOUBLE_COLON))
+                throw error(peek(), "MODEL_INVALID_OP: only statically resolvable nominal operators are admitted");
+            consume(LPAREN, "expected '(' after model operation");
+            List<Ast.ModelArgument> args = new ArrayList<>();
+            java.util.Set<String> named = new java.util.HashSet<>();
+            boolean hasNamed = false;
+            if (!check(RPAREN)) {
+                do {
+                    if (args.size() >= 16)
+                        throw error(peek(), "MODEL_ARGUMENT_BUDGET: at most 16 operation arguments");
+                    String label = null;
+                    if (check(IDENT) && checkNext(COLON)) {
+                        label = advance().lexeme();
+                        consume(COLON, "expected ':' after model argument label");
+                        if (!named.add(label)) throw error(previous(), "MODEL_DUPLICATE_ARGUMENT: " + label);
+                        hasNamed = true;
+                    } else if (hasNamed) {
+                        throw error(peek(), "MODEL_POSITIONAL_AFTER_NAMED: positional argument after named argument");
+                    }
+                    args.add(new Ast.ModelArgument(label, parseModelValue(names)));
+                } while (match(COMMA));
+            }
+            consume(RPAREN, "expected ')' after model operation arguments");
+            match(SEMICOLON);
+            operations.add(new Ast.ModelOperation(operation, args));
+        }
+        if (operations.isEmpty())
+            throw error(peek(), "MODEL_EMPTY_BODY: model needs at least one operation");
+        consume(END, "expected 'end' to close model " + name);
+        return new Ast.ModelDecl(name, visibility, formals, operations);
+    }
+
+    private Ast.ModelValue parseModelValue(java.util.Set<String> allowedFormals) {
+        if (match(INT)) return new Ast.ModelValue(Ast.ModelValueKind.INTEGER, previous().lexeme());
+        if (match(FLOAT)) return new Ast.ModelValue(Ast.ModelValueKind.FLOAT, previous().lexeme());
+        if (match(TRUE, FALSE)) return new Ast.ModelValue(Ast.ModelValueKind.BOOLEAN, previous().lexeme());
+        if (match(STRING)) return new Ast.ModelValue(Ast.ModelValueKind.STRING, previous().lexeme());
+        if (allowedFormals != null && check(IDENT)) {
+            String formal = advance().lexeme();
+            if (!allowedFormals.contains(formal))
+                throw error(previous(), "MODEL_UNKNOWN_FORMAL: " + formal);
+            return new Ast.ModelValue(Ast.ModelValueKind.FORMAL, formal);
+        }
+        throw error(peek(), "MODEL_DYNAMIC_ARGUMENT: expected a constant or declared model formal");
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
