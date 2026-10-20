@@ -1210,6 +1210,19 @@ public final class LogicalSourceActorRouterV1 implements AutoCloseable {
                             txn.proxyTicket.rollback();
                             txn.proxyTicket = null;
                         } catch (RuntimeException | Error rollbackFailure) {
+                            // A failed structural rollback may leave dispatch
+                            // frozen. Preserve the exact ticket from setup as
+                            // well as from the later transaction finalizer.
+                            // Otherwise ABANDONED would clear the only owner
+                            // and the supervisor could never retry the thaw.
+                            if (pendingProxyRollbackTicket != null
+                                    && pendingProxyRollbackTicket != txn.proxyTicket) {
+                                throw new IllegalStateException(
+                                        "a different unresolved proxy freeze owns setup rollback",
+                                        rollbackFailure);
+                            }
+                            pendingProxyRollbackTicket = txn.proxyTicket;
+                            retirementQuarantined = true;
                             if (rollbackFailure != setupFailure)
                                 setupFailure.addSuppressed(rollbackFailure);
                         }
