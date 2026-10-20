@@ -22,7 +22,7 @@ final class FirstClassModelGraphTest {
     // Pinned to common-source contracts/v1/model-graph/executable-v1-conformance.json.
     // A common corpus revision bump requires an explicit backend review/update.
     private static final String SHARED_EXECUTABLE_CORPUS_REVISION =
-            "model-core-i64-v1.2026-10-20.5";
+            "model-core-i64-v1.2026-10-20.6";
 
     private static final String PRICE_MODEL = """
             fnc ValidatePrice(float input): float {
@@ -48,7 +48,7 @@ final class FirstClassModelGraphTest {
 
     @Test
     void sharedExecutableCorpusRevisionIsExplicitlyPinned() {
-        assertEquals("model-core-i64-v1.2026-10-20.5",
+        assertEquals("model-core-i64-v1.2026-10-20.6",
                 SHARED_EXECUTABLE_CORPUS_REVISION);
     }
 
