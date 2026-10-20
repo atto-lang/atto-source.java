@@ -1872,14 +1872,14 @@ public final class TypeChecker {
                     ? actual
                     : overlayReadonlyCapabilities(actual, declaredAhead);
             requireAssignable(actual, declared, "initializer for " + binding.name());
-            if (containsTypedMapType(actual)) {
-                if (!isTypedMapType(actual)) {
+            if (containsTypedMapType(actual) || containsTypedMapType(declared)) {
+                if (!isTypedMapType(actual) || !isTypedMapType(declared)) {
                     throw new IllegalArgumentException(
-                            "nested Map<K,V> values are not enabled in the closed v1 surface");
+                            "nested or dynamically disguised Map<K,V> values are not enabled in the closed v1 surface");
                 }
                 if (!isFreshTypedMapConstruction(binding.initializer())) {
                     throw new IllegalArgumentException(
-                            "Map<K,V> bindings must own a fresh new Map<K,V>() value; aliases and transfers are not enabled yet");
+                            "Map<K,V> bindings must own a fresh new Map<K,V>() value; aliases, dynamic carriers and transfers are not enabled yet");
                 }
             }
 
