@@ -2,6 +2,8 @@ package dev.oreslang.runtime;
 
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.BuildOptions;
+import dev.oreslang.compiler.BuildTreeShaker;
 import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.imports.ImportRules;
@@ -90,6 +92,74 @@ public final class LinkedProgramRunner {
         }
         try (MixedJavaCompiler.Compilation ignored = MixedJavaCompiler.compile(new ArrayList<>(units.values()), programs)) {
             return build;
+        }
+    }
+
+    /**
+     * Validate the complete linked source closure first, then derive the
+     * release-artifact reachability graph. Invalid dead code, forbidden
+     * capabilities and invalid mixed Java islands still fail before pruning.
+     */
+    public static BuildTreeShaker.Result analyzeBuild(
+            Path entryFile,
+            Map<String, String> environment,
+            IsolatePolicy policy,
+            PermissionCheckMode permissionCheckMode,
+            BuildOptions options) throws IOException {
+        Path entry = entryFile.toAbsolutePath().normalize();
+        if (!Files.isRegularFile(entry)) {
+            throw new IllegalArgumentException("not a file: " + entry);
+        }
+
+        OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
+        LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
+        LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
+        collectImportClosure(
+                entry,
+                units,
+                projectConfig,
+                importResolutions,
+                new SourceAdmissionBudget(),
+                0);
+        ensureJavaEntryContainsOres(entry, units);
+
+        if (policy != null) {
+            boolean hasJavaSource =
+                    units.values().stream().anyMatch(MixedSourceUnit::hasJavaSource);
+            if (hasJavaSource) {
+                policy.require(
+                        IsolatePolicy.Capability.JAVA_SOURCE_INTEROP,
+                        "mixed Java/Ores source islands");
+                policy.require(
+                        IsolatePolicy.Capability.JAVA_INTEROP,
+                        "mixed Java/Ores object interop");
+                if (policy.adversarial()) {
+                    throw new SecurityException(
+                            "mixed Java/Ores source islands are disabled for adversarial isolates");
+                }
+            }
+        }
+
+        Map<String, String> sources = oresSources(units);
+        IncrementalCompiler.BuildResult build =
+                new IncrementalCompiler().compile(sources, importResolutions);
+        Map<String, Ast.Program> programs = parsePrograms(sources);
+        if (policy != null) {
+            for (Ast.Program program : programs.values()) {
+                CapabilityChecker.check(program, policy, permissionCheckMode);
+            }
+        }
+
+        // Compile every Java source island before tree shaking so unused invalid
+        // or forbidden source cannot be hidden by release reachability.
+        try (MixedJavaCompiler.Compilation ignored =
+                MixedJavaCompiler.compile(new ArrayList<>(units.values()), programs)) {
+            String entryId = unitId(entry);
+            return BuildTreeShaker.shake(
+                    build,
+                    importResolutions,
+                    entryId,
+                    options);
         }
     }
 
