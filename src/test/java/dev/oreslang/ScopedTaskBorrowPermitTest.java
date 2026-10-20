@@ -110,6 +110,34 @@ final class ScopedTaskBorrowPermitTest {
         assertEquals("42", run(source));
     }
 
+
+    @Test
+    void scopedReadCaptureRequiresSyncReferent() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        async fnc origin(): int {
+                            return 42;
+                        }
+
+                        pub routine main(): void {
+                            val Future<int> pending = origin();
+                            val ref = rt borrow pending;
+                            nb scope {
+                                let worker = nb {
+                                    ref;
+                                };
+                            }
+                            return;
+                        }
+                        """));
+
+        String message = failure.getMessage().toLowerCase();
+        assertTrue(message.contains("sync")
+                || message.contains("thread-affine")
+                || message.contains("future"), message);
+    }
+
     @Test
     void borrowedCaptureOutsideStructuredScopeStillFailsClosed() {
         IllegalArgumentException failure = assertThrows(
