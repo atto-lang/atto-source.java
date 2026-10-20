@@ -2,6 +2,7 @@ package dev.oreslang.launcher;
 
 import dev.oreslang.compiler.BuildOptions;
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.compiler.StaticFactsV0Exporter;
 import dev.oreslang.compiler.ReachabilityReport;
 import dev.oreslang.compiler.TreeShaker;
 import dev.oreslang.config.OresProjectConfig;
@@ -83,6 +84,7 @@ public final class OresMain {
         boolean strict = false;
         boolean checkOnly = false;
         boolean buildAnalysis = false;
+        boolean staticFacts = false;
         String reachabilityReportPath = null;
         List<String> buildDefines = new ArrayList<>();
         Set<String> buildEntryPoints = new LinkedHashSet<>();
@@ -108,6 +110,7 @@ public final class OresMain {
                 else if (arg.equals("--core-debug")) coreDebug = true;
                 else if (arg.equals("--no-core-debug")) coreDebug = false;
                 else if (arg.equals("--build-analysis")) buildAnalysis = true;
+                else if (arg.equals("--static-facts")) staticFacts = true;
                 else if (arg.startsWith("--reachability-report=")) {
                     if (reachabilityReportPath != null) {
                         throw new UsageException("--reachability-report may be supplied only once");
@@ -169,8 +172,8 @@ public final class OresMain {
 
         // Report mutually exclusive CLI flags before opening/discovering a file.
         // An invalid invocation is status 2 even when the source path is absent.
-        if (checkOnly && buildAnalysis) {
-            throw new UsageException("--check and --build-analysis are mutually exclusive");
+        if ((checkOnly && buildAnalysis) || (staticFacts && (checkOnly || buildAnalysis))) {
+            throw new UsageException("--check, --build-analysis and --static-facts are mutually exclusive");
         }
         if (reachabilityReportPath != null && !buildAnalysis) {
             throw new UsageException("--reachability-report requires --build-analysis");
@@ -212,6 +215,16 @@ public final class OresMain {
         if (!Files.isRegularFile(path)) throw new IllegalArgumentException("not a file: " + path);
 
         String directOresSource = filename.endsWith(".ores") ? readBoundedOresSource(path) : null;
+        if (staticFacts) {
+            if (directOresSource == null) {
+                throw new UsageException("--static-facts requires a .ores source file");
+            }
+            if (!buildDefines.isEmpty() || !buildEntryPoints.isEmpty() || reachabilityReportPath != null) {
+                throw new UsageException("--static-facts does not accept build defines, entries or reports");
+            }
+            System.out.println(StaticFactsV0Exporter.fromSource(directOresSource));
+            return 0;
+        }
         if (directOresSource != null) {
             formatSyntaxWarnings(path, directOresSource).forEach(System.err::println);
             formatSelectReturnWarnings(path, directOresSource).forEach(System.err::println);
@@ -367,7 +380,7 @@ public final class OresMain {
 
     private static void printUsage() {
         System.err.println(
-                "usage: oreslang-compiler [--check|--build-analysis] "
+                "usage: oreslang-compiler [--check|--build-analysis|--static-facts] "
                         + "[--permission-check=runtime|compile] [--allow-all] "
                         + "[--allow-read[=PATH,...]] [--deny-read[=PATH,...]] "
                         + "[--allow-write[=PATH,...]] [--deny-write[=PATH,...]] "
