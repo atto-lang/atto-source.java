@@ -260,6 +260,24 @@ public final class UnaryTcpSessionAdapterCheck {
                     8, 4, 2, tooLarge);
             throw new AssertionError("request accepted a payload above the unary protocol limit");
         } catch (IllegalArgumentException expected) { }
+        byte[] directReplySource = new byte[] {9, 8, 7};
+        var directReply = UnaryTcpSessionAdapter.Reply.success(directReplySource);
+        directReplySource[0] = 0;
+        check(directReply.payload()[0] == 9,
+                "ordinary Reply.success must defensively copy caller bytes");
+        byte[] directReplyExport = directReply.payload();
+        directReplyExport[0] = 1;
+        check(directReply.payload()[0] == 9,
+                "Reply payload accessor must not expose mutable backing storage");
+
+        byte[] freshReplySource = new byte[] {5, 4, 3};
+        var freshReply = UnaryTcpSessionAdapter.Reply.successFresh(freshReplySource);
+        check(freshReply.payloadValue().unsignedAt(0) == 5,
+                "fresh runtime reply ownership must preserve bytes");
+        freshReplySource[0] = 6;
+        check(freshReply.payloadValue().unsignedAt(0) == 6,
+                "fresh runtime reply factory must transfer, not copy, owned bytes");
+
         try {
             UnaryTcpSessionAdapter.Reply.success(tooLarge);
             throw new AssertionError("reply accepted a payload above the unary protocol limit");
