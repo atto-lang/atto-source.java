@@ -20,10 +20,13 @@ final class CpuTopology {
     static final int UNKNOWN = -1;
     private static final int MAX_DISCOVERED_CPUS = 8192;
     private static final int MAX_CACHE_INDEXES = 32;
+    // A Task locality hint must never trigger a full scan of thousands
+    // of carrier slots on the scheduling hot path.
+    private static final int MAX_NUMA_SLOT_PROBES = 64;
 
-    /* The cache ID alone is not a globally unique LLC identity across
-     * physical packages or levels. Old three-argument locations are retained
-     * only for synthetic tests where llc is supplied as a prequalified key. */
+    /* The cache ID alone is not globally unique across packages or levels.
+     * Three-argument synthetic locations deliberately carry no proof of LLC
+     * sharing, regardless of a matching numeric cache ID. */
     record Location(int cpu, int llc, int numa, int llcLevel, int packageId) {
         Location(int cpu, int llc, int numa) {
             this(cpu, llc, numa, UNKNOWN, UNKNOWN);
@@ -84,8 +87,9 @@ final class CpuTopology {
     }
 
     /** Select a carrier with an observed target in the requested NUMA node.
-     * A stable hash preserves same-region preference when all nodes are
-     * unknown. This is advisory only: CPU target != proof of page placement. */
+     * Inspect at most 64 slots to keep worst-case Task admission bounded.
+     * When no nearby eligible carrier is observed, use the stable hash.
+     * This is advisory only: CPU target != proof of page placement. */
     int preferredSlotForNuma(int affinityKey, int preferredNuma, int enabled,
                              java.util.function.IntUnaryOperator cpuForSlot) {
         Objects.requireNonNull(cpuForSlot, "cpuForSlot");
@@ -97,7 +101,9 @@ final class CpuTopology {
         // pools. Never perform an unbounded NUMA topology scan on hot paths.
         if (preferredNuma == UNKNOWN || enabled > MAX_DISCOVERED_CPUS)
             return fallback;
-        for (int distance = 0; distance < enabled; distance++) {
+        for (int distance = 0;
+                distance < Math.min(enabled, MAX_NUMA_SLOT_PROBES);
+                distance++) {
             int slot = (int) (((long) fallback + distance) % enabled);
             Location location = locations.get(cpuForSlot.applyAsInt(slot));
             if (location != null && location.numa() == preferredNuma) return slot;
