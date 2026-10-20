@@ -248,6 +248,8 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
     }
 
     void requestClose() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport close request");
         // Fence new sends first. If a physical write is still pinned, submit
         // the abort to the same bounded host cleanup domain; never run
         // Socket.close() on the requesting/actor carrier.
@@ -290,6 +292,11 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                             "IPC abort scheduler executed inline on requesting carrier"));
                     return;
                 }
+                if (RuntimeBlockingGuard.actorCarrierMarked()) {
+                    sessionLease.quarantineIfUnsettled(new IllegalStateException(
+                            "IPC abort scheduler executed on an actor carrier"));
+                    return;
+                }
                 try {
                     socket.close();
                 } catch (IOException abortFailure) {
@@ -308,6 +315,8 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
      * separately invoke retryQuarantinedClose().
      */
     void retryQuarantinedAbort() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport quarantined abort retry");
         var snapshot = sessionLease.snapshot();
         if (snapshot.phase() != IpcTransportSessionLease.Phase.QUARANTINED
                 || snapshot.activeWrites() <= 0) {
@@ -324,6 +333,8 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
      * callable; a quarantined generation cannot reopen for new writes.
      */
     void retryQuarantinedClose() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport quarantined close retry");
         sessionLease.retryQuarantinedClose();
     }
 
