@@ -38,6 +38,12 @@ final class ExecutionProfileDigestV1Test {
                 p.allocation(),p.freestanding(),null,List.of("fma"));
         assertEquals("dad02ababd944847f5fac379b1c9e8f924233df789a46f436b70e48f3881d55b",
                 ExecutionProfileDigestV1.digest(feature));
+
+        Profile target=new Profile(1,p.backendId(),p.backendSemanticVersion(),p.compilerSemanticVersion(),
+                "x86_64-unknown-linux-gnu",p.dataLayout(),p.runtimeAbi(),p.numericMode(),true,
+                p.allocation(),p.freestanding(),null,List.of());
+        assertEquals("50d472c73b925bb180cada7a0def1f4d386f58a09bbdcd547221ed67bbc5a7e1",
+                ExecutionProfileDigestV1.digest(target));
     }
 
     @Test
