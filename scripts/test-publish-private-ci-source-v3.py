@@ -1506,10 +1506,33 @@ class PrivateCiV3Test(unittest.TestCase):
         with self.assertRaisesRegex(v3.Denied, "target is invalid"):
             v3._gh_ref_request("trusted/ci", "ci/not-an-oreslang-handoff", "GET")
 
+    def test_ref_absence_requires_exact_leading_gh_status(self):
+        variants = (
+            ("gh: Not Found (HTTP 404)", True),
+            ("HTTP 404: Not Found", False),
+            ("gh: Unauthorized (HTTP 401)\nHTTP 404", False),
+            ("gh: Unauthorized (HTTP 401) and (HTTP 404)", False),
+            ("gh: Forbidden (HTTP 403)", False),
+            ("gh: Not Found (HTTP 404)\rspoof", False),
+            ("gh: Not Found (HTTP 404) extra", False),
+        )
+        for diagnostic, accepted in variants:
+            with self.subTest(diagnostic=diagnostic):
+                response = type("Result", (), {
+                    "returncode": 1, "stderr": diagnostic, "stdout": "",
+                })()
+                self.assertEqual(
+                    v3.is_github_ref_absent_response(response), accepted
+                )
+        success = type("Result", (), {
+            "returncode": 0, "stderr": "gh: Not Found (HTTP 404)", "stdout": "",
+        })()
+        self.assertFalse(v3.is_github_ref_absent_response(success))
+
     def test_live_ref_404_requires_carrier_identity_to_remain_visible(self):
         response = type(
             "Result", (),
-            {"returncode": 1, "stderr": "HTTP 404: Not Found", "stdout": ""},
+            {"returncode": 1, "stderr": "gh: Not Found (HTTP 404)", "stdout": ""},
         )()
         with (
             patch.object(v3, "_gh_ref_request", return_value=response),
@@ -1550,7 +1573,7 @@ class PrivateCiV3Test(unittest.TestCase):
     def test_live_ref_404_is_absent_only_after_private_carrier_recheck(self):
         response = type(
             "Result", (),
-            {"returncode": 1, "stderr": "HTTP 404: Not Found", "stdout": ""},
+            {"returncode": 1, "stderr": "gh: Not Found (HTTP 404)", "stdout": ""},
         )()
         with (
             patch.object(v3, "_gh_ref_request", return_value=response),
