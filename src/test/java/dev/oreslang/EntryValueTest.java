@@ -6,6 +6,7 @@ import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
+import org.graalvm.polyglot.PolyglotException;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
@@ -636,6 +637,39 @@ final class EntryValueTest {
                   }
                 end
                 """);
+    }
+
+    @Test
+    void runtimeRejectsEntryFactoryExtractionEvenThroughPrecheckedAstBridge() throws Exception {
+        String code = """
+                pub fnc main(): void {
+                  const factory = Entry.of;
+                  const entry = factory(20, 22);
+                  stdio.println(entry.key + entry.value);
+                  return;
+                }
+                """;
+        Ast.Program deliberatelyUnchecked = Parser.parse(code);
+        Source source = Source.newBuilder(
+                        OresLanguage.ID, code, "entry-runtime-direct-call-only.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (OresLanguage.PrecheckedProgramScope ignored =
+                     OresLanguage.openPrecheckedProgram(
+                             "entry-runtime-direct-call-only.ores",
+                             code,
+                             deliberatelyUnchecked);
+             Context context = Context.newBuilder(OresLanguage.ID)
+                     .allowAllAccess(false)
+                     .build()) {
+            PolyglotException failure = assertThrows(
+                    PolyglotException.class,
+                    () -> context.eval(source));
+            assertTrue(
+                    failure.getMessage().contains("direct-call-only"),
+                    failure.getMessage());
+        }
     }
 
     @Test
