@@ -418,6 +418,19 @@ public final class OresScheduler implements AutoCloseable {
      */
     public <T> OresFuture<T> start(
             Task<T> task, Runnable onQuiescent, Runnable onTerminalReady) {
+        Objects.requireNonNull(onTerminalReady, "onTerminalReady");
+        return start(task, onQuiescent, ignored -> onTerminalReady.run());
+    }
+
+    /**
+     * Stronger structured-lifetime hook. The terminal Future is supplied after
+     * terminal authority is irrevocable and cancellation revocation completed,
+     * but before ordinary subscribers are drained.
+     */
+    public <T> OresFuture<T> start(
+            Task<T> task,
+            Runnable onQuiescent,
+            java.util.function.Consumer<OresFuture<T>> onTerminalReady) {
         return startAdmitted(task, onQuiescent, onTerminalReady,
                 null, 0L, () -> { });
     }
@@ -441,13 +454,16 @@ public final class OresScheduler implements AutoCloseable {
             Throwable deadlineFailure, Runnable onNotificationDrained) {
         Objects.requireNonNull(deadlineFailure, "deadlineFailure");
         Objects.requireNonNull(onNotificationDrained, "onNotificationDrained");
-        return startAdmitted(task, onQuiescent, () -> { }, deadlineFailure,
+        return startAdmitted(task, onQuiescent, ignored -> { }, deadlineFailure,
                 Math.max(0L, remainingNanos), onNotificationDrained);
     }
 
     private <T> OresFuture<T> startAdmitted(
-            Task<T> task, Runnable onQuiescent, Runnable onTerminalReady,
-            Throwable deadlineFailure, long remainingNanos,
+            Task<T> task,
+            Runnable onQuiescent,
+            java.util.function.Consumer<OresFuture<T>> onTerminalReady,
+            Throwable deadlineFailure,
+            long remainingNanos,
             Runnable onNotificationDrained) {
         Objects.requireNonNull(task, "task");
         Objects.requireNonNull(onQuiescent, "onQuiescent");
@@ -655,18 +671,28 @@ public final class OresScheduler implements AutoCloseable {
                 new AtomicReference<>();
         private volatile ActorTurnWatchdog.Lease watchdogLease;
 
-        private TaskRunner(Task<T> task, Runnable onQuiescent,
-                Runnable onTerminalReady,
-                boolean timedAdmission, Runnable onNotificationDrained) {
+        private final java.util.function.Consumer<OresFuture<T>> onTerminalReady;
+
+        private TaskRunner(
+                Task<T> task,
+                Runnable onQuiescent,
+                java.util.function.Consumer<OresFuture<T>> onTerminalReady,
+                boolean timedAdmission,
+                Runnable onNotificationDrained) {
             this.task = task;
             this.onQuiescent = onQuiescent;
+            this.onTerminalReady = onTerminalReady;
             this.timedAdmission = timedAdmission;
             this.onNotificationDrained = onNotificationDrained;
             this.completion = new OresFuture<>(
                     () -> true,
                     this::cancelFromFuture,
-                    onTerminalReady,
+                    this::terminalReady,
                     this::notificationDrained);
+        }
+
+        private void terminalReady() {
+            onTerminalReady.accept(completion);
         }
 
         private void reserveDeadlineSlot() {
