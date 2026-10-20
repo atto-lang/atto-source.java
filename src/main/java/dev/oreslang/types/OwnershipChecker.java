@@ -105,6 +105,7 @@ public final class OwnershipChecker {
             checker.classes.put(name, declaration);
         }
         checker.validate(program);
+        checker.taskTransferProvenance.seal();
         return program;
     }
 
@@ -165,11 +166,16 @@ public final class OwnershipChecker {
         }
         defineImplicitArguments(scope, fn.parameters());
         boolean previousAsyncGenerator = currentAsyncGenerator;
+        TaskTransferProvenance.LexicalTypeContext previousTaskTypeContext =
+                currentTaskTypeContext;
         currentAsyncGenerator = fn.generator() && fn.async();
+        currentTaskTypeContext = new TaskTransferProvenance.LexicalTypeContext(
+                fn.genericParameters(), null, TaskTransferProvenance.SelfMode.NONE);
         try {
             checkBlock(fn.body(), scope, fn.returnType());
         } finally {
             currentAsyncGenerator = previousAsyncGenerator;
+            currentTaskTypeContext = previousTaskTypeContext;
             scope.close();
         }
     }
@@ -212,6 +218,11 @@ public final class OwnershipChecker {
                     }
                 }
             }
+            TaskTransferProvenance.LexicalTypeContext previousTaskTypeContext =
+                    currentTaskTypeContext;
+            currentTaskTypeContext = new TaskTransferProvenance.LexicalTypeContext(
+                    klass.genericParameters(), null,
+                    TaskTransferProvenance.SelfMode.NONE);
             try {
                 for (Ast.FieldDecl field : klass.fields()) {
                     if (field.initializer() == null) continue;
@@ -226,6 +237,7 @@ public final class OwnershipChecker {
                     }
                 }
             } finally {
+                currentTaskTypeContext = previousTaskTypeContext;
                 initializerScope.close();
             }
         }
@@ -244,13 +256,19 @@ public final class OwnershipChecker {
             defineImplicitArguments(scope, constructor.parameters());
             Ast.ClassDecl previousInitializingClass = initializingClass;
             Set<String> previousFixedWrites = constructorFixedFieldWrites;
+            TaskTransferProvenance.LexicalTypeContext previousTaskTypeContext =
+                    currentTaskTypeContext;
             initializingClass = klass;
             constructorFixedFieldWrites = new HashSet<>();
+            currentTaskTypeContext = new TaskTransferProvenance.LexicalTypeContext(
+                    klass.genericParameters(), klass,
+                    TaskTransferProvenance.SelfMode.CLASS_NOMINAL);
             try {
                 checkBlock(constructor.body(), scope, Ast.TypeRef.simple("void"));
             } finally {
                 initializingClass = previousInitializingClass;
                 constructorFixedFieldWrites = previousFixedWrites;
+                currentTaskTypeContext = previousTaskTypeContext;
             }
             scope.close();
         }
@@ -407,6 +425,17 @@ public final class OwnershipChecker {
         }
         if (stmt instanceof Ast.BlockStmt block) {
             checkBlock(block.body(), scope, returnType);
+            return;
+        }
+        if (stmt instanceof Ast.TaskScopeStmt taskScope) {
+            // Phase 2 still admits only today's owned/Send Task captures.
+            // Borrowed captures remain rejected until ExecutionPermit proof
+            // metadata is wired into TaskExpr capture checking.
+            checkBlock(taskScope.body(), scope, returnType);
+            // Scope exit is an implicit asynchronous physical-quiescence wait.
+            // Any loan owned by an enclosing scope would otherwise cross a
+            // hidden suspension point without appearing as an AwaitExpr.
+            checkSuspensionBorrows(scope, "nb scope exit");
             return;
         }
         if (stmt instanceof Ast.BreakStmt) {
@@ -2614,6 +2643,14 @@ public final class OwnershipChecker {
         return new ValueInfo(Ast.TypeRef.simple("Fnc"), ValueKind.MOVE_ONLY, null);
     }
 
+
+    /**
+     * Phase-1 conservative Task capture Send proof. No unsafe guest override
+     * or actor private-state transport; nominal types are accepted only when
+     * their entire non-generic field graph has explicit primitive-owned types.
+     * Later versions will reuse canonical compiler Send derivation under
+     * resolved imported/monomorphized signatures.
+     */
     private CaptureSet collectCaptures(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
         CaptureSet captures = new CaptureSet();
         Set<String> locals = new HashSet<>();
@@ -2645,6 +2682,8 @@ public final class OwnershipChecker {
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.DeferStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.BlockStmt s) {
+                scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.TaskScopeStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.LoopStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
@@ -2791,6 +2830,12 @@ public final class OwnershipChecker {
             for (Ast.ObjectField field : e.fields()) {
                 scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);
             }
+        }
+        else if (expr instanceof Ast.TaskExpr nested) {
+            // A nested Task is a deferred closure, not a capture barrier.
+            // Include its free variables transitively when proving ownership
+            // of the surrounding Task or lambda.
+            scanStatements(nested.body(), locals, outer, recursiveBinding, captures);
         }
         else if (expr instanceof Ast.LambdaExpr lambda) {
             // A lexical nested closure can reference values that belong to an
