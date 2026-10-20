@@ -4656,6 +4656,13 @@ public final class OresEvalRootNode extends RootNode {
             Ast.MemberExpr member =
                     (Ast.MemberExpr) call.callee();
 
+            if (receiver instanceof EntryFactory) {
+                if (!member.member().equals("of")) {
+                    throw new IllegalArgumentException("unknown Entry member " + member.member());
+                }
+                return invokableInvocation(EntryFactory::create, args);
+            }
+
             if (receiver instanceof OptionValue option
                     && member.member().equals("unwrap_all")) {
                 int depth = checkedOptionDepth(call);
@@ -6392,6 +6399,14 @@ public final class OresEvalRootNode extends RootNode {
                 Object receiver = eval(methodCall.receiver(), env);
                 List<Object> args = evaluateArguments(call.arguments(), env);
 
+                if (receiver instanceof EntryFactory) {
+                    if (!methodCall.member().equals("of")) {
+                        throw new IllegalArgumentException(
+                                "unknown Entry member " + methodCall.member());
+                    }
+                    return invokableInvocation(EntryFactory::create, args);
+                }
+
                 if (receiver instanceof OptionValue option
                         && methodCall.member().equals("unwrap_all")) {
                     int depth = checkedOptionDepth(call);
@@ -7525,10 +7540,12 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (receiver instanceof EntryFactory) {
-                if (!name.equals("of")) {
-                    throw new IllegalArgumentException("unknown Entry member " + name);
+                if (name.equals("of")) {
+                    throw new IllegalArgumentException(
+                            "Entry.of is direct-call-only; invoke Entry.of(key, value) directly "
+                                    + "or wrap that call in an explicit lambda");
                 }
-                return (Invokable) EntryFactory::create;
+                throw new IllegalArgumentException("unknown Entry member " + name);
             }
             if (receiver instanceof ChannelFactory factory) {
                 if (!name.equals("new")) {
