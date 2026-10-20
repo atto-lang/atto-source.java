@@ -793,4 +793,33 @@ final class V3DefaultArgValsAdmissionTest {
                 List.of(new Ast.Param(valid, "x")), List.of()).length());
     }
 
+    @Test
+    void v3SourceContractFingerprintMatchesPortableGoldenVectors() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.Param port = new Ast.Param(integer, "port");
+        assertEquals("b0d54b3fcaa18d67a8458eb2a38b811a406f305a4f83494b1b7e12edb713f752",
+                V3SourceContractFingerprint.sha256Hex(List.of(port), List.of()));
+        Ast.Annotation defaultPort = new Ast.Annotation("DefaultArgVals", List.of(),
+                List.of(new Ast.NamedDefault("port", Ast.TypeRef.intLiteral("5432"))));
+        assertEquals("abb925658689cebe19f6863a0229a3c6e4a842a8757ae0d3905b0da139ec7712",
+                V3SourceContractFingerprint.sha256Hex(List.of(port), List.of(defaultPort)));
+        Ast.Param explicit = new Ast.Param(integer, "port",
+                false, false, List.of(), true);
+        assertEquals("9e1718cdd9ec343d61b77ed86c0f0156610642672dea0ea1a31bae306bd4ef0b",
+                V3SourceContractFingerprint.sha256Hex(List.of(explicit), List.of(defaultPort)));
+
+        Ast.TypeRef option = Ast.TypeRef.stagedV3Option(integer);
+        Ast.Param requiredOption = new Ast.Param(option, "x");
+        assertEquals("fedebefe4312226984febe3f6bc7da2948201e42fea941cd79bd0d4858206c25",
+                V3SourceContractFingerprint.sha256Hex(List.of(requiredOption), List.of()));
+        Ast.Param omittableOption = new Ast.Param(option, "x",
+                false, false, List.of(), true);
+        assertEquals("06f54a1ef3c0de5fe680dfbdee2418a7ec6722da9c1b72262d186286d63bc8a8",
+                V3SourceContractFingerprint.sha256Hex(List.of(omittableOption), List.of()));
+        Ast.Annotation noneDefault = new Ast.Annotation("DefaultArgVals", List.of(),
+                List.of(new Ast.NamedDefault("x", Ast.TypeRef.simple("None"))));
+        assertEquals("2e768678477747c301887b5a39d9830b251c3e5b8fe721c66a2d5d1d4288578f",
+                V3SourceContractFingerprint.sha256Hex(List.of(omittableOption), List.of(noneDefault)));
+    }
+
 }
