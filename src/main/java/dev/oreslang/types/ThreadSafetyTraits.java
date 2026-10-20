@@ -42,6 +42,7 @@ public final class ThreadSafetyTraits {
     // Depth bounds stack usage; this separate budget prevents enormous flat
     // types or exponentially repeated DAG traversals from exhausting CPU.
     private static final int MAX_PROOF_STEPS = 100_000;
+    private static final int MAX_METADATA_NAME_CHARS = 1_024;
     private static final Set<String> UNPROVEN_CAPABILITIES = Set.of(
             "Mutex", "MutexGuard", "SharedMutex", "Future",
             "ActorRef", "ActorMail", "ActorOutput", "ActorOutputStream",
@@ -166,7 +167,9 @@ public final class ThreadSafetyTraits {
     }
 
     private static boolean validName(String value) {
-        return value != null && !value.isBlank();
+        return value != null
+                && value.length() <= MAX_METADATA_NAME_CHARS
+                && !value.isBlank();
     }
 
     private static boolean has(
