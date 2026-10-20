@@ -259,6 +259,55 @@ class PrivateCiV3Test(unittest.TestCase):
             protected.assert_called_once_with("trusted/ci", POLICY, 246810)
             fallback.assert_not_called()
 
+    def test_maven_plan_requires_offline_mode_and_exact_pom_blob(self):
+        base = {
+            "schema": "ores-private-ci-test-plan-v1",
+            "source_repo": v3.legacy.SOURCE_REPO,
+            "allowed_prs": [1482],
+            "commands": [{
+                "argv": ["mvn", "-B", "test"],
+                "cwd": ".",
+                "timeout_seconds": 300,
+            }],
+        }
+        raw = (json.dumps(base) + "\n").encode()
+        with self.assertRaisesRegex(v3.Denied, "offline"):
+            v3.validate_test_plan(raw, 1482)
+
+        base["commands"][0]["argv"] = ["mvn", "-o", "-B", "test"]
+        raw = (json.dumps(base) + "\n").encode()
+        with self.assertRaisesRegex(v3.Denied, "bind exact pom.xml"):
+            v3.validate_test_plan(raw, 1482)
+
+        pom = b"<project/>\n"
+        base["required_source_blobs"] = {"pom.xml": v3.git_blob_sha(pom)}
+        raw = (json.dumps(base) + "\n").encode()
+        meta = v3.validate_test_plan(raw, 1482)
+        self.assertTrue(meta["uses_maven"])
+        self.assertEqual(
+            meta["required_source_blobs"]["pom.xml"],
+            v3.git_blob_sha(pom),
+        )
+        v3.verify_required_source_blobs(
+            [("pom.xml", pom, "100644")],
+            meta["required_source_blobs"],
+        )
+
+    def test_required_source_blob_mismatch_fails_before_upload(self):
+        expected = v3.git_blob_sha(b"reviewed pom\n")
+        with self.assertRaisesRegex(v3.Denied, "required blob: pom.xml"):
+            v3.verify_required_source_blobs(
+                [("pom.xml", b"changed pom\n", "100644")],
+                {"pom.xml": expected},
+            )
+
+    def test_test_plan_rejects_unreviewed_extension_fields(self):
+        doc = json.loads(PLAN)
+        doc["network"] = "allow"
+        raw = (json.dumps(doc) + "\n").encode()
+        with self.assertRaisesRegex(v3.Denied, "unexpected fields"):
+            v3.validate_test_plan(raw, 1482)
+
     def test_remote_protected_file_rejects_blob_sha_mismatch(self):
         raw = b"reviewed-bytes\n"
         encoded = base64.b64encode(raw).decode("ascii")
