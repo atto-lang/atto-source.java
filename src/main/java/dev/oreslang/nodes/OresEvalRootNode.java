@@ -5847,6 +5847,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object applyRuntimeOwnership(String operation, Object value) {
+            if (isMlScalarCapabilityValue(value)) {
+                throw new SecurityException(
+                        "rt " + operation
+                                + " cannot observe or transfer compiler-issued actor scalar capabilities");
+            }
             return switch (operation) {
                 // Borrow/take/share alter compiler ownership state, not the JVM handle.
                 case "borrow", "take", "share" -> value;
@@ -8219,6 +8224,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean identityEquals(Object left, Object right) {
+            rejectMlScalarCapabilityComparison(left, right, "identity comparison");
             if (left == right) return true;
             if (left == null || right == null) return false;
 
@@ -8243,6 +8249,7 @@ public final class OresEvalRootNode extends RootNode {
                 Object left,
                 Object right,
                 IdentityHashMap<Object, IdentityHashMap<Object, Boolean>> seen) {
+            rejectMlScalarCapabilityComparison(left, right, "equality comparison");
             if (left == right) return true;
             if (left == null || right == null) return false;
 
@@ -8647,7 +8654,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             throw new IllegalArgumentException("value is not object-destructurable");
         }
-        private String display(Object value) { return value instanceof Complex c ? c.toString() : String.valueOf(value); }
+        private String display(Object value) {
+            rejectMlScalarCapabilityValue(value, "print");
+            return value instanceof Complex c ? c.toString() : String.valueOf(value);
+        }
     }
 
     @FunctionalInterface private interface Invokable { Object call(List<Object> arguments); }
@@ -9326,9 +9336,23 @@ public final class OresEvalRootNode extends RootNode {
         if(value instanceof Object[] array)return new ArrayList<>(java.util.Arrays.asList(array));
         throw new IllegalArgumentException(name+" requires an array/list/tuple value");
     }
+    private static boolean isMlScalarCapabilityValue(Object value) {
+        return value instanceof dev.oreslang.runtime.SealedActorState.ScalarSnapshot
+                || value instanceof dev.oreslang.runtime.SealedActorState.ScalarPublication;
+    }
+
     private static void rejectMlScalarCapabilityValue(Object value, String operation) {
-        if (value instanceof dev.oreslang.runtime.SealedActorState.ScalarSnapshot
-                || value instanceof dev.oreslang.runtime.SealedActorState.ScalarPublication) {
+        if (isMlScalarCapabilityValue(value)) {
+            throw new SecurityException(
+                    operation + " cannot observe compiler-issued actor scalar capabilities");
+        }
+    }
+
+    private static void rejectMlScalarCapabilityComparison(
+            Object left,
+            Object right,
+            String operation) {
+        if (isMlScalarCapabilityValue(left) || isMlScalarCapabilityValue(right)) {
             throw new SecurityException(
                     operation + " cannot observe compiler-issued actor scalar capabilities");
         }
