@@ -190,4 +190,70 @@ final class TupleEmptyAndPatternBoundaryTest {
                         .replace("\r\n", "\n")
                         .strip());
     }
+
+    @Test
+    void forOfPreservesArrayVsTupleUnderBothBodySpellings() throws Exception {
+        String code = """
+                fnc fromArray(): int {
+                  let int total = 0;
+                  for let value of [1, 2, 3] do
+                    total = total + value;
+                  done
+                  return total;
+                }
+                fnc fromCompactTuple(): int {
+                  let int total = 0;
+                  for let value of (1, 2, 3) {
+                    total = total + value;
+                  }
+                  return total;
+                }
+                fnc fromExplicitTuple(): int {
+                  let int total = 0;
+                  for let value of tuple {1, 2, 3} do
+                    total = total + value;
+                  done
+                  return total;
+                }
+                pub fnc main(): void {
+                  stdio.println(fromArray());
+                  stdio.println(fromCompactTuple());
+                  stdio.println(fromExplicitTuple());
+                  return;
+                }
+                """;
+        Ast.Program parsed = Parser.parse(code);
+        OwnershipChecker.check(TypeChecker.check(parsed));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source guest = Source.newBuilder(OresLanguage.ID, code, "tuple-iterators.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(guest);
+        }
+        assertEquals("6\\n6\\n6",
+                output.toString(StandardCharsets.UTF_8)
+                        .replace("\\r\\n", "\\n")
+                        .strip());
+    }
+
+    @Test
+    void zeroElementTupleCannotInventPermissiveForOfElementType() {
+        for (String iterable : new String[]{"()", "tuple {}"}) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("""
+                            fnc bad(): void {
+                              for let value of %s do
+                                const int unsafelyNarrowed = value;
+                              done
+                              return;
+                            }
+                            """.formatted(iterable))));
+            assertTrue(error.getMessage().contains("empty tuple"), error.getMessage());
+        }
+    }
 }
