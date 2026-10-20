@@ -139,6 +139,7 @@ public final class OresTaskScope {
             new OresFuture<>(() -> false, () -> { });
     private State state = State.OPEN;
     private Throwable poisonFailure;
+    private boolean poisonFinalized;
 
     public OresTaskScope(OresScheduler scheduler) {
         this(scheduler, ignored -> { }, ignored -> { });
@@ -251,61 +252,25 @@ public final class OresTaskScope {
         List<OresFuture<?>> cancel = List.of();
         boolean complete = false;
         synchronized (lock) {
-            if (state == State.CLOSED || state == State.POISONED) return drained;
-            if (state != State.CANCELLING) {
-                state = State.CANCELLING;
-                ArrayList<OresFuture<?>> snapshot = new ArrayList<>(children.size());
-                for (Child child : children) {
-                    // fork() holds the same lock through start + Future binding,
-                    // so every child visible here has a handle.
-                    snapshot.add(Objects.requireNonNull(
-                            child.future, "Task scope child missing Future"));
+            if (state == State.CLOSED) return drained;
+            if (state == State.POISONED) {
+                // Poison is a failed lifetime proof, not permission to leave
+                // sibling carriers running. Repeated cancellation remains
+                // useful while the poisoned barrier waits for physical exit.
+                cancel = childFuturesLocked();
+            } else {
+                if (state != State.CANCELLING) {
+                    state = State.CANCELLING;
+                    cancel = childFuturesLocked();
                 }
-                cancel = List.copyOf(snapshot);
-            }
-            if (children.isEmpty()) {
-                state = State.CLOSED;
-                complete = true;
+                if (children.isEmpty()) {
+                    state = State.CLOSED;
+                    complete = true;
+                }
             }
         }
 
-        // Two-phase structured cancellation: first claim every still-pending
-        // child, then revoke every claimed child before publishing any ordinary
-        // Future subscribers. A blocking subscriber on child A must never
-        // prevent revocation of child B.
-        ArrayList<OresFuture.RuntimeCancellation<?>> claimed =
-                new ArrayList<>(cancel.size());
-        for (OresFuture<?> child : cancel) {
-            OresFuture.RuntimeCancellation<?> cancellation =
-                    child.claimCancellationFromRuntime();
-            if (cancellation != null) claimed.add(cancellation);
-        }
-        for (OresFuture.RuntimeCancellation<?> cancellation : claimed) {
-            cancellation.revoke();
-        }
-        if (!claimed.isEmpty()) {
-            List<OresFuture.RuntimeCancellation<?>> fallback = new ArrayList<>();
-            // Ordinary Future subscribers are not part of the structured
-            // lifetime proof. After every child is revoked, publish each
-            // Future independently so a blocking subscriber on child A cannot
-            // pin the parent carrier or starve notifications for child B.
-            for (OresFuture.RuntimeCancellation<?> cancellation : claimed) {
-                try {
-                    Thread.ofVirtual()
-                            .name("ores-task-scope-cancel-publish")
-                            .start(cancellation::publish);
-                } catch (RuntimeException | Error unavailable) {
-                    fallback.add(cancellation);
-                }
-            }
-            // Attempt every asynchronous publication before a synchronous
-            // fallback can block. Revocation is already complete for all
-            // children, so this path cannot weaken the reclamation invariant.
-            for (OresFuture.RuntimeCancellation<?> cancellation : fallback) {
-                cancellation.publish();
-            }
-        }
-
+        cancelChildren(cancel);
         if (complete) completeDrain();
         return drained;
     }
@@ -371,21 +336,31 @@ public final class OresTaskScope {
 
     private void childLifecycleChanged(Child child, boolean terminalEvent) {
         boolean complete = false;
-        Throwable poison = null;
+        Throwable finalizePoison = null;
+        List<OresFuture<?>> cancel = List.of();
         synchronized (lock) {
             if (terminalEvent) child.terminal = true;
             else child.quiescent = true;
 
-            if (state == State.POISONED) return;
-            try {
-                complete = retireChildIfReadyLocked(child);
-            } catch (RuntimeException | Error failure) {
-                poisonScopeLocked(failure);
-                poison = failure;
+            if (state == State.POISONED) {
+                finalizePoison = poisonedDrainReadyLocked();
+            } else {
+                try {
+                    complete = retireChildIfReadyLocked(child);
+                } catch (RuntimeException | Error failure) {
+                    poisonScopeLocked(failure);
+                    cancel = childFuturesLocked();
+                    finalizePoison = poisonedDrainReadyLocked();
+                }
             }
         }
-        if (poison != null) {
-            failPoisonedDrain(poison);
+
+        // Never publish a poisoned drain while another child can still execute
+        // against borrowed state. Revoke all siblings first, then wait for their
+        // independent terminal + physical-quiescence callbacks.
+        cancelChildren(cancel);
+        if (finalizePoison != null) {
+            completePoisonedDrain(finalizePoison);
         } else if (complete) {
             completeDrain();
         }
@@ -427,15 +402,92 @@ public final class OresTaskScope {
     private void poisonScopeLocked(Throwable failure) {
         if (poisonFailure == null) {
             poisonFailure = Objects.requireNonNull(failure, "failure");
+        } else if (poisonFailure != failure) {
+            poisonFailure.addSuppressed(failure);
         }
         state = State.POISONED;
     }
 
-    private void failPoisonedDrain(Throwable failure) {
-        if (!drained.failFromRuntime(failure)) {
+    /**
+     * A poisoned drain is still a physical-lifetime barrier. Failure becomes
+     * observable only after every admitted child is terminal and physically
+     * quiescent; otherwise a catch/cleanup path could race a still-running
+     * borrower.
+     */
+    private Throwable poisonedDrainReadyLocked() {
+        if (state != State.POISONED || poisonFinalized) return null;
+        for (Child child : children) {
+            if (!child.terminal || !child.quiescent) return null;
+        }
+        poisonFinalized = true;
+        return Objects.requireNonNull(
+                poisonFailure, "poisoned Task scope missing failure cause");
+    }
+
+    private void completePoisonedDrain(Throwable failure) {
+        Throwable terminalFailure = Objects.requireNonNull(failure, "failure");
+        try {
+            // Deregistration is safe now because every child carrier is
+            // physically gone. The poisoned Future still prevents this event
+            // from being mistaken for successful region-accounting proof.
+            onClosed.accept(this);
+        } catch (RuntimeException | Error ownerFailure) {
+            if (ownerFailure != terminalFailure) {
+                terminalFailure.addSuppressed(ownerFailure);
+            }
+        }
+        if (!drained.failFromRuntime(terminalFailure)) {
             throw new IllegalStateException(
                     "Task scope drain settled before scoped-read retirement poison",
-                    failure);
+                    terminalFailure);
+        }
+    }
+
+    private List<OresFuture<?>> childFuturesLocked() {
+        ArrayList<OresFuture<?>> snapshot = new ArrayList<>(children.size());
+        for (Child child : children) {
+            // fork() holds the same lock through start + Future binding, so
+            // every child visible to a lifecycle/cancellation transition has a
+            // stable handle.
+            snapshot.add(Objects.requireNonNull(
+                    child.future, "Task scope child missing Future"));
+        }
+        return List.copyOf(snapshot);
+    }
+
+    private void cancelChildren(List<OresFuture<?>> cancel) {
+        if (cancel.isEmpty()) return;
+
+        // Two-phase structured cancellation: first claim every still-pending
+        // child, then revoke every claimed child before publishing any ordinary
+        // Future subscribers. A blocking subscriber on child A must never
+        // prevent revocation of child B.
+        ArrayList<OresFuture.RuntimeCancellation<?>> claimed =
+                new ArrayList<>(cancel.size());
+        for (OresFuture<?> child : cancel) {
+            OresFuture.RuntimeCancellation<?> cancellation =
+                    child.claimCancellationFromRuntime();
+            if (cancellation != null) claimed.add(cancellation);
+        }
+        for (OresFuture.RuntimeCancellation<?> cancellation : claimed) {
+            cancellation.revoke();
+        }
+        if (claimed.isEmpty()) return;
+
+        List<OresFuture.RuntimeCancellation<?>> fallback = new ArrayList<>();
+        for (OresFuture.RuntimeCancellation<?> cancellation : claimed) {
+            try {
+                Thread.ofVirtual()
+                        .name("ores-task-scope-cancel-publish")
+                        .start(cancellation::publish);
+            } catch (RuntimeException | Error unavailable) {
+                fallback.add(cancellation);
+            }
+        }
+        // Attempt every asynchronous publication before a synchronous fallback
+        // can block. Revocation is already complete for all children.
+        for (OresFuture.RuntimeCancellation<?> cancellation : fallback) {
+            cancellation.publish();
         }
     }
 
