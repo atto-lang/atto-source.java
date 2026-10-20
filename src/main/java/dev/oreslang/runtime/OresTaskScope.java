@@ -498,6 +498,26 @@ public final class OresTaskScope implements AutoCloseable {
                     },
                     schedulerLifecycle);
         } catch (RuntimeException | Error rejectedBeforeDispatch) {
+            OresScheduler.CompilerTaskHandle<?> exact =
+                    schedulerChild.get();
+
+            if (exact != null && !neverStartedWitness.get()) {
+                // The scheduler minted/bound an exact child but did not attest
+                // a clean pre-registration rollback. That child may still be
+                // present in the scheduler live set, so neither external
+                // resources nor borrowed memory may be reclaimed here.
+                IllegalStateException indeterminateAdmission =
+                        new IllegalStateException(
+                                "compiler scheduler child admission rollback is unproven");
+                rejectedBeforeDispatch.addSuppressed(
+                        indeterminateAdmission);
+                poisonPhysicalExitAndDependentLoan(
+                        onPhysicalExit, loanRetirement,
+                        indeterminateAdmission);
+                exitFence.failFromRuntime(indeterminateAdmission);
+                throw rejectedBeforeDispatch;
+            }
+
             Throwable releaseFailure = null;
             try {
                 onPhysicalExit.run();
@@ -512,20 +532,15 @@ public final class OresTaskScope implements AutoCloseable {
 
             if (releaseFailure == null) {
                 try {
-                    OresScheduler.CompilerTaskHandle<?> exact =
-                            schedulerChild.get();
                     if (exact == null
                             && schedulerBindAttempted.get()) {
-                        // bindSchedulerChild itself failed. Its partial state
-                        // is unknowable and was poisoned by bind(); preserve
-                        // the owner slot and exact failed authority.
+                        // bindSchedulerChild itself failed before scheduler
+                        // registration. Resource cleanup is safe, but the
+                        // partially accepted compiler authority remains pinned.
                         releaseFailure = rejectedBeforeDispatch;
                     } else if (exact == null) {
                         loanRetirement.retireBeforeSchedulerChildBound(
                                 compilerScopeEpoch, ownedChild);
-                    } else if (!neverStartedWitness.get()) {
-                        throw new IllegalStateException(
-                                "scheduler rejected an exact child without a never-started witness");
                     } else {
                         loanRetirement.retireNeverStarted(
                                 compilerScopeEpoch, ownedChild, exact);
