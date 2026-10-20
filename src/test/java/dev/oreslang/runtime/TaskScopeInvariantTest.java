@@ -188,4 +188,33 @@ final class TaskScopeInvariantTest {
                 () -> joined.get(2, TimeUnit.SECONDS));
     }
 
+    @Test
+    void reservedButNeverScheduledParentCannotSpawnDuringClose() throws Exception {
+        TaskScope scope = new TaskScope();
+        TaskScope.Registration unstarted = scope.reserve();
+        OresFuture<Void> joined = scope.close();
+        assertThrows(IllegalStateException.class, () -> scope.reserve(unstarted));
+        assertFalse(joined.isDone());
+        unstarted.failedAdmission(new java.util.concurrent.RejectedExecutionException(
+                "scheduler refused admission"));
+        assertTrue(joined.isCompletedExceptionally());
+        assertThrows(IllegalStateException.class, unstarted::beganExecution);
+    }
+
+    @Test
+    void dispatchedParentMayAdmitBeforeItsFutureAttachment() throws Exception {
+        TaskScope scope = new TaskScope();
+        TaskScope.Registration parent = scope.reserve();
+        parent.beganExecution();
+        OresFuture<Void> joined = scope.close();
+        TaskScope.Registration grandchild = scope.reserve(parent);
+        parent.attach(OresFuture.completed(null));
+        parent.quiesced();
+        assertFalse(joined.isDone());
+        grandchild.beganExecution();
+        grandchild.attach(OresFuture.completed(null));
+        grandchild.quiesced();
+        assertNull(joined.get(2, TimeUnit.SECONDS));
+    }
+
 }
