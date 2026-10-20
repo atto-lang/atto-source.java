@@ -101,6 +101,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return self.fake_api(route, method, payload)
         return fake, routes
 
+    def test_legacy_cli_is_disabled(self):
+        with patch.object(pub, "publish") as publish:
+            self.assertEqual(pub.main([]), 1)
+            publish.assert_not_called()
+
     def test_gh_api_accepts_successful_empty_delete(self):
         response = type(
             "Response", (), {"returncode": 0, "stdout": "", "stderr": ""})()
