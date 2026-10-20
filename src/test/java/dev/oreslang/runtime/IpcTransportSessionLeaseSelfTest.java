@@ -69,6 +69,8 @@ public final class IpcTransportSessionLeaseSelfTest {
                         throw new AssertionError(impossibleBeforeGuard);
                     }
                 });
+                deny(() -> guardedLease.quarantineIfUnsettled(
+                        new IllegalStateException("actor misuse")));
             } finally {
                 RuntimeBlockingGuard.exitActorCarrier();
             }
