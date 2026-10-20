@@ -266,10 +266,12 @@ public final class OresTaskScope implements AutoCloseable {
         OresFuture<Void> pendingFence = null;
         OresTask<T> pendingOwner = null;
         OwnershipSlot pendingSlot = null;
+        boolean loanChildBound = false;
         try {
             pendingFence = new OresFuture<>();
             pendingOwner = OresTask.provisional(pendingFence);
             loanRetirement.bindChild(compilerScopeEpoch, pendingOwner);
+            loanChildBound = true;
             pendingSlot = new OwnershipSlot();
             pendingSlot.task = pendingOwner;
             synchronized (treeAdmissionGate) {
@@ -296,12 +298,15 @@ public final class OresTaskScope implements AutoCloseable {
             }
             if (releaseFailure == null) {
                 try {
-                    if (pendingOwner == null) {
+                    if (!loanChildBound) {
                         loanRetirement.retireBeforeChildBound(
                                 compilerScopeEpoch);
                     } else {
                         loanRetirement.retireNeverStarted(
-                                compilerScopeEpoch, pendingOwner);
+                                compilerScopeEpoch,
+                                Objects.requireNonNull(
+                                        pendingOwner,
+                                        "bound provisional Task child"));
                     }
                 } catch (RuntimeException | Error failure) {
                     releaseFailure = failure;
