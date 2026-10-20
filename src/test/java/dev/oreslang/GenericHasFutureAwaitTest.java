@@ -177,18 +177,15 @@ final class GenericHasFutureAwaitTest {
 
     @Test
     void preservesExactlyOneFutureNestingLayer() {
+        // Async functions cannot export Future<T> as task payloads; that would
+        // cross the async boundary with a future. Test this rule using a
+        // statically supplied capability instead of an illegal async producer.
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 define trait HasFuture<T> as
                     get_future(): Future<T>;
                 end
-                async fnc inner(): int { return 7; }
-                async fnc nested(): Future<int> { return inner(); }
-                define class Nested implements HasFuture<Future<int>> as
-                    pub get_future(): Future<Future<int>> { return nested(); }
-                end
-                fnc read(): int {
-                    val Future<int> first = await new Nested();
-                    return await first;
+                fnc read(HasFuture<Future<int>> operation): Future<int> {
+                    return await operation;
                 }
                 """));
         assertThrows(IllegalArgumentException.class,
@@ -196,15 +193,11 @@ final class GenericHasFutureAwaitTest {
                         define trait HasFuture<T> as
                             get_future(): Future<T>;
                         end
-                        async fnc inner(): int { return 7; }
-                        async fnc nested(): Future<int> { return inner(); }
-                        define class Nested implements HasFuture<Future<int>> as
-                            pub get_future(): Future<Future<int>> { return nested(); }
-                        end
-                        fnc invalid(): int { return await new Nested(); }
+                        fnc invalid(HasFuture<Future<int>> operation): int {
+                            return await operation;
+                        }
                         """));
     }
-
 
     @Test
     void specializesInheritedGenericClassCapability() {
