@@ -266,7 +266,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     "verified_exact_source_tree",
                     return_value=SOURCE_TREE,
                 ),
-                patch.object(v3, "authorize_write"),
+                patch.object(v3, "authorize_write") as authorize,
                 patch.object(v3.legacy, "gh_api", side_effect=api),
             ):
                 result = v3.publish(
@@ -279,6 +279,9 @@ class PrivateCiV3Test(unittest.TestCase):
                     now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                 )
 
+        # One-file publication has five object writes plus two ref
+        # writes. Each must be preceded by the fail-closed per-write guard.
+        self.assertEqual(authorize.call_count, 7)
         self.assertEqual(result["branch"], "ci/oreslang-" + SOURCE_TREE)
         self.assertEqual(
             result["authorization_ref"], "ci/authorized-" + COMMIT
