@@ -9337,8 +9337,70 @@ public final class OresEvalRootNode extends RootNode {
         throw new IllegalArgumentException(name+" requires an array/list/tuple value");
     }
     private static boolean isMlScalarCapabilityValue(Object value) {
-        return value instanceof dev.oreslang.runtime.SealedActorState.ScalarSnapshot
-                || value instanceof dev.oreslang.runtime.SealedActorState.ScalarPublication;
+        return containsMlScalarCapabilityValue(
+                value,
+                java.util.Collections.newSetFromMap(
+                        new java.util.IdentityHashMap<>()));
+    }
+
+    private static boolean containsMlScalarCapabilityValue(
+            Object value,
+            Set<Object> seen) {
+        if (value instanceof dev.oreslang.runtime.SealedActorState.ScalarSnapshot
+                || value instanceof dev.oreslang.runtime.SealedActorState.ScalarPublication) {
+            return true;
+        }
+        if (value == null
+                || value instanceof String
+                || value instanceof Number
+                || value instanceof Boolean
+                || value instanceof Character
+                || value instanceof Enum<?>) {
+            return false;
+        }
+        if (!seen.add(value)) return false;
+
+        if (value instanceof OptionValue option) {
+            return option.present()
+                    && containsMlScalarCapabilityValue(option.value(), seen);
+        }
+        if (value instanceof ResultValue result) {
+            return containsMlScalarCapabilityValue(result.value(), seen);
+        }
+        if (value instanceof GeneratorRuntime.Step<?> step) {
+            return !step.done()
+                    && containsMlScalarCapabilityValue(step.value(), seen);
+        }
+        if (value instanceof List<?> list) {
+            for (Object item : list) {
+                if (containsMlScalarCapabilityValue(item, seen)) return true;
+            }
+            return false;
+        }
+        if (value instanceof Object[] array) {
+            for (Object item : array) {
+                if (containsMlScalarCapabilityValue(item, seen)) return true;
+            }
+            return false;
+        }
+        if (value instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (containsMlScalarCapabilityValue(entry.getKey(), seen)
+                        || containsMlScalarCapabilityValue(entry.getValue(), seen)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (value instanceof OresObject object) {
+            for (Object field : object.fields.values()) {
+                if (field != UNINITIALIZED_FIELD
+                        && containsMlScalarCapabilityValue(field, seen)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static void rejectMlScalarCapabilityValue(Object value, String operation) {
