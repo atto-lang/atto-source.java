@@ -6799,6 +6799,7 @@ public final class ActorRuntime implements AutoCloseable {
         PhysicalMailReceipt receipt = null;
         List<OresMutex.Shared<?>> sharedMutexReservations = List.of();
         boolean admitted = false;
+        Throwable admissionFailure = null;
         try {
             synchronized (runtimeLifecycleLock) {
                 if (closed.get()) throw new IllegalStateException("actor runtime is closed");
@@ -6879,11 +6880,38 @@ public final class ActorRuntime implements AutoCloseable {
                             sharedMutexReservations);
                 }
             }
+        } catch (RuntimeException | Error failure) {
+            admissionFailure = failure;
+            throw failure;
         } finally {
             if (!admitted) {
-                abortSharedMutexBindings(sharedMutexReservations);
-                if (envelope != null) envelope.close();
-                else release.run();
+                Throwable cleanupFailure = null;
+                try {
+                    abortSharedMutexBindings(sharedMutexReservations);
+                } catch (RuntimeException | Error failure) {
+                    cleanupFailure = failure;
+                }
+                try {
+                    if (envelope != null) envelope.close();
+                    else release.run();
+                } catch (RuntimeException | Error failure) {
+                    if (cleanupFailure == null) cleanupFailure = failure;
+                    else if (cleanupFailure != failure) {
+                        cleanupFailure.addSuppressed(failure);
+                    }
+                }
+
+                if (cleanupFailure != null) {
+                    if (admissionFailure != null) {
+                        if (cleanupFailure != admissionFailure) {
+                            admissionFailure.addSuppressed(cleanupFailure);
+                        }
+                    } else if (cleanupFailure instanceof RuntimeException failure) {
+                        throw failure;
+                    } else if (cleanupFailure instanceof Error failure) {
+                        throw failure;
+                    }
+                }
             }
         }
         cell.schedule();
@@ -7522,7 +7550,13 @@ public final class ActorRuntime implements AutoCloseable {
             }
             return List.copyOf(reserved);
         } catch (RuntimeException | Error failure) {
-            abortSharedMutexBindings(reserved);
+            try {
+                abortSharedMutexBindings(reserved);
+            } catch (RuntimeException | Error rollbackFailure) {
+                if (rollbackFailure != failure) {
+                    failure.addSuppressed(rollbackFailure);
+                }
+            }
             throw failure;
         }
     }
