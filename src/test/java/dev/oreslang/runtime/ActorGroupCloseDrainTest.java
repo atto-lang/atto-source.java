@@ -60,6 +60,69 @@ final class ActorGroupCloseDrainTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void failedCloseAfterSealRetainsExactRecoveryOwnerForRetry() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+
+            var faultField = group.getClass().getDeclaredField(
+                    "groupCloseAfterSealFaultForTesting");
+            var activeField = group.getClass().getDeclaredField("groupCloseActive");
+            var completeField = group.getClass().getDeclaredField("groupCloseComplete");
+            var ownedField = group.getClass().getDeclaredField(
+                    "groupCloseOwnedWorkers");
+            faultField.setAccessible(true);
+            activeField.setAccessible(true);
+            completeField.setAccessible(true);
+            ownedField.setAccessible(true);
+
+            var attempts = new java.util.concurrent.atomic.AtomicInteger();
+            faultField.set(group, (Runnable) () -> {
+                if (attempts.incrementAndGet() == 1) {
+                    throw new OutOfMemoryError(
+                            "injected after ActorGroup admission seal");
+                }
+            });
+
+            var failure = assertThrows(OutOfMemoryError.class, group::closeAsync);
+            assertTrue(failure.getMessage().contains("ActorGroup admission seal"));
+            assertTrue(group.closed(),
+                    "admission remains revoked after a failed close attempt");
+            assertFalse(activeField.getBoolean(group),
+                    "failed cleanup must release its exclusive retry claim");
+            assertFalse(completeField.getBoolean(group),
+                    "the admission seal is not proof of completed cleanup");
+            assertNotNull(ownedField.get(group),
+                    "retry must retain the exact pre-seal worker snapshot");
+            assertFalse(group.closedDone().isDone(),
+                    "failed cleanup cannot forge the close completion barrier");
+
+            var groupsField = ActorRuntime.class.getDeclaredField("actorGroups");
+            groupsField.setAccessible(true);
+            var groups = (java.util.Map<Object, Object>) groupsField.get(runtime);
+            assertSame(group, groups.get(group.id()),
+                    "failed close must remain discoverable for runtime cleanup");
+
+            OresFuture<Void> done = group.closeAsync();
+            assertEquals(2, attempts.get(),
+                    "retry must resume the same post-seal cleanup boundary");
+            assertSame(done, group.closedDone());
+            assertTrue(done.isDone());
+            done.get(5, TimeUnit.SECONDS);
+            assertTrue(completeField.getBoolean(group));
+            assertNull(ownedField.get(group),
+                    "successful cleanup must release its durable close owner");
+            assertNull(groups.get(group.id()),
+                    "successful retry must remove the fully closed group");
+
+            assertSame(done, group.closeAsync(),
+                    "completed ActorGroup close remains idempotent");
+            assertEquals(2, attempts.get(),
+                    "completed close must not replay the fault boundary");
+        }
+    }
+
+    @Test
     void emptyGroupCloseFinishesAndRemainsIdempotent() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
