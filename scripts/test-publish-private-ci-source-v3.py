@@ -820,6 +820,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3, "authorize_write") as authorize_write,
                 patch.object(v3, "verify_published_root_and_commit"),
+                patch.object(v3, "require_handoff_refs_absent"),
                 patch.object(v3, "require_exact_ref") as require_exact_ref,
                 patch.object(v3.legacy, "gh_api", side_effect=api),
             ):
@@ -958,6 +959,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
                 patch.object(v3, "verify_published_root_and_commit"),
+                patch.object(v3, "require_handoff_refs_absent"),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1019,6 +1021,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
                 patch.object(v3, "verify_published_root_and_commit"),
+                patch.object(v3, "require_handoff_refs_absent"),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1085,6 +1088,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
                 patch.object(v3, "verify_published_root_and_commit"),
+                patch.object(v3, "require_handoff_refs_absent"),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1154,6 +1158,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
                 patch.object(v3, "verify_published_root_and_commit"),
+                patch.object(v3, "require_handoff_refs_absent"),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1410,6 +1415,33 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3.subprocess, "run", return_value=response),
         ):
             self.assertIs(v3._gh_ref_request("trusted/ci", ref_name, "GET"), response)
+
+    def test_handoff_absence_guard_rejects_preexisting_payload_or_authorization_ref(self):
+        branch = "ci/oreslang-" + SOURCE_TREE
+        authorization = "ci/authorized-" + COMMIT
+        repo_id = contract()["repository_id"]
+
+        with patch.object(v3, "live_ref_sha", side_effect=[None, None]) as live:
+            v3.require_handoff_refs_absent(
+                "trusted/ci", branch, authorization, repo_id
+            )
+        self.assertEqual(
+            [call.args for call in live.call_args_list],
+            [
+                ("trusted/ci", branch, repo_id),
+                ("trusted/ci", authorization, repo_id),
+            ],
+        )
+
+        for existing in (branch, authorization):
+            values = [COMMIT] if existing == branch else [None, COMMIT]
+            with self.subTest(existing=existing), patch.object(
+                v3, "live_ref_sha", side_effect=values
+            ):
+                with self.assertRaisesRegex(v3.Denied, "already exists"):
+                    v3.require_handoff_refs_absent(
+                        "trusted/ci", branch, authorization, repo_id
+                    )
 
     def test_live_ref_rejects_duplicate_or_nonfinite_json(self):
         payloads = (
