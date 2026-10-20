@@ -9744,19 +9744,30 @@ public final class OresEvalRootNode extends RootNode {
         }
         private boolean canInitialize(OresObject object) { return constructingObject == object; }
         private void define(String name, Object value, Ast.BindingKind kind) {
-            define(name, value, kind, null);
+            define(name, value, kind, null, false);
         }
         private void define(
                 String name,
                 Object value,
                 Ast.BindingKind kind,
                 Ast.ClassDecl staticClassView) {
-            if (slots.putIfAbsent(name, new Slot(value, kind, staticClassView)) != null) {
+            define(name, value, kind, staticClassView, false);
+        }
+        private void define(
+                String name,
+                Object value,
+                Ast.BindingKind kind,
+                Ast.ClassDecl staticClassView,
+                boolean mutableReferent) {
+            if (slots.putIfAbsent(
+                    name,
+                    new Slot(value, kind, staticClassView, mutableReferent)) != null) {
                 throw new IllegalArgumentException("duplicate binding " + name);
             }
         }
         private void reserve(String name, Ast.BindingKind kind) {
-            if (slots.putIfAbsent(name, new Slot(MISSING, kind, null)) != null) throw new IllegalArgumentException("duplicate binding " + name);
+            if (slots.putIfAbsent(name, new Slot(MISSING, kind, null, false)) != null)
+                throw new IllegalArgumentException("duplicate binding " + name);
         }
         private void initialize(String name, Object value) {
             Slot slot = slots.get(name);
@@ -9767,6 +9778,14 @@ public final class OresEvalRootNode extends RootNode {
             Slot slot = slots.get(name);
             return slot != null ? slot : parent == null ? null : parent.lookupSlot(name);
         }
+        private boolean canWriteMap(String name, OresKeyedMap<?, ?> expected) {
+            Slot local = slots.get(name);
+            if (local != null) {
+                return local.value == expected && local.mutableReferent;
+            }
+            return parent != null && parent.canWriteMap(name, expected);
+        }
+
         private Ast.ClassDecl lookupStaticClassView(String name) {
             Slot slot = lookupSlot(name);
             return slot == null ? null : slot.staticClassView;
@@ -9776,6 +9795,10 @@ public final class OresEvalRootNode extends RootNode {
             Slot slot = slots.get(name);
             if (slot != null) {
                 if (slot.kind != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + slot.kind.name().toLowerCase() + " binding " + name);
+                if (slot.value instanceof OresKeyedMap<?, ?>) {
+                    throw new SecurityException(
+                            "typed Map rebinding is disabled until exclusive move semantics are implemented");
+                }
                 slot.value = value;
                 return;
             }
@@ -9916,13 +9939,16 @@ public final class OresEvalRootNode extends RootNode {
         private Object value;
         private final Ast.BindingKind kind;
         private final Ast.ClassDecl staticClassView;
+        private final boolean mutableReferent;
         private Slot(
                 Object value,
                 Ast.BindingKind kind,
-                Ast.ClassDecl staticClassView) {
+                Ast.ClassDecl staticClassView,
+                boolean mutableReferent) {
             this.value = value;
             this.kind = kind;
             this.staticClassView = staticClassView;
+            this.mutableReferent = mutableReferent;
         }
     }
 
