@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -70,20 +69,11 @@ public final class IpcReceiptPhysicalBindingSelfTest {
                 Runnable[] probes = {
                         () -> guardedBridge.claimPhysicalTransport(
                                 new Object(), guardedEpoch, 191),
-                        () -> guardedBridge.admit(
-                                guardedOwner, guardedEpoch, 190),
                         () -> guardedBridge.admitAndCommit(
                                 guardedOwner, guardedEpoch, 190),
-                        () -> guardedBridge.commitDispatch(
-                                guardedOwner, guardedEpoch, 190),
-                        () -> guardedBridge.acceptVerified(
-                                guardedOwner, guardedEpoch, 190,
-                                IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED),
                         () -> guardedBridge.applyVerified(
                                 guardedOwner, guardedEpoch, 190,
                                 IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED),
-                        () -> guardedBridge.rejectBeforeRemote(
-                                guardedOwner, guardedEpoch, 190),
                         () -> guardedBridge.transportLost(
                                 guardedOwner, guardedEpoch, 190),
                         () -> guardedBridge.counters(),
@@ -108,7 +98,7 @@ public final class IpcReceiptPhysicalBindingSelfTest {
         carrier.join(500);
         check(!carrier.isAlive());
         check(carrierFailure.get() == null);
-        check(gateDenials.get() == 10);
+        check(gateDenials.get() == 6);
 
         releaseGate.countDown();
         gateHolder.join(3000);
@@ -118,11 +108,13 @@ public final class IpcReceiptPhysicalBindingSelfTest {
                 new IpcReceiptCorrelation.Counters(0, 0)));
 
         // Verified publication has its own monitor because dependent futures
-        // may run synchronously. It must obey the same fail-before-monitor rule.
+        // may run synchronously. It obeys the same fail-before-monitor rule.
         var publication = new IpcReceiptCompletionBridge.VerifiedCompletion(
                 IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
         CountDownLatch publicationHeld = new CountDownLatch(1);
         CountDownLatch releasePublication = new CountDownLatch(1);
+        AtomicReference<Throwable> publicationHolderFailure =
+                new AtomicReference<>();
         Thread publicationHolder = new Thread(() -> {
             synchronized (publication) {
                 publicationHeld.countDown();
@@ -130,9 +122,8 @@ public final class IpcReceiptPhysicalBindingSelfTest {
                     if (!releasePublication.await(3, TimeUnit.SECONDS)) {
                         throw new AssertionError("publication monitor hold timed out");
                     }
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    throw new AssertionError(interrupted);
+                } catch (Throwable failure) {
+                    publicationHolderFailure.set(failure);
                 }
             }
         }, "ipc-test-publication-monitor-holder");
@@ -164,30 +155,29 @@ public final class IpcReceiptPhysicalBindingSelfTest {
         releasePublication.countDown();
         publicationHolder.join(3000);
         check(!publicationHolder.isAlive());
+        check(publicationHolderFailure.get() == null);
 
+        // A bridge is irreversibly bound to one owner, epoch and generation.
         var bridge = new IpcReceiptCompletionBridge(2);
         var epoch = env(1);
         Object owner = new Object();
         Object foreignOwner = new Object();
-
         bridge.claimPhysicalTransport(owner, epoch, 201);
         deny(() -> bridge.claimPhysicalTransport(foreignOwner, epoch, 202));
         deny(() -> bridge.claimPhysicalTransport(owner, epoch, 201));
-        deny(() -> bridge.transportLost(epoch));
 
-        deny(() -> bridge.admit(epoch));
-        CompletionStage<IpcReceiptCorrelation.Stage> result =
-                bridge.admit(owner, epoch, 201);
-        deny(() -> bridge.commitDispatch(epoch));
-        bridge.commitDispatch(owner, epoch, 201);
-        deny(() -> bridge.transportLost(foreignOwner, epoch, 201));
-        deny(() -> bridge.transportLost(owner, epoch, 202));
-
+        deny(() -> bridge.admitAndCommit(foreignOwner, epoch, 201));
+        deny(() -> bridge.admitAndCommit(owner, epoch, 202));
         var changedEpoch = new IpcReceiptCorrelation.Envelope(
                 "tenant", "sender", "worker", "session",
                 "a".repeat(64), 1, 2, 5, 6, 2, 2);
-        deny(() -> bridge.transportLost(owner, changedEpoch, 201));
+        deny(() -> bridge.admitAndCommit(owner, changedEpoch, 201));
+
+        var result = bridge.admitAndCommit(owner, epoch, 201);
         check(!result.toCompletableFuture().isDone());
+        deny(() -> bridge.transportLost(foreignOwner, epoch, 201));
+        deny(() -> bridge.transportLost(owner, epoch, 202));
+        deny(() -> bridge.transportLost(owner, changedEpoch, 201));
 
         check(bridge.transportLost(owner, epoch, 201) == 1);
         check(result.toCompletableFuture().join()
@@ -196,20 +186,20 @@ public final class IpcReceiptPhysicalBindingSelfTest {
                 new IpcReceiptCorrelation.Counters(0, 0)));
         check(bridge.invariant());
 
-        // Retirement never clears the owner binding. A reconnect must use a
-        // fresh bridge, otherwise a delayed old close could acquire authority.
+        // Retirement never clears the owner binding. Reconnect uses a fresh
+        // bridge and fresh physical generation.
         deny(() -> bridge.claimPhysicalTransport(foreignOwner, epoch, 202));
 
         var fresh = new IpcReceiptCompletionBridge(1);
-        fresh.claimPhysicalTransport(foreignOwner, epoch, 202);
         var next = env(2);
-        var nextResult = fresh.admit(foreignOwner, next, 202);
-        fresh.commitDispatch(foreignOwner, next, 202);
+        fresh.claimPhysicalTransport(foreignOwner, next, 202);
+        var nextResult = fresh.admitAndCommit(foreignOwner, next, 202);
         check(fresh.transportLost(foreignOwner, next, 202) == 1);
         check(nextResult.toCompletableFuture().join()
                 == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
         check(fresh.invariant());
 
-        System.out.println("JAVA_IPC_PHYSICAL_BRIDGE_BINDING_PASS checks=" + checks);
+        System.out.println("JAVA_IPC_PHYSICAL_BRIDGE_BINDING_PASS checks=" + checks
+                + " owner_bound=true");
     }
 }
