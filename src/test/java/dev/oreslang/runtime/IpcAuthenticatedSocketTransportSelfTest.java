@@ -905,10 +905,10 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             }
         }
 
-        // If active-write abort scheduling itself is rejected, the
-        // generation is quarantined. A host supervisor can explicitly retry
-        // the abort after capacity returns, but receipt retirement remains a
-        // separate explicit recovery after the write pin has drained.
+        // If the cleanup domain runs an accepted active-write abort on an
+        // actor carrier, the generation is quarantined before Socket.close().
+        // A host supervisor can explicitly retry the abort on a real host
+        // worker; receipt retirement remains a separate recovery after drain.
         var retryAbortMessage = envelope(1, "retryAbort", 3, 4, blockedPayload);
         try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
              Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort());
@@ -918,7 +918,27 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             AtomicInteger scheduled = new AtomicInteger();
             IpcTransportSessionLease.CleanupScheduler scheduler = cleanup -> {
                 if (scheduled.incrementAndGet() == 1) {
-                    throw new IllegalStateException("abort queue saturated");
+                    Thread invalidCarrier = new Thread(() -> {
+                        RuntimeBlockingGuard.enterActorCarrier();
+                        try {
+                            cleanup.run();
+                        } finally {
+                            RuntimeBlockingGuard.exitActorCarrier();
+                        }
+                    }, "ipc-test-illegal-actor-abort");
+                    invalidCarrier.start();
+                    try {
+                        invalidCarrier.join(3000);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(
+                                "actor-carrier abort fixture interrupted", interrupted);
+                    }
+                    if (invalidCarrier.isAlive()) {
+                        throw new IllegalStateException(
+                                "actor-carrier abort fixture did not finish");
+                    }
+                    return;
                 }
                 offCallerCleanup(cleanup);
             };
