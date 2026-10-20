@@ -96,6 +96,39 @@ final class OresTaskScopeLoanBindingTest {
     }
 
     @Test
+    void registeredExecutorRejectionUsesSchedulerQuiescenceEdge() {
+        RecordingLoan loan = new RecordingLoan();
+        AtomicInteger entered = new AtomicInteger();
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "registered-rejection-loan-test", 1,
+                command -> { throw new java.util.concurrent.RejectedExecutionException(
+                        "executor rejected after scheduler registration"); });
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            OresTask<Integer> child = scope.startCompilerFrame(
+                    scheduler,
+                    resume -> {
+                        entered.incrementAndGet();
+                        return new OresScheduler.Done<>(17);
+                    },
+                    () -> { },
+                    loan);
+
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> AsyncRuntime.await(child.getAwaited()));
+            assertNull(AsyncRuntime.await(child.getDone()));
+            assertEquals(0, entered.get());
+            assertEquals(0, loan.neverStarted.get(),
+                    "registered TaskRunner rejection is not the direct start-throw edge");
+            assertEquals(1, loan.physical.get(),
+                    "scheduler quiescence authenticates registered rejection");
+            assertTrue(scope.physicallyQuiescent());
+        } finally {
+            scheduler.close();
+        }
+    }
+
+    @Test
     void rejectedAdmissionCleanupFailureKeepsNeverStartedLoanPinned() {
         RecordingLoan loan = new RecordingLoan();
         OresScheduler scheduler = new OresScheduler(1);
