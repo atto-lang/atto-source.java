@@ -13,6 +13,8 @@ on:
       - 'src/test/java/dev/oreslang/runtime/NativeOtpCanonicalImportTest.java'
       - 'src/main/java/dev/oreslang/runtime/GenServerReplyLedger.java'
       - 'src/main/java/dev/oreslang/runtime/GenServerCallPort.java'
+      - 'src/test/java/dev/oreslang/runtime/GenServerReplyLedgerSmoke.java'
+      - 'src/test/java/dev/oreslang/runtime/GenServerReplyLedgerGenerationalSmoke.java'
       - 'src/test/java/dev/oreslang/runtime/GenServerCallPortTest.java'
       - 'docs/OTP_GENSERVER_RUNTIME_BRIDGE.md'
       - 'docs/OTP_SIX_MODULE_SOURCE_FOUNDATION.md'
@@ -36,6 +38,15 @@ jobs:
           java-version: '25'
           distribution: 'graalvm'
           cache: maven
+      - name: Prove host reply ledger slot and race invariants
+        run: |
+          mkdir -p /tmp/ores-genserver-test
+          javac -d /tmp/ores-genserver-test \
+            src/main/java/dev/oreslang/runtime/GenServerReplyLedger.java \
+            src/test/java/dev/oreslang/runtime/GenServerReplyLedgerSmoke.java \
+            src/test/java/dev/oreslang/runtime/GenServerReplyLedgerGenerationalSmoke.java
+          java -cp /tmp/ores-genserver-test dev.oreslang.runtime.GenServerReplyLedgerSmoke
+          java -cp /tmp/ores-genserver-test dev.oreslang.runtime.GenServerReplyLedgerGenerationalSmoke
       - name: Execute six OTP source slices
         run: >
           mvn -B -ntp
