@@ -68,6 +68,42 @@ final class TaskBoundaryAdmissionsTest {
     }
 
     @Test
+    void typeOnlyLedgerCannotBypassOwnershipAdmission() {
+        Ast.Program parsed = Parser.parse("""
+                pub fnc main(): void {
+                    let int value = await task { return 11; };
+                    return;
+                }
+                """);
+        TypeChecker.TaskTypeCheckResult typed =
+                TypeChecker.checkTypesWithTaskAdmissions(parsed);
+        Ast.TaskExpr boundary = firstTask(typed.program());
+
+        assertTrue(typed.taskAdmissions().sealed());
+        assertFalse(typed.taskAdmissions().executable());
+        assertThrows(IllegalStateException.class,
+                () -> typed.taskAdmissions().requireScalar(
+                        typed.program(), boundary),
+                "type analysis alone must not mint Task execution authority");
+
+        Ast.Program foreign = new Ast.Program(List.of());
+        OwnershipChecker.TaskAdmissionSeal foreignSeal =
+                OwnershipChecker.checkForTaskAdmission(foreign);
+        assertThrows(IllegalArgumentException.class,
+                () -> typed.taskAdmissions().authorizeExecution(
+                        typed.program(), foreignSeal),
+                "ownership seal from another exact Program must fail closed");
+        assertFalse(typed.taskAdmissions().executable());
+
+        OwnershipChecker.TaskAdmissionSeal exactSeal =
+                OwnershipChecker.checkForTaskAdmission(typed.program());
+        typed.taskAdmissions().authorizeExecution(typed.program(), exactSeal);
+        assertTrue(typed.taskAdmissions().executable());
+        assertNotNull(typed.taskAdmissions().requireScalar(
+                typed.program(), boundary));
+    }
+
+    @Test
     void literalZeroCaptureStillRequiresConcreteAdmission() {
         OresCompiler.TaskBoundaryAnalysis checked =
                 OresCompiler.parseAndAnalyzeTaskBoundaries("""
@@ -141,6 +177,13 @@ final class TaskBoundaryAdmissionsTest {
         admissions.seal();
 
         TaskAccessVerifier verifier = new TaskAccessVerifier();
+        assertThrows(IllegalStateException.class,
+                () -> admissions.mintScopedLoan(program, first, verifier),
+                "sealed type proof still needs exact ownership authorization");
+        assertEquals(0, verifier.activeChildren());
+
+        admissions.authorizeExecution(
+                program, OwnershipChecker.checkForTaskAdmission(program));
         assertNotNull(admissions.mintScopedLoan(program, first, verifier));
         assertEquals(1, verifier.activeChildren());
 
