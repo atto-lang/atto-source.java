@@ -6551,10 +6551,11 @@ public final class ActorRuntime implements AutoCloseable {
                     long continuationDeadline = armMessageDeadline("await continuation");
                     boolean suspendedAgain = false;
                     try {
-                        continuation.continuation().resume(
-                                continuation.value(),
-                                continuation.failure(),
-                                context);
+                        withCausalTrace(continuation.causalTrace(), () ->
+                                continuation.continuation().resume(
+                                        continuation.value(),
+                                        continuation.failure(),
+                                        context));
                     } catch (ActorTurnSuspendedSignal suspended) {
                         suspendedAgain = true;
                     } finally {
@@ -6576,10 +6577,11 @@ public final class ActorRuntime implements AutoCloseable {
                     beginMessageBudget();
                     long eventDeadline = armMessageDeadline("actor continuation event");
                     try {
-                        readyEvent.continuation().resume(
-                                readyEvent.value(),
-                                readyEvent.failure(),
-                                context);
+                        withCausalTrace(readyEvent.causalTrace(), () ->
+                                readyEvent.continuation().resume(
+                                        readyEvent.value(),
+                                        readyEvent.failure(),
+                                        context));
                     } catch (ActorTurnSuspendedSignal suspended) {
                         return;
                     } finally {
@@ -6597,7 +6599,8 @@ public final class ActorRuntime implements AutoCloseable {
                     beginMessageBudget();
                     long tickDeadline = armMessageDeadline("next_tick continuation");
                     try {
-                        nextTick.continuation().resume(null, null, context);
+                        withCausalTrace(nextTick.causalTrace(), () ->
+                                nextTick.continuation().resume(null, null, context));
                     } catch (ActorTurnSuspendedSignal suspended) {
                         return;
                     } finally {
@@ -6619,7 +6622,12 @@ public final class ActorRuntime implements AutoCloseable {
                         long messageDeadline = armMessageDeadline("inbox message");
                         try {
                             try {
-                                behavior.onMessage((M) envelope.value(), context);
+                                withCausalTrace(envelope.causalTrace(), () -> {
+                                    behavior.onMessage((M) envelope.value(), context);
+                                    if (kind.memoryIsolated() && !trustedFactory) {
+                                        validatePrivateBehaviorState(ref.id(), behavior);
+                                    }
+                                });
                             } catch (ActorTurnSuspendedSignal suspended) {
                                 // The live Oreslang frame is already captured in
                                 // the continuation registered by suspendOn().
@@ -6628,9 +6636,6 @@ public final class ActorRuntime implements AutoCloseable {
                                 messageSuspended = true;
                                 suspendedInboxEnvelope = envelope;
                                 return;
-                            }
-                            if (kind.memoryIsolated() && !trustedFactory) {
-                                validatePrivateBehaviorState(ref.id(), behavior);
                             }
                         } finally {
                             disarmMessageDeadline(messageDeadline);
