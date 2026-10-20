@@ -1395,21 +1395,36 @@ public final class OresEvalRootNode extends RootNode {
                 lease.retire();
                 if (child != null) child.quiesced();
             };
+            final OresFuture<Object> future;
             try {
-                OresFuture<Object> future = startSourceBlockTask(
+                future = startSourceBlockTask(
                         task.body(),
                         captured,
                         physicalRetirement,
                         child == null ? ignored -> { } : child::terminalReady);
-                if (child != null) child.attach(future);
-                return future;
             } catch (RuntimeException | Error failure) {
-                // No runtime child can retain this transfer after a
-                // pre-admission failure. Both operations are idempotent.
+                // start(...) did not return a Future, so no runtime child can
+                // be observed by the caller. Retire through the never-started
+                // path. Do not reuse this path for post-start bookkeeping.
                 lease.retire();
                 if (child != null) child.failedAdmission(failure);
                 throw failure;
             }
+
+            if (child != null) {
+                try {
+                    child.attach(future);
+                } catch (RuntimeException | Error attachFailure) {
+                    // A Future now exists and owns the physical retirement
+                    // callback. Never classify this as failed admission or
+                    // release the transfer early. Revoke the orphaned child
+                    // logically; its normal terminal + physical callbacks
+                    // remain the only authority that can retire the ticket.
+                    future.cancel(false);
+                    throw attachFailure;
+                }
+            }
+            return future;
         }
 
         private OresFuture<Object> startSourceBlockTask(
