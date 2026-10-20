@@ -38,6 +38,7 @@ public final class OresCompiler {
                 throw new IllegalArgumentException(
                         "Task boundary analysis requires ownership-authorized executable admissions");
             }
+            taskAdmissions.requireProgramIdentity(program);
         }
     }
 
