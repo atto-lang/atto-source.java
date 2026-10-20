@@ -221,6 +221,16 @@ final class FirstClassModelGraphTest {
     }
 
     @Test
+    void modelInstancesAreNotImplicitActorTransportValues() {
+        assertThrowsMessage("MODEL_ACTOR_TRANSFER_UNSUPPORTED", () ->
+                OresCompiler.parseAndTypeCheck(PRICE_MODEL + """
+                        actor fnc consume(PriceEstimate model): void {
+                          return;
+                        }
+                        """));
+    }
+
+    @Test
     void modelOwnsBothValueAndNominalTypeNames() {
         assertThrowsMessage("MODEL_TYPE_NAME_COLLISION", () ->
                 OresCompiler.parseAndTypeCheck("""
