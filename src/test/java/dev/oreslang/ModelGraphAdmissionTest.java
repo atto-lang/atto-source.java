@@ -2,7 +2,10 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.ModelGraphAdmission;
-import dev.oreslang.compiler.ModelGraphAdmission.*;
+import dev.oreslang.compiler.ModelGraphAdmission.Port;
+import dev.oreslang.compiler.ModelGraphAdmission.Signature;
+import dev.oreslang.compiler.ModelGraphAdmission.Limits;
+import dev.oreslang.compiler.ModelGraphAdmission.ModelGraph;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 import java.util.List;
