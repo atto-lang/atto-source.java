@@ -56,6 +56,216 @@ def contract():
 
 
 class PrivateCiV3Test(unittest.TestCase):
+    def test_carrier_main_requires_protected_reviews_ci_and_codeowners(self):
+        rules = (
+            b"* @ORESoftware\n"
+            b"/.github/ @ORESoftware\n"
+            b"/.github/CODEOWNERS @ORESoftware\n"
+        )
+        root = "repos/trusted/ci"
+        branch = {"name": "main", "protected": True,
+                  "commit": {"sha": BASE}}
+        protection = {
+            "required_pull_request_reviews": {
+                "require_code_owner_reviews": True,
+                "dismiss_stale_reviews": True,
+                "required_approving_review_count": 1,
+                "bypass_pull_request_allowances": {
+                    "users": [], "teams": [], "apps": [],
+                },
+            },
+            "required_status_checks": {
+                "strict": True, "contexts": ["carrier-contracts"], "checks": [],
+            },
+            "enforce_admins": {"enabled": True},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False},
+        }
+        codeowners = {
+            "path": ".github/CODEOWNERS", "type": "file",
+            "encoding": "base64",
+            "content": base64.b64encode(rules).decode("ascii"),
+            "sha": v3.git_blob_sha(rules),
+        }
+        def api(route):
+            return {
+                root + "/branches/main": branch,
+                root + "/branches/main/protection": protection,
+                root + "/contents/.github/CODEOWNERS?ref=" + BASE: codeowners,
+            }[route]
+        with patch.object(v3.legacy, "gh_api", side_effect=api) as gh:
+            v3.require_destination_main_governance("trusted/ci", BASE)
+        self.assertEqual(gh.call_count, 3)
+
+        bad_cases = (
+            (dict(branch, protected=False), protection, codeowners),
+            (branch, dict(protection, enforce_admins={"enabled": False}), codeowners),
+            (branch, dict(protection, required_status_checks={
+                "strict": False, "contexts": ["carrier-contracts"], "checks": [],
+            }), codeowners),
+            (branch, dict(protection, required_pull_request_reviews={
+                **protection["required_pull_request_reviews"],
+                "bypass_pull_request_allowances": {
+                    "users": [{"login": "bypass"}], "teams": [], "apps": [],
+                },
+            }), codeowners),
+            (branch, dict(protection, allow_force_pushes={"enabled": True}), codeowners),
+            (branch, protection, dict(codeowners, sha="0" * 40)),
+        )
+        for changed_branch, changed_protection, changed_owners in bad_cases:
+            with self.subTest(change=(changed_branch, changed_protection, changed_owners)):
+                def changed(route):
+                    return {
+                        root + "/branches/main": changed_branch,
+                        root + "/branches/main/protection": changed_protection,
+                        root + "/contents/.github/CODEOWNERS?ref=" + BASE: changed_owners,
+                    }[route]
+                with patch.object(v3.legacy, "gh_api", side_effect=changed):
+                    with self.assertRaises(v3.Denied):
+                        v3.require_destination_main_governance("trusted/ci", BASE)
+
+    def test_direct_carrier_directory_proof_detects_extra_empty_subtrees(self):
+        base_root = "1" * 40
+        new_root = "2" * 40
+        old_ci = "3" * 40
+        new_ci = "4" * 40
+        receipt = "5" * 40
+        license_sha = "6" * 40
+        plan_sha = "7" * 40
+        def entry(name, mode, kind, sha):
+            return {"path": name, "mode": mode, "type": kind, "sha": sha}
+        original = [
+            entry("ci", "040000", "tree", old_ci),
+            entry("LICENSE", "100644", "blob", license_sha),
+        ]
+        published = [
+            entry("ci", "040000", "tree", new_ci),
+            entry("LICENSE", "100644", "blob", license_sha),
+            entry(v3.legacy.PREFIX, "040000", "tree", SOURCE_TREE),
+        ]
+        ci_before = [entry("test-plan.json", "100644", "blob", plan_sha)]
+        ci_after = ci_before + [
+            entry("oreslang-receipt.json", "100644", "blob", receipt)
+        ]
+        listings = {
+            base_root: original, new_root: published,
+            old_ci: ci_before, new_ci: ci_after,
+        }
+        def api(route):
+            sha = route.rsplit("/", 1)[1]
+            return {"sha": sha, "truncated": False, "tree": listings[sha]}
+        with patch.object(v3.legacy, "gh_api", side_effect=api):
+            v3.verify_carrier_directories(
+                "trusted/ci", base_root, SOURCE_TREE, receipt, new_root
+            )
+            listings[new_root] = published + [
+                entry("injected-empty-tree", "040000", "tree", "8" * 40)
+            ]
+            with self.assertRaisesRegex(v3.Denied, "root directory differs"):
+                v3.verify_carrier_directories(
+                    "trusted/ci", base_root, SOURCE_TREE, receipt, new_root
+                )
+            listings[new_root] = published
+            listings[new_ci] = ci_after + [
+                entry("unexpected.txt", "100644", "blob", "8" * 40)
+            ]
+            with self.assertRaisesRegex(v3.Denied, "receipt directory changed"):
+                v3.verify_carrier_directories(
+                    "trusted/ci", base_root, SOURCE_TREE, receipt, new_root
+                )
+            listings[new_ci] = ci_after
+            listings[new_root] = [
+                dict(item, sha="9" * 40)
+                if item["path"] == v3.legacy.PREFIX else item
+                for item in published
+            ]
+            with self.assertRaisesRegex(v3.Denied, "root directory differs"):
+                v3.verify_carrier_directories(
+                    "trusted/ci", base_root, SOURCE_TREE, receipt, new_root
+                )
+
+    def test_direct_carrier_tree_rejects_unsafe_entries_and_missing_metadata(self):
+        tree = "a" * 40
+        def entry(path):
+            return {"path": path, "mode": "100644",
+                    "type": "blob", "sha": "b" * 40}
+        for entries in (
+            [entry("safe"), entry("safe")],
+            [entry("bad/subpath")],
+            [entry("nul" + chr(0) + "path")],
+            [dict(entry("safe"), type=["blob"])],
+        ):
+            with self.subTest(entries=entries), patch.object(
+                v3.legacy, "gh_api",
+                return_value={"sha": tree, "truncated": False, "tree": entries},
+            ):
+                with self.assertRaises(v3.Denied):
+                    v3.direct_tree_entries("trusted/ci", tree)
+        with patch.object(v3.legacy, "gh_api", return_value=None):
+            with self.assertRaises(v3.Denied):
+                v3.direct_tree_entries("trusted/ci", tree)
+
+    def test_carrier_stored_tree_and_commit_attestation(self):
+        before = {"LICENSE": ("100644", "blob", "7" * 40)}
+        after = dict(before)
+        after[v3.legacy.PREFIX + "/x.ores"] = (
+            "100644", "blob", "8" * 40
+        )
+        after["ci/oreslang-receipt.json"] = (
+            "100644", "blob", "9" * 40
+        )
+        elements = [{
+            "path": "x.ores", "mode": "100644",
+            "type": "blob", "sha": "8" * 40,
+        }]
+        def api(route):
+            if route.endswith("/git/commits/" + COMMIT):
+                return {
+                    "sha": COMMIT, "tree": {"sha": ROOT_TREE},
+                    "parents": [{"sha": BASE}],
+                }
+            raise AssertionError("unexpected API " + route)
+        with (
+            patch.object(v3, "verified_recursive_leaves",
+                         side_effect=[before, after]),
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+        ):
+            v3.verify_published_root_and_commit(
+                "trusted/ci", "1" * 40, BASE, SOURCE_TREE,
+                elements, "9" * 40, ROOT_TREE, COMMIT,
+            )
+        corrupted = dict(after)
+        corrupted["ci/oreslang-receipt.json"] = (
+            "100644", "blob", "0" * 40
+        )
+        with (
+            patch.object(v3, "verified_recursive_leaves",
+                         side_effect=[before, corrupted]),
+            patch.object(v3.legacy, "gh_api", side_effect=api) as gh,
+        ):
+            with self.assertRaisesRegex(v3.Denied, "root tree differs"):
+                v3.verify_published_root_and_commit(
+                    "trusted/ci", "1" * 40, BASE, SOURCE_TREE,
+                    elements, "9" * 40, ROOT_TREE, COMMIT,
+                )
+        gh.assert_not_called()
+        with (
+            patch.object(v3, "verified_recursive_leaves",
+                         side_effect=[before, after]),
+            patch.object(
+                v3.legacy, "gh_api",
+                return_value={
+                    "sha": COMMIT, "tree": {"sha": ROOT_TREE},
+                    "parents": [{"sha": "0" * 40}],
+                },
+            ),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "parent differs"):
+                v3.verify_published_root_and_commit(
+                    "trusted/ci", "1" * 40, BASE, SOURCE_TREE,
+                    elements, "9" * 40, ROOT_TREE, COMMIT,
+                )
+
     def test_route_paths_fail_closed_on_encoded_and_ambiguous_names(self):
         invalid = [
             "ci/test-plans//bad.json",
@@ -1002,6 +1212,8 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(v3, "verify_carrier_directories"),
+                patch.object(v3, "verify_published_root_and_commit"),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1066,6 +1278,8 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(v3, "verify_carrier_directories"),
+                patch.object(v3, "verify_published_root_and_commit"),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1135,6 +1349,8 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(v3, "verify_carrier_directories"),
+                patch.object(v3, "verify_published_root_and_commit"),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1207,6 +1423,8 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(v3, "verify_carrier_directories"),
+                patch.object(v3, "verify_published_root_and_commit"),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
