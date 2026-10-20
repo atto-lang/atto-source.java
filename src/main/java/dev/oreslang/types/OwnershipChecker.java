@@ -37,7 +37,34 @@ public final class OwnershipChecker {
     // Must retain every (module, name, arity) slot. A name-only map loses
     // one overload and can silently skip/misapply its move/borrow effects.
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
-    private enum ReturnOwnershipSummary { UNKNOWN, FRESH }
+    private enum ReturnOwnershipKind {
+        UNKNOWN,
+        FRESH,
+        MOVES_PARAMETER
+    }
+
+    private record ReturnOwnershipSummary(
+            ReturnOwnershipKind kind,
+            int parameterIndex) {
+        private static final ReturnOwnershipSummary UNKNOWN =
+                new ReturnOwnershipSummary(
+                        ReturnOwnershipKind.UNKNOWN, -1);
+        private static final ReturnOwnershipSummary FRESH =
+                new ReturnOwnershipSummary(
+                        ReturnOwnershipKind.FRESH, -1);
+
+        private static ReturnOwnershipSummary movesParameter(
+                int parameterIndex) {
+            if (parameterIndex < 0) {
+                throw new IllegalArgumentException(
+                        "negative moved parameter index");
+            }
+            return new ReturnOwnershipSummary(
+                    ReturnOwnershipKind.MOVES_PARAMETER,
+                    parameterIndex);
+        }
+    }
+
     private final IdentityHashMap<Ast.FunctionDecl, ReturnOwnershipSummary>
             returnOwnershipSummaries = new IdentityHashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
@@ -60,6 +87,9 @@ public final class OwnershipChecker {
      * copy/unique-transfer provenance for the exact scheduled AST boundary.
      */
     private final TaskTransferProvenance taskTransferProvenance;
+    private TaskTransferProvenance.LexicalTypeContext
+            currentTaskTypeContext =
+                    TaskTransferProvenance.LexicalTypeContext.none();
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -201,11 +231,19 @@ public final class OwnershipChecker {
         }
         defineImplicitArguments(scope, fn.parameters());
         boolean previousAsyncGenerator = currentAsyncGenerator;
+        TaskTransferProvenance.LexicalTypeContext
+                previousTaskTypeContext = currentTaskTypeContext;
         currentAsyncGenerator = fn.generator() && fn.async();
+        currentTaskTypeContext =
+                new TaskTransferProvenance.LexicalTypeContext(
+                        fn.genericParameters(),
+                        null,
+                        TaskTransferProvenance.SelfMode.NONE);
         try {
             checkBlock(fn.body(), scope, fn.returnType());
         } finally {
             currentAsyncGenerator = previousAsyncGenerator;
+            currentTaskTypeContext = previousTaskTypeContext;
             scope.close();
         }
     }
@@ -248,6 +286,13 @@ public final class OwnershipChecker {
                     }
                 }
             }
+            TaskTransferProvenance.LexicalTypeContext
+                    previousTaskTypeContext = currentTaskTypeContext;
+            currentTaskTypeContext =
+                    new TaskTransferProvenance.LexicalTypeContext(
+                            klass.genericParameters(),
+                            null,
+                            TaskTransferProvenance.SelfMode.NONE);
             try {
                 for (Ast.FieldDecl field : klass.fields()) {
                     if (field.initializer() == null) continue;
@@ -262,6 +307,7 @@ public final class OwnershipChecker {
                     }
                 }
             } finally {
+                currentTaskTypeContext = previousTaskTypeContext;
                 initializerScope.close();
             }
         }
@@ -280,13 +326,21 @@ public final class OwnershipChecker {
             defineImplicitArguments(scope, constructor.parameters());
             Ast.ClassDecl previousInitializingClass = initializingClass;
             Set<String> previousFixedWrites = constructorFixedFieldWrites;
+            TaskTransferProvenance.LexicalTypeContext
+                    previousTaskTypeContext = currentTaskTypeContext;
             initializingClass = klass;
             constructorFixedFieldWrites = new HashSet<>();
+            currentTaskTypeContext =
+                    new TaskTransferProvenance.LexicalTypeContext(
+                            klass.genericParameters(),
+                            klass,
+                            TaskTransferProvenance.SelfMode.CLASS_NOMINAL);
             try {
                 checkBlock(constructor.body(), scope, Ast.TypeRef.simple("void"));
             } finally {
                 initializingClass = previousInitializingClass;
                 constructorFixedFieldWrites = previousFixedWrites;
+                currentTaskTypeContext = previousTaskTypeContext;
             }
             scope.close();
         }
@@ -333,10 +387,31 @@ public final class OwnershipChecker {
                     }
                 }
             }
-            for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
+            for (Ast.Param param : method.parameters()) {
+                scope.define(param.name(), stateForParam(param));
+            }
             defineImplicitArguments(scope, method.parameters());
-            checkBlock(method.body(), scope, method.returnType());
-            scope.close();
+            ArrayList<String> taskGenerics = new ArrayList<>();
+            if (!method.isStatic()) {
+                taskGenerics.addAll(klass.genericParameters());
+            }
+            taskGenerics.addAll(method.genericParameters());
+            TaskTransferProvenance.LexicalTypeContext
+                    previousTaskTypeContext = currentTaskTypeContext;
+            currentTaskTypeContext =
+                    new TaskTransferProvenance.LexicalTypeContext(
+                            taskGenerics,
+                            method.isStatic() ? null : klass,
+                            method.isStatic()
+                                    ? TaskTransferProvenance.SelfMode.NONE
+                                    : TaskTransferProvenance.SelfMode
+                                            .RECEIVER_POLYMORPHIC);
+            try {
+                checkBlock(method.body(), scope, method.returnType());
+            } finally {
+                currentTaskTypeContext = previousTaskTypeContext;
+                scope.close();
+            }
         }
     }
 
@@ -1920,7 +1995,8 @@ public final class OwnershipChecker {
             transfers.add(scheduledArgumentTransfer(
                     i, argument, value, scope));
         }
-        taskTransferProvenance.record(boundary, transfers);
+        taskTransferProvenance.record(
+                boundary, transfers, currentTaskTypeContext);
         Ast.TypeRef result = Ast.TypeRef.inferred();
         // A lambda whose body explicitly returns a Task creates a genuine
         // nested Task, whether its own scheduling layer is async Future or
@@ -2575,7 +2651,8 @@ public final class OwnershipChecker {
         checkLambda(block, outer, null);
         taskTransferProvenance.record(
                 boundary,
-                scheduledCaptureTransfers(captures));
+                scheduledCaptureTransfers(captures),
+                currentTaskTypeContext);
         return new ValueInfo(new Ast.TypeRef(
                 "Task", List.of(Ast.TypeRef.inferred()), false), ValueKind.MOVE_ONLY, null);
     }
@@ -2745,16 +2822,32 @@ public final class OwnershipChecker {
 
     private ReturnOwnershipSummary summarizeReturnOwnership(
             Ast.FunctionDecl function) {
-        if (function.async() || function.generator()
+        if (function.kind() != Ast.CallableKind.FNC
+                || function.async()
+                || function.suspends()
+                || function.generator()
+                || function.trapped()
+                || function.actorKind() != Ast.ActorKind.NONE
                 || function.body().size() != 1
                 || !(function.body().getFirst()
                         instanceof Ast.ReturnStmt returned)
                 || returned.value() == null) {
             return ReturnOwnershipSummary.UNKNOWN;
         }
-        return isStaticallyFreshReturn(returned.value())
-                ? ReturnOwnershipSummary.FRESH
-                : ReturnOwnershipSummary.UNKNOWN;
+        if (isStaticallyFreshReturn(returned.value())) {
+            return ReturnOwnershipSummary.FRESH;
+        }
+        if (returned.value() instanceof Ast.NameExpr name) {
+            for (int i = 0; i < function.parameters().size(); i++) {
+                Ast.Param parameter = function.parameters().get(i);
+                if (parameter.name().equals(name.name())
+                        && !parameter.structural()
+                        && !parameter.type().isBorrow()) {
+                    return ReturnOwnershipSummary.movesParameter(i);
+                }
+            }
+        }
+        return ReturnOwnershipSummary.UNKNOWN;
     }
 
     /**
@@ -2809,34 +2902,27 @@ public final class OwnershipChecker {
         return false;
     }
 
-    private boolean hasFreshReturnOwnership(
+    private ReturnOwnershipSummary returnOwnershipSummary(
             Ast.CallExpr call, Scope scope) {
+        Ast.FunctionDecl function = null;
         if (call.callee() instanceof Ast.NameExpr name
                 && scope.lookup(name.name()) == null) {
-            Ast.FunctionDecl function = findFunction(
+            function = findFunction(
                     name.name(),
                     syntacticCallArgumentTypes(
                             call.arguments(), scope).size());
-            return function != null
-                    && returnOwnershipSummaries.getOrDefault(
-                            function,
-                            ReturnOwnershipSummary.UNKNOWN)
-                    == ReturnOwnershipSummary.FRESH;
-        }
-        if (call.callee() instanceof Ast.MemberExpr qualified
+        } else if (call.callee() instanceof Ast.MemberExpr qualified
                 && qualified.receiver() instanceof Ast.NameExpr namespace
                 && scope.lookup(namespace.name()) == null) {
-            Ast.FunctionDecl function = findFunction(
+            function = findFunction(
                     namespace.name() + "." + qualified.member(),
                     syntacticCallArgumentTypes(
                             call.arguments(), scope).size());
-            return function != null
-                    && returnOwnershipSummaries.getOrDefault(
-                            function,
-                            ReturnOwnershipSummary.UNKNOWN)
-                    == ReturnOwnershipSummary.FRESH;
         }
-        return false;
+        return function == null
+                ? ReturnOwnershipSummary.UNKNOWN
+                : returnOwnershipSummaries.getOrDefault(
+                        function, ReturnOwnershipSummary.UNKNOWN);
     }
 
     private boolean isProvenTaskOwnedRvalue(
@@ -2917,11 +3003,28 @@ public final class OwnershipChecker {
             return true;
         }
         if (expression instanceof Ast.CallExpr call) {
-            // Callee spelling is never enough. Only an exact indexed guest
-            // function with a compiler-minted FRESH return summary can admit a
-            // move-only call result. Methods and arbitrary/dynamic callables
-            // remain fail-closed until richer effect summaries exist.
-            return hasFreshReturnOwnership(call, scope);
+            // Callee spelling is never enough. Only an exact indexed,
+            // synchronous guest function with a compiler-minted return
+            // ownership summary can admit a move-only call result.
+            ReturnOwnershipSummary summary =
+                    returnOwnershipSummary(call, scope);
+            if (summary.kind() == ReturnOwnershipKind.FRESH) {
+                return true;
+            }
+            if (summary.kind()
+                    == ReturnOwnershipKind.MOVES_PARAMETER) {
+                if (call.arguments().stream()
+                        .anyMatch(Ast.SpreadExpr.class::isInstance)) {
+                    return false;
+                }
+                int parameterIndex = summary.parameterIndex();
+                return parameterIndex >= 0
+                        && parameterIndex < call.arguments().size()
+                        && isProvenTaskOwnedRvalue(
+                                call.arguments().get(parameterIndex),
+                                scope);
+            }
+            return false;
         }
         return false;
     }

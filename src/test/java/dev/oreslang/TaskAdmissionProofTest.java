@@ -99,6 +99,40 @@ final class TaskAdmissionProofTest {
     }
 
     @Test
+    void movedParameterReturnFlowsThroughCombinedAdmissionProof() {
+        OresCompiler.TaskTransferAnalysis checked =
+                OresCompiler.proveTaskTransfers(Parser.parse("""
+                    pub fnc moveThrough(
+                            Array<int> value): Array<int> {
+                        return value;
+                    }
+                    pub fnc main(): void {
+                        let data = arr[1, 2, 3];
+                        let Task<int> result =
+                            (async task |Array<int> value| -> {
+                                return 1;
+                            })(moveThrough(data));
+                        return;
+                    }
+                    """));
+
+        Ast.BindingStmt binding =
+                (Ast.BindingStmt) main(checked.program())
+                        .body().get(1);
+        Ast.CallExpr boundary =
+                (Ast.CallExpr) binding.initializer();
+        TaskAdmissionProof.AdmittedTransfer transfer =
+                checked.admissions()
+                        .transfersFor(boundary).getFirst();
+
+        assertEquals(
+                TaskTransferProvenance.TransferKind.OWNED_RVALUE,
+                transfer.ownership());
+        assertInstanceOf(
+                Types.ListType.class, transfer.resolvedType());
+    }
+
+    @Test
     void readonlyBackingFailsAtResolvedSemanticHalf() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,

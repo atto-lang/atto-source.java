@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
 
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -35,6 +36,42 @@ public final class TaskTransferProvenance {
         OWNED_RVALUE
     }
 
+    enum SelfMode {
+        NONE,
+        CLASS_NOMINAL,
+        RECEIVER_POLYMORPHIC
+    }
+
+    /**
+     * Compiler-minted lexical type-resolution context for one exact Task
+     * boundary. This is not a Send proof and is never source-authorable.
+     */
+    record LexicalTypeContext(
+            List<String> genericParameters,
+            Ast.ClassDecl ownerClass,
+            SelfMode selfMode) {
+        LexicalTypeContext {
+            genericParameters = List.copyOf(
+                    Objects.requireNonNull(
+                            genericParameters, "genericParameters"));
+            selfMode = Objects.requireNonNull(selfMode, "selfMode");
+            if (new HashSet<>(genericParameters).size()
+                    != genericParameters.size()) {
+                throw new IllegalArgumentException(
+                        "duplicate Task lexical generic parameter");
+            }
+            if ((selfMode == SelfMode.NONE) != (ownerClass == null)) {
+                throw new IllegalArgumentException(
+                        "Task lexical self mode/class owner mismatch");
+            }
+        }
+
+        static LexicalTypeContext none() {
+            return new LexicalTypeContext(
+                    List.of(), null, SelfMode.NONE);
+        }
+    }
+
     public static final class Transfer {
         private final String name;
         private final Ast.TypeRef type;
@@ -58,6 +95,8 @@ public final class TaskTransferProvenance {
     private final Ast.Program programIdentity;
     private final IdentityHashMap<Object, List<Transfer>> byBoundary =
             new IdentityHashMap<>();
+    private final IdentityHashMap<Object, LexicalTypeContext>
+            lexicalContextByBoundary = new IdentityHashMap<>();
     private int totalTransfers;
     private boolean sealed;
 
@@ -70,11 +109,19 @@ public final class TaskTransferProvenance {
     Ast.Program programIdentity() { return programIdentity; }
 
     void record(Object boundary, List<Transfer> transfers) {
+        record(boundary, transfers, LexicalTypeContext.none());
+    }
+
+    void record(
+            Object boundary,
+            List<Transfer> transfers,
+            LexicalTypeContext lexicalContext) {
         if (sealed) {
             throw new IllegalStateException(
                     "Task transfer provenance is already sealed");
         }
         Objects.requireNonNull(boundary, "boundary");
+        Objects.requireNonNull(lexicalContext, "lexicalContext");
         List<Transfer> copy =
                 List.copyOf(Objects.requireNonNull(transfers, "transfers"));
         if (copy.size() > MAX_TRANSFERS_PER_BOUNDARY
@@ -83,12 +130,15 @@ public final class TaskTransferProvenance {
             throw new IllegalStateException(
                     "Task transfer provenance capacity exceeded");
         }
-        if (byBoundary.containsKey(boundary)) {
+        if (byBoundary.containsKey(boundary)
+                || lexicalContextByBoundary.containsKey(boundary)) {
             throw new IllegalStateException(
                     "duplicate Task transfer provenance for one AST boundary");
         }
-        // Commit only after every bound/duplicate check so rejection is atomic.
+        // Commit only after every bound/duplicate/context check so rejection
+        // cannot leave the transfer and lexical-context ledgers misaligned.
         byBoundary.put(boundary, copy);
+        lexicalContextByBoundary.put(boundary, lexicalContext);
         totalTransfers += copy.size();
     }
 
@@ -108,6 +158,15 @@ public final class TaskTransferProvenance {
     private List<Transfer> transfersForIdentity(Object boundary) {
         List<Transfer> transfers = byBoundary.get(boundary);
         return transfers == null ? List.of() : transfers;
+    }
+
+    LexicalTypeContext lexicalContextForIdentity(Object boundary) {
+        LexicalTypeContext context = lexicalContextByBoundary.get(boundary);
+        if (context == null && byBoundary.containsKey(boundary)) {
+            throw new IllegalStateException(
+                    "Task transfer provenance lost lexical context");
+        }
+        return context;
     }
 
     void forEachBoundary(

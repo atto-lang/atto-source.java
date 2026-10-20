@@ -173,16 +173,46 @@ public final class TypeChecker {
         TaskSemanticAdmission semantic =
                 new TaskSemanticAdmission(program);
         provenance.forEachBoundary((boundary, transfers) -> {
+            TaskTransferProvenance.LexicalTypeContext lexicalContext =
+                    provenance.lexicalContextForIdentity(boundary);
+            if (lexicalContext == null) {
+                throw new IllegalStateException(
+                        "Task ownership provenance has no lexical context");
+            }
+            Set<String> lexicalGenerics =
+                    Set.copyOf(lexicalContext.genericParameters());
+            Type lexicalSelf = null;
+            if (lexicalContext.selfMode()
+                    != TaskTransferProvenance.SelfMode.NONE) {
+                Ast.ClassDecl ownerClass =
+                        lexicalContext.ownerClass();
+                boolean exactCollectedOwner = checker.classes.values()
+                        .stream()
+                        .anyMatch(candidate ->
+                                candidate == ownerClass);
+                if (!exactCollectedOwner) {
+                    throw new IllegalArgumentException(
+                            "Task lexical self context belongs to a class "
+                                    + "outside the exact program instance");
+                }
+                Type nominalSelf =
+                        checker.nominalClassType(ownerClass);
+                lexicalSelf = lexicalContext.selfMode()
+                                == TaskTransferProvenance.SelfMode
+                                        .RECEIVER_POLYMORPHIC
+                        ? new SelfType(nominalSelf)
+                        : nominalSelf;
+            }
+
             ArrayList<TaskSemanticAdmission.Entry> entries =
                     new ArrayList<>(transfers.size());
             for (TaskTransferProvenance.Transfer transfer : transfers) {
                 Type resolved;
                 try {
-                    // No lexical generic/self context is guessed here. Such
-                    // transfers fail closed until the future full lowering
-                    // bridge supplies exact declaration context.
                     resolved = checker.resolve(
-                            transfer.type(), Set.of(), null);
+                            transfer.type(),
+                            lexicalGenerics,
+                            lexicalSelf);
                 } catch (IllegalArgumentException failure) {
                     throw new IllegalArgumentException(
                             "Task transfer '" + transfer.name()

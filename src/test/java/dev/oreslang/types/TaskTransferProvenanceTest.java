@@ -205,25 +205,35 @@ final class TaskTransferProvenanceTest {
     }
 
     @Test
-    void aliasingOrNestedCallReturnCannotSelfMintFreshOwnership() {
-        IllegalArgumentException alias = assertThrows(
-                IllegalArgumentException.class,
-                () -> OwnershipChecker.check(Parser.parse("""
-                    pub fnc alias(Array<int> value): Array<int> {
-                        return value;
-                    }
-                    pub fnc main(): void {
-                        let data = arr[1, 2, 3];
-                        let Task<int> result =
-                            (async task |Array<int> value| -> { return 1; })(
-                                alias(data));
-                        return;
-                    }
-                    """)));
-        assertTrue(
-                alias.getMessage().contains("rvalue provenance"),
-                alias::getMessage);
+    void directFunctionReturnCanMoveOneOwnedParameter() {
+        Ast.Program program = Parser.parse("""
+            pub fnc moveThrough(Array<int> value): Array<int> {
+                return value;
+            }
+            pub fnc main(): void {
+                let data = arr[1, 2, 3];
+                let Task<int> result =
+                    (async task |Array<int> value| -> { return 1; })(
+                        moveThrough(data));
+                return;
+            }
+            """);
+        Ast.BindingStmt binding =
+                (Ast.BindingStmt) main(program).body().get(1);
+        Ast.CallExpr boundary =
+                (Ast.CallExpr) binding.initializer();
 
+        OwnershipChecker.CheckResult checked =
+                OwnershipChecker.checkWithTaskTransferProvenance(
+                        program);
+        assertEquals(
+                TaskTransferProvenance.TransferKind.OWNED_RVALUE,
+                checked.taskTransfers()
+                        .transfersFor(boundary).getFirst().kind());
+    }
+
+    @Test
+    void nestedArbitraryCallCannotSelfMintFreshOwnership() {
         IllegalArgumentException nestedCall = assertThrows(
                 IllegalArgumentException.class,
                 () -> OwnershipChecker.check(Parser.parse("""
@@ -263,6 +273,186 @@ final class TaskTransferProvenanceTest {
                 failure.getMessage().contains("borrow"),
                 failure::getMessage);
     }
+    @Test
+    void provenanceBindsExactLexicalTypeContextToBoundary() {
+        Ast.TaskBlockStmt boundary =
+                new Ast.TaskBlockStmt(List.of());
+        Ast.ClassDecl owner = new Ast.ClassDecl(
+                "Box",
+                Ast.Visibility.PRIVATE,
+                false,
+                Ast.ActorKind.NONE,
+                List.of("T"),
+                List.of(),
+                List.of(),
+                List.of(),
+                null,
+                List.of());
+        TaskTransferProvenance provenance =
+                new TaskTransferProvenance();
+        provenance.record(
+                boundary,
+                List.of(),
+                new TaskTransferProvenance.LexicalTypeContext(
+                        List.of("T", "U"),
+                        owner,
+                        TaskTransferProvenance.SelfMode
+                                .RECEIVER_POLYMORPHIC));
+        provenance.seal();
+
+        TaskTransferProvenance.LexicalTypeContext context =
+                provenance.lexicalContextForIdentity(boundary);
+        assertEquals(List.of("T", "U"),
+                context.genericParameters());
+        assertSame(owner, context.ownerClass());
+        assertEquals(
+                TaskTransferProvenance.SelfMode.RECEIVER_POLYMORPHIC,
+                context.selfMode());
+        assertNull(provenance.lexicalContextForIdentity(
+                new Ast.TaskBlockStmt(List.of())));
+    }
+
+    @Test
+    void semanticAdmissionResolvesLexicalGenericBeforeFailingConcreteSend() {
+        Ast.FunctionDecl generic = new Ast.FunctionDecl(
+                "generic",
+                Ast.Visibility.PRIVATE,
+                false,
+                List.of("T"),
+                List.of(),
+                Ast.TypeRef.simple("void"),
+                List.of(),
+                List.of());
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl("main", List.of(generic))));
+        Ast.TaskBlockStmt boundary =
+                new Ast.TaskBlockStmt(List.of());
+        TaskTransferProvenance provenance =
+                new TaskTransferProvenance(program);
+        provenance.record(
+                boundary,
+                List.of(new TaskTransferProvenance.Transfer(
+                        "value",
+                        Ast.TypeRef.simple("T"),
+                        TaskTransferProvenance.TransferKind.COPY)),
+                new TaskTransferProvenance.LexicalTypeContext(
+                        List.of("T"),
+                        null,
+                        TaskTransferProvenance.SelfMode.NONE));
+        provenance.seal();
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.checkTaskTransferProvenance(
+                        program, provenance));
+        assertTrue(
+                failure.getMessage().contains(
+                        "concrete owned Send data"),
+                failure::getMessage);
+        assertFalse(
+                failure.getMessage().contains("unknown type 'T'"),
+                failure::getMessage);
+    }
+
+    @Test
+    void semanticAdmissionResolvesExactReceiverSelfContext() {
+        Ast.ClassDecl owner = new Ast.ClassDecl(
+                "Box",
+                Ast.Visibility.PRIVATE,
+                false,
+                Ast.ActorKind.NONE,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                null,
+                List.of());
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl("main", List.of(owner))));
+        Ast.TaskBlockStmt boundary =
+                new Ast.TaskBlockStmt(List.of());
+        TaskTransferProvenance provenance =
+                new TaskTransferProvenance(program);
+        provenance.record(
+                boundary,
+                List.of(new TaskTransferProvenance.Transfer(
+                        "value",
+                        Ast.TypeRef.simple("self"),
+                        TaskTransferProvenance.TransferKind.UNIQUE_MOVE)),
+                new TaskTransferProvenance.LexicalTypeContext(
+                        List.of(),
+                        owner,
+                        TaskTransferProvenance.SelfMode
+                                .RECEIVER_POLYMORPHIC));
+        provenance.seal();
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.checkTaskTransferProvenance(
+                        program, provenance));
+        assertTrue(
+                failure.getMessage().contains(
+                        "concrete owned Send data"),
+                failure::getMessage);
+        assertFalse(
+                failure.getMessage().contains(
+                        "'self' type is only available"),
+                failure::getMessage);
+    }
+
+    @Test
+    void semanticAdmissionRejectsForeignReceiverContextIdentity() {
+        Ast.ClassDecl owner = new Ast.ClassDecl(
+                "Box",
+                Ast.Visibility.PRIVATE,
+                false,
+                Ast.ActorKind.NONE,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                null,
+                List.of());
+        Ast.ClassDecl lookalike = new Ast.ClassDecl(
+                "Box",
+                Ast.Visibility.PRIVATE,
+                false,
+                Ast.ActorKind.NONE,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                null,
+                List.of());
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl("main", List.of(owner))));
+        Ast.TaskBlockStmt boundary =
+                new Ast.TaskBlockStmt(List.of());
+        TaskTransferProvenance provenance =
+                new TaskTransferProvenance(program);
+        provenance.record(
+                boundary,
+                List.of(new TaskTransferProvenance.Transfer(
+                        "value",
+                        Ast.TypeRef.simple("self"),
+                        TaskTransferProvenance.TransferKind.UNIQUE_MOVE)),
+                new TaskTransferProvenance.LexicalTypeContext(
+                        List.of(),
+                        lookalike,
+                        TaskTransferProvenance.SelfMode
+                                .RECEIVER_POLYMORPHIC));
+        provenance.seal();
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.checkTaskTransferProvenance(
+                        program, provenance));
+        assertTrue(
+                failure.getMessage().contains(
+                        "outside the exact program instance"),
+                failure::getMessage);
+    }
+
     @Test
     void provenanceLedgerCapacityAndLabelsFailClosedAtomically() {
         assertThrows(

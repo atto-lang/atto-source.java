@@ -40,6 +40,15 @@ public final class TaskTransferProvenanceSmoke {
         expect(provenance.transfersFor(
                 new Ast.TaskBlockStmt(List.of())).isEmpty(),
                 "lookalike identity cannot claim proof");
+        expect(
+                provenance.lexicalContextForIdentity(boundary)
+                        .selfMode()
+                        == TaskTransferProvenance.SelfMode.NONE,
+                "default lexical context is explicit none");
+        expect(
+                provenance.lexicalContextForIdentity(
+                        new Ast.TaskBlockStmt(List.of())) == null,
+                "lookalike identity cannot claim lexical context");
 
         boolean rejected = false;
         try {
