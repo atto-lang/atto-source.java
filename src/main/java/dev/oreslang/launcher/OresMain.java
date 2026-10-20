@@ -1,8 +1,8 @@
 package dev.oreslang.launcher;
 
 import dev.oreslang.compiler.BuildOptions;
+import dev.oreslang.compiler.BuildTreeShaker;
 import dev.oreslang.compiler.OresCompiler;
-import dev.oreslang.compiler.TreeShaker;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.ExecutionProfile;
@@ -236,23 +236,37 @@ public final class OresMain {
             if (!filename.endsWith(".ores")) {
                 throw new UsageException("--build-analysis currently requires a .ores source file");
             }
-            String source = directOresSource;
-            if (permissionCheckMode == PermissionCheckMode.COMPILE) {
-                OresCompiler.validateForIsolate(source, policy);
-            }
-            Map<String, String> defines = BuildOptions.mergeDefines(System.getenv(), buildDefines);
-            Set<String> entries = buildEntryPoints.isEmpty() ? Set.of("main") : Set.copyOf(buildEntryPoints);
-            TreeShaker.Result result = OresCompiler.compileForBuild(
-                    directOresSource,
+            Map<String, String> defines =
+                    BuildOptions.mergeDefines(System.getenv(), buildDefines);
+            Set<String> entries = buildEntryPoints.isEmpty()
+                    ? Set.of("main")
+                    : Set.copyOf(buildEntryPoints);
+            BuildTreeShaker.Result result = LinkedProgramRunner.analyzeBuild(
+                    path,
+                    System.getenv(),
+                    policy,
+                    permissionCheckMode,
                     new BuildOptions(defines, entries, false));
 
             if (buildAnalysisJson) {
                 System.out.println(result.manifest().toCanonicalJson());
             } else {
-                System.out.println("tree-shake retained:");
-                result.retainedSymbols().stream().sorted().forEach(symbol -> System.out.println("  + " + symbol));
-                System.out.println("tree-shake removed:");
-                result.removedSymbols().stream().sorted().forEach(symbol -> System.out.println("  - " + symbol));
+                System.out.println("tree-shake units retained:");
+                result.build().units().keySet().stream().sorted()
+                        .forEach(unit -> System.out.println("  + " + unit));
+                System.out.println("tree-shake units removed:");
+                result.removedUnits().stream().sorted()
+                        .forEach(unit -> System.out.println("  - " + unit));
+                result.manifests().entrySet().stream()
+                        .sorted(Map.Entry.comparingByKey())
+                        .forEach(entry -> {
+                            System.out.println("tree-shake retained [" + entry.getKey() + "]:");
+                            entry.getValue().retainedSymbols().forEach(
+                                    symbol -> System.out.println("  + " + symbol));
+                            System.out.println("tree-shake removed [" + entry.getKey() + "]:");
+                            entry.getValue().removedSymbols().forEach(
+                                    symbol -> System.out.println("  - " + symbol));
+                        });
             }
             return 0;
         }
