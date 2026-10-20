@@ -1,0 +1,52 @@
+name: Future constructors guest exact-head
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/main/java/dev/oreslang/runtime/OresFutureConstructors.java'
+      - 'src/test/java/dev/oreslang/FutureConstructorsLanguageTest.java'
+      - 'src/test/java/dev/oreslang/runtime/OresFutureConstructorsTest.java'
+      - '.github/workflows/future-constructors-exact-head.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: future-constructors-exact-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  source-and-runtime:
+    # Private-source PRs must not execute untrusted cross-fork source and
+    # must never use an unapproved public/private cross-org CI carrier.
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Assert checked-out exact PR head
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_REPOSITORY: ores-truffle-oreslang/oreslang-source.java
+          SOURCE_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "$EXPECTED_REPOSITORY"
+          test "$SOURCE_PRIVATE" = true
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          echo "Future constructor source head: $(git rev-parse HEAD)"
+          echo "Future constructor source tree: $(git rev-parse HEAD^{tree})"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+      - name: Execute exact-head host and guest Future tests
+        run: mvn -B -ntp '-Dtest=FutureConstructorsLanguageTest,OresFutureConstructorsTest,AsyncAwaitLanguageTest,AsyncRuntimeTest,OresFutureCallbackTest' test
