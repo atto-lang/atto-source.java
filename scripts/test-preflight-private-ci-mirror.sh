@@ -283,6 +283,18 @@ assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   SYNTH_DEST_BASE_COMMIT=5e1079638ba322d0208631ef34fcbd3f129b40ab \
   SYNTH_DEST_BASE_TREE=1f2f5d5f816213192d13c179d0e9381d00fdeaf7 \
   bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
+assert_exit 1 run_preflight SYNTH_PROTECTED=false \
+  SYNTH_DEST_BASE_COMMIT=c5f5155259aa37b808f4e96dbe09cddded4c04ed \
+  SYNTH_DEST_BASE_TREE=15fcb558350a2965d9edf1f503d45a6d8e7f98df \
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
+assert_exit 1 run_preflight SYNTH_PROTECTED=false \
+  SYNTH_DEST_BASE_COMMIT=38957a4218d0025526ed7e6c13b5d38280a94ede \
+  SYNTH_DEST_BASE_TREE=94e48a8a5e8677d4dab7fe2ad9942101c2002890 \
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
+assert_exit 1 run_preflight SYNTH_PROTECTED=false \
+  SYNTH_DEST_BASE_COMMIT=0e494bc70fde8fd74204475ca223a3886d1fe7a3 \
+  SYNTH_DEST_BASE_TREE=46b9c0b186edf6a2e509fceb9e6dc2fde107249a \
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 
 # Merely leaving protection disabled must never activate the fallback when
 # either classic protection or rulesets is actually available.
