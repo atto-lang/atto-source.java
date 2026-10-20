@@ -3,4 +3,5 @@
 # Changes must be reviewed by maintainers and security owners on a protected branch.
 # Format: one exact owner/repo per uncommented line, no whitespace or wildcards.
 # Proposed narrow private carrier for v3 exact-tree tests; requires CODEOWNER review and protected merge.
-# Review-only candidate (NOT an approved destination): ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra
+# Approved only after this PR receives independent CODEOWNER/security review and is merged under enforced source governance:
+usa-acc/usa-acc-e2e
