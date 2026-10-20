@@ -413,6 +413,9 @@ public final class OresTaskScope {
         private final Runnable retirement;
         private final java.util.concurrent.atomic.AtomicBoolean retired =
                 new java.util.concurrent.atomic.AtomicBoolean();
+        private final java.util.concurrent.atomic.AtomicReference<
+                OresScheduler.CompilerTaskHandle<?>> bound =
+                new java.util.concurrent.atomic.AtomicReference<>();
 
         private AtomicRetirement(Runnable retirement) {
             this.retirement = Objects.requireNonNull(
@@ -422,6 +425,10 @@ public final class OresTaskScope {
         @Override
         public void bind(OresScheduler.CompilerTaskHandle<?> child) {
             Objects.requireNonNull(child, "compiler Task child");
+            if (!bound.compareAndSet(null, child)) {
+                throw new IllegalStateException(
+                        "structured compiler Task child bound more than once");
+            }
         }
 
         @Override
