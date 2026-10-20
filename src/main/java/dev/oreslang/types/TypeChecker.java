@@ -5,6 +5,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.compiler.ModelGraphCompiler;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
@@ -66,6 +67,8 @@ public final class TypeChecker {
     private Map<String, Ast.TypeAliasDecl> resolvingLinkedFieldAliases = Map.of();
     private final Set<String> hiddenLinkedAliasNames = new HashSet<>();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
+    /** Canonical compiler-owned first-class model catalog for this source unit. */
+    private ModelGraphCompiler.Catalog modelCatalog;
     /** Lexical compile-time type aliases local to the block currently being checked. */
     private Env currentTypeScope;
     /** Names declared by named inference, including aliases not yet initialized. */
@@ -241,6 +244,7 @@ public final class TypeChecker {
                     }
                     localNames.add(alias.name());
                 }
+                else if (declaration instanceof Ast.ModelDecl model) localNames.add(model.name());
             }
         }
 
@@ -283,6 +287,7 @@ public final class TypeChecker {
                 }
             }
         }
+        modelCatalog = ModelGraphCompiler.compile(program);
     }
 
     private void putFunction(String module, Ast.FunctionDecl fn) {
@@ -338,6 +343,7 @@ public final class TypeChecker {
             String previousModule = currentLexicalModule;
             currentLexicalModule = module.name();
             try {
+                validateModelTypeNamespace(module);
                 validateModuleValueNamespace(module);
                 checkModuleAdherence(module);
                 for (Ast.Decl decl : module.declarations()) {
@@ -349,9 +355,39 @@ public final class TypeChecker {
                         resolve(alias.target(), aliasGenerics, null);
                     }
                     else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
+                    else if (decl instanceof Ast.ModelDecl model) checkModel(model);
                 }
             } finally {
                 currentLexicalModule = previousModule;
+            }
+        }
+    }
+
+    private void validateModelTypeNamespace(Ast.ModuleDecl module) {
+        Set<String> modelNames = new LinkedHashSet<>();
+        for (Ast.Decl declaration : module.declarations()) {
+            if (declaration instanceof Ast.ModelDecl model) modelNames.add(model.name());
+        }
+        if (modelNames.isEmpty()) return;
+
+        for (Ast.Decl declaration : module.declarations()) {
+            String name = null;
+            String category = null;
+            if (declaration instanceof Ast.ClassDecl klass) {
+                name = klass.name();
+                category = "class";
+            } else if (declaration instanceof Ast.InterfaceDecl iface) {
+                name = iface.name();
+                category = iface.moduleContract() ? "contract" : "interface";
+            } else if (declaration instanceof Ast.TypeAliasDecl alias) {
+                name = alias.name();
+                category = "type alias";
+            }
+            if (name != null && modelNames.contains(name)) {
+                throw new IllegalArgumentException(
+                        "MODEL_TYPE_NAME_COLLISION: model '" + module.name() + "." + name
+                                + "' conflicts with " + category
+                                + " '" + name + "' in the nominal type namespace");
             }
         }
     }
@@ -373,6 +409,9 @@ public final class TypeChecker {
             } else if (decl instanceof Ast.FieldDecl field) {
                 name = field.name();
                 category = "binding";
+            } else if (decl instanceof Ast.ModelDecl model) {
+                name = model.name();
+                category = "model";
             } else {
                 continue; // interfaces and aliases occupy the type namespace
             }
@@ -382,7 +421,7 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "module value member '" + module.name() + "." + name
                                 + "' is ambiguous between " + previous + " and " + category
-                                + "; callable/class/binding names share one runtime value namespace");
+                                + "; callable/model/class/binding names share one runtime value namespace");
             }
         }
     }
@@ -521,6 +560,27 @@ public final class TypeChecker {
             }
         }
         return new Record(members);
+    }
+
+    private void checkModel(Ast.ModelDecl model) {
+        for (Ast.ModelParam parameter : model.parameters()) {
+            Type expected = resolve(parameter.type(), Set.of(), null);
+            if (expected == Primitive.VOID || expected instanceof Borrow) {
+                throw new IllegalArgumentException(
+                        "MODEL_INVALID_CONFIG_TYPE: model parameter '" + parameter.name()
+                                + "' must be an owned value type");
+            }
+            if (parameter.defaultValue() != null) {
+                Type actual = typeOf(parameter.defaultValue(), new Env(null), Set.of(), null);
+                requireAssignable(actual, expected,
+                        "default for model parameter '" + parameter.name() + "'");
+            }
+        }
+        ModelGraphCompiler.CompiledModel compiled = findModel(model.name());
+        if (compiled == null || compiled.declaration() != model) {
+            throw new IllegalStateException(
+                    "compiler ModelGraph catalog lost declaration identity for " + model.name());
+        }
     }
 
     private void checkInterface(Ast.InterfaceDecl iface) {
@@ -2228,6 +2288,13 @@ public final class TypeChecker {
                 rejectUnimportedClassNamespace(classNamespace);
                 return new ClassNamespace(qualifiedClassName(classNamespace));
             }
+            ModelGraphCompiler.CompiledModel modelType = findModel(name.name());
+            if (modelType != null) {
+                throw new IllegalArgumentException(
+                        "model type '" + name.name()
+                                + "' is not a first-class factory value; construct it directly with "
+                                + name.name() + "(...)");
+            }
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findSingleFunction(name.name());
             if (fn != null) {
@@ -2641,6 +2708,44 @@ public final class TypeChecker {
                     && modules.containsKey(namespace.name())) {
                 throw new IllegalArgumentException(
                         "module init is a lifecycle hook and cannot be called directly; startup invokes it exactly once");
+            }
+            if (call.callee() instanceof Ast.MemberExpr qualifiedModel
+                    && qualifiedModel.receiver() instanceof Ast.NameExpr namespace
+                    && env.lookup(namespace.name()) == null) {
+                ModelGraphCompiler.CompiledModel model =
+                        modelCatalog == null ? null
+                                : modelCatalog.find(namespace.name() + "." + qualifiedModel.member());
+                if (model != null) {
+                    return typeModelConstruction(model, call, env, generics, self);
+                }
+            }
+            if (call.callee() instanceof Ast.NameExpr modelName
+                    && env.lookup(modelName.name()) == null) {
+                ModelGraphCompiler.CompiledModel model = findModel(modelName.name());
+                if (model != null) {
+                    return typeModelConstruction(model, call, env, generics, self);
+                }
+            }
+            if (call.callee() instanceof Ast.MemberExpr modelRun
+                    && modelRun.member().equals("run")) {
+                Type receiverType = typeOf(modelRun.receiver(), env, generics, self);
+                ModelGraphCompiler.CompiledModel model = modelForType(receiverType);
+                if (model != null) {
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "MODEL_RUN_TYPE_ARGUMENTS: model.run does not accept call-site type arguments");
+                    }
+                    if (call.arguments().size() != 1
+                            || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                        throw new IllegalArgumentException(
+                                "MODEL_RUN_ARITY: model.run expects exactly one input value");
+                    }
+                    Type actual = typeOf(call.arguments().getFirst(), env, generics, self);
+                    Type expected = resolve(model.inputType(), Set.of(), null);
+                    requireAssignable(actual, expected,
+                            "model '" + model.sourceName() + "' input");
+                    return resolve(model.outputType(), Set.of(), null);
+                }
             }
             if (call.callee() instanceof Ast.NameExpr functionName
                     && env.lookup(functionName.name()) == null) {
@@ -3535,6 +3640,16 @@ public final class TypeChecker {
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
+            ModelGraphCompiler.CompiledModel receiverModel = modelForType(deref(receiver));
+            if (receiverModel != null) {
+                if (member.member().equals("run")) {
+                    throw new IllegalArgumentException(
+                            "model.run is direct-call-only; invoke it with exactly one input value");
+                }
+                throw new IllegalArgumentException(
+                        "unknown model member '" + member.member() + "' on "
+                                + receiverModel.sourceName());
+            }
             Type sumReceiver = receiverDispatchType(deref(receiver));
             // Nested extraction consumes the receiver. unwrap_all also
             // requires a checked static-depth proof bound to the CallExpr's
@@ -5332,6 +5447,12 @@ public final class TypeChecker {
         }
         if (!(type instanceof Named named)) {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
+        }
+
+        if (modelCatalog != null && modelCatalog.findByTypeName(named.name()) != null) {
+            throw new IllegalArgumentException(
+                    "MODEL_ACTOR_TRANSFER_UNSUPPORTED: model instances cannot cross actor boundaries "
+                            + "until an explicit frozen/serialization/copy contract is implemented");
         }
 
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
@@ -8382,6 +8503,15 @@ public final class TypeChecker {
                             + "' is not imported; use the public class field contract");
         }
 
+        ModelGraphCompiler.CompiledModel sourceModel = findModel(ref.name());
+        if (sourceModel != null) {
+            if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "model type '" + ref.name() + "' does not accept generic type arguments");
+            }
+            return modelType(sourceModel);
+        }
+
         Ast.TypeAliasDecl alias = resolvingLinkedFieldAliases.get(ref.name());
         if (alias == null) alias = findTypeAlias(ref.name());
         if (alias != null) {
@@ -8554,6 +8684,60 @@ public final class TypeChecker {
                 yield new Named(ref.name(), ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
             }
         };
+    }
+
+    private ModelGraphCompiler.CompiledModel findModel(String name) {
+        if (modelCatalog == null) return null;
+        if (name.indexOf('.') >= 0) return modelCatalog.find(name);
+        if (currentLexicalModule != null && !currentLexicalModule.equals(Parser.ROOT_MODULE)) {
+            ModelGraphCompiler.CompiledModel local =
+                    modelCatalog.find(currentLexicalModule + "." + name);
+            if (local != null) return local;
+        }
+        return modelCatalog.find(name);
+    }
+
+    private Named modelType(ModelGraphCompiler.CompiledModel model) {
+        return new Named(model.modelTypeName(), List.of());
+    }
+
+    private ModelGraphCompiler.CompiledModel modelForType(Type type) {
+        if (!(type instanceof Named named)) return null;
+        return modelCatalog == null ? null : modelCatalog.findByTypeName(named.name());
+    }
+
+    private Type typeModelConstruction(
+            ModelGraphCompiler.CompiledModel model,
+            Ast.CallExpr call,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(
+                    "MODEL_CONFIG_TYPE_ARGUMENTS: model constructors do not accept call-site type arguments");
+        }
+        long required = model.parameters().stream().filter(parameter -> !parameter.hasDefault()).count();
+        if (call.arguments().size() < required
+                || call.arguments().size() > model.parameters().size()) {
+            throw new IllegalArgumentException(
+                    "MODEL_CONFIG_ARITY: model '" + model.sourceName() + "' expects "
+                            + required + ".." + model.parameters().size()
+                            + " positional configuration argument(s), got "
+                            + call.arguments().size());
+        }
+        for (int i = 0; i < call.arguments().size(); i++) {
+            Ast.Expr argument = call.arguments().get(i);
+            if (argument instanceof Ast.SpreadExpr
+                    || !(argument instanceof Ast.LiteralExpr)) {
+                throw new IllegalArgumentException(
+                        "MODEL_NONCONSTANT_CONFIG: model constructor arguments must be bounded literals in executable v1");
+            }
+            Type actual = typeOf(argument, env, generics, self);
+            Type expected = resolve(model.parameters().get(i).type(), Set.of(), null);
+            requireAssignable(actual, expected,
+                    "model configuration parameter '" + model.parameters().get(i).name() + "'");
+        }
+        return modelType(model);
     }
 
     private Ast.TypeRef substituteAliasType(Ast.TypeRef ref, Map<String, Ast.TypeRef> substitutions) {
