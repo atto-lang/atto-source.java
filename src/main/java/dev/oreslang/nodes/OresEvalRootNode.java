@@ -970,6 +970,7 @@ public final class OresEvalRootNode extends RootNode {
             private final List<Ast.Stmt> blockBody;
             private final List<?> arguments;
             private Env initialBlockEnv;
+            private boolean validateScopedReadLeases;
 
             private SourceValueCont awaitingContinuation;
             private OresScheduler.Step<Object> nextStep;
@@ -1033,7 +1034,7 @@ public final class OresEvalRootNode extends RootNode {
                 // authority. A child must never execute after its physical
                 // lifetime lease was retired, even if a future runtime
                 // accounting regression leaves the heap frame reachable.
-                if (initialBlockEnv != null) {
+                if (validateScopedReadLeases && initialBlockEnv != null) {
                     initialBlockEnv.validateScopedReadTickets();
                 }
 
@@ -1325,6 +1326,7 @@ public final class OresEvalRootNode extends RootNode {
             // remain forbidden. The logical SourceTask may migrate between
             // host worker carriers. Actor Tasks remain supervised by CONTROL.
             task.initialBlockEnv = env.snapshot();
+            task.validateScopedReadLeases = !readClaims.isEmpty();
             OresTaskScope structuredScope = env.structuredTaskScope();
             if (structuredScope != null) {
                 if (ActorRuntime.inActorExecution()) {
