@@ -117,6 +117,171 @@ class PrivateCiV3Test(unittest.TestCase):
         with self.assertRaisesRegex(v3.Denied, "bind exact pom.xml"):
             v3.validate_test_plan(maven_without_pom, 1482)
 
+    def test_unprotected_main_accepts_exact_independent_review(self):
+        main_sha = "2" * 40
+        authority_head = "3" * 40
+        policy_bytes = b"trusted/ci\n"
+        policy_digest = hashlib.sha256(policy_bytes).digest()
+
+        def api(route, method="GET", payload=None):
+            if route == (
+                    "repos/" + v3.legacy.SOURCE_REPO
+                    + "/branches/" + v3.legacy.SOURCE_PROTECTED_BRANCH):
+                return {
+                    "name": v3.legacy.SOURCE_PROTECTED_BRANCH,
+                    "protected": False,
+                    "commit": {"sha": main_sha},
+                }
+            if route == (
+                    "repos/" + v3.legacy.SOURCE_REPO
+                    + "/pulls/" + str(v3.REVIEW_AUTHORITY_PR)):
+                return {
+                    "number": v3.REVIEW_AUTHORITY_PR,
+                    "state": "closed",
+                    "merged_at": "2026-10-20T00:00:00Z",
+                    "head": {
+                        "sha": authority_head,
+                        "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                    },
+                    "base": {"ref": v3.legacy.SOURCE_PROTECTED_BRANCH},
+                }
+            raise AssertionError(route)
+
+        def remote(path, ref, _limit):
+            raw = policy_bytes if path == v3.legacy.POLICY_PATH else (path + "\n").encode()
+            blob = hashlib.sha1(
+                b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
+            ).hexdigest()
+            return raw, blob
+
+        reviews = [{
+            "id": 7,
+            "state": "APPROVED",
+            "commit_id": authority_head,
+            "submitted_at": "2026-10-20T00:01:00Z",
+            "user": {
+                "id": v3.REVIEW_AUTHORITY_USER_ID,
+                "login": v3.REVIEW_AUTHORITY_LOGIN,
+            },
+        }]
+        with (
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(v3, "gh_api_list", return_value=reviews),
+            patch.object(v3, "remote_file_at_source_main", side_effect=remote),
+        ):
+            self.assertEqual(
+                v3.authorized_main_sha("trusted/ci", policy_digest),
+                main_sha,
+            )
+
+    def test_unprotected_main_rejects_stale_or_revoked_review(self):
+        main_sha = "2" * 40
+        authority_head = "3" * 40
+        policy_bytes = b"trusted/ci\n"
+        policy_digest = hashlib.sha256(policy_bytes).digest()
+
+        def api(route, method="GET", payload=None):
+            if "/branches/" in route:
+                return {
+                    "name": v3.legacy.SOURCE_PROTECTED_BRANCH,
+                    "protected": False,
+                    "commit": {"sha": main_sha},
+                }
+            if route.endswith("/pulls/" + str(v3.REVIEW_AUTHORITY_PR)):
+                return {
+                    "number": v3.REVIEW_AUTHORITY_PR,
+                    "state": "closed",
+                    "merged_at": "2026-10-20T00:00:00Z",
+                    "head": {
+                        "sha": authority_head,
+                        "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                    },
+                    "base": {"ref": v3.legacy.SOURCE_PROTECTED_BRANCH},
+                }
+            raise AssertionError(route)
+
+        reviews = [
+            {
+                "id": 7,
+                "state": "APPROVED",
+                "commit_id": authority_head,
+                "submitted_at": "2026-10-20T00:01:00Z",
+                "user": {
+                    "id": v3.REVIEW_AUTHORITY_USER_ID,
+                    "login": v3.REVIEW_AUTHORITY_LOGIN,
+                },
+            },
+            {
+                "id": 8,
+                "state": "CHANGES_REQUESTED",
+                "commit_id": authority_head,
+                "submitted_at": "2026-10-20T00:02:00Z",
+                "user": {
+                    "id": v3.REVIEW_AUTHORITY_USER_ID,
+                    "login": v3.REVIEW_AUTHORITY_LOGIN,
+                },
+            },
+        ]
+        with (
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(v3, "gh_api_list", return_value=reviews),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "stale or not approved"):
+                v3.authorized_main_sha("trusted/ci", policy_digest)
+
+    def test_unprotected_main_rejects_governance_drift(self):
+        main_sha = "2" * 40
+        authority_head = "3" * 40
+        policy_bytes = b"trusted/ci\n"
+        policy_digest = hashlib.sha256(policy_bytes).digest()
+
+        def api(route, method="GET", payload=None):
+            if "/branches/" in route:
+                return {
+                    "name": v3.legacy.SOURCE_PROTECTED_BRANCH,
+                    "protected": False,
+                    "commit": {"sha": main_sha},
+                }
+            if route.endswith("/pulls/" + str(v3.REVIEW_AUTHORITY_PR)):
+                return {
+                    "number": v3.REVIEW_AUTHORITY_PR,
+                    "state": "closed",
+                    "merged_at": "2026-10-20T00:00:00Z",
+                    "head": {
+                        "sha": authority_head,
+                        "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                    },
+                    "base": {"ref": v3.legacy.SOURCE_PROTECTED_BRANCH},
+                }
+            raise AssertionError(route)
+
+        def remote(path, ref, _limit):
+            raw = policy_bytes if path == v3.legacy.POLICY_PATH else (path + "\n").encode()
+            blob = hashlib.sha1(
+                b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
+            ).hexdigest()
+            if path == "scripts/publish-private-ci-source-v3.py" and ref == main_sha:
+                blob = "9" * 40
+            return raw, blob
+
+        reviews = [{
+            "id": 7,
+            "state": "APPROVED",
+            "commit_id": authority_head,
+            "submitted_at": "2026-10-20T00:01:00Z",
+            "user": {
+                "id": v3.REVIEW_AUTHORITY_USER_ID,
+                "login": v3.REVIEW_AUTHORITY_LOGIN,
+            },
+        }]
+        with (
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(v3, "gh_api_list", return_value=reviews),
+            patch.object(v3, "remote_file_at_source_main", side_effect=remote),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "governance drifted"):
+                v3.authorized_main_sha("trusted/ci", policy_digest)
+
     def test_contract_rejects_duplicate_json_keys(self):
         raw = (
             '{"schema":1,"schema":1,"carriers":{"trusted/ci":{'
@@ -264,8 +429,7 @@ class PrivateCiV3Test(unittest.TestCase):
             with (
                 patch.object(v3.legacy, "require_preflight"),
                 patch.object(v3.legacy, "checked_policy_fingerprint", return_value=POLICY),
-                patch.object(v3.legacy, "verify_protected_origin"),
-                patch.object(v3, "protected_main_sha", return_value=PROTECTED),
+                patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
                 patch.object(v3, "checked_contract", return_value=carrier),
                 patch.object(
                     v3,
