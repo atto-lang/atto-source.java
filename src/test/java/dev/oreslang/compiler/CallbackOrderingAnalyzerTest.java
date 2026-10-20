@@ -285,4 +285,34 @@ final class CallbackOrderingAnalyzerTest {
                 """);
         assertTrue(containsRule(result, "ORES-CB-002"), result.toString());
     }
+
+    @Test
+    void callbackEmissionInsideListExpressionCannotHideFromZalgoScanner() {
+        var result = scan("""
+                pub fnc foo(Callback cb): void {
+                    let randie = bar();
+                    doMore(|| -> {
+                        let values = [randie.emit("done", true)];
+                    });
+                    randie.on("done", cb);
+                }
+                """);
+        assertTrue(containsRule(result, "ORES-CB-002"), result.toString());
+    }
+
+    @Test
+    void callbackEmissionInsideConditionalGuardCannotHideFromScanner() {
+        var result = scan("""
+                pub fnc foo(Callback cb): void {
+                    let randie = bar();
+                    doMore(|| -> {
+                        if randie.emit("done", true) {
+                            let marker = 1;
+                        } fi
+                    });
+                    randie.on("done", cb);
+                }
+                """);
+        assertTrue(containsRule(result, "ORES-CB-002"), result.toString());
+    }
 }
