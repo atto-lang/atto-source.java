@@ -13,26 +13,29 @@ import static org.junit.jupiter.api.Assertions.*;
 final class OresTaskScopeLoanBindingTest {
     private static final class RecordingLoan
             implements OresTaskScope.CompilerLoanRetirement {
-        Object scopeEpoch;
+        OresTaskScope.CompilerScopeEpoch scopeEpoch;
         OresTask<?> child;
         final AtomicInteger neverStarted = new AtomicInteger();
         final AtomicInteger physical = new AtomicInteger();
 
         @Override
-        public synchronized void bindScope(Object epoch) {
+        public synchronized void bindScope(
+                OresTaskScope.CompilerScopeEpoch epoch) {
             assertNull(scopeEpoch, "scope epoch may be bound once");
             scopeEpoch = epoch;
         }
 
         @Override
-        public synchronized void bindChild(Object epoch, OresTask<?> task) {
+        public synchronized void bindChild(
+                OresTaskScope.CompilerScopeEpoch epoch, OresTask<?> task) {
             assertSame(scopeEpoch, epoch);
             assertNull(child, "child may be bound once");
             child = task;
         }
 
         @Override
-        public synchronized void retireNeverStarted(Object epoch) {
+        public synchronized void retireNeverStarted(
+                OresTaskScope.CompilerScopeEpoch epoch) {
             assertSame(scopeEpoch, epoch);
             assertEquals(0, physical.get());
             neverStarted.incrementAndGet();
@@ -40,7 +43,7 @@ final class OresTaskScopeLoanBindingTest {
 
         @Override
         public synchronized void retireAfterPhysicalQuiescence(
-                Object epoch, OresTask<?> task) {
+                OresTaskScope.CompilerScopeEpoch epoch, OresTask<?> task) {
             assertSame(scopeEpoch, epoch);
             assertSame(child, task);
             assertEquals(0, neverStarted.get());
