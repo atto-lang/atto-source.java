@@ -205,10 +205,33 @@ public final class OresTaskScope {
                         () -> childTerminal(child));
             } catch (RuntimeException | Error failure) {
                 // Admission can fail before TaskRunner ownership exists, in which
-                // case no onQuiescent callback will arrive.
-                children.remove(child);
-                releaseScopedReadsLocked(child);
-                rollbackScopedReadIssuesLocked(child);
+                // case no lifecycle callback will arrive. Roll back authority
+                // before removing the forensic child from the join set.
+                try {
+                    releaseScopedReadsLocked(child);
+                    rollbackScopedReadIssuesLocked(child);
+                    if (!children.remove(child)) {
+                        throw new IllegalStateException(
+                                "failed-admission Task child disappeared during rollback");
+                    }
+                } catch (RuntimeException | Error rollbackFailure) {
+                    if (rollbackFailure != failure) {
+                        rollbackFailure.addSuppressed(failure);
+                    }
+                    // A failed authority rollback is itself a lifetime
+                    // bookkeeping failure. Keep the child pinned; it has no
+                    // carrier, so it is already terminal + physically
+                    // quiescent for poison-barrier purposes.
+                    child.terminal = true;
+                    child.quiescent = true;
+                    child.retirementClaimed = true;
+                    poisonScopeLocked(rollbackFailure);
+                    Throwable poison = poisonedDrainReadyLocked();
+                    if (poison != null) {
+                        completePoisonedDrain(poison);
+                    }
+                    throw rollbackFailure;
+                }
                 throw failure;
             }
 
