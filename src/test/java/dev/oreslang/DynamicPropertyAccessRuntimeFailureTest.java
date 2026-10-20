@@ -274,4 +274,45 @@ final class DynamicPropertyAccessRuntimeFailureTest {
                 "dynamic-structural-interface-extra-field.ores",
                 "structural computed field key outside checked domain: z");
     }
+
+    @Test
+    void structuralInterfaceDynamicAccessCannotExposeExtraStructOrRecordFields() {
+        runtimeRejected("""
+                define interface PointLike
+                    x: int;
+                    y: int;
+                end
+
+                fnc read(structural PointLike value, string key): int {
+                    return value[key];
+                }
+
+                pub fnc main(): void {
+                    val point = infer struct{x: 1, y: 2, z: 3};
+                    stdio.println(read(point, "z"));
+                    return;
+                }
+                """,
+                "dynamic-structural-struct-extra-field.ores",
+                "structural computed field key outside checked domain: z");
+
+        runtimeRejected("""
+                define interface PointLike
+                    x: int;
+                    y: int;
+                end
+
+                fnc read(structural PointLike value, string key): int {
+                    return value[key];
+                }
+
+                pub fnc main(): void {
+                    const row = record{x: 4, y: 5, z: 6};
+                    stdio.println(read(row, "z"));
+                    return;
+                }
+                """,
+                "dynamic-structural-record-extra-field.ores",
+                "structural computed field key outside checked domain: z");
+    }
 }
