@@ -1557,11 +1557,7 @@ public final class TreeShaker {
             for (String name : imported.names()) {
                 if (externalBindings.contains(name)) return true;
             }
-            // An unnamed wildcard import can satisfy any still-unresolved
-            // binding. Without cross-file symbol ownership metadata, dropping
-            // it would be unsound; retain it conservatively until the linker
-            // can prove which wildcard supplied which binding.
-            return imported.wildcard() && !externalBindings.isEmpty();
+            return false;
         }
 
         private String resolveConstantReference(String name, String module) {
