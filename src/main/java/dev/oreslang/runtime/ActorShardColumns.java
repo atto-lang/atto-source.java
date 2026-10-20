@@ -15,7 +15,6 @@ public final class ActorShardColumns extends ActorShardBacking implements AutoCl
     public enum Layout { AOS, SOA, AOSOA }
     private static final int MAX_BYTES = 16 * 1024 * 1024;
 
-    private final ActorRuntime.ActorId owner;
     private final Layout layout;
     private final int rows;
     private final int fields;
@@ -29,7 +28,7 @@ public final class ActorShardColumns extends ActorShardBacking implements AutoCl
      * two lane count; AoS and SoA use lanes=1.
      */
     public ActorShardColumns(Layout layout, int rows, int fields, int lanes) {
-        this.owner = ActorRuntime.currentActorId().orElseThrow(() ->
+        ActorRuntime.currentActorId().orElseThrow(() ->
                 new SecurityException("shard creation requires an executing actor"));
         this.layout = Objects.requireNonNull(layout, "layout");
         if (rows <= 0 || fields <= 0) {
