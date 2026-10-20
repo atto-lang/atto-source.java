@@ -16,6 +16,7 @@ spec = importlib.util.spec_from_file_location("private_publisher", MODULE)
 pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
 A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
+W1, W2 = ("1"*40, "2"*40)
 TEST_BRANCH = "ci/oreslang-" + D + "-" + A
 
 
@@ -88,6 +89,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "/scripts/verify-oreslang-private-ci-snapshot.sh @ORESoftware\n"
             "/scripts/launch-oreslang-private-ci-publisher.py @ORESoftware\n"
             "/.github/oreslang-private-build-images.txt @ORESoftware\n"
+            "/.github/oreslang-private-workflows.txt @ORESoftware\n"
             "/scripts/run-oreslang-private-build-in-sandbox.py @ORESoftware\n"
             "/.github/workflows/ @ORESoftware\n"
         )
@@ -102,6 +104,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "java25 sha256:" + "b" * 64 + "\n"
         )
         self.carrier_build_images_sha = None
+        self.carrier_workflows = {
+            ".github/workflows/private-oreslang-exact-tree.yml": W1,
+            ".github/workflows/private-oreslang-source-gate.yaml": W2,
+        }
+        self.carrier_workflow_manifest_text = "".join(
+            f"{path} {sha}\n" for path, sha in sorted(self.carrier_workflows.items()))
+        self.carrier_workflow_manifest_sha = None
+        self.carrier_tree_truncated = False
+        self.carrier_extra_workflow = None
         self.preflight = patch.object(pub, "require_preflight", return_value=123)
         self.preflight_patch_entry = self.preflight.start()
         self.addCleanup(self.preflight.stop)
@@ -257,6 +268,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     "sha": self.carrier_codeowners_sha or sha,
                     "content": base64.b64encode(raw).decode("ascii")}
         if route == pub.at_ref(
+                "repos/trusted/ci/contents/" + pub.CARRIER_WORKFLOW_MANIFEST_PATH, A):
+            raw = self.carrier_workflow_manifest_text.encode("utf-8")
+            sha = hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
+                                + bytes([0]) + raw).hexdigest()
+            return {"type": "file", "encoding": "base64", "size": len(raw),
+                    "sha": self.carrier_workflow_manifest_sha or sha,
+                    "content": base64.b64encode(raw).decode("ascii")}
+        if route == pub.at_ref(
                 "repos/trusted/ci/contents/" + pub.CARRIER_APPROVAL_PATH, A):
             raw = self.carrier_reviewed_snapshot.encode("utf-8")
             return {"type": "file", "encoding": "base64", "size": len(raw),
@@ -312,8 +331,19 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == "repos/trusted/ci/collaborators/ORESoftware/permission":
             return {"permission": self.carrier_security_permission,
                     "user": {"login": "ORESoftware", "type": "User"}}
+        workflow_tree = [
+            {"path": path, "mode": "100644", "type": "blob", "sha": sha}
+            for path, sha in sorted(self.carrier_workflows.items())
+        ]
+        if self.carrier_extra_workflow is not None:
+            workflow_tree.append({
+                "path": self.carrier_extra_workflow,
+                "mode": "100644", "type": "blob", "sha": E,
+            })
         mapping = {
             "repos/trusted/ci/git/commits/"+A: {"sha": A, "tree": {"sha": B}},
+            "repos/trusted/ci/git/trees/"+B+"?recursive=1": {
+                "sha": B, "truncated": self.carrier_tree_truncated, "tree": workflow_tree},
             "repos/trusted/ci/git/commits": {"sha": C},
             "repos/trusted/ci/git/commits/"+C: {"sha": C, "tree": {"sha": E}},
             "repos/trusted/ci/git/refs": {
@@ -3030,6 +3060,51 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                           side_effect=AssertionError("private source read too early")):
             with self.assertRaisesRegex(pub.Denied, "selected Actions policy is too broad"):
                 self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+
+    def test_unlisted_carrier_workflow_denies_before_source_read(self):
+        self.carrier_extra_workflow = ".github/workflows/unreviewed.yml"
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read too early")):
+            with self.assertRaisesRegex(pub.Denied, "workflow surface differs"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_truncated_carrier_tree_denies_before_source_read(self):
+        self.carrier_tree_truncated = True
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read too early")):
+            with self.assertRaisesRegex(pub.Denied, "recursive tree is unavailable or truncated"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_workflow_manifest_drift_denies_before_first_write(self):
+        original = self.fake_api
+        calls = {"manifest": 0}
+        manifest_route = pub.at_ref(
+            "repos/trusted/ci/contents/" + pub.CARRIER_WORKFLOW_MANIFEST_PATH, A)
+
+        def drift(route, method="GET", payload=None):
+            if route == manifest_route:
+                calls["manifest"] += 1
+                if calls["manifest"] >= 2:
+                    self.route_calls.append((method, route, payload))
+                    raw = (
+                        ".github/workflows/private-oreslang-exact-tree.yml " + W1 + "\n"
+                    ).encode("utf-8")
+                    sha = hashlib.sha1(
+                        b"blob " + str(len(raw)).encode("ascii") + bytes([0]) + raw
+                    ).hexdigest()
+                    return {"type": "file", "encoding": "base64", "size": len(raw),
+                            "sha": sha,
+                            "content": base64.b64encode(raw).decode("ascii")}
+            return original(route, method, payload)
+
+        with patch.object(pub, "gh_api", side_effect=drift):
+            with self.assertRaisesRegex(pub.Denied, "workflow manifest changed"):
+                pub.publish("trusted/ci", self.source, TEST_BRANCH,
+                            self.root, self.expected_tree, D)
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
 
