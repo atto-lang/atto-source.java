@@ -147,6 +147,8 @@ public final class OresKeyedMap<K, V> {
 
     /** Sanitized duplicate-key error; never render a private key in logs. */
     public static final class DuplicateKeyException extends IllegalArgumentException {
+        private static final long serialVersionUID = 1L;
+
         public DuplicateKeyException() {
             super("duplicate logical key in typed Map entries");
         }
