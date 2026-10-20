@@ -49,6 +49,19 @@ final class CallbackOrderingAnalyzerTest {
     }
 
     @Test
+    void merelyRegisteringListenerDoesNotInvokeIt() {
+        var result = scan("""
+                pub fnc foo(): void {
+                    let randie = bar();
+                    randie.on("done", || -> {
+                        randie.emit("done", true);
+                    });
+                }
+                """);
+        assertFalse(containsRule(result, "ORES-ZALGO-001"), result.toString());
+    }
+
+    @Test
     void eventNameMustMatchUnlessDynamic() {
         var result = scan("""
                 pub fnc foo(Callback cb): void {
