@@ -200,6 +200,38 @@ final class GenericHasFutureAwaitTest {
     }
 
     @Test
+    void allowsRepeatedAwaitOfNamedCapabilityWithoutMovingItsReceiver() throws Exception {
+        String source = """
+                define trait HasFuture<T> as
+                    get_future(): Future<T>;
+                end
+                async fnc answer(): int { return 8; }
+                define class Repeatable implements HasFuture<int> as
+                    pub get_future(): Future<int> {
+                        stdio.stdout.write("P");
+                        return answer();
+                    }
+                end
+                pub fnc main(): void {
+                    val Repeatable operation = new Repeatable();
+                    val int first = await operation;
+                    stdio.stdout.write(first);
+                    val int second = await operation;
+                    stdio.stdout.write(second);
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(stdout).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, "has-future-repeat.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("P8P8", stdout.toString(StandardCharsets.UTF_8).trim());
+    }
+
+    @Test
     void specializesInheritedGenericClassCapability() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 define trait HasFuture<T> as
