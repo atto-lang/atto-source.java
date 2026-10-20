@@ -131,4 +131,23 @@ final class OresKeyedMapFromNominalEntriesTest {
         assertEquals(List.of(1, 2, 3), map.get("list"),
                 "host foundation must not misrepresent mutable nested values as frozen");
     }
+    @Test
+    void mutableTypedMapCannotCrossActorBoundariesEvenInsideNominalEntry() {
+        OresKeyedMap<Object, Object> map = OresKeyedMap.fromNominalEntries(
+                List.of(new OresEntry("a", 1)),
+                OresKeyedMap.KeyDomain.STRING, OresKeyedMap.ValueDomain.INT);
+        IllegalArgumentException direct = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(map));
+        assertTrue(direct.getMessage().contains("typed guest Map transport"),
+                direct.getMessage());
+
+        IllegalArgumentException nested = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(new OresEntry("payload", map)));
+        assertTrue(nested.getMessage().contains("typed guest Map transport"),
+                nested.getMessage());
+    }
+
+
 }
