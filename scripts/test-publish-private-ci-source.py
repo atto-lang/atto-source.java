@@ -65,6 +65,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.disabled = [False] * 100
         self.carrier_allow_forking = [False] * 100
         self.carrier_actions_enabled = [True] * 100
+        self.carrier_sha_pinning_required = [True] * 100
         self.carrier_allowed_actions = ["selected"] * 100
         self.carrier_github_owned_actions = [True] * 100
         self.carrier_verified_actions = [False] * 100
@@ -213,6 +214,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         allow_forking=self.carrier_allow_forking.pop(0))
         if route == "repos/trusted/ci/actions/permissions":
             return {"enabled": self.carrier_actions_enabled.pop(0),
+                    "sha_pinning_required": self.carrier_sha_pinning_required.pop(0),
                     "allowed_actions": self.carrier_allowed_actions.pop(0)}
         if route == "repos/trusted/ci/actions/permissions/selected-actions":
             return {"github_owned_allowed": self.carrier_github_owned_actions.pop(0),
@@ -3006,6 +3008,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                        '0' + ']' * 10000 + '}')
 
 
+
+
+    def test_carrier_missing_action_sha_pinning_denied_before_source_read(self):
+        self.carrier_sha_pinning_required = [False] * 100
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read too early")):
+            with self.assertRaisesRegex(pub.Denied, "immutable Action SHA pins"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_carrier_all_actions_denied_before_source_read(self):
         self.carrier_allowed_actions = ["all"] * 100
