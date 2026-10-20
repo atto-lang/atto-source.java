@@ -39,6 +39,8 @@ public final class IpcReceiptCompletionBridge {
     void claimPhysicalTransport(Object owner,
                                 IpcReceiptCorrelation.Envelope trustedEpoch,
                                 long generation) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC receipt bridge physical claim");
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(trustedEpoch, "trustedEpoch");
         if (generation <= 0) {
@@ -131,6 +133,8 @@ public final class IpcReceiptCompletionBridge {
         }
 
         void publish() {
+            RuntimeBlockingGuard.requireBlockingHostThread(
+                    "IPC verified receipt publication");
             final CompletableFuture<IpcReceiptCorrelation.Stage> done;
             synchronized (this) {
                 if (published) {
@@ -159,6 +163,8 @@ public final class IpcReceiptCompletionBridge {
 
     public CompletionStage<IpcReceiptCorrelation.Stage> admit(
             IpcReceiptCorrelation.Envelope envelope) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC receipt bridge admission");
         Objects.requireNonNull(envelope, "envelope");
         // Prepare all callback bookkeeping before admitting the DATA receipt.
         CompletableFuture<IpcReceiptCorrelation.Stage> future = new CompletableFuture<>();
@@ -183,6 +189,8 @@ public final class IpcReceiptCompletionBridge {
             Object owner,
             IpcReceiptCorrelation.Envelope envelope,
             long generation) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC receipt bridge owner-bound admission");
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(envelope, "envelope");
         CompletableFuture<IpcReceiptCorrelation.Stage> future = new CompletableFuture<>();
@@ -208,6 +216,8 @@ public final class IpcReceiptCompletionBridge {
             Object owner,
             IpcReceiptCorrelation.Envelope envelope,
             long generation) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC receipt bridge atomic admission");
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(envelope, "envelope");
         CompletableFuture<IpcReceiptCorrelation.Stage> future = new CompletableFuture<>();
@@ -247,6 +257,8 @@ public final class IpcReceiptCompletionBridge {
      * never call rejectBeforeRemote after dispatch commitment.
      */
     void commitDispatch(IpcReceiptCorrelation.Envelope envelope) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC receipt bridge dispatch commitment");
         Objects.requireNonNull(envelope, "envelope");
         synchronized (gate) {
             requireUnboundPhysicalBridge();
@@ -260,6 +272,8 @@ public final class IpcReceiptCompletionBridge {
     void commitDispatch(Object owner,
                         IpcReceiptCorrelation.Envelope envelope,
                         long generation) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC receipt bridge owner-bound dispatch commitment");
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(envelope, "envelope");
         synchronized (gate) {
@@ -274,6 +288,8 @@ public final class IpcReceiptCompletionBridge {
     /** Caller MUST verify the remote peer/frame/capability before this call. */
     public void acceptVerified(IpcReceiptCorrelation.Envelope envelope,
                                IpcReceiptCorrelation.Stage stage) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC receipt bridge verified completion");
         CompletableFuture<IpcReceiptCorrelation.Stage> done = null;
         synchronized (gate) {
             requireUnboundPhysicalBridge();
@@ -307,6 +323,8 @@ public final class IpcReceiptCompletionBridge {
             IpcReceiptCorrelation.Envelope envelope,
             long generation,
             IpcReceiptCorrelation.Stage stage) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC receipt bridge ordered verified completion");
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(envelope, "envelope");
         Objects.requireNonNull(stage, "stage");
@@ -332,6 +350,8 @@ public final class IpcReceiptCompletionBridge {
      * User callbacks complete only after releasing the correlation monitor.
      */
     void rejectBeforeRemote(IpcReceiptCorrelation.Envelope envelope) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC receipt bridge local rejection");
         Objects.requireNonNull(envelope, "envelope");
         CompletableFuture<IpcReceiptCorrelation.Stage> done;
         synchronized (gate) {
@@ -348,6 +368,8 @@ public final class IpcReceiptCompletionBridge {
     void rejectBeforeRemote(Object owner,
                             IpcReceiptCorrelation.Envelope envelope,
                             long generation) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC receipt bridge owner-bound local rejection");
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(envelope, "envelope");
         CompletableFuture<IpcReceiptCorrelation.Stage> done;
@@ -368,6 +390,8 @@ public final class IpcReceiptCompletionBridge {
      * string session id or a peer-provided EOF claim.
      */
     int transportLost(IpcReceiptCorrelation.Envelope trustedEpoch) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC receipt bridge transport loss");
         synchronized (gate) {
             if (physicalOwner != null) {
                 throw new IllegalStateException(
@@ -380,6 +404,8 @@ public final class IpcReceiptCompletionBridge {
     int transportLost(Object owner,
                       IpcReceiptCorrelation.Envelope trustedEpoch,
                       long generation) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC receipt bridge owner-bound transport loss");
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(trustedEpoch, "trustedEpoch");
         synchronized (gate) {
@@ -411,10 +437,14 @@ public final class IpcReceiptCompletionBridge {
     }
 
     public IpcReceiptCorrelation.Counters counters() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC receipt bridge counters");
         synchronized (gate) { return correlations.counters(); }
     }
 
     public boolean invariant() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC receipt bridge invariant");
         synchronized (gate) {
             return correlations.invariant()
                     && completions.size() == correlations.counters().pending();
