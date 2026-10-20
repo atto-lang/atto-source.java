@@ -4,7 +4,6 @@ import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
-import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.RejectedExecutionException;
@@ -31,17 +30,29 @@ public final class TrapFailurePolicy {
 
     public static boolean isTrappable(
             RuntimeException failure, Class<? extends Throwable> panicType) {
-        return permits(failure, panicType, false);
+        return isTrappable(failure, panicType, null);
+    }
+
+    /**
+     * The interpreter supplies only its concrete privately constructed guest
+     * fault class. Stack traces, messages and names never authorize trapping.
+     */
+    public static boolean isTrappable(
+            RuntimeException failure,
+            Class<? extends Throwable> panicType,
+            Class<? extends Throwable> trustedGuestFailureType) {
+        return permits(failure, panicType, trustedGuestFailureType, false);
     }
 
     public static boolean isGuestCatchable(
             Throwable failure, Class<? extends Throwable> panicType) {
-        return permits(failure, panicType, true);
+        return permits(failure, panicType, null, true);
     }
 
     private static boolean permits(
             Throwable failure,
             Class<? extends Throwable> panicType,
+            Class<? extends Throwable> trustedGuestFailureType,
             boolean explicitGuestCatch) {
         if (failure == null) return false;
 
@@ -79,30 +90,10 @@ public final class TrapFailurePolicy {
                 current = current.getCause()) {
             if (current instanceof GuestControlSignal.Throw) return true;
             if (current instanceof SecurityException) return explicitGuestCatch;
-            if (isMappedGuestFailure(current)) return true;
+            if (trustedGuestFailureType != null
+                    && current.getClass() == trustedGuestFailureType) return true;
         }
         return false;
     }
 
-    private static boolean isMappedGuestFailure(Throwable failure) {
-        if (failure instanceof IllegalArgumentException
-                || failure instanceof IllegalStateException
-                || failure instanceof ArithmeticException
-                || failure instanceof IndexOutOfBoundsException
-                || failure instanceof ClassCastException
-                || failure instanceof UnsupportedOperationException
-                || failure instanceof NoSuchElementException
-                || failure instanceof NegativeArraySizeException
-                || failure instanceof ArrayStoreException) {
-            // These JDK exception types are guest errors only when they were
-            // raised by the Oreslang runtime itself. A host/FFI exception with
-            // the same Java class must be explicitly mapped by its adapter.
-            StackTraceElement[] trace = failure.getStackTrace();
-            return trace.length > 0
-                    && trace[0].getClassName().startsWith("dev.oreslang.");
-        }
-        // The interpreter's cast failure is a dedicated guest runtime type.
-        return failure.getClass().getName()
-                .equals("dev.oreslang.nodes.OresEvalRootNode$OresCastError");
-    }
 }
