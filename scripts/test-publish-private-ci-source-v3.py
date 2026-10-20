@@ -56,6 +56,88 @@ def contract():
 
 
 class PrivateCiV3Test(unittest.TestCase):
+    def test_export_denied_without_executing_checkout_preflight(self):
+        # Neither a policy denial nor an attempt to use a different checkout
+        # may invoke executable checkout code as an admission check.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            with (
+                patch.object(
+                    v3.legacy, "require_preflight",
+                    side_effect=AssertionError("unattested checkout shell executed"),
+                ) as shell,
+                patch.object(
+                    v3.legacy, "checked_policy_approval",
+                    side_effect=v3.Denied("destination not independently approved"),
+                ) as policy,
+                patch.object(
+                    v3, "authorized_main_sha",
+                    side_effect=AssertionError("authority requested after local denial"),
+                ) as authority,
+                patch.object(
+                    v3.legacy, "collect_source",
+                    side_effect=AssertionError("private source read before admission"),
+                ) as source,
+                patch.object(
+                    v3.legacy, "gh_api",
+                    side_effect=AssertionError("GitHub API called after local denial"),
+                ) as api,
+            ):
+                with self.assertRaisesRegex(v3.Denied, "not independently approved"):
+                    v3.publish(
+                        "trusted/ci",
+                        root / "nonexistent-source",
+                        "4" * 40,
+                        1482,
+                        "ci/test-plans/java-pr1482.json",
+                        root,
+                    )
+            policy.assert_called_once_with(root, "trusted/ci")
+            shell.assert_not_called()
+            authority.assert_not_called()
+            source.assert_not_called()
+            api.assert_not_called()
+
+    def test_review_authority_denial_stops_before_source_or_write(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            with (
+                patch.object(
+                    v3.legacy, "require_preflight",
+                    side_effect=AssertionError("unattested shell executed"),
+                ) as shell,
+                patch.object(
+                    v3.legacy, "checked_policy_approval",
+                    return_value=(POLICY, 1323598177),
+                ) as policy,
+                patch.object(
+                    v3, "authorized_main_sha",
+                    side_effect=v3.Denied("exact independent review absent"),
+                ) as authority,
+                patch.object(
+                    v3.legacy, "collect_source",
+                    side_effect=AssertionError("private source read"),
+                ) as source,
+                patch.object(
+                    v3.legacy, "gh_api",
+                    side_effect=AssertionError("unapproved GitHub write"),
+                ) as api,
+            ):
+                with self.assertRaisesRegex(v3.Denied, "independent review absent"):
+                    v3.publish(
+                        "trusted/ci",
+                        root / "nonexistent-source",
+                        "4" * 40,
+                        1482,
+                        "ci/test-plans/java-pr1482.json",
+                        root,
+                    )
+            policy.assert_called_once_with(root, "trusted/ci")
+            authority.assert_called_once_with("trusted/ci", POLICY, 1323598177)
+            shell.assert_not_called()
+            source.assert_not_called()
+            api.assert_not_called()
+
     def review_governance_fixture(self, policy=b"trusted/ci 246810\n"):
         codeowners = (
             "\n".join(
