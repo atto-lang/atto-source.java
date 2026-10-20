@@ -1033,7 +1033,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             env.define(
                     "arguments",
-                    java.util.Collections.unmodifiableList(tuple),
+                    List.copyOf(tuple),
                     Ast.BindingKind.CONST);
         }
 
@@ -9265,6 +9265,12 @@ public final class OresEvalRootNode extends RootNode {
                     if (fields.leftIterator().hasNext()) {
                         Map.Entry<?, ?> field = fields.leftIterator().next();
                         Object key = field.getKey();
+                        // Structural record keys are named String fields; a
+                        // foreign Map key may have hostile hashCode/equals.
+                        if (!(key instanceof String)) {
+                            throw new IllegalArgumentException(
+                                    "guest structural equality requires string field names");
+                        }
                         if (!fields.rightFields().containsKey(key)) return false;
                         enqueueValueEqualityStep(pending, fields);
                         enqueueValueEquality(
@@ -9361,8 +9367,12 @@ public final class OresEvalRootNode extends RootNode {
                     continue;
                 }
 
+                // Arbitrary host Map implementations are opaque. Never call
+                // their size(), entrySet(), containsKey() or get() implicitly.
                 Map<?, ?> leftFields = structuralFields(a);
                 Map<?, ?> rightFields = structuralFields(b);
+                if ((a instanceof Map<?, ?> && leftFields == null)
+                        || (b instanceof Map<?, ?> && rightFields == null)) return false;
                 if (leftFields != null || rightFields != null) {
                     if (leftFields == null || rightFields == null
                             || leftFields.size() != rightFields.size()) return false;
@@ -9376,6 +9386,10 @@ public final class OresEvalRootNode extends RootNode {
                     continue;
                 }
 
+                // Reject subclassed/delegating host Lists before invoking
+                // their size()/get() virtual methods.
+                if ((a instanceof List<?> && !isTrustedGuestList(a))
+                        || (b instanceof List<?> && !isTrustedGuestList(b))) return false;
                 int leftSize = sequenceSize(a);
                 int rightSize = sequenceSize(b);
                 if (leftSize >= 0 || rightSize >= 0) {
@@ -9444,13 +9458,41 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Map<?, ?> structuralFields(Object value) {
-            if (value instanceof Map<?, ?> map) return map;
+            // Only evaluator-owned records, ordinary concrete record payloads
+            // and actor-runtime-frozen maps may be traversed. In particular,
+            // a custom host Map must not execute callbacks from guest ==.
+            if (value instanceof ReadonlyRecordValue
+                    || value instanceof MutableStructValue
+                    || value instanceof ActorRuntime.FrozenGuestMap
+                    || (value != null && value.getClass() == LinkedHashMap.class)) {
+                return (Map<?, ?>) value;
+            }
             return null;
         }
 
+        private static final Set<Class<?>> TRUSTED_GUEST_LIST_CLASSES =
+                trustedGuestListClasses();
+
+        private static Set<Class<?>> trustedGuestListClasses() {
+            Set<Class<?>> classes = new java.util.HashSet<>();
+            classes.add(ArrayList.class);
+            classes.add(java.util.Arrays.asList(new Object[0]).getClass());
+            classes.add(List.of().getClass());
+            classes.add(List.of(1).getClass());
+            classes.add(List.of(1, 2, 3).getClass());
+            classes.add(java.util.Collections.emptyList().getClass());
+            classes.add(java.util.Collections.singletonList(1).getClass());
+            return Set.copyOf(classes);
+        }
+
+        private boolean isTrustedGuestList(Object value) {
+            return value != null
+                    && TRUSTED_GUEST_LIST_CLASSES.contains(value.getClass());
+        }
+
         private int sequenceSize(Object value) {
-            if (value instanceof List<?> list) return list.size();
             if (value instanceof Object[] array) return array.length;
+            if (isTrustedGuestList(value)) return ((List<?>) value).size();
             return -1;
         }
 

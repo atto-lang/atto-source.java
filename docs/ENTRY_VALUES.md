@@ -43,6 +43,13 @@ silently treating an incomplete comparison as equal or unequal. A guest
 Map key hash must eventually agree with these equality semantics; the Java
 identity hash is not a valid substitute.
 
+The equality evaluator only traverses known guest List and record carriers,
+including actor-transport snapshots. A foreign Java List/Map implementation
+is opaque, even if it implements those interfaces: guest equality must never
+implicitly execute its user-defined size/get/entrySet/containsKey callbacks.
+Structural record keys must be strings. This is intentionally distinct from
+the future typed Map contract, whose keys may have other approved domains.
+
 
 An array of entries is distinct from an array of arrays or tuples:
 

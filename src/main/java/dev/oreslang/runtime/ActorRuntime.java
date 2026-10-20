@@ -6390,6 +6390,31 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Trusted immutable map produced only after actor transport validates and
+     * recursively detaches its entries. Unlike a general host Map, its
+     * containment and iteration methods never dispatch to attacker code.
+     */
+    public static final class FrozenGuestMap extends java.util.AbstractMap<Object, Object> {
+        private final Map<Object, Object> fields;
+
+        private FrozenGuestMap(Map<Object, Object> detached) {
+            fields = Collections.unmodifiableMap(new LinkedHashMap<>(detached));
+        }
+
+        @Override public Set<Entry<Object, Object>> entrySet() {
+            return fields.entrySet();
+        }
+
+        @Override public Object get(Object key) {
+            return fields.get(key);
+        }
+
+        @Override public boolean containsKey(Object key) {
+            return fields.containsKey(key);
+        }
+    }
+
     private static Object freeze(
             Object value,
             IdentityHashMap<Object, Boolean> visiting,
@@ -6432,7 +6457,7 @@ public final class ActorRuntime implements AutoCloseable {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     frozen.put(freeze(entry.getKey(), visiting, depth + 1), freeze(entry.getValue(), visiting, depth + 1));
                 }
-                return Collections.unmodifiableMap(frozen);
+                return new FrozenGuestMap(frozen);
             }
             if (value.getClass().isArray()) {
                 int length = Array.getLength(value);
@@ -6488,7 +6513,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (value instanceof List<?> list) {
                 List<Object> copy = new ArrayList<>(list.size());
                 for (Object item : list) copy.add(isolateCopy(item, visiting, depth + 1));
-                return Collections.unmodifiableList(copy);
+                return List.copyOf(copy);
             }
             if (value instanceof Set<?> set) {
                 LinkedHashSet<Object> copy = new LinkedHashSet<>();
@@ -6500,7 +6525,7 @@ public final class ActorRuntime implements AutoCloseable {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     copy.put(isolateCopy(entry.getKey(), visiting, depth + 1), isolateCopy(entry.getValue(), visiting, depth + 1));
                 }
-                return Collections.unmodifiableMap(copy);
+                return new FrozenGuestMap(copy);
             }
             if (value.getClass().isArray()) {
                 int length = Array.getLength(value);
@@ -6508,7 +6533,7 @@ public final class ActorRuntime implements AutoCloseable {
                 for (int i = 0; i < length; i++) {
                     copy.add(isolateCopy(Array.get(value, i), visiting, depth + 1));
                 }
-                return Collections.unmodifiableList(copy);
+                return List.copyOf(copy);
             }
             throw new IllegalArgumentException("value of type " + value.getClass().getName()
                     + " is not Sendable; mutable host objects cannot cross actor boundaries");

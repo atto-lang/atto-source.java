@@ -4,6 +4,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.OresEntry;
+import dev.oreslang.runtime.ActorRuntime;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Constructor;
@@ -11,6 +12,9 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.AbstractList;
 import java.util.ArrayList;
+import java.util.AbstractMap;
+import java.util.Map;
+import java.util.Set;
 import java.util.LinkedHashMap;
 import java.util.List;
 
@@ -114,33 +118,96 @@ final class EntryGuestEqualityGraphTest {
     }
 
     @Test
-    void unequalFirstSequenceElementStopsBeforeTouchingLaterElements() throws Exception {
+    void unknownHostCollectionCallbacksAreNotInvoked() throws Exception {
         GuestComparator guest = comparator();
-        List<Object> hostileTail = new AbstractList<>() {
-            @Override public int size() { return 2; }
+        List<Object> hostileList = new AbstractList<>() {
+            @Override public int size() {
+                throw new AssertionError("host List.size invoked");
+            }
             @Override public Object get(int index) {
-                if (index != 0) throw new AssertionError("late slot evaluated after mismatch");
-                return 1L;
+                throw new AssertionError("host List.get invoked");
             }
         };
-        assertFalse(guest.equal(hostileTail, List.of(2L, 3L)));
+        Map<Object, Object> hostileMap = new AbstractMap<>() {
+            @Override public int size() {
+                throw new AssertionError("host Map.size invoked");
+            }
+            @Override public Set<Entry<Object, Object>> entrySet() {
+                throw new AssertionError("host Map.entrySet invoked");
+            }
+            @Override public boolean containsKey(Object key) {
+                throw new AssertionError("host Map.containsKey invoked");
+            }
+        };
+        assertFalse(guest.equal(new OresEntry(hostileList, 1),
+                new OresEntry(new ArrayList<>(), 1)));
+        assertFalse(guest.equal(new OresEntry(hostileMap, 1),
+                new OresEntry(new LinkedHashMap<>(), 1)));
+    }
+
+    @Test
+    void unequalFirstSequenceElementShortCircuitsBeforeOversizedTail() throws Exception {
+        GuestComparator guest = comparator();
+        Object[] hugeLeft = new Object[65_537];
+        Object[] hugeRight = new Object[65_537];
+        assertFalse(guest.equal(
+                new OresEntry(new ArrayList<>(List.of(1L, hugeLeft)), 0L),
+                new OresEntry(new ArrayList<>(List.of(2L, hugeRight)), 0L)));
+    }
+
+    @Test
+    void structuralMapNonStringKeysFailClosedBeforeHashing() throws Exception {
+        GuestComparator guest = comparator();
+        java.util.concurrent.atomic.AtomicInteger hashCalls =
+                new java.util.concurrent.atomic.AtomicInteger();
+        Object maliciousKey = new Object() {
+            @Override public int hashCode() {
+                if (hashCalls.incrementAndGet() > 1) {
+                    throw new AssertionError("host key rehashed during guest equality");
+                }
+                return 12345;
+            }
+            @Override public boolean equals(Object other) {
+                throw new AssertionError("host key equals invoked");
+            }
+        };
+        LinkedHashMap<Object, Object> left = new LinkedHashMap<>();
+        // Insertion necessarily hashes this host key. The equality path must
+        // not hash it again: construct map with one key that is already stored.
+        left.put(maliciousKey, 1L);
+        LinkedHashMap<Object, Object> right = new LinkedHashMap<>();
+        right.put("x", 1L);
+        IllegalArgumentException failure = guest.rejects(
+                new OresEntry(left, "v"), new OresEntry(right, "v"));
+        assertTrue(failure.getMessage().contains("string field names"),
+                failure.getMessage());
+        assertEquals(1, hashCalls.get());
+    }
+
+    @Test
+    void actorFrozenMapRemainsComparableAndCannotBeMutated() throws Exception {
+        GuestComparator guest = comparator();
+        LinkedHashMap<Object, Object> source = new LinkedHashMap<>();
+        source.put("key", List.of(1L, 2L));
+        Object frozen = ActorRuntime.freeze(source);
+        assertInstanceOf(ActorRuntime.FrozenGuestMap.class, frozen);
+        assertTrue(guest.equal(new OresEntry(frozen, "v"),
+                new OresEntry(source, "v")));
+
+        source.put("key", List.of(99L));
+        assertFalse(guest.equal(new OresEntry(frozen, "v"),
+                new OresEntry(source, "v")));
+        @SuppressWarnings("unchecked")
+        Map<Object, Object> readonly = (Map<Object, Object>) frozen;
+        assertThrows(UnsupportedOperationException.class,
+                () -> readonly.put("new", 1L));
     }
 
     @Test
     void oversizedGraphsFailClosedInsteadOfExhaustingHeapOrStack() throws Exception {
         GuestComparator guest = comparator();
-        List<Object> huge = new AbstractList<>() {
-            @Override public int size() { return 65_537; }
-            @Override public Object get(int index) {
-                throw new AssertionError("oversized graph must not access its payload");
-            }
-        };
-        List<Object> otherHuge = new AbstractList<>() {
-            @Override public int size() { return 65_537; }
-            @Override public Object get(int index) {
-                throw new AssertionError("oversized graph must not access its payload");
-            }
-        };
+        Object[] huge = new Object[65_537];
+        Object[] otherHuge = new Object[65_537];
         IllegalArgumentException failure = guest.rejects(huge, otherHuge);
         assertTrue(failure.getMessage().contains("comparison work limit"),
                 failure.getMessage());
