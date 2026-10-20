@@ -55,12 +55,12 @@ public final class OresKeyedMap {
     }
 
     private final KeyDomain domain;
-    private final LinkedHashMap<Object, Object> entries;
+    private final LinkedHashMap<Object, OresEntry> entries;
     private final long keyBytes;
 
     private OresKeyedMap(
             KeyDomain domain,
-            LinkedHashMap<Object, Object> entries,
+            LinkedHashMap<Object, OresEntry> entries,
             long keyBytes) {
         this.domain = Objects.requireNonNull(domain, "Map key domain");
         this.entries = new LinkedHashMap<>(entries);
@@ -82,7 +82,7 @@ public final class OresKeyedMap {
         }
 
         KeyDomain domain = domainOf(first.key());
-        LinkedHashMap<Object, Object> staged = new LinkedHashMap<>();
+        LinkedHashMap<Object, OresEntry> staged = new LinkedHashMap<>();
         long totalKeyBytes = 0L;
         int observed = 0;
         for (Object raw : values) {
@@ -103,7 +103,7 @@ public final class OresKeyedMap {
                 throw new IllegalArgumentException(
                         "typed Map exceeds aggregate key byte budget");
             }
-            staged.put(normalized, value);
+            staged.put(normalized, new OresEntry(entry.key(), value));
         }
         return new OresKeyedMap(domain, staged, totalKeyBytes);
     }
@@ -118,8 +118,8 @@ public final class OresKeyedMap {
 
     public Lookup lookup(Object key) {
         Object normalized = normalizeKey(domain, key);
-        Object value = entries.get(normalized);
-        return value == null ? Lookup.missing() : Lookup.present(value);
+        OresEntry entry = entries.get(normalized);
+        return entry == null ? Lookup.missing() : Lookup.present(entry.value());
     }
 
     public Object getRequired(Object key) {
@@ -127,14 +127,14 @@ public final class OresKeyedMap {
         if (!entries.containsKey(normalized)) {
             throw new IllegalArgumentException("unknown typed Map key");
         }
-        return entries.get(normalized);
+        return entries.get(normalized).value();
     }
 
     /** Deterministic detached Entry values in insertion order. */
     public List<OresEntry> entrySnapshot() {
         ArrayList<OresEntry> result = new ArrayList<>(entries.size());
-        for (var entry : entries.entrySet()) {
-            result.add(new OresEntry(entry.getKey(), entry.getValue()));
+        for (OresEntry entry : entries.values()) {
+            result.add(entry);
         }
         return List.copyOf(result);
     }
