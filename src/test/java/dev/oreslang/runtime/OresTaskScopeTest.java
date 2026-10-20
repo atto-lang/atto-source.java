@@ -353,4 +353,159 @@ final class OresTaskScopeTest {
         }
     }
 
+
+    @Test
+    void scopedReadClaimRemainsLiveUntilCancelledCarrierPhysicallyQuiesces()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresTaskScope scope = new OresTaskScope(scheduler);
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            OresTaskScope.ScopedReadClaim claim =
+                    new OresTaskScope.ScopedReadClaim("view", 7L, 3L, "$");
+
+            OresFuture<Integer> child = scope.fork(resume -> {
+                entered.countDown();
+                assertTrue(release.await(5, TimeUnit.SECONDS));
+                return OresScheduler.done(1);
+            }, java.util.List.of(claim));
+
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertEquals(1, scope.activeScopedReadClaims());
+            assertEquals(1, scope.activeScopedReadRegions());
+            assertTrue(scope.hasScopedReadLease(7L, 3L));
+
+            OresFuture<Void> drained = scope.cancelAndQuiesce();
+            assertTrue(child.isCancelled());
+            assertEquals(1, scope.activeScopedReadClaims(),
+                    "logical cancellation must not release region authority");
+            assertTrue(scope.hasScopedReadLease(7L, 3L));
+            assertFalse(drained.isDone());
+
+            release.countDown();
+            assertNull(drained.get(5, TimeUnit.SECONDS));
+            assertEquals(0, scope.activeScopedReadClaims());
+            assertEquals(0, scope.activeScopedReadRegions());
+            assertFalse(scope.hasScopedReadLease(7L, 3L));
+        }
+    }
+
+    @Test
+    void conflictingScopedReadGenerationIsRejectedWithoutAuthorityMutation()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresTaskScope scope = new OresTaskScope(scheduler);
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+
+            OresFuture<Integer> first = scope.fork(resume -> {
+                entered.countDown();
+                assertTrue(release.await(5, TimeUnit.SECONDS));
+                return OresScheduler.done(1);
+            }, java.util.List.of(
+                    new OresTaskScope.ScopedReadClaim("first", 11L, 4L, "$")));
+
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            IllegalStateException stale = assertThrows(
+                    IllegalStateException.class,
+                    () -> scope.fork(
+                            resume -> OresScheduler.done(2),
+                            java.util.List.of(
+                                    new OresTaskScope.ScopedReadClaim(
+                                            "stale", 11L, 5L, "$"))));
+            assertTrue(stale.getMessage().contains("generation"));
+            assertEquals(1, scope.activeChildren());
+            assertEquals(1, scope.activeScopedReadClaims());
+            assertEquals(1, scope.activeScopedReadRegions());
+            assertTrue(scope.hasScopedReadLease(11L, 4L));
+            assertFalse(scope.hasScopedReadLease(11L, 5L));
+
+            OresFuture<Void> drained = scope.quiesce();
+            release.countDown();
+            assertEquals(1, first.get(5, TimeUnit.SECONDS));
+            assertNull(drained.get(5, TimeUnit.SECONDS));
+            assertEquals(0, scope.activeScopedReadClaims());
+        }
+    }
+
+    @Test
+    void siblingScopedReadersShareOneRegionGenerationAndRetireIndependently()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresTaskScope scope = new OresTaskScope(scheduler);
+            CountDownLatch entered = new CountDownLatch(2);
+            CountDownLatch release = new CountDownLatch(1);
+
+            OresFuture<Integer> first = scope.fork(resume -> {
+                entered.countDown();
+                assertTrue(release.await(5, TimeUnit.SECONDS));
+                return OresScheduler.done(1);
+            }, java.util.List.of(
+                    new OresTaskScope.ScopedReadClaim("left", 23L, 0L, "$")));
+            OresFuture<Integer> second = scope.fork(resume -> {
+                entered.countDown();
+                assertTrue(release.await(5, TimeUnit.SECONDS));
+                return OresScheduler.done(2);
+            }, java.util.List.of(
+                    new OresTaskScope.ScopedReadClaim("right", 23L, 0L, "$")));
+
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertEquals(2, scope.activeScopedReadClaims());
+            assertEquals(1, scope.activeScopedReadRegions());
+            assertTrue(scope.hasScopedReadLease(23L, 0L));
+
+            OresFuture<Void> drained = scope.quiesce();
+            release.countDown();
+            assertEquals(1, first.get(5, TimeUnit.SECONDS));
+            assertEquals(2, second.get(5, TimeUnit.SECONDS));
+            assertNull(drained.get(5, TimeUnit.SECONDS));
+            assertEquals(0, scope.activeScopedReadClaims());
+            assertEquals(0, scope.activeScopedReadRegions());
+        }
+    }
+
+    @Test
+    void failedSchedulerAdmissionRollsBackScopedReadReservation() {
+        OresScheduler scheduler = new OresScheduler(1);
+        OresTaskScope scope = new OresTaskScope(scheduler);
+        scheduler.close();
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> scope.fork(
+                        resume -> OresScheduler.done(1),
+                        java.util.List.of(
+                                new OresTaskScope.ScopedReadClaim(
+                                        "view", 31L, 2L, "$"))));
+        assertEquals(0, scope.activeChildren());
+        assertEquals(0, scope.activeScopedReadClaims());
+        assertEquals(0, scope.activeScopedReadRegions());
+        assertFalse(scope.hasScopedReadLease(31L, 2L));
+    }
+
+    @Test
+    void duplicateBindingAndProjectedClaimsFailBeforeReservation() {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresTaskScope scope = new OresTaskScope(scheduler);
+
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> scope.fork(
+                            resume -> OresScheduler.done(1),
+                            java.util.List.of(
+                                    new OresTaskScope.ScopedReadClaim(
+                                            "view", 41L, 0L, "$"),
+                                    new OresTaskScope.ScopedReadClaim(
+                                            "view", 42L, 0L, "$"))));
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> new OresTaskScope.ScopedReadClaim(
+                            "projection", 41L, 0L, "$.field"));
+
+            assertEquals(0, scope.activeChildren());
+            assertEquals(0, scope.activeScopedReadClaims());
+            assertEquals(0, scope.activeScopedReadRegions());
+        }
+    }
+
 }
