@@ -5059,6 +5059,13 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException(
                             "new Future<T> requires exactly one non-actor async provider");
                 }
+                if (!provider.klass.fields().isEmpty()
+                        || !provider.klass.parents().isEmpty()
+                        || provider.klass.constructor() != null
+                        || !provider.fields.isEmpty()) {
+                    throw new IllegalStateException(
+                            "Future<T> provider lacks the required stateless ownership proof");
+                }
                 Ast.MethodDecl run = provider.owner.findMethod(
                         provider.klass, CallableSelector.instance("run", 0));
                 if (run == null || !run.async() || run.suspends()
