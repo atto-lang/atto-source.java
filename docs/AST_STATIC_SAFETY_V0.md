@@ -4,6 +4,29 @@ Status: prototype and opt-in. Not a security scanner, proof of bounded resources
 
 Call OresCompiler.analyzeStaticSafety(source) to type/ownership check Oreslang source and then receive immutable diagnostic records. Parser-only analysis is for fixture coverage and cannot be used for security admission.
 
+## Experimental CLI
+
+```sh
+oreslang-compiler --static-safety src/main.ores
+oreslang-compiler --static-safety --fail-on=warning src/main.ores
+oreslang-compiler --static-safety --fail-on=never src/main.ores
+```
+
+The CLI returns **JSON on stdout** with schema `ores-static-safety/v0`,
+`assurance: advisory_unverified`, `producer_authenticated: false`, and
+`proof_complete: false`. It is not the `ores-static-facts/v0` schema,
+nor a verified LLVM/JVM certificate. The scanner runs the standard Java
+type and ownership admission before producing advisory findings and
+**does not execute guest code**. `--fail-on=warning` uses status 1 when any
+finding exists; by default (and with `--fail-on=never`) findings do not
+change exit status. Invalid invocations return usage status 2.
+`--static-safety` rejects runtime, permission, build and strict-isolate
+options rather than allowing their names to imply enforced proof.
+The renderer rejects >10,000 findings, >16,384 characters per field, and
+>8 MiB of JSON. It intentionally does not invent source spans or SARIF
+locations; these require compiler-authenticated typed IR source metadata.
+
+
 ## Current rule IDs
 
 - ORES-TERM-002: syntactically unconditional loops without an apparent reachable exit; potential nontermination.
