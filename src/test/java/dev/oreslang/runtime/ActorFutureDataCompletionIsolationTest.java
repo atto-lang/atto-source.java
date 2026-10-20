@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Timeout;
 final class ActorFutureDataCompletionIsolationTest {
     private static final long ONE_MIB_LOGICAL_BYTES =
             24L + UnaryTransportFrame.MAX_PAYLOAD_BYTES;
+    private static final long MIN_PRIVATE_HEAP_BYTES = 16L * 1024 * 1024;
 
     @Test
     void privateFutureCompletionIsCopiedAndByteReservedUntilContinuationReturns()
@@ -128,6 +129,66 @@ final class ActorFutureDataCompletionIsolationTest {
             actor.getDone().get(5, TimeUnit.SECONDS);
         } finally {
             release.countDown();
+        }
+    }
+
+    @Test
+    void oversizedPrivateFutureCompletionFailsBeforeReservationAndDoesNotLeak()
+            throws Exception {
+        OresFuture<OresBytes> producer = new OresFuture<>();
+        CountDownLatch registered = new CountDownLatch(1);
+        CountDownLatch observed = new CountDownLatch(1);
+        AtomicReference<OresBytes> delivered = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        IsolatePolicy policy = new IsolatePolicy(
+                IsolatePolicy.developer().capabilities(),
+                MIN_PRIVATE_HEAP_BYTES,
+                64,
+                java.time.Duration.ofSeconds(30),
+                false);
+
+        try (ActorRuntime runtime = new ActorRuntime(
+                policy,
+                new ActorRuntime.DispatcherConfig(1, 1, 64, 128))) {
+            var actor = runtime.<String>spawnPrivateTrusted(
+                    policy,
+                    context -> (message, turnContext) -> {
+                        ActorRuntime.ContinuationTarget target =
+                                runtime.captureCurrentContinuationTarget();
+                        runtime.enqueueDataOnCompletion(
+                                producer,
+                                target,
+                                (value, terminal) -> {
+                                    assertTrue(
+                                            runtime.currentThreadOwnsActorExecutionLease(),
+                                            "oversize rejection must run on the actor lane");
+                                    delivered.set(value);
+                                    failure.set(terminal);
+                                    observed.countDown();
+                                });
+                        registered.countDown();
+                    });
+
+            actor.send("register");
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            actor.drain().get(5, TimeUnit.SECONDS);
+            long baseline = runtime.privateMemoryBytes();
+
+            // The payload alone fits the nominal heap, but its OresBytes
+            // logical overhead makes the transported value exceed it.
+            OresBytes tooLarge = OresBytes.copyOf(
+                    new byte[(int) MIN_PRIVATE_HEAP_BYTES]);
+            producer.completeFromRuntime(tooLarge);
+
+            assertTrue(observed.await(5, TimeUnit.SECONDS));
+            assertNull(delivered.get());
+            assertInstanceOf(IllegalStateException.class, failure.get());
+            assertEquals(baseline, runtime.privateMemoryBytes(),
+                    "rejected data completion must not retain a private reservation");
+
+            actor.stop();
+            actor.getDone().get(5, TimeUnit.SECONDS);
         }
     }
 
