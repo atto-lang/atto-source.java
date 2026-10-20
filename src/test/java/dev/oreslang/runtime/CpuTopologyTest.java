@@ -12,10 +12,10 @@ final class CpuTopologyTest {
     @Test
     void ranksSameCpuThenLlcThenNumaThenRemote() {
         CpuTopology topology = CpuTopology.of(
-                new CpuTopology.Location(0, 10, 0),
-                new CpuTopology.Location(1, 10, 0),
-                new CpuTopology.Location(2, 20, 0),
-                new CpuTopology.Location(3, 30, 1));
+                new CpuTopology.Location(0, 10, 0, 3, 0),
+                new CpuTopology.Location(1, 10, 0, 3, 0),
+                new CpuTopology.Location(2, 20, 0, 3, 0),
+                new CpuTopology.Location(3, 30, 1, 3, 1));
 
         assertEquals(0, topology.localityRank(0, 0));
         assertEquals(1, topology.localityRank(0, 1));
@@ -47,6 +47,11 @@ final class CpuTopologyTest {
         assertEquals(2, topology.localityRank(0, 2),
                 "same numeric cache id at different levels is not same LLC");
         assertEquals(1, topology.localityRank(0, 3));
+        CpuTopology unqualified = CpuTopology.of(
+                new CpuTopology.Location(4, 77, 0),
+                new CpuTopology.Location(5, 77, 0));
+        assertEquals(2, unqualified.localityRank(4, 5),
+                "unqualified numeric cache id must not prove shared LLC");
         assertThrows(IllegalArgumentException.class,
                 () -> new CpuTopology.Location(4, 7, 0, 3, -1));
         assertThrows(IllegalArgumentException.class,
