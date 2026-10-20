@@ -4711,34 +4711,60 @@ public final class OresEvalRootNode extends RootNode {
                             "class field index must be a String");
                 }
 
-                Ast.ClassDecl staticClass = checkedComputedClassView(receiverExpression);
-                OwnedField ownedField = findField(
-                        staticClass, key, new LinkedHashSet<>());
-                if (ownedField == null) {
-                    throw new IllegalArgumentException(
-                            "unknown class field key " + staticClass.name() + "." + key);
-                }
-                requireClassMemberVisible(
-                        ownedField.field().visibility(),
-                        ownedField.owner(),
-                        env == null ? null : env.accessClass(),
-                        "field",
-                        ownedField.field().name());
+                String checkedClassName = Ast.CheckedClassView.lookup(receiverExpression);
+                if (checkedClassName != null) {
+                    Ast.ClassDecl staticClass = checkedComputedClassView(receiverExpression);
+                    OwnedField ownedField = findField(
+                            staticClass, key, new LinkedHashSet<>());
+                    if (ownedField == null) {
+                        throw new IllegalArgumentException(
+                                "unknown class field key " + staticClass.name() + "." + key);
+                    }
+                    requireClassMemberVisible(
+                            ownedField.field().visibility(),
+                            ownedField.owner(),
+                            env == null ? null : env.accessClass(),
+                            "field",
+                            ownedField.field().name());
 
-                // The object may be a subtype of staticClass, but computed
-                // access is intentionally bounded by the static receiver
-                // domain. A child-only field must never appear merely because
-                // the runtime object is more derived than the checked type.
+                    // The object may be a subtype of staticClass, but computed
+                    // access is intentionally bounded by the static receiver
+                    // domain. A child-only field must never appear merely because
+                    // the runtime object is more derived than the checked type.
+                    if (!object.fields.containsKey(key)) {
+                        throw new IllegalStateException(
+                                "runtime object " + object.klass.name()
+                                        + " does not contain statically admitted field "
+                                        + staticClass.name() + "." + key);
+                    }
+                    Object value = object.fields.get(key);
+                    if (value == UNINITIALIZED_FIELD) {
+                        throw new IllegalArgumentException(
+                                "field '" + staticClass.name() + "." + key
+                                        + "' is read before constructor initialization");
+                    }
+                    return value;
+                }
+
+                java.util.Set<String> structuralDomain =
+                        Ast.CheckedStructuralFieldDomain.lookup(receiverExpression);
+                if (structuralDomain == null) {
+                    throw new IllegalStateException(
+                            "computed class indexing requires a type-checked nominal or structural receiver proof");
+                }
+                if (!structuralDomain.contains(key)) {
+                    throw new IllegalArgumentException(
+                            "structural computed field key outside checked domain: " + key);
+                }
                 if (!object.fields.containsKey(key)) {
                     throw new IllegalStateException(
                             "runtime object " + object.klass.name()
-                                    + " does not contain statically admitted field "
-                                    + staticClass.name() + "." + key);
+                                    + " does not contain structurally admitted field " + key);
                 }
                 Object value = object.fields.get(key);
                 if (value == UNINITIALIZED_FIELD) {
                     throw new IllegalArgumentException(
-                            "field '" + staticClass.name() + "." + key
+                            "structural field '" + key
                                     + "' is read before constructor initialization");
                 }
                 return value;
@@ -4747,6 +4773,12 @@ public final class OresEvalRootNode extends RootNode {
                 if (!(index instanceof String key)) {
                     throw new IllegalArgumentException(
                             "record field index must be a String");
+                }
+                java.util.Set<String> structuralDomain =
+                        Ast.CheckedStructuralFieldDomain.lookup(receiverExpression);
+                if (structuralDomain != null && !structuralDomain.contains(key)) {
+                    throw new IllegalArgumentException(
+                            "structural computed field key outside checked domain: " + key);
                 }
                 if (!record.containsKey(key)) {
                     throw new IllegalArgumentException(
@@ -4763,6 +4795,12 @@ public final class OresEvalRootNode extends RootNode {
                 if (!(index instanceof String key)) {
                     throw new IllegalArgumentException(
                             "struct field index must be a String");
+                }
+                java.util.Set<String> structuralDomain =
+                        Ast.CheckedStructuralFieldDomain.lookup(receiverExpression);
+                if (structuralDomain != null && !structuralDomain.contains(key)) {
+                    throw new IllegalArgumentException(
+                            "structural computed field key outside checked domain: " + key);
                 }
                 if (!struct.containsKey(key)) {
                     throw new IllegalArgumentException(
@@ -4781,6 +4819,14 @@ public final class OresEvalRootNode extends RootNode {
                             "indexed map key must be a String or Symbol");
                 }
                 Object key = index;
+                java.util.Set<String> structuralDomain =
+                        Ast.CheckedStructuralFieldDomain.lookup(receiverExpression);
+                if (structuralDomain != null
+                        && (!(key instanceof String stringKey)
+                                || !structuralDomain.contains(stringKey))) {
+                    throw new IllegalArgumentException(
+                            "structural computed field key outside checked domain: " + key);
+                }
                 if (!map.containsKey(key)) {
                     throw new IllegalArgumentException(
                             "unknown struct/map key " + key);
