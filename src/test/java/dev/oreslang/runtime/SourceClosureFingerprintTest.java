@@ -78,9 +78,10 @@ final class SourceClosureFingerprintTest {
         sources.put("main", "import fnc a from './a';");
         sources.put("a", "import fnc b from './b'; pub fnc a(): int { return b(); }");
         sources.put("b", "pub fnc b(): int { return 1; }");
+        sources.put("b2", "pub fnc b(): int { return 1; }");
         var edges = Map.of(
                 "main", Map.of("./a", "a"),
-                "a", Map.of("./b", "b"));
+                "a", Map.of("./b", "b", "./fallback", "b2"));
         String first = digest(sources, edges, "manifest", List.of("/project"));
         sources.put("b", "pub fnc b(): int { return 2; }");
         assertNotEquals(first, digest(sources, edges, "manifest", List.of("/project")));
@@ -88,10 +89,10 @@ final class SourceClosureFingerprintTest {
         // A source with unchanged text but a rebound transitive import is
         // also a different program. Never identify imports by basename only.
         sources.put("b", "pub fnc b(): int { return 1; }");
-        sources.put("b2", "pub fnc b(): int { return 1; }");
         String alternate = digest(sources, Map.of(
                 "main", Map.of("./a", "a"),
-                "a", Map.of("./b", "b2")), "manifest", List.of("/project"));
+                "a", Map.of("./b", "b2", "./fallback", "b")),
+                "manifest", List.of("/project"));
         assertNotEquals(first, alternate);
     }
 
