@@ -4,4 +4,4 @@
 # Format: exact owner/repo, one ASCII space, immutable numeric repository ID,
 # one ASCII space, reviewed destination exact-tree workflow Git blob SHA.
 # No wildcards, aliases, redirects, slug-only approvals, or floating workflow refs.
-ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra 1412142815 2d4b412ca8480d02fcd122a9cb7ee3a5d7d45227
+ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra 1412142815 ef7b0caaa1aedb56864f01fad14bfe88321f1ab1
