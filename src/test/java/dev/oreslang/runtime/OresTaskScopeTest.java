@@ -880,6 +880,57 @@ final class OresTaskScopeTest {
     }
 
 
+    @Test
+    void failedAdmissionRollbackCorruptionPoisonsAndPinsAuthority()
+            throws Exception {
+        OresScheduler scheduler = new OresScheduler(1);
+        OresTaskScope scope = new OresTaskScope(scheduler);
+        OresTaskScope.ScopedReadClaim claim =
+                new OresTaskScope.ScopedReadClaim("view", 109L, 0L, "$");
+
+        // Make post-reservation retirement accounting inconsistent without
+        // changing the region table itself. reserve() will bring -1 -> 0,
+        // then the closed scheduler rejects admission and rollback must detect
+        // the count underflow before mutating lease identity/region state.
+        setActiveScopedReadClaimsForTest(scope, -1);
+        scheduler.close();
+
+        StructuredTaskScopePoisonException poison = assertThrows(
+                StructuredTaskScopePoisonException.class,
+                () -> scope.fork(
+                        resume -> OresScheduler.done(1),
+                        java.util.List.of(claim)));
+
+        assertTrue(scope.isPoisoned());
+        assertEquals(1, scope.activeChildren(),
+                "unproved rollback must pin the forensic child");
+        assertTrue(claim.issued(),
+                "unproved rollback must not recycle one-shot authority");
+        assertTrue(scope.hasScopedReadLease(claim),
+                "unproved rollback must keep exact authority conservatively live");
+        assertNotNull(poison.getCause());
+        assertTrue(poison.getCause().getMessage().contains("underflow"));
+        assertEquals(1, poison.getCause().getSuppressed().length);
+        assertInstanceOf(
+                java.util.concurrent.RejectedExecutionException.class,
+                poison.getCause().getSuppressed()[0]);
+
+        java.util.concurrent.ExecutionException drained = assertThrows(
+                java.util.concurrent.ExecutionException.class,
+                () -> scope.cancelAndQuiesce().get(5, TimeUnit.SECONDS));
+        assertSame(poison, drained.getCause(),
+                "fork and drain must expose the same structured poison identity");
+    }
+
+    private static void setActiveScopedReadClaimsForTest(
+            OresTaskScope scope, int value) throws Exception {
+        java.lang.reflect.Field countField =
+                OresTaskScope.class.getDeclaredField("activeScopedReadClaims");
+        countField.setAccessible(true);
+        countField.setInt(scope, value);
+    }
+
+
     @SuppressWarnings("unchecked")
     private static void corruptScopedReadRegionForTest(
             OresTaskScope scope, long regionId) throws Exception {
