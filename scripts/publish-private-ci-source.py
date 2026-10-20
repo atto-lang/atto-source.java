@@ -493,6 +493,11 @@ def publish(repository, source, branch, trusted_root, source_commit):
     verify_protected_origin(
         repository, approved_policy, approved_repository_id
     )
+    # Retain the early live-private destination gate that the former shell
+    # preflight provided, but authenticate it through the data-only publisher
+    # after protected source governance has been established. Do not touch
+    # private source bytes before validating destination identity/privacy.
+    checked_repo(repository, approved_repository_id)
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
     try:
