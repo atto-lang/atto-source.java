@@ -1504,8 +1504,15 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
                            "sha": isolated_sha}]})
     new_tree_sha = valid_sha(new_tree.get("sha"))
     authorize_write()
+    provenance_message = "\n".join([
+        f"ci: exact private Oreslang tree {expected_source_commit} tree {expected_source_tree}",
+        f"carrier-base {base_sha} tree {base_tree}",
+        f"source-approval-blob {reviewed_snapshot_sha}",
+        f"carrier-approval-blob {carrier_approval_sha}",
+        f"carrier-ruleset-id {carrier_ruleset_id}",
+    ])
     commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
-        "message": "ci: source snapshot from approved private Oreslang checkout",
+        "message": provenance_message,
         "tree": new_tree_sha, "parents": [base_sha]
     })
     commit_sha = valid_sha(commit.get("sha"))
