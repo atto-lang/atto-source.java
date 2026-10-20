@@ -98,6 +98,9 @@ public final class RealtimeRegionEffectModel {
         private final Map<String, Binding> bindings = new HashMap<>();
         private final Map<String, Loan> loans = new HashMap<>();
         private final Map<String, Long> used = new HashMap<>();
+        // Destination region -> source regions whose addresses remain stored.
+        // A Drop/Move of the source binding does NOT erase a stored pointer.
+        private final Map<String, Set<String>> retainedRegions = new HashMap<>();
         private final Set<String> ended = new HashSet<>();
         private final ArrayDeque<String> active = new ArrayDeque<>();
         private long allocated;
@@ -119,6 +122,13 @@ public final class RealtimeRegionEffectModel {
         Report run() {
             visit(plan.entry());
             if (!loans.isEmpty()) deny("borrow survived analyzed entry");
+            // A caller cannot claim bounded scope cleanup while leaving the
+            // scope live, even when its last local binding was dropped.
+            for (Region r : regions.values()) {
+                if (r.kind() == RegionKind.SCOPED && !ended.contains(r.id())) {
+                    deny("scoped region was not explicitly closed: " + r.id());
+                }
+            }
             return new Report(allocated, copied, operations, depth,
                     "SYMBOLIC_REGION_MODEL_ONLY;SOURCE_LOWERING_AND_PHYSICAL_VM_UNVERIFIED");
         }
@@ -228,6 +238,10 @@ public final class RealtimeRegionEffectModel {
                     deny("cross-actor private region escape");
                 }
                 if (hasLoan(store.binding())) deny("storing borrowed owner requires lifetime proof");
+                // The destination retains a pointer independently of the
+                // source binding. Its lifetime must be checked at scope close.
+                retainedRegions.computeIfAbsent(destination.id(), ignored -> new HashSet<>())
+                        .add(source.id());
             } else if (op instanceof Send send) {
                 Binding value = binding(send.binding());
                 Region source = region(value.region());
@@ -252,6 +266,17 @@ public final class RealtimeRegionEffectModel {
                         })) {
                     deny("scope closed with live references or borrows");
                 }
+                // Ending a scope invalidates every address allocated inside
+                // it. Other still-live regions must not retain such pointers.
+                for (var entry : retainedRegions.entrySet()) {
+                    if (!entry.getKey().equals(r.id()) && !ended.contains(entry.getKey())
+                            && entry.getValue().contains(r.id())) {
+                        deny("scope closed while another region retains its address: "
+                                + entry.getKey() + " -> " + r.id());
+                    }
+                }
+                // References stored *inside* this scope die with that scope.
+                retainedRegions.remove(r.id());
                 ended.add(r.id());
                 used.put(r.id(), 0L);
             } else if (op instanceof Call call) {
