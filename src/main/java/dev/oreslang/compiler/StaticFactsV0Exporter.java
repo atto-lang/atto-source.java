@@ -28,6 +28,13 @@ import java.util.Set;
 public final class StaticFactsV0Exporter {
     private StaticFactsV0Exporter() { }
 
+    // Matched to the conservative Rust static-facts importer admission ceiling.
+    private static final int MAX_PROCEDURES = 512;
+    private static final int MAX_LOOPS_PER_PROCEDURE = 256;
+    private static final int MAX_TOTAL_LOOPS = 4_096;
+    private static final int MAX_CALL_EDGES = 8_192;
+    private static final int MAX_AST_DEPTH = 128;
+
     private record Loop(String id) { }
     private record Edge(String from, String to) { }
     private record Procedure(String id, List<Loop> loops) { }
@@ -46,6 +53,8 @@ public final class StaticFactsV0Exporter {
         private final List<Procedure> procedures = new ArrayList<>();
         private final Set<Edge> edges = new LinkedHashSet<>();
         private final Set<String> functionNames = new HashSet<>();
+        private int totalLoops;
+        private int traversalDepth;
 
         Exporter(String source, Ast.Program checked) {
             this.source = source;
@@ -61,7 +70,7 @@ public final class StaticFactsV0Exporter {
             if (!module.annotations().isEmpty() || !module.contracts().isEmpty()) {
                 throw unsupported("module annotations and contracts");
             }
-            if (module.declarations().isEmpty() || module.declarations().size() > 10_000) {
+            if (module.declarations().isEmpty() || module.declarations().size() > MAX_PROCEDURES) {
                 throw unsupported("empty or oversized procedure collection");
             }
             for (Ast.Decl decl : module.declarations()) {
@@ -178,7 +187,10 @@ public final class StaticFactsV0Exporter {
         }
 
         private void addLoop(List<Loop> loops) {
-            if (loops.size() >= 20_000) throw unsupported("too many loops");
+            if (loops.size() >= MAX_LOOPS_PER_PROCEDURE || totalLoops >= MAX_TOTAL_LOOPS) {
+                throw unsupported("too many loops for the downstream importer");
+            }
+            totalLoops++;
             loops.add(new Loop("L" + (loops.size() + 1)));
         }
 
@@ -212,8 +224,10 @@ public final class StaticFactsV0Exporter {
                 String callee = symbols.get(target.name() + "/" + call.arguments().size());
                 if (callee == null) throw unsupported("unresolved or external call " + target.name());
                 for (Ast.Expr arg : call.arguments()) visitExpr(arg, caller);
-                edges.add(new Edge(caller, callee));
-                if (edges.size() > 50_000) throw unsupported("too many call edges");
+                if (!edges.add(new Edge(caller, callee))) {
+                    throw unsupported("multiple static call sites with one caller/callee need callsite facts");
+                }
+                if (edges.size() > MAX_CALL_EDGES) throw unsupported("too many call edges");
             } else {
                 throw unsupported("expression " + expr.getClass().getSimpleName());
             }
