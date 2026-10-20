@@ -110,7 +110,10 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         if (reactor)
             throw new RejectedExecutionException(
                     "no fully started actor carrier available for reactor completion");
-        executeOnLane(0, notification);
+        // First off-reactor bootstrap is a placement barrier: soft-spill may
+        // move ordinary DATA turns, but must not redirect the carrier whose
+        // successful start will authorize future selector notifications.
+        executeOnLane(0, notification, false, true);
     }
 
     private static int verifiedWarmHostLoad(ExecutorService lane, boolean reactor) {
@@ -205,6 +208,11 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     }
 
     private void executeOnLane(int lane, Runnable command, boolean noBootstrap) {
+        executeOnLane(lane, command, noBootstrap, false);
+    }
+
+    private void executeOnLane(
+            int lane, Runnable command, boolean noBootstrap, boolean strictLane) {
         Objects.requireNonNull(command);
         if (lane < 0 || lane >= lanes.size())
             throw new IllegalArgumentException("actor lane outside configured range");
@@ -212,10 +220,10 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
             throw new RejectedExecutionException("actor lane queue unavailable");
         final int target;
         try {
-            // An authenticated warm-lane NIO notification is not actor
-            // placement and MUST NOT soft-spill into a cold worker, because
-            // selector admission may never start a native carrier.
-            target = noBootstrap ? lane : selectLane(lane);
+            // Neither warm NIO delivery nor its off-reactor first bootstrap
+            // can be redirected by an ordinary actor DATA soft-spill decision.
+            // Only regular DATA turns may choose a different eligible lane.
+            target = (noBootstrap || strictLane) ? lane : selectLane(lane);
         } catch (RuntimeException | Error failure) {
             queueSlots.release();
             throw failure;
