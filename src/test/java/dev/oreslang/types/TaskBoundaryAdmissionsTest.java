@@ -101,6 +101,12 @@ final class TaskBoundaryAdmissionsTest {
         assertTrue(typed.taskAdmissions().executable());
         assertNotNull(typed.taskAdmissions().requireScalar(
                 typed.program(), boundary));
+
+        Ast.Program mismatchedProgram = new Ast.Program(List.of());
+        assertThrows(IllegalArgumentException.class,
+                () -> new OresCompiler.TaskBoundaryAnalysis(
+                        mismatchedProgram, typed.taskAdmissions()),
+                "public compiler result must reject a ledger from another exact Program");
     }
 
     @Test
