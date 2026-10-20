@@ -91,6 +91,41 @@ public final class RealtimePrimitiveSmoke {
         rejectsClassfile("heap allocation bytecode", () ->
                 RealtimeClassfileAudit.audit(
                         forbiddenOut.resolve(RealtimePrimitiveCompiler.CLASS_NAME + ".class")));
+
+        Path recursiveOut = out.resolve("recursive-classfile");
+        Files.createDirectories(recursiveOut);
+        Path recursiveJava = recursiveOut.resolve(RealtimePrimitiveCompiler.CLASS_NAME + ".java");
+        Files.writeString(recursiveJava, """
+                final class RtPrimitiveModule {
+                  static int tick(int x) { return helper(x); }
+                  static int helper(int x) { return tick(x); }
+                }
+                """, StandardCharsets.UTF_8);
+        if (javac.run(null, null, null,
+                "--release", "8", "-g:none", "-proc:none",
+                "-d", recursiveOut.toString(), recursiveJava.toString()) != 0) {
+            throw new AssertionError("failed to build recursive classfile fixture");
+        }
+        rejectsClassfile("mutually recursive bytecode call graph", () ->
+                RealtimeClassfileAudit.audit(
+                        recursiveOut.resolve(RealtimePrimitiveCompiler.CLASS_NAME + ".class")));
+
+        Path synchronizedOut = out.resolve("synchronized-classfile");
+        Files.createDirectories(synchronizedOut);
+        Path synchronizedJava = synchronizedOut.resolve(RealtimePrimitiveCompiler.CLASS_NAME + ".java");
+        Files.writeString(synchronizedJava, """
+                final class RtPrimitiveModule {
+                  static synchronized int tick(int x) { return x; }
+                }
+                """, StandardCharsets.UTF_8);
+        if (javac.run(null, null, null,
+                "--release", "8", "-g:none", "-proc:none",
+                "-d", synchronizedOut.toString(), synchronizedJava.toString()) != 0) {
+            throw new AssertionError("failed to build synchronized classfile fixture");
+        }
+        rejectsClassfile("implicit synchronized monitor", () ->
+                RealtimeClassfileAudit.audit(
+                        synchronizedOut.resolve(RealtimePrimitiveCompiler.CLASS_NAME + ".class")));
         try (URLClassLoader loader = new URLClassLoader(new java.net.URL[] {out.toUri().toURL()})) {
             Class<?> generated = Class.forName(RealtimePrimitiveCompiler.CLASS_NAME, true, loader);
             Method method = generated.getDeclaredMethod("tick", int.class);
