@@ -12,11 +12,14 @@ security reviewers explicitly add an exact `owner/repo` destination through a
 reviewed, protected-branch change.
 
 An allowlist line is necessary but no longer sufficient. The protected
-`.github/private-ci-carrier-contracts.json` must independently pin the live
-destination repository ID, an exact reviewed source-free carrier `main`
-commit, the carrier workflow blob, and the exact reviewed test-plan blob/PR
-set. A carrier `main` advance, repository delete/recreate, workflow change,
-or test-plan change fails closed until the source policy is reviewed again.
+`.github/private-ci-carrier-contracts.json` independently pins the live
+destination repository ID and exact reviewed source-free carrier control
+plane. Receipt-mode carriers pin the carrier `main` commit, workflow blob,
+and exact reviewed test-plan blob/PR set. Connector-mode carriers additionally
+pin the carrier base-tree SHA and an exact source PR number to its reviewed
+stacked base ref and base SHA. A carrier `main` advance, repository
+delete/recreate, workflow change, test-plan change, or stacked-base movement
+fails closed until source policy is reviewed again.
 
 **Origin protection is mandatory.** Before reading private source files, the
 publisher now checks the live GitHub identity of
@@ -61,12 +64,27 @@ scripts/run-in-private-ci-destination.sh opto-sync-test/go-java-validation \
   --source-commit FULL_40_CHARACTER_OPEN_PR_HEAD_SHA \
   --source-pr 1482 \
   --test-plan ci/test-plans/java-pr1482.json
+
+For a connector-mode carrier whose exact stacked PR lineage is already pinned
+by the protected carrier contract, no caller-selected test plan is accepted:
+
+```bash
+scripts/run-in-private-ci-destination.sh \
+  ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra \
+  --source-dir ./verified-source-tree \
+  --source-commit FULL_40_CHARACTER_OPEN_PR_HEAD_SHA \
+  --source-pr 1616
+```
 ```
 
 The caller does not choose the executable carrier branch. After proving the
 complete source Git tree, the dispatcher derives exactly
-`ci/oreslang-<SOURCE_ROOT_TREE_SHA>`. The exact source commit must also be
-the current head of the named open PR against source `main`.
+`ci/oreslang-<SOURCE_ROOT_TREE_SHA>`. The exact source commit must be the
+current head of the named open PR in the private source repository. Receipt
+mode additionally requires the PR to target source `main`. Connector mode
+instead requires the PR's base ref and base SHA to exactly match the protected
+carrier contract, which permits an explicitly reviewed stacked PR without
+accepting arbitrary branch ancestry.
 
 The checked-in policy file must explicitly list the destination. The
 publisher checks the live GitHub identity and `visibility=private` /
@@ -86,6 +104,14 @@ bound into the carrier commit message. It then creates a **new**
 `ci/oreslang-<SOURCE_ROOT_TREE_SHA>` ref and the exact
 `ci/authorized-<CARRIER_COMMIT_SHA>` dispatcher authorization ref required
 by the carrier. Existing branches, including `main`, are never updated.
+
+Connector mode deliberately does not add a receipt or test-plan blob because
+the reviewed carrier computes an exact root tree consisting only of its pinned
+base plus `private-oreslang-source/`. Its carrier commit message is exactly
+three lines binding the source commit/tree, carrier base commit/tree, and
+source repository slug/numeric ID. The reviewed carrier verifies both the
+payload ref and `ci/authorized-<CARRIER_COMMIT_SHA>` ref point to that exact
+commit before private-source checkout.
 
 The reviewed carrier base must itself be source-free: neither
 `private-oreslang-source/` nor `ci/oreslang-receipt.json` may already be
@@ -134,10 +160,12 @@ python3 scripts/test-publish-private-ci-source-v3.py
 
 The Bash test uses a temporary policy checkout; Python tests mock all GitHub
 API operations. V3 tests additionally prove protected carrier-contract parsing,
-source-free base enforcement, exact open-PR binding, receipt construction,
-tree-derived branch naming, and dispatcher-authorization ref creation. The
-real allowlist remains empty and **no destination is authorized** unless
-separately reviewed and protected-main enforcement is active.
+source-free base enforcement, exact open-PR binding, connector stacked-base
+binding, receipt construction, connector envelope construction, tree-derived
+branch naming, and dispatcher-authorization ref creation. An allowlist change
+on a feature branch is **not authorization**; only independently reviewed
+protected `main` bytes count, and all live repository/control-plane checks
+must still pass.
 
 ## Active disclosure incident
 
