@@ -898,6 +898,9 @@ public final class OwnershipChecker {
         if (readonlyRecord && storedType.isRecordType() && !storedType.isReadonlyRecordType()) {
             storedType = Ast.TypeRef.readonlyRecordType(storedType.recordMembers());
         }
+        if (containsNestedMapSourceType(storedType)) {
+            throw error("Map<K,V> cannot be nested in another owned value until projection-level affine ownership is implemented");
+        }
         if (binding.kind() == Ast.BindingKind.LET && containsMutexGuardType(storedType)) {
             throw error("guard-bearing values are linear and cannot use let; bind them once with val");
         }
@@ -1282,6 +1285,12 @@ public final class OwnershipChecker {
                 throw error(
                         "Entry<K,V> is an immutable value product and has no constructor; use Entry.of(key, value)");
             }
+            if (created.type().name().equals("Map")) {
+                if (!created.arguments().isEmpty()) {
+                    throw error("new Map<K,V>() takes no positional arguments");
+                }
+                return new ValueInfo(created.type(), ValueKind.MOVE_ONLY, null);
+            }
             List<Ast.TypeRef> argumentTypes = new ArrayList<>(created.arguments().size());
             for (Ast.Expr arg : created.arguments()) {
                 ValueInfo info = checkExpr(arg, scope, true);
@@ -1380,6 +1389,7 @@ public final class OwnershipChecker {
             for (Ast.Expr item : list.elements()) {
                 ValueInfo info = checkExpr(item, scope, true);
                 if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in an array/list");
+                if (containsMapSourceType(info.type)) throw error("Map<K,V> cannot be stored in an array/list until projection-level affine ownership is implemented");
                 if (isBorrowValue(info)) throw error("borrowed references cannot be stored in an owned array/list until explicit container lifetimes are supported");
                 elementType = elementType == null
                         ? info.type
@@ -1397,6 +1407,7 @@ public final class OwnershipChecker {
             for (Ast.Expr item : tuple.elements()) {
                 ValueInfo info = checkExpr(item, scope, true);
                 if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in a tuple");
+                if (containsMapSourceType(info.type)) throw error("Map<K,V> cannot be stored in a tuple until projection-level affine ownership is implemented");
                 if (isBorrowValue(info)) throw error("borrowed references cannot be stored in an owned tuple until explicit container lifetimes are supported");
                 copy &= info.kind == ValueKind.COPY;
                 slots.add(info.type);
@@ -1416,6 +1427,9 @@ public final class OwnershipChecker {
                 ValueInfo info = checkExpr(field.value(), scope, true);
                 if (containsMutexGuardType(info.type)) {
                     throw error("MutexGuard cannot be stored in a struct");
+                }
+                if (containsMapSourceType(info.type)) {
+                    throw error("Map<K,V> cannot be stored in a struct until projection-level affine ownership is implemented");
                 }
                 if (isBorrowValue(info)) {
                     throw error("borrowed references cannot be stored in an owned struct until explicit container lifetimes are supported");
@@ -1577,6 +1591,30 @@ public final class OwnershipChecker {
                     null);
         }
 
+        if (call.callee() instanceof Ast.MemberExpr mapCall
+                && mapCall.receiver() instanceof Ast.NameExpr mapFactory
+                && mapFactory.name().equals("Map")
+                && scope.lookup("Map") == null
+                && mapCall.member().equals("from_entries")) {
+            if (call.arguments().size() != 1) {
+                throw error("Map.from_entries expects exactly one Entry sequence");
+            }
+            ValueInfo sequence = checkExpr(call.arguments().getFirst(), scope, true);
+            Ast.TypeRef mapType;
+            if (call.typeArgumentsPresent() && !call.typeArguments().isEmpty()) {
+                if (call.typeArguments().size() != 2) {
+                    throw error("Map.from_entries explicit type arguments must be <K,V>");
+                }
+                mapType = new Ast.TypeRef(
+                        "Map",
+                        List.of(call.typeArguments().get(0), call.typeArguments().get(1)),
+                        false);
+            } else {
+                mapType = inferMapFromEntrySequence(sequence.type);
+            }
+            return new ValueInfo(mapType, ValueKind.MOVE_ONLY, null);
+        }
+
         if (call.callee() instanceof Ast.MemberExpr qualified
                 && qualified.receiver() instanceof Ast.NameExpr namespace) {
             Ast.FunctionDecl fn = findFunction(
@@ -1602,6 +1640,52 @@ public final class OwnershipChecker {
             if (sumCall != null) return sumCall;
             ValueInfo stringCall = checkBuiltinStringCall(member, call.arguments(), scope);
             if (stringCall != null) return stringCall;
+
+            Ast.TypeRef mapReceiver = receiverType(member.receiver(), scope);
+            if (isClosedMapSourceType(mapReceiver)) {
+                Ast.TypeRef concrete = mapReceiver.isBorrow()
+                        ? mapReceiver.borrowedTarget() : mapReceiver;
+                Ast.TypeRef valueType = concrete.arguments().get(1);
+                return switch (member.member()) {
+                    case "size" -> {
+                        if (!call.arguments().isEmpty()) {
+                            throw error("Map.size expects no arguments");
+                        }
+                        checkExpr(member.receiver(), scope, false);
+                        yield new ValueInfo(Ast.TypeRef.simple("int"), ValueKind.COPY, null);
+                    }
+                    case "has", "get", "take", "remove" -> {
+                        if (call.arguments().size() != 1) {
+                            throw error("Map." + member.member() + " expects exactly one key argument");
+                        }
+                        checkExpr(member.receiver(), scope, false);
+                        checkExpr(call.arguments().getFirst(), scope, false);
+                        if (member.member().equals("take") || member.member().equals("remove")) {
+                            ensureMutableReceiver(member.receiver(), scope, "Map." + member.member());
+                        }
+                        if (member.member().equals("has") || member.member().equals("remove")) {
+                            yield new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+                        }
+                        Ast.TypeRef option = new Ast.TypeRef(
+                                "Option", List.of(valueType), false);
+                        yield new ValueInfo(option, kindOfType(option), null);
+                    }
+                    case "put" -> {
+                        if (call.arguments().size() != 2) {
+                            throw error("Map.put expects exactly key and value arguments");
+                        }
+                        checkExpr(member.receiver(), scope, false);
+                        ensureMutableReceiver(member.receiver(), scope, "Map.put");
+                        checkExpr(call.arguments().get(0), scope, false);
+                        checkExpr(call.arguments().get(1), scope, true);
+                        Ast.TypeRef option = new Ast.TypeRef(
+                                "Option", List.of(valueType), false);
+                        yield new ValueInfo(option, kindOfType(option), null);
+                    }
+                    default -> throw error(
+                            "unknown Map operation '" + member.member() + "'");
+                };
+            }
             // Native collection mutations are effects on the receiver, not
             // harmless reads. TypeChecker validates method availability/arity.
             // A const/let read-only view must not gain mutation via .add/.set.
@@ -1935,6 +2019,9 @@ public final class OwnershipChecker {
                     if (containsMutexGuardType(slot)) {
                         throw error(label + " cannot store a MutexGuard");
                     }
+                    if (containsMapSourceType(slot)) {
+                        throw error(label + " cannot store Map<K,V> tuple elements");
+                    }
                     values.add(new ValueInfo(
                             slot,
                             kindOfType(slot),
@@ -1950,6 +2037,9 @@ public final class OwnershipChecker {
             }
             if (containsMutexGuardType(value.type)) {
                 throw error(label + " cannot store a MutexGuard");
+            }
+            if (containsMapSourceType(value.type)) {
+                throw error(label + " cannot store Map<K,V> until projection-level affine ownership is implemented");
             }
             values.add(value);
         }
@@ -2436,6 +2526,12 @@ public final class OwnershipChecker {
                     && receiverType.name().equals("Entry")
                     && receiverType.arguments().size() == 2) {
                 throw error("Entry<K,V> is immutable; indexed assignment is not allowed");
+            }
+            Ast.TypeRef mapType = receiverType != null && receiverType.isBorrow()
+                    ? receiverType.borrowedTarget() : receiverType;
+            if (mapType != null && mapType.name().equals("Map")
+                    && mapType.arguments().size() == 2) {
+                throw error("Map indexed assignment is not admitted in V1; use Map.put");
             }
             ensureMutableReceiver(indexed.receiver(), scope, "indexed value");
             checkExpr(indexed.index(), scope, false);
@@ -3747,6 +3843,72 @@ public final class OwnershipChecker {
         return captured;
     }
 
+    private static boolean isClosedMapSourceType(Ast.TypeRef type) {
+        if (type == null) return false;
+        Ast.TypeRef concrete = type.isBorrow() ? type.borrowedTarget() : type;
+        return concrete.name().equals("Map") && concrete.arguments().size() == 2;
+    }
+
+    private static boolean containsMapSourceType(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return containsMapSourceType(type.borrowedTarget());
+        if (type.name().equals("Map") && type.arguments().size() == 2) return true;
+        if (type.isClosedAggregateType()) {
+            return type.aggregateMembers().values().stream()
+                    .anyMatch(OwnershipChecker::containsMapSourceType);
+        }
+        return type.arguments().stream().anyMatch(OwnershipChecker::containsMapSourceType);
+    }
+
+    private static boolean containsNestedMapSourceType(Ast.TypeRef type) {
+        if (type == null) return false;
+        Ast.TypeRef concrete = type.isBorrow() ? type.borrowedTarget() : type;
+        if (concrete.name().equals("Map") && concrete.arguments().size() == 2) return false;
+        return containsMapSourceType(concrete);
+    }
+
+    private Ast.TypeRef inferMapFromEntrySequence(Ast.TypeRef sequence) {
+        Ast.TypeRef concrete = sequence.isBorrow() ? sequence.borrowedTarget() : sequence;
+        if (!((concrete.name().equals("Array") || concrete.name().equals("List"))
+                && concrete.arguments().size() == 1)) {
+            return new Ast.TypeRef(
+                    "Map",
+                    List.of(Ast.TypeRef.inferred(), Ast.TypeRef.inferred()),
+                    false);
+        }
+        Ast.TypeRef element = concrete.arguments().getFirst();
+        List<Ast.TypeRef> alternatives = element.isUnion()
+                ? element.arguments() : List.of(element);
+        Ast.TypeRef key = null;
+        Ast.TypeRef value = null;
+        for (Ast.TypeRef alternative : alternatives) {
+            if (!alternative.name().equals("Entry")
+                    || alternative.arguments().size() != 2) {
+                return new Ast.TypeRef(
+                        "Map",
+                        List.of(Ast.TypeRef.inferred(), Ast.TypeRef.inferred()),
+                        false);
+            }
+            key = key == null
+                    ? alternative.arguments().get(0)
+                    : Ast.TypeRef.union(List.of(key, alternative.arguments().get(0)));
+            if (value == null) value = alternative.arguments().get(1);
+            else if (!value.equals(alternative.arguments().get(1))) {
+                return new Ast.TypeRef(
+                        "Map",
+                        List.of(key, Ast.TypeRef.inferred()),
+                        false);
+            }
+        }
+        if (key == null || value == null) {
+            return new Ast.TypeRef(
+                    "Map",
+                    List.of(Ast.TypeRef.inferred(), Ast.TypeRef.inferred()),
+                    false);
+        }
+        return new Ast.TypeRef("Map", List.of(key, value), false);
+    }
+
     private Ast.TypeRef indexedElementType(
             Ast.IndexExpr indexed, Ast.TypeRef receiverType, Scope scope) {
         if (receiverType == null) return Ast.TypeRef.inferred();
@@ -3755,6 +3917,10 @@ public final class OwnershipChecker {
         concrete = ownershipAggregateType(concrete);
 
         Object constantIndex = computedIndexConstant(indexed.index(), scope);
+
+        if (concrete.name().equals("Map") && concrete.arguments().size() == 2) {
+            return concrete.arguments().get(1);
+        }
 
         if (concrete.name().equals("Entry") && concrete.arguments().size() == 2) {
             if (constantIndex instanceof String key) {
