@@ -102,6 +102,56 @@ public final class OresKeyedMap<K, V> {
     // Reject such reentrant mutation until the whole batch is committed.
     private boolean bulkMutationActive;
 
+    /**
+     * Host/runtime foundation for the future checked guest Map.from_entries API.
+     *
+     * The iterable must contain nominal OresEntry values; positional tuples
+     * and Java Map.Entry impostors are never converted implicitly. The new
+     * storage is not reachable by a caller until the entire bounded input has
+     * been admitted, so any failure leaves no partially published Map.
+     *
+     * Only the currently reified String/Symbol key domains are supported.
+     * Guest-facing Map construction, ownership transfer and actor transport
+     * remain disabled until verified compiler and runtime admission exists.
+     */
+    public static OresKeyedMap<Object, Object> fromNominalEntries(
+            Iterable<?> input, KeyDomain keyDomain, ValueDomain valueDomain) {
+        Objects.requireNonNull(input, "map entry input");
+        OresKeyedMap<Object, Object> candidate = new OresKeyedMap<>(
+                Objects.requireNonNull(keyDomain, "map key domain"),
+                Objects.requireNonNull(valueDomain, "map value domain"),
+                NO_ENTRY_VALIDATOR);
+        int count = 0;
+        for (Object raw : input) {
+            if (count >= MAX_ENTRIES) {
+                throw new IllegalArgumentException(
+                        "typed Map entries exceed maximum key count");
+            }
+            count++;
+            if (!(raw instanceof OresEntry entry)) {
+                throw new IllegalArgumentException(
+                        "typed Map entries require nominal Entry<K,V> values");
+            }
+            // containsKey validates the nominal key domain. For this v1
+            // storage the only admissible keys are immutable String/Symbol;
+            // neither domain can dispatch attacker-defined Java equals/hash.
+            if (candidate.containsKey(entry.key())) {
+                throw new DuplicateKeyException();
+            }
+            // Value-domain, tagged key-byte and aggregate size validation all
+            // happen while candidate is private. A failed put is unobservable.
+            candidate.put(entry.key(), entry.value());
+        }
+        return candidate;
+    }
+
+    /** Sanitized duplicate-key error; never render a private key in logs. */
+    public static final class DuplicateKeyException extends IllegalArgumentException {
+        public DuplicateKeyException() {
+            super("duplicate logical key in typed Map entries");
+        }
+    }
+
     private OresKeyedMap(
             KeyDomain domain,
             ValueDomain valueDomain,
