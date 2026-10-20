@@ -2232,6 +2232,25 @@ public final class ActorRuntime implements AutoCloseable {
                 () -> cell.releaseSharedMailbox(bytes));
     }
 
+    private static Object exportActorData(
+            ActorKind kind,
+            Object value) {
+        validateMessageGraph(value);
+        rejectDataFreezeCapabilities(
+                value,
+                new IdentityHashMap<>(),
+                0);
+        if (kind == ActorKind.UNTRUSTED) {
+            rejectUntrustedInboundCapabilities(
+                    value,
+                    new IdentityHashMap<>(),
+                    0);
+        }
+        return isPrivateKind(kind)
+                ? isolateCopy(value)
+                : freeze(value, new IdentityHashMap<>(), 0);
+    }
+
     private boolean enqueueContinuation(
             ActorId actorId,
             Runnable continuation) {
@@ -4935,8 +4954,9 @@ public final class ActorRuntime implements AutoCloseable {
                                                 staged.failFromRuntime(
                                                         OresFuture.unwrap(failure));
                                             } else {
-                                                R frozen = (R) freeze(value);
-                                                staged.completeFromRuntime(frozen);
+                                                R exported =
+                                                        (R) exportActorData(kind, value);
+                                                staged.completeFromRuntime(exported);
                                             }
                                         } catch (Throwable callbackFailure) {
                                             staged.failFromRuntime(callbackFailure);
@@ -4947,8 +4967,8 @@ public final class ActorRuntime implements AutoCloseable {
                             return;
                         }
 
-                        R frozen = (R) freeze(result);
-                        staged.completeFromRuntime(frozen);
+                        R exported = (R) exportActorData(kind, result);
+                        staged.completeFromRuntime(exported);
                         turnContext.self().stop();
                     } catch (VirtualMachineError fatal) {
                         staged.failFromRuntime(fatal);
