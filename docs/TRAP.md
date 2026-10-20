@@ -908,3 +908,14 @@ panic  -> bypass catch/trap -> nearest recover
 ```
 
 No parser rewrite, optimizer pass, foreign adapter, actor boundary, JIT optimization, or native backend may collapse these three channels into one.
+
+## Throwable provenance boundary (fail closed)
+
+Java stack traces, exception messages and class-name prefixes are untrusted.
+The interpreter converts only explicit guest `throw` and an exact private
+interpreter fault class (currently the cast failure) into a trap outcome.
+Host/JDK exceptions are not automatically guest errors, even if their trace
+is rewritten to begin with `dev.oreslang`. New built-in guest faults need
+explicit trusted conversion at their origin, never a guess at a trap boundary.
+The host-facing classifier rejects bare JDK exceptions. This is a conservative
+compatibility change pending runtime-wide trusted fault classification.
