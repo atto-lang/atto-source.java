@@ -25,6 +25,11 @@ final class TrapFailurePolicyTest {
                 GuestPanic.class, TrustedCastFailure.class));
         assertFalse(TrapFailurePolicy.isTrappable(
                 new TrustedCastFailure("missing trusted class"), GuestPanic.class));
+        assertTrue(TrapFailurePolicy.isGuestCatchable(
+                new CompletionException(new TrustedCastFailure("guest cast failure")),
+                GuestPanic.class, TrustedCastFailure.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(
+                new TrustedCastFailure("missing trusted class"), GuestPanic.class));
     }
 
     @Test void forgedTraceNeverAuthorizesHostErrors() {
