@@ -107,6 +107,33 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         source.assert_not_called()
         api.assert_not_called()
 
+    def test_legacy_rejects_nonprivate_destination_before_source_read(self):
+        with (
+            patch.object(
+                pub, "require_preflight",
+                side_effect=AssertionError("checkout shell should never execute"),
+            ) as shell,
+            patch.object(
+                pub, "checked_policy_approval",
+                return_value=(b"p" * 32, 246810),
+            ),
+            patch.object(pub, "verify_protected_origin") as origin,
+            patch.object(
+                pub, "checked_repo",
+                side_effect=pub.Denied("destination not private"),
+            ) as destination,
+            patch.object(
+                pub, "collect_source",
+                side_effect=AssertionError("private source was read"),
+            ) as source,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "destination not private"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, A)
+        origin.assert_called_once_with("trusted/ci", b"p" * 32, 246810)
+        destination.assert_called_once_with("trusted/ci", 246810)
+        shell.assert_not_called()
+        source.assert_not_called()
+
     def test_descriptor_safety_flags_require_distinct_positive_integers(self):
         with (
             patch.object(pub.os, "O_DIRECTORY", 1, create=True),
