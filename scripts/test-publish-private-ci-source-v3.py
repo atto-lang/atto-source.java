@@ -516,6 +516,44 @@ class PrivateCiV3Test(unittest.TestCase):
             ],
         )
 
+    def test_ref_request_accepts_exact_authorization_ref_and_uses_get_route(self):
+        response = type(
+            "Result", (),
+            {"returncode": 0, "stderr": "", "stdout": "{}"},
+        )()
+        ref_name = "ci/authorized-" + COMMIT
+        with patch.object(v3.subprocess, "run", return_value=response) as run:
+            self.assertIs(
+                v3._gh_ref_request("trusted/ci", ref_name, "GET"),
+                response,
+            )
+        argv = run.call_args.args[0]
+        self.assertIn(
+            "repos/trusted/ci/git/ref/heads/ci%2Fauthorized-" + COMMIT,
+            argv,
+        )
+
+    def test_ref_request_uses_plural_delete_route(self):
+        response = type(
+            "Result", (),
+            {"returncode": 0, "stderr": "", "stdout": ""},
+        )()
+        ref_name = "ci/authorized-" + COMMIT
+        with patch.object(v3.subprocess, "run", return_value=response) as run:
+            self.assertIs(
+                v3._gh_ref_request("trusted/ci", ref_name, "DELETE"),
+                response,
+            )
+        argv = run.call_args.args[0]
+        self.assertIn(
+            "repos/trusted/ci/git/refs/heads/ci%2Fauthorized-" + COMMIT,
+            argv,
+        )
+
+    def test_ref_request_rejects_unrelated_ci_namespace(self):
+        with self.assertRaisesRegex(v3.Denied, "target is invalid"):
+            v3._gh_ref_request("trusted/ci", "ci/not-an-oreslang-handoff", "GET")
+
     def test_delete_exact_ref_missing_is_idempotent(self):
         with patch.object(v3, "live_ref_sha", return_value=None):
             self.assertFalse(
