@@ -299,4 +299,24 @@ final class RefinementRulesTest {
                 java.util.Set.of(Long.MIN_VALUE, Long.MAX_VALUE)));
     }
 
+    @Test void overBudgetHostListsCannotForceSchemaTraversalBeforeRejection() {
+        var hostileBounds = new java.util.AbstractList<Ast.RefinementBound>() {
+            @Override public int size() { return 4097; }
+            @Override public Ast.RefinementBound get(int index) {
+                throw new AssertionError("oversized schema must not be read");
+            }
+        };
+        var hostileExclusions = new java.util.AbstractList<Long>() {
+            @Override public int size() { return 4097; }
+            @Override public Long get(int index) {
+                throw new AssertionError("oversized exclusion list must not be copied");
+            }
+        };
+        assertThrows(IllegalArgumentException.class,
+                () -> RefinementRules.normalize(Ast.TypeRef.simple("int"), hostileBounds));
+        assertThrows(IllegalArgumentException.class,
+                () -> new RefinementRules.Descriptor(1, "int", "value", 0,
+                        Long.MAX_VALUE, hostileExclusions, "", "0".repeat(64)));
+    }
+
 }
