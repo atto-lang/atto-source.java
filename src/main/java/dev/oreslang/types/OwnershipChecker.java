@@ -385,6 +385,12 @@ public final class OwnershipChecker {
         }
         if (stmt instanceof Ast.BlockStmt block) {
             checkBlock(block.body(), scope, returnType);
+            if (block.taskScope()) {
+                // Scope exit is an implicit asynchronous physical-quiescence
+                // wait. Enclosing loans therefore cross a hidden suspension
+                // boundary even when the source contains no explicit await.
+                checkSuspensionBorrows(scope, "task scope exit");
+            }
             return;
         }
         if (stmt instanceof Ast.BreakStmt) {
