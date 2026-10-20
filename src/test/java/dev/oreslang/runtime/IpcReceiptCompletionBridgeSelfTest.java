@@ -234,6 +234,29 @@ public final class IpcReceiptCompletionBridgeSelfTest {
             }
         }
 
+        // Deterministic ACK -> physical loss -> late terminal race. A
+        // delayed peer terminal can never convert trusted uncertainty into a
+        // committed outcome after physical loss has been claimed.
+        {
+            var message = env(1, "post-ack-loss");
+            var transport = bound(1, message, 65);
+            var future = transport.admit(message);
+            transport.accept(message, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+            check(transport.lost() == 1);
+            check(result(future) == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            try {
+                transport.accept(message, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+                throw new AssertionError("terminal accepted after physical loss");
+            } catch (IllegalStateException expectedLoss) {
+                check("IPC physical transport already lost".equals(
+                        expectedLoss.getMessage()));
+            }
+            check(transport.lost() == 0);
+            check(transport.bridge().counters().equals(
+                    new IpcReceiptCorrelation.Counters(0, 0)));
+            check(transport.bridge().invariant());
+        }
+
         // Textual session reuse is not authority. A route/capability upgrade
         // requires a fresh bridge/owner; the old physical bridge rejects it.
         {
