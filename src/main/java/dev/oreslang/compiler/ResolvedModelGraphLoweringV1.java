@@ -83,7 +83,11 @@ public final class ResolvedModelGraphLoweringV1 {
             prior = id;
         }
         if (nodes.isEmpty()) throw new IllegalArgumentException("MODEL_EMPTY_BODY");
-        return new Graph(1, modelTypeId, nodes, List.of(prior));
+        Graph graph = new Graph(1, modelTypeId, nodes, List.of(prior));
+        // Validation must happen before a resolved graph escapes lowering.
+        // Merely hashing at a later cache boundary is not sufficient.
+        PortableModelGraphDigestV1.canonicalBytes(graph);
+        return graph;
     }
 
     private static Constant canonical(Ast.ModelValue value, String expectedKind) {
