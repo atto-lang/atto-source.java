@@ -7,8 +7,8 @@ pub routine main(): void {
     return;
   fi
   if packing_score(9223372036854775807, 0, 9223372036854775807,
-                   100, 0, 1) != -1; do
-    stdio.println("ERROR: score overflow not rejected");
+                   100, 0, 1) != 9223372036854775807; do
+    stdio.println("ERROR: checked score lost exact large value");
     return;
   fi
   if may_create(9223372036854775800, 0, 0, 100); do
