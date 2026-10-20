@@ -30,3 +30,18 @@ optimization does not confer actor isolation or ownership capability.
 
 Unit tests: `mvn -Dtest=DataLayoutAdvisorTest test`.
 No JUnit/CI execution has yet been observed on this draft PR.
+
+## Oreslang-native rules (initial source, not yet self-hosted)
+
+The optional `stdlib/analysis/layout_advice.ores` defines pure, bounded
+semantic predicates for AoS field-selectivity, SoA whole-row access,
+AoSoA tile sizing, dense ECS iterations and archetype mutation churn.
+They return the same stable diagnostic codes as the host analyzer.
+This is an **unwired foundation**: the Java/LLVM compilers do not yet
+invoke these Oreslang functions on source/HIR, and this draft has not
+passed an end-to-end Oreslang parse/typecheck/runtime test. Therefore
+it must not be advertised as an operational self-hosted analyzer.
+
+No optional stdlib analysis module is a dependency of freestanding `core`.
+A future self-hosted pass can consume immutable, compiler-verified layout
+IR while retaining Rust and host backends for cross-checking and bootstrap.
