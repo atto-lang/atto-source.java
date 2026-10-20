@@ -3954,9 +3954,11 @@ public final class TypeChecker {
                         resolve(target.method().returnType(),
                                 Set.copyOf(owner.genericParameters()), nominalClassType(owner)),
                         classGenericBindings(owner, ownerType));
-                if (runResult == Unknown.INSTANCE) {
+                if (containsUnknown(runResult)
+                        || containsUnknown(futureType.arguments().getFirst())) {
                     throw new IllegalArgumentException(
-                            "Future<T> provider return type must be concrete");
+                            "Future<T> provider and result types must be concrete, "
+                                    + "including nested generic arguments");
                 }
                 // The evaluator returns the provider method's OresFuture<T>
                 // directly. It does not construct a mapper or coerce payloads.
