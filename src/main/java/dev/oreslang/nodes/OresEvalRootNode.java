@@ -9857,6 +9857,10 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return false;
             }
+            if (value instanceof OresEntry entry) {
+                return containsLiveMutexGuard(entry.key(), seen)
+                        || containsLiveMutexGuard(entry.value(), seen);
+            }
             if (value instanceof OresTuple tuple) {
                 for (Object item : tuple) if (containsLiveMutexGuard(item, seen)) return true;
                 return false;
@@ -9924,6 +9928,15 @@ public final class OresEvalRootNode extends RootNode {
                 for (Object field : object.fields.values()) {
                     releaseMutexGuardsInValue(field, failed, seen);
                 }
+                return;
+            }
+            if (value instanceof OresEntry entry) {
+                releaseMutexGuardsInValue(entry.key(), failed, seen);
+                releaseMutexGuardsInValue(entry.value(), failed, seen);
+                return;
+            }
+            if (value instanceof OresTuple tuple) {
+                for (Object item : tuple) releaseMutexGuardsInValue(item, failed, seen);
                 return;
             }
             if (value instanceof List<?> list) {
