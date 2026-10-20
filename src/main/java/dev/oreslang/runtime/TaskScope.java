@@ -15,7 +15,11 @@ public final class TaskScope {
     private boolean closing;
     private boolean published;
     private Throwable firstFailure;
-    private boolean cancellationRequested;
+    // One-way cancellation seal. Volatile publication lets Registration.attach()
+    // observe cancellation without acquiring the scope monitor while it holds
+    // the registration monitor; reserve(parent) may take those locks in the
+    // opposite order while closing, so nested acquisition here would deadlock.
+    private volatile boolean cancellationRequested;
     private final java.util.Set<Registration> children =
             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
 
@@ -115,10 +119,6 @@ public final class TaskScope {
         return drained;
     }
 
-    private synchronized boolean isCancellationRequested() {
-        return cancellationRequested;
-    }
-
     private void childDone(Registration ticket, Throwable failure) {
         synchronized (this) {
             if (active == 0) {
@@ -210,7 +210,11 @@ public final class TaskScope {
                 }
                 attached = true;
                 attachedFuture = future;
-                cancel = scope.isCancellationRequested() && !terminal;
+                // Never acquire the scope monitor while holding this ticket.
+                // If cancellation wins before this volatile read, cancel below;
+                // if it wins afterwards, cancelAndDrain() snapshots this already-
+                // attached Future and claims cancellation itself.
+                cancel = scope.cancellationRequested && !terminal;
             }
 
             // Fallback for host/runtime tests or legacy callers that bind a
