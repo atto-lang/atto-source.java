@@ -254,6 +254,21 @@ final class TupleEmptyAndPatternBoundaryTest {
                             }
                             """.formatted(iterable))));
             assertTrue(error.getMessage().contains("empty tuple"), error.getMessage());
+
+            // Ownership must fail closed even if it receives an AST without
+            // a prior TypeChecker pass.
+            IllegalArgumentException ownershipError = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OwnershipChecker.check(Parser.parse("""
+                            fnc bad(): void {
+                              for let value of %s do
+                                const int unsafelyNarrowed = value;
+                              done
+                              return;
+                            }
+                            """.formatted(iterable))));
+            assertTrue(ownershipError.getMessage().contains("empty tuple"),
+                    ownershipError.getMessage());
         }
     }
 }
