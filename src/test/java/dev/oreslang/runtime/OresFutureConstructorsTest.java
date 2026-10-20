@@ -99,4 +99,128 @@ final class OresFutureConstructorsTest {
                     () -> OresFutureConstructors.fromAsyncRun(runtime, null));
         }
     }
+
+    @Test
+    void cancelledCallbackRegistrationDetachesExactlyOnce() {
+        AtomicReference<OresFuture.Callback<Integer>> callback = new AtomicReference<>();
+        java.util.concurrent.atomic.AtomicInteger detaches = new java.util.concurrent.atomic.AtomicInteger();
+        OresFuture<Integer> future = OresFutureConstructors.fromCancellableRunCallback(
+                cb -> {
+                    callback.set(cb);
+                    return detaches::incrementAndGet;
+                });
+
+        assertFalse(future.isDone());
+        assertEquals(0, detaches.get());
+        assertTrue(future.cancel(false));
+        assertEquals(1, detaches.get());
+        assertDoesNotThrow(() -> callback.get().resolve(40));
+        assertTrue(future.isCancelled());
+        assertEquals(1, detaches.get());
+    }
+
+    @Test
+    void synchronousResolutionCleansUpRegistrationAfterItIsInstalled()
+            throws Exception {
+        java.util.concurrent.atomic.AtomicInteger detaches = new java.util.concurrent.atomic.AtomicInteger();
+        OresFuture<String> future = OresFutureConstructors.fromCancellableRunCallback(
+                cb -> {
+                    cb.resolve("ready");
+                    return detaches::incrementAndGet;
+                });
+
+        assertEquals("ready", future.get(5, TimeUnit.SECONDS));
+        assertEquals(1, detaches.get());
+    }
+
+    @Test
+    void rejectionCleansUpRegistration() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger detaches = new java.util.concurrent.atomic.AtomicInteger();
+        IllegalStateException failure = new IllegalStateException("producer failure");
+        OresFuture<Integer> future = OresFutureConstructors.fromCancellableRunCallback(
+                cb -> {
+                    cb.reject(failure);
+                    return detaches::incrementAndGet;
+                });
+
+        var observed = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> future.get(5, TimeUnit.SECONDS));
+        assertSame(failure, observed.getCause());
+        assertEquals(1, detaches.get());
+    }
+
+    @Test
+    void concurrentCancellationAndProducerCompletionDoNotDoubleDetach()
+            throws Exception {
+        for (int i = 0; i < 128; i++) {
+            AtomicReference<OresFuture.Callback<Integer>> callback = new AtomicReference<>();
+            java.util.concurrent.atomic.AtomicInteger detaches = new java.util.concurrent.atomic.AtomicInteger();
+            OresFuture<Integer> future = OresFutureConstructors.fromCancellableRunCallback(
+                    cb -> {
+                        callback.set(cb);
+                        return detaches::incrementAndGet;
+                    });
+            CountDownLatch go = new CountDownLatch(1);
+            AtomicReference<Throwable> unexpected = new AtomicReference<>();
+            Thread settle = Thread.startVirtualThread(() -> {
+                try {
+                    if (!go.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("producer race gate timed out");
+                    }
+                    callback.get().resolve(40);
+                } catch (Throwable failure) {
+                    unexpected.compareAndSet(null, failure);
+                }
+            });
+            Thread cancel = Thread.startVirtualThread(() -> {
+                try {
+                    if (!go.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("cancel race gate timed out");
+                    }
+                    future.cancel(false);
+                } catch (Throwable failure) {
+                    unexpected.compareAndSet(null, failure);
+                }
+            });
+            go.countDown();
+            settle.join(5_000);
+            cancel.join(5_000);
+            assertFalse(settle.isAlive(), "stalled producer in iteration " + i);
+            assertFalse(cancel.isAlive(), "stalled canceller in iteration " + i);
+            assertNull(unexpected.get(), "unexpected callback race exception");
+            assertTrue(future.isDone());
+            assertEquals(1, detaches.get(), "leaked or duplicate detach at iteration " + i);
+        }
+    }
+
+    @Test
+    void guestCallbackLoweringRequiresTrackedTaskTurn() throws Exception {
+        assertThrows(IllegalStateException.class,
+                () -> OresFutureConstructors.fromRunCallbackOnCurrentTask(
+                        callback -> callback.resolve(3)));
+
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> task = scheduler.start(resume -> {
+                assertTrue(resume.initial());
+                OresFuture<Integer> made =
+                        OresFutureConstructors.fromRunCallbackOnCurrentTask(
+                                callback -> {
+                                    assertSame(scheduler, OresScheduler.current());
+                                    callback.resolve(17);
+                                });
+                return OresScheduler.done(made.get(5, TimeUnit.SECONDS));
+            });
+            assertEquals(17, task.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void cancellableRegistrationRejectsMissingCleanup() throws Exception {
+        OresFuture<Integer> future = OresFutureConstructors.fromCancellableRunCallback(
+                cb -> null);
+        var observed = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> future.get(5, TimeUnit.SECONDS));
+        assertInstanceOf(NullPointerException.class, observed.getCause());
+    }
+
 }
