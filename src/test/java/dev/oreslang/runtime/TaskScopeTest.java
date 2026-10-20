@@ -128,5 +128,31 @@ final class TaskScopeTest {
                 "failed admission has no scheduler Future identity to bind");
     }
 
+    @Test
+    void retiredTicketRejectsDifferentTerminalFutureIdentity() {
+        TaskScope scope = new TaskScope();
+        TaskScope.Registration ticket = scope.reserve();
+        OresFuture<Integer> exact = OresFuture.completed(42);
+        ticket.terminalReady(exact);
+        ticket.quiesced();
+
+        assertDoesNotThrow(() -> ticket.terminalReady(exact),
+                "duplicate terminal callback from exact Future is idempotent");
+        assertThrows(IllegalStateException.class,
+                () -> ticket.terminalReady(OresFuture.completed(43)),
+                "retired ticket must reject a different terminal authority");
+    }
+
+    @Test
+    void failedAdmissionRejectsAnyLaterTerminalFutureAuthority() {
+        TaskScope scope = new TaskScope();
+        TaskScope.Registration ticket = scope.reserve();
+        ticket.failedAdmission(new IllegalStateException("rejected"));
+
+        assertThrows(IllegalStateException.class,
+                () -> ticket.terminalReady(OresFuture.completed(1)),
+                "failed admission must never acquire scheduler Future authority");
+    }
+
 
 }
