@@ -218,6 +218,27 @@ final class StaticContractSignatureV1Test {
     }
 
     @Test
+    void inheritedStaticFunctionDoesNotImplicitlySatisfyV1Contract() {
+        String source = """
+                define static contract Factory as
+                    fnc create(int id) -> int;
+                end
+
+                define class Base as
+                    pub static fnc create(int id) -> int {
+                        return id;
+                    }
+                end
+
+                define class Child extends Base implements static Factory as
+                end
+                """;
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void staticImplementationRemainsBraceBodied() {
         String source = """
                 define static contract Factory as
