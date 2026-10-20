@@ -100,4 +100,59 @@ final class TaskScopeCancellationTest {
         assertThrows(java.util.concurrent.ExecutionException.class,
                 () -> joining.get(5, TimeUnit.SECONDS));
     }
+    @Test
+    void cancellationSealsAdmissionEvenForStillExecutingParent() throws Exception {
+        TaskScope scope = new TaskScope();
+        TaskScope.Registration parent = scope.reserve();
+        parent.beganExecution();
+        OresFuture<Void> running = new OresFuture<>();
+        parent.attach(running);
+        OresFuture<Void> joined = scope.cancelAndDrain();
+        assertTrue(running.isCancelled());
+        assertThrows(IllegalStateException.class, () -> scope.reserve(parent));
+        assertFalse(joined.isDone(), "parent still owns the physical carrier lease");
+        parent.quiesced();
+        assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> joined.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void cancellationAndAdmissionRaceCannotLeaveAnUntrackedChild() throws Exception {
+        for (int i = 0; i < 128; i++) {
+            TaskScope scope = new TaskScope();
+            TaskScope.Registration parent = scope.reserve();
+            parent.beganExecution();
+            OresFuture<Void> parentFuture = new OresFuture<>();
+            parent.attach(parentFuture);
+            CountDownLatch gate = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<TaskScope.Registration> extra =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            Thread spawner = Thread.ofVirtual().start(() -> {
+                try {
+                    gate.await();
+                    extra.set(scope.reserve(parent));
+                } catch (IllegalStateException expected) {
+                    // Cancellation won the admission race.
+                } catch (InterruptedException interruption) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interruption);
+                }
+            });
+            gate.countDown();
+            OresFuture<Void> joined = scope.cancelAndDrain();
+            spawner.join();
+            TaskScope.Registration child = extra.get();
+            if (child != null) {
+                OresFuture<Void> childFuture = new OresFuture<>();
+                child.attach(childFuture);
+                assertTrue(childFuture.isCancelled(),
+                        "late published work cannot survive scope cancellation");
+                child.quiesced();
+            }
+            parent.quiesced();
+            assertTrue(joined.isDone());
+            assertThrows(IllegalStateException.class, () -> scope.reserve(parent));
+        }
+    }
+
 }
