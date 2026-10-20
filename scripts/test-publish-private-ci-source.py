@@ -16,7 +16,7 @@ ORIGINAL_VERIFY_PROTECTED_ORIGIN = pub.verify_protected_origin
 ORIGINAL_VERIFY_EXACT_SOURCE_TREE = pub.verified_exact_source_tree
 A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
 DESTINATION_ID = 1412142815
-WORKFLOW_SHA = "2d4b412ca8480d02fcd122a9cb7ee3a5d7d45227"
+WORKFLOW_SHA = "ef7b0caaa1aedb56864f01fad14bfe88321f1ab1"
 APPROVED_POLICY = (
     f"trusted/ci {DESTINATION_ID} {WORKFLOW_SHA}\n".encode()
 )
