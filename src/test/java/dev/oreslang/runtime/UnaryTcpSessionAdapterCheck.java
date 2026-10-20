@@ -699,7 +699,7 @@ public final class UnaryTcpSessionAdapterCheck {
                                         && terminal.correlationId() == id,
                                 "race may publish only its matching successful reply");
                     } catch (SocketTimeoutException cancelledWon) {
-                        check(handle.cancelled.get(),
+                        awaitTrue(handle.cancelled::get, 1000,
                                 "absence of reply requires cancellation to have won");
                     }
                 }
