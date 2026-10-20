@@ -20,6 +20,11 @@ import java.util.Set;
  * FFI/serialization, actor and hot-reload boundaries enforce the invariants.
  */
 public final class RefinementRules {
+    // Bounded checked-schema admission. Individual host Interval records
+    // remain useful for large formal proofs, but untrusted source clauses
+    // must never cause unbounded compiler work or serialized ABI payloads.
+    private static final int MAX_SOURCE_REFINEMENT_CLAUSES = 4096;
+
     private RefinementRules() { }
 
     public record Interval(String property, long min, long max, Set<Long> excluded) {
@@ -117,6 +122,10 @@ public final class RefinementRules {
     /** Interval implication is decidable for this closed built-in comparison fragment. */
     public static Interval normalize(Ast.TypeRef base, List<Ast.RefinementBound> clauses) {
         Objects.requireNonNull(clauses);
+        if (clauses.size() > MAX_SOURCE_REFINEMENT_CLAUSES) {
+            throw new IllegalArgumentException(
+                    "source refinement clause limit exceeded (4096)");
+        }
         String canonicalBase = canonicalBaseName(base);
         String prop = canonicalBase.equals("string") ? "length" : "value";
         long min = prop.equals("length") ? 0 : Long.MIN_VALUE;
@@ -164,6 +173,10 @@ public final class RefinementRules {
                              String nominalIdentity, String fingerprint) {
         public Descriptor {
             excluded = List.copyOf(excluded);
+            if (excluded.size() > MAX_SOURCE_REFINEMENT_CLAUSES) {
+                throw new IllegalArgumentException(
+                        "refinement descriptor exclusion quota exceeded (4096)");
+            }
             if (version != 1 || base == null || property == null
                     || (!base.equals("int") && !base.equals("string"))
                     || !(base.equals("int") ? property.equals("value")
