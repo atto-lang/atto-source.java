@@ -356,27 +356,32 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
                 AtomicReference<IpcReceiptCorrelation.Stage> nextAck =
                         new AtomicReference<>();
+                CountDownLatch callbackDone = new CountDownLatch(1);
                 first.outcome().thenAccept(stage -> {
-                    CountDownLatch received = new CountDownLatch(1);
-                    Thread nextReader = new Thread(() -> {
-                        try {
-                            nextAck.set(transport.readVerifiedReceipt());
-                        } catch (Throwable failure) {
-                            callbackFailure.compareAndSet(null, failure);
-                        } finally {
-                            received.countDown();
-                        }
-                    }, "ipc-test-dependent-next-receipt-reader");
-                    nextReader.setDaemon(true);
-                    nextReader.start();
                     try {
-                        if (!received.await(2, TimeUnit.SECONDS)) {
-                            callbackFailure.compareAndSet(null, new AssertionError(
-                                    "terminal completion callback held socket readGate"));
+                        CountDownLatch received = new CountDownLatch(1);
+                        Thread nextReader = new Thread(() -> {
+                            try {
+                                nextAck.set(transport.readVerifiedReceipt());
+                            } catch (Throwable failure) {
+                                callbackFailure.compareAndSet(null, failure);
+                            } finally {
+                                received.countDown();
+                            }
+                        }, "ipc-test-dependent-next-receipt-reader");
+                        nextReader.setDaemon(true);
+                        nextReader.start();
+                        try {
+                            if (!received.await(2, TimeUnit.SECONDS)) {
+                                callbackFailure.compareAndSet(null, new AssertionError(
+                                        "terminal completion callback held socket readGate"));
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            callbackFailure.compareAndSet(null, interrupted);
                         }
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                        callbackFailure.compareAndSet(null, interrupted);
+                    } finally {
+                        callbackDone.countDown();
                     }
                 });
                 check(transport.readVerifiedReceipt()
@@ -385,6 +390,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                         == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
                 check(first.outcome().toCompletableFuture().join()
                         == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+                check(callbackDone.await(2, TimeUnit.SECONDS));
                 check(callbackFailure.get() == null);
                 check(nextAck.get() == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
                 check(transport.readVerifiedReceipt()
