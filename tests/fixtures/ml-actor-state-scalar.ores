@@ -1,0 +1,457 @@
+// Proposed executable gate for Java/Graal actor state; NOT proven as a guest
+// execution on this exact tree. Uses int scalars to avoid pretending Tensor<f64>
+// or GPU-backed parameter storage is implemented.
+// Golden stdout lives in tests/golden/actor_state_scalar.stdout; includes
+// rejected out-of-range inputs and a rejected oversized optimizer candidate.
+//
+// This is a single actor performing a scalar differentiable step. Gradient
+// contribution is x * upstream_gradient. Two microbatches are admitted at
+// weight version 1; SGD with integer learning_rate 1 publishes weight 5,
+// version 2. Gradients carry graph, run, incarnation, step, version and microbatch identity.
+// It is NOT tensor autograd nor a multi-stage training proof.
+//
+// The only persistent guest-owned instance data is the sole state schema.
+// State is NEVER accessed through self.state or an ordinary instance field.
+define enum TrainingError as
+    STALE_RUN = 1
+    STALE_GRAPH = 2
+    STALE_INCAR = 3
+    STALE_VERSION = 4
+    STALE_STEP = 5
+    INVALID_INPUT = 6
+    DUPLICATE_FORWARD = 7
+    INVALID_MICROBATCH = 8
+    INVALID_GRADIENT = 9
+    ORPHAN_GRADIENT = 10
+    DUPLICATE_GRADIENT = 11
+    INCOMPLETE_FANIN = 12
+    COUNTER_EXHAUSTED = 13
+    UNSAFE_CANDIDATE = 14
+    VALID_CANDIDATE_MUST_COMMIT = 15
+end
+
+define actor VersionedScalarStage as
+    state {
+        // Demo-only identity pins, NOT credentials or runtime-authenticated identity.
+        run_id: int = 101;
+        graph_id: int = 202;
+        incarnation: int = 1;
+        weight: int = 10;
+        version: int = 1;
+        accumulated_gradient: int = 0;
+        pending_gradients: int = 0;
+        step: int = 1;
+        issued_first: bool = false;
+        issued_second: bool = false;
+        input_first: int = 0;
+        input_second: int = 0;
+        seen_first: bool = false;
+        seen_second: bool = false;
+    }
+
+    // Reserve the (step, weight version, microbatch) forward context in the
+    // sole actor state. This *scalar* reference computes in the short state
+    // transaction; real tensor kernels must compute from a frozen pinned
+    // storage snapshot OUTSIDE the loan.
+    private eval_affine(int expected_step, int expected_version, int microbatch, int x, int expected_run, int expected_incarnation, int expected_graph): Result<int, TrainingError>
+        with state.read, state.write
+    {
+        return using state.write(critical |s| -> {
+            if s.run_id != expected_run; do
+                return Err(TrainingError.STALE_RUN());
+            fi
+            if s.graph_id != expected_graph; do
+                return Err(TrainingError.STALE_GRAPH());
+            fi
+            if s.incarnation != expected_incarnation; do
+                return Err(TrainingError.STALE_INCAR());
+            fi
+            if s.version != expected_version; do
+                return Err(TrainingError.STALE_VERSION());
+            fi
+            if s.step != expected_step; do
+                return Err(TrainingError.STALE_STEP());
+            fi
+            // Conservative 32-bit-safe domain: |weight| and |x| <= 10000.
+            // Forward multiplication is therefore <= 1e8, with no mutation
+            // on invalid input. This method returns a typed error instead of a numerical sentinel.
+            if x < -10000 || x > 10000 || s.weight < -10000 || s.weight > 10000; do
+                return Err(TrainingError.INVALID_INPUT());
+            fi
+            if microbatch == 1; do
+                if s.issued_first; do
+                    return Err(TrainingError.DUPLICATE_FORWARD());
+                fi
+                s.issued_first = true;
+                s.input_first = x;
+                return Ok(s.weight * x);
+            fi
+            if microbatch == 2; do
+                if s.issued_second; do
+                    return Err(TrainingError.DUPLICATE_FORWARD());
+                fi
+                s.issued_second = true;
+                s.input_second = x;
+                return Ok(s.weight * x);
+            fi
+            return Err(TrainingError.INVALID_MICROBATCH());
+        });
+    }
+
+    // The input comes from the *saved forward context*, never the untrusted
+    // backward message. No gradient can be accepted without a prior matching
+    // forward, and no microbatch can contribute twice.
+    private accumulate(int expected_step, int expected_version, int microbatch, int upstream, int expected_run, int expected_incarnation, int expected_graph): Result<int, TrainingError>
+        with state.read, state.write
+    {
+        return using state.write(critical |s| -> {
+            if s.run_id != expected_run; do
+                return Err(TrainingError.STALE_RUN());
+            fi
+            if s.graph_id != expected_graph; do
+                return Err(TrainingError.STALE_GRAPH());
+            fi
+            if s.incarnation != expected_incarnation; do
+                return Err(TrainingError.STALE_INCAR());
+            fi
+            if s.version != expected_version; do
+                return Err(TrainingError.STALE_VERSION());
+            fi
+            if s.step != expected_step; do
+                return Err(TrainingError.STALE_STEP());
+            fi
+            if microbatch != 1 && microbatch != 2; do
+                return Err(TrainingError.INVALID_MICROBATCH());
+            fi
+            // Both inputs were bounded during forward. Each contribution is
+            // <= 1e8; two contributions cannot overflow a signed 32-bit int.
+            // Reject first so neither seen bit nor gradient is consumed.
+            if upstream < -10000 || upstream > 10000; do
+                return Err(TrainingError.INVALID_GRADIENT());
+            fi
+            if microbatch == 1; do
+                if !s.issued_first; do
+                    return Err(TrainingError.ORPHAN_GRADIENT());
+                fi
+                if s.seen_first; do
+                    return Err(TrainingError.DUPLICATE_GRADIENT());
+                fi
+                s.seen_first = true;
+                s.accumulated_gradient = s.accumulated_gradient
+                    + (s.input_first * upstream);
+            fi
+            if microbatch == 2; do
+                if !s.issued_second; do
+                    return Err(TrainingError.ORPHAN_GRADIENT());
+                fi
+                if s.seen_second; do
+                    return Err(TrainingError.DUPLICATE_GRADIENT());
+                fi
+                s.seen_second = true;
+                s.accumulated_gradient = s.accumulated_gradient
+                    + (s.input_second * upstream);
+            fi
+            s.pending_gradients = s.pending_gradients + 1;
+            return Ok(s.accumulated_gradient);
+        });
+    }
+
+    // Single local state publication: compare expected version, require all
+    // two uniquely identified backward contributions, update weight and version together.
+    // Real tensor-backed ML must prepare independent frozen parameter buffers
+    // before entering this critical write scope.
+    private commit(int expected_step, int expected_version, int expected_run, int expected_incarnation, int expected_graph): Result<int, TrainingError> with state.read, state.write {
+        return self.handle_state(critical write |s| -> {
+            if s.run_id != expected_run; do
+                return Err(TrainingError.STALE_RUN());
+            fi
+            if s.graph_id != expected_graph; do
+                return Err(TrainingError.STALE_GRAPH());
+            fi
+            if s.incarnation != expected_incarnation; do
+                return Err(TrainingError.STALE_INCAR());
+            fi
+            if s.version != expected_version; do
+                return Err(TrainingError.STALE_VERSION());
+            fi
+            if s.step != expected_step; do
+                return Err(TrainingError.STALE_STEP());
+            fi
+            if s.pending_gradients != 2 || !s.issued_first || !s.issued_second || !s.seen_first || !s.seen_second; do
+                return Err(TrainingError.INCOMPLETE_FANIN());
+            fi
+            // Version/step cannot wrap and create a stale-message ABA.
+            // Bound them before the write. Both gradients sum to <= 2e8,
+            // making candidate arithmetic safe for signed 32-bit int.
+            if s.step >= 1000000 || s.version >= 1000000; do
+                return Err(TrainingError.COUNTER_EXHAUSTED());
+            fi
+            val int candidate_weight = s.weight - s.accumulated_gradient;
+            if candidate_weight < -10000 || candidate_weight > 10000; do
+                return Err(TrainingError.UNSAFE_CANDIDATE());
+            fi
+            // All checks complete: one exclusive state transaction publishes
+            // candidate weight, version, step, and cleared gradient receipts.
+            s.weight = candidate_weight;
+            s.accumulated_gradient = 0;
+            s.pending_gradients = 0;
+            s.issued_first = false;
+            s.issued_second = false;
+            s.input_first = 0;
+            s.input_second = 0;
+            s.seen_first = false;
+            s.seen_second = false;
+            s.step = s.step + 1;
+            s.version = s.version + 1;
+            return Ok(s.weight);
+        });
+    }
+
+    // A controlled recovery path (internal-only) for a step whose full gradient fan-in
+    // exists but whose optimizer candidate is outside the bounded domain.
+    // This is NOT a successful optimizer commit: committed weight is unchanged.
+    // Bumping both fences retires all pending/late messages for the failed step.
+    // Result keeps error and valid negative scalar outcomes disjoint.
+    private cancel_rejected(int expected_step, int expected_version, int expected_run, int expected_incarnation, int expected_graph): Result<int, TrainingError>
+        with state.read, state.write
+    {
+        return self.handle_state(critical write |s| -> {
+            if s.run_id != expected_run; do
+                return Err(TrainingError.STALE_RUN());
+            fi
+            if s.graph_id != expected_graph; do
+                return Err(TrainingError.STALE_GRAPH());
+            fi
+            if s.incarnation != expected_incarnation; do
+                return Err(TrainingError.STALE_INCAR());
+            fi
+            if s.version != expected_version; do
+                return Err(TrainingError.STALE_VERSION());
+            fi
+            if s.step != expected_step; do
+                return Err(TrainingError.STALE_STEP());
+            fi
+            if s.pending_gradients != 2 || !s.seen_first || !s.seen_second
+                || !s.issued_first || !s.issued_second; do
+                return Err(TrainingError.INCOMPLETE_FANIN());
+            fi
+            if s.step >= 1000000 || s.version >= 1000000; do
+                return Err(TrainingError.COUNTER_EXHAUSTED());
+            fi
+            val int candidate = s.weight - s.accumulated_gradient;
+            // An otherwise valid candidate must use commit(), not discard.
+            if candidate >= -10000 && candidate <= 10000; do
+                return Err(TrainingError.VALID_CANDIDATE_MUST_COMMIT());
+            fi
+            s.accumulated_gradient = 0;
+            s.pending_gradients = 0;
+            s.issued_first = false;
+            s.issued_second = false;
+            s.input_first = 0;
+            s.input_second = 0;
+            s.seen_first = false;
+            s.seen_second = false;
+            s.step = s.step + 1;
+            s.version = s.version + 1;
+            return Ok(s.version);
+        });
+    }
+
+    // Presentation belongs outside the state loan. A negative successful
+    // mathematical result (for example Ok(-10)) is never an error sentinel.
+    // The CLI chooses a stable marker rather than relying on an unverified
+    // Result.unwrap_err() API. The typed error value remains in the Result.
+    // Closed nominal error handling: adding an error case must update this match.
+    // No wildcard is permitted; compiler exhaustiveness is a required guest gate.
+    private print_outcome(Result<int, TrainingError> outcome): void {
+        match outcome over
+            on Ok(value) -> { stdio.println(value); }
+            on Err(problem) -> {
+                match problem over
+                on TrainingError.STALE_RUN -> { stdio.println("REJECTED"); }
+                on TrainingError.STALE_GRAPH -> { stdio.println("REJECTED"); }
+                on TrainingError.STALE_INCAR -> { stdio.println("REJECTED"); }
+                on TrainingError.STALE_VERSION -> { stdio.println("REJECTED"); }
+                on TrainingError.STALE_STEP -> { stdio.println("REJECTED"); }
+                on TrainingError.INVALID_INPUT -> { stdio.println("REJECTED"); }
+                on TrainingError.DUPLICATE_FORWARD -> { stdio.println("REJECTED"); }
+                on TrainingError.INVALID_MICROBATCH -> { stdio.println("REJECTED"); }
+                on TrainingError.INVALID_GRADIENT -> { stdio.println("REJECTED"); }
+                on TrainingError.ORPHAN_GRADIENT -> { stdio.println("REJECTED"); }
+                on TrainingError.DUPLICATE_GRADIENT -> { stdio.println("REJECTED"); }
+                on TrainingError.INCOMPLETE_FANIN -> { stdio.println("REJECTED"); }
+                on TrainingError.COUNTER_EXHAUSTED -> { stdio.println("REJECTED"); }
+                on TrainingError.UNSAFE_CANDIDATE -> { stdio.println("REJECTED"); }
+                on TrainingError.VALID_CANDIDATE_MUST_COMMIT -> { stdio.println("REJECTED"); }
+                end
+            }
+        end
+        return;
+    }
+
+    private weight_snapshot(): int with state.read {
+        return using state.read(|s| -> s.weight);
+    }
+
+    private version(): int with state.read {
+        return self.handle_state(critical read |s| -> s.version);
+    }
+
+    // Demo lifecycle check, not an authenticated supervisor permission.
+    // Terminate only after both final-step forward contexts are issued.
+    private demo_finish_ready(): bool with state.read {
+        return self.handle_state(critical read |s| ->
+            s.run_id == 101 && s.graph_id == 202 && s.incarnation == 1
+            && s.step == 3 && s.version == 3
+            && s.issued_first && s.issued_second
+            && s.pending_gradients == 0);
+    }
+
+    // ActorRef callers ONLY send messages; they never invoke actor user methods.
+    receive(ActorMail<String> mail): void {
+        if mail.value == "orphan"; do
+            self.print_outcome(self.accumulate(1, 1, 2, 1, 101, 1, 202));
+            return;
+        fi
+        if mail.value == "unsafe_forward"; do
+            self.print_outcome(self.eval_affine(1, 1, 1, 10001, 101, 1, 202));
+            return;
+        fi
+        if mail.value == "forward1"; do
+            self.print_outcome(self.eval_affine(1, 1, 1, 2, 101, 1, 202));
+            return;
+        fi
+        if mail.value == "forward_duplicate"; do
+            self.print_outcome(self.eval_affine(1, 1, 1, 2, 101, 1, 202));
+            return;
+        fi
+        if mail.value == "forward2"; do
+            self.print_outcome(self.eval_affine(1, 1, 2, 3, 101, 1, 202));
+            return;
+        fi
+        if mail.value == "unsafe_upstream"; do
+            self.print_outcome(self.accumulate(1, 1, 1, 10001, 101, 1, 202));
+            return;
+        fi
+        if mail.value == "grad1"; do
+            self.print_outcome(self.accumulate(1, 1, 1, 1, 101, 1, 202));
+            return;
+        fi
+        if mail.value == "duplicate"; do
+            self.print_outcome(self.accumulate(1, 1, 1, 1, 101, 1, 202));
+            return;
+        fi
+        if mail.value == "early"; do
+            self.print_outcome(self.commit(1, 1, 101, 1, 202));
+            return;
+        fi
+        if mail.value == "grad2"; do
+            self.print_outcome(self.accumulate(1, 1, 2, 1, 101, 1, 202));
+            return;
+        fi
+        if mail.value == "commit"; do
+            self.print_outcome(self.commit(1, 1, 101, 1, 202));
+            stdio.println(self.version());
+            return;
+        fi
+        if mail.value == "stale"; do
+            self.print_outcome(self.accumulate(1, 1, 1, 1, 101, 1, 202));
+            return;
+        fi
+        // A second step has mathematically valid individual contributions,
+        // but its candidate weight would exceed the bounded safe domain.
+        // Rejection must leave weight/version unchanged.
+        if mail.value == "wrong_run"; do
+            self.print_outcome(self.eval_affine(2, 2, 1, 2, 100, 1, 202));
+            return;
+        fi
+        if mail.value == "wrong_graph"; do
+            self.print_outcome(self.eval_affine(2, 2, 1, 2, 101, 1, 201));
+            return;
+        fi
+        if mail.value == "wrong_incarnation"; do
+            self.print_outcome(self.eval_affine(2, 2, 1, 2, 101, 0, 202));
+            return;
+        fi
+        if mail.value == "high_forward1"; do
+            self.print_outcome(self.eval_affine(2, 2, 1, 10000, 101, 1, 202));
+            return;
+        fi
+        if mail.value == "high_forward2"; do
+            self.print_outcome(self.eval_affine(2, 2, 2, 10000, 101, 1, 202));
+            return;
+        fi
+        if mail.value == "high_grad1"; do
+            self.print_outcome(self.accumulate(2, 2, 1, 10000, 101, 1, 202));
+            return;
+        fi
+        if mail.value == "high_grad2"; do
+            // A completed gradient fan-in drives the actor-owned optimizer
+            // lifecycle; no mailbox command can directly request commit or cancel.
+            val Result<int, TrainingError> final_gradient = self.accumulate(2, 2, 2, 10000, 101, 1, 202);
+            self.print_outcome(final_gradient);
+            if !final_gradient.is_err(); do
+                val Result<int, TrainingError> outcome = self.commit(2, 2, 101, 1, 202);
+                self.print_outcome(outcome);
+                stdio.println(self.version());
+                if outcome.is_err(); do
+                    // Re-checks unsafe candidate, full fan-in and all epoch fences.
+                    val Result<int, TrainingError> recovery = self.cancel_rejected(2, 2, 101, 1, 202);
+                    if recovery.is_err(); do
+                        stdio.println("CANCEL_REJECTED");
+                    else
+                        stdio.println(recovery.unwrap());
+                    fi
+                fi
+            fi
+            return;
+        fi
+        if mail.value == "stale_after_cancel"; do
+            self.print_outcome(self.accumulate(2, 2, 1, 1, 101, 1, 202));
+            return;
+        fi
+        if mail.value == "new_forward"; do
+            self.print_outcome(self.eval_affine(3, 3, 1, 2, 101, 1, 202));
+            return;
+        fi
+        if mail.value == "new_negative_forward"; do
+            val Result<int, TrainingError> final_result = self.eval_affine(3, 3, 2, -2, 101, 1, 202);
+            self.print_outcome(final_result);
+            if !final_result.is_err() && self.demo_finish_ready(); do
+                stdio.println(self.weight_snapshot() * 2);
+                self.end();
+            fi
+            return;
+        fi
+        return;
+    }
+end
+
+pub async routine main(): void {
+    val worker = spawn VersionedScalarStage();
+    await worker.get_ready();
+    worker.send("orphan");
+    worker.send("unsafe_forward");
+    worker.send("forward1");
+    worker.send("forward_duplicate");
+    worker.send("forward2");
+    worker.send("unsafe_upstream");
+    worker.send("grad1");
+    worker.send("duplicate");
+    worker.send("early");
+    worker.send("grad2");
+    worker.send("commit");
+    worker.send("stale");
+    worker.send("wrong_run");
+    worker.send("wrong_graph");
+    worker.send("wrong_incarnation");
+    worker.send("high_forward1");
+    worker.send("high_forward2");
+    worker.send("high_grad1");
+    worker.send("high_grad2");
+    worker.send("stale_after_cancel");
+    worker.send("new_forward");
+    worker.send("new_negative_forward");
+    await worker.get_done();
+    return;
+}
