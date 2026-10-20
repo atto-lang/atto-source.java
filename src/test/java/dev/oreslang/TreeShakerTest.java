@@ -351,6 +351,43 @@ final class TreeShakerTest {
     }
 
     @Test
+    void treeShakingPreservesCheckedClassViewThroughConstantCallInlining() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                define class Parent as
+                    pub let int id = 7;
+                end
+
+                fnc inlineRead(): int {
+                    return (new Parent())["id"];
+                }
+
+                pub fnc read(): int {
+                    return inlineRead();
+                }
+                """, BuildOptions.library(Map.of()));
+
+        Ast.FunctionDecl read = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(function -> function.name().equals("read"))
+                .findFirst()
+                .orElseThrow();
+
+        Ast.ReturnStmt returned = read.body().stream()
+                .filter(Ast.ReturnStmt.class::isInstance)
+                .map(Ast.ReturnStmt.class::cast)
+                .findFirst()
+                .orElseThrow();
+        Ast.IndexExpr indexed = assertInstanceOf(Ast.IndexExpr.class, returned.value());
+
+        assertEquals(
+                "Parent",
+                Ast.CheckedClassView.lookup(indexed.receiver()),
+                "constant-call substitution must preserve the type checker's static class-domain proof");
+    }
+
+    @Test
     void treeShakingPreservesStructuralFieldDomainForRewrittenReceiver() {
         TreeShaker.Result result = OresCompiler.compileForBuild("""
                 define class Product as
