@@ -38,6 +38,17 @@ class OresSymbolActorBoundaryTest {
         assertInstanceOf(SecurityException.class, failed.getCause());
     }
 
+    @Test void untrustedInboundRejectsNestedActorGroupJoinCapability() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroupJoinCapability join =
+                    runtime.createActorGroup().joinCapability();
+            InvocationTargetException failed = assertThrows(
+                    InvocationTargetException.class,
+                    () -> checkInbound(List.of(Map.of("join", join))));
+            assertInstanceOf(SecurityException.class, failed.getCause());
+        }
+    }
+
     @Test void stableUuidSymbolNotAutomaticallyExposedToUntrustedActor() {
         InvocationTargetException failed = assertThrows(InvocationTargetException.class,
                 () -> checkInbound(Map.of(
