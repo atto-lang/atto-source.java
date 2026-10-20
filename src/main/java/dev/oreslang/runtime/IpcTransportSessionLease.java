@@ -408,14 +408,24 @@ final class IpcTransportSessionLease {
         }
     }
 
-    synchronized Throwable closeFailure() { return closeFailure; }
+    Throwable closeFailure() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport close failure inspection");
+        synchronized (this) {
+            return closeFailure;
+        }
+    }
 
-    synchronized boolean invariant() {
-        return activeWrites >= 0 && activeWrites <= limit
-                && (!physicalCloseConfirmed || activeWrites == 0)
-                && (phase != Phase.RETIRED || (physicalCloseConfirmed && receiptsRetired))
-                && (phase != Phase.OPEN || !physicalCloseConfirmed)
-                && (phase != Phase.FINALIZING || activeWrites == 0)
-                && (!cleanupExecuting || phase == Phase.FINALIZING);
+    boolean invariant() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport invariant inspection");
+        synchronized (this) {
+            return activeWrites >= 0 && activeWrites <= limit
+                    && (!physicalCloseConfirmed || activeWrites == 0)
+                    && (phase != Phase.RETIRED || (physicalCloseConfirmed && receiptsRetired))
+                    && (phase != Phase.OPEN || !physicalCloseConfirmed)
+                    && (phase != Phase.FINALIZING || activeWrites == 0)
+                    && (!cleanupExecuting || phase == Phase.FINALIZING);
+        }
     }
 }
