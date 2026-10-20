@@ -170,6 +170,44 @@ final class InlineSelfReceiverTest {
     }
 
     @Test
+    void explicitSelfValueIsActuallyBoundAndEvaluatedByTheSelectedMethod() throws Exception {
+        // This test uses the ordinary self-typed value argument inside the
+        // method body, not merely its arity: no argument may be swallowed.
+        String output = run("""
+                define class Foo as
+                  pub add(int x): int { return x + 10; }
+                  pub foo(self other, int x): int { return other.add(x); }
+                  pub both(): int { return self.foo(self, 5); }
+                end
+                pub routine main(): void {
+                  val item = new Foo();
+                  stdio.stdout.write(item.both());
+                }
+                """);
+        assertEquals("15", output);
+    }
+
+    @Test
+    void inlineMutableReceiverCannotAliasAnExclusiveArgumentLoan() {
+        // The receiver consumes an exclusive loan independent of the
+        // ordinary caller-visible value arity; inline spelling must retain
+        // exactly the protection exercised by legacy mut self syntax.
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Counter as
+                          pub let int count = 0;
+                          pub take_borrow(mut self, borrow mut Counter other): int {
+                            return other.count;
+                          }
+                        end
+                        fnc bad(): int {
+                          val Counter c = new Counter();
+                          return c.take_borrow(rt borrow mut c);
+                        }
+                        """)));
+    }
+
+    @Test
     void inlineMutableReceiverUsesExistingBorrowedMutabilitySemantics() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Counter as
