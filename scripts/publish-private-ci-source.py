@@ -8,6 +8,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import os
 import stat
 from pathlib import Path
@@ -24,6 +25,7 @@ MAX_BYTES = 40 * 1024 * 1024
 MAX_SINGLE = 10 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
+MAX_GH_API_RESPONSE_CHARS = 24 * 1024 * 1024
 PREFIX = "private-oreslang-source"
 SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
@@ -65,10 +67,7 @@ def require_security_codeowners(contents):
     """Require terminal exact rules owned by an explicit Oreslang team."""
     if not isinstance(contents, bytes) or not contents or len(contents) > 16 * 1024:
         raise Denied("protected CODEOWNERS is missing or oversized")
-    try:
-        lines = contents.decode("utf-8").splitlines()
-    except UnicodeDecodeError as exc:
-        raise Denied("protected CODEOWNERS is not UTF-8") from exc
+    lines = canonical_security_lines(contents, "protected CODEOWNERS")
     rules = [line.strip() for line in lines
              if line.strip() and not line.lstrip().startswith("#")]
     if len(rules) < len(SECURITY_CODEOWNER_PATHS):
@@ -89,24 +88,106 @@ def valid_sha(value):
     return value
 
 
+def trusted_github_cli():
+    """Resolve GitHub API access only through the root-controlled OS binary."""
+    target = "/usr/bin/gh"
+    for directory in ("/", "/usr", "/usr/bin"):
+        try:
+            info = os.lstat(directory)
+        except OSError as exc:
+            raise Denied("trusted GitHub CLI directory is unavailable") from exc
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0
+                or info.st_mode & 0o022):
+            raise Denied("trusted GitHub CLI directory is not root-controlled")
+    try:
+        info = os.lstat(target)
+    except OSError as exc:
+        raise Denied("trusted GitHub CLI is unavailable") from exc
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
+            or info.st_mode & 0o6022 or not info.st_mode & 0o111):
+        raise Denied("trusted GitHub CLI executable is not root-controlled")
+    return target
+
+
+def github_api_environment():
+    """Build a minimal environment for authenticated GitHub API subprocesses."""
+    provided = [
+        name for name in ("GH_TOKEN", "GITHUB_TOKEN")
+        if os.environ.get(name)
+    ]
+    if len(provided) != 1:
+        raise Denied("exactly one explicit GitHub API token is required")
+    return {
+        provided[0]: os.environ[provided[0]],
+        "GH_HOST": "github.com",
+        "GH_PROMPT_DISABLED": "1",
+        "PATH": "/usr/bin:/bin",
+        "HOME": "/",
+        "XDG_CONFIG_HOME": "/nonexistent",
+        "LC_ALL": "C.UTF-8",
+    }
+
+
+def strict_json_loads(text, label="invalid GitHub API JSON response"):
+    """Reject duplicate keys and non-finite numbers in security metadata."""
+    if not isinstance(text, str):
+        raise Denied(label)
+    def unique_fields(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise Denied("authenticated GitHub API JSON contains duplicate fields")
+            result[key] = value
+        return result
+    def reject_constant(_value):
+        raise Denied("authenticated GitHub API JSON contains a nonfinite constant")
+    def finite_float(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise Denied("authenticated GitHub API JSON contains a nonfinite number")
+        return number
+    try:
+        return json.loads(
+            text,
+            object_pairs_hook=unique_fields,
+            parse_constant=reject_constant,
+            parse_float=finite_float,
+        )
+    except (json.JSONDecodeError, RecursionError, OverflowError) as exc:
+        raise Denied(label) from exc
+
+
+def canonical_security_lines(contents, label):
+    """Accept only printable ASCII records separated by LF."""
+    if not isinstance(contents, bytes) or any(
+            byte != 10 and not 32 <= byte <= 126 for byte in contents):
+        raise Denied(label + " contains noncanonical ASCII LF bytes")
+    return contents.decode("ascii").split("\n")
+
+
 def gh_api(route, method="GET", payload=None):
-    argv = ["gh", "api", "--method", method, route,
+    """Authenticated GitHub API with a trusted executable and sealed environment."""
+    argv = [trusted_github_cli(), "api", "--method", method, route,
             "--header", "Accept: application/vnd.github+json"]
     if payload is not None:
         argv.extend(["--input", "-"])
-    env = dict(os.environ, GH_HOST="github.com", GH_PROMPT_DISABLED="1")
     try:
-        p = subprocess.run(argv, input=json.dumps(payload) if payload is not None else None,
-                           capture_output=True, text=True, env=env, timeout=45, check=False)
+        p = subprocess.run(
+            argv,
+            input=json.dumps(payload) if payload is not None else None,
+            capture_output=True, text=True,
+            env=github_api_environment(),
+            timeout=45, check=False,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("authenticated GitHub API request unavailable") from exc
+    # Never display stderr: it may contain private data or credentials.
     if p.returncode != 0:
-        # Never echo stderr: a client can include private file bytes in errors.
         raise Denied("authenticated GitHub API request failed")
-    try:
-        data = json.loads(p.stdout)
-    except json.JSONDecodeError as exc:
-        raise Denied("invalid GitHub API JSON response") from exc
+    if (not isinstance(p.stdout, str) or len(p.stdout) > MAX_GH_API_RESPONSE_CHARS
+            or not isinstance(p.stderr, str) or len(p.stderr) > MAX_GH_API_RESPONSE_CHARS):
+        raise Denied("authenticated GitHub API response exceeds size limit")
+    data = strict_json_loads(p.stdout)
     if not isinstance(data, dict):
         raise Denied("unexpected GitHub response shape")
     return data
@@ -146,10 +227,7 @@ def require_preflight(repository, root):
 def _parse_policy_approval(contents, repository, label):
     if not isinstance(contents, bytes):
         raise Denied(label + " has invalid contents")
-    try:
-        lines = contents.decode("utf-8").splitlines()
-    except UnicodeDecodeError as exc:
-        raise Denied(label + " cannot be decoded") from exc
+    lines = canonical_security_lines(contents, label)
     approved_id = None
     seen = set()
     for line in lines:
@@ -480,8 +558,12 @@ def publish(repository, source, branch, trusted_root, source_commit):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
     source_commit = valid_sha(source_commit)
-    # Approval comes before reading potentially sensitive source files.
-    require_preflight(repository, trusted_root)
+    # Do not execute a checkout-provided guard before authenticated origin
+    # review. The old require_preflight() spawned bash against the unchecked
+    # workspace while the publisher could possess GitHub credentials.
+    # Read the bounded local policy as data, authenticate its exact digest
+    # against independently reviewed protected source main, and only then
+    # permit source traversal or destination publication.
     approved_policy, approved_repository_id = checked_policy_approval(
         trusted_root, repository
     )
@@ -489,6 +571,11 @@ def publish(repository, source, branch, trusted_root, source_commit):
     verify_protected_origin(
         repository, approved_policy, approved_repository_id
     )
+    # Retain the early live-private destination gate that the former shell
+    # preflight provided, but authenticate it through the data-only publisher
+    # after protected source governance has been established. Do not touch
+    # private source bytes before validating destination identity/privacy.
+    checked_repo(repository, approved_repository_id)
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
     try:

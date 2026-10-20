@@ -13,6 +13,7 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -37,6 +38,7 @@ CONTRACT_PATH = ".github/private-ci-carrier-contracts.json"
 REVIEW_AUTHORITY_PR = 1724
 REVIEW_AUTHORITY_LOGIN = "ORESoftware"
 REVIEW_AUTHORITY_USER_ID = 11139560
+MAX_SOURCE_PR_REVIEWS = 100
 MAX_GOVERNANCE_FILE = 1024 * 1024
 REVIEWED_GOVERNANCE_PATHS = (
     ".github/CODEOWNERS",
@@ -95,13 +97,39 @@ def unique_object(pairs):
     return result
 
 
+def strict_json_loads(text, label):
+    def reject_constant(_value):
+        raise Denied(label + " contains nonfinite JSON constant")
+    def finite_float(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise Denied(label + " contains nonfinite JSON number")
+        return number
+    try:
+        return json.loads(
+            text,
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+            parse_float=finite_float,
+        )
+    except (json.JSONDecodeError, RecursionError, OverflowError) as exc:
+        raise Denied(label) from exc
+
+
 def safe_policy_path(value, prefix, suffix):
     if not isinstance(value, str):
         raise Denied("invalid protected carrier path")
     parts = PurePosixPath(value).parts
-    if (not value.startswith(prefix) or not value.endswith(suffix)
-            or not parts or ".." in parts or ".git" in parts
-            or "\\" in value or value.startswith("/")):
+    # These paths are interpolated into GitHub Contents API routes.  Require a
+    # single canonical ASCII spelling so caller/contract data cannot introduce
+    # query strings, fragments, percent-encoded separators, redundant slashes,
+    # dot components or other route ambiguity.
+    if (not re.fullmatch(r"[A-Za-z0-9._/-]+", value)
+            or PurePosixPath(value).as_posix() != value
+            or not value.startswith(prefix) or not value.endswith(suffix)
+            or not parts or any(part in (".", "..") for part in parts)
+            or any(part.casefold() == ".git" for part in parts)
+            or value.startswith("/")):
         raise Denied("invalid protected carrier path")
     return value
 
@@ -154,25 +182,27 @@ def read_local_contract(root):
 
 
 def gh_api_list(route):
-    """Bounded authenticated GET for GitHub list endpoints."""
+    """Authenticated bounded list read; do not inherit checkout/PYTHON/GH config."""
     argv = [
-        "gh", "api", "--method", "GET", route,
+        legacy.trusted_github_cli(), "api", "--method", "GET", route,
         "--header", "Accept: application/vnd.github+json",
     ]
-    env = dict(os.environ, GH_HOST="github.com", GH_PROMPT_DISABLED="1")
     try:
         completed = subprocess.run(
-            argv, capture_output=True, text=True, env=env,
+            argv, capture_output=True, text=True,
+            env=legacy.github_api_environment(),
             timeout=45, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("authenticated GitHub list request unavailable") from exc
     if completed.returncode != 0:
         raise Denied("authenticated GitHub list request failed")
-    try:
-        data = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        raise Denied("invalid GitHub list JSON response") from exc
+    if (not isinstance(completed.stdout, str)
+            or len(completed.stdout) > legacy.MAX_GH_API_RESPONSE_CHARS
+            or not isinstance(completed.stderr, str)
+            or len(completed.stderr) > legacy.MAX_GH_API_RESPONSE_CHARS):
+        raise Denied("authenticated GitHub list response exceeds size limit")
+    data = strict_json_loads(completed.stdout, "invalid GitHub list JSON response")
     if not isinstance(data, list):
         raise Denied("unexpected GitHub list response shape")
     return data
@@ -420,7 +450,7 @@ def remote_file_at_source_main(path, main_sha, max_bytes):
 
 def parse_contract(raw, repository, source_pr, test_plan):
     try:
-        doc = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
+        doc = strict_json_loads(raw.decode("utf-8"), "invalid carrier contract JSON")
     except (UnicodeError, ValueError, RecursionError) as exc:
         raise Denied("invalid carrier contract JSON") from exc
     if not isinstance(doc, dict) or doc.get("schema") != CONTRACT_SCHEMA:
@@ -560,7 +590,54 @@ def checked_destination(repository, contract):
     return repo, base_tree, plan_bytes
 
 
+def require_source_pr_independent_review(source_pr, source_commit, author):
+    """Require the latest exact-head review from the immutable security owner."""
+    if (not isinstance(author, dict)
+            or type(author.get("id")) is not int
+            or author["id"] <= 0
+            or author["id"] == REVIEW_AUTHORITY_USER_ID):
+        raise Denied("source PR author is missing or cannot self-authorize")
+    reviews = gh_api_list(
+        f"repos/{legacy.SOURCE_REPO}/pulls/{source_pr}/reviews?per_page=100"
+    )
+    if len(reviews) >= MAX_SOURCE_PR_REVIEWS:
+        raise Denied("source PR review history may be incomplete")
+    candidates = []
+    seen_ids = set()
+    for item in reviews:
+        if not isinstance(item, dict):
+            raise Denied("source PR review entry malformed")
+        review_id = item.get("id")
+        if (type(review_id) is not int or review_id <= 0
+                or review_id in seen_ids):
+            raise Denied("source PR review identity ambiguous")
+        seen_ids.add(review_id)
+        reviewer = item.get("user")
+        if not isinstance(reviewer, dict):
+            raise Denied("source PR review user missing")
+        if (reviewer.get("id") == REVIEW_AUTHORITY_USER_ID
+                and isinstance(reviewer.get("login"), str)
+                and reviewer["login"].casefold() == REVIEW_AUTHORITY_LOGIN.casefold()):
+            instant = github_timestamp(
+                item.get("submitted_at"), "source PR review timestamp invalid"
+            )
+            if not isinstance(item.get("state"), str):
+                raise Denied("source PR review state invalid")
+            valid_sha(item.get("commit_id"), "source PR review commit invalid")
+            candidates.append((instant, review_id, item))
+    if not candidates:
+        raise Denied("source PR lacks independent security owner approval")
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    current = candidates[-1][2]
+    if (current.get("state") != "APPROVED"
+            or current.get("commit_id") != source_commit):
+        raise Denied("source PR security owner approval is stale or revoked")
+
+
 def verify_source_pr(source_pr, source_commit):
+    if type(source_pr) is not int or source_pr <= 0:
+        raise Denied("invalid source PR number")
+    source_commit = valid_sha(source_commit, "invalid source commit")
     origin = legacy.gh_api(f"repos/{legacy.SOURCE_REPO}")
     repo_id = origin.get("id")
     if (origin.get("full_name") != legacy.SOURCE_REPO
@@ -574,21 +651,27 @@ def verify_source_pr(source_pr, source_commit):
     pr = legacy.gh_api(f"repos/{legacy.SOURCE_REPO}/pulls/{source_pr}")
     head = pr.get("head")
     base = pr.get("base")
+    author = pr.get("user")
     if (pr.get("number") != source_pr
             or pr.get("state") != "open"
+            or pr.get("draft") is not False
+            or not isinstance(author, dict)
             or not isinstance(head, dict)
             or head.get("sha") != source_commit
             or not isinstance(head.get("repo"), dict)
             or head["repo"].get("full_name") != legacy.SOURCE_REPO
             or not isinstance(base, dict)
+            or not isinstance(base.get("repo"), dict)
+            or base["repo"].get("full_name") != legacy.SOURCE_REPO
             or base.get("ref") != legacy.SOURCE_PROTECTED_BRANCH):
         raise Denied("source commit is not the exact open PR head against main")
+    require_source_pr_independent_review(source_pr, source_commit, author)
     return repo_id
 
 
 def validate_test_plan(plan_bytes, source_pr):
     try:
-        plan = json.loads(plan_bytes.decode("utf-8"), object_pairs_hook=unique_object)
+        plan = strict_json_loads(plan_bytes.decode("utf-8"), "invalid reviewed carrier test plan")
     except (UnicodeError, ValueError, RecursionError) as exc:
         raise Denied("invalid reviewed carrier test plan") from exc
     if (not isinstance(plan, dict)
@@ -714,18 +797,26 @@ def _gh_ref_request(repository, ref_name, method):
     encoded = ref_name.replace("/", "%2F")
     family = "ref" if method == "GET" else "refs"
     argv = [
-        "gh", "api", "--method", method,
+        legacy.trusted_github_cli(), "api", "--method", method,
         f"repos/{repository}/git/{family}/heads/{encoded}",
         "--header", "Accept: application/vnd.github+json",
     ]
-    env = dict(os.environ, GH_HOST="github.com", GH_PROMPT_DISABLED="1")
+    env = legacy.github_api_environment()
     try:
-        return subprocess.run(
+        result = subprocess.run(
             argv, capture_output=True, text=True, env=env,
             timeout=30, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("carrier ref rollback is unavailable") from exc
+    # Keep direct ref verification subject to the same bounded-response trust
+    # boundary as legacy.gh_api().  Both stdout and stderr are attacker-useful
+    # memory amplification surfaces before JSON parsing or HTTP-status checks.
+    for stream in (result.stdout, result.stderr):
+        if (not isinstance(stream, str)
+                or len(stream) > legacy.MAX_GH_API_RESPONSE_CHARS):
+            raise Denied("carrier ref API response exceeds size limit")
+    return result
 
 
 def live_ref_sha(repository, ref_name, expected_repository_id):
@@ -741,7 +832,7 @@ def live_ref_sha(repository, ref_name, expected_repository_id):
             return None
         raise Denied("carrier ref lookup failed")
     try:
-        payload = json.loads(result.stdout)
+        payload = strict_json_loads(result.stdout, "carrier ref lookup returned invalid JSON")
     except json.JSONDecodeError as exc:
         raise Denied("carrier ref lookup returned invalid JSON") from exc
     if (not isinstance(payload, dict)
@@ -783,8 +874,13 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     if not isinstance(source_pr, int) or isinstance(source_pr, bool) or source_pr <= 0:
         raise Denied("invalid source PR number")
 
-    # Authorize before reading private source bytes.
-    legacy.require_preflight(repository, trusted_root)
+    # All early admission must be data-only. The former require_preflight()
+    # launched a checkout-provided shell script before the V3 control plane
+    # had been matched to reviewed Git objects. A poisoned checkout could
+    # execute with publisher credentials even if authorization later denied.
+    # checked_policy_approval() reads the bounded local policy through
+    # no-follow file descriptors; authorized_main_sha() independently
+    # establishes reviewed origin governance before source traversal/writes.
     approved_policy, approved_repository_id = legacy.checked_policy_approval(
         trusted_root, repository
     )

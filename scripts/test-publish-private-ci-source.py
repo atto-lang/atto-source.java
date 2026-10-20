@@ -45,6 +45,166 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.source_tree_mock = self.source_tree_guard.start()
         self.addCleanup(self.source_tree_guard.stop)
 
+    def test_local_policy_denial_never_runs_unattested_shell(self):
+        with (
+            patch.object(
+                pub, "require_preflight",
+                side_effect=AssertionError("checkout shell executed before review"),
+            ) as shell,
+            patch.object(
+                pub, "checked_policy_approval",
+                side_effect=pub.Denied("independent destination policy missing"),
+            ) as policy,
+            patch.object(
+                pub, "verify_protected_origin",
+                side_effect=AssertionError("remote authority queried after local denial"),
+            ) as origin,
+            patch.object(
+                pub, "collect_source",
+                side_effect=AssertionError("private source read"),
+            ) as source,
+            patch.object(
+                pub, "gh_api",
+                side_effect=AssertionError("GitHub API used after local denial"),
+            ) as api,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "independent destination policy missing"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, A)
+        policy.assert_called_once_with(self.root, "trusted/ci")
+        shell.assert_not_called()
+        origin.assert_not_called()
+        source.assert_not_called()
+        api.assert_not_called()
+
+    def test_origin_denial_stops_before_source_and_checkout_shell(self):
+        with (
+            patch.object(
+                pub, "require_preflight",
+                side_effect=AssertionError("checkout shell executed before review"),
+            ) as shell,
+            patch.object(
+                pub, "checked_policy_approval",
+                return_value=(b"p" * 32, 246810),
+            ) as policy,
+            patch.object(
+                pub, "verify_protected_origin",
+                side_effect=pub.Denied("protected source review missing"),
+            ) as origin,
+            patch.object(
+                pub, "collect_source",
+                side_effect=AssertionError("source read despite authority denial"),
+            ) as source,
+            patch.object(
+                pub, "gh_api",
+                side_effect=AssertionError("GitHub API after authority denial"),
+            ) as api,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "protected source review missing"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, A)
+        policy.assert_called_once_with(self.root, "trusted/ci")
+        origin.assert_called_once_with("trusted/ci", b"p" * 32, 246810)
+        shell.assert_not_called()
+        source.assert_not_called()
+        api.assert_not_called()
+
+    def test_legacy_rejects_nonprivate_destination_before_source_read(self):
+        with (
+            patch.object(
+                pub, "require_preflight",
+                side_effect=AssertionError("checkout shell should never execute"),
+            ) as shell,
+            patch.object(
+                pub, "checked_policy_approval",
+                return_value=(b"p" * 32, 246810),
+            ),
+            patch.object(pub, "verify_protected_origin") as origin,
+            patch.object(
+                pub, "checked_repo",
+                side_effect=pub.Denied("destination not private"),
+            ) as destination,
+            patch.object(
+                pub, "collect_source",
+                side_effect=AssertionError("private source was read"),
+            ) as source,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "destination not private"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, A)
+        origin.assert_called_once_with("trusted/ci", b"p" * 32, 246810)
+        destination.assert_called_once_with("trusted/ci", 246810)
+        shell.assert_not_called()
+        source.assert_not_called()
+
+    def test_gh_api_uses_root_owned_binary_and_isolated_token_environment(self):
+        process = type("Result", (), {
+            "returncode": 0, "stdout": '{"ok":true}', "stderr": "",
+        })()
+        poisoned = {
+            "GH_TOKEN": "synthetic-test-token",
+            "PYTHONPATH": "/attacker",
+            "GH_CONFIG_DIR": "/attacker",
+            "HTTPS_PROXY": "http://attacker.invalid",
+            "PATH": "/attacker",
+            "HOME": "/attacker",
+        }
+        with (
+            patch.dict(pub.os.environ, poisoned, clear=True),
+            patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh") as cli,
+            patch.object(pub.subprocess, "run", return_value=process) as run,
+        ):
+            self.assertEqual(pub.gh_api("repos/trusted/ci"), {"ok": True})
+        cli.assert_called_once_with()
+        argv = run.call_args.args[0]
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(argv[0], "/usr/bin/gh")
+        self.assertEqual(env["GH_TOKEN"], "synthetic-test-token")
+        self.assertEqual(env["PATH"], "/usr/bin:/bin")
+        self.assertEqual(env["HOME"], "/")
+        self.assertNotIn("PYTHONPATH", env)
+        self.assertNotIn("GH_CONFIG_DIR", env)
+        self.assertNotIn("HTTPS_PROXY", env)
+        self.assertNotIn("synthetic-test-token", argv)
+
+    def test_gh_api_denies_missing_or_ambiguous_credentials(self):
+        for variables in ({}, {"GH_TOKEN": "a", "GITHUB_TOKEN": "b"}):
+            with self.subTest(tokens=sorted(variables)), patch.dict(
+                pub.os.environ, variables, clear=True
+            ), patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"), patch.object(
+                pub.subprocess, "run"
+            ) as run:
+                with self.assertRaisesRegex(pub.Denied, "exactly one explicit"):
+                    pub.gh_api("repos/trusted/ci")
+                run.assert_not_called()
+
+    def test_gh_api_denies_ambiguous_json_and_response_overflow(self):
+        responses = ('{"x":1,"x":2}', '{"x":NaN}', '{"x":1e999}')
+        with (
+            patch.dict(pub.os.environ, {"GH_TOKEN": "synthetic"}, clear=True),
+            patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"),
+        ):
+            for payload in responses:
+                response = type("Result", (), {
+                    "returncode": 0, "stdout": payload, "stderr": "",
+                })()
+                with self.subTest(payload=payload), patch.object(
+                    pub.subprocess, "run", return_value=response
+                ):
+                    with self.assertRaises(pub.Denied):
+                        pub.gh_api("repos/trusted/ci")
+            response = type("Result", (), {
+                "returncode": 0, "stdout": '{"ok":true}', "stderr": "0123456789",
+            })()
+            with patch.object(pub, "MAX_GH_API_RESPONSE_CHARS", 8), patch.object(
+                pub.subprocess, "run", return_value=response
+            ):
+                with self.assertRaisesRegex(pub.Denied, "response exceeds size limit"):
+                    pub.gh_api("repos/trusted/ci")
+
+    def test_private_ci_policy_rejects_noncanonical_control_bytes(self):
+        for raw in (b"trusted/ci 246810\r\n", b"trusted/ci 246810\x00",
+                    b"trusted/ci 246810\xe2\x80\xa8"):
+            with self.subTest(raw=raw), self.assertRaises(pub.Denied):
+                pub._parse_policy_approval(raw, "trusted/ci", "protected source policy")
+
     def test_descriptor_safety_flags_require_distinct_positive_integers(self):
         with (
             patch.object(pub.os, "O_DIRECTORY", 1, create=True),
@@ -456,7 +616,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_visibility_flip_aborts_before_next_write(self):
-        self.visibility = ["private", "private", "public"]
+        # Early data-only provenance check now verifies live privacy before source read.
+        self.visibility = ["private", "private", "private", "public"]
         with self.assertRaises(pub.Denied):
             self.publish()
         self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
@@ -762,10 +923,21 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             outside.rmdir()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
-    def test_denied_preflight_halts_before_api(self):
-        with patch.object(pub, "require_preflight", side_effect=pub.Denied("not approved")):
+    def test_denied_data_only_policy_halts_before_api(self):
+        with (
+            patch.object(
+                pub, "require_preflight",
+                side_effect=AssertionError("checkout shell must not run"),
+            ) as shell,
+            patch.object(
+                pub, "checked_policy_approval",
+                side_effect=pub.Denied("not approved"),
+            ) as policy,
+        ):
             with self.assertRaisesRegex(pub.Denied, "not approved"):
                 self.publish()
+        policy.assert_called_once_with(self.root, "trusted/ci")
+        shell.assert_not_called()
         self.assertEqual(self.route_calls, [])
 
     def test_oversized_source_file_rejected(self):

@@ -56,6 +56,224 @@ def contract():
 
 
 class PrivateCiV3Test(unittest.TestCase):
+    def test_route_paths_fail_closed_on_encoded_and_ambiguous_names(self):
+        invalid = [
+            "ci/test-plans//bad.json",
+            "ci/test-plans/./bad.json",
+            "ci/test-plans/%2e%2e/bad.json",
+            "ci/test-plans/x.json?ref=other.json",
+            "ci/test-plans/x.json#other.json",
+            "ci/test-plans/../bad.json",
+        ]
+        for value in invalid:
+            with self.subTest(path=value), self.assertRaises(v3.Denied):
+                v3.safe_policy_path(value, "ci/test-plans/", ".json")
+        self.assertEqual(
+            v3.safe_policy_path("ci/test-plans/one.json", "ci/test-plans/", ".json"),
+            "ci/test-plans/one.json",
+        )
+
+    def test_v3_rejects_nonfinite_contract_and_plan_json(self):
+        for value in (b'{"v":NaN}', b'{"v":1e999}', b'{"v":1,"v":2}'):
+            with self.subTest(value=value), self.assertRaises(v3.Denied):
+                v3.strict_json_loads(value.decode("ascii"), "untrusted v3 JSON")
+        plan = b'{"schema":"ores-private-ci-test-plan-v1","allowed_prs":[1482],"x":1e999}'
+        with self.assertRaises(v3.Denied):
+            v3.validate_test_plan(plan, 1482)
+
+    def test_review_list_uses_trusted_cli_minimal_env_and_rejects_ambiguity(self):
+        result = type("Result", (), {
+            "returncode": 0, "stdout": '[{"state":"APPROVED"}]', "stderr": "",
+        })()
+        with (
+            patch.object(v3.legacy, "trusted_github_cli", return_value="/usr/bin/gh"),
+            patch.object(
+                v3.legacy, "github_api_environment",
+                return_value={"GH_TOKEN": "synthetic"},
+            ),
+            patch.object(v3.subprocess, "run", return_value=result) as run,
+        ):
+            self.assertEqual(v3.gh_api_list("repos/trusted/ci/pulls/1/reviews"),
+                             [{"state": "APPROVED"}])
+        self.assertEqual(run.call_args.args[0][0], "/usr/bin/gh")
+        self.assertEqual(run.call_args.kwargs["env"], {"GH_TOKEN": "synthetic"})
+        invalid = type("Result", (), {
+            "returncode": 0, "stdout": '[{"state":NaN}]', "stderr": "",
+        })()
+        with (
+            patch.object(v3.legacy, "trusted_github_cli", return_value="/usr/bin/gh"),
+            patch.object(
+                v3.legacy, "github_api_environment",
+                return_value={"GH_TOKEN": "synthetic"},
+            ),
+            patch.object(v3.subprocess, "run", return_value=invalid),
+        ):
+            with self.assertRaises(v3.Denied):
+                v3.gh_api_list("repos/trusted/ci/pulls/1/reviews")
+
+    def test_ref_api_requires_sealed_process_and_bounded_text(self):
+        response = type("Result", (), {
+            "returncode": 0, "stdout": "{}", "stderr": "",
+        })()
+        with (
+            patch.object(v3.legacy, "trusted_github_cli", return_value="/usr/bin/gh"),
+            patch.object(
+                v3.legacy, "github_api_environment",
+                return_value={"GH_TOKEN": "synthetic"},
+            ),
+            patch.object(v3.subprocess, "run", return_value=response) as run,
+        ):
+            self.assertIs(
+                v3._gh_ref_request("trusted/ci", "ci/authorized-" + COMMIT, "GET"),
+                response,
+            )
+        self.assertEqual(run.call_args.args[0][0], "/usr/bin/gh")
+        self.assertEqual(run.call_args.kwargs["env"], {"GH_TOKEN": "synthetic"})
+        invalid = type("Result", (), {
+            "returncode": 0, "stdout": "012345", "stderr": "",
+        })()
+        with (
+            patch.object(v3.legacy, "trusted_github_cli", return_value="/usr/bin/gh"),
+            patch.object(v3.legacy, "github_api_environment", return_value={}),
+            patch.object(v3.legacy, "MAX_GH_API_RESPONSE_CHARS", 4),
+            patch.object(v3.subprocess, "run", return_value=invalid),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "response exceeds size limit"):
+                v3._gh_ref_request("trusted/ci", "ci/authorized-" + COMMIT, "GET")
+
+    def test_source_pr_requires_latest_independent_exact_head_review(self):
+        approved = {
+            "id": 101,
+            "user": {"id": v3.REVIEW_AUTHORITY_USER_ID,
+                     "login": v3.REVIEW_AUTHORITY_LOGIN},
+            "submitted_at": "2026-10-20T19:00:00Z",
+            "state": "APPROVED",
+            "commit_id": "8" * 40,
+        }
+        author = {"id": 424242, "login": "PR-author"}
+        with patch.object(v3, "gh_api_list", return_value=[approved]) as reviews:
+            v3.require_source_pr_independent_review(1482, "8" * 40, author)
+        reviews.assert_called_once_with(
+            "repos/" + v3.legacy.SOURCE_REPO + "/pulls/1482/reviews?per_page=100"
+        )
+        for incorrect in (
+            dict(approved, commit_id="9" * 40),
+            dict(approved, state="CHANGES_REQUESTED"),
+            dict(approved, user={"id": 1234, "login": "ORESoftware"}),
+            dict(approved, user={"id": v3.REVIEW_AUTHORITY_USER_ID,
+                                 "login": "forged-name"}),
+        ):
+            with self.subTest(incorrect=incorrect), patch.object(
+                v3, "gh_api_list", return_value=[incorrect]
+            ):
+                with self.assertRaises(v3.Denied):
+                    v3.require_source_pr_independent_review(1482, "8" * 40, author)
+
+    def test_source_pr_latest_review_revocation_and_pagination_fail_closed(self):
+        earlier = {
+            "id": 10, "user": {"id": v3.REVIEW_AUTHORITY_USER_ID,
+                              "login": v3.REVIEW_AUTHORITY_LOGIN},
+            "submitted_at": "2026-10-20T19:00:00Z",
+            "state": "APPROVED", "commit_id": "8" * 40,
+        }
+        revoked = dict(earlier, id=11, submitted_at="2026-10-20T19:01:00Z",
+                       state="DISMISSED")
+        author = {"id": 424242}
+        with patch.object(v3, "gh_api_list", return_value=[earlier, revoked]):
+            with self.assertRaisesRegex(v3.Denied, "stale or revoked"):
+                v3.require_source_pr_independent_review(1482, "8" * 40, author)
+        with patch.object(v3, "gh_api_list", return_value=[earlier] * 100):
+            with self.assertRaisesRegex(v3.Denied, "incomplete"):
+                v3.require_source_pr_independent_review(1482, "8" * 40, author)
+        with patch.object(v3, "gh_api_list") as reviews:
+            with self.assertRaisesRegex(v3.Denied, "self-authorize"):
+                v3.require_source_pr_independent_review(
+                    1482, "8" * 40, {"id": v3.REVIEW_AUTHORITY_USER_ID}
+                )
+            reviews.assert_not_called()
+
+    def test_export_denied_without_executing_checkout_preflight(self):
+        # Neither a policy denial nor an attempt to use a different checkout
+        # may invoke executable checkout code as an admission check.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            with (
+                patch.object(
+                    v3.legacy, "require_preflight",
+                    side_effect=AssertionError("unattested checkout shell executed"),
+                ) as shell,
+                patch.object(
+                    v3.legacy, "checked_policy_approval",
+                    side_effect=v3.Denied("destination not independently approved"),
+                ) as policy,
+                patch.object(
+                    v3, "authorized_main_sha",
+                    side_effect=AssertionError("authority requested after local denial"),
+                ) as authority,
+                patch.object(
+                    v3.legacy, "collect_source",
+                    side_effect=AssertionError("private source read before admission"),
+                ) as source,
+                patch.object(
+                    v3.legacy, "gh_api",
+                    side_effect=AssertionError("GitHub API called after local denial"),
+                ) as api,
+            ):
+                with self.assertRaisesRegex(v3.Denied, "not independently approved"):
+                    v3.publish(
+                        "trusted/ci",
+                        root / "nonexistent-source",
+                        "4" * 40,
+                        1482,
+                        "ci/test-plans/java-pr1482.json",
+                        root,
+                    )
+            policy.assert_called_once_with(root, "trusted/ci")
+            shell.assert_not_called()
+            authority.assert_not_called()
+            source.assert_not_called()
+            api.assert_not_called()
+
+    def test_review_authority_denial_stops_before_source_or_write(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            with (
+                patch.object(
+                    v3.legacy, "require_preflight",
+                    side_effect=AssertionError("unattested shell executed"),
+                ) as shell,
+                patch.object(
+                    v3.legacy, "checked_policy_approval",
+                    return_value=(POLICY, 1323598177),
+                ) as policy,
+                patch.object(
+                    v3, "authorized_main_sha",
+                    side_effect=v3.Denied("exact independent review absent"),
+                ) as authority,
+                patch.object(
+                    v3.legacy, "collect_source",
+                    side_effect=AssertionError("private source read"),
+                ) as source,
+                patch.object(
+                    v3.legacy, "gh_api",
+                    side_effect=AssertionError("unapproved GitHub write"),
+                ) as api,
+            ):
+                with self.assertRaisesRegex(v3.Denied, "independent review absent"):
+                    v3.publish(
+                        "trusted/ci",
+                        root / "nonexistent-source",
+                        "4" * 40,
+                        1482,
+                        "ci/test-plans/java-pr1482.json",
+                        root,
+                    )
+            policy.assert_called_once_with(root, "trusted/ci")
+            authority.assert_called_once_with("trusted/ci", POLICY, 1323598177)
+            shell.assert_not_called()
+            source.assert_not_called()
+            api.assert_not_called()
+
     def review_governance_fixture(self, policy=b"trusted/ci 246810\n"):
         codeowners = (
             "\n".join(
@@ -1020,7 +1238,14 @@ class PrivateCiV3Test(unittest.TestCase):
             {"returncode": 0, "stderr": "", "stdout": "{}"},
         )()
         ref_name = "ci/authorized-" + COMMIT
-        with patch.object(v3.subprocess, "run", return_value=response) as run:
+        with (
+            patch.object(v3.legacy, "trusted_github_cli", return_value="/usr/bin/gh"),
+            patch.object(
+                v3.legacy, "github_api_environment",
+                return_value={"GH_TOKEN": "synthetic"},
+            ),
+            patch.object(v3.subprocess, "run", return_value=response) as run,
+        ):
             self.assertIs(
                 v3._gh_ref_request("trusted/ci", ref_name, "GET"),
                 response,
@@ -1037,7 +1262,14 @@ class PrivateCiV3Test(unittest.TestCase):
             {"returncode": 0, "stderr": "", "stdout": ""},
         )()
         ref_name = "ci/authorized-" + COMMIT
-        with patch.object(v3.subprocess, "run", return_value=response) as run:
+        with (
+            patch.object(v3.legacy, "trusted_github_cli", return_value="/usr/bin/gh"),
+            patch.object(
+                v3.legacy, "github_api_environment",
+                return_value={"GH_TOKEN": "synthetic"},
+            ),
+            patch.object(v3.subprocess, "run", return_value=response) as run,
+        ):
             self.assertIs(
                 v3._gh_ref_request("trusted/ci", ref_name, "DELETE"),
                 response,
