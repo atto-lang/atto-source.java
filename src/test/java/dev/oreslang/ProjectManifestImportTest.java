@@ -468,6 +468,38 @@ final class ProjectManifestImportTest {
 
         assertEquals("false", out.toString(StandardCharsets.UTF_8),
                 "nominal enum identity must include the defining source unit");
+
+        Path smuggle = app.resolve("smuggle.ores");
+        Files.writeString(smuggle, """
+                import fnc foreign_error from "./foreign.ores";
+
+                define enum TrainingError as
+                    INVALID_INPUT = 1
+                end
+
+                fnc wrapped(): TrainingError {
+                    return foreign_error();
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(wrapped());
+                    return;
+                }
+                """);
+
+        PolyglotException mismatch = assertThrows(
+                PolyglotException.class,
+                () -> LinkedProgramRunner.run(
+                        smuggle,
+                        IsolatePolicy.developer(),
+                        ExecutionProfile.serverJit(),
+                        Set.of(),
+                        Map.of(),
+                        new ByteArrayOutputStream(),
+                        new ByteArrayOutputStream()));
+        assertTrue(mismatch.getMessage().contains("returned")
+                        && mismatch.getMessage().contains("TrainingError"),
+                mismatch.getMessage());
     }
 
     @Test
