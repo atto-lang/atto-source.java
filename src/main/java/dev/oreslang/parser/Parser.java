@@ -1715,9 +1715,14 @@ public final class Parser {
             throw error(peek(),
                     "end-delimited actor callable bodies are not enabled; use a braced actor body");
         }
-        if (current == 0 || previous().line() >= peek().line()) {
+
+        // 'do' is an optional, semantics-free body boundary. Without it, keep
+        // the newline boundary so a return type cannot run directly into the
+        // first statement. With it, compact/minified same-line bodies are safe.
+        boolean explicitBodySeparator = match(DO);
+        if (!explicitBodySeparator && (current == 0 || previous().line() >= peek().line())) {
             throw error(peek(),
-                    "end-delimited callable body must begin on the line after its '-> ReturnType' header");
+                    "end-delimited callable body must begin on the line after its '-> ReturnType' header, or use optional 'do'");
         }
 
         List<Ast.Stmt> body = new ArrayList<>();
