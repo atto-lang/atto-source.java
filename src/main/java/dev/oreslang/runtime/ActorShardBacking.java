@@ -9,4 +9,6 @@ package dev.oreslang.runtime;
  */
 interface ActorShardBacking {
     void revokeBackingFromLease();
+    boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor);
+    boolean isPrivateBacked();
 }
