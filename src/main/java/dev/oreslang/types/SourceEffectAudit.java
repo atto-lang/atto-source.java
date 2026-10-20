@@ -169,11 +169,20 @@ public final class SourceEffectAudit {
                     || node instanceof Ast.SelectStmt) {
                 direct.add(EffectContracts.Effect.SCHEDULER);
                 direct.add(EffectContracts.Effect.SYNCHRONIZATION);
+                direct.add(EffectContracts.Effect.SUSPEND);
             }
             if (node instanceof Ast.ChannelOpExpr
                     || node instanceof Ast.DynamicSelectExpr
                     || node instanceof Ast.SelectStmt) {
                 direct.add(EffectContracts.Effect.ACTOR);
+            }
+            if ((node instanceof Ast.ChannelOpExpr op
+                        && op.mode() == Ast.WaitMode.BLOCKING)
+                    || (node instanceof Ast.DynamicSelectExpr op
+                        && op.mode() == Ast.WaitMode.BLOCKING)
+                    || (node instanceof Ast.SelectStmt op
+                        && op.mode() == Ast.WaitMode.BLOCKING)) {
+                direct.add(EffectContracts.Effect.BLOCK);
             }
             if (node instanceof Ast.DynamicSelectExpr) {
                 direct.add(EffectContracts.Effect.UNKNOWN_CALL);
@@ -182,6 +191,7 @@ public final class SourceEffectAudit {
                 // Yield/cooperate is a scheduling boundary even if it yields a
                 // constant; never certify a generator's body as effect-free.
                 direct.add(EffectContracts.Effect.SCHEDULER);
+                direct.add(EffectContracts.Effect.SUSPEND);
             }
             if (node instanceof Ast.CastExpr || node instanceof Ast.SpreadExpr) {
                 // Conversion, iteration and generic spreads may invoke
