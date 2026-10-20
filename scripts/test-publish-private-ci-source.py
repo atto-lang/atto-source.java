@@ -617,6 +617,34 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                             pub.gh_api("repos/trusted/ci")
         self.assertEqual(invoked.call_count, 1)
 
+    def test_github_api_rejects_duplicate_security_fields_at_any_depth(self):
+        from unittest.mock import Mock
+        payloads = (
+            '{"id":1,"id":2}',
+            '{"protected":true,"details":{"sha":"a","sha":"b"}}',
+            '{"reviews":[{"state":"APPROVED","state":"DISMISSED"}]}',
+        )
+        with patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"):
+            with patch.dict(pub.os.environ, {"GH_TOKEN": "fixture"}, clear=True):
+                for payload in payloads:
+                    with self.subTest(payload=payload):
+                        with patch.object(pub.subprocess, "run", return_value=Mock(
+                                returncode=0, stdout=payload)):
+                            with self.assertRaisesRegex(pub.Denied, "duplicate fields"):
+                                pub.gh_api("repos/trusted/ci")
+
+    def test_github_api_rejects_nonfinite_json_constants(self):
+        from unittest.mock import Mock
+        with patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"):
+            with patch.dict(pub.os.environ, {"GH_TOKEN": "fixture"}, clear=True):
+                for number in ("NaN", "Infinity", "-Infinity"):
+                    with self.subTest(number=number):
+                        payload = '{"meta":{"score":' + number + '}}'
+                        with patch.object(pub.subprocess, "run", return_value=Mock(
+                                returncode=0, stdout=payload)):
+                            with self.assertRaisesRegex(pub.Denied, "nonfinite constant"):
+                                pub.gh_api("repos/trusted/ci")
+
     def test_github_api_output_limit_allows_small_valid_json(self):
         from unittest.mock import Mock
         with patch.object(pub, "MAX_GH_API_RESPONSE_CHARS", 64):
