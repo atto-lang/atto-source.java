@@ -79,7 +79,8 @@ final class SourceEffectAuditTest {
     }
 
     @Test void emptySourceCannotForgeVacuousEffectPurity() {
-        assertFalse(SourceEffectAudit.inspect("").conservativelyEffectFree());
+        assertThrows(IllegalArgumentException.class,
+                () -> SourceEffectAudit.inspect(""));
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.requireConservativelyEffectFree(""));
     }
