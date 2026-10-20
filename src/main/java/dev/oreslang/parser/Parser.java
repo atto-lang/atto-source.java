@@ -397,6 +397,23 @@ public final class Parser {
         return isolated ? Ast.ActorKind.PRIVATE : Ast.ActorKind.SHARED;
     }
 
+    /**
+     * Postfix typed exceptional effects are staged, not an implicit guarantee.
+     * Until callable AST/HIR, imports, ownership, runtime unwind and exports
+     * carry their exact sets, reject at the signature boundary rather than
+     * allowing an incidental parse failure or losing the annotation.
+     * These words remain ordinary identifiers outside this position.
+     */
+    private void rejectStagedExceptionalEffectClause() {
+        if (!check(IDENT)) return;
+        String word = peek().lexeme();
+        if (word.equals("throws") || word.equals("raises") || word.equals("panics")) {
+            throw error(peek(), "postfix '" + word
+                    + "' exceptional effect contract is not yet enabled; "
+                    + "requires checked callable signatures and unwind lowering");
+        }
+    }
+
     private Ast.FunctionDecl parseFunction(List<Ast.Annotation> annotations, Modifiers modifiers, Ast.CallableKind kind) {
         return parseFunction(annotations, modifiers, kind, Ast.ActorKind.NONE);
     }
@@ -432,6 +449,7 @@ public final class Parser {
             Ast.TypeRef returnType = check(LBRACE)
                     ? Ast.TypeRef.simple("void")
                     : parseTypeRef();
+            rejectStagedExceptionalEffectClause();
             List<Ast.Stmt> body = parseBlock();
             return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind,
                     generics, params, returnType, annotations, body);
@@ -442,6 +460,7 @@ public final class Parser {
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
+        rejectStagedExceptionalEffectClause();
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body);
@@ -795,6 +814,7 @@ public final class Parser {
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
                 consume(RPAREN, "expected ')' after interface parameters");
                 Ast.TypeRef returns = match(FAT_ARROW, COLON) ? parseTypeRef() : Ast.TypeRef.simple("void");
+                rejectStagedExceptionalEffectClause();
                 consumeMemberTerminator(terminator, "interface function signature should end with ';'");
                 members.add(new Ast.InterfaceFunctionDecl(memberName, callableStructural.enabled(), memberGenerics, params, returns));
                 continue;
@@ -959,6 +979,7 @@ public final class Parser {
         }
 
         Ast.TypeRef returnType = parseReturnType(annotations);
+        rejectStagedExceptionalEffectClause();
         // An abstract class may declare required slots as `name(args): Type;`.
         // Such signatures are implicitly public and abstract unless visibility
         // was explicitly specified. Their identity is still name + arity only.
