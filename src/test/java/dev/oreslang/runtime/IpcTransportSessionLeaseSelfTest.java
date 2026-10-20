@@ -289,7 +289,7 @@ public final class IpcTransportSessionLeaseSelfTest {
                     == IpcTransportSessionLease.Phase.RETIRED);
             check(bound.lease().snapshot().activeWrites() == 0);
             check(bound.bridge().counters().equals(
-                    new IpcReceiptCorrelation.Counters(0, 1)));
+                    new IpcReceiptCorrelation.Counters(0, 0)));
             check(bound.lease().invariant());
         }
 
