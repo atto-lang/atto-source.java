@@ -68,6 +68,29 @@ final class TaskScopeLoweringTest {
         assertEquals("42", run(source));
     }
 
+
+    @Test
+    void inferredTaskResultCanReturnThroughScopeAfterChildDrain() throws Exception {
+        String source = """
+                pub routine main(): void {
+                    let worker = nb {
+                        nb scope {
+                            let child = nb {
+                                stdio.stdout.write(4);
+                            };
+                            return 2;
+                        }
+                    };
+                    let int result = await worker;
+                    stdio.stdout.write(result);
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("42", run(source));
+    }
+
     @Test
     void borrowedTaskCaptureStillFailsClosedInsideScope() {
         IllegalArgumentException failure = assertThrows(
