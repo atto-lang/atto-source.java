@@ -153,4 +153,47 @@ final class RepeatingSequenceShapeSafetyTest {
                 }
                 """);
     }
+
+    @Test
+    void refusesForgedCompilerMetadataThatNarrowedTheElementJoin() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new Types.ListType(Types.Primitive.INT,
+                        List.of(Types.Primitive.INT, Types.Primitive.STRING)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Types.ListType(Types.Unknown.INSTANCE,
+                        List.of(Types.Primitive.VOID)));
+        assertDoesNotThrow(() ->
+                new Types.ListType(Types.unionOf(List.of(
+                        Types.Primitive.INT, Types.Primitive.STRING)),
+                        List.of(Types.Primitive.INT, Types.Primitive.STRING)));
+    }
+
+    @Test
+    void contextualCallArgumentsValidateTheirCompleteSequenceShape() {
+        accepts("""
+                pub fnc consume(Array[...(int, string, bool)] xs): void { return; }
+                pub fnc main(): void {
+                  consume([1, "one", true, 2, "two", false]);
+                  return;
+                }
+                """);
+        rejects("""
+                pub fnc consume(Array[...(int, string, bool)] xs): void { return; }
+                pub fnc main(): void {
+                  consume([1, "one", true, false]);
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void readFromRuntimeIndexDoesNotForgeAPositionSpecificType() {
+        rejects("""
+                pub fnc bad(): void {
+                  val xs: Array[...(int, string, bool)] = [1, "one", true];
+                  val first: int = xs.get(0);
+                  return;
+                }
+                """);
+    }
 }
