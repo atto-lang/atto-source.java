@@ -73,11 +73,13 @@ public final class ActorDenseIndexColumns implements AutoCloseable, ActorShardBa
         }
     }
 
-    boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor) {
+    @Override
+    public boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor) {
         return reservation.ownedBy(runtime, actor);
     }
 
-    boolean isPrivateBacked() {
+    @Override
+    public boolean isPrivateBacked() {
         return reservation.privateBacking();
     }
 
