@@ -143,7 +143,31 @@ public final class TypeChecker {
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
+        checker.validateTaskReturnOwnershipSummaryCandidates(program);
         return program;
+    }
+
+    /**
+     * A compiler-minted return ownership summary must never outrun ordinary
+     * semantic checking. Validate exactly the synchronous guest functions for
+     * which OwnershipChecker could mint FRESH/MOVES_PARAMETER before the
+     * ownership pass is allowed to consume those summaries.
+     *
+     * <p>This intentionally does not enable Task syntax or lowering. It only
+     * reuses the canonical function checker for summary-eligible helpers whose
+     * body is otherwise outside the Task boundary.</p>
+     */
+    private void validateTaskReturnOwnershipSummaryCandidates(
+            Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl function
+                        && OwnershipChecker
+                                .mayMintTaskReturnOwnershipSummary(function)) {
+                    checkFunction(module.name(), function);
+                }
+            }
+        }
     }
 
     /**
