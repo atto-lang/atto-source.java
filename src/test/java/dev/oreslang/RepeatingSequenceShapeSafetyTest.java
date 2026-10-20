@@ -264,4 +264,30 @@ final class RepeatingSequenceShapeSafetyTest {
                         new Types.Generic("T"), Types.Primitive.INT)),
                         List.of(new Types.Generic("T"), Types.Primitive.INT)));
     }
+
+    @Test
+    void genericTypeInferenceUsesRepeatedSlotTypesInsteadOfTheElementUnion() {
+        accepts("""
+                fnc preserve<T>(Array[...(T, string, bool)] input):
+                    Array[...(T, string, bool)] {
+                  return input;
+                }
+                pub fnc main(): void {
+                  val input: Array[...(int, string, bool)] = [1, "one", true];
+                  val output: Array[...(int, string, bool)] = preserve(input);
+                  return;
+                }
+                """);
+        rejectsAtTypecheck("""
+                fnc preserve<T>(Array[...(T, string, bool)] input):
+                    Array[...(T, string, bool)] {
+                  return input;
+                }
+                pub fnc main(): void {
+                  val input: Array[...(int, string, int)] = [1, "one", 2];
+                  val output: Array[...(int, string, bool)] = preserve(input);
+                  return;
+                }
+                """);
+    }
 }
