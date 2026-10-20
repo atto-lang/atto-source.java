@@ -152,12 +152,18 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                 },
                 () -> {
                     try {
+                        // Close first so a receipt reader blocked in kernel I/O
+                        // is interrupted without waiting on readGate.
                         socket.close();
                     } finally {
-                        // This is our private clone, never the broker's input.
-                        // Destroy only after the lease has drained physical
-                        // writers and entered authoritative close cleanup.
-                        Arrays.fill(this.macKey, (byte) 0);
+                        // A reader may already have consumed a complete frame
+                        // and be authenticating/applying it under readGate.
+                        // Do not destroy the key until that ordered receive
+                        // transaction exits. Taking readGate before close would
+                        // deadlock a blocked socket read.
+                        synchronized (readGate) {
+                            Arrays.fill(this.macKey, (byte) 0);
+                        }
                     }
                 },
                 this.cleanupScheduler);
