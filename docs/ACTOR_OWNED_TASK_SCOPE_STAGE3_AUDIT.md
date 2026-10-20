@@ -420,3 +420,61 @@ success. Keep Stage-3 draft pending exact-source CI and review.
 
 Private cross-organization source mirroring remains explicitly blocked
 by open security issue #962. No cross-org source mirror was attempted.
+
+
+## Actor mailbox shutdown callback lock-order audit (2026-10-20)
+
+Direct source inspection found a deadlock hazard in `ActorCell.terminateTree`:
+`ChannelRuntime.Channel.close(cause)` calls its pending Future subscribers
+**synchronously** after releasing its own coordinator lock, but the actor
+previously invoked `mailbox.close` and `continuationMailbox.close`
+while holding `lifecycleLock`. A host reader callback could block
+another actor lifecycle operation or acquire locks in the reverse order.
+`drainMailboxReservations` likewise called `Channel.drainOne`, which
+invokes consumers/committed writer subscribers synchronously, while
+holding the actor monitor for continuation mailbox draining.
+
+**Fix:** snapshot actor/Task/Future/child cancellation ownership and
+claim the termination cascade barrier under `lifecycleLock`; close both
+channels, drain mailbox reservations and dispatch all cancellation
+notifications only **after releasing** the actor monitor. The drain
+helper now synchronizes only its bookkeeping state, never the channel
+consumer/notification callbacks. Actor `doneFuture` remains guarded
+behind cascade completion, active turn, child actor and owned TaskScope
+physical quiescence.
+
+**Independent failure delivery:** fatal/synchronous callback failure
+must not skip otherwise unrelated child and Future cancellations.
+`ActorRuntime.attemptTerminationAction` attempts every independent
+channel close/drain, TaskScope cancellation, drain-waiter failure,
+pending-Future cancellation and child-actor cancellation. It retains
+the first error, suppresses subsequent errors and continues dispatch.
+Any action failure **fails closed**: the actor's `done` witness is not
+falsely published and the fatal/ordinary host error is rethrown after
+sibling dispatches are attempted. This is intentionally conservative;
+a failed host cancellation callback can still require supervisor
+intervention rather than automatic memory reclamation.
+
+**Production-source tests committed:** a blocked real
+`ChannelRuntime.Channel.readAsync` subscriber during actor mailbox
+closure must not hold the actor's `lifecycleLock`, while actor done
+remains pending; fatal callbacks must not prevent attempts to revoke
+independent siblings; first/secondary error preservation and normal
+actions are verified. `ActorTaskTerminationCascadeTest` has **17**
+JUnit methods, plus 10 actor-owned TaskScope methods (27 total
+Stage-3 source JUnit methods). **These source tests have not been run
+through Maven/GraalVM.**
+
+An isolated OpenJDK 21 concurrency model passed **2,000/2,000**
+blocked-close/lock-probe checks and **5,000/5,000** sibling-failure
+fanout checks. This model is illustrative and does not compile the
+actual ActorRuntime, ChannelRuntime or its JUnit test classes.
+
+**Known limits and release gates:** a genuinely **blocking** host Future
+callback can still stall the calling cancellation-dispatch thread;
+holding no actor monitor eliminates lock-order inversion but does not
+provide a bounded shutdown latency. A failed required cancellation
+action intentionally holds the quiescence gate closed. JDK25/GraalVM
+exact-source CI and tests against actor quota/lease reclamation remain
+unverified. Private-source cross-org mirroring remains blocked by
+security issue #962; there is still no verified approved destination.
