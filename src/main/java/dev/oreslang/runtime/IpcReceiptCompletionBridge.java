@@ -131,23 +131,29 @@ public final class IpcReceiptCompletionBridge {
         }
 
         void publish() {
-            if (published) {
-                throw new IllegalStateException(
-                        "IPC verified completion published more than once");
-            }
-            published = true;
-            if (stage == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED) {
-                if (future != null) {
+            final CompletableFuture<IpcReceiptCorrelation.Stage> done;
+            synchronized (this) {
+                if (published) {
                     throw new IllegalStateException(
-                            "REMOTE_ACCEPTED carried terminal host completion");
+                            "IPC verified completion published more than once");
                 }
-                return;
+                published = true;
+                if (stage == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED) {
+                    if (future != null) {
+                        throw new IllegalStateException(
+                                "REMOTE_ACCEPTED carried terminal host completion");
+                    }
+                    return;
+                }
+                if (future == null) {
+                    throw new IllegalStateException(
+                            "terminal IPC receipt missing host completion");
+                }
+                done = future;
             }
-            if (future == null) {
-                throw new IllegalStateException(
-                        "terminal IPC receipt missing host completion");
-            }
-            completeExactlyOnce(future, stage);
+            // CompletableFuture may synchronously invoke arbitrary dependents:
+            // never hold this token monitor while publishing.
+            completeExactlyOnce(done, stage);
         }
     }
 
