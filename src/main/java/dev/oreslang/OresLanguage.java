@@ -43,16 +43,16 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     private static final class PrecheckedProgramLease {
         private final String codeUnitId;
         private final String sourceText;
-        private final Ast.Program program;
+        private final OresCompiler.CheckedProgram checkedProgram;
         private boolean consumed;
 
         private PrecheckedProgramLease(
                 String codeUnitId,
                 String sourceText,
-                Ast.Program program) {
+                OresCompiler.CheckedProgram checkedProgram) {
             this.codeUnitId = codeUnitId;
             this.sourceText = sourceText;
-            this.program = program;
+            this.checkedProgram = checkedProgram;
         }
     }
 
@@ -89,10 +89,10 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     public static PrecheckedProgramScope openPrecheckedProgram(
             String codeUnitId,
             String sourceText,
-            Ast.Program program) {
+            OresCompiler.CheckedProgram checkedProgram) {
         java.util.Objects.requireNonNull(codeUnitId, "code unit id");
         java.util.Objects.requireNonNull(sourceText, "source text");
-        java.util.Objects.requireNonNull(program, "prechecked program");
+        java.util.Objects.requireNonNull(checkedProgram, "prechecked program proof");
         if (codeUnitId.isBlank()) {
             throw new IllegalArgumentException("prechecked code unit id cannot be blank");
         }
@@ -101,7 +101,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
                     "nested prechecked Oreslang program leases are not supported");
         }
         PrecheckedProgramLease lease = new PrecheckedProgramLease(
-                codeUnitId, sourceText, program);
+                codeUnitId, sourceText, checkedProgram);
         PRECHECKED_PROGRAM.set(lease);
         return new PrecheckedProgramScope(lease);
     }
@@ -125,7 +125,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
             throw new IllegalStateException(
                     "prechecked Oreslang program lease does not match parsed source identity/content");
         }
-        return lease.program;
+        return lease.checkedProgram.program();
     }
 
     @Override
