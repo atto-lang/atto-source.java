@@ -113,13 +113,17 @@ public final class Types {
                 // A generic is not a wildcard proof: an unbound T may not
                 // be substituted with an arbitrary concrete type. Its own
                 // identity must occur in the joined type.
-                boolean genericCovered = !(slot instanceof Generic)
+                boolean unresolved = containsUnknownRecursively(element)
+                        || containsUnknownRecursively(slot);
+                // A generic-bearing positional slot must occur *exactly* in
+                // the joined type, rather than relying on wildcard-like
+                // Generic compatibility.
+                boolean genericCovered = !containsUncertainType(slot)
                         || slot.equals(element)
                         || (element instanceof Union joined && joined.options().contains(slot));
                 boolean joinedGenericSafe = !(element instanceof Generic)
                         || element.equals(slot);
-                if (element == Unknown.INSTANCE || slot == Unknown.INSTANCE
-                        || slot == Primitive.VOID || slot == Primitive.NULL
+                if (unresolved || slot == Primitive.VOID || slot == Primitive.NULL
                         || !genericCovered || !joinedGenericSafe
                         || !Types.isAssignable(slot, element)) {
                     throw new IllegalArgumentException(
@@ -229,6 +233,41 @@ public final class Types {
         return false; // Not knowing if types overlap is NOT proof of exclusion.
     }
 
+    /** A dynamic value must not manufacture a positional proof through an
+     * Option, borrow, record, function signature, or other wrapper.
+     */
+    public static boolean containsPatternedList(Type type) {
+        if (type instanceof ListType list) return list.patterned()
+                || containsPatternedList(list.element())
+                || list.repeatUnit().stream().anyMatch(Types::containsPatternedList);
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsPatternedList);
+        if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsPatternedList);
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsPatternedList);
+        if (type instanceof Record rec) return rec.members().values().stream().anyMatch(Types::containsPatternedList);
+        if (type instanceof Function fn) return fn.parameters().stream().anyMatch(Types::containsPatternedList)
+                || containsPatternedList(fn.result());
+        if (type instanceof Borrow loan) return containsPatternedList(loan.target());
+        if (type instanceof SelfType self) return containsPatternedList(self.bound());
+        if (type instanceof Not not) return containsPatternedList(not.excluded());
+        return false;
+    }
+
+    private static boolean containsUnknownRecursively(Type type) {
+        if (type == Unknown.INSTANCE) return true;
+        if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUnknownRecursively);
+        if (type instanceof Not not) return containsUnknownRecursively(not.excluded());
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsUnknownRecursively);
+        if (type instanceof Record record) return record.members().values().stream().anyMatch(Types::containsUnknownRecursively);
+        if (type instanceof ListType list) return containsUnknownRecursively(list.element())
+                || list.repeatUnit().stream().anyMatch(Types::containsUnknownRecursively);
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsUnknownRecursively);
+        if (type instanceof Function function) return function.parameters().stream().anyMatch(Types::containsUnknownRecursively)
+                || containsUnknownRecursively(function.result());
+        if (type instanceof Borrow borrow) return containsUnknownRecursively(borrow.target());
+        if (type instanceof SelfType self) return containsUnknownRecursively(self.bound());
+        return false;
+    }
+
     private static boolean containsUncertainType(Type type) {
         if (type == Unknown.INSTANCE || type instanceof Generic) return true;
         if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUncertainType);
@@ -260,7 +299,7 @@ public final class Types {
         // ordered, runtime-extent array contract. Generic slots INSIDE a
         // declared pattern are still permitted and preserve their identity.
         if ((from == Unknown.INSTANCE || from instanceof Generic)
-                && to instanceof ListType target && target.patterned()) return false;
+                && containsPatternedList(to)) return false;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
