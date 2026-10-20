@@ -40,3 +40,13 @@ The model now records both the *source region* and source *binding name* for eac
 The model does not implement field overwrite, reference removal, refcounts, nested dynamic lifetime proofs, or relocation of stored addresses. Therefore a legitimate program needing those operations must wait for typed-IR proofs rather than bypass these restrictions. Lifetime ranks are symbolic declarations—not independently verified facts—and a caller-created plan remains **untrusted for hard-RT admission**.
 
 The follow-up audit adds negative cases for forgotten scope closure, equal-rank independent scopes, retained pointers surviving a dropped source binding, stale destination regions, and forbidden destruction/moves of region-retained objects. The test suite currently contains 31 negative policy checks. CI status must be tracked separately: zero-step GitHub Actions failures do not constitute an executed test run.
+
+## Checked-source actor callback preflight
+
+`RealtimeActorSourceEffects` and `OresCompiler.analyzeRealtimeActorCallback(source, actorName, callbackName, arity, budget)` provide the first **real checked-AST** admission step. The public compiler entrypoint invokes the existing complete `TypeChecker` and `OwnershipChecker` before analysis.
+
+The strict initial profile admits one private trusted actor class without fields, constructor, inheritance or generics and one synchronous instance callback with explicit scalar `i32`/`bool` parameters and result. Only finite expression trees of primitive literals, locals and nonexceptional primitive operators, immutable scalar local declarations, and exhaustive conditional return paths are accepted. All calls, actor state/heap references, `new`, `await`, `rt share`/`rt borrow`, mailbox operations, FFI, generic/dynamic dispatch, annotations, non-returning paths and unbounded loops fail closed.
+
+It returns a conservative source-AST worst-path step count and the explicit assurance `CHECKED_ACTOR_AST_SCALAR_ONLY;ACTOR_REGION_AND_VM_UNVERIFIED`. This is a **semantic/effect exclusion preflight** only. It does not call `RealtimeRegionEffectModel.check` to justify actual allocation ownership or certify actor scheduling. The physical class instance, actor runtime, constructor/callback dispatch, implementation-dependent safepoints and GC behavior remain unverified.
+
+Synthetic `RealtimeActorSourceEffectsSelfTest` cases exercise this gate against the actual `Ast` record interfaces; a source CI job compiles both self-tests. Real source-parser/typechecker end-to-end conformance remains a separate integration gate, particularly before enabling actor fields or scoped memory.
