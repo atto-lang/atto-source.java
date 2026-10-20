@@ -148,11 +148,18 @@ public final class ModelGraphAdmission {
             if (signature.scratchBytes() < 0)
                 throw new IllegalArgumentException("MODEL_INVALID_SCRATCH");
             // The parser's op arguments are configuration, NOT values read
-            // from the previous graph node. No arbitrary source calls allowed.
+            // from the previous graph node. Preserve them in a length-tagged
+            // canonical descriptor so distinct static configs cannot alias.
+            List<String> config = new ArrayList<>();
             for (Ast.ModelArgument argument : op.arguments()) {
                 if (argument.value().kind() == Ast.ModelValueKind.FORMAL
                         && !formals.contains(argument.value().source()))
                     throw new IllegalArgumentException("MODEL_UNKNOWN_FORMAL");
+                String label = argument.label() == null ? "" : argument.label();
+                String value = argument.value().source();
+                config.add(label.length() + ":" + label + "|"
+                        + argument.value().kind().name() + "|"
+                        + value.length() + ":" + value);
             }
             long outputBytes = bytes(signature.output());
             if (signature.input() != null) bytes(signature.input());
@@ -179,8 +186,9 @@ public final class ModelGraphAdmission {
             }
             if (used > limits.maxBytes())
                 throw new IllegalArgumentException("MODEL_MEMORY_BUDGET");
-            nodes.add(new Node(nodes.size(), op.name(), signature.abi(), signature.input(),
-                    signature.output(), signature.vjp()));
+            nodes.add(new Node(nodes.size(), op.name(), signature.abi(),
+                    signature.implDigest(), signature.provenance(), config,
+                    signature.input(), signature.output(), signature.vjp()));
             prior = signature.output();
         }
         return new ModelGraph(source.name(), input, prior, formalConfig, nodes, used);
