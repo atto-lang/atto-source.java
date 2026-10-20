@@ -517,6 +517,39 @@ final class CheckedDynamicIndexAccessTest {
     }
 
     @Test
+    void constructorSelfCannotBeAnInstanceCallReceiver() {
+        for (String body : java.util.List.of(
+                """
+                self.observe();
+                self.value = next;
+                """,
+                """
+                (self as Box).observe();
+                self.value = next;
+                """,
+                """
+                self.value = next;
+                self.observe();
+                """)) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse("""
+                    define class Box as
+                      val int value;
+                      constructor(int next) {
+                    """ + body + """
+                      }
+                      pub observe(): int {
+                        return self.value;
+                      }
+                    end
+                    """)));
+            assertTrue(failure.getMessage().contains("constructor self"),
+                    failure::getMessage);
+        }
+    }
+
+    @Test
     void constructorCannotCreateRuntimeBorrowAliasOfSelfThenIndexIt() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse("""

@@ -2407,6 +2407,13 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.CallExpr call) {
             if (currentConstructorOwner != null
+                    && call.callee() instanceof Ast.MemberExpr member
+                    && capturesConstructorSelfValue(member.receiver())) {
+                throw new IllegalArgumentException(
+                        "constructor self cannot be used as an instance call receiver before "
+                                + "definite class-field initialization and escape safety are proven");
+            }
+            if (currentConstructorOwner != null
                     && call.arguments().stream()
                             .anyMatch(TypeChecker::capturesConstructorSelfValue)) {
                 throw new IllegalArgumentException(
