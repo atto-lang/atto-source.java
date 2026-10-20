@@ -154,6 +154,11 @@ final class TaskAccessVerifier {
                              ThreadSafetyTraits.NominalProof nominalProof) {
         Objects.requireNonNull(nominalProof, "nominalProof");
         List<TypedClaim> typed = List.copyOf(Objects.requireNonNull(requested, "claims"));
+        // No claims is not proof of no memory/FFI/global side effects.
+        // A separate compiler-verified pure-effect path is required.
+        if (typed.isEmpty()) {
+            throw new IllegalArgumentException("empty Task access footprint requires purity proof");
+        }
         for (TypedClaim claim : typed) {
             ThreadSafetyTraits.Trait needed = claim.claim().mode() == Mode.READ
                     ? ThreadSafetyTraits.Trait.SYNC : ThreadSafetyTraits.Trait.SEND;
@@ -344,6 +349,12 @@ final class TaskAccessVerifier {
     public synchronized Ticket admit(List<Claim> requested) {
         if (sealed) throw new IllegalStateException("TaskScope is sealed");
         List<Claim> claims = List.copyOf(Objects.requireNonNull(requested, "claims"));
+        // This low-level entry point must not bypass typed admission's
+        // fail-closed empty-footprint rule. Future pure Tasks need an
+        // independently verified effect/ownership permit, not List.of().
+        if (claims.isEmpty()) {
+            throw new IllegalArgumentException("empty Task access footprint requires purity proof");
+        }
         if (live.size() >= MAX_CHILDREN || claims.size() > MAX_CLAIMS_PER_CHILD) {
             throw new IllegalStateException("TaskScope access capacity exceeded");
         }
