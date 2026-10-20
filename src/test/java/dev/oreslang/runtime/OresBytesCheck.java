@@ -43,6 +43,23 @@ public final class OresBytesCheck {
             throw new AssertionError("out-of-range byte access accepted");
         } catch (IndexOutOfBoundsException expected) { }
 
+        OresBytes constructed = OresBytes.fromUnsignedIntegers(
+                java.util.List.of((byte) 0xff, 0, 127, 255L));
+        check(constructed.size() == 4
+                        && constructed.unsignedAt(0) == 255
+                        && constructed.unsignedAt(1) == 0
+                        && constructed.unsignedAt(2) == 127
+                        && constructed.unsignedAt(3) == 255,
+                "checked integer construction must preserve unsigned octets");
+
+        for (Object invalid : java.util.List.of(-1, 256, 1.5, "1")) {
+            try {
+                OresBytes.fromUnsignedIntegers(java.util.List.of(invalid));
+                throw new AssertionError(
+                        "invalid source Bytes element accepted: " + invalid);
+            } catch (IllegalArgumentException expected) { }
+        }
+
         System.out.println("PASS: compact immutable OresBytes full unary wire budget");
     }
 }
