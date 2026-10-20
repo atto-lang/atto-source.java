@@ -174,6 +174,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
              Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort());
              Socket peer = server.accept()) {
+            check(peer.isConnected());
             var bridge = new IpcReceiptCompletionBridge(2);
             try {
                 new IpcAuthenticatedSocketTransport(
@@ -199,6 +200,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
              Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort());
              Socket peer = server.accept()) {
+            check(peer.isConnected());
             var bridge = new IpcReceiptCompletionBridge(1);
             var transport = new IpcAuthenticatedSocketTransport(
                     client, bridge, configMessage, 10, 1, key, connectionBinding,
@@ -409,6 +411,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
              Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort());
              Socket peer = server.accept()) {
+            check(peer.isConnected());
             ExecutorService cleanup = Executors.newSingleThreadExecutor();
             try {
                 var bridge = new IpcReceiptCompletionBridge(2);
@@ -436,6 +439,7 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
         try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
              Socket client = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort());
              Socket peer = server.accept()) {
+            check(peer.isConnected());
             ExecutorService cleanup = Executors.newSingleThreadExecutor();
             try {
                 var bridge = new IpcReceiptCompletionBridge(1);
