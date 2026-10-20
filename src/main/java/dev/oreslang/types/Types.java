@@ -113,13 +113,18 @@ public final class Types {
                 // A generic is not a wildcard proof: an unbound T may not
                 // be substituted with an arbitrary concrete type. Its own
                 // identity must occur in the joined type.
-                boolean genericCovered = !(slot instanceof Generic)
+                // Unknown hidden inside Box<Unknown>, records, tuples,
+                // nested arrays or callbacks is not a positional type proof.
+                boolean unresolved = containsUnknownRecursively(element)
+                        || containsUnknownRecursively(slot);
+                // Generic<T> is not wildcard compatibility. Retain the exact
+                // generic-bearing slot in the join, including nested T's.
+                boolean genericCovered = !containsUncertainType(slot)
                         || slot.equals(element)
                         || (element instanceof Union joined && joined.options().contains(slot));
                 boolean joinedGenericSafe = !(element instanceof Generic)
                         || element.equals(slot);
-                if (element == Unknown.INSTANCE || slot == Unknown.INSTANCE
-                        || slot == Primitive.VOID || slot == Primitive.NULL
+                if (unresolved || slot == Primitive.VOID || slot == Primitive.NULL
                         || !genericCovered || !joinedGenericSafe
                         || !Types.isAssignable(slot, element)) {
                     throw new IllegalArgumentException(
@@ -226,6 +231,23 @@ public final class Types {
         if (first instanceof Tuple && second instanceof Primitive
                 || second instanceof Tuple && first instanceof Primitive) return true;
         return false; // Not knowing if types overlap is NOT proof of exclusion.
+    }
+
+    /** Unknown is not a proof, even when nested; generic names remain valid. */
+    private static boolean containsUnknownRecursively(Type type) {
+        if (type == Unknown.INSTANCE) return true;
+        if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUnknownRecursively);
+        if (type instanceof Not not) return containsUnknownRecursively(not.excluded());
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsUnknownRecursively);
+        if (type instanceof Record record) return record.members().values().stream().anyMatch(Types::containsUnknownRecursively);
+        if (type instanceof ListType list) return containsUnknownRecursively(list.element())
+                || list.repeatUnit().stream().anyMatch(Types::containsUnknownRecursively);
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsUnknownRecursively);
+        if (type instanceof Function function) return function.parameters().stream().anyMatch(Types::containsUnknownRecursively)
+                || containsUnknownRecursively(function.result());
+        if (type instanceof Borrow borrow) return containsUnknownRecursively(borrow.target());
+        if (type instanceof SelfType self) return containsUnknownRecursively(self.bound());
+        return false;
     }
 
     private static boolean containsUncertainType(Type type) {
