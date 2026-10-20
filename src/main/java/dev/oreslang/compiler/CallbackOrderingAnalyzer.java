@@ -97,6 +97,12 @@ public final class CallbackOrderingAnalyzer {
                     || name.equals("addListener") || name.equals("add_listener");
         }
 
+        private boolean listenerRemoval(String name) {
+            return name.equals("off") || name.equals("removeListener")
+                    || name.equals("remove_listener")
+                    || name.equals("removeAllListeners") || name.equals("remove_all_listeners");
+        }
+
         private String receiver(Ast.Expr expression, State state) {
             if (expression instanceof Ast.NameExpr name) {
                 String value = name.name();
@@ -266,6 +272,21 @@ public final class CallbackOrderingAnalyzer {
                         && listener(member.member()) && !call.arguments().isEmpty()) {
                     String obj = receiver(member.receiver(), state);
                     if (obj != null) register(new Event(obj, event(call.arguments().get(0))), state);
+                }
+                if (call.callee() instanceof Ast.MemberExpr member
+                        && listenerRemoval(member.member())) {
+                    String obj = receiver(member.receiver(), state);
+                    if (obj != null) {
+                        // A possible listener removal invalidates syntactic
+                        // registration evidence. A dynamic/missing event ID
+                        // invalidates all events on the emitter; source method
+                        // names never establish successful removal or install.
+                        String removed = call.arguments().isEmpty()
+                                ? "*" : event(call.arguments().get(0));
+                        state.registered.removeIf(installed -> installed.emitter().equals(obj)
+                                && (removed.equals("*") || installed.event().equals("*")
+                                || installed.event().equals(removed)));
+                    }
                 }
                 // Non-lambda callee may have side effects; source-level source order
                 // cannot establish a runtime happens-before relation here.
