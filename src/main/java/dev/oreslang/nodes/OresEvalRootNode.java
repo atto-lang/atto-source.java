@@ -8160,11 +8160,6 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof NominalEnumValue enumValue) {
                 if (target.name().equals(enumValue.owner())
                         || target.name().equals(enumValue.qualifiedName())) return true;
-                var domain = enumTypes.patterns().get(target.name());
-                if (domain != null) {
-                    return domain.cases().stream().anyMatch(candidate ->
-                            candidate.qualifiedName().equals(enumValue.qualifiedName()));
-                }
             }
             if (target.isUnion()) {
                 for (Ast.TypeRef option : target.arguments()) {

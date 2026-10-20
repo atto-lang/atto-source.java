@@ -138,13 +138,7 @@ public final class Parser {
                     rootDeclarations.add(parseTaggedEnum());
                     continue;
                 }
-                if (match(PATTERN)) {
-                    validateNoModifiers(modifiers, "patterns");
-                    rejectCallableStructuralAnnotation(annotations, "patterns");
-                    rootDeclarations.add(parseNamedPattern());
-                    continue;
-                }
-                throw error(previous(), "expected module, class, interface, trait, enum, or pattern after 'define'");
+                throw error(previous(), "expected module, class, interface, trait, or enum after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -978,32 +972,6 @@ public final class Parser {
         consume(END, "expected 'end' after enum " + name);
         if (cases.isEmpty()) throw error(previous(), "enum must declare at least one case");
         return new Ast.EnumDecl(name, cases);
-    }
-
-    private Ast.PatternDecl parseNamedPattern() {
-        String name = consume(IDENT, "expected pattern name").lexeme();
-        consume(AS, "expected 'as' after pattern name");
-        List<String> alternatives = new ArrayList<>();
-        java.util.Set<String> seen = new java.util.HashSet<>();
-        while (!check(END) && !check(EOF)) {
-            if (alternatives.size() >= 4096) {
-                throw error(peek(), "pattern may declare at most 4096 alternatives");
-            }
-            Token owner = consume(IDENT, "pattern alternatives must be qualified enum cases");
-            consume(DOT, "expected '.' between enum and case");
-            String variant = consume(IDENT, "expected enum case name").lexeme();
-            String qualified = owner.lexeme() + "." + variant;
-            if (!seen.add(qualified)) throw error(owner, "duplicate pattern alternative " + qualified);
-            alternatives.add(qualified);
-            if (check(PIPE)) throw error(peek(), "pattern alternatives are newline/comma separated; omit '|'");
-            boolean separator = match(COMMA, SEMICOLON);
-            if (!separator && !check(END) && peek().line() <= previous().line()) {
-                throw error(peek(), "pattern alternatives require separate lines, commas or semicolons");
-            }
-        }
-        consume(END, "expected 'end' after pattern " + name);
-        if (alternatives.isEmpty()) throw error(previous(), "pattern must declare alternatives");
-        return new Ast.PatternDecl(name, alternatives);
     }
 
     private List<Ast.TypeRef> parseTypeRefList() {

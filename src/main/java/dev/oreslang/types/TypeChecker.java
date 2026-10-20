@@ -147,12 +147,6 @@ public final class TypeChecker {
                                 "enum name conflicts with a local, module, or builtin name: " + enumDecl.name());
                     }
                 }
-                else if (declaration instanceof Ast.PatternDecl patternDecl) {
-                    if (!localNames.add(patternDecl.name())) {
-                        throw new IllegalArgumentException(
-                                "pattern name conflicts with a local, module, or builtin name: " + patternDecl.name());
-                    }
-                }
             }
         }
 
@@ -5129,8 +5123,7 @@ public final class TypeChecker {
     private TaggedMessageContracts.Domain matchCaseDomain(Type subject) {
         if (!(subject instanceof Named named) || !named.arguments().isEmpty()
                 || taggedMessages == null) return null;
-        if (taggedMessages.enums().containsKey(named.name())
-                || taggedMessages.patterns().containsKey(named.name())) {
+        if (taggedMessages.enums().containsKey(named.name())) {
             return taggedMessages.requireDomain(named.name());
         }
         TaggedMessageContracts.Case singleton = taggedCaseOrNull(named.name());
@@ -7672,11 +7665,10 @@ public final class TypeChecker {
             }
             default -> {
                 if (taggedMessages != null
-                        && (taggedMessages.enums().containsKey(ref.name())
-                            || taggedMessages.patterns().containsKey(ref.name()))) {
+                        && taggedMessages.enums().containsKey(ref.name())) {
                     if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                         throw new IllegalArgumentException(
-                                "enum/match pattern type '" + ref.name() + "' is not generic");
+                                "enum type '" + ref.name() + "' is not generic");
                     }
                     yield new Named(ref.name(), List.of());
                 }

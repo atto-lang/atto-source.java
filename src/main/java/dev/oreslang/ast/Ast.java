@@ -35,7 +35,7 @@ public final class Ast {
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl, EnumDecl, PatternDecl { }
+    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl, EnumDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
@@ -472,11 +472,6 @@ public final class Ast {
     /** Local nominal enum declaration. */
     public record EnumDecl(String name, List<EnumCase> cases) implements Decl {
         public EnumDecl { cases = List.copyOf(cases); }
-    }
-
-    /** Closed type-only union of qualified enum cases. */
-    public record PatternDecl(String name, List<String> alternatives) implements Decl {
-        public PatternDecl { alternatives = List.copyOf(alternatives); }
     }
 
     public record TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) implements Decl {
