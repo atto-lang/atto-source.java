@@ -63,14 +63,18 @@ It rejects:
 - unknown FFI;
 - unbounded allocation/blocking/loops/cleanup;
 - page-fault risk;
-- missing WCET/deadline/period budgets;
-- deadline values greater than the period under the current constrained-deadline task model;
-- a missing (zero) memory-cap budget;
-- response bounds where WCET + blocking + jitter overflows or exceeds the deadline.
+- missing WCET/deadline budgets;
+- response bounds where WCET + blocking + jitter overflows or exceeds the deadline;
+- missing independent whole-system schedulability evidence for the exact declared scheduler/budget;
+- missing peak-memory evidence, or a proven peak larger than `maxMemoryBytes`.
 
-A nonzero `maxMemoryBytes` is currently a required configured cap, not yet a proof that the reachable program fits inside it. The compiler/runtime must eventually supply a peak-footprint witness and compare it to that cap before this can become artifact-level hard-RT evidence.
+The common contract allows period/minimum inter-arrival time only where applicable, so `periodNs == 0` remains valid for an aperiodic unit whose independent scheduler proof covers that workload. This scaffold also does not invent a constrained-deadline rule: a deadline greater than a period is not rejected locally if the supplied scheduler proof establishes schedulability.
 
-The next compiler step is transitive effect inference from guest source into this model, followed by a compiler-derived peak-memory witness.
+A zero-byte `maxMemoryBytes` is valid when the compiler/runtime proves that the reachable critical path has a zero-byte peak. The cap is therefore checked against an independent peak-footprint witness instead of treating zero as "missing".
+
+The two-argument `admitJavaHardRt(effects, budget)` entry point now deliberately fails closed because it has no scheduler or peak-memory proof. Callers seeking hard-RT admission must provide `RealtimeProfile.Proof`; this record is evidence plumbing only and does not by itself create or certify either proof.
+
+The next compiler step is transitive effect inference from guest source plus a compiler-derived peak-memory witness, with the deployment scheduler supplying the independent schedulability result.
 
 ## Vendor/runtime work
 
