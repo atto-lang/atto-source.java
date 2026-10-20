@@ -22,12 +22,17 @@ the result as untrusted.
 
 ## Destination-bound source snapshot publisher
 
-The only supported transfer entry point is **not an arbitrary command
-launcher**. It accepts an approved destination, a bounded local source
-directory, and a new isolated CI branch:
+The checkout-local wrapper is **not** a transfer trust root and is now a
+fail-closed compatibility tombstone. Real publication must be launched through
+the independently reviewed external bootstrap, which authenticates and executes
+exact publisher bytes before any checkout-local publisher code can run.
+
+The publisher argument contract still accepts an approved destination, a
+bounded local source directory, and a new isolated CI branch:
 
 ```bash
-scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
+# invoked by the independently reviewed bootstrap after publisher-byte attestation
+publish-private-ci-source.py trusted-org/private-ci \
   --source-dir ./verified-source-tree \
   --branch 'ci/oreslang-<source-commit-SHA>-<reviewed-carrier-main-SHA>' \
   --expected-source-tree '<trusted full 40-hex Git tree SHA>' \
@@ -71,8 +76,9 @@ private-branch rules fail closed. A passing API read is not a substitute for iss
 synthetic-PR demonstration that direct pushes and unreviewed merges are blocked.
 Do not turn the repository public to gain protection features.
 
-The publisher's POSIX transfer wrapper starts Python in isolated mode and
-drops inherited Bash startup, Python import-path and dynamic-loader variables.
+The checkout-local POSIX wrapper no longer starts Python at all; it always
+rejects direct publication. The external bootstrap starts the authenticated
+publisher under isolated Python and drops inherited shell/Python/loader state.
 The publisher also removes shell/Git startup and configuration overrides,
 caller-chosen GitHub CLI configuration roots, inherited HTTP(S)/SOCKS proxy
 variables, and custom TLS trust-bundle variables from child-process
