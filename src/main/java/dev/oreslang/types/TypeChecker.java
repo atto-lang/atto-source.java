@@ -576,12 +576,13 @@ public final class TypeChecker {
         for (Ast.Param param : fn.parameters()) {
             Type parameterType = resolveParam(param, generics, null);
             argumentTypes.add(parameterType);
-            if (param.structural() && fn.actorKind() != Ast.ActorKind.NONE) {
+            boolean structuralView = param.structural() || containsBorrowedStructuralView(parameterType);
+            if (structuralView && fn.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
                         "structural parameter '" + param.name() + "' cannot cross an actor mailbox boundary; "
                                 + "pass an owned/sendable nominal value instead");
             }
-            if (param.structural() && (fn.async() || fn.generator())) {
+            if (structuralView && (fn.async() || fn.suspends() || fn.generator())) {
                 throw new IllegalArgumentException(
                         "structural parameter '" + param.name() + "' cannot outlive a synchronous call across await/suspension; "
                                 + "pass an owned nominal value or copy the required fields");
@@ -1177,12 +1178,13 @@ public final class TypeChecker {
             for (Ast.Param param : method.parameters()) {
                 Type parameterType = resolveParam(param, generics, callableSelf);
                 methodArgumentTypes.add(parameterType);
-                if (param.structural() && klass.actorKind() != Ast.ActorKind.NONE) {
+                boolean structuralView = param.structural() || containsBorrowedStructuralView(parameterType);
+                if (structuralView && klass.actorKind() != Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
                             "structural parameter '" + param.name() + "' cannot cross actor method mailbox boundaries; "
                                     + "actor APIs require owned/sendable nominal message values");
                 }
-                if (param.structural() && method.async()) {
+                if (structuralView && (method.async() || method.suspends())) {
                     throw new IllegalArgumentException(
                             "structural parameter '" + param.name() + "' cannot outlive a synchronous call across await/suspension; "
                                     + "pass an owned nominal value or copy the required fields");
@@ -3813,6 +3815,51 @@ public final class TypeChecker {
         return false;
     }
 
+    /**
+     * A borrowed structural shape cannot be hidden inside a nested collection
+     * or wrapper and then retained across suspension or actor transport.
+     * Unlike mutable parameter admission, this is transitive through the
+     * parameter's carried type, including opaque generic wrappers.
+     */
+    private boolean containsBorrowedStructuralView(Type type) {
+        Set<Type> visited = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+        return containsBorrowedStructuralView(type, visited);
+    }
+
+    private boolean containsBorrowedStructuralView(Type type, Set<Type> visited) {
+        if (type == null || !visited.add(type)) return false;
+        Type current = deref(type);
+        if (current != type && !visited.add(current)) return false;
+        if (current instanceof Record record) {
+            return record.readOnly() || record.members().values().stream()
+                    .anyMatch(member -> containsBorrowedStructuralView(member, visited));
+        }
+        if (current instanceof Union union) {
+            return union.options().stream()
+                    .anyMatch(option -> containsBorrowedStructuralView(option, visited));
+        }
+        if (current instanceof ListType list) {
+            return containsBorrowedStructuralView(list.element(), visited);
+        }
+        if (current instanceof Tuple tuple) {
+            return tuple.elements().stream()
+                    .anyMatch(element -> containsBorrowedStructuralView(element, visited));
+        }
+        if (current instanceof Named named) {
+            return named.arguments().stream()
+                    .anyMatch(argument -> containsBorrowedStructuralView(argument, visited));
+        }
+        if (current instanceof Function function) {
+            return containsBorrowedStructuralView(function.result(), visited)
+                    || function.parameters().stream()
+                    .anyMatch(argument -> containsBorrowedStructuralView(argument, visited));
+        }
+        if (current instanceof SelfType receiver) {
+            return containsBorrowedStructuralView(receiver.bound(), visited);
+        }
+        return false;
+    }
+
     private Type overlayReadonlyCapabilities(Type actual, Type expected) {
         if (actual instanceof Borrow actualBorrow && expected instanceof Borrow expectedBorrow) {
             return new Borrow(
@@ -6291,7 +6338,17 @@ public final class TypeChecker {
     }
 
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {
-        if (!param.structural()) return resolve(param.type(), generics, self);
+        if (!param.structural()) {
+            Type resolved = resolve(param.type(), generics, self);
+            // Do not turn a borrowed shape contract into a mutating parameter.
+            // This includes aliases that resolve to readonly records.
+            if (param.mutable() && containsReadonlyRecordCapability(resolved)) {
+                throw new IllegalArgumentException(
+                        "readonly structural parameter '" + param.name()
+                                + "' cannot be declared mut");
+            }
+            return resolved;
+        }
         if (param.mutable()) {
             throw new IllegalArgumentException(
                     "structural parameter '" + param.name()
@@ -7461,6 +7518,9 @@ public final class TypeChecker {
             if (actual.methodKeys().contains(required.getKey())
                     != expected.methodKeys().contains(required.getKey())) return false;
             if (!assignable(candidate, required.getValue())) return false;
+            if (expected.readOnly()
+                    && !Types.representationPreservingFieldRead(candidate, required.getValue()))
+                return false;
             // Writable slots must be genuinely invariant. Two-way assignability
             // is insufficient: Unknown, dynamic interop and permissive generic
             // relations can pass both directions without equal representations.

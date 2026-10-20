@@ -46,6 +46,18 @@ storage location, but none of these narrowed parameter views exposes it.
 `record{foo: int}` is not a `record{foo: 3}` value initializer, a nominal
 record declaration, or a separate runtime layout.
 
+## Representation-preserving readonly projections (batch 11)
+
+A readonly record or struct type view must not retype a stored field using an
+ordinary expression's numeric widening rule. A source `{foo: int}` cannot
+satisfy a readonly `record{foo: float}` just because an expression of type
+`int` can be explicitly or implicitly converted to `float`: no field
+conversion or copy occurs at the view boundary. This prohibition propagates
+through nested row views, lists and tuples; width narrowing and exact field
+types remain allowed. No dynamic-map allocation or class/actor identity
+conversion is introduced. This is a staged Java contract until full exact-head
+JDK 25 and backend parity testing succeeds.
+
 ## Soundness gates
 
 - **Direction:** `S` satisfies `R` if every required public/readable field
@@ -86,3 +98,27 @@ native AOT/hybrid checks; a targeted audit of readonly numeric widening,
 Unknown/Generic, nested mutable projections and methods; explicit
 LLVM rejection or matching lowering for syntax/shape checks, and shared
 positive/negative conformance cases. No parity or green build is claimed.
+
+### Suspension and actor admission
+
+Type-position `struct{...}` / `record{...}` (and aliases that resolve to
+readonly shape views) must not provide a `mut` parameter or cross an actor
+mailbox. These borrowed parameter views are prohibited for `async`,
+`suspend` / `suspends`, and `generator` callables. The same prohibition
+applies to explicit `structural {...}` parameters. This is a capability and
+lifetime rule, not a statement that an owned immutable struct can never be
+copied/serialized for async or actor use.
+
+An eventual explicit owned/copy conversion may relax this restriction only
+with ownership, serialization, and cancellation-safe lifetime proof.
+
+### Nested borrowed structural views
+
+A readonly shape view nested inside `List<record{...}>`, a tuple, union,
+function signature, or named generic wrapper remains borrowed. It must not
+be passed to a suspending/async/generator function or actor message by hiding
+it under a container type. The compiler recursively inspects the carried
+type, with a cycle guard. This does not mean owned immutable structs are
+intrinsically unsendable; explicit ownership-safe copies need a separate
+contract. Mutable access checks on the *outer container* are separate from
+mutation of a readonly projected member.
