@@ -41,6 +41,9 @@ public final class OresTaskScope implements AutoCloseable {
      */
     private static final class OwnershipSlot {
         private OresTask<?> task;
+        // Protected by the owning scope gate. No additional allocation per
+        // Task is needed to distinguish an uninserted abort from retirement.
+        private boolean registered;
     }
 
     // Deliberately non-final only for package/reflection fault-injection tests.
@@ -91,8 +94,6 @@ public final class OresTaskScope implements AutoCloseable {
         // An already sealed scope may reject before ever inserting the slot.
         // An adversarial owner set can instead insert then throw. Differentiate
         // these cases so legitimate rejection doesn't invent a failed release.
-        java.util.concurrent.atomic.AtomicBoolean registered =
-                new java.util.concurrent.atomic.AtomicBoolean();
         // Hook registration happens before the owner becomes executable.
         // Generic Future listeners intentionally isolate thrown callbacks,
         // so slot retirement must run as part of TaskExit itself.
@@ -101,7 +102,7 @@ public final class OresTaskScope implements AutoCloseable {
                 // If ensureAdmitting() rejected before insertion, there is
                 // nothing to retire from this scope. An insert-then-throw
                 // collection remains detectable through contains().
-                if (!registered.get() && !tasks.contains(slot)) return;
+                if (!slot.registered && !tasks.contains(slot)) return;
                 if (!tasks.remove(slot))
                     throw new IllegalStateException(
                             "ordinary Task owner slot missing at physical retirement");
@@ -114,7 +115,7 @@ public final class OresTaskScope implements AutoCloseable {
                     ensureAdmitting();
                     if (!tasks.add(slot))
                         throw new IllegalStateException("duplicate Task ownership slot");
-                    registered.set(true);
+                    slot.registered = true;
                 }
             }
         } catch (RuntimeException | Error reservationFailure) {
