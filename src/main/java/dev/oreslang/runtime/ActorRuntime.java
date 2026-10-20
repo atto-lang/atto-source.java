@@ -1468,6 +1468,13 @@ public final class ActorRuntime implements AutoCloseable {
     public final class ActorOutputStream<M> {
         private final ActorId actorId;
         private final ChannelRuntime.Channel<ActorOutputEnvelope> channel;
+        /**
+         * Every admitted output is retained here before channel publication.
+         * A dequeued envelope whose accounting release fails therefore remains
+         * reachable even though its OresFuture waiter is single-shot.
+         */
+        private final Set<ActorOutputEnvelope> retainedEnvelopes =
+                ConcurrentHashMap.newKeySet();
 
         private ActorOutputStream(
                 ActorId actorId,
@@ -1481,10 +1488,32 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public boolean isDone() {
-            return channel.isClosed() && channel.isEmpty();
+            return channel.isClosed() && channel.isEmpty()
+                    && retainedEnvelopes.isEmpty();
+        }
+
+        private void retainEnvelope(ActorOutputEnvelope envelope) {
+            if (!retainedEnvelopes.add(envelope)) {
+                throw new IllegalStateException(
+                        "actor output envelope is already retained");
+            }
+        }
+
+        private void releaseEnvelope(ActorOutputEnvelope envelope) {
+            retainedEnvelopes.remove(envelope);
+        }
+
+        private void retryFailedEnvelopeReleases() {
+            for (ActorOutputEnvelope envelope : retainedEnvelopes) {
+                if (envelope.releaseFailed()) envelope.close();
+            }
         }
 
         public OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> next() {
+            // A previous read may have dequeued an envelope before its
+            // accounting release failed inside a runtime Future callback.
+            // Retry those exact owners before consuming another output.
+            retryFailedEnvelopeReleases();
             OresFuture<ActorOutputEnvelope> read = channel.readAsync();
             OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> result =
                     new OresFuture<>(() -> read.cancel(false));
@@ -1510,7 +1539,16 @@ public final class ActorRuntime implements AutoCloseable {
 
                 @SuppressWarnings("unchecked")
                 ActorOutput<M> output = (ActorOutput<M>) envelope.output();
-                envelope.close();
+                try {
+                    envelope.close();
+                } catch (RuntimeException | Error releaseFailure) {
+                    // Runtime waiter exceptions are intentionally isolated by
+                    // OresFuture. Settle the public result explicitly so this
+                    // resource failure cannot turn into a permanently pending
+                    // next() while the exact envelope remains retained.
+                    result.failFromRuntime(releaseFailure);
+                    return;
+                }
                 result.completeFromRuntime(
                         GeneratorRuntime.Step.yielded(output));
                 if (isDone()) actorOutputStreams.remove(this);
@@ -1524,21 +1562,42 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void closeAndDrainFromRuntime() {
             channel.close();
+
+            // First repair any envelope already dequeued by a prior failed
+            // consumer/drain callback.
+            retryFailedEnvelopeReleases();
+
             while (channel.drainOne(ActorOutputEnvelope::close)) {
                 // release all queued transport reservations on runtime teardown
+            }
+
+            // A drain callback can remove an envelope from the channel before
+            // its release throws. Retry that exact owner before certifying the
+            // stream as drained.
+            retryFailedEnvelopeReleases();
+            if (!retainedEnvelopes.isEmpty()) {
+                throw new IllegalStateException(
+                        "actor output stream retained unresolved envelopes");
             }
             actorOutputStreams.remove(this);
         }
     }
 
-    private static final class ActorOutputEnvelope implements AutoCloseable {
+    private final class ActorOutputEnvelope implements AutoCloseable {
+        private final ActorOutputStream<?> ownerStream;
         private final ActorOutput<Object> output;
         private final Runnable release;
-        private final AtomicBoolean closed = new AtomicBoolean();
+        /** Guarded by this envelope. */
+        private boolean closed;
+        /** Guarded by this envelope. */
+        private boolean releaseFailed;
 
         private ActorOutputEnvelope(
+                ActorOutputStream<?> ownerStream,
                 ActorOutput<Object> output,
                 Runnable release) {
+            this.ownerStream =
+                    Objects.requireNonNull(ownerStream, "ownerStream");
             this.output = Objects.requireNonNull(output, "output");
             this.release = Objects.requireNonNull(release, "release");
         }
@@ -1547,9 +1606,22 @@ public final class ActorRuntime implements AutoCloseable {
             return output;
         }
 
+        private synchronized boolean releaseFailed() {
+            return releaseFailed && !closed;
+        }
+
         @Override
-        public void close() {
-            if (closed.compareAndSet(false, true)) release.run();
+        public synchronized void close() {
+            if (closed) return;
+            try {
+                release.run();
+            } catch (RuntimeException | Error failure) {
+                releaseFailed = true;
+                throw failure;
+            }
+            releaseFailed = false;
+            closed = true;
+            ownerStream.releaseEnvelope(this);
         }
     }
 
@@ -1898,11 +1970,16 @@ public final class ActorRuntime implements AutoCloseable {
                 }
 
                 envelope = new ActorOutputEnvelope(
+                        cell.outputStream,
                         new ActorOutput<>(
                                 cell.ref.id(),
                                 sequence,
                                 prepared),
                         () -> cell.releaseOutput(bytes));
+                // Publish the exact resource owner before channel admission.
+                // If registration itself throws after insertion, the enclosing
+                // finally closes this same envelope and removes it on success.
+                cell.outputStream.retainEnvelope(envelope);
                 if (!cell.outputChannel.tryWrite(envelope)) {
                     throw new IllegalStateException(
                             "actor output stream limit exceeded for "
