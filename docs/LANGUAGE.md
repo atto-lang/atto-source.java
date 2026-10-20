@@ -637,6 +637,12 @@ the singleton requires `(a,)` when using parentheses. Both `()` and
 restricted to tuples and must not silently match Array/List or nominal Entry
 values. Parenthesized groupings remain unaffected.
 
+A zero-arity tuple has no element type. Until the compiler supports an explicit
+bottom/`Never` type for zero-iteration loops, `for ... of ()` and
+`for ... of tuple {}` are rejected at type checking rather than exposing a
+permissive `Unknown` element binding. Use an explicitly typed empty Array/List
+when an iterable of known element type is required.
+
 ```ores
 val pair = (1, "one");
 [const number, let label] = pair;
