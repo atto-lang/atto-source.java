@@ -17,6 +17,7 @@ import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.OresEntry;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -1773,6 +1774,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.TrapExpr trapped) {
                 return expressionContainsPotentialSuspension(trapped.expression(), seen);
+            }
+            if (expr instanceof Ast.SpreadExpr spread) {
+                return expressionContainsPotentialSuspension(
+                        spread.expression(), seen);
             }
             if (expr instanceof Ast.UnaryExpr unary) {
                 return expressionContainsPotentialSuspension(
@@ -3977,15 +3982,23 @@ public final class OresEvalRootNode extends RootNode {
                 continuation.accept(task, List.copyOf(values), null);
                 return;
             }
+            Ast.Expr expression = expressions.get(index);
+            Ast.Expr valueExpression = expression instanceof Ast.SpreadExpr spread
+                    ? spread.expression()
+                    : expression;
             evalSuspendableExpr(
                     task,
-                    expressions.get(index),
+                    valueExpression,
                     env,
                     (t, value, failure) -> {
                         if (failure != null) {
                             continuation.accept(t, List.of(), failure);
                         } else {
-                            values.add(value);
+                            if (expression instanceof Ast.SpreadExpr) {
+                                values.addAll(expandArgumentSequence(value, "argument spread"));
+                            } else {
+                                values.add(value);
+                            }
                             evalSuspendableArgumentAt(
                                     t,
                                     expressions,
@@ -4446,7 +4459,7 @@ public final class OresEvalRootNode extends RootNode {
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
-                if (direct != null) {
+                if (direct != null || hasFunctionFamily(name.name())) {
                     requireExplicitClassCallableImport(env, name.name());
                     evalSuspendableArguments(
                             task,
@@ -4459,7 +4472,7 @@ public final class OresEvalRootNode extends RootNode {
                                 }
                                 try {
                                     Invocation invocation =
-                                            functionInvocation(direct, values);
+                                            functionInvocation(findFunction(name.name(), values.size()), values);
                                     completeSourceInvocation(
                                             t,
                                             invocation,
@@ -4472,6 +4485,24 @@ public final class OresEvalRootNode extends RootNode {
                             });
                     return;
                 }
+            }
+
+            if (call.callee() instanceof Ast.NameExpr tupleName
+                    && tupleName.name().equals("tuple")
+                    && env.lookup("tuple") == Env.MISSING
+                    && !hasFunctionFamily("tuple")) {
+                evalSuspendableArguments(
+                        task,
+                        call.arguments(),
+                        env,
+                        (t, values, failure) ->
+                                continuation.accept(
+                                        t,
+                                        failure == null
+                                                ? List.copyOf(values)
+                                                : null,
+                                        failure));
+                return;
             }
 
             if (call.callee() instanceof Ast.MemberExpr member) {
@@ -4635,6 +4666,19 @@ public final class OresEvalRootNode extends RootNode {
                         }, args);
             }
 
+            if (receiver instanceof OresEntry entry) {
+                Object field = switch (member.member()) {
+                    case "key" -> entry.key();
+                    case "value" -> entry.value();
+                    default -> throw new IllegalArgumentException(
+                            "unknown Entry member " + member.member());
+                };
+                if (!(field instanceof Invokable invokable)) {
+                    throw new IllegalArgumentException(
+                            "Entry field '" + member.member() + "' is not callable");
+                }
+                return invokableInvocation(invokable, args);
+            }
             if (receiver instanceof OresObject object) {
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("end")) {
@@ -4857,6 +4901,18 @@ public final class OresEvalRootNode extends RootNode {
                                     + "' is read before constructor initialization");
                 }
                 return value;
+            }
+            if (receiver instanceof OresEntry entry) {
+                if (!(index instanceof String key)) {
+                    throw new IllegalArgumentException(
+                            "Entry field index must be a String");
+                }
+                return switch (key) {
+                    case "key" -> entry.key();
+                    case "value" -> entry.value();
+                    default -> throw new IllegalArgumentException(
+                            "unknown Entry field key " + key);
+                };
             }
             if (receiver instanceof ReadonlyRecordValue record) {
                 if (!(index instanceof String key)) {
@@ -5295,6 +5351,11 @@ public final class OresEvalRootNode extends RootNode {
                         fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
                     }
                     return new MutableStructValue(fields);
+                }
+                if (value instanceof OresEntry entry) {
+                    return new OresEntry(
+                            detachAsyncValue(entry.key(), visiting),
+                            detachAsyncValue(entry.value(), visiting));
                 }
                 if (value instanceof OptionValue option) {
                     return option.present()
@@ -6305,13 +6366,26 @@ public final class OresEvalRootNode extends RootNode {
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             if (call.callee() instanceof Ast.NameExpr directName
-                    && env.lookup(directName.name()) == Env.MISSING) {
-                Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
-                if (direct != null) {
-                    requireExplicitClassCallableImport(env, directName.name());
-                    List<Object> args = evaluateArguments(call.arguments(), env);
-                    return functionInvocation(direct, args);
+                    && env.lookup(directName.name()) == Env.MISSING
+                    && hasFunctionFamily(directName.name())) {
+                requireExplicitClassCallableImport(env, directName.name());
+                List<Object> args = evaluateArguments(call.arguments(), env);
+                Ast.FunctionDecl direct =
+                        findFunction(directName.name(), args.size());
+                if (direct == null) {
+                    throw new IllegalArgumentException(
+                            "no function " + directName.name()
+                                    + " with arity " + args.size());
                 }
+                return functionInvocation(direct, args);
+            }
+
+            if (call.callee() instanceof Ast.NameExpr tupleName
+                    && tupleName.name().equals("tuple")
+                    && env.lookup("tuple") == Env.MISSING
+                    && !hasFunctionFamily("tuple")) {
+                List<Object> args = evaluateArguments(call.arguments(), env);
+                return invokableInvocation(values -> List.copyOf(values), args);
             }
 
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
@@ -6654,6 +6728,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Channel")) return new ChannelFactory();
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
+                if (name.name().equals("Entry")) return EntryFactory.INSTANCE;
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
                 if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                     return BooleanOpsNamespace.INSTANCE;
@@ -7449,6 +7524,12 @@ public final class OresEvalRootNode extends RootNode {
                             "unknown Channel member " + name);
                 };
             }
+            if (receiver instanceof EntryFactory) {
+                if (!name.equals("of")) {
+                    throw new IllegalArgumentException("unknown Entry member " + name);
+                }
+                return (Invokable) EntryFactory::create;
+            }
             if (receiver instanceof ChannelFactory factory) {
                 if (!name.equals("new")) {
                     throw new IllegalArgumentException("unknown Channel factory member " + name);
@@ -7671,6 +7752,14 @@ public final class OresEvalRootNode extends RootNode {
                     return new StaticFunctionValue(klass.owner(), klass.klass(), name, env == null ? null : env.accessClass());
                 }
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
+            }
+            if (receiver instanceof OresEntry entry) {
+                return switch (name) {
+                    case "key" -> entry.key();
+                    case "value" -> entry.value();
+                    default -> throw new IllegalArgumentException(
+                            "unknown Entry member " + name);
+                };
             }
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) {
@@ -8951,6 +9040,12 @@ public final class OresEvalRootNode extends RootNode {
                 return value instanceof dev.oreslang.runtime.OresSymbol;
             if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
             if (name.equals("Option")) return value instanceof OptionValue;
+            if (name.equals("Entry")) {
+                if (!(value instanceof OresEntry entry)
+                        || target.arguments().size() != 2) return false;
+                return oresTypeMatches(entry.key(), target.arguments().get(0))
+                        && oresTypeMatches(entry.value(), target.arguments().get(1));
+            }
             if (name.equals("Result")) return value instanceof ResultValue;
             if (name.equals("Array") || name.equals("List")) return value instanceof List<?>;
             if (name.equals("Generator") || name.equals("Iterator")) return value instanceof GeneratorRuntime.Generator<?>;
@@ -8980,6 +9075,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
+            if (value instanceof OresEntry) return "Entry";
             if (value instanceof ActorRuntime.ActorOutput<?>) return "ActorOutput";
             if (value instanceof ActorRuntime.ActorOutputStream<?>) return "ActorOutputStream";
             if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
@@ -9109,6 +9205,13 @@ public final class OresEvalRootNode extends RootNode {
                 } catch (IllegalArgumentException ignored) {
                     return false;
                 }
+            }
+
+            if (left instanceof OresEntry || right instanceof OresEntry) {
+                if (!(left instanceof OresEntry a) || !(right instanceof OresEntry b)) return false;
+                if (comparisonPairSeen(left, right, seen)) return true;
+                return valueEquals(a.key(), b.key(), seen)
+                        && valueEquals(a.value(), b.value(), seen);
             }
 
             // Class/actor instances have identity equality by default.
@@ -9356,6 +9459,26 @@ public final class OresEvalRootNode extends RootNode {
                     shapeReturnedValue(member.getValue(), nested, callable + "." + member.getKey(), resolving);
                 }
                 return value;
+            }
+
+            if (declared.name().equals("Entry")) {
+                if (declared.inferArguments() || declared.arguments().size() != 2
+                        || !(value instanceof OresEntry entry)) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                Object key = shapeReturnedValue(
+                        declared.arguments().get(0),
+                        entry.key(),
+                        callable + ".key",
+                        resolving);
+                Object entryValue = shapeReturnedValue(
+                        declared.arguments().get(1),
+                        entry.value(),
+                        callable + ".value",
+                        resolving);
+                return key == entry.key() && entryValue == entry.value()
+                        ? entry
+                        : new OresEntry(key, entryValue);
             }
 
             if (declared.name().equals("Array") || declared.name().equals("List")) {
@@ -9911,6 +10034,7 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
                 if (!(value instanceof OresObject
+                        || value instanceof OresEntry
                         || value instanceof ReadonlyRecordValue
                         || value instanceof OptionValue
                         || value instanceof ResultValue
@@ -9926,7 +10050,13 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
                 try {
-                    if (value instanceof OresObject object) {
+                    if (value instanceof OresEntry entry) {
+                        write("Entry{key=");
+                        append(entry.key(), depth + 1);
+                        write(", value=");
+                        append(entry.value(), depth + 1);
+                        write("}");
+                    } else if (value instanceof OresObject object) {
                         write(object.klass.name());
                         write("{");
                         boolean first = true;
@@ -10074,6 +10204,15 @@ public final class OresEvalRootNode extends RootNode {
             return value == null ? List.of() : List.of(value);
         }
     }
+    private enum EntryFactory {
+        INSTANCE;
+
+        private static Object create(List<Object> args) {
+            requireTwo(args, "Entry.of");
+            return new OresEntry(args.get(0), args.get(1));
+        }
+    }
+
     private enum FutureFactory { INSTANCE }
     private enum BooleanOpsNamespace { INSTANCE }
 
@@ -10113,6 +10252,10 @@ public final class OresEvalRootNode extends RootNode {
 
             if (!seen.add(value)) return true;
 
+            if (value instanceof OresEntry entry) {
+                return runtimeSharedSafe(entry.key(), seen)
+                        && runtimeSharedSafe(entry.value(), seen);
+            }
             if (value instanceof OptionValue option) {
                 return !option.present() || runtimeSharedSafe(option.value(), seen);
             }
