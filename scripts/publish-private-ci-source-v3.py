@@ -33,7 +33,7 @@ SPEC.loader.exec_module(legacy)
 Denied = legacy.Denied
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HANDOFF_REF = re.compile(
-    r"^ci/(?:oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}|authorized-[0-9a-f]{40})$"
+    r"^ci/(?:oreslang-[0-9a-f]{40}-[0-9a-f]{32}|authorized-[0-9a-f]{40}-[0-9a-f]{32})$"
 )
 CONTRACT_PATH = ".github/private-ci-carrier-contracts.json"
 REVIEW_AUTHORITY_PR = 1724
@@ -1220,7 +1220,11 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     verify_required_source_blobs(files, plan_meta["required_source_blobs"])
     source_tree = legacy.verified_exact_source_tree(files, source_commit)
     rows, manifest_sha256 = manifest(files)
-    branch = "ci/oreslang-" + source_tree
+    # Every handoff owns a fresh capability-like namespace. This avoids
+    # deterministic ref reuse across retries and lets the carrier bind both
+    # payload and authorization refs to one unguessable invocation identity.
+    handoff_nonce = fresh_handoff_nonce()
+    branch = "ci/oreslang-" + source_tree + "-" + handoff_nonce
 
     def auth():
         authorize_write(trusted_root, repository, approved_policy, contract)
@@ -1270,6 +1274,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         },
         "mirror": {
             "root_tree_sha": source_tree,
+        },
+        "handoff": {
+            "nonce": handoff_nonce,
         },
         "source": {
             "repo": legacy.SOURCE_REPO,
@@ -1327,10 +1334,6 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     )
 
     auth()
-    # An independent writer exporting the same tree must produce a different
-    # commit identity, so a failed CREATE cannot confuse ordinary collisions.
-    # This is not an atomic compare-and-delete guarantee.
-    handoff_nonce = fresh_handoff_nonce()
     commit_message = (
         f"ci: exact private Oreslang tree {source_commit} tree {source_tree}\n"
         f"carrier-base {contract['base_sha']} tree {base_tree}\n"
@@ -1376,17 +1379,14 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     # while it waits for the exact authorization ref below. Treat a create call
     # as potentially successful before it returns: transport ambiguity must not
     # strand a source-bearing ref.
-    authorization = "ci/authorized-" + commit_sha
+    authorization = "ci/authorized-" + commit_sha + "-" + handoff_nonce
     # Admission is read-only. A pre-existing deterministic branch might
     # belong to another invocation; never try to delete it.
     require_handoff_refs_absent(
         repository, branch, authorization, contract["repository_id"]
     )
-    payload_attempted = False
-    authorization_attempted = False
     try:
         auth()
-        payload_attempted = True
         create_handoff_ref(
             repository, branch, commit_sha, contract["repository_id"]
         )
@@ -1409,7 +1409,6 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
             raise Denied("source repository identity changed before authorization")
 
         auth()
-        authorization_attempted = True
         create_handoff_ref(
             repository, authorization, commit_sha, contract["repository_id"]
         )
@@ -1420,37 +1419,23 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
             repository, authorization, commit_sha, contract["repository_id"]
         )
     except BaseException:
-        # The remote API may commit before its response is lost. Attempt
-        # cleanup only for refs this invocation attempted, and never delete a
-        # moved ref: delete_exact_ref re-reads immutable repository identity
-        # and exact SHA before DELETE, then verifies absence afterwards.
-        rollback_error = None
-        if authorization_attempted:
-            try:
-                delete_exact_ref(
-                    repository, authorization, commit_sha,
-                    contract["repository_id"],
-                )
-            except BaseException as rollback_exc:
-                rollback_error = rollback_exc
-        if payload_attempted:
-            try:
-                delete_exact_ref(
-                    repository, branch, commit_sha,
-                    contract["repository_id"],
-                )
-            except BaseException as rollback_exc:
-                rollback_error = rollback_error or rollback_exc
-        if rollback_error is not None:
-            raise Denied(
-                "private CI handoff failed and carrier ref rollback was incomplete"
-            ) from rollback_error
+        # GitHub has no compare-and-delete primitive. A GET(SHA)->DELETE
+        # rollback can race another writer and delete a ref this invocation
+        # no longer owns. Never perform destructive rollback here.
+        #
+        # If payload creation succeeded but authorization did not, the unique
+        # payload ref is inert. If the authorization create committed remotely
+        # but its response was lost, execution was still authorized only after
+        # all checks above. Ref cleanup is separate hygiene and must use the
+        # nonce-scoped handoff identity under an independently controlled
+        # cleanup path; deletion is not treated as source erasure.
         raise
 
     return {
         "commit": commit_sha,
         "branch": branch,
         "authorization_ref": authorization,
+        "handoff_nonce": handoff_nonce,
         "source_tree": source_tree,
         "manifest_sha256": manifest_sha256,
         "receipt_sha256": receipt_digest,
