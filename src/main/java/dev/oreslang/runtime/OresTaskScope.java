@@ -256,9 +256,24 @@ public final class OresTaskScope {
         try {
             retirement.run();
         } catch (RuntimeException | Error failure) {
+            java.util.ArrayList<OresFuture<?>> cancel =
+                    new java.util.ArrayList<>();
+            synchronized (lock) {
+                if (state != State.CLOSED) {
+                    state = State.CANCELLING;
+                }
+                for (Child remaining : children) {
+                    if (remaining.future != null) {
+                        cancel.add(remaining.future);
+                    }
+                }
+            }
             // Fail closed: never remove this child or publish a successful
             // scope-drain witness when compiler-owned retirement failed.
             drained.failFromRuntime(failure);
+            for (OresFuture<?> future : cancel) {
+                future.cancel(false);
+            }
             return;
         }
 

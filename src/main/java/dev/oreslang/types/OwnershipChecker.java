@@ -2578,55 +2578,6 @@ public final class OwnershipChecker {
      * Later versions will reuse canonical compiler Send derivation under
      * resolved imported/monomorphized signatures.
      */
-    private boolean taskCaptureSend(Ast.TypeRef type, Set<String> active, int depth) {
-        if (type == null || depth > 64 || type.isBorrow()
-                || type.isComplement() || type.inferArguments()) return false;
-        if (type.isRecordType()) {
-            for (Ast.TypeRef field : type.recordMembers().values()) {
-                if (!taskCaptureSend(field, active, depth + 1)) return false;
-            }
-            return true;
-        }
-        if (type.isTupleType()) {
-            for (Ast.TypeRef part : type.arguments()) {
-                if (!taskCaptureSend(part, active, depth + 1)) return false;
-            }
-            return true;
-        }
-        String name = type.name();
-        if (Set.of("int", "uint", "i8", "i16", "i32", "i64",
-                "u8", "u16", "u32", "u64", "float", "f32", "f64",
-                "decimal", "bool", "String", "string", "Symbol").contains(name)) {
-            return type.arguments().isEmpty();
-        }
-        if (Set.of("Option", "List", "Array", "Vector", "FixedList",
-                "FixedArray").contains(name)) {
-            return type.arguments().size() == 1
-                    && taskCaptureSend(type.arguments().getFirst(), active, depth + 1);
-        }
-        if (name.equals("Result")) {
-            return type.arguments().size() == 2
-                    && taskCaptureSend(type.arguments().get(0), active, depth + 1)
-                    && taskCaptureSend(type.arguments().get(1), active, depth + 1);
-        }
-        // A class containing mutable actor state or a hidden native resource
-        // is never assumed Send from its name alone.
-        Ast.ClassDecl klass = classes.get(name);
-        if (klass == null || !type.arguments().isEmpty()
-                || !klass.genericParameters().isEmpty()
-                || klass.actorKind() != Ast.ActorKind.NONE
-                || !klass.parents().isEmpty()
-                || !active.add(name)) return false;
-        try {
-            for (Ast.FieldDecl field : klass.fields()) {
-                if (!taskCaptureSend(field.type(), active, depth + 1)) return false;
-            }
-            return true;
-        } finally {
-            active.remove(name);
-        }
-    }
-
     private CaptureSet collectCaptures(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
         CaptureSet captures = new CaptureSet();
         Set<String> locals = new HashSet<>();
