@@ -282,4 +282,33 @@ final class MapFromEntriesLanguageTest {
         assertTrue(wrongLookup.getMessage().contains("Map key")
                 || wrongLookup.getMessage().contains("expected"), wrongLookup.getMessage());
     }
+
+    @Test
+    void v1MapFailsClosedAtActorAndSharedMemoryBoundaries() {
+        IllegalArgumentException actor = rejected("""
+                define actor Worker as
+                  receive(ActorMail<Map<int, int>> mail): void {
+                    return;
+                  }
+                end
+                """);
+        assertTrue(
+                actor.getMessage().contains("Map")
+                        || actor.getMessage().contains("actor boundary"),
+                actor.getMessage());
+
+        IllegalArgumentException shared = rejected("""
+                fnc bad(): void {
+                  const result = Map.from_entries([Entry.of(1, 10)]);
+                  const map = result.unwrap();
+                  const shared = SharedMutex.new(map);
+                  return;
+                }
+                """);
+        assertTrue(
+                shared.getMessage().contains("shared-safe")
+                        || shared.getMessage().contains("Map"),
+                shared.getMessage());
+    }
+
 }
