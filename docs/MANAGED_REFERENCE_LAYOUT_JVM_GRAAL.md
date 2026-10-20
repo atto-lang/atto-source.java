@@ -64,8 +64,11 @@ which passes:
 ```
 
 The Oreslang property is captured during image generation by
-`NativeBuildMode`; it is not a launch-time switch that can silently reinterpret
-an already-built heap layout.
+`NativeBuildMode`; the native-image profiles explicitly initialize that class
+at build time and require an explicit `ores.native.ref-mode`. Missing or
+unknown native reference-mode metadata fails the image build rather than
+silently defaulting. It is not a launch-time switch that can reinterpret an
+already-built heap layout.
 
 Reference documentation:
 
@@ -94,7 +97,9 @@ are treated as unsigned storage bits.
 shared actors the backing is `int[]`; for private actors the existing
 owner-checked direct-memory arena is used through 32-bit `readInt/writeInt`
 operations. Both are charged to the actor's existing shard quota and revoked by
-the same physical-lifetime barrier.
+the same physical-lifetime barrier. Hot kernels can use
+`readEncodedWord`/`writeEncodedWord` to preserve primitive 32-bit index words
+without constructing nullable wrappers or materializing Java object references.
 
 This gives the Java backend the same important property as LLVM:
 
