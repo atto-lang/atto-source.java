@@ -264,6 +264,32 @@ final class InvertedColumnStoreTest {
     }
 
     @Test
+    void transactionCannotCloseOrReenterAndRollbackWorks() {
+        try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32)) {
+            var row = store.push(10);
+            store.transformRow(row, values -> {
+                assertThrows(IllegalStateException.class, store::close);
+                assertThrows(IllegalStateException.class, () -> store.get(row, 0));
+                assertThrows(IllegalStateException.class, () -> store.set(row, 0, 21));
+                values[0] = 20;
+                return values;
+            });
+            assertEquals(20, store.get(row, 0));
+            assertThrows(IllegalArgumentException.class, () ->
+                    store.transformRow(row, values -> new Object[]{"wrong type"}));
+            assertEquals(20, store.get(row, 0));
+            assertThrows(IllegalStateException.class, () ->
+                    store.transformRow(row, values -> {
+                        values[0] = 99;
+                        throw new IllegalStateException("aborted");
+                    }));
+            assertEquals(20, store.get(row, 0));
+            store.set(row, 0, 30);
+            assertEquals(30, store.get(row, 0));
+        }
+    }
+
+    @Test
     void deterministicHandleStressPreservesRows() {
         try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32,
                                                  InvertedColumnStore.Kind.BOOL)) {
