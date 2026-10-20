@@ -199,19 +199,63 @@ public final class CallbackOrderingAnalyzer {
             if (expr instanceof Ast.CallExpr call) {
                 Event emitted = eventCall(call, "emit", state);
                 if (emitted != null) result.add(emitted);
+                emissionExpressions(call.callee(), state, result);
                 for (Ast.Expr arg : call.arguments()) emissionExpressions(arg, state, result);
-            } else if (expr instanceof Ast.LambdaExpr lambda) {
-                // Nested lambdas are not necessarily invoked by this callback.
-                // Analyze their body only when separately published.
+            } else if (expr instanceof Ast.LambdaExpr) {
+                // A nested lambda is a value, not proof it was invoked.
             } else if (expr instanceof Ast.BinaryExpr b) {
                 emissionExpressions(b.left(), state, result);
                 emissionExpressions(b.right(), state, result);
             } else if (expr instanceof Ast.UnaryExpr u) emissionExpressions(u.operand(), state, result);
             else if (expr instanceof Ast.AwaitExpr a) emissionExpressions(a.expression(), state, result);
             else if (expr instanceof Ast.TrapExpr t) emissionExpressions(t.expression(), state, result);
-            else if (expr instanceof Ast.AssignExpr a) emissionExpressions(a.value(), state, result);
-            else if (expr instanceof Ast.RuntimeCallExpr rt)
+            else if (expr instanceof Ast.AssignExpr a) {
+                emissionExpressions(a.target(), state, result);
+                emissionExpressions(a.value(), state, result);
+            } else if (expr instanceof Ast.ConditionalExpr cond) {
+                emissionExpressions(cond.condition(), state, result);
+                emissionExpressions(cond.whenTrue(), state, result);
+                emissionExpressions(cond.whenFalse(), state, result);
+            } else if (expr instanceof Ast.RuntimeCallExpr rt) {
                 for (Ast.Expr arg : rt.arguments()) emissionExpressions(arg, state, result);
+            } else if (expr instanceof Ast.NewExpr n) {
+                for (Ast.Expr arg : n.arguments()) emissionExpressions(arg, state, result);
+            } else if (expr instanceof Ast.MemberExpr m) {
+                emissionExpressions(m.receiver(), state, result);
+            } else if (expr instanceof Ast.IndexExpr i) {
+                emissionExpressions(i.receiver(), state, result);
+                emissionExpressions(i.index(), state, result);
+            } else if (expr instanceof Ast.CastExpr cast) {
+                emissionExpressions(cast.value(), state, result);
+            } else if (expr instanceof Ast.TypeTestExpr test) {
+                emissionExpressions(test.value(), state, result);
+            } else if (expr instanceof Ast.PatternTestExpr test) {
+                emissionExpressions(test.value(), state, result);
+            } else if (expr instanceof Ast.SpreadExpr spread) {
+                emissionExpressions(spread.expression(), state, result);
+            } else if (expr instanceof Ast.MatchExpr match) {
+                emissionExpressions(match.subject(), state, result);
+                for (Ast.MatchValueArm arm : match.arms()) {
+                    emissionExpressions(arm.guard(), state, result);
+                    emissionExpressions(arm.value(), state, result);
+                }
+            } else if (expr instanceof Ast.ListExpr list) {
+                for (Ast.Expr value : list.elements()) emissionExpressions(value, state, result);
+            } else if (expr instanceof Ast.TupleExpr tuple) {
+                for (Ast.Expr value : tuple.elements()) emissionExpressions(value, state, result);
+            } else if (expr instanceof Ast.ObjectExpr obj) {
+                for (Ast.ObjectField field : obj.fields()) emissionExpressions(field.value(), state, result);
+            } else if (expr instanceof Ast.ChannelOpExpr ch) {
+                emissionExpressions(ch.channel(), state, result);
+                emissionExpressions(ch.value(), state, result);
+                emissionStatements(ch.callbackBody(), state, result);
+            } else if (expr instanceof Ast.DynamicSelectExpr select) {
+                emissionExpressions(select.cases(), state, result);
+            } else if (!(expr instanceof Ast.NameExpr || expr instanceof Ast.LiteralExpr)) {
+                // Unrecognized AST variants are unverified, never a proof of
+                // absence. Extend this visitor when the frontend grows.
+                throw new IllegalArgumentException("unhandled callback emission expression");
+            }
         }
 
         private void emissionStatements(List<Ast.Stmt> body, State state, List<Event> result) {
@@ -223,22 +267,66 @@ public final class CallbackOrderingAnalyzer {
                         emissionExpressions(ex.expression(), state, result);
                     else if (stmt instanceof Ast.ReturnStmt r)
                         emissionExpressions(r.value(), state, result);
+                    else if (stmt instanceof Ast.YieldStmt y)
+                        emissionExpressions(y.value(), state, result);
                     else if (stmt instanceof Ast.BindingStmt b)
                         emissionExpressions(b.initializer(), state, result);
+                    else if (stmt instanceof Ast.DestructureStmt d)
+                        emissionExpressions(d.initializer(), state, result);
+                    else if (stmt instanceof Ast.DeferStmt d)
+                        emissionExpressions(d.expression(), state, result);
                     else if (stmt instanceof Ast.BlockStmt b)
                         emissionStatements(b.body(), state, result);
                     else if (stmt instanceof Ast.IfStmt i) {
-                        for (Ast.IfBranch arm : i.branches())
+                        for (Ast.IfBranch arm : i.branches()) {
+                            emissionExpressions(arm.condition(), state, result);
                             emissionStatements(arm.body(), state, result);
+                        }
                         emissionStatements(i.elseBody(), state, result);
                     } else if (stmt instanceof Ast.LoopStmt l)
                         emissionStatements(l.body(), state, result);
-                    else if (stmt instanceof Ast.ForStmt f)
+                    else if (stmt instanceof Ast.ForStmt f) {
+                        if (f.initializer() != null)
+                            emissionStatements(List.of(f.initializer()), state, result);
+                        emissionExpressions(f.condition(), state, result);
+                        emissionExpressions(f.update(), state, result);
                         emissionStatements(f.body(), state, result);
-                    else if (stmt instanceof Ast.ForOfStmt f)
+                    } else if (stmt instanceof Ast.ForOfStmt f) {
+                        emissionExpressions(f.iterable(), state, result);
                         emissionStatements(f.body(), state, result);
-                    else if (stmt instanceof Ast.DoWhileStmt d)
+                    } else if (stmt instanceof Ast.ForOfDestructureStmt f) {
+                        emissionExpressions(f.iterable(), state, result);
+                        emissionStatements(f.body(), state, result);
+                    } else if (stmt instanceof Ast.DoWhileStmt d) {
                         emissionStatements(d.body(), state, result);
+                        emissionExpressions(d.condition(), state, result);
+                    } else if (stmt instanceof Ast.TryStmt t) {
+                        emissionStatements(t.body(), state, result);
+                        emissionStatements(t.catchBody(), state, result);
+                        emissionStatements(t.finallyBody(), state, result);
+                    } else if (stmt instanceof Ast.MatchStmt m) {
+                        emissionExpressions(m.subject(), state, result);
+                        for (Ast.MatchArm arm : m.arms()) {
+                            emissionExpressions(arm.guard(), state, result);
+                            emissionStatements(arm.body(), state, result);
+                        }
+                    } else if (stmt instanceof Ast.SwitchStmt sw) {
+                        emissionExpressions(sw.subject(), state, result);
+                        for (Ast.SwitchCase arm : sw.cases()) {
+                            for (Ast.Expr constant : arm.constants())
+                                emissionExpressions(constant, state, result);
+                            emissionStatements(arm.body(), state, result);
+                        }
+                        emissionStatements(sw.defaultBody(), state, result);
+                    } else if (stmt instanceof Ast.SelectStmt select) {
+                        for (Ast.SelectArm arm : select.arms()) {
+                            emissionExpressions(arm.channel(), state, result);
+                            emissionExpressions(arm.value(), state, result);
+                            emissionStatements(arm.body(), state, result);
+                        }
+                    } else if (!(stmt instanceof Ast.BreakStmt || stmt instanceof Ast.ContinueStmt)) {
+                        throw new IllegalArgumentException("unhandled callback emission statement");
+                    }
                 }
             } finally {
                 depth--;
