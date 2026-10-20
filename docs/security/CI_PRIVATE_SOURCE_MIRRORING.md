@@ -65,7 +65,9 @@ diagnostic script.
 ## Destination-bound source snapshot publisher
 
 The only supported transfer entry point is **not an arbitrary command
-launcher**. V3 accepts an approved destination, a bounded local source
+launcher**. Direct execution of `scripts/publish-private-ci-source.py` is
+fail-closed; that legacy module exists only to provide audited helper functions
+to v3. V3 accepts an approved destination, a bounded local source
 directory, the exact open source PR head, and one test plan already pinned by
 the protected carrier contract:
 
