@@ -187,8 +187,35 @@ final class FutureConstructorsLanguageTest {
                     return;
                   }
                 """)));
-        assertTrue(error.getMessage().contains("Future<T> constructor requires exact async run() result type"),
+        assertTrue(error.getMessage().contains("Future<T> provider and result types must be concrete"),
                 () -> "wrong diagnostic: " + error.getMessage());
+    }
+
+
+    @Test
+    void constructorRejectsNestedAnyFutureResult() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program("""
+                  pub fnc main(): void {
+                    let Future<Option<Any>> f = new Future<Option<Any>>(new Producer());
+                    return;
+                  }
+                """)));
+        assertTrue(error.getMessage().contains("Future<T> provider and result types must be concrete"),
+                () -> "nested Any escaped Future constructor gate: " + error.getMessage());
+    }
+
+    @Test
+    void constructorRejectsNamedUnknownFutureResult() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program("""
+                  pub fnc main(): void {
+                    let Future<Unknown> f = new Future<Unknown>(new Producer());
+                    return;
+                  }
+                """)));
+        assertTrue(error.getMessage().contains("Future<T> provider and result types must be concrete"),
+                () -> "named Unknown escaped Future constructor gate: " + error.getMessage());
     }
 
 
