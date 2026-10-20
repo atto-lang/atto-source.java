@@ -50,6 +50,34 @@ final class ActorUnaryMailboxRequestTest {
     }
 
     @Test
+    void handlerThrowAfterStagingNeverPublishesSuccess() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var timer = Executors.newSingleThreadScheduledExecutor()) {
+            var registry = new GenerationalReplyRegistry(4);
+            var caller = registry.newActorEndpoint();
+            var callee = registry.newActorEndpoint();
+            var issued = new CountDownLatch(1);
+            var returned = new AtomicReference<OresFuture<String>>();
+            var worker = runtime.<String>spawn(() -> (message, ctx) -> {
+                assertTrue(ctx.replyCurrentCall("wrong-success"));
+                throw new IllegalStateException("handler aborted after staging");
+            });
+            var client = runtime.<String>spawn(() -> (message, ctx) -> {
+                returned.set(ActorReplySchedulerBridge.requestCurrentActor(
+                        runtime, registry, caller, callee, worker, "work",
+                        String.class, Duration.ofSeconds(3), timer));
+                issued.countDown();
+            });
+            client.send("request");
+            assertTrue(issued.await(3, TimeUnit.SECONDS));
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> returned.get().get(3, TimeUnit.SECONDS));
+            assertEquals(0, registry.pendingCount());
+            registry.close();
+        }
+    }
+
+    @Test
     void ordinarySendHasNoForgedReplyCapability() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var received = new CountDownLatch(1);
