@@ -27,11 +27,11 @@ final class ModelRunFencingTest {
         assertEquals("MODEL_RUN_REPLAY",
                 assertThrows(IllegalStateException.class,
                         () -> ModelRunFencing.validateAndCommit(owner(), good, ledger)).getMessage());
-        assertEquals("MODEL_STALE_GRAPH_GENERATION",
+        assertEquals("MODEL_GRAPH_GENERATION_MISMATCH",
                 rejected(new RunStamp("run-2", "app::Tax@v1", G, 8, "instance-1", 11, P)));
-        assertEquals("MODEL_STALE_PARAMETER_VERSION",
+        assertEquals("MODEL_PARAMETER_VERSION_MISMATCH",
                 rejected(new RunStamp("run-3", "app::Tax@v1", G, 7, "instance-1", 12, P)));
-        assertEquals("MODEL_WRONG_EXECUTION_PROFILE",
+        assertEquals("MODEL_EXECUTION_PROFILE_MISMATCH",
                 rejected(new RunStamp("run-4", "app::Tax@v1", G, 7, "instance-1", 11, "c".repeat(64))));
     }
 
