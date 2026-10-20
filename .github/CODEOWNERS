@@ -2,6 +2,8 @@
 # Enforcement requires branch protection to require code-owner reviews.
 /.github/CODEOWNERS @ORESoftware
 /.github/private-ci-approved-repositories.txt @ORESoftware
+/scripts/preflight-private-ci-mirror.sh @ORESoftware
+/scripts/test-preflight-private-ci-mirror.sh @ORESoftware
 /scripts/check-private-ci-destination.sh @ORESoftware
 /scripts/run-in-private-ci-destination.sh @ORESoftware
 /scripts/test-private-ci-destination.sh @ORESoftware
@@ -9,3 +11,5 @@
 /docs/security/CI_PRIVATE_SOURCE_MIRRORING.md @ORESoftware
 /scripts/publish-private-ci-source.py @ORESoftware
 /scripts/test-publish-private-ci-source.py @ORESoftware
+/tools/verify-exact-source-tree.sh @ORESoftware
+/tools/test-verify-exact-source-tree.sh @ORESoftware

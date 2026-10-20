@@ -12,8 +12,6 @@ MODULE = Path(__file__).with_name("publish-private-ci-source.py")
 spec = importlib.util.spec_from_file_location("private_publisher", MODULE)
 pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
-ORIGINAL_VERIFY_PROTECTED_ORIGIN = pub.verify_protected_origin
-ORIGINAL_VERIFY_EXACT_SOURCE_TREE = pub.verified_exact_source_tree
 A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
 
 
@@ -26,30 +24,32 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.source.mkdir()
         (self.root / ".github").mkdir()
         self.approval = self.root / ".github" / "private-ci-approved-repositories.txt"
-        self.approval.write_text("trusted/ci\n")
+        self.approval.write_text("trusted/ci@12345\n")
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.route_calls = []
         self.visibility = ["private"] * 100
+        self.repo_ids = [12345] * 100
+        self.push_permissions = [True] * 100
+        self.destination = patch.object(pub, "MIRROR_DESTINATION", "trusted/ci")
+        self.destination.start()
+        self.addCleanup(self.destination.stop)
+        self.base_commit = patch.object(pub, "DEST_BASE_COMMIT", A)
+        self.base_commit.start()
+        self.addCleanup(self.base_commit.stop)
+        self.base_tree = patch.object(pub, "DEST_BASE_TREE", B)
+        self.base_tree.start()
+        self.addCleanup(self.base_tree.stop)
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
-        # Existing isolated transfer/FS tests model the downstream publisher;
-        # protected-source provenance gets independent real-guard tests below.
-        self.origin_guard = patch.object(pub, "verify_protected_origin")
-        self.origin_guard.start()
-        self.addCleanup(self.origin_guard.stop)
-        # Existing transfer/FS tests verify post-attestation behavior; the
-        # source Git-tree verifier is tested separately against mocked origin.
-        self.source_tree_guard = patch.object(
-            pub, "verified_exact_source_tree", return_value=D)
-        self.source_tree_guard.start()
-        self.addCleanup(self.source_tree_guard.stop)
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
         if route == "repos/trusted/ci":
-            return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
-                        private=True, default_branch="main")
+            return dict(id=self.repo_ids.pop(0), full_name="trusted/ci",
+                        visibility=self.visibility.pop(0),
+                        private=True, default_branch="anything-can-move",
+                        permissions={"push": self.push_permissions.pop(0)})
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
             return {"sha": hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
@@ -58,8 +58,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             # A fresh file tree and its parent root tree must be distinct.
             return {"sha": E if "base_tree" in payload else D}
         mapping = {
-            "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
-            "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
+            "repos/trusted/ci/git/commits/"+A: {"sha": A, "tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": A},
             "repos/trusted/ci/git/refs": {"ref": "refs/heads/ci/oreslang-test"},
         }
@@ -69,224 +68,17 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
-            return pub.publish(repo, self.source, branch, self.root, A)
+            return pub.publish(
+                repo, self.source, branch, self.root,
+                source_pr=1425, source_commit=C, source_tree=D)
 
-    def verified_origin_api(self, protected=True, policy=b"trusted/ci\n",
-                            codeowners=True, stale=True, admins=True,
-                            approvals=1, force=False, deletions=False,
-                            bypasses=None):
-        routes = []
-        def fake(route, method="GET", payload=None):
-            routes.append(route)
-            if route == "repos/"+pub.SOURCE_REPO:
-                return {"full_name": pub.SOURCE_REPO, "private": True}
-            if route == "repos/"+pub.SOURCE_REPO+"/branches/main":
-                return {"name": "main", "protected": protected,
-                        "commit": {"sha": A}}
-            if route == "repos/"+pub.SOURCE_REPO+"/branches/main/protection":
-                reviews = {"require_code_owner_reviews": codeowners,
-                           "dismiss_stale_reviews": stale,
-                           "required_approving_review_count": approvals}
-                if bypasses is not None:
-                    reviews["bypass_pull_request_allowances"] = bypasses
-                return {"required_pull_request_reviews": reviews,
-                        "enforce_admins": {"enabled": admins},
-                        "allow_force_pushes": {"enabled": force},
-                        "allow_deletions": {"enabled": deletions}}
-            if route == ("repos/"+pub.SOURCE_REPO+"/contents/"
-                         +pub.POLICY_PATH+"?ref="+A):
-                return {"path": pub.POLICY_PATH, "type": "file",
-                        "encoding": "base64",
-                        "content": base64.b64encode(policy).decode("ascii")}
-            return self.fake_api(route, method, payload)
-        return fake, routes
-
-    def test_origin_main_must_be_protected_before_export(self):
-        api, routes = self.verified_origin_api(protected=False)
-        with patch.object(pub, "verify_protected_origin",
-                          side_effect=ORIGINAL_VERIFY_PROTECTED_ORIGIN):
-            with patch.object(pub, "gh_api", side_effect=api):
-                with patch.object(pub, "collect_source") as collect:
-                    with self.assertRaisesRegex(pub.Denied, "not protected"):
-                        pub.publish("trusted/ci", self.source,
-                                    "ci/oreslang-test", self.root, A)
-                    collect.assert_not_called()
-        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
-        self.assertNotIn("repos/"+pub.SOURCE_REPO+"/contents/"
-                         +pub.POLICY_PATH+"?ref="+A, routes)
-
-    def test_origin_main_requires_real_codeowner_and_admin_enforcement(self):
-        for rule in ("codeowners", "stale", "admins"):
-            with self.subTest(rule=rule):
-                options = {rule: False}
-                api, routes = self.verified_origin_api(**options)
-                with patch.object(pub, "verify_protected_origin",
-                                  side_effect=ORIGINAL_VERIFY_PROTECTED_ORIGIN):
-                    with patch.object(pub, "gh_api", side_effect=api):
-                        with patch.object(pub, "collect_source") as collect:
-                            with self.assertRaisesRegex(pub.Denied, "CODEOWNER"):
-                                pub.publish("trusted/ci", self.source,
-                                            "ci/oreslang-test", self.root, A)
-                            collect.assert_not_called()
-                self.assertNotIn("repos/"+pub.SOURCE_REPO+"/contents/"
-                                 +pub.POLICY_PATH+"?ref="+A, routes)
-                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
-
-    def test_origin_main_rejects_force_push_delete_and_review_bypasses(self):
-        for config in ({"approvals": 0}, {"force": True},
-                       {"deletions": True},
-                       {"bypasses": {"users": ["someone"], "teams": [], "apps": []}},
-                       {"bypasses": {"users": "invalid"}}):
-            with self.subTest(config=config):
-                api, routes = self.verified_origin_api(**config)
-                with patch.object(pub, "verify_protected_origin",
-                                  side_effect=ORIGINAL_VERIFY_PROTECTED_ORIGIN):
-                    with patch.object(pub, "gh_api", side_effect=api):
-                        with patch.object(pub, "collect_source") as collect:
-                            with self.assertRaises(pub.Denied):
-                                pub.publish("trusted/ci", self.source,
-                                            "ci/oreslang-test", self.root, A)
-                            collect.assert_not_called()
-                self.assertNotIn(
-                    "repos/"+pub.SOURCE_REPO+"/contents/"
-                    +pub.POLICY_PATH+"?ref="+A, routes)
-                self.assertFalse(any(method == "POST"
-                                     for method, _, _ in self.route_calls))
-
-    def test_origin_protection_api_permission_denial_rejects_export(self):
-        api, _ = self.verified_origin_api()
-        def denied(route, method="GET", payload=None):
-            if route.endswith("/branches/main/protection"):
-                raise pub.Denied("GitHub protection settings API unavailable")
-            return api(route, method, payload)
-        with patch.object(pub, "verify_protected_origin",
-                          side_effect=ORIGINAL_VERIFY_PROTECTED_ORIGIN):
-            with patch.object(pub, "gh_api", side_effect=denied):
-                with patch.object(pub, "collect_source") as collect:
-                    with self.assertRaisesRegex(pub.Denied, "unavailable"):
-                        pub.publish("trusted/ci", self.source,
-                                    "ci/oreslang-test", self.root, A)
-                    collect.assert_not_called()
-        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
-
-    def test_origin_main_must_match_local_approved_policy(self):
-        api, _ = self.verified_origin_api(
-            protected=True, policy=b"# no authorized destination\n")
-        with patch.object(pub, "verify_protected_origin",
-                          side_effect=ORIGINAL_VERIFY_PROTECTED_ORIGIN):
-            with patch.object(pub, "gh_api", side_effect=api):
-                with patch.object(pub, "collect_source") as collect:
-                    with self.assertRaisesRegex(pub.Denied, "diverges"):
-                        pub.publish("trusted/ci", self.source,
-                                    "ci/oreslang-test", self.root, A)
-                    collect.assert_not_called()
-        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
-
-    def test_protected_origin_verification_before_and_after_upload(self):
-        api, routes = self.verified_origin_api(protected=True)
-        with patch.object(pub, "verify_protected_origin",
-                          side_effect=ORIGINAL_VERIFY_PROTECTED_ORIGIN):
-            with patch.object(pub, "gh_api", side_effect=api):
-                sha, count = pub.publish("trusted/ci", self.source,
-                                         "ci/oreslang-test", self.root, A)
-        self.assertEqual((sha, count), (A, 1))
-        branch_reads = [r for r in routes
-                        if r == "repos/"+pub.SOURCE_REPO+"/branches/main"]
-        self.assertEqual(len(branch_reads), 2)
-
-    def test_protected_origin_recheck_rejects_last_minute_revocation(self):
-        api, routes = self.verified_origin_api(protected=True)
-        calls = [0]
-        def revoke(route, method="GET", payload=None):
-            if route == "repos/"+pub.SOURCE_REPO+"/branches/main":
-                calls[0] += 1
-                if calls[0] == 2:
-                    return {"name": "main", "protected": False,
-                            "commit": {"sha": A}}
-            return api(route, method, payload)
-        with patch.object(pub, "verify_protected_origin",
-                          side_effect=ORIGINAL_VERIFY_PROTECTED_ORIGIN):
-            with patch.object(pub, "gh_api", side_effect=revoke):
-                with self.assertRaisesRegex(pub.Denied, "not protected"):
-                    pub.publish("trusted/ci", self.source,
-                                "ci/oreslang-test", self.root, A)
-        self.assertEqual(calls[0], 2)
-        self.assertFalse(any(r == "repos/trusted/ci/git/refs"
-                             for m, r, _ in self.route_calls if m == "POST"))
-
-    def test_git_tree_proof_exactly_matches_all_local_files(self):
-        data = (self.source / "hello.ores").read_bytes()
-        git_blob = hashlib.sha1(
-            b"blob "+str(len(data)).encode("ascii")+bytes([0])+data
-        ).hexdigest()
-        tree = [{"path": "hello.ores", "type": "blob",
-                 "mode": "100644", "sha": git_blob}]
-        seen = []
-        def origin_api(route, method="GET", payload=None):
-            seen.append(route)
-            if route == "repos/"+pub.SOURCE_REPO+"/git/commits/"+A:
-                return {"sha": A, "tree": {"sha": D}}
-            if route == "repos/"+pub.SOURCE_REPO+"/git/trees/"+D+"?recursive=1":
-                return {"sha": D, "truncated": False, "tree": tree}
-            raise AssertionError("unexpected origin route: "+route)
-        with patch.object(pub, "gh_api", side_effect=origin_api):
-            self.assertEqual(
-                ORIGINAL_VERIFY_EXACT_SOURCE_TREE(
-                    [("hello.ores", data, "100644")], A), D)
-            with self.assertRaisesRegex(pub.Denied, "differs"):
-                ORIGINAL_VERIFY_EXACT_SOURCE_TREE(
-                    [("hello.ores", data+b"dirty", "100644")], A)
-            with self.assertRaisesRegex(pub.Denied, "differs"):
-                ORIGINAL_VERIFY_EXACT_SOURCE_TREE(
-                    [("hello.ores", data, "100755")], A)
-            with self.assertRaisesRegex(pub.Denied, "differs"):
-                ORIGINAL_VERIFY_EXACT_SOURCE_TREE(
-                    [("hello.ores", data, "100644"),
-                     ("untracked.secret", b"secret", "100644")], A)
-            with self.assertRaisesRegex(pub.Denied, "differs"):
-                ORIGINAL_VERIFY_EXACT_SOURCE_TREE([], A)
-        self.assertTrue(seen)
-
-    def test_git_tree_attestation_refuses_truncation_and_symlinks(self):
-        data = (self.source / "hello.ores").read_bytes()
-        def fake(route, method="GET", payload=None):
-            if route.endswith("/git/commits/"+A):
-                return {"sha": A, "tree": {"sha": D}}
-            if route.endswith("/git/trees/"+D+"?recursive=1"):
-                return {"sha": D, "truncated": True, "tree": []}
-            raise AssertionError(route)
-        with patch.object(pub, "gh_api", side_effect=fake):
-            with self.assertRaisesRegex(pub.Denied, "incomplete"):
-                ORIGINAL_VERIFY_EXACT_SOURCE_TREE(
-                    [("hello.ores", data, "100644")], A)
-        def symlink(route, method="GET", payload=None):
-            if route.endswith("/git/commits/"+A):
-                return {"sha": A, "tree": {"sha": D}}
-            if route.endswith("/git/trees/"+D+"?recursive=1"):
-                return {"sha": D, "truncated": False,
-                        "tree": [{"path":"link", "type":"blob",
-                                  "mode":"120000", "sha": B}]}
-            raise AssertionError(route)
-        with patch.object(pub, "gh_api", side_effect=symlink):
-            with self.assertRaisesRegex(pub.Denied, "symlink"):
-                ORIGINAL_VERIFY_EXACT_SOURCE_TREE(
-                    [("hello.ores", data, "100644")], A)
-
-    def test_publisher_rejects_mismatched_uploaded_tree_before_branch(self):
-        # GitHub returns a different tree SHA even though blobs matched.
-        self.source_tree_guard.return_value = C
-        with self.assertRaisesRegex(pub.Denied, "uploaded source tree differs"):
-            self.publish()
-        self.assertNotIn("repos/trusted/ci/git/refs",
-                         [route for method, route, _ in self.route_calls
-                          if method == "POST"])
-
-    def test_source_commit_is_mandatory_exact_sha(self):
-        with patch.object(pub, "collect_source") as source:
-            with self.assertRaises(pub.Denied):
-                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
-                            self.root, "main")
-            source.assert_not_called()
+    def test_real_preflight_rejects_missing_exact_source_authorization(self):
+        self.preflight.stop()
+        try:
+            with self.assertRaisesRegex(pub.Denied, "exact source PR"):
+                pub.require_preflight("trusted/ci", "ci/oreslang-test", self.root, None, None, None)
+        finally:
+            self.preflight.start()
 
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
         sha, count = self.publish()
@@ -304,7 +96,26 @@ class DestinationBoundPublisherTests(unittest.TestCase):
              "type": "tree", "sha": D}])
         self.assertEqual(writes[2][2]["base_tree"], B)
         self.assertEqual(writes[3][2]["tree"], E)
+        self.assertEqual(
+            writes[3][2]["message"],
+            f"ci: exact private Oreslang tree {C} tree {D}\n"
+            f"carrier-base {A} tree {B}")
+        self.assertEqual(writes[3][2]["parents"], [A])
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
+
+    def test_exact_source_tree_mismatch_stops_before_carrier_commit_and_ref(self):
+        with patch.object(pub, "gh_api", side_effect=self.fake_api):
+            with self.assertRaisesRegex(
+                    pub.Denied, "source subtree does not match authorized source tree"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, source_pr=1425, source_commit=C, source_tree=C)
+        writes = [r for m, r, _ in self.route_calls if m == "POST"]
+        self.assertEqual(writes, [
+            "repos/trusted/ci/git/blobs",
+            "repos/trusted/ci/git/trees",
+        ])
+        self.assertFalse(any(r.endswith("/git/commits") or r.endswith("/git/refs")
+                             for r in writes))
 
     def test_existing_stale_files_cannot_survive_clean_source_snapshot(self):
         # Assume base_tree contains a stale private-oreslang-source/secret.ores.
@@ -321,15 +132,68 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": D}])
         self.assertEqual(tree_writes[1]["base_tree"], B)
 
+    def test_mutable_destination_default_branch_is_not_an_authorization_input(self):
+        self.publish()
+        self.assertFalse(any("/git/ref/heads/" in route
+                             for _, route, _ in self.route_calls))
+
+    def test_reviewed_carrier_commit_identity_mismatch_aborts_before_source_upload(self):
+        original = self.fake_api
+        def drift(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/commits/" + A:
+                return {"sha": C, "tree": {"sha": B}}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=drift):
+            with self.assertRaisesRegex(pub.Denied, "carrier commit/tree mismatch"):
+                pub.publish(
+                    "trusted/ci", self.source, "ci/oreslang-test", self.root,
+                    source_pr=1425, source_commit=C, source_tree=D)
+        self.assertFalse(any(r.endswith("/git/commits") or r.endswith("/git/refs")
+                             for m, r, _ in self.route_calls if m == "POST"))
+
+    def test_reviewed_carrier_tree_mismatch_aborts_before_source_upload(self):
+        original = self.fake_api
+        def drift(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/commits/" + A:
+                return {"sha": A, "tree": {"sha": C}}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=drift):
+            with self.assertRaisesRegex(pub.Denied, "carrier commit/tree mismatch"):
+                pub.publish(
+                    "trusted/ci", self.source, "ci/oreslang-test", self.root,
+                    source_pr=1425, source_commit=C, source_tree=D)
+        self.assertFalse(any(r.endswith("/git/commits") or r.endswith("/git/refs")
+                             for m, r, _ in self.route_calls if m == "POST"))
+
     def test_public_visibility_aborts_before_any_write(self):
         self.visibility = ["public"]
         with self.assertRaises(pub.Denied):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_wrong_immutable_repo_id_aborts_before_any_write(self):
+        self.repo_ids = [67890]
+        with self.assertRaisesRegex(pub.Denied, "immutable ID"):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_repo_id_flip_aborts_before_next_write(self):
+        self.repo_ids = [12345, 12345, 67890]
+        with self.assertRaisesRegex(pub.Denied, "immutable ID"):
+            self.publish()
+        self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
+                         ["repos/trusted/ci/git/blobs"])
+
     def test_visibility_flip_aborts_before_next_write(self):
         self.visibility = ["private", "private", "public"]
         with self.assertRaises(pub.Denied):
+            self.publish()
+        self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
+                         ["repos/trusted/ci/git/blobs"])
+
+    def test_push_permission_flip_aborts_before_next_write(self):
+        self.push_permissions = [True, True, False]
+        with self.assertRaisesRegex(pub.Denied, "write permission"):
             self.publish()
         self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
                          ["repos/trusted/ci/git/blobs"])
@@ -343,13 +207,28 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return result
         with patch.object(pub, "gh_api", side_effect=revoke_after_blob):
             with self.assertRaisesRegex(pub.Denied, "approval.*(revoked|changed)"):
-                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, A)
+                pub.publish(
+                    "trusted/ci", self.source, "ci/oreslang-test", self.root,
+                    source_pr=1425, source_commit=C, source_tree=D)
         writes = [r for m, r, _ in self.route_calls if m == "POST"]
         self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
 
     def test_initial_unapproved_policy_fails_even_with_stale_preflight(self):
         self.approval.write_text("# reviewer removed the destination")
         with self.assertRaisesRegex(pub.Denied, "revoked or absent"):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_duplicate_destination_policy_fails_closed(self):
+        self.approval.write_text(
+            "trusted/ci@12345\nTRUSTED/CI@67890\n")
+        with self.assertRaisesRegex(pub.Denied, "duplicate destination"):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_crlf_policy_fails_closed(self):
+        self.approval.write_bytes(b"trusted/ci@12345\r\n")
+        with self.assertRaisesRegex(pub.Denied, "LF line endings"):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
@@ -462,7 +341,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_policy_symlink_swap_between_check_and_read_rejected(self):
         outside = self.root / "outside-approved-policy"
-        outside.write_text("trusted/ci\n")
+        outside.write_text("trusted/ci@12345\n")
         self.approval.write_text("# no approval\n")
         original_read = Path.read_bytes
         def malicious_read(path):
@@ -483,7 +362,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_policy_parent_directory_swap_rejected(self):
         outside = self.root / "external-approved-dir"
         outside.mkdir()
-        (outside / "private-ci-approved-repositories.txt").write_text("trusted/ci\n")
+        (outside / "private-ci-approved-repositories.txt").write_text("trusted/ci@12345\n")
         self.approval.write_text("# no approval\n")
         original_open = pub.os.open
         replaced = [False]
@@ -572,7 +451,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         import os
         import threading
         outside = self.root / "outside-policy"
-        outside.write_text("trusted/ci\n")
+        outside.write_text("trusted/ci@12345\n")
         self.approval.write_text("# no approval\n")
         stop = threading.Event()
         def attacker():
@@ -607,7 +486,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return original(route, method, payload)
         with patch.object(pub, "gh_api", side_effect=bad):
             with self.assertRaises(pub.Denied):
-                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, A)
+                pub.publish(
+                    "trusted/ci", self.source, "ci/oreslang-test", self.root,
+                    source_pr=1425, source_commit=C, source_tree=D)
         self.assertFalse(any(r.endswith("/git/refs") for _, r, _ in self.route_calls))
 
     def test_valid_looking_but_incorrect_blob_sha_is_rejected(self):
@@ -618,7 +499,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return original(route, method, payload)
         with patch.object(pub, "gh_api", side_effect=wrong):
             with self.assertRaisesRegex(pub.Denied, "digest"):
-                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, A)
+                pub.publish(
+                    "trusted/ci", self.source, "ci/oreslang-test", self.root,
+                    source_pr=1425, source_commit=C, source_tree=D)
         self.assertFalse(any(r.endswith("/git/refs") for _, r, _ in self.route_calls))
 
     def test_source_must_be_under_trusted_checkout(self):
@@ -628,7 +511,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             (outside / "outside.ores").write_text("private data")
             with patch.object(pub, "gh_api", side_effect=self.fake_api):
                 with self.assertRaisesRegex(pub.Denied, "trusted checkout"):
-                    pub.publish("trusted/ci", outside, "ci/oreslang-test", self.root, A)
+                    pub.publish(
+                        "trusted/ci", outside, "ci/oreslang-test", self.root,
+                        source_pr=1425, source_commit=C, source_tree=D)
         finally:
             (outside / "outside.ores").unlink()
             outside.rmdir()
@@ -646,7 +531,17 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
-    def test_git_metadata_directory_rejected(self):
+    def test_checkout_root_git_metadata_is_excluded_from_snapshot(self):
+        metadata = self.root / ".git"
+        metadata.mkdir()
+        (metadata / "config").write_text("must not be exported")
+        files = pub.collect_source(self.root, self.root)
+        paths = [path for path, _, _ in files]
+        self.assertIn(".github/private-ci-approved-repositories.txt", paths)
+        self.assertIn("source/hello.ores", paths)
+        self.assertNotIn(".git/config", paths)
+
+    def test_nested_source_git_metadata_directory_rejected(self):
         (self.source / ".git").mkdir()
         with self.assertRaises(pub.Denied):
             self.publish()

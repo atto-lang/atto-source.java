@@ -4,6 +4,8 @@ on:
     paths:
       - 'scripts/check-private-ci-destination.sh'
       - 'scripts/test-private-ci-destination.sh'
+      - 'scripts/preflight-private-ci-mirror.sh'
+      - 'scripts/test-preflight-private-ci-mirror.sh'
       - 'scripts/run-in-private-ci-destination.sh'
       - 'scripts/publish-private-ci-source.py'
       - 'scripts/test-publish-private-ci-source.py'
@@ -16,6 +18,8 @@ on:
     paths:
       - 'scripts/check-private-ci-destination.sh'
       - 'scripts/test-private-ci-destination.sh'
+      - 'scripts/preflight-private-ci-mirror.sh'
+      - 'scripts/test-preflight-private-ci-mirror.sh'
       - 'scripts/run-in-private-ci-destination.sh'
       - 'scripts/publish-private-ci-source.py'
       - 'scripts/test-publish-private-ci-source.py'
@@ -31,13 +35,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
       - name: Assert private CI guard fail-closed behavior
         run: |
           set -euo pipefail
-          bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
+          bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh scripts/preflight-private-ci-mirror.sh scripts/test-preflight-private-ci-mirror.sh
           python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py
           bash scripts/test-private-ci-destination.sh
+          bash scripts/test-preflight-private-ci-mirror.sh
           bash -n tools/verify-exact-source-tree.sh tools/test-verify-exact-source-tree.sh
           bash tools/test-verify-exact-source-tree.sh
           for attempt in 1 2 3; do

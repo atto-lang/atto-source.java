@@ -1,6 +1,23 @@
 # Private CI destinations explicitly approved for source transfers.
 # No repositories are approved by default.
-# Changes must be reviewed by maintainers and security owners on a protected branch.
-# Format: one exact owner/repo per uncommented line, no whitespace or wildcards.
-# Proposed narrow private carrier for v3 exact-tree tests; requires CODEOWNER review and protected merge.
-# Review-only candidate (NOT an approved destination): ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra
+#
+# Authorization mode A (preferred): this exact policy is effective on protected
+# main and has maintainer + security-owner review.
+#
+# Authorization mode B (review-attested-v1): ONLY when branch protection is
+# technically unavailable, each individual export must have two distinct,
+# unedited GitHub issue comments (maintainer + @ORESoftware) whose identical
+# canonical payload binds the exact source PR/head/tree, destination repo/ID,
+# and the exact policy, preflight, destination guard, wrapper, and publisher
+# blob IDs currently on main. Any source-head, destination, policy, or
+# security-critical export-path change invalidates approval.
+# The fallback itself is inert until independently reviewed and merged.
+#
+# Format: exact ASCII owner/repo@numeric-github-repository-id rows; UTF-8 comments; LF-only.
+# This draft does NOT approve a destination; independent security review required.
+#
+# PROPOSED APPROVAL ONLY: this file is inert on this PR branch.
+# Before each transfer, reconfirm the exact private GitHub repo ID 1412142815,
+# approved confidential-use purpose, ACLs and hosted workflow isolation.
+# Do not infer approval from this PR branch or a successful Actions run.
+ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra@1412142815
