@@ -270,4 +270,33 @@ final class RefinementRulesTest {
                         java.util.List.of(), huge, valid.fingerprint()));
     }
 
+    @Test void untrustedSourceBoundsAreLimitedBeforeExpensiveNormalization() {
+        var bounds = new java.util.ArrayList<Ast.RefinementBound>();
+        for (int i = 0; i < 4096; ++i)
+            bounds.add(new Ast.RefinementBound("value", "ne", i + 1L));
+        var inBudget = RefinementRules.normalize(Ast.TypeRef.simple("int"), bounds);
+        assertTrue(inBudget.contains(0));
+        assertFalse(inBudget.contains(4096));
+        bounds.add(new Ast.RefinementBound("value", "ne", 4097L));
+        var tooMany = assertThrows(IllegalArgumentException.class,
+                () -> RefinementRules.normalize(Ast.TypeRef.simple("int"), bounds));
+        assertTrue(tooMany.getMessage().contains("limit"));
+    }
+
+    @Test void publicDescriptorCannotSkipCanonicalExcludedValueQuota() {
+        var spec = alias("type Count = int with value gte 0;");
+        var valid = RefinementRules.descriptor(null, spec.target(), spec.refinement());
+        var exclusions = new java.util.ArrayList<Long>();
+        for (long i = 0; i <= 4096; i++) exclusions.add(i);
+        assertThrows(IllegalArgumentException.class, () ->
+                new RefinementRules.Descriptor(1, "int", "value", 0,
+                        Long.MAX_VALUE, exclusions, "", valid.fingerprint()));
+        // Formal Interval may still represent a large sparse proof. It is
+        // compiler source-schema admission, not interval arithmetic, that
+        // must be budgeted.
+        assertDoesNotThrow(() -> new RefinementRules.Interval(
+                "value", Long.MIN_VALUE, Long.MAX_VALUE,
+                java.util.Set.of(Long.MIN_VALUE, Long.MAX_VALUE)));
+    }
+
 }
