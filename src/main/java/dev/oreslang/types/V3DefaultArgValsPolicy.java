@@ -39,7 +39,7 @@ public final class V3DefaultArgValsPolicy {
         if (parameters.size() > MAX_FORMALS || annotations.size() > MAX_ANNOTATIONS) {
             throw new IllegalArgumentException("v3 default contract formal/annotation budget exceeded");
         }
-        int namedDefaults = 0;
+        long namedDefaults = 0;
         for (Ast.Annotation annotation : annotations) {
             Objects.requireNonNull(annotation, "declaration annotation");
             namedDefaults += annotation.namedDefaults().size();
@@ -59,7 +59,16 @@ public final class V3DefaultArgValsPolicy {
                 throw new IllegalArgumentException(
                         "v3 default contract type depth/node budget exceeded");
             }
-            for (Ast.TypeRef nested : candidate.type().arguments()) {
+            // Check breadth BEFORE pushing children; otherwise one forged
+            // million-way TypeRef can exhaust memory even though the visited
+            // counter would eventually reject it. Include already visited
+            // and pending work in the bounded admission budget.
+            List<Ast.TypeRef> children = candidate.type().arguments();
+            if ((long) visited + pending.size() + children.size() > MAX_TYPE_NODES) {
+                throw new IllegalArgumentException(
+                        "v3 default contract type depth/node budget exceeded");
+            }
+            for (Ast.TypeRef nested : children) {
                 pending.addLast(new TypeVisit(
                         Objects.requireNonNull(nested, "nested type"), candidate.depth() + 1));
             }
