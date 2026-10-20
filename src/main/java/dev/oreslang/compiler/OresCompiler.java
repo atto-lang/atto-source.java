@@ -38,6 +38,20 @@ public final class OresCompiler {
     }
 
     /**
+     * Experimental AST-backed termination, recursive-work and host-effect warnings.
+     * Performs the same type/ownership admission as other compiler entry points.
+     * Findings are potential warnings, not proofs of safety or exhaustive coverage.
+     */
+    public static java.util.List<StaticSafetyAnalyzer.Finding> analyzeStaticSafety(String source) {
+        return StaticSafetyAnalyzer.analyze(parseAndTypeCheck(source));
+    }
+
+    /** Analysis variant for clients that already have an admitted typed program. */
+    public static java.util.List<StaticSafetyAnalyzer.Finding> analyzeStaticSafety(Ast.Program program) {
+        return StaticSafetyAnalyzer.analyze(analyze(program));
+    }
+
+    /**
      * Opt-in RT primitive subset: perform the full existing type/ownership check
      * before admitting any source-level resource bounds or lowering to Java 8.
      * This is not a verified no-heap runtime or WCET proof. Consumers must run
