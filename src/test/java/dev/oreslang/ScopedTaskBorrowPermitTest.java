@@ -387,6 +387,29 @@ final class ScopedTaskBorrowPermitTest {
     }
 
 
+
+    @Test
+    void inheritedScopedReadPermitCanCrossUnrelatedNestedScopeDrain()
+            throws Exception {
+        String source = """
+                pub routine main(): void {
+                    let int value = 42;
+                    val ref = rt borrow value;
+                    nb scope {
+                        let outer = nb {
+                            nb scope {
+                            }
+                            stdio.stdout.write(ref);
+                        };
+                    }
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("42", run(source));
+    }
+
     @Test
     void scopedReadLeaseCanFlowThroughNestedLexicalTaskScope() throws Exception {
         String source = """
