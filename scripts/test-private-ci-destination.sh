@@ -145,6 +145,21 @@ grep -Fq "PRIVATE_PUBLISHER_SOURCE_SHA_MISMATCH" "$workflow"
 grep -Fq "PRIVATE_PUBLISHER_POST_TEST_HEAD_MISMATCH" "$workflow"
 printf 'PASS: publisher PR checkout and triple-regression receipt bind exact HEAD\n'
 
+# Regression: explicit py_compile creates pycache even with -B and prevents
+# the new clean-worktree receipt. Pin side-effect-free in-memory compilation.
+grep -Fq 'compile(pathlib.Path(p).read_bytes(), p, "exec")' "$workflow"
+if grep -Fq '"${clean_python[@]}" -m py_compile ' "$workflow"; then
+  echo 'Explicit py_compile would dirty the publisher checkout' >&2
+  exit 1
+fi
+mkdir -p "$work/compile-oracle"
+printf 'value = 1\n' > "$work/compile-oracle/fixture.py"
+(
+  cd "$work/compile-oracle"
+  /usr/bin/python3 -I -B -c 'import pathlib,sys; [compile(pathlib.Path(p).read_bytes(), p, "exec") for p in sys.argv[1:]]' fixture.py
+  test ! -e __pycache__
+)
+printf 'PASS: publisher in-memory syntax check does not create bytecode\n'
 # Source-free negative tests for the exact-tree worktree evidence tripwire.
 # These tests neither inspect nor export Oreslang compiler source.
 grep -Fq 'EXPECTED_SOURCE_TREE=$tree' "$workflow"
