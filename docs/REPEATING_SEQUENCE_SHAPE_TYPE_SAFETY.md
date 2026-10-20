@@ -12,3 +12,11 @@ This is a Java/Graal compiler hardening candidate dated 2026-10-19; it does **no
 **Verification status:** execute `mvn -q -Dtest=RepeatingSequenceShapeSafetyTest,CollectionShapeMetadataTest,NativeCollectionMemberRuntimeTest test` at the exact proposed commit. This change still needs an audit of nonliteral constructors, casts, generic APIs, FFI, other mutation mechanisms, and full actor boundary handling before promoting the type invariant to unconditional backend parity.
 
 The LLVM main frontend currently implements a narrower typed-i64 source subset; its native array ABI is not evidence of complete heterogeneous sequence-pattern parsing or lowering. Source mirroring to another private org must use independently approved and pinned source-tree provenance; this PR does not publish source or use cross-org mirrors.
+
+## Additional audit hardening (2026-10-20)
+
+- Runtime type checks and casts inspect **transitively expanded type aliases**. A named alias to a non-runtime-reifiable `Array[...(T1, T2)]` cannot bypass the structural type-test restriction. Alias cycles fail closed; primitive aliases still work.
+- A built-in constructor for a patterned runtime-extent array is accepted only with zero constructor arguments. Constructors that might create a nonempty but incompletely typed sequence are rejected before granting pattern metadata. Full-group literal initialization remains permitted.
+- A typed repeating group cannot obtain its static slot proof from an expression containing `Unknown`; both the contextual and declared-literal validators reject unresolved slot types. `ListType` metadata also rejects `Unknown` joined elements or slots while preserving ordinary compile-time `Generic<T>` slot support.
+- The additional JUnit tests assert that the parser accepts alias-cast and constructor fixtures before requiring the type checker to reject them; merely failing to parse is not evidence of semantic safety.
+- Exact-source carrier review is tracked by [Java issue #1699](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1699) and [source-free carrier plan PR #17](https://github.com/opto-sync-test/go-java-validation/pull/17). Neither review artifact authorizes private source transfer.
