@@ -76,9 +76,20 @@ public final class GenerationalReplyRegistry implements AutoCloseable {
             future.completeExceptionally(failure);
             return true;
         }
-        boolean cancel(Endpoint requester) {
-            if (!owner.claim(this, requester, false, State.CANCELLED)) return false;
+        /** Cancellation admission is separate from publication to preserve
+         * OresFuture's cancel/CAS/revocation ordering under synchronous callbacks. */
+        boolean claimCancel(Endpoint requester) {
+            return owner.claim(this, requester, false, State.CANCELLED);
+        }
+        void publishCancellation() {
+            if (state != State.CANCELLED) {
+                throw new IllegalStateException("cancellation was not claimed");
+            }
             future.completeExceptionally(new CancellationException("actor call cancelled"));
+        }
+        boolean cancel(Endpoint requester) {
+            if (!claimCancel(requester)) return false;
+            publishCancellation();
             return true;
         }
         boolean timeout(Endpoint requester) {
