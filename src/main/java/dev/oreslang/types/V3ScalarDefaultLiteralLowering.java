@@ -22,22 +22,44 @@ import java.util.Objects;
 public final class V3ScalarDefaultLiteralLowering {
     private V3ScalarDefaultLiteralLowering() { }
 
-    public record Preview(
-            Ast.CallExpr fullArityCall,
-            List<Integer> evaluatedSourceCallItemIndices,
-            List<Boolean> formalUsesDefault,
-            String selectedSourceContractFingerprint) {
-        public Preview {
-            Objects.requireNonNull(fullArityCall, "lowered call");
-            evaluatedSourceCallItemIndices = List.copyOf(evaluatedSourceCallItemIndices);
-            formalUsesDefault = List.copyOf(formalUsesDefault);
+    /**
+     * Factory-only carrier: callers must not be allowed to construct a
+     * fingerprint-looking Preview around arbitrary AST call expressions.
+     * This remains NON-EXECUTABLE and never replaces backend admission.
+     */
+    public static final class Preview {
+        private final Ast.CallExpr fullArityCall;
+        private final List<Integer> evaluatedSourceCallItemIndices;
+        private final List<Boolean> formalUsesDefault;
+        private final String selectedSourceContractFingerprint;
+
+        private Preview(
+                Ast.CallExpr fullArityCall,
+                List<Integer> evaluatedSourceCallItemIndices,
+                List<Boolean> formalUsesDefault,
+                String selectedSourceContractFingerprint) {
+            this.fullArityCall = Objects.requireNonNull(fullArityCall, "lowered call");
+            this.evaluatedSourceCallItemIndices =
+                    List.copyOf(evaluatedSourceCallItemIndices);
+            this.formalUsesDefault = List.copyOf(formalUsesDefault);
             if (selectedSourceContractFingerprint == null
-                    || selectedSourceContractFingerprint.length() != 64) {
-                throw new IllegalArgumentException("missing v3 source contract fingerprint");
+                    || !selectedSourceContractFingerprint.matches("[0-9a-f]{64}")) {
+                throw new IllegalArgumentException("invalid v3 source contract fingerprint");
             }
+            this.selectedSourceContractFingerprint = selectedSourceContractFingerprint;
             if (fullArityCall.arguments().size() != formalUsesDefault.size()) {
-                throw new IllegalArgumentException("default plan must retain full formal ABI arity");
+                throw new IllegalArgumentException(
+                        "default plan must retain full formal ABI arity");
             }
+        }
+
+        public Ast.CallExpr fullArityCall() { return fullArityCall; }
+        public List<Integer> evaluatedSourceCallItemIndices() {
+            return evaluatedSourceCallItemIndices;
+        }
+        public List<Boolean> formalUsesDefault() { return formalUsesDefault; }
+        public String selectedSourceContractFingerprint() {
+            return selectedSourceContractFingerprint;
         }
     }
 
