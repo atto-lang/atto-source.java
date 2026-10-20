@@ -141,6 +141,14 @@ public final class EffectContracts {
             Map<String, Set<Effect>> inferred = infer();
             for (Callable def : definitions.values()) {
                 if (def.allowed() == null) continue;
+                // Unknown is not a user-declarable permission. A forged
+                // allowance containing UNKNOWN_CALL or FFI_UNKNOWN must not
+                // turn unverified dispatch/interop into a certified effect.
+                if (def.allowed().contains(Effect.UNKNOWN_CALL)
+                        || def.allowed().contains(Effect.FFI_UNKNOWN)) {
+                    throw new IllegalArgumentException(
+                            "unverifiable effect allowance in " + def.symbol());
+                }
                 EnumSet<Effect> forbidden = enumCopy(inferred.get(def.symbol()));
                 forbidden.removeAll(def.allowed());
                 if (!forbidden.isEmpty()) {
