@@ -1221,6 +1221,7 @@ public final class OwnershipChecker {
             if (concreteReceiver != null && concreteReceiver.isBorrow()) {
                 concreteReceiver = concreteReceiver.borrowedTarget();
             }
+            concreteReceiver = ownershipAggregateType(concreteReceiver);
             if (concreteReceiver != null && concreteReceiver.isClosedAggregateType()) {
                 Ast.TypeRef valueType = concreteReceiver.aggregateMembers().get(member.member());
                 if (valueType == null) {
