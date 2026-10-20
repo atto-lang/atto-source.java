@@ -480,8 +480,12 @@ def publish(repository, source, branch, trusted_root, source_commit):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
     source_commit = valid_sha(source_commit)
-    # Approval comes before reading potentially sensitive source files.
-    require_preflight(repository, trusted_root)
+    # Do not execute a checkout-provided guard before authenticated origin
+    # review. The old require_preflight() spawned bash against the unchecked
+    # workspace while the publisher could possess GitHub credentials.
+    # Read the bounded local policy as data, authenticate its exact digest
+    # against independently reviewed protected source main, and only then
+    # permit source traversal or destination publication.
     approved_policy, approved_repository_id = checked_policy_approval(
         trusted_root, repository
     )
