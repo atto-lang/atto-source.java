@@ -17,6 +17,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
+import subprocess
 import sys
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -342,6 +343,27 @@ def authorize_write(root, repository, approved_policy, contract):
         raise Denied("carrier identity/state changed during transfer")
 
 
+def delete_exact_ref(repository, ref_name):
+    if not isinstance(ref_name, str) or not ref_name.startswith("ci/"):
+        raise Denied("ref cleanup target is invalid")
+    encoded = ref_name.replace("/", "%2F")
+    argv = [
+        "gh", "api", "--method", "DELETE",
+        f"repos/{repository}/git/refs/heads/{encoded}",
+        "--header", "Accept: application/vnd.github+json",
+    ]
+    env = dict(os.environ, GH_HOST="github.com", GH_PROMPT_DISABLED="1")
+    try:
+        result = subprocess.run(
+            argv, capture_output=True, text=True, env=env,
+            timeout=30, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Denied("carrier ref rollback is unavailable") from exc
+    if result.returncode != 0:
+        raise Denied("carrier ref rollback failed")
+
+
 def publish(repository, source, source_commit, source_pr, test_plan, trusted_root, now=None):
     if not legacy.NAME.fullmatch(repository):
         raise Denied("invalid destination repository")
@@ -502,7 +524,8 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     checked_destination(repository, contract)
 
     # Create the source-bearing branch first. The carrier workflow fails closed
-    # while it waits for the exact authorization ref below.
+    # while it waits for the exact authorization ref below. If anything changes
+    # before authorization, remove every ref created by this handoff.
     created = legacy.gh_api(
         f"repos/{repository}/git/refs", method="POST",
         payload={"ref": "refs/heads/" + branch, "sha": commit_sha},
@@ -511,12 +534,37 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         raise Denied("carrier did not confirm exact-tree CI branch creation")
 
     authorization = "ci/authorized-" + commit_sha
-    approved = legacy.gh_api(
-        f"repos/{repository}/git/refs", method="POST",
-        payload={"ref": "refs/heads/" + authorization, "sha": commit_sha},
-    )
-    if approved.get("ref") != "refs/heads/" + authorization:
-        raise Denied("carrier did not confirm dispatcher authorization ref")
+    authorization_created = False
+    try:
+        # Revalidate the exact open PR head after payload-ref creation and
+        # immediately before making the carrier executable.
+        if verify_source_pr(source_pr, source_commit) != source_repo_id:
+            raise Denied("source repository identity changed before authorization")
+
+        approved = legacy.gh_api(
+            f"repos/{repository}/git/refs", method="POST",
+            payload={"ref": "refs/heads/" + authorization, "sha": commit_sha},
+        )
+        authorization_created = True
+        if (approved.get("ref") != "refs/heads/" + authorization
+                or approved.get("object", {}).get("sha") not in (None, commit_sha)):
+            raise Denied("carrier did not confirm dispatcher authorization ref")
+    except Denied as exc:
+        rollback_error = None
+        if authorization_created:
+            try:
+                delete_exact_ref(repository, authorization)
+            except Denied as rollback_exc:
+                rollback_error = rollback_exc
+        try:
+            delete_exact_ref(repository, branch)
+        except Denied as rollback_exc:
+            rollback_error = rollback_error or rollback_exc
+        if rollback_error is not None:
+            raise Denied(
+                "private CI handoff failed and carrier ref rollback was incomplete"
+            ) from rollback_error
+        raise exc
 
     return {
         "commit": commit_sha,
