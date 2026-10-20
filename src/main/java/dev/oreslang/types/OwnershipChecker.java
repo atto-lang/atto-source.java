@@ -328,6 +328,9 @@ public final class OwnershipChecker {
     }
 
     private VarState stateForParam(Ast.Param param) {
+        if (containsTypedMapType(param.type())) {
+            throw error("Map<K,V> parameters are not enabled in the closed v1 surface");
+        }
         if (param.structural() && param.mutable()) {
             throw error("structural parameter '" + param.name()
                     + "' is a read-only borrowed view and cannot be declared mut");
@@ -438,6 +441,9 @@ public final class OwnershipChecker {
                     }
                 }
                 ValueInfo returned = checkExpr(ret.value(), scope, true);
+                if (containsTypedMapType(returned.type)) {
+                    throw error("Map<K,V> cannot escape through return in the closed v1 surface");
+                }
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
                 }
@@ -844,6 +850,19 @@ public final class OwnershipChecker {
             placeholder.kind = value.kind;
             placeholder.borrowSource = value.borrowSource;
             return;
+        }
+
+        if (containsTypedMapType(value.type)) {
+            if (!isTypedMapType(value.type)) {
+                throw error("nested Map<K,V> values are not enabled in the closed v1 surface");
+            }
+            if (!(binding.initializer() instanceof Ast.NewExpr created)
+                    || !created.type().name().equals("Map")
+                    || created.type().inferArguments()
+                    || created.type().arguments().size() != 2
+                    || !created.arguments().isEmpty()) {
+                throw error("Map<K,V> bindings must own a fresh new Map<K,V>() value; aliases and transfers are not enabled yet");
+            }
         }
 
         boolean readonlyRecord = value.type.isReadonlyRecordType();
@@ -2274,6 +2293,9 @@ public final class OwnershipChecker {
     private void checkAssignmentTarget(Ast.Expr target, Scope scope) {
         if (target instanceof Ast.NameExpr name) {
             VarState state = requireState(scope, name.name());
+            if (isTypedMapType(state.type)) {
+                throw error("Map<K,V> rebinding is disabled until exclusive move transfer is implemented");
+            }
             if (!state.rebindable) throw error("cannot reassign fixed binding '" + name.name() + "'; use let or let mut");
             VarState root = ownershipRoot(state);
             if (root.moved) {
@@ -2320,6 +2342,13 @@ public final class OwnershipChecker {
             return;
         }
         if (target instanceof Ast.IndexExpr indexed) {
+            Ast.TypeRef receiverType = receiverType(indexed.receiver(), scope);
+            Ast.TypeRef concrete = receiverType != null && receiverType.isBorrow()
+                    ? receiverType.borrowedTarget() : receiverType;
+            if (isTypedMapType(concrete)
+                    && !(indexed.receiver() instanceof Ast.NameExpr)) {
+                throw error("Map<K,V> indexed mutation requires a directly owned local binding");
+            }
             ensureMutableReceiver(indexed.receiver(), scope, "indexed value");
             checkExpr(indexed.index(), scope, false);
             return;
@@ -2549,6 +2578,9 @@ public final class OwnershipChecker {
         for (Capture capture : captures.values.values()) {
             VarState source = capture.source;
             source.debugName = capture.name;
+            if (containsTypedMapType(source.type)) {
+                throw error("Map<K,V> cannot be captured by a closure in the closed v1 surface");
+            }
             requireUsable(source, capture.name, capture.write);
 
             if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW || source.type.isBorrow()) {
@@ -3654,6 +3686,9 @@ public final class OwnershipChecker {
                 && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
         }
+        if (isTypedMapType(concrete)) {
+            return concrete.arguments().get(1);
+        }
 
         Ast.ClassDecl klass = findClass(concrete.name());
         if (klass != null) {
@@ -3688,6 +3723,9 @@ public final class OwnershipChecker {
         if ((concrete.name().equals("Array") || concrete.name().equals("List"))
                 && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
+        }
+        if (isTypedMapType(concrete)) {
+            return concrete.arguments().get(1);
         }
         if (concrete.isTupleType() && !concrete.arguments().isEmpty()) {
             Ast.TypeRef first = concrete.arguments().getFirst();
@@ -3878,6 +3916,24 @@ public final class OwnershipChecker {
         if (left.name().equals("$infer$")) return right;
         if (right.name().equals("$infer$")) return left;
         return Ast.TypeRef.union(List.of(left, right));
+    }
+
+    private static boolean isTypedMapType(Ast.TypeRef type) {
+        if (type == null) return false;
+        Ast.TypeRef concrete = type.isBorrow() ? type.borrowedTarget() : type;
+        return concrete.name().equals("Map")
+                && concrete.arguments().size() == 2
+                && !concrete.inferArguments();
+    }
+
+    private static boolean containsTypedMapType(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (isTypedMapType(type)) return true;
+        if (type.isBorrow()) return containsTypedMapType(type.borrowedTarget());
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsTypedMapType(argument)) return true;
+        }
+        return false;
     }
 
     private ValueKind kindOfType(Ast.TypeRef type) {
