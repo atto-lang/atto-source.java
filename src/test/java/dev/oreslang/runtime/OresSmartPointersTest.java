@@ -26,24 +26,16 @@ final class OresSmartPointersTest {
 
         assertEquals(2, first.strongCount());
         assertEquals(1, first.weakCount());
-        assertEquals("shared", weak.upgrade().orElseThrow().value());
-
-        // Drop the temporary upgrade.
-        var temporary = weak.upgrade().orElseThrow();
-        assertEquals(4, first.strongCount());
-        temporary.close();
+        var upgraded = weak.upgrade().orElseThrow();
+        assertEquals("shared", upgraded.value());
         assertEquals(3, first.strongCount());
+        upgraded.close();
+        assertEquals(2, first.strongCount());
 
-        // One upgrade from the assertion above is still live.
         first.close();
+        assertEquals(1, second.strongCount());
         second.close();
-        assertEquals(1, weak.strongCount());
-        var last = weak.upgrade().orElseThrow();
-        assertEquals("shared", last.value());
-        last.close();
-
-        // The assertion-created upgrade must be recovered and dropped before
-        // the payload can die, so use a fresh lifecycle below for expiry.
+        assertTrue(weak.upgrade().isEmpty());
         weak.close();
 
         var owner = OresSmartPointers.arc(7);
