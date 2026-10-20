@@ -3,6 +3,68 @@
 This document is the source/runtime contract for Oreslang channel waiting,
 selection, actor mailbox transport, parent/child lifetimes, and cancellation.
 
+
+## Select plans and allocation-conscious loop reuse (Java draft #1733)
+
+This section documents a **draft Java runtime integration**, not a complete
+guest-language API release or a native LLVM implementation.
+
+- `ChannelRuntime.DynamicSelectPlan<K>` is a keyed, insertion-ordered mutable
+  plan. `put` and `remove` advance a checked structural version and publish
+  immutable `SelectSet` snapshots. Replacing an existing key retains its
+  position. A pending selection retains its exact older snapshot and the
+  `PlannedResult` identifies both version and key. Cache hits load a volatile
+  snapshot without acquiring the plan monitor.
+- No plan mutation may exceed the same 256-arm admission bound as ordinary
+  `SelectSet`. A rejected addition leaves the version and cached snapshot
+  unchanged; an existing key may be replaced at capacity. At most one default
+  arm may exist.
+- `SelectPlan` and `DynamicSelectPlan` are **not yet wired through all current
+  source type-checker, ownership and guest factory paths**. Their Java runtime
+  surface does not imply the source-language constructors work on mainline.
+- Every `select` execution allocates new winner/cancellation and channel or
+  Future subscriptions; plans share immutable *descriptors*, never live waiters.
+  Future listener detach is performed outside the global channel coordinator.
+- At admission under the global coordinator, FAIR captures a reusable plan's
+  winner cursor or a compiler-owned source static ticket. PRIORITY scans source
+  order and RANDOM freshly shuffles. FAIR/PRIORITY use **ordinal arithmetic**
+  instead of allocating an `int[]` of arm indexes each iteration. Their
+  indexed case lookups avoid list searches, and completed selections detach
+  from the coordinator-owned registrations without a list copy. This is
+  allocation reduction, **not zero-allocation selection**.
+- An ordinary source `select` can reuse descriptors only inside one lexical
+  loop invocation when every non-default arm is a READ on a stable, immutable,
+  non-shadowed channel binding. `for`, `for-of` (including destructuring) and
+  `loop` paths have lexical loop anchors. AWAIT/Future, WRITE, computed channel
+  operands and shadowed/mutable bindings are evaluated per invocation.
+  Caches never live on globally shared AST nodes.
+- Static-site FAIR tickets and reusable plan fairness are independent:
+  a winning static-site selection does not mutate the plan's winner-advanced
+  cursor. A default does not advance FAIR. Old dynamic plan generations retain
+  their own cursor state, preventing late winners from changing new versions.
+- For mixed Future/channel selections, a cancelled or failed select must not
+  cancel a producer Future or consume a losing channel arm. Duplicate references
+  to one Future must have consistent readiness observation in each preference
+  scan. Timer/cancellation-token readiness from other branches is **not
+  integrated here**.
+
+### Verification and private-source CI gate
+
+Regression sources include `DynamicSelectPlanTest`,
+`DynamicSelectMainlineInteropTest` and `SelectLoopMainlineRegressionTest`.
+Added cases exercise versioned generations, mixed Future/channel fairness,
+duplicate Future alias priority, terminal failure, repeated cancellation,
+quota rejection, nested lexical binding, and RANDOM permutations.
+
+These test sources require a real JDK25/GraalVM Maven and native-image run
+against an **exact** PR commit/tree. The source organization's recent GitHub
+Actions jobs failed before executing steps. Do not treat them as compiler
+failures or as passing regressions. Until source main has enforced protection
+and reviewed carrier policies explicitly approving the target private repo,
+specific PR and immutable carrier/test plan, **do not export private source
+to another GitHub organization**. A source-free synthetic proof may evaluate
+scheduler formulas but cannot establish Oreslang compilation or conformance.
+
 ## One concurrency model: actors
 
 Oreslang has one general-purpose concurrency identity: the **actor**.
