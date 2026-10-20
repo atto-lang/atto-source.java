@@ -184,11 +184,11 @@ public final class RealtimeClassfileAudit {
                 || (b[4] & 0xff) != 0xb1) deny("constructor contains unqualified effects");
         int index = u2(b, 2);
         Cp item = cpAt(cp, index);
-        if (!(item instanceof MethodRefCp ref)
-                || !"java.lang.Object".equals(className(cp, ref.classIndex()))) {
+        if (!(item instanceof MethodRefCp)) deny("constructor invokes a non-method");
+        MethodRefCp ref = (MethodRefCp) item;
+        if (!"java.lang.Object".equals(className(cp, ref.classIndex()))) {
             deny("constructor must only invoke Object.<init>");
         }
-        MethodRefCp ref = (MethodRefCp) item;
         Cp ntItem = cpAt(cp, ref.nameAndTypeIndex());
         if (!(ntItem instanceof NameAndTypeCp)) deny("bad Object constructor descriptor");
         NameAndTypeCp nt = (NameAndTypeCp) ntItem;
