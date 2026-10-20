@@ -118,6 +118,11 @@ public final class TaskBoundaryAdmissions {
             SendSyncTraits sourceProof,
             ThreadSafetyTraits.NominalProof resolvedNominals) {
         ensureMutable();
+        Objects.requireNonNull(sourceProof, "sourceProof");
+        if (sourceProof.programIdentity() != programIdentity) {
+            throw new IllegalArgumentException(
+                    "scoped Task source type proof belongs to a different exact program instance");
+        }
         put(Objects.requireNonNull(boundary, "boundary"),
                 new ScopedLoanBoundary(claims, sourceProof, resolvedNominals));
     }
