@@ -110,7 +110,13 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         this.cleanupScheduler = Objects.requireNonNull(
                 cleanupScheduler, "cleanupScheduler");
         byte[] privateMacKey = macKey.clone();
-        byte[] privateConnectionBinding = connectionBinding.clone();
+        final byte[] privateConnectionBinding;
+        try {
+            privateConnectionBinding = connectionBinding.clone();
+        } catch (RuntimeException | Error cloneFailure) {
+            Arrays.fill(privateMacKey, (byte) 0);
+            throw cloneFailure;
+        }
         final InputStream socketInput;
         final OutputStream socketOutput;
         try {
