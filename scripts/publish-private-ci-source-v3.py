@@ -81,6 +81,17 @@ def safe_policy_path(value, prefix, suffix):
     return value
 
 
+def safe_branch_ref(value):
+    if (not isinstance(value, str)
+            or len(value) > 160
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", value)
+            or value.startswith("/") or value.endswith("/")
+            or ".." in value or "//" in value
+            or value.endswith(".lock")):
+        raise Denied("invalid protected source base ref")
+    return value
+
+
 def read_local_contract(root):
     """Read the local protected contract through no-follow descriptors."""
     if (not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW")
@@ -160,11 +171,7 @@ def parse_contract(raw, repository, source_pr, test_plan):
     carrier = carriers.get(repository)
     if not isinstance(carrier, dict):
         raise Denied("destination absent from protected carrier contract")
-    if set(carrier) != {
-        "repository_id", "base_sha", "workflow_path",
-        "workflow_blob_sha", "test_plans"
-    }:
-        raise Denied("carrier contract fields are not exact")
+
     repo_id = carrier.get("repository_id")
     if (not isinstance(repo_id, int) or isinstance(repo_id, bool) or repo_id <= 0):
         raise Denied("carrier repository id invalid")
@@ -175,6 +182,55 @@ def parse_contract(raw, repository, source_pr, test_plan):
     workflow_blob = valid_sha(
         carrier.get("workflow_blob_sha"), "carrier workflow blob invalid"
     )
+
+    if carrier.get("mode") == "connector":
+        if set(carrier) != {
+            "mode", "repository_id", "base_sha", "base_tree_sha",
+            "workflow_path", "workflow_blob_sha", "source_prs"
+        }:
+            raise Denied("connector carrier contract fields are not exact")
+        if test_plan is not None:
+            raise Denied("connector carrier does not accept a caller test plan")
+        base_tree_sha = valid_sha(
+            carrier.get("base_tree_sha"), "carrier base tree SHA invalid"
+        )
+        source_prs = carrier.get("source_prs")
+        if not isinstance(source_prs, dict) or not source_prs:
+            raise Denied("connector carrier source PR policy missing")
+        parsed = {}
+        for pr_text, policy in source_prs.items():
+            if (not isinstance(pr_text, str)
+                    or not re.fullmatch(r"[1-9][0-9]*", pr_text)
+                    or not isinstance(policy, dict)
+                    or set(policy) != {"base_ref", "base_sha"}):
+                raise Denied("connector source PR policy is invalid")
+            parsed[pr_text] = {
+                "base_ref": safe_branch_ref(policy.get("base_ref")),
+                "base_sha": valid_sha(
+                    policy.get("base_sha"), "connector source base SHA invalid"
+                ),
+            }
+        selected = parsed.get(str(source_pr))
+        if selected is None:
+            raise Denied("source PR is not authorized by connector carrier contract")
+        return {
+            "mode": "connector",
+            "repository_id": repo_id,
+            "base_sha": base_sha,
+            "base_tree_sha": base_tree_sha,
+            "workflow_path": workflow_path,
+            "workflow_blob_sha": workflow_blob,
+            "source_base_ref": selected["base_ref"],
+            "source_base_sha": selected["base_sha"],
+        }
+
+    if "mode" in carrier or set(carrier) != {
+        "repository_id", "base_sha", "workflow_path",
+        "workflow_blob_sha", "test_plans"
+    }:
+        raise Denied("carrier contract fields are not exact")
+    if test_plan is None:
+        raise Denied("receipt carrier requires a reviewed test plan")
     plans = carrier.get("test_plans")
     if not isinstance(plans, dict):
         raise Denied("carrier test plans missing")
@@ -191,6 +247,7 @@ def parse_contract(raw, repository, source_pr, test_plan):
             or source_pr not in allowed):
         raise Denied("source PR is not authorized by protected test plan")
     return {
+        "mode": "receipt",
         "repository_id": repo_id,
         "base_sha": base_sha,
         "workflow_path": workflow_path,
@@ -198,7 +255,6 @@ def parse_contract(raw, repository, source_pr, test_plan):
         "test_plan_path": plan_path,
         "test_plan_blob_sha": plan_blob,
     }
-
 
 def checked_contract(root, repository, source_pr, test_plan, main_sha):
     local = read_local_contract(root)
@@ -226,6 +282,9 @@ def checked_destination(repository, contract):
         raise Denied("carrier base commit mismatch")
     base_tree = valid_sha(commit.get("tree", {}).get("sha"),
                           "carrier base tree invalid")
+    if (contract["mode"] == "connector"
+            and base_tree != contract["base_tree_sha"]):
+        raise Denied("connector carrier base tree differs from protected contract")
     base_listing = legacy.gh_api(
         f"repos/{repository}/git/trees/{base_tree}?recursive=1"
     )
@@ -248,6 +307,9 @@ def checked_destination(repository, contract):
             or workflow.get("sha") != contract["workflow_blob_sha"]):
         raise Denied("carrier workflow differs from protected contract")
 
+    if contract["mode"] == "connector":
+        return repo, base_tree, None
+
     plan = legacy.gh_api(
         f"repos/{repository}/contents/{contract['test_plan_path']}?ref={base_sha}"
     )
@@ -267,8 +329,7 @@ def checked_destination(repository, contract):
         raise Denied("carrier test plan missing or oversized")
     return repo, base_tree, plan_bytes
 
-
-def verify_source_pr(source_pr, source_commit):
+def verify_source_pr(source_pr, source_commit, contract):
     origin = legacy.gh_api(f"repos/{legacy.SOURCE_REPO}")
     repo_id = origin.get("id")
     if (origin.get("full_name") != legacy.SOURCE_REPO
@@ -288,11 +349,20 @@ def verify_source_pr(source_pr, source_commit):
             or head.get("sha") != source_commit
             or not isinstance(head.get("repo"), dict)
             or head["repo"].get("full_name") != legacy.SOURCE_REPO
-            or not isinstance(base, dict)
-            or base.get("ref") != legacy.SOURCE_PROTECTED_BRANCH):
+            or not isinstance(base, dict)):
+        raise Denied("source commit is not the exact open PR head")
+
+    if contract["mode"] == "connector":
+        base_repo = base.get("repo")
+        if (base.get("ref") != contract["source_base_ref"]
+                or base.get("sha") != contract["source_base_sha"]
+                or not isinstance(base_repo, dict)
+                or base_repo.get("full_name") != legacy.SOURCE_REPO):
+            raise Denied(
+                "source PR base differs from protected connector contract")
+    elif base.get("ref") != legacy.SOURCE_PROTECTED_BRANCH:
         raise Denied("source commit is not the exact open PR head against main")
     return repo_id
-
 
 def validate_test_plan(plan_bytes, source_pr):
     try:
