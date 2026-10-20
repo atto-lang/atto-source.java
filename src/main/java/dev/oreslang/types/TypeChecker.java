@@ -202,6 +202,7 @@ public final class TypeChecker {
                 else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
                 else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
                 else if (declaration instanceof Ast.TypeAliasDecl alias) localNames.add(alias.name());
+                else if (declaration instanceof Ast.ModelDecl model) localNames.add(model.name());
             }
         }
 
@@ -240,6 +241,12 @@ public final class TypeChecker {
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                     typeAliasOwners.put(alias, module.name());
+                } else if (decl instanceof Ast.ModelDecl model) {
+                    // Parser support intentionally lands before executable semantics.
+                    // Never let an inert ModelDecl disappear into ordinary call/runtime paths.
+                    throw new IllegalArgumentException(
+                            "MODEL_LOWERING_NOT_IMPLEMENTED: define model '" + model.name()
+                                    + "' parsed successfully, but typed ModelGraph lowering is not enabled");
                 }
             }
         }
