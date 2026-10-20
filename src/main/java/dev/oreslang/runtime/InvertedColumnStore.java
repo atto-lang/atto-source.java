@@ -419,6 +419,7 @@ public final class InvertedColumnStore implements AutoCloseable {
         // close() does not use open(), so guard against reentrant teardown
         // during the detached snapshot evaluation explicitly.
         if (transforming) {
+            rejectedReentrantAccess = true;
             throw new IllegalStateException("cannot close an inverted store during row transform");
         }
         if (closed) return;
