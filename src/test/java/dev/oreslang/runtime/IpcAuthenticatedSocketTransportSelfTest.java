@@ -617,6 +617,143 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             drainCleanup.awaitTermination(2, TimeUnit.SECONDS);
         }
 
+        // Authenticated terminal receipt vs trusted close has one winner
+        // through the full socket adapter, not just the bridge abstraction.
+        // First prove a terminal receipt that is already consumed under
+        // readGate wins before close can erase the key/retire correlations.
+        byte[] terminalRacePayload = "terminal close race".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var terminalRaceMessage = envelope(
+                1, "terminalCloseRace", 3, 4, terminalRacePayload);
+        ByteArrayOutputStream terminalRaceWire = new ByteArrayOutputStream();
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                terminalRaceWire,
+                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                        terminalRaceMessage, 131,
+                        IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED,
+                        connectionBinding, key));
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                terminalRaceWire,
+                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                        terminalRaceMessage, 131,
+                        IpcReceiptCorrelation.Stage.HANDLER_COMMITTED,
+                        connectionBinding, key));
+        CountDownLatch terminalFrameCopied = new CountDownLatch(1);
+        CountDownLatch releaseTerminalRead = new CountDownLatch(1);
+        CountDownLatch terminalCloseCalled = new CountDownLatch(1);
+        var terminalRaceSocket = new ControlledSocket(
+                new FinalReadGateInputStream(
+                        terminalRaceWire.toByteArray(),
+                        terminalFrameCopied,
+                        releaseTerminalRead),
+                terminalCloseCalled);
+        ExecutorService terminalRaceCleanup = Executors.newSingleThreadExecutor(
+                r -> new Thread(r, "ipc-test-terminal-close-race"));
+        try {
+            var bridge = new IpcReceiptCompletionBridge(1);
+            var transport = new IpcAuthenticatedSocketTransport(
+                    terminalRaceSocket, bridge, terminalRaceMessage, 131, 1,
+                    key, connectionBinding, terminalRaceCleanup::execute);
+            var submission = transport.send(terminalRaceMessage, terminalRacePayload);
+            check(!submission.writeAttemptFailed());
+            check(transport.readVerifiedReceipt()
+                    == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+
+            AtomicReference<IpcReceiptCorrelation.Stage> terminalRead =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> terminalFailure = new AtomicReference<>();
+            Thread terminalReader = new Thread(() -> {
+                try {
+                    terminalRead.set(transport.readVerifiedReceipt());
+                } catch (Throwable failure) {
+                    terminalFailure.set(failure);
+                }
+            }, "ipc-test-terminal-before-loss");
+            terminalReader.start();
+
+            check(terminalFrameCopied.await(2, TimeUnit.SECONDS));
+            transport.requestClose();
+            check(terminalCloseCalled.await(2, TimeUnit.SECONDS));
+            check(!transport.keyCloneZeroized());
+            check(!submission.outcome().toCompletableFuture().isDone());
+
+            releaseTerminalRead.countDown();
+            terminalReader.join(3000);
+            check(!terminalReader.isAlive());
+            check(terminalFailure.get() == null);
+            check(terminalRead.get()
+                    == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(submission.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            awaitPhase(transport, IpcTransportSessionLease.Phase.RETIRED);
+            check(transport.keyCloneZeroized());
+            check(bridge.counters().equals(
+                    new IpcReceiptCorrelation.Counters(0, 0)));
+            check(bridge.invariant());
+        } finally {
+            releaseTerminalRead.countDown();
+            terminalRaceSocket.close();
+            terminalRaceCleanup.shutdownNow();
+            terminalRaceCleanup.awaitTermination(2, TimeUnit.SECONDS);
+        }
+
+        // Then prove trusted loss can win first after ACK: the host completion
+        // settles OUTCOME_UNKNOWN exactly once and a correctly MACed terminal
+        // frame still buffered in the test input cannot resurrect it.
+        var lossWinsMessage = envelope(
+                1, "lossWinsTerminal", 3, 4, terminalRacePayload);
+        ByteArrayOutputStream lossWinsWire = new ByteArrayOutputStream();
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                lossWinsWire,
+                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                        lossWinsMessage, 132,
+                        IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED,
+                        connectionBinding, key));
+        IpcAuthenticatedSocketTransport.writeWireFrame(
+                lossWinsWire,
+                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                        lossWinsMessage, 132,
+                        IpcReceiptCorrelation.Stage.HANDLER_FAILED,
+                        connectionBinding, key));
+        CountDownLatch lossCloseCalled = new CountDownLatch(1);
+        var lossWinsSocket = new ControlledSocket(
+                new ByteArrayInputStream(lossWinsWire.toByteArray()),
+                lossCloseCalled);
+        ExecutorService lossWinsCleanup = Executors.newSingleThreadExecutor(
+                r -> new Thread(r, "ipc-test-loss-before-terminal"));
+        try {
+            var bridge = new IpcReceiptCompletionBridge(1);
+            var transport = new IpcAuthenticatedSocketTransport(
+                    lossWinsSocket, bridge, lossWinsMessage, 132, 1,
+                    key, connectionBinding, lossWinsCleanup::execute);
+            var submission = transport.send(lossWinsMessage, terminalRacePayload);
+            check(!submission.writeAttemptFailed());
+            check(transport.readVerifiedReceipt()
+                    == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+            check(transport.requestCloseAndAwait(3000));
+            check(lossCloseCalled.getCount() == 0);
+            check(transport.keyCloneZeroized());
+            check(submission.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+
+            try {
+                transport.readVerifiedReceipt();
+                throw new AssertionError(
+                        "late terminal receipt resurrected retired completion");
+            } catch (IOException | IllegalArgumentException expected) {
+                ++checks;
+            }
+            check(submission.outcome().toCompletableFuture().join()
+                    == IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+            check(bridge.counters().equals(
+                    new IpcReceiptCorrelation.Counters(0, 0)));
+            check(bridge.invariant());
+        } finally {
+            lossWinsSocket.close();
+            lossWinsCleanup.shutdownNow();
+            lossWinsCleanup.awaitTermination(2, TimeUnit.SECONDS);
+        }
+
         // A partially-enqueued physical abort from attempt N must become
         // inert after explicit retry N+1. Once N+1 atomically claims Socket.close,
         // another retry is rejected until that descriptor operation finishes.
