@@ -439,4 +439,102 @@ final class LogicalSourceActorSupervisorUpgradeTxnTest {
         }
     }
 
+
+    @Test
+    void setupFreezeRollbackFailurePreservesExactTicketForSupervisorRepair()
+            throws Exception {
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var first = manager.stageActorGeneration(
+                    "setup-freeze-failure-v1.ores", V1);
+            var candidate = manager.stageActorGeneration(
+                    "setup-freeze-failure-v2.ores", V2);
+            try (var router = LogicalSourceActorRouterV1.spawn(
+                    first, ActorRuntime.ActorKind.SHARED, "Counter", WAIT);
+                 var mailbox = new LogicalActorProxyMailboxV1(4, 8, 32)) {
+                router.bindProxyMailboxForSupervisor(mailbox);
+
+                Field messageCount = LogicalActorProxyMailboxV1.class
+                        .getDeclaredField("retainedMessages");
+                messageCount.setAccessible(true);
+                Field outstandingField = LogicalActorProxyMailboxV1.class
+                        .getDeclaredField("outstanding");
+                outstandingField.setAccessible(true);
+                Object original = outstandingField.get(mailbox);
+
+                // The freeze's preflight sees a valid empty map. Once the
+                // freshly minted ticket calls drained(), corrupt the
+                // accounting and throw. Both subsequent rollback attempts
+                // must reject thaw without losing that exact ticket.
+                var corrupting = new java.util.HashMap<Long,
+                        LogicalActorProxyMailboxV1.Envelope>() {
+                    private final java.util.concurrent.atomic.AtomicBoolean
+                            fired = new java.util.concurrent.atomic.AtomicBoolean();
+                    @Override public java.util.Set<Long> keySet() {
+                        if (fired.compareAndSet(false, true)) {
+                            try {
+                                messageCount.setInt(mailbox, -1);
+                            } catch (IllegalAccessException error) {
+                                throw new AssertionError(error);
+                            }
+                            throw new IllegalStateException(
+                                    "injected post-freeze setup failure");
+                        }
+                        return super.keySet();
+                    }
+                };
+                outstandingField.set(mailbox, corrupting);
+                try {
+                    var failure = assertThrows(
+                            IllegalStateException.class,
+                            () -> router.upgradeToForProxy(
+                                    candidate, WAIT, mailbox));
+                    assertTrue(failure.getMessage().contains(
+                            "injected post-freeze setup failure"));
+                    assertEquals(1L, router.ref().routeEpoch(),
+                            "failed setup cannot publish a candidate");
+                    Field pending = LogicalSourceActorRouterV1.class
+                            .getDeclaredField("pendingProxyRollbackTicket");
+                    pending.setAccessible(true);
+                    Object ticket = pending.get(router);
+                    assertNotNull(ticket,
+                            "failed setup rollback must preserve the exact ticket");
+                    Field frozen = LogicalActorProxyMailboxV1.class
+                            .getDeclaredField("dispatchFrozen");
+                    frozen.setAccessible(true);
+                    assertTrue(frozen.getBoolean(mailbox),
+                            "structural rollback failure cannot thaw dispatch");
+                    Field active = LogicalActorProxyMailboxV1.class
+                            .getDeclaredField("activeFreeze");
+                    active.setAccessible(true);
+                    assertSame(ticket, active.get(mailbox),
+                            "recovery must own the mailbox's actual freeze ticket");
+                    Field quarantine = LogicalSourceActorRouterV1.class
+                            .getDeclaredField("retirementQuarantined");
+                    quarantine.setAccessible(true);
+                    assertTrue(quarantine.getBoolean(router));
+                    assertThrows(IllegalStateException.class, router::close,
+                            "unreconciled proxy freeze must prohibit actor retirement");
+                    assertThrows(IllegalStateException.class,
+                            router::reconcileFailedProxyRollback,
+                            "unrepaired accounting cannot authorize thaw");
+                    assertSame(ticket, pending.get(router),
+                            "failed reconciliation must preserve retry owner");
+                } finally {
+                    // Repair test-only corruption before any host shutdown.
+                    messageCount.setInt(mailbox, 0);
+                    outstandingField.set(mailbox, original);
+                }
+                assertTrue(router.reconcileFailedProxyRollback(),
+                        "explicit trusted reconciliation must thaw exact ticket");
+                assertFalse(mailbox.snapshot().dispatchFrozen());
+                assertEquals(1L, mailbox.snapshot().routeEpoch(),
+                        "rollback never increments the physical route epoch");
+                assertFalse(router.ref().address().routeEpoch() != 1L);
+                assertEquals(0, router.reapRetired(),
+                        "candidate lease must be debited at most once");
+            }
+        }
+    }
+
 }
