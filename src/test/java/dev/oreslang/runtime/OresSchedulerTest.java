@@ -463,4 +463,24 @@ final class OresSchedulerTest {
         assertEquals(1, pc.get(),
                 "detached continuation must never resume after producer completion");
     }
+
+    @Test
+    void quiescenceRetirementFailureOverridesGuestSuccess() throws Exception {
+        RuntimeException retirementFailure =
+                new RuntimeException("ownership retirement failed");
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> task = scheduler.start(
+                    resume -> OresScheduler.done(42),
+                    () -> { throw retirementFailure; });
+
+            java.util.concurrent.ExecutionException observed =
+                    assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> task.get(5, TimeUnit.SECONDS));
+            assertSame(retirementFailure, observed.getCause(),
+                    "trusted lifecycle failure must override guest success");
+        }
+    }
+
+
 }
