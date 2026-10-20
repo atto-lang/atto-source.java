@@ -252,7 +252,7 @@ public final class IpcReceiptCompletionBridge {
                 }
             }
         }
-        if (done != null) done.complete(stage);
+        if (done != null) completeExactlyOnce(done, stage);
     }
 
     /**
@@ -288,7 +288,7 @@ public final class IpcReceiptCompletionBridge {
                 throw new IllegalStateException("missing host completion");
             }
         }
-        done.complete(IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
+        completeExactlyOnce(done, IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
     }
 
     /**
