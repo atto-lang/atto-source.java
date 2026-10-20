@@ -125,6 +125,47 @@ public final class ModelGraphCompiler {
             }
             return Collections.unmodifiableMap(values);
         }
+
+        /**
+         * Digest of this blueprint after binding its immutable static configuration.
+         * The declaration-level graphDigest remains the public blueprint ABI identity;
+         * execution/cache/run identity must use this configured digest instead.
+         */
+        public String configuredGraphDigest(Map<String, Object> configuration) {
+            if (configuration.size() != parameters.size()) {
+                fail("MODEL_CONFIG_SHAPE",
+                        "configured model '" + sourceName
+                                + "' must bind exactly " + parameters.size() + " parameter(s)");
+            }
+            StringBuilder canonical = new StringBuilder("ores-model-configured-v1|");
+            canonical.append(graphDigest).append("|");
+            for (Parameter parameter : parameters) {
+                if (!configuration.containsKey(parameter.name())) {
+                    fail("MODEL_MISSING_CONFIG",
+                            "configured model '" + sourceName
+                                    + "' is missing parameter '" + parameter.name() + "'");
+                }
+                Object value = configuration.get(parameter.name());
+                Ast.TypeRef actual = literalType(value);
+                requireSameType(
+                        actual,
+                        parameter.type(),
+                        "MODEL_CONFIG_TYPE_MISMATCH",
+                        "configured model parameter '" + parameter.name() + "'");
+                canonical.append(parameter.name())
+                        .append("=")
+                        .append(canonicalConstant(value))
+                        .append("|");
+            }
+            for (String key : configuration.keySet()) {
+                if (parameters.stream().noneMatch(parameter -> parameter.name().equals(key))) {
+                    fail("MODEL_UNKNOWN_CONFIG",
+                            "configured model '" + sourceName
+                                    + "' has unknown parameter '" + key + "'");
+                }
+            }
+            return sha256(canonical.toString());
+        }
     }
 
     public static final class Catalog {
