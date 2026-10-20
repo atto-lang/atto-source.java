@@ -1264,11 +1264,30 @@ public final class OresEvalRootNode extends RootNode {
         private OresFuture<Object> startSourceBlockTask(
                 Ast.TaskExpr task,
                 Env caller) {
+            List<Ast.TaskCaptureProof> proofs = task.captureProofs();
+            OresTaskScope structuredScope = caller.structuredTaskScope();
+            boolean hasScopedBorrow = proofs.stream().anyMatch(
+                    proof -> proof.mode() == Ast.TaskCaptureMode.SCOPED_READ_BORROW);
+            if (hasScopedBorrow && structuredScope == null) {
+                throw new IllegalStateException(
+                        "borrowed Task capture reached runtime without a live nb scope");
+            }
+            for (Ast.TaskCaptureProof proof : proofs) {
+                if (proof.mode() == Ast.TaskCaptureMode.SCOPED_READ_BORROW
+                        && (proof.regionId() <= 0L
+                            || proof.regionGeneration() < 0L
+                            || proof.accessPath().isBlank())) {
+                    throw new IllegalStateException(
+                            "invalid scoped Task region proof for '" + proof.name() + "'");
+                }
+            }
+
             // Every capture must have been proven at the compiler ownership
             // boundary. Project just those names into fresh independent slots:
             // normal lambda Env.snapshot() intentionally shares its Slot
             // instances and MUST NOT be used directly for cross-Task moves.
-            Env captured = caller.taskProjection(task.captures());
+            Env captured = caller.taskProjection(
+                    proofs.stream().map(Ast.TaskCaptureProof::name).toList());
             return startSourceBlockTask(task.body(), captured);
         }
 
