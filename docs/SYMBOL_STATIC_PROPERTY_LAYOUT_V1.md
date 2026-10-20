@@ -99,6 +99,26 @@ detection, declared-order or canonical-order construction and immutable
 snapshot storage. It does not carry runtime field values, mutate aggregates,
 use reflection or allocate actor-owned heaps.
 
+### Bounded admission for new static tagged-key metadata
+
+Initial v1 limits (the same framing budgets as the opt-in tagged-key codec):
+- At most **4,096 statically declared fields per layout**.
+- At most **16,384 UTF-8 bytes per String property key**.
+- At most **1,048,576 aggregate encoded key bytes**, counting the six-byte v1
+  framing overhead of each key, even though this layout does not serialize them.
+- Existing Symbol validation already bounds Symbol names to **256 UTF-8 bytes**.
+
+The Java layout bounds key count and byte totals **while iterating** the supplied
+collection, rather than trusting `Collection.size()` or accumulating unbounded
+input before validation. The native host-only counterpart bounds vector count and
+aggregate key bytes prior to canonical sort/slot allocation. String keys retain
+exact spelling and reject malformed UTF-16/UTF-8. This quota applies only to
+**new tagged-key metadata**: before rolling out to legacy string-named fields,
+review source compatibility, format and built-in core schemas separately.
+
+These limits prevent extreme metadata allocation but do not themselves prove
+safe actor transport, runtime borrow/move semantics or a compiler ABI.
+
 Dedicated JUnit source tests exercise key collisions, Symbol NFC duplicate
 identity, stable/process kind separation, canonical ordering, immutable
 layouts and Map-key separation. The existing compiler rejects unsupported
