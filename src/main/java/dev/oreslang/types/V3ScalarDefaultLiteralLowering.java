@@ -61,6 +61,17 @@ public final class V3ScalarDefaultLiteralLowering {
             throw new IllegalArgumentException("scalar default lowering requires a plain local direct fnc");
         }
 
+        // This proof is deliberately not polymorphic over declaration
+        // annotations: caller roles, capabilities, ownership or codegen
+        // annotations must never disappear in a scalar-only rewrite.
+        for (Ast.Annotation annotation : selected.annotations()) {
+            if (!annotation.name().equals("DefaultArgVals")) {
+                throw new IllegalArgumentException(
+                        "scalar literal rewriting cannot erase callable annotation '"
+                                + annotation.name() + "'");
+            }
+        }
+
         List<V3DefaultArgValsPolicy.FormalPreview> formals =
                 V3DefaultArgValsPolicy.validateDeclaration(
                         selected.parameters(), selected.annotations());
