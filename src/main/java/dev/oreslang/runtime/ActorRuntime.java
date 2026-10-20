@@ -1352,9 +1352,15 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
+            return continuation(continuation, null);
+        }
+
+        private static MessageEnvelope continuation(
+                Runnable continuation,
+                Runnable release) {
             return new MessageEnvelope(
                     null,
-                    null,
+                    release,
                     Objects.requireNonNull(continuation, "continuation"),
                     null,
                     -1L);
@@ -2105,23 +2111,160 @@ public final class ActorRuntime implements AutoCloseable {
                         target.enqueue(() -> continuation.accept(value, failure)));
     }
 
-    private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
+    /**
+     * Data-bearing Future completion bridge.
+     *
+     * <p>Unlike {@link #enqueueOnCompletion}, this method treats the completed
+     * value as actor-transport data. SHARED actors receive a deeply frozen
+     * value; PRIVATE/UNTRUSTED actors receive an isolated copy. The queued
+     * value is byte-reserved until the continuation executes or is drained, so
+     * a producer thread cannot smuggle unaccounted payloads into an actor by
+     * completing a Future.</p>
+     */
+    public <T> void enqueueDataOnCompletion(
+            OresFuture<T> future,
+            ContinuationTarget target,
+            BiConsumer<? super T, ? super Throwable> continuation) {
+        Objects.requireNonNull(future, "future");
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(continuation, "continuation");
+
+        ActorCell<?> cell = actors.get(target.actorId());
+        if (cell == null || !ownFuture(cell, future)) return;
+
+        future.whenCompleteRuntime((value, failure) -> {
+            if (failure != null) {
+                enqueueContinuation(
+                        target.actorId(),
+                        () -> continuation.accept(null, failure));
+                return;
+            }
+
+            final PreparedContinuationData prepared;
+            try {
+                prepared = prepareContinuationData(cell, value);
+            } catch (VirtualMachineError fatal) {
+                throw fatal;
+            } catch (ThreadDeath fatal) {
+                throw fatal;
+            } catch (LinkageError fatal) {
+                throw fatal;
+            } catch (Throwable transportFailure) {
+                enqueueContinuation(
+                        target.actorId(),
+                        () -> continuation.accept(null, transportFailure));
+                return;
+            }
+
+            @SuppressWarnings("unchecked")
+            T delivered = (T) prepared.value();
+            enqueueContinuation(
+                    target.actorId(),
+                    () -> continuation.accept(delivered, null),
+                    prepared.release());
+        });
+    }
+
+    private record PreparedContinuationData(
+            Object value,
+            Runnable release) {
+        private PreparedContinuationData {
+            Objects.requireNonNull(release, "release");
+        }
+    }
+
+    private PreparedContinuationData prepareContinuationData(
+            ActorCell<?> cell,
+            Object value) {
+        validateMessageGraph(value);
+        rejectDataFreezeCapabilities(
+                value,
+                new IdentityHashMap<>(),
+                0);
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            rejectUntrustedInboundCapabilities(
+                    value,
+                    new IdentityHashMap<>(),
+                    0);
+        }
+
+        long runtimeRemaining =
+                Math.max(0L, policyCeiling.maxHeapBytes() - actorMemoryBytes());
+        if (isPrivateKind(cell.kind)) {
+            long actorRemaining = cell.memorySlice.remainingBytes();
+            estimatePrivateTransportBytes(
+                    value,
+                    new IdentityHashMap<>(),
+                    0,
+                    actorRemaining);
+            estimatePrivateTransportBytes(
+                    value,
+                    new IdentityHashMap<>(),
+                    0,
+                    runtimeRemaining);
+
+            Object prepared = isolateCopy(value);
+            MemoryReservation reservation =
+                    cell.memorySlice.reserveMailbox(prepared);
+            return new PreparedContinuationData(
+                    prepared,
+                    reservation::close);
+        }
+
+        long actorRemaining = Math.max(
+                0L,
+                cell.policy.maxHeapBytes() - cell.sharedMailboxBytes.get());
+        long allowed = Math.min(actorRemaining, runtimeRemaining);
+        estimateSharedTransportBytes(
+                value,
+                new IdentityHashMap<>(),
+                0,
+                allowed);
+
+        Object prepared = freezeForTransport(value);
+        long bytes = estimateSharedMailboxBytes(
+                prepared,
+                new IdentityHashMap<>(),
+                0);
+        cell.reserveSharedMailbox(bytes);
+        return new PreparedContinuationData(
+                prepared,
+                () -> cell.releaseSharedMailbox(bytes));
+    }
+
+    private boolean enqueueContinuation(
+            ActorId actorId,
+            Runnable continuation) {
+        return enqueueContinuation(actorId, continuation, null);
+    }
+
+    private boolean enqueueContinuation(
+            ActorId actorId,
+            Runnable continuation,
+            Runnable release) {
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(continuation, "continuation");
         ActorCell<?> cell = actors.get(actorId);
-        if (cell == null || cell.stopped.get() || closed.get()) return false;
+        if (cell == null || cell.stopped.get() || closed.get()) {
+            if (release != null) release.run();
+            return false;
+        }
         if (!cell.reserveContinuationSlot()) {
+            if (release != null) release.run();
             cell.fail(new IllegalStateException(
                     "actor internal continuation queue overflow for " + actorId));
             return false;
         }
 
+        MessageEnvelope envelope = null;
         boolean admitted = false;
         try {
             synchronized (cell.lifecycleLock) {
                 if (cell.stopped.get() || cell.finalized || closed.get()) return false;
-                if (!cell.continuationMailbox.tryWrite(
-                        MessageEnvelope.continuation(continuation))) {
+                envelope = MessageEnvelope.continuation(
+                        continuation,
+                        release);
+                if (!cell.continuationMailbox.tryWrite(envelope)) {
                     throw new IllegalStateException(
                             "actor continuation mailbox capacity invariant violated for " + actorId);
                 }
@@ -2139,7 +2282,11 @@ public final class ActorRuntime implements AutoCloseable {
             cell.schedule();
             return true;
         } finally {
-            if (!admitted) cell.releaseMailboxSlot(true);
+            if (!admitted) {
+                if (envelope != null) envelope.close();
+                else if (release != null) release.run();
+                cell.releaseMailboxSlot(true);
+            }
         }
     }
 
@@ -4779,7 +4926,7 @@ public final class ActorRuntime implements AutoCloseable {
                             ContinuationTarget target =
                                     captureCurrentContinuationTarget();
 
-                            enqueueOnCompletion(
+                            enqueueDataOnCompletion(
                                     (OresFuture) owned,
                                     target,
                                     (value, failure) -> {
