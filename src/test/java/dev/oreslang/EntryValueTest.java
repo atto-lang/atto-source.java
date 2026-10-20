@@ -599,33 +599,28 @@ final class EntryValueTest {
 
 
     @Test
-    void entryNullPayloadsRemainLegalAtRuntime() throws Exception {
-        String code = """
-                pub fnc main(): void {
+    void entryFactoryRejectsStandaloneNullComponents() {
+        IllegalArgumentException key = rejected("""
+                fnc bad(): void {
                   const entry = Entry.of(null, 42);
-                  stdio.println(entry.value);
                   return;
                 }
-                """;
+                """);
+        assertTrue(key.getMessage().contains("null"), key.getMessage());
 
-        Ast.Program typed = TypeChecker.check(Parser.parse(code));
-        OwnershipChecker.check(typed);
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Source source = Source.newBuilder(
-                        OresLanguage.ID, code, "entry-null.ores")
-                .mimeType(OresLanguage.MIME_TYPE)
-                .build();
-        try (Context context = Context.newBuilder(OresLanguage.ID)
-                .allowAllAccess(false)
-                .out(output)
-                .build()) {
-            context.eval(source);
-        }
-        assertEquals(
-                "42",
-                output.toString(StandardCharsets.UTF_8)
-                        .replace("\r\n", "\n")
-                        .strip());
+        IllegalArgumentException value = rejected("""
+                fnc bad(): void {
+                  const entry = Entry.of(42, null);
+                  return;
+                }
+                """);
+        assertTrue(value.getMessage().contains("null"), value.getMessage());
+
+        accepted("""
+                fnc good(): Entry<Option<int>, Option<int>> {
+                  return Entry.of(None, None);
+                }
+                """);
     }
 
     @Test
