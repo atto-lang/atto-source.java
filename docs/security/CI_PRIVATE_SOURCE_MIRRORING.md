@@ -53,6 +53,15 @@ Run the checked transfer from trusted, reviewed source, not an untrusted PR
 checkout. If an approval policy can be modified by the code under test, treat
 the result as untrusted.
 
+## Diagnostic checker is not authorization
+
+`scripts/check-private-ci-destination.sh` is a convenience diagnostic only.
+Its output must never authorize a source transfer. The v3 publisher does not
+execute it during preflight; authorization comes from data-only local policy
+validation plus the authenticated protected-main policy/carrier contract and
+live destination checks. Do not grant privileged reusable credentials to the
+diagnostic script.
+
 ## Destination-bound source snapshot publisher
 
 The only supported transfer entry point is **not an arbitrary command
