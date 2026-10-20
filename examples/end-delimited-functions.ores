@@ -1,0 +1,12 @@
+fnc classify(int x) -> tuple (int, int, string)
+    if x > 0 then
+        return (1, x, "positive")
+    else
+        return (0, x, "non-positive")
+    fi
+end
+
+fnc main() -> int
+    const result = classify(7)
+    return result[0]
+end
