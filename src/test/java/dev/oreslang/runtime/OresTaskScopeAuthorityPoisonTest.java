@@ -117,4 +117,29 @@ final class OresTaskScopeAuthorityPoisonTest {
             assertThrows(IllegalStateException.class, scope::close);
         }
     }
+    @Test
+    void preDispatchLoanRollbackFailureRetainsAuthorityAndOwnerPin() {
+        OresScheduler scheduler = new OresScheduler(1);
+        scheduler.close();
+        try (AsyncRuntime runtime = new AsyncRuntime()) {
+            OresTaskScope scope = new OresTaskScope(runtime);
+            Loan loan = new Loan();
+            RuntimeException failure = new RuntimeException("rollback poison");
+            loan.retireFailure = failure;
+
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> scope.startCompilerFrame(
+                            scheduler,
+                            resume -> new OresScheduler.Done<>(4),
+                            () -> { },
+                            loan));
+
+            assertEquals(1, scope.failedCompilerAuthoritiesForTesting());
+            assertNotNull(loan.child);
+            assertFalse(scope.physicallyQuiescent());
+            assertThrows(IllegalStateException.class, scope::close);
+            assertFalse(scope.physicallyQuiescent());
+        }
+    }
+
 }
