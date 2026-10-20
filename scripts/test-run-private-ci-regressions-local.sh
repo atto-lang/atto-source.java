@@ -286,4 +286,23 @@ fi
 test ! -e "$root/path-injection-marker"
 grep -q '^PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED=1$' "$root/out"
 echo 'PASS: caller PATH cannot replace trusted Python or dirname'
-echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=22'
+make_fixture
+printf '%s\n' 'printf "unsafe hook executed\n" >> "$CI_HOOK_MARKER"' > "$root/bash-env-hook"
+status=0
+CI_HOOK_MARKER="$root/bash-env-triggered" \
+  BASH_ENV="$root/bash-env-hook" \
+  PRIVATE_CI_TEST_REPEATS=1 /bin/bash "$fixture/run-private-ci-regressions-local.sh" \
+  > "$root/out" 2>&1 || status=$?
+test "$status" -eq 2
+test -s "$root/bash-env-triggered"
+grep -q PRIVATE_CI_UNTRUSTED_LAUNCH_ENV "$root/out"
+if grep -q PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED "$root/out"; then exit 1; fi
+echo 'PASS: direct BASH_ENV startup injection cannot earn regression receipt'
+make_fixture
+env -i PATH=/usr/bin:/bin HOME=/ PRIVATE_CI_TEST_REPEATS=1 \
+  /bin/bash "$fixture/run-private-ci-regressions-local.sh" \
+  > "$root/out" 2>&1 || { cat "$root/out" >&2; exit 1; }
+grep -q '^PRIVATE_CI_COMPLETE_REGRESSIONS_PASSED=1
+ "$root/out"
+echo 'PASS: clean env -i launch can earn regression receipt'
+echo 'PRIVATE_CI_LOCAL_RUNNER_SELFTESTS_PASSED=24'
