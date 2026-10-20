@@ -228,6 +228,56 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
+    void higherOrderEndDelimitedReturnsRespectNamedCallableReifiability() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc increment(int value): int {
+                    return value + 1;
+                }
+
+                fnc callback() -> (int) => int do
+                    return increment;
+                end
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                type IntFn = typeof fnc(int value) => int;
+
+                fnc increment(int value): int {
+                    return value + 1;
+                }
+
+                fnc callback() -> IntFn do
+                    return increment;
+                end
+                """)));
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        routine direct_only(int value): int {
+                            return value + 1;
+                        }
+
+                        fnc callback() -> (int) => int do
+                            return direct_only;
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("direct-call-only"), error::getMessage);
+    }
+
+    @Test
+    void routineUsesTheSameEndDelimitedAndCompactDoRules() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                routine identity(int x) -> int
+                    return x
+                end
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "routine identity(int x) -> int do return x; end")));
+    }
+
+    @Test
     void explicitVoidMayFallThrough() {
         String source = """
                 fnc noop() -> void
