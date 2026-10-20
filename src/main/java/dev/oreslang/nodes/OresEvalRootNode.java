@@ -10223,6 +10223,10 @@ public final class OresEvalRootNode extends RootNode {
 
             if (!seen.add(value)) return true;
 
+            if (value instanceof OresEntry entry) {
+                return runtimeSharedSafe(entry.key(), seen)
+                        && runtimeSharedSafe(entry.value(), seen);
+            }
             if (value instanceof OptionValue option) {
                 return !option.present() || runtimeSharedSafe(option.value(), seen);
             }
