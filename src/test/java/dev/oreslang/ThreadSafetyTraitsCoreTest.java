@@ -175,4 +175,31 @@ final class ThreadSafetyTraitsCoreTest {
                         "MutexGuard", List.of(Types.Primitive.INT)))),
                 Trait.SEND));
     }
+    @Test
+    void unloweredSharedStateAndTaskCapabilitiesCannotBeBlessedByNominalCallback() {
+        // The nominal callback is compiler-trusted, but may be overly broad.
+        // Unsupported runtime/allocator/thread-affinity handles must deny
+        // regardless of any nested generic argument being harmless.
+        ThreadSafetyTraits.NominalProof permissive = (type, trait) -> true;
+        for (String name : List.of(
+                "Arc", "Weak", "Rc", "RefCell", "Cell", "RwLock",
+                "RwLockReadGuard", "RwLockWriteGuard",
+                "Ref", "TRef", "EtsTable", "TableId",
+                "Task", "TaskHandle", "TaskScope", "TaskCancellation",
+                "ThreadBound", "NativeHandle", "Pointer", "RawPointer")) {
+            Type capability = new Types.Named(name, List.of(Types.Primitive.INT));
+            for (Trait trait : Trait.values()) {
+                assertFalse(ThreadSafetyTraits.has(capability, trait, permissive),
+                        () -> name + " cannot derive " + trait + " before ABI proof");
+                assertFalse(ThreadSafetyTraits.has(
+                        new Types.Named("Option", List.of(capability)),
+                        trait, permissive),
+                        () -> "Option cannot launder " + name + " capability");
+            }
+        }
+        assertTrue(ThreadSafetyTraits.has(
+                new Types.Named("Option", List.of(Types.Primitive.INT)),
+                Trait.SEND, permissive));
+    }
+
 }
