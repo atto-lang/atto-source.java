@@ -70,8 +70,8 @@ final class RealtimeProfileTest {
                 Long.MAX_VALUE - 10,
                 8,
                 8,
-                0,
-                0,
+                Long.MAX_VALUE,
+                1,
                 RealtimeProfile.Scheduler.FIXED_PRIORITY);
         assertFalse(RealtimeProfile.admitJavaHardRt(effects, overflow).admitted());
     }
@@ -89,5 +89,71 @@ final class RealtimeProfileTest {
                 64 * 1024,
                 RealtimeProfile.Scheduler.EDF);
         assertFalse(RealtimeProfile.admitJavaHardRt(effects, impossible).admitted());
+    }
+
+    @Test
+    void rejectsMissingPeriodBudget() {
+        var effects = new RealtimeProfile.Effects(
+                false, false, false, false, false, false, false, false, false);
+        var missing = new RealtimeProfile.Budget(
+                1_000_000,
+                500_000,
+                100_000,
+                50_000,
+                0,
+                64 * 1024,
+                RealtimeProfile.Scheduler.FIXED_PRIORITY);
+        var result = RealtimeProfile.admitJavaHardRt(effects, missing);
+        assertEquals(RealtimeProfile.Failure.MISSING_TIMING_BUDGET, result.failure());
+        assertEquals("RT003_WCET_UNPROVEN", result.diagnosticCode());
+    }
+
+    @Test
+    void rejectsDeadlineBeyondPeriodForConstrainedDeadlineModel() {
+        var effects = new RealtimeProfile.Effects(
+                false, false, false, false, false, false, false, false, false);
+        var invalid = new RealtimeProfile.Budget(
+                2_000_000,
+                500_000,
+                100_000,
+                50_000,
+                1_000_000,
+                64 * 1024,
+                RealtimeProfile.Scheduler.EDF);
+        assertEquals(
+                RealtimeProfile.Failure.MISSING_TIMING_BUDGET,
+                RealtimeProfile.admitJavaHardRt(effects, invalid).failure());
+    }
+
+    @Test
+    void rejectsMissingMemoryBudget() {
+        var effects = new RealtimeProfile.Effects(
+                false, false, false, false, false, false, false, false, false);
+        var missing = new RealtimeProfile.Budget(
+                1_000_000,
+                500_000,
+                100_000,
+                50_000,
+                10_000_000,
+                0,
+                RealtimeProfile.Scheduler.FIXED_PRIORITY);
+        var result = RealtimeProfile.admitJavaHardRt(effects, missing);
+        assertEquals(RealtimeProfile.Failure.MISSING_MEMORY_BUDGET, result.failure());
+        assertEquals("RT009_SCHEDULING_UNPROVEN", result.diagnosticCode());
+    }
+
+    @Test
+    void admitsBoundaryDeadlineAndMinimalExplicitMemoryCap() {
+        var effects = new RealtimeProfile.Effects(
+                false, false, false, false, false, false, false, false, false);
+        var boundary = new RealtimeProfile.Budget(
+                650_000,
+                500_000,
+                100_000,
+                50_000,
+                650_000,
+                1,
+                RealtimeProfile.Scheduler.FIXED_PRIORITY);
+        assertTrue(RealtimeProfile.admitJavaHardRt(effects, boundary).admitted());
     }
 }
