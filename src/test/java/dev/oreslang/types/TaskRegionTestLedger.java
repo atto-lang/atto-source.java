@@ -21,6 +21,8 @@ public final class TaskRegionTestLedger {
                     .field("position", true);
     private final TaskRegionPermitBridge.Permit left;
     private final TaskRegionPermitBridge.Permit right;
+    private final Runnable leftPhysicalExit;
+    private final Runnable rightPhysicalExit;
     private final SendSyncTraits source = new SendSyncTraits(
             new Ast.Program(List.of()), Set.of("Array"));
     private final ThreadSafetyTraits.NominalProof resolved =
@@ -28,7 +30,15 @@ public final class TaskRegionTestLedger {
 
     public TaskRegionTestLedger() {
         left = permits.admit(List.of(write(0, 128)), source, resolved);
-        right = permits.admit(List.of(write(128, 256)), source, resolved);
+        try {
+            right = permits.admit(List.of(write(128, 256)), source, resolved);
+        } catch (RuntimeException | Error admissionFailure) {
+            // Nothing was ever scheduled: this is pre-binding abandonment.
+            left.abortBeforeScheduling();
+            throw admissionFailure;
+        }
+        leftPhysicalExit = left.bindPhysicalExit();
+        rightPhysicalExit = right.bindPhysicalExit();
     }
 
     private TaskAccessVerifier.CoherentTypedClaim write(long from, long to) {
@@ -50,10 +60,10 @@ public final class TaskRegionTestLedger {
     public void cancelLeft() { left.requestCancel(); }
 
     /** Called only by the scheduler after confirmed physical final exit. */
-    public void physicalExitLeft() { left.run(); }
+    public void physicalExitLeft() { leftPhysicalExit.run(); }
 
     /** Called only by the scheduler after confirmed physical final exit. */
-    public void physicalExitRight() { right.run(); }
+    public void physicalExitRight() { rightPhysicalExit.run(); }
 
     public void verifyOverlapRejected() {
         assertThrows(IllegalArgumentException.class,

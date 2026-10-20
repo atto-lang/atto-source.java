@@ -13,8 +13,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * capability nor proof of an actor allocation domain: the compiler must
  * establish trusted allocation provenance, type identity and capture effects
  * before constructing the claims. The runtime is allowed to receive only the
- * resulting permit's physical-exit Runnable. Do not expose the ledger or
- * {@link Permit#run()} to Oreslang guest code.
+ * one-time bound physical-exit Runnable. Do not expose the ledger or
+ * an exit callback to Oreslang guest code.
  *
  * <p>In particular this compiler preflight does NOT authorize lexical &T or
  * &mut T across await; admitCoherentTyped still rejects unproven borrows.
@@ -58,22 +58,25 @@ final class TaskRegionPermitBridge {
     void finishScope() { ledger.finishScope(); }
 
     /**
-     * Ticket holder passed as the trusted onPhysicalExit callback when the
-     * runtime admits a Task frame. The scheduler invokes it after physical
-     * quiescence; admission rejection invokes it before any task starts.
+     * One compiler-owned child region ticket.
      *
-     * A second invocation may succeed only if the original retirement has
-     * FINISHED. Cancellation is just intent and never releases the ticket.
+     * RESERVED is pre-scheduling, not physical runtime admission.
+     * abortBeforeScheduling() is its only permitted cleanup. Once bound,
+     * only the one-time physical-exit callback supplied to the trusted
+     * OresTaskScope may retire the region. This is NOT an authenticated MIR
+     * provenance witness or guest-visible capability.
      */
-    static final class Permit implements Runnable {
-        private static final int ACTIVE = 0;
-        private static final int RETIRING = 1;
-        private static final int RETIRED = 2;
-        private static final int FAILED = 3;
+    static final class Permit {
+        private static final int RESERVED = 0;
+        private static final int BOUND = 1;
+        private static final int RETIRING = 2;
+        private static final int RETIRED = 3;
+        private static final int ABANDONED = 4;
+        private static final int FAILED = 5;
 
         private final TaskAccessVerifier ledger;
         private final TaskAccessVerifier.Ticket ticket;
-        private final AtomicInteger retirement = new AtomicInteger(ACTIVE);
+        private final AtomicInteger retirement = new AtomicInteger(RESERVED);
         private volatile Throwable failure;
 
         private Permit(TaskAccessVerifier ledger, TaskAccessVerifier.Ticket ticket) {
@@ -81,33 +84,68 @@ final class TaskRegionPermitBridge {
             this.ticket = Objects.requireNonNull(ticket, "ticket");
         }
 
+        /**
+         * Call immediately before trusted host admission of this frame.
+         * Scheduler rejection invokes the returned callback without starting
+         * the frame; otherwise only physical final exit invokes it.
+         * The callback must never be exposed to guest code.
+         * Allocate callback before switching state so allocation failure
+         * leaves a reservation eligible for pre-scheduling abandonment.
+         */
+        Runnable bindPhysicalExit() {
+            Runnable callback = this::retireOnPhysicalExit;
+            if (!retirement.compareAndSet(RESERVED, BOUND))
+                throw new IllegalStateException("Task region permit already bound or retired");
+            return callback;
+        }
+
+        /** Only valid before a runnable child / exit callback is bound. */
+        void abortBeforeScheduling() {
+            retireFrom(RESERVED, "Task region permit is already bound to a Task");
+        }
+
         void requestCancel() {
-            if (retirement.get() != ACTIVE)
+            int state = retirement.get();
+            if (state != RESERVED && state != BOUND)
                 throw new IllegalStateException("Task region permit is no longer live");
             ledger.requestCancel(ticket);
         }
 
         boolean cancellationRequested() {
-            if (retirement.get() != ACTIVE)
+            int state = retirement.get();
+            if (state != RESERVED && state != BOUND)
                 throw new IllegalStateException("Task region permit is no longer live");
             return ledger.cancellationRequested(ticket);
         }
 
-        boolean retired() { return retirement.get() == RETIRED; }
+        boolean retired() {
+            int state = retirement.get();
+            return state == RETIRED || state == ABANDONED;
+        }
 
-        @Override public void run() {
-            if (!retirement.compareAndSet(ACTIVE, RETIRING)) {
+        private void retireOnPhysicalExit() {
+            retireFrom(BOUND, "Task region physical-exit callback is not bound");
+        }
+
+        private void retireFrom(int expected, String denial) {
+            if (!retirement.compareAndSet(expected, RETIRING)) {
                 int prior = retirement.get();
-                if (prior == RETIRED) return;
+                // A completed physical exit is not equivalent to an
+                // abandoned unbound reservation. Only the *same* successful
+                // completion route is idempotent.
+                if ((prior == RETIRED && expected == BOUND)
+                        || (prior == ABANDONED && expected == RESERVED)) return;
                 if (prior == FAILED)
                     throw new IllegalStateException(
                             "Task region retirement previously failed", failure);
-                throw new IllegalStateException(
-                        "Task region retirement has not physically completed");
+                if (prior == RETIRING)
+                    throw new IllegalStateException(
+                            "Task region retirement has not physically completed");
+                throw new IllegalStateException(denial);
             }
             try {
                 ledger.quiescent(ticket);
-                retirement.set(RETIRED);
+                retirement.set(expected == RESERVED ? ABANDONED : RETIRED);
             } catch (RuntimeException | Error error) {
                 failure = error;
                 retirement.set(FAILED);
