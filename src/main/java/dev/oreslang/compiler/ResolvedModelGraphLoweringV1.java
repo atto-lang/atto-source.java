@@ -52,8 +52,9 @@ public final class ResolvedModelGraphLoweringV1 {
             Signature sig = trusted.get(op.name());
             if (sig == null) throw new IllegalArgumentException("MODEL_UNKNOWN_OP");
             if (!"pure".equals(sig.effect())) throw new IllegalArgumentException("MODEL_EFFECTFUL_OP");
-            int expectedInputs = index == 0 ? 0 : 1;
-            if (sig.inputs().size() != expectedInputs)
+            if (index == 0 && sig.inputs().size() > 1)
+                throw new IllegalArgumentException("MODEL_ARITY_MISMATCH");
+            if (index > 0 && sig.inputs().size() != 1)
                 throw new IllegalArgumentException("MODEL_ARITY_MISMATCH");
             if (op.arguments().size() != sig.constKinds().size())
                 throw new IllegalArgumentException("MODEL_CONST_ARITY_MISMATCH");
