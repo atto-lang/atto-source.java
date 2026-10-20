@@ -523,4 +523,49 @@ final class DynamicPropertyAccessRuntimeTest {
                 "4.0\n",
                 output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
     }
+
+    @Test
+    void structuralInterfaceDynamicAccessUsesNarrowCheckedFieldDomain() {
+        String source = """
+                define interface PointLike
+                    x: int;
+                    y: int;
+                end
+
+                define class Point3d as
+                    pub val int x = 1;
+                    pub val int y = 2;
+                    pub val int z = 3;
+                end
+
+                fnc read(structural PointLike value, string key): int {
+                    return value[key];
+                }
+
+                pub fnc main(): void {
+                    stdio.println(read(new Point3d(), "y"));
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(OresLanguage.ID, source, "dynamic-structural-interface-domain.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(output)
+                    .build()) {
+                context.eval(program);
+            }
+        });
+
+        assertEquals(
+                "2\n",
+                output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
+    }
 }
