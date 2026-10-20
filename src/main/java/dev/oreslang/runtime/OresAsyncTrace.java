@@ -146,6 +146,8 @@ public final class OresAsyncTrace {
         private final int maxEvents;
         private final ArrayDeque<Event> history;
         private final ArrayDeque<ActorVisit> actorVisits;
+        /** An actor is visited only after its callback begins executing. */
+        private ActorVisit pendingActorVisit;
         private long elidedActorVisits;
         private final Object identity = new Object();
         private Frame current;
@@ -257,15 +259,25 @@ public final class OresAsyncTrace {
             BoundaryKind actualKind = Objects.requireNonNull(kind, "kind");
             SourceSite actualSite = Objects.requireNonNull(site, "site");
             if (actualKind == BoundaryKind.ACTOR_MESSAGE) {
-                // Events can be evicted by arbitrarily many awaits/selects between actors.
-                // Retain actor visits in a separate, copied-on-child, bounded history.
-                if (actorVisits.size() >= MAX_ACTOR_VISITS) {
-                    actorVisits.removeFirst();
-                    if (elidedActorVisits != Long.MAX_VALUE) elidedActorVisits++;
-                }
-                actorVisits.addLast(new ActorVisit(current, actualSite));
+                // The caller creates this trace before the actor's mailbox admission.
+                // Only a successful entry into an actor execution scope establishes
+                // a visit. Pending entries are not part of propagated history.
+                pendingActorVisit = new ActorVisit(current, actualSite);
             }
             addBounded(new BoundaryEvent(actualKind, current, actualSite));
+        }
+
+        private void confirmActorVisit() {
+            ActorVisit visit = pendingActorVisit;
+            if (visit == null) return;
+            pendingActorVisit = null;
+            // This ring survives independent async-event elision.
+            if (actorVisits.size() >= MAX_ACTOR_VISITS) {
+                actorVisits.removeFirst();
+                if (elidedActorVisits != Long.MAX_VALUE) elidedActorVisits++;
+            }
+            actorVisits.addLast(visit);
+            bumpRevision();
         }
 
         public void tailAwait(Frame target, SourceSite site) {
@@ -392,6 +404,9 @@ public final class OresAsyncTrace {
         Trace installed = Objects.requireNonNull(trace, "trace");
         Thread owner = Thread.currentThread();
         installed.acquireLease(owner);
+        // Confirm a runtime actor visit only on actual entry into its turn.
+        // Reinstalling the same suspended turn never adds duplicate visits.
+        installed.confirmActorVisit();
 
         Trace prior = CURRENT.get();
         InstalledScope priorScope = CURRENT_SCOPE.get();
