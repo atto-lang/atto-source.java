@@ -282,7 +282,8 @@ public final class OresDiagnosticRenderer {
         int elidedSuppressed = 0;
         boolean firstSuppressed = true;
         for (Throwable suppressed : failure.getSuppressed()) {
-            if (suppressed instanceof OresAsyncTrace.LogicalAsyncStackTrace
+            if (suppressed instanceof OresAsyncTrace.LogicalGuestStackTrace
+                    || suppressed instanceof OresAsyncTrace.LogicalAsyncStackTrace
                     || suppressed instanceof OresAsyncTrace.LogicalAsyncTraceElision) {
                 continue;
             }
