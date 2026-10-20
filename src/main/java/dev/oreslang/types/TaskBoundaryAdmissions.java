@@ -57,18 +57,10 @@ public final class TaskBoundaryAdmissions {
     }
 
     private record ScopedLoanBoundary(
-            List<TaskAccessVerifier.CoherentTypedClaim> claims,
-            SendSyncTraits sourceProof,
-            ThreadSafetyTraits.NominalProof resolvedNominals)
+            TaskAccessVerifier.CoherentAccessProof accessProof)
             implements BoundaryAdmission {
         private ScopedLoanBoundary {
-            claims = List.copyOf(Objects.requireNonNull(claims, "claims"));
-            Objects.requireNonNull(sourceProof, "sourceProof");
-            Objects.requireNonNull(resolvedNominals, "resolvedNominals");
-            if (claims.isEmpty()) {
-                throw new IllegalArgumentException(
-                        "scoped Task loan proof requires an exact non-empty footprint");
-            }
+            Objects.requireNonNull(accessProof, "accessProof");
         }
     }
 
@@ -123,8 +115,11 @@ public final class TaskBoundaryAdmissions {
             throw new IllegalArgumentException(
                     "scoped Task source type proof belongs to a different exact program instance");
         }
+        TaskAccessVerifier.CoherentAccessProof frozen =
+                TaskAccessVerifier.proveCoherentTyped(
+                        claims, sourceProof, resolvedNominals);
         put(Objects.requireNonNull(boundary, "boundary"),
-                new ScopedLoanBoundary(claims, sourceProof, resolvedNominals));
+                new ScopedLoanBoundary(frozen));
     }
 
     TaskBoundaryAdmissions seal() {
@@ -166,10 +161,8 @@ public final class TaskBoundaryAdmissions {
             throw new IllegalArgumentException(
                     "exact Task boundary has no scoped-loan compiler proof");
         }
-        return verifier.admitCoherentTypedRuntimeBound(
-                scoped.claims(),
-                scoped.sourceProof(),
-                scoped.resolvedNominals());
+        return verifier.admitProvenRuntimeBound(
+                scoped.accessProof(), program);
     }
 
     /** Verify this sealed ledger belongs to this exact checked program. */
