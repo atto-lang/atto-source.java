@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -326,6 +327,52 @@ public final class IpcReceiptCompletionBridgeSelfTest {
             check(callbackReturned.await(2, TimeUnit.SECONDS));
             awaitGlobalBudgetQuiescence();
             check(budget.availablePermits() == before);
+            check(transport.bridge().invariant());
+        }
+
+        // A global-budget denial must be a pure pre-dispatch rejection:
+        // no correlation, credit, or host completion may be consumed. Once
+        // capacity returns, that exact message must still be admissible.
+        // A throwing downstream callback must never strand its global permit
+        // or alter the authenticated terminal outcome.
+        {
+            awaitGlobalBudgetQuiescence();
+            Semaphore budget = globalBudgetForTest();
+            final int limit = 16_384;
+            var message = env(1, "global-budget-exhaustion");
+            var transport = bound(1, message, 57);
+            check(budget.tryAcquire(limit, 5, TimeUnit.SECONDS));
+            try {
+                denied(() -> transport.admit(message));
+                check(budget.availablePermits() == 0);
+                check(transport.bridge().counters().pending() == 0);
+                check(transport.bridge().invariant());
+            } finally {
+                budget.release(limit);
+            }
+            var outcome = transport.admit(message);
+            CountDownLatch callbackEntered = new CountDownLatch(1);
+            CompletionStage<Void> throwingDependent = outcome.thenRun(() -> {
+                callbackEntered.countDown();
+                throw new IllegalStateException("intentional IPC test callback failure");
+            });
+            transport.accept(
+                    message, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+            transport.accept(
+                    message, IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(result(outcome) == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+            check(callbackEntered.await(2, TimeUnit.SECONDS));
+            try {
+                throwingDependent.toCompletableFuture().join();
+                throw new AssertionError("throwing dependent was not exceptional");
+            } catch (CompletionException expected) {
+                check(expected.getCause() instanceof IllegalStateException);
+                check("intentional IPC test callback failure"
+                        .equals(expected.getCause().getMessage()));
+            }
+            awaitGlobalBudgetQuiescence();
+            check(budget.availablePermits() == limit);
+            check(transport.bridge().counters().pending() == 0);
             check(transport.bridge().invariant());
         }
 
