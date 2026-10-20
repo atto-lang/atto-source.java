@@ -8112,24 +8112,28 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void drainMailboxReservations() {
-            synchronized (lifecycleLock) {
-                while (continuationMailbox.drainOne(continuation -> {
-                    releaseMailboxSlot(true);
-                    continuation.close();
-                })) {
-                    // Reclaim admitted control mail even after termination closes the channel.
-                }
-                sourceHandoffRequested = false;
+            // Channel.drainOne invokes synchronous Future notifications and
+            // runs the supplied consumer outside its coordinator lock. Neither
+            // action may be performed under lifecycleLock: observers can
+            // reenter actor lifecycle code or wait for another actor's lock.
+            while (continuationMailbox.drainOne(continuation -> {
+                releaseMailboxSlot(true);
+                continuation.close();
+            })) {
+                // Reclaim accepted control mail after channel closure.
             }
 
             while (mailbox.drainOne(envelope -> {
                 releaseMailboxSlot(false);
                 envelope.close();
             })) {
-                // Drain all committed user-message envelopes, including after close.
+                // Drain all committed user-message envelopes after closure.
             }
-            sourceReceiveSuspended = false;
-            activeMail = null;
+            synchronized (lifecycleLock) {
+                sourceHandoffRequested = false;
+                sourceReceiveSuspended = false;
+                activeMail = null;
+            }
         }
 
         private void fail(Throwable failure) {
@@ -8161,10 +8165,6 @@ public final class ActorRuntime implements AutoCloseable {
                 // one while holding lifecycleLock.
                 failedDrainWaiters = List.copyOf(pendingDrains);
                 pendingDrains.clear();
-                if (cause == null) mailbox.close();
-                else mailbox.close(cause);
-                continuationMailbox.close(cause);
-                drainMailboxReservations();
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
@@ -8182,6 +8182,15 @@ public final class ActorRuntime implements AutoCloseable {
 
             boolean cascadeDispatchComplete = false;
             try {
+                // The cancellation cascade was claimed under lifecycleLock.
+                // Channel.close and drainOne both invoke callbacks inline;
+                // dispatch those outside the actor monitor so a subscriber
+                // cannot pin it or deadlock a second lifecycle operation.
+                if (cause == null) mailbox.close();
+                else mailbox.close(cause);
+                continuationMailbox.close(cause);
+                drainMailboxReservations();
+
                 // Sealing/cancelling a scope can settle Futures and execute
                 // trusted callbacks inline. Never hold the actor lifecycle
                 // monitor while doing so.
