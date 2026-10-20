@@ -75,6 +75,50 @@ public final class IpcBlockingGuardSelfTest {
         byte[] binding = binding();
 
         {
+            byte[] payload = "guard-construction".getBytes(
+                    java.nio.charset.StandardCharsets.UTF_8);
+            var message = envelope("guardConstruction", payload);
+            ExecutorService cleanup = Executors.newSingleThreadExecutor();
+            try (ServerSocket server = new ServerSocket(
+                        0, 8, InetAddress.getLoopbackAddress());
+                 Socket client = new Socket(
+                        InetAddress.getLoopbackAddress(), server.getLocalPort());
+                 Socket peer = server.accept()) {
+                check(peer.isConnected());
+                var bridge = new IpcReceiptCompletionBridge(1);
+                var constructionAuthority = authority(300, key, binding);
+
+                actorCarrierDenied(() -> {
+                    try {
+                        new IpcAuthenticatedSocketTransport(
+                                client, bridge, message, 1,
+                                constructionAuthority, cleanup::execute);
+                        throw new AssertionError(
+                                "actor carrier constructed IPC socket transport");
+                    } catch (IOException impossibleBeforeGuard) {
+                        throw new AssertionError(impossibleBeforeGuard);
+                    }
+                }, "IPC socket transport construction");
+
+                check(!constructionAuthority.consumedOrDestroyed());
+                check(!client.isClosed());
+
+                // The exact authority remains valid because actor rejection
+                // happened before stream acquisition or ownership transfer.
+                var transport = new IpcAuthenticatedSocketTransport(
+                        client, bridge, message, 1,
+                        constructionAuthority, cleanup::execute);
+                check(constructionAuthority.consumedOrDestroyed());
+                check(transport.requestCloseAndAwait(3000));
+                check(transport.keyCloneZeroized());
+                check(transport.connectionBindingCloneZeroized());
+            } finally {
+                cleanup.shutdownNow();
+                cleanup.awaitTermination(2, TimeUnit.SECONDS);
+            }
+        }
+
+        {
             byte[] payload = "guard-send".getBytes(java.nio.charset.StandardCharsets.UTF_8);
             var message = envelope("guardSend", payload);
             ExecutorService cleanup = Executors.newSingleThreadExecutor();
