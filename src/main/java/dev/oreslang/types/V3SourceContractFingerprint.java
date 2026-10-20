@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.DigestOutputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayDeque;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
@@ -33,10 +34,43 @@ public final class V3SourceContractFingerprint {
     private static final String DOMAIN = "oreslang/v3/parameter-source-contract-preview";
     private static final int VERSION = 1;
     private static final int MAX_TYPE_DEPTH = 64;
+    private static final int MAX_TYPE_NODES = 8192;
+    private static final int MAX_FORMALS = 1024;
+
+    private record TypeVisit(Ast.TypeRef value, int depth) { }
+
+    /**
+     * Run BEFORE policy/preview expansion, whose TypeRef recursion otherwise
+     * executes before the fingerprint's existing depth check. This preflight
+     * uses explicit heap-backed traversal to prevent generated nested types
+     * from exhausting the Java stack in the source-contract hashing path.
+     */
+    private static void preflight(List<Ast.Param> parameters) {
+        if (parameters.size() > MAX_FORMALS) {
+            throw new IllegalArgumentException("v3 source-contract formal count exceeds limit");
+        }
+        ArrayDeque<TypeVisit> pending = new ArrayDeque<>();
+        for (Ast.Param param : parameters) {
+            Objects.requireNonNull(param, "formal");
+            pending.addLast(new TypeVisit(Objects.requireNonNull(param.type(), "formal type"), 0));
+        }
+        int visited = 0;
+        while (!pending.isEmpty()) {
+            TypeVisit item = pending.removeLast();
+            if (item.depth() > MAX_TYPE_DEPTH || ++visited > MAX_TYPE_NODES) {
+                throw new IllegalArgumentException(
+                        "v3 source-contract type depth/node budget exceeded");
+            }
+            for (Ast.TypeRef nested : item.value().arguments()) {
+                pending.addLast(new TypeVisit(nested, item.depth() + 1));
+            }
+        }
+    }
 
     public static String sha256Hex(List<Ast.Param> parameters, List<Ast.Annotation> annotations) {
         Objects.requireNonNull(parameters, "parameters");
         Objects.requireNonNull(annotations, "annotations");
+        preflight(parameters);
         List<V3DefaultArgValsPolicy.FormalPreview> checked =
                 V3DefaultArgValsPolicy.validateDeclaration(parameters, annotations);
         try {
