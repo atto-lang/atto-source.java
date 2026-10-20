@@ -182,7 +182,7 @@ final class EndDelimitedFunctionSyntaxTest {
     @Test
     void interfaceMethodSignaturesDoNotAcquireExecutableArrowSyntax() {
         String source = """
-                interface InstanceApi as
+                interface InstanceApi
                     fnc classify(int x) -> int;
                 end
                 """;
