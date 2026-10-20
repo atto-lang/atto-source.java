@@ -315,4 +315,32 @@ final class TreeShakerTest {
         assertTrue(read.mutableReferent());
     }
 
+    @Test
+    void treeShakingRetainsNominalEnumConstructorAndMatchDomain() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                define enum TrainingError as
+                    INVALID_INPUT = 1
+                    STALE_GRAPH = 2
+                end
+
+                fnc render(TrainingError value): int {
+                    match value over
+                        on TrainingError.INVALID_INPUT -> { return 1; }
+                        on TrainingError.STALE_GRAPH -> { return 2; }
+                    end
+                }
+
+                pub routine main(): void {
+                    val TrainingError error = TrainingError.STALE_GRAPH();
+                    stdio.stdout.write(render(error));
+                    return;
+                }
+                """, BuildOptions.executable(Map.of()));
+
+        assertTrue(result.retained(Parser.ROOT_MODULE + ".TrainingError"));
+        assertTrue(result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .anyMatch(Ast.EnumDecl.class::isInstance));
+    }
+
 }
