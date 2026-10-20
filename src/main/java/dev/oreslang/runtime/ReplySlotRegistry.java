@@ -140,6 +140,17 @@ final class ReplySlotRegistry implements AutoCloseable {
      * the connection, never from the packet. The entire reply payload must be
      * authenticated and decoded under a trusted, schema-specific codec first.
      */
+    /**
+     * Cheap authority preflight before a trusted IPC codec decodes payload bytes.
+     * Always re-validate in completeRemote after decoding (TOCTOU fencing).
+     */
+    synchronized boolean isAuthorizedRemoteTicket(
+            Endpoint destination, long handle, AuthenticatedPeer peer,
+            String schemaDigest, byte[] replyTicket) {
+        return authorize(destination, handle, peer, schemaDigest) != null
+                && tickets.valid(replyTicket, handle, origin, peer, schemaDigest);
+    }
+
     synchronized boolean completeRemote(
             Endpoint destination, long handle, AuthenticatedPeer peer,
             String schemaDigest, byte[] replyTicket, Object value) {
