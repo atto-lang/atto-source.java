@@ -81,6 +81,24 @@ final class TaskAdmissionRuntimeBridgeTest {
     }
 
     @Test
+    void joinedProofRejectsNonTaskExpressionBoundary() {
+        OresCompiler.ExecutionAnalysis analysis =
+                OresCompiler.parseAndProveForExecution("""
+                        pub routine main(): void {
+                            let worker = nb { return 1; };
+                            return;
+                        }
+                        """);
+        Ast.LiteralExpr notATask = new Ast.LiteralExpr(1L);
+
+        IllegalStateException failure = assertThrows(
+                IllegalStateException.class,
+                () -> analysis.taskAdmissions()
+                        .requireFor(analysis.program(), notATask));
+        assertTrue(failure.getMessage().contains("TaskExpr"));
+    }
+
+    @Test
     void moveOnlyTaskCaptureCarriesUniqueMoveProof() {
         OresCompiler.ExecutionAnalysis analysis =
                 OresCompiler.parseAndProveForExecution("""
