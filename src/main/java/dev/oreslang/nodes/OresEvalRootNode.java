@@ -17,6 +17,7 @@ import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.OresEntry;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -4665,6 +4666,14 @@ public final class OresEvalRootNode extends RootNode {
                         }, args);
             }
 
+            if (receiver instanceof OresEntry entry) {
+                return switch (name) {
+                    case "key" -> entry.key();
+                    case "value" -> entry.value();
+                    default -> throw new IllegalArgumentException(
+                            "unknown Entry member " + name);
+                };
+            }
             if (receiver instanceof OresObject object) {
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("end")) {
@@ -4887,6 +4896,18 @@ public final class OresEvalRootNode extends RootNode {
                                     + "' is read before constructor initialization");
                 }
                 return value;
+            }
+            if (receiver instanceof OresEntry entry) {
+                if (!(index instanceof String key)) {
+                    throw new IllegalArgumentException(
+                            "Entry field index must be a String");
+                }
+                return switch (key) {
+                    case "key" -> entry.key();
+                    case "value" -> entry.value();
+                    default -> throw new IllegalArgumentException(
+                            "unknown Entry field key " + key);
+                };
             }
             if (receiver instanceof ReadonlyRecordValue record) {
                 if (!(index instanceof String key)) {
@@ -5326,7 +5347,11 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     return new MutableStructValue(fields);
                 }
-                if (value instanceof OptionValue option) {
+                if (value instanceof OresEntry entry) {
+                return runtimeSharedSafe(entry.key(), seen)
+                        && runtimeSharedSafe(entry.value(), seen);
+            }
+            if (value instanceof OptionValue option) {
                     return option.present()
                             ? new OptionValue(true, detachAsyncValue(option.value(), visiting))
                             : option;
@@ -9001,6 +9026,12 @@ public final class OresEvalRootNode extends RootNode {
                 return value instanceof dev.oreslang.runtime.OresSymbol;
             if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
             if (name.equals("Option")) return value instanceof OptionValue;
+            if (name.equals("Entry")) {
+                if (!(value instanceof OresEntry entry)
+                        || target.arguments().size() != 2) return false;
+                return oresTypeMatches(entry.key(), target.arguments().get(0))
+                        && oresTypeMatches(entry.value(), target.arguments().get(1));
+            }
             if (name.equals("Result")) return value instanceof ResultValue;
             if (name.equals("Array") || name.equals("List")) return value instanceof List<?>;
             if (name.equals("Generator") || name.equals("Iterator")) return value instanceof GeneratorRuntime.Generator<?>;
@@ -9030,6 +9061,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
+            if (value instanceof OresEntry) return "Entry";
             if (value instanceof ActorRuntime.ActorOutput<?>) return "ActorOutput";
             if (value instanceof ActorRuntime.ActorOutputStream<?>) return "ActorOutputStream";
             if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
@@ -9159,6 +9191,13 @@ public final class OresEvalRootNode extends RootNode {
                 } catch (IllegalArgumentException ignored) {
                     return false;
                 }
+            }
+
+            if (left instanceof OresEntry || right instanceof OresEntry) {
+                if (!(left instanceof OresEntry a) || !(right instanceof OresEntry b)) return false;
+                if (comparisonPairSeen(left, right, seen)) return true;
+                return valueEquals(a.key(), b.key(), seen)
+                        && valueEquals(a.value(), b.value(), seen);
             }
 
             // Class/actor instances have identity equality by default.
@@ -9961,6 +10000,7 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
                 if (!(value instanceof OresObject
+                        || value instanceof OresEntry
                         || value instanceof ReadonlyRecordValue
                         || value instanceof OptionValue
                         || value instanceof ResultValue
@@ -9976,7 +10016,13 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
                 try {
-                    if (value instanceof OresObject object) {
+                    if (value instanceof OresEntry entry) {
+                        write("Entry{key=");
+                        append(entry.key(), depth + 1);
+                        write(", value=");
+                        append(entry.value(), depth + 1);
+                        write("}");
+                    } else if (value instanceof OresObject object) {
                         write(object.klass.name());
                         write("{");
                         boolean first = true;
@@ -10129,10 +10175,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private static Object create(List<Object> args) {
             requireTwo(args, "Entry.of");
-            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
-            fields.put("key", args.get(0));
-            fields.put("value", args.get(1));
-            return new ReadonlyRecordValue(fields);
+            return new OresEntry(args.get(0), args.get(1));
         }
     }
 
