@@ -9486,54 +9486,52 @@ public final class ActorRuntime implements AutoCloseable {
                     boolean guestCompleted = false;
                     try {
                         /*
-                         * Linearize queued-work start against stop/cancel.
-                         * If cancellation acquired lifecycleLock first, this
-                         * envelope is discarded and no new guest work begins.
-                         * If this gate wins first, the envelope is already-active
-                         * actor work; a later cancellation is observed at the
-                         * normal scheduler safepoints.
+                         * Linearize queued-work start against stop/cancel, but
+                         * never execute guest/continuation code under the
+                         * lifecycle monitor.
                          */
+                        final boolean runGuest;
                         synchronized (lifecycleLock) {
-                            if (stopped.get() || finalized) {
-                                // No guest execution started. The exact owner is
-                                // still retired below.
-                            } else if (envelope.isContinuation()) {
-                                envelope.continuation().run();
-                                guestCompleted = true;
-                            } else {
-                                ActorInboxMail<M> mail = new ActorInboxMail<>(
-                                        ref.id(),
-                                        Optional.ofNullable(envelope.sender()),
-                                        envelope.sequence(),
-                                        (M) envelope.value());
-                                activeMail = mail;
-                                try {
-                                    if (codeExecutor != null) {
-                                        if (codeActorState == null
-                                                || !codeActorState.ownerActorId().equals(ref.id())) {
-                                            throw new SecurityException(
-                                                    "source actor state lost actor ownership before mailbox dispatch");
-                                        }
-                                        @SuppressWarnings("unchecked")
-                                        ActorInboxMail<Object> sourceMail =
-                                                (ActorInboxMail<Object>) (ActorInboxMail<?>) mail;
-                                        @SuppressWarnings("unchecked")
-                                        ActorContext<Object> sourceContext =
-                                                (ActorContext<Object>) (ActorContext<?>) context;
-                                        codeExecutor.receiveActor(
-                                                codeActorType,
-                                                codeActorState,
-                                                sourceMail,
-                                                sourceContext);
-                                    } else {
-                                        behavior.onMessage(mail.value(), context);
+                            runGuest = !stopped.get() && !finalized;
+                        }
+
+                        if (runGuest && envelope.isContinuation()) {
+                            envelope.continuation().run();
+                            guestCompleted = true;
+                        } else if (runGuest) {
+                            ActorInboxMail<M> mail = new ActorInboxMail<>(
+                                    ref.id(),
+                                    Optional.ofNullable(envelope.sender()),
+                                    envelope.sequence(),
+                                    (M) envelope.value());
+                            activeMail = mail;
+                            try {
+                                if (codeExecutor != null) {
+                                    if (codeActorState == null
+                                            || !codeActorState.ownerActorId().equals(ref.id())) {
+                                        throw new SecurityException(
+                                                "source actor state lost actor ownership before mailbox dispatch");
                                     }
-                                    guestCompleted = true;
-                                } finally {
-                                    if (!sourceReceiveSuspended) activeMail = null;
+                                    @SuppressWarnings("unchecked")
+                                    ActorInboxMail<Object> sourceMail =
+                                            (ActorInboxMail<Object>) (ActorInboxMail<?>) mail;
+                                    @SuppressWarnings("unchecked")
+                                    ActorContext<Object> sourceContext =
+                                            (ActorContext<Object>) (ActorContext<?>) context;
+                                    codeExecutor.receiveActor(
+                                            codeActorType,
+                                            codeActorState,
+                                            sourceMail,
+                                            sourceContext);
+                                } else {
+                                    behavior.onMessage(mail.value(), context);
                                 }
+                                guestCompleted = true;
+                            } finally {
+                                if (!sourceReceiveSuspended) activeMail = null;
                             }
                         }
+
                         if (guestCompleted
                                 && codeExecutor == null
                                 && isPrivateKind(kind)
