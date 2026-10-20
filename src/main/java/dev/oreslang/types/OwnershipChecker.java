@@ -1285,7 +1285,15 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
             checkSuspensionBorrows(scope, "await");
-            ValueInfo awaitedValue = checkExpr(awaited.expression(), scope, consuming);
+            // HasFuture.get_future() is a synchronous immutable receiver loan,
+            // not an implicit ownership transfer of the capability object.
+            // Preserve reusability of named capabilities across two awaits.
+            // Unknown expressions keep the existing conservative move rule.
+            Ast.TypeRef operandType = syntacticType(awaited.expression(), scope);
+            boolean borrowCapability = hasFutureResult(
+                    operandType, new LinkedHashSet<>()) != null;
+            ValueInfo awaitedValue = checkExpr(
+                    awaited.expression(), scope, borrowCapability ? false : consuming);
             if (awaitedValue.type.name().equals("Future") && awaitedValue.type.arguments().size() == 1) {
                 Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
                 return new ValueInfo(result, kindOfType(result), null);
