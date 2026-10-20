@@ -18,6 +18,7 @@ spec.loader.exec_module(pub)
 A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
 W1, W2 = ("1"*40, "2"*40)
 TEST_BRANCH = "ci/oreslang-" + D + "-" + A
+AUTH_BRANCH = "ci/authorized-" + C
 
 
 class DestinationBoundPublisherTests(unittest.TestCase):
@@ -311,7 +312,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 "bypass_actors": [],
                 "conditions": {
                     "ref_name": {
-                        "include": ["refs/heads/ci/oreslang-*"],
+                        "include": [
+                            "refs/heads/ci/authorized-*",
+                            "refs/heads/ci/oreslang-*",
+                        ],
                         "exclude": [],
                     }
                 },
@@ -321,8 +325,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     {"type": "deletion"},
                 ],
             }
-        if route == ("repos/trusted/ci/rules/branches/"
-                     + TEST_BRANCH.replace("/", "%2F") + "?per_page=100&page=1"):
+        if route in (
+                "repos/trusted/ci/rules/branches/"
+                + TEST_BRANCH.replace("/", "%2F") + "?per_page=100&page=1",
+                "repos/trusted/ci/rules/branches/"
+                + AUTH_BRANCH.replace("/", "%2F") + "?per_page=100&page=1"):
             return [
                 {"type": "update", "ruleset_id": 777,
                  "ruleset_source_type": "Repository",
@@ -332,8 +339,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                  "ruleset_source_type": "Repository",
                  "ruleset_source": "trusted/ci"},
             ]
-        if route == ("repos/trusted/ci/git/matching-refs/heads/"
-                     + TEST_BRANCH + "?per_page=1&page=1"):
+        if route in (
+                "repos/trusted/ci/git/matching-refs/heads/"
+                + TEST_BRANCH + "?per_page=1&page=1",
+                "repos/trusted/ci/git/matching-refs/heads/"
+                + AUTH_BRANCH + "?per_page=1&page=1"):
             return []
         if route == pub.at_ref("repos/trusted/ci/codeowners/errors", A):
             return {"errors": self.carrier_codeowners_errors}
@@ -349,16 +359,23 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 "path": self.carrier_extra_workflow,
                 "mode": "100644", "type": "blob", "sha": E,
             })
+        if route == "repos/trusted/ci/git/refs" and method == "POST":
+            ref = payload.get("ref") if isinstance(payload, dict) else None
+            if ref not in ("refs/heads/" + TEST_BRANCH,
+                           "refs/heads/" + AUTH_BRANCH):
+                raise AssertionError("unexpected ref creation " + repr(ref))
+            return {"ref": ref, "object": {"sha": C, "type": "commit"}}
         mapping = {
             "repos/trusted/ci/git/commits/"+A: {"sha": A, "tree": {"sha": B}},
             "repos/trusted/ci/git/trees/"+B+"?recursive=1": {
                 "sha": B, "truncated": self.carrier_tree_truncated, "tree": workflow_tree},
             "repos/trusted/ci/git/commits": {"sha": C},
             "repos/trusted/ci/git/commits/"+C: {"sha": C, "tree": {"sha": E}},
-            "repos/trusted/ci/git/refs": {
-                "ref": "refs/heads/" + TEST_BRANCH, "object": {"sha": C}},
             "repos/trusted/ci/git/ref/heads/" + TEST_BRANCH: {
                 "ref": "refs/heads/" + TEST_BRANCH,
+                "object": {"sha": C, "type": "commit"}},
+            "repos/trusted/ci/git/ref/heads/" + AUTH_BRANCH: {
+                "ref": "refs/heads/" + AUTH_BRANCH,
                 "object": {"sha": C, "type": "commit"}},
             "repos/trusted/ci/git/trees/"+E: {
                 "sha": E, "truncated": False,
@@ -1274,7 +1291,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual([r for _, r, _ in writes], [
             "repos/trusted/ci/git/blobs", "repos/trusted/ci/git/trees",
             "repos/trusted/ci/git/trees", "repos/trusted/ci/git/commits",
-            "repos/trusted/ci/git/refs"])
+            "repos/trusted/ci/git/refs", "repos/trusted/ci/git/refs"])
         self.assertEqual(writes[-1][2]["ref"], "refs/heads/" + TEST_BRANCH)
         self.assertEqual(writes[1][2]["tree"][0]["path"], "hello.ores")
         self.assertNotIn("base_tree", writes[1][2])
