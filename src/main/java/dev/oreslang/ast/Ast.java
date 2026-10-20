@@ -55,7 +55,7 @@ public final class Ast {
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl, ModelDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
@@ -248,6 +248,51 @@ public final class Ast {
     public record Param(TypeRef type, String name, boolean structural, boolean mutable) {
         public Param(TypeRef type, String name) { this(type, name, false, false); }
         public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, false); }
+    }
+
+    /** Compile-time configuration parameter of a first-class model declaration. */
+    public record ModelParam(TypeRef type, String name, Expr defaultValue) {
+        public ModelParam {
+            java.util.Objects.requireNonNull(type, "model parameter type");
+            if (name == null || name.isBlank() || name.equals("_") || name.startsWith("$")) {
+                throw new IllegalArgumentException("invalid model parameter name");
+            }
+        }
+    }
+
+    /** One statically named operation in the v1 ordered ModelGraph body. */
+    public record ModelOp(String name, List<Expr> arguments) {
+        public ModelOp {
+            if (name == null || name.isBlank() || name.startsWith("$")) {
+                throw new IllegalArgumentException("invalid model operation name");
+            }
+            arguments = List.copyOf(arguments);
+        }
+    }
+
+    /**
+     * Nominal first-class computational model declaration.
+     * The declaration is a compiler-owned immutable graph blueprint, not a class or actor.
+     */
+    public record ModelDecl(
+            String name,
+            Visibility visibility,
+            List<ModelParam> parameters,
+            List<ModelOp> operations) implements Decl {
+        public ModelDecl {
+            if (name == null || name.isBlank() || name.equals("_") || name.startsWith("$")) {
+                throw new IllegalArgumentException("invalid model name");
+            }
+            parameters = List.copyOf(parameters);
+            operations = List.copyOf(operations);
+            java.util.HashSet<String> parameterNames = new java.util.HashSet<>();
+            for (ModelParam parameter : parameters) {
+                if (!parameterNames.add(parameter.name())) {
+                    throw new IllegalArgumentException(
+                            "duplicate model parameter '" + parameter.name() + "'");
+                }
+            }
+        }
     }
 
     /** A source generic name and its optional compile-time default type. */
