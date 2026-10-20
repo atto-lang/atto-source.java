@@ -340,8 +340,13 @@ public final class IpcReceiptCompletionBridge {
                 done.add(completion);
             }
         }
-        for (var future : done) {
-            future.complete(IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN);
+        int index = 0;
+        for (var loss : losses) {
+            IpcReceiptCorrelation.Stage terminal =
+                    loss.lastObserved() == IpcReceiptCorrelation.Stage.LOCAL_ADMITTED
+                            ? IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE
+                            : IpcReceiptCorrelation.Stage.OUTCOME_UNKNOWN;
+            done.get(index++).complete(terminal);
         }
         return done.size();
     }
