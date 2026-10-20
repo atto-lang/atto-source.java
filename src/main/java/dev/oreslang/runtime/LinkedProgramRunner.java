@@ -232,16 +232,16 @@ public final class LinkedProgramRunner {
 
                     for (String id : ids) {
                         IncrementalCompiler.CompiledUnit unit = build.units().get(id);
+                        if (unit.checkedProgram() == null) {
+                            throw new IllegalStateException(
+                                    "incremental compiler unit lacks checked-program proof: " + id);
+                        }
                         Source source = Source.newBuilder(OresLanguage.ID, unit.sourceText(), id)
                                 .mimeType(OresLanguage.MIME_TYPE)
                                 .buildLiteral();
                         try (OresLanguage.PrecheckedProgramScope ignored =
                                 OresLanguage.openPrecheckedProgram(
                                         id, unit.sourceText(), unit.checkedProgram())) {
-                            if (unit.checkedProgram() == null) {
-                                throw new IllegalStateException(
-                                        "incremental compiler unit lacks checked-program proof: " + id);
-                            }
                             parsedUnits.put(id, context.parse(source));
                         }
                     }
