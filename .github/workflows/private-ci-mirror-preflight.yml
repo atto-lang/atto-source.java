@@ -60,7 +60,16 @@ jobs:
           }
           tree="$(git rev-parse --verify 'HEAD^{tree}')"
           [[ "$tree" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          # HEAD alone is unchanged by tracked working-tree or index edits.
+          # Refuse receipts if any test mutated the checked-out source.
+          git diff --quiet --exit-code HEAD --
+          git diff --cached --quiet --exit-code HEAD --
+          if [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+            echo 'PRIVATE_PUBLISHER_UNTRACKED_FILES' >&2
+            exit 1
+          fi
           printf 'PRIVATE_PUBLISHER_EXACT_HEAD=%s TREE=%s\n' "$actual" "$tree"
+          echo "EXPECTED_SOURCE_TREE=$tree" >> "$GITHUB_ENV"
           printf 'Publisher source commit: `%s`\nSource root tree: `%s`\n' "$actual" "$tree" >> "$GITHUB_STEP_SUMMARY"
       - name: Assert private CI guard fail-closed behavior
         run: |
@@ -82,4 +91,20 @@ jobs:
             echo 'PRIVATE_PUBLISHER_POST_TEST_HEAD_MISMATCH' >&2
             exit 1
           }
-          printf 'PRIVATE_PUBLISHER_REGRESSIONS_COMPLETE_SHA=%s PASSES=3\n' "$actual"
+          git diff --quiet --exit-code HEAD -- || {
+            echo 'PRIVATE_PUBLISHER_TRACKED_SOURCE_DIRTY' >&2
+            exit 1
+          }
+          git diff --cached --quiet --exit-code HEAD -- || {
+            echo 'PRIVATE_PUBLISHER_INDEX_DIRTY' >&2
+            exit 1
+          }
+          if [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+            echo 'PRIVATE_PUBLISHER_UNTRACKED_FILES' >&2
+            exit 1
+          fi
+          [[ "$(git rev-parse --verify 'HEAD^{tree}')" == "$EXPECTED_SOURCE_TREE" ]] || {
+            echo 'PRIVATE_PUBLISHER_TREE_MISMATCH' >&2
+            exit 1
+          }
+          printf 'PRIVATE_PUBLISHER_REGRESSIONS_COMPLETE_SHA=%s TREE=%s PASSES=3\n' "$actual" "$EXPECTED_SOURCE_TREE"
