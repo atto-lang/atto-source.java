@@ -53,7 +53,7 @@ Python launcher rather than a shell program, so `BASH_ENV`, shell startup
 files, caller `PYTHONPATH`, and caller `PATH` cannot execute before the
 trusted environment is reduced to the fixed control-plane inputs. Before
 reading potentially sensitive source bytes, the publisher
-runs `preflight-private-ci-mirror.sh` from the trusted main control-plane checkout with a sanitized environment. That preflight verifies the exact clean source checkout, either a live same-repository `pr:<N>` head or the authenticated current `main` head, the clean trusted control-plane `main`, authoritative security-program blobs, applicable approval mode, policy row, and
+runs `preflight-private-ci-mirror.sh` from the trusted main control-plane checkout with a sanitized environment. The source checkout is treated as an untrusted Git repository: source-side Git object reads disable replacement refs and lazy promisor fetches, and cannot prompt for credentials. That preflight verifies the exact clean source checkout, either a live same-repository `pr:<N>` head or the authenticated current `main` head, the clean trusted control-plane `main`, authoritative security-program blobs, applicable approval mode, policy row, and
 destination identity. It also resolves the reviewed destination carrier
 directly by its immutable Git commit SHA and requires that commit's tree to
 equal the reviewed carrier tree embedded in the authoritative exporter.
