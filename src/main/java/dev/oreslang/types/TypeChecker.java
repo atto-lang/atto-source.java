@@ -4312,7 +4312,9 @@ public final class TypeChecker {
             return containsChannelCallable(borrow.target(), seen, genericBindings);
         }
         if (type instanceof ListType list) {
-            return containsChannelCallable(list.element(), seen, genericBindings);
+            if (containsChannelCallable(list.element(), seen, genericBindings)) return true;
+            return list.repeatUnit().stream()
+                    .anyMatch(slot -> containsChannelCallable(slot, seen, genericBindings));
         }
         if (type instanceof Tuple tuple) {
             return tuple.elements().stream()
@@ -4384,7 +4386,9 @@ public final class TypeChecker {
             return containsChannelBorrow(receiverSelf.bound(), seen, genericBindings);
         }
         if (type instanceof ListType list) {
-            return containsChannelBorrow(list.element(), seen, genericBindings);
+            if (containsChannelBorrow(list.element(), seen, genericBindings)) return true;
+            return list.repeatUnit().stream()
+                    .anyMatch(slot -> containsChannelBorrow(slot, seen, genericBindings));
         }
         if (type instanceof Tuple tuple) {
             return tuple.elements().stream()
@@ -4531,8 +4535,10 @@ public final class TypeChecker {
                 }
                 for (int i = 0; i < list.elements().size(); i++) {
                     Type actual = typeOf(list.elements().get(i), env, generics, self);
-                    requireAssignable(actual, unit.get(i % unit.size()),
+                    Type slot = unit.get(i % unit.size());
+                    requireReadonlyCapabilityPreserved(actual, slot,
                             "repeating sequence element " + i);
+                    requireAssignable(actual, slot, "repeating sequence element " + i);
                 }
                 return patterned;
             }
@@ -4637,8 +4643,18 @@ public final class TypeChecker {
                     targetRecord.kind());
         }
         if (source instanceof ListType sourceList && target instanceof ListType targetList) {
+            List<Type> slots = targetList.repeatUnit();
+            if (sourceList.patterned() && targetList.patterned()
+                    && sourceList.repeatUnit().size() == slots.size()) {
+                List<Type> overlay = new ArrayList<>(slots.size());
+                for (int i = 0; i < slots.size(); i++) {
+                    overlay.add(overlayReadonlyCapabilities(
+                            sourceList.repeatUnit().get(i), slots.get(i)));
+                }
+                slots = List.copyOf(overlay);
+            }
             return new ListType(overlayReadonlyCapabilities(sourceList.element(), targetList.element()),
-                    targetList.repeatUnit());
+                    slots);
         }
         if (source instanceof Tuple sourceTuple && target instanceof Tuple targetTuple
                 && sourceTuple.kind() == targetTuple.kind()
@@ -4705,7 +4721,15 @@ public final class TypeChecker {
             return false;
         }
         if (source instanceof ListType sourceList && target instanceof ListType targetList) {
-            return readonlyCapabilityErased(sourceList.element(), targetList.element());
+            if (readonlyCapabilityErased(sourceList.element(), targetList.element())) return true;
+            if (sourceList.patterned() && targetList.patterned()
+                    && sourceList.repeatUnit().size() == targetList.repeatUnit().size()) {
+                for (int i = 0; i < sourceList.repeatUnit().size(); i++) {
+                    if (readonlyCapabilityErased(
+                            sourceList.repeatUnit().get(i), targetList.repeatUnit().get(i))) return true;
+                }
+            }
+            return false;
         }
         if (source instanceof Tuple sourceTuple && target instanceof Tuple targetTuple
                 && sourceTuple.kind() == targetTuple.kind()
@@ -4804,6 +4828,12 @@ public final class TypeChecker {
         }
 
         if (source instanceof ListType list) {
+            // A rest binding could share mutable backing storage with its
+            // patterned owner; fail closed until copy-vs-view is proven.
+            if (list.patterned() && restIndex >= 0) {
+                throw new IllegalArgumentException(
+                        "rest destructuring a repeating-pattern collection requires an ownership-safe projection");
+            }
             List<Type> result = new ArrayList<>(bindings.size());
             for (int i = 0; i < fixedArity; i++) result.add(list.element());
             if (restIndex >= 0) result.add(new ListType(list.element()));
@@ -5335,6 +5365,10 @@ public final class TypeChecker {
         if (type instanceof Primitive || type instanceof StringLiteral) return;
         if (type instanceof ListType list) {
             validateActorCallableBoundaryType(list.element(), actorKind, false, where + " element");
+            for (int i = 0; i < list.repeatUnit().size(); i++) {
+                validateActorCallableBoundaryType(list.repeatUnit().get(i),
+                        actorKind, false, where + " repeated slot " + i);
+            }
             return;
         }
         if (type instanceof Tuple tuple) {
@@ -5428,7 +5462,11 @@ public final class TypeChecker {
             Type bound = genericBindings.get(generic.name());
             return bound != null && bound != type && isSharedSafe(bound, seen, genericBindings);
         }
-        if (type instanceof ListType list) return isSharedSafe(list.element(), seen, genericBindings);
+        if (type instanceof ListType list) {
+            if (!isSharedSafe(list.element(), seen, genericBindings)) return false;
+            return list.repeatUnit().stream()
+                    .allMatch(slot -> isSharedSafe(slot, seen, genericBindings));
+        }
         if (type instanceof Union union) {
             for (Type option : union.options()) if (!isSharedSafe(option, seen, genericBindings)) return false;
             return true;
