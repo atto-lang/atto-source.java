@@ -8972,16 +8972,48 @@ public final class TypeChecker {
             Type candidate = actual.members().get(required.getKey());
             if (candidate == null) return false;
             if (expected.readOnly()) {
-                if (!candidate.equals(required.getValue())
-                        && (Types.containsUncertainType(candidate)
-                                || !assignable(candidate, required.getValue()))) {
-                    return false;
-                }
+                if (!readonlyStructuralMemberAssignable(candidate, required.getValue())) return false;
             } else if (!candidate.equals(required.getValue())) {
                 return false;
             }
         }
         return true;
+    }
+
+    /**
+     * A readonly structural slot is an alias of existing storage, not an implicit
+     * conversion. Reject numeric widening even when ordinary argument passing
+     * could convert int to float. Preserve safe nominal subtype and callable
+     * variance proofs using this checker's declaration metadata.
+     */
+    private boolean readonlyStructuralMemberAssignable(Type source, Type target) {
+        if (source.equals(target)) return true;
+        if (Types.containsUncertainType(source) || Types.containsUncertainType(target)) return false;
+        if (source instanceof StringLiteral && target == Primitive.STRING) return true;
+        if (source instanceof BoolLiteral && target == Primitive.BOOL) return true;
+        if (source instanceof Union union) {
+            return union.options().stream().allMatch(t -> readonlyStructuralMemberAssignable(t, target));
+        }
+        if (target instanceof Union union) {
+            return union.options().stream().anyMatch(t -> readonlyStructuralMemberAssignable(source, t));
+        }
+        if (source instanceof Record from && target instanceof Record to) {
+            return structuralRecordAssignable(from, to);
+        }
+        if (source instanceof Tuple from && target instanceof Tuple to) {
+            if (from.kind() != to.kind() || from.elements().size() != to.elements().size()) return false;
+            for (int i = 0; i < from.elements().size(); i++) {
+                if (!readonlyStructuralMemberAssignable(from.elements().get(i), to.elements().get(i))) return false;
+            }
+            return true;
+        }
+        if (source instanceof Function && target instanceof Function) {
+            return assignable(source, target);
+        }
+        if (source instanceof Named && target instanceof Named) {
+            return assignable(source, target);
+        }
+        return false;
     }
 
     private Named concreteClassReference(Ast.TypeRef ref, Ast.ClassDecl owner, Named ownerType) {
