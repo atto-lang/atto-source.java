@@ -4004,6 +4004,10 @@ public final class TypeChecker {
             if (created.type().name().equals("Symbol") && findClass("Symbol") == null) {
                 throw new IllegalArgumentException("new Symbol(...) is not supported; use #name or Symbol.stable(uuid)");
             }
+            if (created.type().name().equals("Entry") && findClass("Entry") == null) {
+                throw new IllegalArgumentException(
+                        "Entry<K,V> is an immutable value product and has no constructor; use Entry.of(key, value)");
+            }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
                         "DynamicStruct has been removed; use infer struct{...}, "
