@@ -29,7 +29,7 @@ die() {
 }
 
 usage() {
-  echo "usage: bash preflight-private-ci-mirror.sh <source-pr-number> <source-commit-sha> <source-tree-sha> <destination-branch> [maintainer-approval-comment-id security-approval-comment-id]" >&2
+  echo "usage: bash preflight-private-ci-mirror.sh <source-checkout> <source-selector: pr:N|main> <source-commit-sha> <source-tree-sha> <destination-branch> [maintainer-approval-comment-id security-approval-comment-id]" >&2
   exit 2
 }
 
@@ -68,12 +68,13 @@ require_plan_feature_unavailable() {
     || die "cannot prove $label is unavailable on the current repository plan"
 }
 
-[[ "$#" -eq 4 || "$#" -eq 6 ]] || usage
-source_pr="$1"
-expected_commit="$2"
-expected_tree="$3"
-destination_branch="$4"
-[[ "$source_pr" =~ ^[1-9][0-9]{0,8}$ ]] || usage
+[[ "$#" -eq 5 || "$#" -eq 7 ]] || usage
+source_checkout="$1"
+source_selector="$2"
+expected_commit="$3"
+expected_tree="$4"
+destination_branch="$5"
+[[ "$source_selector" == "main" || "$source_selector" =~ ^pr:[1-9][0-9]{0,8}$ ]] || usage
 [[ "$expected_commit" =~ ^[0-9a-f]{40}$ ]] || usage
 [[ "$expected_tree" =~ ^[0-9a-f]{40}$ ]] || usage
 [[ "$destination_branch" =~ ^ci/oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}$ ]] || usage
@@ -87,71 +88,92 @@ actual_source_id="$(gh_api "repos/$SOURCE_REPO" --jq '.id')" \
 [[ "$actual_source_id" == "$SOURCE_ID" ]] \
   || die "source GitHub repository ID mismatch"
 
-actual_root="$(git rev-parse --show-toplevel 2>/dev/null)" \
-  || die "not in a Git checkout"
-physical_pwd="$(pwd -P)"
-[[ "$actual_root" == "$physical_pwd" ]] \
-  || die "run at the top of the source repository checkout"
+control_root="$(git rev-parse --show-toplevel 2>/dev/null)" \
+  || die "trusted control plane is not in a Git checkout"
+control_pwd="$(pwd -P)"
+[[ "$control_root" == "$control_pwd" ]] \
+  || die "run the trusted control plane at the top of its checkout"
 
-actual_commit="$(git rev-parse --verify HEAD^{commit})" \
-  || die "cannot resolve HEAD commit"
-actual_tree="$(git rev-parse --verify HEAD^{tree})" \
-  || die "cannot resolve HEAD tree"
-[[ "$actual_commit" == "$expected_commit" ]] \
-  || die "source commit mismatch"
-[[ "$actual_tree" == "$expected_tree" ]] \
-  || die "source tree mismatch"
-[[ -z "$(git status --porcelain=v1 --untracked-files=all --ignored)" ]] \
-  || die "dirty tracked, untracked or ignored source checkout"
-
-# Bind the checkout to the current head of an open, same-repo pull request.
-# A caller-supplied but internally consistent commit/tree is insufficient.
-pr_head="$(gh_api "repos/$SOURCE_REPO/pulls/$source_pr" --jq '.head.sha')" \
-  || die "cannot resolve authenticated source PR"
-pr_state="$(gh_api "repos/$SOURCE_REPO/pulls/$source_pr" --jq '.state')" \
-  || die "cannot read source PR state"
-pr_base="$(gh_api "repos/$SOURCE_REPO/pulls/$source_pr" --jq '.base.ref')" \
-  || die "cannot read source PR base"
-pr_repo="$(gh_api "repos/$SOURCE_REPO/pulls/$source_pr" --jq '.head.repo.full_name')" \
-  || die "cannot read source PR repository"
-[[ "$pr_head" == "$expected_commit" && "$pr_state" == "open" \
-    && "$pr_base" == "main" && "$pr_repo" == "$SOURCE_REPO" ]] \
-  || die "source checkout is not the live head of an open same-repo PR"
-
-# Consult authenticated main for the authoritative policy/export-program blobs.
-# The running source head must contain byte/mode-identical security programs.
 main_sha="$(gh_api "repos/$SOURCE_REPO/branches/main" --jq '.commit.sha')" \
   || die "cannot read authenticated source main"
 main_protected="$(gh_api "repos/$SOURCE_REPO/branches/main" --jq '.protected')" \
   || die "cannot read authenticated source branch protection state"
 [[ "$main_sha" =~ ^[0-9a-f]{40}$ ]] \
   || die "invalid GitHub source main SHA"
-local_main="$(git rev-parse --verify refs/remotes/origin/main 2>/dev/null)" \
-  || die "missing origin/main: fetch the trusted source main first"
-[[ "$main_sha" == "$local_main" ]] \
-  || die "origin/main is stale or does not match GitHub main"
 
-policy_blob="$(git rev-parse "$main_sha:$POLICY_PATH" 2>/dev/null)" \
+control_head="$(git -C "$control_root" rev-parse --verify HEAD^{commit})" \
+  || die "cannot resolve trusted control-plane HEAD"
+[[ "$control_head" == "$main_sha" ]] \
+  || die "trusted control plane is not the authenticated current main head"
+[[ -z "$(git -C "$control_root" status --porcelain=v1 --untracked-files=all --ignored)" ]] \
+  || die "trusted control-plane checkout is dirty"
+
+source_root="$(cd -- "$source_checkout" 2>/dev/null && pwd -P)" \
+  || die "cannot resolve source checkout"
+source_git_root="$(git -C "$source_root" rev-parse --show-toplevel 2>/dev/null)" \
+  || die "source checkout is not a Git checkout"
+[[ "$source_git_root" == "$source_root" ]] \
+  || die "source path must be the exact source repository checkout root"
+
+actual_commit="$(git -C "$source_root" rev-parse --verify HEAD^{commit})" \
+  || die "cannot resolve source HEAD commit"
+actual_tree="$(git -C "$source_root" rev-parse --verify HEAD^{tree})" \
+  || die "cannot resolve source HEAD tree"
+[[ "$actual_commit" == "$expected_commit" ]] \
+  || die "source commit mismatch"
+[[ "$actual_tree" == "$expected_tree" ]] \
+  || die "source tree mismatch"
+[[ -z "$(git -C "$source_root" status --porcelain=v1 --untracked-files=all --ignored)" ]] \
+  || die "dirty tracked, untracked or ignored source checkout"
+
+source_pr=""
+case "$source_selector" in
+  main)
+    [[ "$expected_commit" == "$main_sha" ]] \
+      || die "main source selector is not the authenticated current main head"
+    ;;
+  pr:*)
+    source_pr="${source_selector#pr:}"
+    [[ "$source_root" != "$control_root" ]] \
+      || die "PR source checkout must be separate from the trusted main control plane"
+    pr_head="$(gh_api "repos/$SOURCE_REPO/pulls/$source_pr" --jq '.head.sha')" \
+      || die "cannot resolve authenticated source PR"
+    pr_state="$(gh_api "repos/$SOURCE_REPO/pulls/$source_pr" --jq '.state')" \
+      || die "cannot read source PR state"
+    pr_base="$(gh_api "repos/$SOURCE_REPO/pulls/$source_pr" --jq '.base.ref')" \
+      || die "cannot read source PR base"
+    pr_repo="$(gh_api "repos/$SOURCE_REPO/pulls/$source_pr" --jq '.head.repo.full_name')" \
+      || die "cannot read source PR repository"
+    [[ "$pr_head" == "$expected_commit" && "$pr_state" == "open" \
+        && "$pr_base" == "main" && "$pr_repo" == "$SOURCE_REPO" ]] \
+      || die "source checkout is not the live head of an open same-repo PR"
+    ;;
+  *)
+    usage
+    ;;
+esac
+
+policy_blob="$(git -C "$control_root" rev-parse "$main_sha:$POLICY_PATH" 2>/dev/null)" \
   || die "cannot resolve main private mirror policy blob"
-preflight_blob="$(git rev-parse "$main_sha:$PREFLIGHT_PATH" 2>/dev/null)" \
+preflight_blob="$(git -C "$control_root" rev-parse "$main_sha:$PREFLIGHT_PATH" 2>/dev/null)" \
   || die "cannot resolve main private mirror preflight blob"
-guard_blob="$(git rev-parse "$main_sha:$DEST_GUARD_PATH" 2>/dev/null)" \
+guard_blob="$(git -C "$control_root" rev-parse "$main_sha:$DEST_GUARD_PATH" 2>/dev/null)" \
   || die "cannot resolve main destination guard blob"
-wrapper_blob="$(git rev-parse "$main_sha:$WRAPPER_PATH" 2>/dev/null)" \
+wrapper_blob="$(git -C "$control_root" rev-parse "$main_sha:$WRAPPER_PATH" 2>/dev/null)" \
   || die "cannot resolve main destination wrapper blob"
-publisher_blob="$(git rev-parse "$main_sha:$PUBLISHER_PATH" 2>/dev/null)" \
+publisher_blob="$(git -C "$control_root" rev-parse "$main_sha:$PUBLISHER_PATH" 2>/dev/null)" \
   || die "cannot resolve main private publisher blob"
 
 verify_security_entry() {
   local path="$1"
   local main_entry source_entry
-  main_entry="$(git ls-tree "$main_sha" -- "$path")" \
+  main_entry="$(git -C "$control_root" ls-tree "$main_sha" -- "$path")" \
     || die "cannot inspect authoritative main export file: $path"
-  source_entry="$(git ls-tree "$expected_commit" -- "$path")" \
+  source_entry="$(git -C "$source_root" ls-tree "$expected_commit" -- "$path")" \
     || die "cannot inspect source-head export file: $path"
   [[ -n "$main_entry" && "$source_entry" == "$main_entry" ]] \
     || die "source-head export file mode/blob differs from authoritative main: $path"
-  [[ -f "$path" && ! -L "$path" ]] \
+  [[ -f "$source_root/$path" && ! -L "$source_root/$path" ]] \
     || die "security-critical export path is not a regular non-symlink file: $path"
 }
 
@@ -161,7 +183,7 @@ verify_security_entry "$DEST_GUARD_PATH"
 verify_security_entry "$WRAPPER_PATH"
 verify_security_entry "$PUBLISHER_PATH"
 
-policy="$(git show "$main_sha:$POLICY_PATH")" \
+policy="$(git -C "$control_root" show "$main_sha:$POLICY_PATH")" \
   || die "cannot read authoritative main allowlist"
 [[ "$policy" != *$'\r'* ]] \
   || die "private mirror policy must use LF line endings only"
@@ -251,17 +273,17 @@ elif [[ "$main_protected" == "false" ]]; then
     "repos/$SOURCE_REPO/branches/main/protection" "classic branch protection"
   require_plan_feature_unavailable \
     "repos/$SOURCE_REPO/rulesets" "repository rulesets"
-  [[ "$#" -eq 6 ]] \
+  [[ "$#" -eq 7 ]] \
     || die "unprotected main requires review-attested-v1 comment IDs"
-  maintainer_comment_id="$5"
-  security_comment_id="$6"
+  maintainer_comment_id="$6"
+  security_comment_id="$7"
   [[ "$maintainer_comment_id" =~ ^[1-9][0-9]*$ \
       && "$security_comment_id" =~ ^[1-9][0-9]*$ ]] \
     || die "invalid review-attested approval comment ID"
   [[ "$maintainer_comment_id" != "$security_comment_id" ]] \
     || die "maintainer and security approvals must be distinct comments"
 
-  approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=$SOURCE_REPO source_repo_id=$SOURCE_ID source_pr=$source_pr source_commit=$expected_commit source_tree=$expected_tree destination_repo=$DEST_REPO destination_repo_id=$DEST_ID destination_branch=$destination_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree destination_workflow_blob=$dest_workflow_blob policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
+  approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=$SOURCE_REPO source_repo_id=$SOURCE_ID source_selector=$source_selector source_commit=$expected_commit source_tree=$expected_tree destination_repo=$DEST_REPO destination_repo_id=$DEST_ID destination_branch=$destination_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree destination_workflow_blob=$dest_workflow_blob policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
 
   verify_attestation_comment() {
     local comment_id="$1"
@@ -316,8 +338,8 @@ final_workflow_blob="$(gh_api "repos/$DEST_REPO/contents/$DEST_WORKFLOW_PATH?ref
   || die "destination exact-tree workflow changed during authorization"
 require_destination_branch_absent
 
-printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_pr=%s source_commit=%s source_tree=%s destination_branch=%s destination_base_commit=%s destination_base_tree=%s destination_workflow_blob=%s main_sha=%s policy_blob=%s preflight_blob=%s guard_blob=%s wrapper_blob=%s publisher_blob=%s dest_repo_id=%s\n' \
-  "$auth_mode" "$source_pr" "$actual_commit" "$actual_tree" "$destination_branch" \
+printf 'PRIVATE_MIRROR_PREFLIGHT_PASS auth_mode=%s source_selector=%s source_commit=%s source_tree=%s destination_branch=%s destination_base_commit=%s destination_base_tree=%s destination_workflow_blob=%s main_sha=%s policy_blob=%s preflight_blob=%s guard_blob=%s wrapper_blob=%s publisher_blob=%s dest_repo_id=%s\n' \
+  "$auth_mode" "$source_selector" "$actual_commit" "$actual_tree" "$destination_branch" \
   "$dest_base_commit" "$dest_base_tree" "$dest_workflow_blob" "$main_sha" \
   "$policy_blob" "$preflight_blob" "$guard_blob" "$wrapper_blob" "$publisher_blob" "$actual_id"
 

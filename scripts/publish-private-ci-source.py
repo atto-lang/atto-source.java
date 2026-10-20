@@ -29,6 +29,10 @@ PREFIX = "private-oreslang-source"
 MIRROR_DESTINATION = "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra"
 DEST_BASE_COMMIT = "c5f5155259aa37b808f4e96dbe09cddded4c04ed"
 DEST_BASE_TREE = "15fcb558350a2965d9edf1f503d45a6d8e7f98df"
+SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
+SOURCE_SELECTOR = re.compile(r"^(?:main|pr:[1-9][0-9]{0,8})$")
+TRUSTED_PATH = "/usr/local/bin:/usr/bin:/bin"
+
 
 
 class Denied(RuntimeError):
@@ -41,12 +45,39 @@ def valid_sha(value):
     return value
 
 
+def trusted_binary(name):
+    for directory in ("/usr/bin", "/bin", "/usr/local/bin"):
+        candidate = Path(directory) / name
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if resolved.is_file() and os.access(resolved, os.X_OK):
+            return str(resolved)
+    raise Denied(f"trusted host tool unavailable: {name}")
+
+
+def trusted_env():
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        raise Denied("trusted GitHub token is required")
+    return {
+        "PATH": TRUSTED_PATH,
+        "HOME": "/tmp",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "GH_HOST": "github.com",
+        "GH_PROMPT_DISABLED": "1",
+        "GH_TOKEN": token,
+    }
+
+
 def gh_api(route, method="GET", payload=None):
-    argv = ["gh", "api", "--method", method, route,
+    argv = [trusted_binary("gh"), "api", "--method", method, route,
             "--header", "Accept: application/vnd.github+json"]
     if payload is not None:
         argv.extend(["--input", "-"])
-    env = dict(os.environ, GH_HOST="github.com", GH_PROMPT_DISABLED="1")
+    env = trusted_env()
     try:
         p = subprocess.run(argv, input=json.dumps(payload) if payload is not None else None,
                            capture_output=True, text=True, env=env, timeout=45, check=False)
@@ -92,49 +123,84 @@ def checked_carrier(repository):
     return commit_sha, tree_sha
 
 
-def require_preflight(repository, branch, root, source_pr, source_commit, source_tree,
+def require_trusted_control_plane(root):
+    """Require this executing publisher to come from the authenticated clean main head."""
+    root = root.resolve(strict=True)
+    main = gh_api(f"repos/{SOURCE_REPO}/branches/main")
+    try:
+        main_sha = valid_sha(main["commit"]["sha"])
+    except (KeyError, TypeError) as exc:
+        raise Denied("cannot resolve authenticated source main") from exc
+    git = trusted_binary("git")
+    env = trusted_env()
+
+    def run_git(*args):
+        try:
+            p = subprocess.run([git, "-C", str(root), *args],
+                               capture_output=True, text=True, env=env,
+                               timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise Denied("trusted control-plane Git inspection unavailable") from exc
+        if p.returncode != 0:
+            raise Denied("trusted control-plane Git inspection failed")
+        return p.stdout.strip()
+
+    top = run_git("rev-parse", "--show-toplevel")
+    head = run_git("rev-parse", "--verify", "HEAD^{commit}")
+    dirty = run_git("status", "--porcelain=v1", "--untracked-files=all", "--ignored")
+    if Path(top).resolve() != root:
+        raise Denied("trusted control plane must run at its checkout root")
+    if head != main_sha:
+        raise Denied("trusted control plane is not the authenticated current main head")
+    if dirty:
+        raise Denied("trusted control-plane checkout is dirty")
+    return main_sha
+
+
+def require_preflight(repository, branch, root, source, source_selector, source_commit, source_tree,
                       maintainer_comment=None, security_comment=None):
     """Run the authoritative export preflight before any source-byte read.
 
     This publisher is intentionally destination-bound while the reviewed policy
     contains a single approved mirror target. The shell preflight independently
-    revalidates the live PR/head/tree, authoritative main blobs, dual
-    attestations when needed, and destination identity.
+    revalidates the selected PR-or-main source commit/tree, authoritative main
+    control-plane blobs, dual attestations when needed, and destination identity.
     """
     if repository != MIRROR_DESTINATION:
         raise Denied("publisher is bound to the reviewed private mirror destination")
     if not isinstance(branch, str) or not BRANCH.fullmatch(branch):
         raise Denied("publisher requires one isolated reviewed CI branch")
-    if (not isinstance(source_pr, int) or source_pr <= 0
+    if (not isinstance(source_selector, str) or not SOURCE_SELECTOR.fullmatch(source_selector)
             or not isinstance(source_commit, str) or not SHA.fullmatch(source_commit)
             or not isinstance(source_tree, str) or not SHA.fullmatch(source_tree)):
-        raise Denied("exact source PR, commit and tree authorization is required")
+        raise Denied("exact source selector, commit and tree authorization is required")
     if (maintainer_comment is None) != (security_comment is None):
         raise Denied("both review-attested comment IDs must be supplied together")
     for value in (maintainer_comment, security_comment):
         if value is not None and (not isinstance(value, int) or value <= 0):
             raise Denied("invalid review-attested comment ID")
 
+    require_trusted_control_plane(root)
     preflight = root / "scripts" / "preflight-private-ci-mirror.sh"
     guard = root / "scripts" / "check-private-ci-destination.sh"
     for program in (preflight, guard):
         if program.is_symlink() or not program.is_file():
             raise Denied("trusted private CI authorization program missing")
 
-    argv = ["bash", str(preflight), str(source_pr), source_commit, source_tree, branch]
+    argv = [trusted_binary("bash"), str(preflight), str(source.resolve(strict=True)), source_selector, source_commit, source_tree, branch]
     if maintainer_comment is not None:
         argv.extend([str(maintainer_comment), str(security_comment)])
     try:
         p = subprocess.run(argv, cwd=root, capture_output=True, text=True,
-                           timeout=45, check=False)
+                           env=trusted_env(), timeout=45, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("private source export preflight unavailable") from exc
     if p.returncode != 0:
         raise Denied("private source export preflight denied")
 
     try:
-        p = subprocess.run(["bash", str(guard), repository], cwd=root,
-                           capture_output=True, text=True, timeout=30, check=False)
+        p = subprocess.run([trusted_binary("bash"), str(guard), repository], cwd=root,
+                           capture_output=True, text=True, env=trusted_env(), timeout=30, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("destination policy check unavailable") from exc
     if p.returncode != 0:
@@ -327,26 +393,25 @@ def collect_source(root, trusted_root):
     return sorted(entries, key=lambda item: item[0])
 
 
-def publish(repository, source, branch, trusted_root, source_pr=None,
+def publish(repository, source, branch, trusted_root, source_selector=None,
             source_commit=None, source_tree=None, maintainer_comment=None,
             security_comment=None):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
     # Approval comes before reading potentially sensitive source files.
-    require_preflight(repository, branch, trusted_root, source_pr, source_commit,
+    require_preflight(repository, branch, trusted_root, source, source_selector, source_commit,
                       source_tree, maintainer_comment, security_comment)
     approved_policy, expected_id = checked_policy_fingerprint(
         trusted_root, repository)
-    trusted = trusted_root.resolve(strict=True)
-    checked_source = source.resolve(strict=True)
-    try:
-        checked_source.relative_to(trusted)
-    except ValueError as exc:
-        raise Denied("source directory escapes the trusted checkout") from exc
-    files = collect_source(source, trusted_root)
+    trusted_root.resolve(strict=True)
+    source.resolve(strict=True)
+    # The trusted exporter/control plane and untrusted source checkout are
+    # deliberately separate trust domains. The preflight proves source identity;
+    # collection is anchored to that exact checkout root and never to control files.
+    files = collect_source(source, source)
     # Approval can be revoked while a bounded source tree is being read.
     # Revalidate before the first private byte is uploaded.
-    require_preflight(repository, branch, trusted_root, source_pr, source_commit,
+    require_preflight(repository, branch, trusted_root, source, source_selector, source_commit,
                       source_tree, maintainer_comment, security_comment)
     checked_repo(repository, expected_id)
     base_sha, base_tree = checked_carrier(repository)
@@ -401,9 +466,9 @@ def publish(repository, source, branch, trusted_root, source_pr=None,
     })
     commit_sha = valid_sha(commit.get("sha"))
     authorize_write()
-    # A deleted/edited attestation or changed PR head must prevent publication
+    # A deleted/edited attestation or changed selected source head must prevent publication
     # even if private unreferenced blobs/trees were already uploaded.
-    require_preflight(repository, branch, trusted_root, source_pr, source_commit,
+    require_preflight(repository, branch, trusted_root, source, source_selector, source_commit,
                       source_tree, maintainer_comment, security_comment)
     authorize_write()
     final_base_sha, final_base_tree = checked_carrier(repository)
@@ -423,7 +488,7 @@ def main(argv=None):
     p.add_argument("repository", help="approved private owner/repo")
     p.add_argument("--source-dir", required=True, type=Path)
     p.add_argument("--branch", required=True)
-    p.add_argument("--source-pr", required=True, type=int)
+    p.add_argument("--source-selector", required=True)
     p.add_argument("--source-commit", required=True)
     p.add_argument("--source-tree", required=True)
     p.add_argument("--maintainer-approval-comment", type=int)
@@ -437,7 +502,7 @@ def main(argv=None):
     try:
         commit, count = publish(
             args.repository, args.source_dir, args.branch, root,
-            args.source_pr, args.source_commit, args.source_tree,
+            args.source_selector, args.source_commit, args.source_tree,
             args.maintainer_approval_comment, args.security_approval_comment)
     except Denied as exc:
         print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)

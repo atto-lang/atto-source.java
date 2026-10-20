@@ -7,7 +7,7 @@
 # Authorization mode B (review-attested-v1): ONLY when branch protection is
 # technically unavailable, each individual export must have two distinct,
 # unedited GitHub issue comments (maintainer + @ORESoftware) whose identical
-# canonical payload binds the exact source PR/head/tree, destination repo/ID,
+# canonical payload binds the exact source selector/commit/tree, destination repo/ID,
 # and the exact policy, preflight, destination guard, wrapper, and publisher
 # blob IDs currently on main. Any source-head, destination, policy, or
 # security-critical export-path change invalidates approval.

@@ -70,13 +70,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(
                 repo, self.source, branch, self.root,
-                source_pr=1425, source_commit=C, source_tree=D)
+                source_selector="pr:1425", source_commit=C, source_tree=D)
 
     def test_real_preflight_rejects_missing_exact_source_authorization(self):
         self.preflight.stop()
         try:
-            with self.assertRaisesRegex(pub.Denied, "exact source PR"):
-                pub.require_preflight("trusted/ci", "ci/oreslang-test", self.root, None, None, None)
+            with self.assertRaisesRegex(pub.Denied, "exact source selector"):
+                pub.require_preflight("trusted/ci", "ci/oreslang-test", self.root, self.source, None, None, None)
         finally:
             self.preflight.start()
 
@@ -108,7 +108,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(
                     pub.Denied, "source subtree does not match authorized source tree"):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test",
-                            self.root, source_pr=1425, source_commit=C, source_tree=C)
+                            self.root, source_selector="pr:1425", source_commit=C, source_tree=C)
         writes = [r for m, r, _ in self.route_calls if m == "POST"]
         self.assertEqual(writes, [
             "repos/trusted/ci/git/blobs",
@@ -147,7 +147,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "carrier commit/tree mismatch"):
                 pub.publish(
                     "trusted/ci", self.source, "ci/oreslang-test", self.root,
-                    source_pr=1425, source_commit=C, source_tree=D)
+                    source_selector="pr:1425", source_commit=C, source_tree=D)
         self.assertFalse(any(r.endswith("/git/commits") or r.endswith("/git/refs")
                              for m, r, _ in self.route_calls if m == "POST"))
 
@@ -161,7 +161,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "carrier commit/tree mismatch"):
                 pub.publish(
                     "trusted/ci", self.source, "ci/oreslang-test", self.root,
-                    source_pr=1425, source_commit=C, source_tree=D)
+                    source_selector="pr:1425", source_commit=C, source_tree=D)
         self.assertFalse(any(r.endswith("/git/commits") or r.endswith("/git/refs")
                              for m, r, _ in self.route_calls if m == "POST"))
 
@@ -209,7 +209,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "approval.*(revoked|changed)"):
                 pub.publish(
                     "trusted/ci", self.source, "ci/oreslang-test", self.root,
-                    source_pr=1425, source_commit=C, source_tree=D)
+                    source_selector="pr:1425", source_commit=C, source_tree=D)
         writes = [r for m, r, _ in self.route_calls if m == "POST"]
         self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
 
@@ -488,7 +488,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaises(pub.Denied):
                 pub.publish(
                     "trusted/ci", self.source, "ci/oreslang-test", self.root,
-                    source_pr=1425, source_commit=C, source_tree=D)
+                    source_selector="pr:1425", source_commit=C, source_tree=D)
         self.assertFalse(any(r.endswith("/git/refs") for _, r, _ in self.route_calls))
 
     def test_valid_looking_but_incorrect_blob_sha_is_rejected(self):
@@ -501,23 +501,22 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "digest"):
                 pub.publish(
                     "trusted/ci", self.source, "ci/oreslang-test", self.root,
-                    source_pr=1425, source_commit=C, source_tree=D)
+                    source_selector="pr:1425", source_commit=C, source_tree=D)
         self.assertFalse(any(r.endswith("/git/refs") for _, r, _ in self.route_calls))
 
-    def test_source_must_be_under_trusted_checkout(self):
-        outside = self.root.parent / ("unsafe-" + self.root.name)
+    def test_source_checkout_is_separate_from_trusted_control_plane(self):
+        outside = self.root.parent / ("source-" + self.root.name)
         outside.mkdir()
         try:
             (outside / "outside.ores").write_text("private data")
             with patch.object(pub, "gh_api", side_effect=self.fake_api):
-                with self.assertRaisesRegex(pub.Denied, "trusted checkout"):
-                    pub.publish(
-                        "trusted/ci", outside, "ci/oreslang-test", self.root,
-                        source_pr=1425, source_commit=C, source_tree=D)
+                sha, count = pub.publish(
+                    "trusted/ci", outside, "ci/oreslang-test", self.root,
+                    source_selector="pr:1425", source_commit=C, source_tree=D)
+            self.assertEqual((sha, count), (A, 1))
         finally:
             (outside / "outside.ores").unlink()
             outside.rmdir()
-        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_denied_preflight_halts_before_api(self):
         with patch.object(pub, "require_preflight", side_effect=pub.Denied("not approved")):
@@ -542,7 +541,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertNotIn(".git/config", paths)
 
     def test_nested_source_git_metadata_directory_rejected(self):
-        (self.source / ".git").mkdir()
+        nested = self.source / "nested"
+        nested.mkdir()
+        (nested / ".git").mkdir()
         with self.assertRaises(pub.Denied):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))

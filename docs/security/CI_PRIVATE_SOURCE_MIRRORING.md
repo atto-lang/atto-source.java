@@ -21,8 +21,8 @@ protection and repository rulesets are unavailable because of the current
 private-repository plan; a generic 403/404, disabled setting, or integration
 permission failure is not sufficient evidence and fails closed.
 
-Both comments must be the exact same one-line payload binding the live source
-PR/head/tree, destination name/ID, exact new `ci/oreslang-*` target branch,
+Both comments must be the exact same one-line payload binding the source
+selector (`pr:<N>` or `main`), exact commit/tree, destination name/ID, exact new `ci/oreslang-*` target branch,
 reviewed destination carrier base commit/tree, and the authoritative-main blobs
 for the policy, preflight, destination guard, wrapper, and publisher. Any bound
 change voids the comments. The fallback is not active merely because its code
@@ -30,22 +30,17 @@ exists on a feature branch; it must itself be independently reviewed and merged
 first.
 
 Do **not** accept a destination allowlist or approval payload from arbitrary
-environment variables or unreviewed workflow inputs. The source checkout may
-be the exact PR tree being tested, but every security-critical export program
-must hash identically to its reviewed `main` blob before the preflight passes.
-A PR therefore cannot weaken its own exporter.
+environment variables or unreviewed workflow inputs. The exporter is executed only from a clean checkout whose `HEAD` equals the authenticated current `main` head. The source checkout is a separate trust domain in PR mode; source-owned security files must still hash identically to reviewed `main` before preflight passes. A PR therefore cannot execute or weaken its own exporter.
 
 ## Destination-bound source snapshot publisher
 
-The only supported transfer entry point is **not an arbitrary command
-launcher**. It accepts one reviewed destination, a bounded local source directory, a new
-isolated CI branch, and the exact source PR/commit/tree authorization:
+The only supported transfer entry point is **not an arbitrary command launcher**. It must itself run from authenticated current `main`; it accepts one reviewed destination, a separate exact source checkout, a new isolated CI branch, and the exact source selector/commit/tree authorization:
 
 ```bash
 scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
   --source-dir . \
   --branch ci/oreslang-verified-20261019 \
-  --source-pr 1425 \
+  --source-selector pr:1425 \
   --source-commit <40-hex-live-pr-head> \
   --source-tree <40-hex-exact-tree> \
   --maintainer-approval-comment <comment-id> \
@@ -54,9 +49,7 @@ scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
 
 The two comment flags are omitted only when protected-main authorization is
 effective. Before reading potentially sensitive source bytes, the publisher
-runs `preflight-private-ci-mirror.sh`. That preflight verifies the exact clean
-source checkout, live same-repository PR head, fresh authenticated `main`,
-authoritative security-program blobs, applicable approval mode, policy row, and
+runs `preflight-private-ci-mirror.sh` from the trusted main control-plane checkout with a sanitized environment. That preflight verifies the exact clean source checkout, either a live same-repository `pr:<N>` head or the authenticated current `main` head, the clean trusted control-plane `main`, authoritative security-program blobs, applicable approval mode, policy row, and
 destination identity. It also resolves the reviewed destination carrier
 directly by its immutable Git commit SHA and requires that commit's tree to
 equal the reviewed carrier tree embedded in the authoritative exporter.

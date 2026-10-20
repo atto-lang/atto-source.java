@@ -6,25 +6,29 @@ root="$(cd "$(dirname "$0")/.." && pwd -P)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+control="$tmp/control"
 repo="$tmp/source"
-mkdir -p "$repo/scripts" "$repo/.github" "$tmp/bin"
-cp "$root/scripts/preflight-private-ci-mirror.sh" "$repo/scripts/"
-cp "$root/scripts/check-private-ci-destination.sh" "$repo/scripts/"
-cp "$root/scripts/run-in-private-ci-destination.sh" "$repo/scripts/"
-cp "$root/scripts/publish-private-ci-source.py" "$repo/scripts/"
-cp "$root/.github/private-ci-approved-repositories.txt" "$repo/.github/"
+mkdir -p "$control/scripts" "$control/.github" "$tmp/bin"
+cp "$root/scripts/preflight-private-ci-mirror.sh" "$control/scripts/"
+cp "$root/scripts/check-private-ci-destination.sh" "$control/scripts/"
+cp "$root/scripts/run-in-private-ci-destination.sh" "$control/scripts/"
+cp "$root/scripts/publish-private-ci-source.py" "$control/scripts/"
+cp "$root/.github/private-ci-approved-repositories.txt" "$control/.github/"
 
-git -C "$repo" init -q -b main
-git -C "$repo" -c user.name=CI-Security -c user.email=ci-security@example.invalid add .
-git -C "$repo" -c user.name=CI-Security -c user.email=ci-security@example.invalid \
+git -C "$control" init -q -b main
+git -C "$control" -c user.name=CI-Security -c user.email=ci-security@example.invalid add .
+git -C "$control" -c user.name=CI-Security -c user.email=ci-security@example.invalid \
   commit -qm 'authoritative synthetic main'
-main_sha="$(git -C "$repo" rev-parse HEAD)"
-policy_blob="$(git -C "$repo" rev-parse "HEAD:.github/private-ci-approved-repositories.txt")"
-preflight_blob="$(git -C "$repo" rev-parse "HEAD:scripts/preflight-private-ci-mirror.sh")"
-guard_blob="$(git -C "$repo" rev-parse "HEAD:scripts/check-private-ci-destination.sh")"
-wrapper_blob="$(git -C "$repo" rev-parse "HEAD:scripts/run-in-private-ci-destination.sh")"
-publisher_blob="$(git -C "$repo" rev-parse "HEAD:scripts/publish-private-ci-source.py")"
-git -C "$repo" update-ref refs/remotes/origin/main "$main_sha"
+main_sha="$(git -C "$control" rev-parse HEAD)"
+main_tree="$(git -C "$control" rev-parse HEAD^{tree})"
+policy_blob="$(git -C "$control" rev-parse "HEAD:.github/private-ci-approved-repositories.txt")"
+preflight_blob="$(git -C "$control" rev-parse "HEAD:scripts/preflight-private-ci-mirror.sh")"
+guard_blob="$(git -C "$control" rev-parse "HEAD:scripts/check-private-ci-destination.sh")"
+wrapper_blob="$(git -C "$control" rev-parse "HEAD:scripts/run-in-private-ci-destination.sh")"
+publisher_blob="$(git -C "$control" rev-parse "HEAD:scripts/publish-private-ci-source.py")"
+
+git clone -q "$control" "$repo"
+git -C "$repo" checkout -q -b feature
 
 git -C "$repo" -c user.name=CI-Feature -c user.email=ci-feature@example.invalid \
   commit --allow-empty -qm 'synthetic source PR head'
@@ -139,11 +143,11 @@ esac
 EOF
 chmod +x "$tmp/bin/gh"
 
-approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=ores-truffle-oreslang/oreslang-source.java source_repo_id=1400792274 source_pr=1425 source_commit=$head source_tree=$tree destination_repo=ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra destination_repo_id=1412142815 destination_branch=$dest_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree destination_workflow_blob=$dest_workflow_blob policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
+approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=ores-truffle-oreslang/oreslang-source.java source_repo_id=1400792274 source_selector=pr:1425 source_commit=$head source_tree=$tree destination_repo=ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra destination_repo_id=1412142815 destination_branch=$dest_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree destination_workflow_blob=$dest_workflow_blob policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
 
 run_preflight() {
   (
-    cd "$repo"
+    cd "$control"
     env \
       PATH="$tmp/bin:$PATH" \
       SYNTH_HEAD="$head" \
@@ -167,32 +171,38 @@ assert_exit() {
 
 # Preferred protected-main mode needs no per-export comments.
 assert_exit 0 run_preflight SYNTH_PROTECTED=true \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch"
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch"
+
+# Post-merge verification may target the authenticated current main head.
+assert_exit 0 run_preflight SYNTH_PROTECTED=true \
+  bash scripts/preflight-private-ci-mirror.sh "$control" main "$main_sha" "$main_tree" "$dest_branch"
+assert_exit 1 run_preflight SYNTH_PROTECTED=true \
+  bash scripts/preflight-private-ci-mirror.sh "$control" main "$head" "$tree" "$dest_branch"
 
 # Unprotected main fails unless the exact dual attestation is supplied.
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch"
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch"
 
 # Correct, distinct, unedited attestations pass only when GitHub explicitly
 # reports both protection mechanisms as unavailable on the current plan.
 assert_exit 0 run_preflight SYNTH_PROTECTED=false \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 assert_exit 1 run_preflight SYNTH_PROTECTED=false SYNTH_DEST_BRANCH_EXISTS=true \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 
 # Authorization is bound to the exact reviewed destination carrier base and
 # the exact inline-cleanup workflow blob contained in that immutable carrier.
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   SYNTH_DEST_WORKFLOW_BLOB=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 
 # Authorization is bound to the exact reviewed destination carrier base.
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   SYNTH_DEST_BASE_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   SYNTH_DEST_BASE_TREE=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 
 # A previously reviewed carrier pair is stale once authorization is re-pinned.
 # This prevents an old green carrier from being reused after the reviewed
@@ -200,56 +210,56 @@ assert_exit 1 run_preflight SYNTH_PROTECTED=false \
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   SYNTH_DEST_BASE_COMMIT=4d1d65445a09eb47f383bd5dc373d36056346056 \
   SYNTH_DEST_BASE_TREE=825c75a6b4cf84c62510f717290d6c87f4611b9a \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   SYNTH_DEST_BASE_COMMIT=054b65982f0950a4e2f3fb4752e78f585198c2ff \
   SYNTH_DEST_BASE_TREE=09ccea168b563ee91f9cd7a938ddabb5a33078ec \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   SYNTH_DEST_BASE_COMMIT=1012deffdaa3d0aec03a98073dc1f48ec1565c08 \
   SYNTH_DEST_BASE_TREE=de8053d4005b326929e8734a5be741e82b40e9e7 \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   SYNTH_DEST_BASE_COMMIT=ec6a5ddc39dd5524285fcc18902d777c4827c666 \
   SYNTH_DEST_BASE_TREE=c7eba95c9abfc008e395194360327026cf33bd9c \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   SYNTH_DEST_BASE_COMMIT=fc49aa44726eac47301ae2d676c4b38954d3cc46 \
   SYNTH_DEST_BASE_TREE=1e9dec690e45df80758547e991d37f6b18872e33 \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   SYNTH_DEST_BASE_COMMIT=5e1079638ba322d0208631ef34fcbd3f129b40ab \
   SYNTH_DEST_BASE_TREE=1f2f5d5f816213192d13c179d0e9381d00fdeaf7 \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 
 # Merely leaving protection disabled must never activate the fallback when
 # either classic protection or rulesets is actually available.
 assert_exit 1 run_preflight SYNTH_PROTECTED=false SYNTH_BRANCH_PROTECTION_AVAILABLE=true \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 assert_exit 1 run_preflight SYNTH_PROTECTED=false SYNTH_RULESETS_AVAILABLE=true \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 
 # Opaque permission/integration failures are not proof of plan unavailability.
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   SYNTH_BRANCH_PROTECTION_ERROR="HTTP 403: Resource not accessible by integration" \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
   SYNTH_RULESETS_ERROR="HTTP 403: Resource not accessible by integration" \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 
 # Reusing one comment cannot satisfy two independent approvals.
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 101
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 101
 
 # Wrong security identity, edited comments, or payload drift all fail closed.
 assert_exit 1 run_preflight SYNTH_PROTECTED=false SYNTH_SECURITY_LOGIN=someone-else \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 assert_exit 1 run_preflight SYNTH_PROTECTED=false SYNTH_SECURITY_ID=999999 \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 assert_exit 1 run_preflight SYNTH_PROTECTED=false SYNTH_SECURITY_UPDATED=2026-10-19T19:00:01Z \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 assert_exit 1 run_preflight SYNTH_PROTECTED=false SYNTH_SECURITY_BODY=wrong-payload \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 
 # A clean feature commit that changes the running preflight must not be trusted
 # merely because its caller supplies the new commit/tree correctly.
@@ -259,9 +269,9 @@ git -C "$repo" -c user.name=CI-Feature -c user.email=ci-feature@example.invalid 
   commit -qm 'mutate preflight only on feature head'
 head="$(git -C "$repo" rev-parse HEAD)"
 tree="$(git -C "$repo" rev-parse HEAD^{tree})"
-approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=ores-truffle-oreslang/oreslang-source.java source_repo_id=1400792274 source_pr=1425 source_commit=$head source_tree=$tree destination_repo=ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra destination_repo_id=1412142815 destination_branch=$dest_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree destination_workflow_blob=$dest_workflow_blob policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
+approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=ores-truffle-oreslang/oreslang-source.java source_repo_id=1400792274 source_selector=pr:1425 source_commit=$head source_tree=$tree destination_repo=ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra destination_repo_id=1412142815 destination_branch=$dest_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree destination_workflow_blob=$dest_workflow_blob policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 
 # Reset to authoritative main, then mutate only the publisher. The approval
 # binds that blob too, so a feature branch cannot swap the copy routine after
@@ -276,8 +286,8 @@ git -C "$repo" -c user.name=CI-Feature -c user.email=ci-feature@example.invalid 
   commit -qm 'mutate publisher only on feature head'
 head="$(git -C "$repo" rev-parse HEAD)"
 tree="$(git -C "$repo" rev-parse HEAD^{tree})"
-approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=ores-truffle-oreslang/oreslang-source.java source_repo_id=1400792274 source_pr=1425 source_commit=$head source_tree=$tree destination_repo=ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra destination_repo_id=1412142815 destination_branch=$dest_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree destination_workflow_blob=$dest_workflow_blob policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
+approval_payload="PRIVATE_CI_EXPORT_APPROVAL_V1 source_repo=ores-truffle-oreslang/oreslang-source.java source_repo_id=1400792274 source_selector=pr:1425 source_commit=$head source_tree=$tree destination_repo=ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra destination_repo_id=1412142815 destination_branch=$dest_branch destination_base_commit=$dest_base_commit destination_base_tree=$dest_base_tree destination_workflow_blob=$dest_workflow_blob policy_blob=$policy_blob preflight_blob=$preflight_blob guard_blob=$guard_blob wrapper_blob=$wrapper_blob publisher_blob=$publisher_blob"
 assert_exit 1 run_preflight SYNTH_PROTECTED=false \
-  bash scripts/preflight-private-ci-mirror.sh 1425 "$head" "$tree" "$dest_branch" 101 102
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch" 101 102
 
 echo "PRIVATE_MIRROR_PREFLIGHT_SYNTHETIC_TEST_PASS"
