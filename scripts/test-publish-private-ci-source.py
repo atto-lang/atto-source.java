@@ -59,6 +59,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return {"sha": E if "base_tree" in payload else D}
         mapping = {
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
+            "repos/trusted/ci/git/ref/heads/ci/oreslang-test": {
+                "ref": "refs/heads/ci/oreslang-test",
+                "object": {"sha": A, "type": "commit"}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": A},
             "repos/trusted/ci/git/refs": {
@@ -340,6 +343,38 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return original(route, method, payload)
         with patch.object(pub, "gh_api", side_effect=missing_ref):
             with self.assertRaises(pub.Denied):
+                pub.publish("trusted/ci", self.source,
+                            "ci/oreslang-test", self.root, A)
+
+    def test_fresh_ref_must_be_read_back_from_github(self):
+        sha, count = self.publish()
+        self.assertEqual((sha, count), (A, 1))
+        observed = [route for method, route, payload in self.route_calls
+                    if method == "GET" and route ==
+                    "repos/trusted/ci/git/ref/heads/ci/oreslang-test"]
+        self.assertEqual(len(observed), 1)
+
+    def test_readback_rejects_ref_updated_by_another_writer(self):
+        original = self.fake_api
+        def swapped(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/ref/heads/ci/oreslang-test":
+                return {"ref": "refs/heads/ci/oreslang-test",
+                        "object": {"sha": B, "type": "commit"}}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=swapped):
+            with self.assertRaisesRegex(pub.Denied, "readback differs"):
+                pub.publish("trusted/ci", self.source,
+                            "ci/oreslang-test", self.root, A)
+
+    def test_readback_rejects_wrong_ref_type(self):
+        original = self.fake_api
+        def wrong_type(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/ref/heads/ci/oreslang-test":
+                return {"ref": "refs/heads/ci/oreslang-test",
+                        "object": {"sha": A, "type": "tag"}}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=wrong_type):
+            with self.assertRaisesRegex(pub.Denied, "readback differs"):
                 pub.publish("trusted/ci", self.source,
                             "ci/oreslang-test", self.root, A)
 
