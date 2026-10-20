@@ -74,4 +74,21 @@ final class ResolvedModelGraphLoweringV1Test {
                         () -> ResolvedModelGraphLoweringV1.lower(
                                 wrong, "finance.PriceEstimate@v1", registry(), Map.of())).getMessage());
     }
+    @Test
+    void unaryExternalRunInputMatchesSharedDigestVector() {
+        Map<String, Signature> external = Map.of(
+                "ValidatePrice", sig("1".repeat(64), List.of(), List.of(PRICE)),
+                "ApplyTaxBps", sig("2".repeat(64), List.of("i64"), List.of(PRICE)),
+                "RoundCents", sig("3".repeat(64), List.of(), List.of(PRICE)));
+        Graph graph = ResolvedModelGraphLoweringV1.lower(
+                source("define model PriceTransform as ValidatePrice() ApplyTaxBps(1500) RoundCents() end"),
+                "finance.PriceTransform@v1", external, Map.of());
+        assertEquals(577, PortableModelGraphDigestV1.canonicalBytes(graph).length);
+        assertEquals("069288245a672efe264581df42bfec4686192fdb210dca8ce7da7dda563ecac3",
+                PortableModelGraphDigestV1.digest(graph));
+        assertEquals(1, graph.nodes().getFirst().signature().inputs().size());
+        assertTrue(graph.nodes().getFirst().inputs().isEmpty());
+    }
+
+
 }
