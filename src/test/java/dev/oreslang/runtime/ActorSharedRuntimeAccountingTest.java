@@ -365,6 +365,54 @@ final class ActorSharedRuntimeAccountingTest {
     }
 
     @Test
+    void failedRuntimeCloseCannotZeroSharedAggregateBeforePhysicalProof()
+            throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        try {
+            var shared = runtime.shareReadonly(
+                    new java.util.ArrayList<>(java.util.List.of(11, 12, 13)));
+            long reserved = runtime.sharedMemoryBytes();
+            assertTrue(reserved > 0L);
+
+            var faultField = ActorRuntime.class.getDeclaredField(
+                    "runtimeCloseBeforeTerminationProofFaultForTesting");
+            faultField.setAccessible(true);
+            var attempts = new AtomicInteger();
+            faultField.set(runtime, (Runnable) () -> {
+                if (attempts.incrementAndGet() == 1) {
+                    throw new OutOfMemoryError(
+                            "injected before runtime physical-close proof");
+                }
+            });
+
+            var failure = assertThrows(OutOfMemoryError.class, runtime::close);
+            assertTrue(failure.getMessage().contains(
+                    "runtime physical-close proof"));
+            assertEquals(1, attempts.get());
+            assertEquals(reserved, runtime.sharedMemoryBytes(),
+                    "failed close must retain conservative shared aggregate");
+            assertThrows(IllegalStateException.class, shared::value,
+                    "resource invalidation may precede the final aggregate reset");
+
+            faultField.set(runtime, null);
+            runtime.close();
+
+            assertEquals(0L, runtime.sharedMemoryBytes(),
+                    "aggregate reset publishes only after physical close succeeds");
+        } finally {
+            try {
+                var faultField = ActorRuntime.class.getDeclaredField(
+                        "runtimeCloseBeforeTerminationProofFaultForTesting");
+                faultField.setAccessible(true);
+                faultField.set(runtime, null);
+            } catch (ReflectiveOperationException ignored) {
+                // Best-effort fixture cleanup.
+            }
+            runtime.close();
+        }
+    }
+
+    @Test
     void concurrentBalancedReservationsDoNotLoseRuntimeAccounting() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             Method reserve = operation(
