@@ -483,4 +483,44 @@ final class DynamicPropertyAccessRuntimeTest {
                 "7\n7\n7\n7\n",
                 output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
     }
+
+    @Test
+    void structuralClassDynamicAccessUsesCheckedPublicFieldDomain() {
+        String source = """
+                define class Product as
+                    pub val float x = 3.0;
+                    pub val float y = 4.0;
+                    private val string hidden = "secret";
+                end
+
+                fnc read(structural Product value, string key): float {
+                    return value[key];
+                }
+
+                pub fnc main(): void {
+                    stdio.println(read(new Product(), "y"));
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(OresLanguage.ID, source, "dynamic-structural-class-domain.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(output)
+                    .build()) {
+                context.eval(program);
+            }
+        });
+
+        assertEquals(
+                "4.0\n",
+                output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
+    }
 }
