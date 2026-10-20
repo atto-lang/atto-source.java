@@ -178,9 +178,11 @@ one-node-per-octet graph ceiling without making large payloads free.
 
 The one-shot Java actor bridge can therefore carry the full wire-valid 1 MiB
 unary body through ActorRuntime admission without expanding it into a boxed
-integer list. The strict result codec likewise accepts `OresBytes` directly;
-bootstrap integer byte lists remain compatibility input until source-level
-`Bytes` parsing/typechecking/lowering uses the compact value end to end.
+integer list. Source-level `Bytes` now type-checks and lowers to compact
+`OresBytes` end to end on this branch, including PRIVATE actor isolation,
+unsigned indexing, value equality and explicit checked construction from
+integer lists. The strict result codec accepts `OresBytes` directly;
+bootstrap integer byte lists remain only bounded compatibility input.
 
 The branch also includes the supervisor-owned TLS listener and concrete
 mutual-TLS authenticator described below. Production binding goes through
