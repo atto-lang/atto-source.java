@@ -970,6 +970,9 @@ public final class OresEvalRootNode extends RootNode {
             private final List<Ast.Stmt> blockBody;
             private final List<?> arguments;
             private TaskScope.Registration scopeRegistration;
+            private final Object taskScopeLock = new Object();
+            private final Set<TaskScope> activeTaskScopes =
+                    java.util.Collections.newSetFromMap(new IdentityHashMap<>());
             private Env initialBlockEnv;
 
             private SourceValueCont awaitingContinuation;
@@ -1003,6 +1006,68 @@ public final class OresEvalRootNode extends RootNode {
                 this.blockBody = List.copyOf(
                         Objects.requireNonNull(blockBody, "blockBody"));
                 this.arguments = List.of();
+            }
+
+            private void registerTaskScope(TaskScope scope) {
+                Objects.requireNonNull(scope, "Task scope");
+                synchronized (taskScopeLock) {
+                    if (!activeTaskScopes.add(scope)) {
+                        throw new IllegalStateException(
+                                "source Task registered the same Task scope twice");
+                    }
+                }
+            }
+
+            private void unregisterTaskScope(TaskScope scope) {
+                synchronized (taskScopeLock) {
+                    if (!activeTaskScopes.remove(scope)) {
+                        throw new IllegalStateException(
+                                "source Task retired an unknown Task scope");
+                    }
+                }
+            }
+
+            @Override
+            public void afterCarrierQuiescent(Runnable retire) {
+                Objects.requireNonNull(retire, "Task retirement");
+                final List<TaskScope> snapshot;
+                synchronized (taskScopeLock) {
+                    if (activeTaskScopes.isEmpty()) {
+                        retire.run();
+                        return;
+                    }
+                    snapshot = List.copyOf(activeTaskScopes);
+                }
+
+                java.util.concurrent.atomic.AtomicInteger remaining =
+                        new java.util.concurrent.atomic.AtomicInteger(snapshot.size());
+                java.util.concurrent.atomic.AtomicBoolean retired =
+                        new java.util.concurrent.atomic.AtomicBoolean();
+                for (TaskScope scope : snapshot) {
+                    final OresFuture<Void> drained;
+                    try {
+                        // Parent termination seals and revokes every still-live
+                        // lexical scope. Its barrier settles only after every
+                        // child has terminal authority and physical quiescence.
+                        drained = scope.cancelAndDrain();
+                    } catch (RuntimeException | Error corruption) {
+                        // Fail closed: a broken scope cannot manufacture a
+                        // parent physical-retirement witness.
+                        return;
+                    }
+                    drained.whenCompleteRuntime((ignored, failure) -> {
+                        synchronized (taskScopeLock) {
+                            activeTaskScopes.remove(scope);
+                        }
+                        if (remaining.decrementAndGet() == 0
+                                && retired.compareAndSet(false, true)) {
+                            // A failed drain still proves all child carriers
+                            // are physically retired; its failure is logical
+                            // outcome, not a reason to retain reclaimed memory.
+                            retire.run();
+                        }
+                    });
+                }
             }
 
             @Override
@@ -2125,6 +2190,7 @@ public final class OresEvalRootNode extends RootNode {
                             return;
                         }
                         TaskScope scope = new TaskScope();
+                        task.registerTaskScope(scope);
                         Env scopedEnv = new Env(env);
                         scopedEnv.taskScope = scope;
                         scopedEnv.taskScopeParent = null;
@@ -2137,9 +2203,11 @@ public final class OresEvalRootNode extends RootNode {
                                     flow.kind() == SourceFlowKind.THROW
                                             ? scope.cancelAndDrain()
                                             : scope.close();
-                            t.suspend(joined, (resumed, ignored, failure) ->
-                                    continuation.accept(resumed, failure == null
-                                            ? flow : mergeCleanupFailure(flow, failure)));
+                            t.suspend(joined, (resumed, ignored, failure) -> {
+                                resumed.unregisterTaskScope(scope);
+                                continuation.accept(resumed, failure == null
+                                        ? flow : mergeCleanupFailure(flow, failure));
+                            });
                         });
                     } else {
                         runBlock(task, block.body(), env, continuation);
