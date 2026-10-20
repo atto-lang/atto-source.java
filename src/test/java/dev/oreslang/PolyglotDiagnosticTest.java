@@ -125,7 +125,7 @@ final class PolyglotDiagnosticTest {
             assertEquals("<lambda>", lambda.getMember("symbol").asString());
             assertEquals("direct-async-stack.ores", lambda.getMember("source").asString());
             assertEquals(3, lambda.getMember("line").asLong());
-            assertEquals(34, lambda.getMember("column").asLong());
+            assertEquals(32, lambda.getMember("column").asLong());
 
             Value traces = guest.getMember("async_traces");
             assertTrue(traces.hasArrayElements());
