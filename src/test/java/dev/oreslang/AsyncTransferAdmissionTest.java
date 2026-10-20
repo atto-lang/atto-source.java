@@ -260,6 +260,33 @@ final class AsyncTransferAdmissionTest {
     }
 
     @Test
+    void firstClassAsyncCallFailsClosedWithoutOwnershipCallableMetadata() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define module app
+                          define class Box as
+                            pub let int value = 1;
+                          end
+
+                          async fnc consume(Box box): int {
+                            return box.value;
+                          }
+
+                          pub fnc main(): void {
+                            let original = new Box();
+                            val action = consume;
+                            val pending = action(original);
+                            return;
+                          }
+                        end
+                        """));
+        assertTrue(
+                failure.getMessage().contains("async lowering admission"),
+                failure::getMessage);
+    }
+
+    @Test
     void semanticAsyncBoundaryFailureProducesNoAdmissionResult() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
