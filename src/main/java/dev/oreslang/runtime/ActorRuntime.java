@@ -470,8 +470,8 @@ public final class ActorRuntime implements AutoCloseable {
             long bytes = reservedBytes;
             if (bytes != 0L) {
                 // Keep the exact debit locally until the aggregate release
-                // succeeds. A failed runtime close can then retry the same
-                // owner instead of skipping cleanup because sharedClosed=true.
+                // succeeds. Any live/internal cleanup retry must retain the
+                // same owner instead of treating sharedClosed=true as proof.
                 releaseSharedRuntimeBytes(bytes);
                 reservedBytes = 0L;
             }
