@@ -153,4 +153,40 @@ final class OresSchedulerScopeRetirementTest {
         }
     }
 
+    @Test
+    void shutdownRevokesPendingTaskButRetainsPhysicalRetirementLease() throws Exception {
+        java.util.concurrent.atomic.AtomicReference<Runnable> retireHook =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicInteger releases =
+                new java.util.concurrent.atomic.AtomicInteger();
+        CountDownLatch dispatched = new CountDownLatch(1);
+        CountDownLatch hookPublished = new CountDownLatch(1);
+        OresScheduler scheduler = new OresScheduler(1);
+        try {
+            OresFuture<Void> task = scheduler.start(new OresScheduler.Task<>() {
+                @Override
+                public OresScheduler.Step<Void> resume(OresScheduler.Resume resume) {
+                    dispatched.countDown();
+                    return OresScheduler.await(new OresFuture<>());
+                }
+                @Override
+                public void afterCarrierQuiescent(Runnable retire) {
+                    retireHook.set(retire);
+                    hookPublished.countDown();
+                }
+            }, releases::incrementAndGet);
+            assertTrue(dispatched.await(5, TimeUnit.SECONDS));
+            scheduler.close();
+            assertTrue(hookPublished.await(5, TimeUnit.SECONDS));
+            assertTrue(task.isCancelled(), "logical task authority revoked on close");
+            assertEquals(0, releases.get(),
+                    "closed scheduler must not reclaim a deferred child lease");
+            retireHook.get().run();
+            retireHook.get().run();
+            assertEquals(1, releases.get(), "deferred retirement is exactly once");
+        } finally {
+            scheduler.close();
+        }
+    }
+
 }
