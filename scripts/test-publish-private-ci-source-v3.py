@@ -346,15 +346,9 @@ class PrivateCiV3Test(unittest.TestCase):
             with (
                 patch.object(v3.legacy, "require_preflight"),
                 patch.object(v3.legacy, "checked_policy_fingerprint", return_value=POLICY),
-                patch.object(
-                    v3.legacy, "verify_protected_origin"
-                ) as verify_origin,
-                patch.object(
-                    v3, "protected_main_sha", return_value=PROTECTED
-                ) as protected_main,
-                patch.object(
-                    v3, "checked_contract", return_value=carrier
-                ) as checked_contract,
+                patch.object(v3.legacy, "verify_protected_origin"),
+                patch.object(v3, "protected_main_sha", return_value=PROTECTED),
+                patch.object(v3, "checked_contract", return_value=carrier),
                 patch.object(
                     v3,
                     "verify_source_pr",
@@ -474,9 +468,15 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(
                     v3.legacy, "checked_policy_fingerprint", return_value=POLICY
                 ),
-                patch.object(v3.legacy, "verify_protected_origin"),
-                patch.object(v3, "protected_main_sha", return_value=PROTECTED),
-                patch.object(v3, "checked_contract", return_value=carrier),
+                patch.object(
+                    v3.legacy, "verify_protected_origin"
+                ) as verify_origin,
+                patch.object(
+                    v3, "protected_main_sha", return_value=PROTECTED
+                ) as protected_main,
+                patch.object(
+                    v3, "checked_contract", return_value=carrier
+                ) as checked_contract,
                 patch.object(
                     v3, "verify_source_pr",
                     return_value=v3.SOURCE_REPOSITORY_ID,
