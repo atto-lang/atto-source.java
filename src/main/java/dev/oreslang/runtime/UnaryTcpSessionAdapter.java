@@ -91,18 +91,39 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
             long sessionId,
             long generation,
             long correlationId,
-            byte[] payload) {
+            OresBytes payloadValue) {
         Request {
             Objects.requireNonNull(peer, "peer");
-            Objects.requireNonNull(payload, "payload");
+            Objects.requireNonNull(payloadValue, "payloadValue");
             if (sessionId <= 0 || generation <= 0 || correlationId <= 0)
                 throw new IllegalArgumentException("invalid unary TCP request identity");
-            if (payload.length > UnaryTransportFrame.MAX_PAYLOAD_BYTES)
+            if (payloadValue.size() > UnaryTransportFrame.MAX_PAYLOAD_BYTES)
                 throw new IllegalArgumentException("unary TCP request exceeds protocol byte limit");
-            payload = payload.clone();
         }
 
-        @Override public byte[] payload() { return payload.clone(); }
+        Request(
+                PeerIdentity peer,
+                long sessionId,
+                long generation,
+                long correlationId,
+                byte[] payload) {
+            this(peer, sessionId, generation, correlationId, OresBytes.copyOf(payload));
+        }
+
+        static Request fromFreshTransportPayload(
+                PeerIdentity peer,
+                long sessionId,
+                long generation,
+                long correlationId,
+                byte[] freshPayload) {
+            Objects.requireNonNull(freshPayload, "freshPayload");
+            return new Request(
+                    peer, sessionId, generation, correlationId,
+                    OresBytes.wrapTrusted(freshPayload));
+        }
+
+        byte[] payload() { return payloadValue.toByteArray(); }
+        int payloadLength() { return payloadValue.size(); }
 
         /** Data-only message suitable for a runtime actor transport boundary. */
         Map<String, Object> actorMessage() {
@@ -111,7 +132,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
                     "session_id", sessionId,
                     "generation", generation,
                     "correlation_id", correlationId,
-                    "payload", OresBytes.wrapTrusted(payload));
+                    "payload", payloadValue);
         }
     }
 
@@ -483,7 +504,7 @@ final class UnaryTcpSessionAdapter implements AutoCloseable {
                 throw new IOException("unary TCP frame expired before dispatch");
             }
 
-            Request request = new Request(
+            Request request = Request.fromFreshTransportPayload(
                     peer, sessionId, generation, head.correlationId(), payload);
             ScheduledFuture<?> deadline = timers.schedule(
                     () -> timeout(admitted),
