@@ -1538,6 +1538,10 @@ public final class TypeChecker {
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
             if (iface.moduleContract()) throw new IllegalArgumentException("module contract '" + interfaceRef.name() + "' cannot be implemented by class '" + klass.name() + "'");
             if (iface.name().equals("HasFuture")) {
+                if (klass.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "actor classes cannot implement HasFuture<T>; use ActorRef<T> readiness instead");
+                }
                 ResolvedMethod projection = findMethodTarget(
                         klass, nominalClassType(klass), "get_future", 0,
                         new LinkedHashSet<>());
@@ -4049,7 +4053,27 @@ public final class TypeChecker {
                 return named.arguments().getFirst();
             }
             Type projectedResult = hasFutureResult(awaitedType, new LinkedHashSet<>());
-            if (projectedResult != null) return projectedResult;
+            if (projectedResult != null) {
+                if (awaitedType instanceof Named wrapper) {
+                    Ast.ClassDecl concrete = findClass(wrapper.name());
+                    if (concrete != null) {
+                        if (concrete.actorKind() != Ast.ActorKind.NONE) {
+                            throw new IllegalArgumentException(
+                                    "await of actor HasFuture<T> is forbidden; use ActorRef<T>");
+                        }
+                        ResolvedMethod method = findMethodTarget(
+                                concrete, wrapper, "get_future", 0, new LinkedHashSet<>());
+                        if (method == null || method.method().isStatic()
+                                || method.method().async() || method.method().suspends()
+                                || method.method().isAbstract()
+                                || method.method().visibility() != Ast.Visibility.PUBLIC) {
+                            throw new IllegalArgumentException(
+                                    "await requires a public synchronous HasFuture.get_future() projection");
+                        }
+                    }
+                }
+                return projectedResult;
+            }
             if (awaitedType instanceof Named actorRef
                     && actorRef.name().equals("ActorRef")) {
                 // await spawn Actor() is a readiness barrier, not a termination
