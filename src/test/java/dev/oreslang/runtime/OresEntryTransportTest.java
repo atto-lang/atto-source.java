@@ -62,14 +62,44 @@ final class OresEntryTransportTest {
     void entryChildrenStillUndergoActorCapabilityValidation() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var recipient = runtime.<String>spawn(() -> (message, context) -> context.self().stop());
-            OresEntry entry = new OresEntry("ref", recipient);
+
+            OresEntry hiddenInKey = new OresEntry(recipient, "value");
+            OresEntry hiddenInValue = new OresEntry("ref", recipient);
+            OresEntry nested = new OresEntry(
+                    "outer",
+                    new OresEntry(recipient, "nested"));
 
             assertThrows(
                     IllegalArgumentException.class,
-                    () -> ActorRuntime.freeze(entry),
-                    "data-only freeze must not hide an ActorRef inside Entry");
+                    () -> ActorRuntime.freeze(hiddenInKey),
+                    "data-only freeze must not hide an ActorRef in Entry.key");
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> ActorRuntime.freeze(hiddenInValue),
+                    "data-only freeze must not hide an ActorRef in Entry.value");
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> ActorRuntime.freeze(nested),
+                    "nested Entry values must not hide actor capabilities");
             recipient.stop();
         }
+    }
+
+    @Test
+    void entryNestingHonorsActorGraphDepthBoundary() {
+        Object atLimit = "leaf";
+        for (int i = 0; i < 256; i++) {
+            atLimit = new OresEntry(i, atLimit);
+        }
+        Object allowed = atLimit;
+        assertDoesNotThrow(() -> ActorRuntime.freeze(allowed));
+
+        Object beyondLimit = new OresEntry("overflow", atLimit);
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(beyondLimit));
+        assertTrue(rejected.getMessage().contains("maximum nesting depth"),
+                rejected.getMessage());
     }
     @Test
     void cyclicHostPayloadIsRejectedBeforeActorFreezeRatherThanOverflowing() {
