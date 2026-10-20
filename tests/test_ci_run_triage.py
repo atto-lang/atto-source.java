@@ -305,7 +305,7 @@ class ClassifierTests(unittest.TestCase):
                     if path.endswith("/jobs?per_page=100") else RUN)
         m.inspect("org/repo", 42, SHA, fetch=fetch)
         self.assertEqual(seen, ["repos/org/repo/actions/runs/42",
-                                "repos/org/repo/actions/runs/42/jobs?per_page=100",
+                                "repos/org/repo/actions/runs/42/attempts/2/jobs?per_page=100",
                                 "repos/org/repo/actions/runs/42"])
 
 
@@ -388,8 +388,30 @@ class VerifiedPRModeTests(unittest.TestCase):
         self.assertTrue(out["job_provenance_verified"])
         self.assertEqual(out["run_attempt"], 2)
         self.assertEqual(calls, ["repos/org/repo/pulls/17", "repos/org/repo/actions/runs/42",
-                                 "repos/org/repo/actions/runs/42/jobs?per_page=100",
+                                 "repos/org/repo/actions/runs/42/attempts/2/jobs?per_page=100",
                                  "repos/org/repo/actions/runs/42", "repos/org/repo/pulls/17"])
+
+    def test_scoped_attempt_url_supplies_attempt_provenance(self):
+        # GitHub's documented job payload has run_id and head_sha,
+        # but does not guarantee a job-level run_attempt property.
+        job_without_attempt = self._job()
+        del job_without_attempt["run_attempt"]
+        fetch, calls = self._fetch(candidate=job_without_attempt)
+        out = m.inspect("org/repo", 42, SHA, fetch=fetch, pr_number=17)
+        self.assertEqual(out["category"], "executed_build_test_failure")
+        self.assertTrue(out["job_provenance_verified"])
+        self.assertEqual(out["run_attempt"], 2)
+        self.assertIn("repos/org/repo/actions/runs/42/attempts/2/jobs?per_page=100", calls)
+        self.assertNotIn("repos/org/repo/actions/runs/42/jobs?per_page=100", calls)
+
+    def test_rerun_attempt_selects_distinct_job_endpoint(self):
+        latest = dict(RUN, run_attempt=3)
+        job_attempt_3 = self._job(run_attempt=3)
+        fetch, calls = self._fetch(run=latest, candidate=job_attempt_3)
+        result = m.inspect("org/repo", 42, SHA, fetch=fetch, pr_number=17)
+        self.assertEqual(result["run_attempt"], 3)
+        self.assertIn("repos/org/repo/actions/runs/42/attempts/3/jobs?per_page=100", calls)
+        self.assertNotIn("repos/org/repo/actions/runs/42/attempts/2/jobs?per_page=100", calls)
 
     def test_no_jobs_does_not_claim_job_provenance(self):
         calls = []
@@ -422,7 +444,7 @@ class VerifiedPRModeTests(unittest.TestCase):
             m.inspect("org/repo", 42, SHA, fetch=racing, pr_number=17)
 
     def test_missing_or_mismatched_attempt_and_sha_provenance(self):
-        for changed in ({"run_attempt": None}, {"run_attempt": 3},
+        for changed in ({"run_attempt": 3},
                         {"head_sha": None}, {"head_sha": "b" * 40},
                         {"run_id": None}, {"run_id": 43}):
             with self.subTest(changed=changed):
