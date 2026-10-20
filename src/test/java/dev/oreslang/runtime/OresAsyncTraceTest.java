@@ -168,8 +168,10 @@ final class OresAsyncTraceTest {
             OresAsyncTrace.SourceSite handoff = site(20 + actor);
             trace = trace.child(new OresAsyncTrace.Frame("Actor" + actor, handoff), handoff);
             trace.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, handoff);
-            for (int await = 0; await < 150; await++) {
-                trace.awaitAt(site(1000 + actor * 150 + await));
+            try (OresAsyncTrace.Scope executed = OresAsyncTrace.install(trace)) {
+                for (int await = 0; await < 150; await++) {
+                    trace.awaitAt(site(1000 + actor * 150 + await));
+                }
             }
         }
         assertEquals(10, trace.actorVisits().size());
@@ -202,6 +204,7 @@ final class OresAsyncTraceTest {
             OresAsyncTrace.SourceSite handoff = site(10 + actor);
             trace = trace.child(new OresAsyncTrace.Frame("Actor" + actor, handoff), handoff);
             trace.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, handoff);
+            try (OresAsyncTrace.Scope executed = OresAsyncTrace.install(trace)) { }
         }
         assertEquals(16, trace.actorVisits().size());
         assertEquals(184, trace.elidedActorVisits());
