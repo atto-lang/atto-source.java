@@ -6,6 +6,7 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
+import dev.oreslang.types.SourceEffectAudit;
 
 /** Trusted compiler front-end API for build systems and isolate admission. */
 public final class OresCompiler {
@@ -35,6 +36,24 @@ public final class OresCompiler {
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
         OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
         return new AnalysisResult(checked.program(), checked.warnings());
+    }
+
+    /**
+     * An opt-in fail-closed effects gate for a deliberately narrow subset of
+     * Oreslang source. This runs normal parsing, typing, and ownership checking
+     * before conservative classification. It does NOT authorize FFI, actor
+     * capabilities, execution of deferred actions, or generic pure declarations.
+     *
+     * Reject on any inferred effect or unsupported declaration; do not infer
+     * that an unexamined source file is pure from an empty graph.
+     */
+    public static SourceEffectAudit.Report requireConservativelyEffectFree(String source) {
+        SourceEffectAudit.Report report = SourceEffectAudit.inspect(source);
+        if (!report.conservativelyEffectFree()) {
+            throw new IllegalArgumentException(
+                    "effect-free subset admission denied: " + report);
+        }
+        return report;
     }
 
     /**
