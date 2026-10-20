@@ -155,6 +155,18 @@ def gh_api_list(route):
     return data
 
 
+def github_timestamp(value, label):
+    if not isinstance(value, str):
+        raise Denied(label)
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise Denied(label) from exc
+    if parsed.tzinfo is None:
+        raise Denied(label)
+    return parsed
+
+
 def latest_authority_review():
     reviews = gh_api_list(
         f"repos/{legacy.SOURCE_REPO}/pulls/{REVIEW_AUTHORITY_PR}/reviews?per_page=100"
@@ -162,22 +174,78 @@ def latest_authority_review():
     if len(reviews) >= 100:
         raise Denied("private-CI authority review history exceeds bounded page")
     matching = []
+    seen_ids = set()
     for review in reviews:
         if not isinstance(review, dict):
-            continue
+            raise Denied("private-CI authority review history is malformed")
+        review_id = review.get("id")
+        if (not isinstance(review_id, int) or isinstance(review_id, bool)
+                or review_id <= 0 or review_id in seen_ids):
+            raise Denied("private-CI authority review history has invalid IDs")
+        seen_ids.add(review_id)
         user = review.get("user")
         if (isinstance(user, dict)
                 and user.get("id") == REVIEW_AUTHORITY_USER_ID
                 and isinstance(user.get("login"), str)
                 and user["login"].casefold() == REVIEW_AUTHORITY_LOGIN.casefold()):
-            matching.append(review)
+            commit_id = valid_sha(
+                review.get("commit_id"),
+                "private-CI authority review commit SHA invalid",
+            )
+            submitted = github_timestamp(
+                review.get("submitted_at"),
+                "private-CI authority review timestamp invalid",
+            )
+            if not isinstance(review.get("state"), str):
+                raise Denied("private-CI authority review state invalid")
+            matching.append((submitted, review_id, commit_id, review))
     if not matching:
         raise Denied("independent private-CI authority review is missing")
-    matching.sort(key=lambda review: (
-        review.get("submitted_at") if isinstance(review.get("submitted_at"), str) else "",
-        review.get("id") if isinstance(review.get("id"), int) else -1,
-    ))
-    return matching[-1]
+    matching.sort(key=lambda item: (item[0], item[1]))
+    return matching[-1][3]
+
+
+def governance_tree_entries(commit_sha):
+    commit = legacy.gh_api(
+        f"repos/{legacy.SOURCE_REPO}/git/commits/{commit_sha}"
+    )
+    if commit.get("sha") != commit_sha:
+        raise Denied("source governance commit identity mismatch")
+    tree_sha = valid_sha(
+        commit.get("tree", {}).get("sha"),
+        "source governance root tree SHA invalid",
+    )
+    listing = legacy.gh_api(
+        f"repos/{legacy.SOURCE_REPO}/git/trees/{tree_sha}?recursive=1"
+    )
+    if (listing.get("sha") != tree_sha
+            or listing.get("truncated") is not False
+            or not isinstance(listing.get("tree"), list)):
+        raise Denied("source governance tree listing is incomplete")
+
+    wanted = set(REVIEWED_GOVERNANCE_PATHS)
+    found = {}
+    for entry in listing["tree"]:
+        if not isinstance(entry, dict):
+            raise Denied("source governance tree entry is malformed")
+        path = entry.get("path")
+        if path not in wanted:
+            continue
+        if path in found:
+            raise Denied("source governance tree contains duplicate reviewed path")
+        mode = entry.get("mode")
+        kind = entry.get("type")
+        if kind != "blob" or mode not in ("100644", "100755"):
+            raise Denied("source governance path has unsafe Git type/mode: " + path)
+        found[path] = (
+            mode,
+            kind,
+            valid_sha(entry.get("sha"), "source governance blob SHA invalid"),
+        )
+
+    if set(found) != wanted:
+        raise Denied("source governance tree is missing reviewed paths")
+    return found
 
 
 def review_attested_main_sha(repository, expected_policy_digest):
@@ -209,24 +277,36 @@ def review_attested_main_sha(repository, expected_policy_digest):
     )
 
     review = latest_authority_review()
-    submitted_at = review.get("submitted_at")
-    merged_at = authority.get("merged_at")
+    submitted_at = github_timestamp(
+        review.get("submitted_at"),
+        "private-CI authority review timestamp invalid",
+    )
+    merged_at = github_timestamp(
+        authority.get("merged_at"),
+        "private-CI authority merge timestamp invalid",
+    )
     if (review.get("state") != "APPROVED"
             or review.get("commit_id") != reviewed_head
-            or not isinstance(submitted_at, str)
-            or not isinstance(merged_at, str)
             or submitted_at > merged_at):
         raise Denied(
             "independent private-CI review is stale, late, or not approved")
 
+    reviewed_tree = governance_tree_entries(reviewed_head)
+    main_tree = governance_tree_entries(main_sha)
     for path in REVIEWED_GOVERNANCE_PATHS:
+        if main_tree[path] != reviewed_tree[path]:
+            raise Denied(
+                "source governance Git entry drifted after independent review: " + path
+            )
         _reviewed_raw, reviewed_blob = remote_file_at_source_main(
             path, reviewed_head, MAX_GOVERNANCE_FILE
         )
         main_raw, main_blob = remote_file_at_source_main(
             path, main_sha, MAX_GOVERNANCE_FILE
         )
-        if main_blob != reviewed_blob:
+        if (main_blob != reviewed_blob
+                or reviewed_blob != reviewed_tree[path][2]
+                or main_blob != main_tree[path][2]):
             raise Denied("source governance drifted after independent review: " + path)
         if path == legacy.POLICY_PATH:
             if hashlib.sha256(main_raw).digest() != expected_policy_digest:
