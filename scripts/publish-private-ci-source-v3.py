@@ -848,7 +848,19 @@ def manifest(files):
     return rows, hashlib.sha256(canonical_bytes(rows)).hexdigest()
 
 
-def authorize_write(root, repository, approved_policy, contract):
+def require_source_authority_epoch(expected_sha):
+    """Pin source main to the exact authority commit accepted at admission."""
+    expected_sha = valid_sha(expected_sha, "source authority SHA invalid")
+    branch = legacy.gh_api(
+        f"repos/{legacy.SOURCE_REPO}/branches/{legacy.SOURCE_PROTECTED_BRANCH}"
+    )
+    if (branch.get("name") != legacy.SOURCE_PROTECTED_BRANCH
+            or not isinstance(branch.get("commit"), dict)
+            or branch["commit"].get("sha") != expected_sha):
+        raise Denied("source governance authority advanced during transfer")
+
+
+def authorize_write(root, repository, approved_policy, contract, authority_sha):
     """Cheap per-write guard: local approval bytes plus live carrier identity.
 
     Protected-source main and the full immutable carrier contract are checked
@@ -867,13 +879,13 @@ def authorize_write(root, repository, approved_policy, contract):
         raise Denied(
             "private CI destination approval or repository identity changed during transfer"
         )
-    repo = legacy.checked_repo(repository, contract["repository_id"])
-    if (repo.get("id") != contract["repository_id"]
-            or repo.get("archived") is not False
-            or repo.get("disabled") is not False
-            or repo.get("fork") is not False
-            or repo.get("default_branch") != "main"):
-        raise Denied("carrier identity/state changed during transfer")
+    # Pin the already-authenticated source governance epoch and re-read the
+    # full live destination protection boundary immediately before each write.
+    # This reconciles the protection-drift hardening with nonce-scoped refs:
+    # neither branch movement nor CODEOWNER/admin policy weakening may authorize
+    # later source-bearing objects.
+    require_source_authority_epoch(authority_sha)
+    require_destination_main_governance(repository, contract["base_sha"])
 
 
 def _gh_ref_request(repository, ref_name, method):
@@ -1211,7 +1223,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     branch = "ci/oreslang-" + source_tree + "-" + handoff_nonce
 
     def auth():
-        authorize_write(trusted_root, repository, approved_policy, contract)
+        authorize_write(
+            trusted_root, repository, approved_policy, contract, authority_sha
+        )
 
     elements = []
     for rel, data, mode in files:
