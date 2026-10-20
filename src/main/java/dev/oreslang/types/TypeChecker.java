@@ -303,6 +303,7 @@ public final class TypeChecker {
             String previousModule = currentLexicalModule;
             currentLexicalModule = module.name();
             try {
+                validateModelTypeNamespace(module);
                 validateModuleValueNamespace(module);
                 checkModuleAdherence(module);
                 for (Ast.Decl decl : module.declarations()) {
@@ -318,6 +319,35 @@ public final class TypeChecker {
                 }
             } finally {
                 currentLexicalModule = previousModule;
+            }
+        }
+    }
+
+    private void validateModelTypeNamespace(Ast.ModuleDecl module) {
+        Set<String> modelNames = new LinkedHashSet<>();
+        for (Ast.Decl declaration : module.declarations()) {
+            if (declaration instanceof Ast.ModelDecl model) modelNames.add(model.name());
+        }
+        if (modelNames.isEmpty()) return;
+
+        for (Ast.Decl declaration : module.declarations()) {
+            String name = null;
+            String category = null;
+            if (declaration instanceof Ast.ClassDecl klass) {
+                name = klass.name();
+                category = "class";
+            } else if (declaration instanceof Ast.InterfaceDecl iface) {
+                name = iface.name();
+                category = iface.moduleContract() ? "contract" : "interface";
+            } else if (declaration instanceof Ast.TypeAliasDecl alias) {
+                name = alias.name();
+                category = "type alias";
+            }
+            if (name != null && modelNames.contains(name)) {
+                throw new IllegalArgumentException(
+                        "MODEL_TYPE_NAME_COLLISION: model '" + module.name() + "." + name
+                                + "' conflicts with " + category
+                                + " '" + name + "' in the nominal type namespace");
             }
         }
     }
