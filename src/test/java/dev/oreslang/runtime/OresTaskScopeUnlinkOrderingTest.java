@@ -54,4 +54,79 @@ final class OresTaskScopeUnlinkOrderingTest {
             assertTrue(child.isQuiescent());
         }
     }
+
+    @Test
+    void failedTokenRegistrationDetachesUpstreamObserverAndKeepsScopeOpen()
+            throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresTaskScope scope = new OresTaskScope(runtime);
+             OresCancellationSource source = new OresCancellationSource()) {
+            Field field = OresTaskScope.class.getDeclaredField("externalCancellation");
+            field.setAccessible(true);
+            Object original = field.get(scope);
+            java.util.List<OresCancellationToken.Registration> hostile =
+                    new java.util.ArrayList<>() {
+                        @Override
+                        public boolean add(OresCancellationToken.Registration registration) {
+                            throw new IllegalStateException(
+                                    "injected token registration allocation failure");
+                        }
+                    };
+            field.set(scope, hostile);
+            try {
+                assertEquals(0, source.notification().pendingRuntimeWaiterCount());
+                var exception = assertThrows(IllegalStateException.class,
+                        () -> scope.cancelWhen(source.token()));
+                assertTrue(exception.getMessage().contains(
+                        "token registration allocation failure"));
+                assertEquals(0, source.notification().pendingRuntimeWaiterCount(),
+                        "failed owner registration may not leak source subscription");
+            } finally {
+                field.set(scope, original);
+            }
+
+            assertFalse(scope.isCancelRequested(),
+                    "failed subscription must not unexpectedly seal scope");
+            assertTrue(source.cancel(), "upstream source can still cancel itself");
+            assertFalse(scope.isCancelRequested(),
+                    "rolled-back subscription must not cancel the Task scope");
+            OresTask<Integer> task = scope.submit(() -> 123);
+            assertEquals(123, AsyncRuntime.await(task.getAwaited()));
+            assertNull(AsyncRuntime.await(task.getDone()));
+        }
+    }
+
+    @Test
+    void tokenInsertThenThrowRollbackUnregistersAndRemovesPartialLink()
+            throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresTaskScope scope = new OresTaskScope(runtime);
+             OresCancellationSource source = new OresCancellationSource()) {
+            Field field = OresTaskScope.class.getDeclaredField("externalCancellation");
+            field.setAccessible(true);
+            Object original = field.get(scope);
+            java.util.List<OresCancellationToken.Registration> hostile =
+                    new java.util.ArrayList<>() {
+                        @Override
+                        public boolean add(OresCancellationToken.Registration registration) {
+                            super.add(registration);
+                            throw new IllegalStateException("injected token insert then throw");
+                        }
+                    };
+            field.set(scope, hostile);
+            try {
+                var exception = assertThrows(IllegalStateException.class,
+                        () -> scope.cancelWhen(source.token()));
+                assertTrue(exception.getMessage().contains("token insert then throw"));
+                assertEquals(0, hostile.size(),
+                        "partial external link must be removed on failed admission");
+                assertEquals(0, source.notification().pendingRuntimeWaiterCount(),
+                        "upstream waiter must be detached even after partial insertion");
+            } finally {
+                field.set(scope, original);
+            }
+            assertTrue(source.cancel());
+            assertFalse(scope.isCancelRequested());
+        }
+    }
 }
