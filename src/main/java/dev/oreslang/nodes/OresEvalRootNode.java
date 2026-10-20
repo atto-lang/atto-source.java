@@ -4471,8 +4471,15 @@ public final class OresEvalRootNode extends RootNode {
                                     return;
                                 }
                                 try {
+                                    Ast.FunctionDecl expandedTarget =
+                                            findFunction(name.name(), values.size());
+                                    if (expandedTarget == null) {
+                                        throw new IllegalArgumentException(
+                                                "no function " + name.name()
+                                                        + " with arity " + values.size());
+                                    }
                                     Invocation invocation =
-                                            functionInvocation(findFunction(name.name(), values.size()), values);
+                                            functionInvocation(expandedTarget, values);
                                     completeSourceInvocation(
                                             t,
                                             invocation,
