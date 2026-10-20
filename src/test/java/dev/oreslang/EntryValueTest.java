@@ -640,6 +640,27 @@ final class EntryValueTest {
     }
 
     @Test
+    void ownershipCheckerRejectsEntryFactoryExtractionIndependently() {
+        IllegalArgumentException member = ownershipRejectedDirect("""
+                fnc bad(): void {
+                  const factory = Entry.of;
+                  return;
+                }
+                """);
+        assertTrue(member.getMessage().contains("direct-call-only"), member.getMessage());
+
+        IllegalArgumentException computed = ownershipRejectedDirect("""
+                fnc bad(): void {
+                  const factory = Entry["of"];
+                  return;
+                }
+                """);
+        assertTrue(
+                computed.getMessage().contains("computed property access"),
+                computed.getMessage());
+    }
+
+    @Test
     void runtimeRejectsEntryFactoryExtractionEvenThroughPrecheckedAstBridge() throws Exception {
         String code = """
                 pub fnc main(): void {
