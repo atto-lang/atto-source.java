@@ -171,6 +171,7 @@ final class TaskAccessVerifier {
     private static final int MAX_CLAIMS_PER_CHILD = 1024;
     private static final int MAX_TRACKED_ALLOCATIONS = 65536;
 
+    private final ScopeEpoch scopeEpoch = new ScopeEpoch();
     private final Map<Ticket, Child> live = new LinkedHashMap<>();
     private final Map<AllocationKey, Long> knownGenerations = new HashMap<>();
     /** Single trusted allocation/trust domain per scope, including READ-only claims. */
