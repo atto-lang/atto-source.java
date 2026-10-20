@@ -17,5 +17,12 @@ pub fnc main(): int {
   let mut Counter c = new Counter();
   val first: int = mutate(rt borrow mut c, 0);
   val second: int = mutate(rt borrow mut c, 1);
-  return first * 100 + second + c.value;
+  // Verify return snapshot, finally-before-defer and mutable state after
+  // each call. Use an exit code in the portable conformance range 0..125.
+  if (first eq 1) {
+    if (second eq 13) {
+      if (c.value eq 133) { return 42; } fi
+    } fi
+  } fi
+  return 1;
 }

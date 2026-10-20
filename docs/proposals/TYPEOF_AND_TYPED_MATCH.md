@@ -62,6 +62,9 @@ Async vs sync, `trap`/Option result effects, `pure`/capability effects, mutable/
 
 ## 4. `match<T>` is an **expression result constraint**
 
+> **Extension:** `match<Input, Output>` additionally constrains the input/scrutinee type while retaining `match<Output>` as the result-only shorthand. Named `infer<T> struct` must normalize as `type T = struct { ... };` (never `T = structural { ... }`). Named tuple inference instead normalizes as `type T = Tuple[...];`. See [Named inferred types and typed match input/output](NAMED_INFERRED_TYPES_AND_TYPED_MATCH_CONTRACT.md). The extension is a **design contract, not implemented**; integrate it on the match-expression drafts #296/#404.
+
+
 Canonical intended form:
 
 ```ores

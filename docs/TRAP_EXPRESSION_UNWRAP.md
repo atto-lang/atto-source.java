@@ -1,9 +1,9 @@
 # Expression `trap` and `unwrap()` — shared source contract
 
-**Status:** Approved language-design target / **not implemented** as expression syntax.
-The Java/GraalVM frontend currently implements synchronous **callable** `trap`,
-not `trap expression`. The LLVM frontend reserves `trap` and rejects the
-unsupported syntax. This file does not claim executable cross-backend parity.
+**Status:** Java/GraalVM main represents expression-level `trap` in its
+parser, type checker and evaluator, alongside callable `trap`. LLVM still
+reserves and rejects the unsupported syntax. This reconciliation preserves
+the Java implementation; it does not establish executable backend parity.
 
 ## One rule: catch ordinary `throw`, never panic
 
@@ -12,11 +12,8 @@ exactly the same as the existing `trap fnc` callable boundary:
 
 - Evaluate `expr` exactly once.
 - If it completes normally with value `v: T`, yield `Some(v): Option<T>`.
-- If an explicitly admitted ordinary Ores `throw` escapes during that
-  evaluation, run lexical cleanup and yield `None: Option<T>`.
-- `trap` is an error boundary, **not** a transaction: writes, I/O and other
-  side effects before the throw remain visible unless the operation has
-  its own rollback protocol.
+- If an ordinary Ores `throw` escapes during that evaluation, run lexical
+  cleanup and yield `None: Option<T>`.
 - `panic`, `raise`, cancellation, forced termination, VM-fatal errors and
   unknown native/host failures **bypass** `trap`; never reclassify them as
   `None`.
@@ -81,52 +78,12 @@ If the design goal is to represent lock unavailability as `None`, retain
 the original `Option` instead of inserting `unwrap()`. Do not introduce
 a context-dependent version of `unwrap()` inside `trap`.
 
-## Runtime failure classification and diagnostic integrity
-
-An arbitrary host-language `RuntimeException` is **not** an Ores `throw`.
-The current Java bootstrap explicitly treats `OresCastError` (failed
-checked cast) as a recoverable guest error for compatibility until typed
-`Throw<E>` is admitted. A type error, scheduler interruption, cancellation,
-`SecurityException`, host `ArithmeticException`, internal invariant
-failure, and unknown exception must **not** be silently collapsed to `None`
-by either `trap` or ordinary `try/catch`. Catch/cleanup may process only
-the explicitly admitted ordinary guest failure class. Preserve the original
-exception identity and source-boundary diagnostics rather than wrapping it
-with a generic trappable exception.
-
-In particular, no code path is allowed to turn an `unwrap(None)` panic
-into a recoverable error before it reaches `trap`: the control category is
-determined by the failure's origin, not by its textual message or by whether
-an `Option` happens to be expected.
-
-This rule applies **before** trap classification, including synchronous
-`try/catch/finally`, suspended source-task `try/catch/finally`, `defer`
-stacks, and mutex-guard release. Run all cleanup, but retain the strongest
-in-flight failure and attach lesser failures as suppressed diagnostics,
-with a finite diagnostic budget so untrusted code cannot produce an unbounded
-list of failing defers. A `finally` cast error may not erase an earlier panic/cancellation,
-and a `finally` or `defer` panic outranks an earlier ordinary cast error.
-Unknown host/internal failures are not ordinary merely because cleanup
-encounters them.
-
-A suspended expression has a **single terminal completion** even when an
-await, cancellation, or actor wake races with another terminal event. Once
-the result has been handed to its continuation, a failure from that
-continuation belongs to the consumer: it must not be reclassified as an
-expression failure and dispatched to the same continuation a second time.
-Nested asynchronous blocks must likewise run their defer stack and
-resource-release finalization once, including exceptional exits.
-
 ## Ownership, execution, and fail-closed rollout
 
 `Option<Guard>` is still affine when `Guard` is affine. Converting a
 trapped successful evaluation to `Some(guard)` must transfer the guard
 exactly once. Failure paths must unwind and release any acquired resources
-exactly once. `Option<Guard>` is **not** a usable guard until the caller
-checks `Some` and explicitly extracts the owned guard. Merely writing
-`let mut balance = trap ...` never grants access to `balance.value`;
-unwrapping such an Option must still obey the existing panic and move rules.
-The trap boundary cannot outlive its permitted actor/isolate
+exactly once. The trap boundary cannot outlive its permitted actor/isolate
 execution domain or silently capture a detached task's exception.
 
 The first implementation should support only synchronous expressions and
@@ -138,8 +95,7 @@ conversion of panic to throw; no global host exception catch.
 
 1. Parser precedence, single evaluation, and exact `Option<T>` typing.
 2. Success `Some(v)`, ordinary throw `None`, no automatic nested flattening.
-3. `unwrap(None)` and `unwrap(Err)` panic across `trap`, including
-   nested calls, while unknown host and security failures remain untrapped.
+3. `unwrap(None)` and `unwrap(Err)` panic across `trap`.
 4. `raise`, `panic`, cancellation, and termination bypass `trap`.
 5. `unwrap_safe()` stays `Result` data, including nested `Option<Result<...>>`.
 6. Move-only guards: no double consumption, no leaked resources on unwind,
@@ -150,3 +106,24 @@ conversion of panic to throw; no global host exception catch.
 
 Also see the Java/GraalVM `docs/TRAP.md` callable-trap contract and
 `docs/LANGUAGE.md` Option/Result semantics.
+
+## Current-main cleanup reconciliation (2026-10-20)
+
+A trap boundary does not roll back writes or I/O. Successful guard values remain
+owned Option payloads and require explicit extraction before use.
+
+The Java runtime retains the shared `TrapFailurePolicy`: explicit guest
+catch and trap have distinct admission rules, including bounded inspection
+of wrapped/suppressed failures. This integration does not replace that policy
+with the older cast-only catch rule. Terminal panic, cancellation and process
+exit precedence remains the current-main policy.
+
+Each resumed expression delivers a terminal completion at most once. A failure
+thrown by its consumer is not delivered to the same consumer again. The block
+statement walker finalizes its environment once. Cleanup diagnostics are capped
+at 64 suppressed entries with an atomic check/add under the primary failure
+monitor. Existing process-exit precedence and newer match/select lowering remain.
+
+The reconciled snapshot requires exact-head Maven/GraalVM execution, including
+trap-expression, failure-policy and process-exit suites. Historical checks on
+the earlier branch are not validation of this integration.

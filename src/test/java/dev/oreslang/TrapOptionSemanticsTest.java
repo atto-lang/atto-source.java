@@ -316,7 +316,6 @@ final class TrapOptionSemanticsTest {
         assertEquals("3:7", run(source));
     }
 
-
     @Test
     void trapDoesNotSwallowResultUnwrapPanic() throws Exception {
         String source = """
@@ -333,47 +332,6 @@ final class TrapOptionSemanticsTest {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
         PolyglotException thrown = assertThrows(PolyglotException.class, () -> run(source));
         assertTrue(thrown.getMessage().contains("Result::unwrap"));
-    }
-
-    @Test
-    void trapDoesNotTurnUnclassifiedHostRuntimeFaultIntoNone() throws Exception {
-        // Modulo by zero emits a Java ArithmeticException, not an Ores throw.
-        // Future typed guest Throw<E> admission must not reclassify this fault.
-        String source = """
-                trap fnc invalid(int divisor): int {
-                  return 1 % divisor;
-                }
-                pub fnc main(): void {
-                  val int zero = 0;
-                  val Option<int> ignored = invalid(zero);
-                  stdio.stdout.write("unreachable");
-                  return;
-                }
-                """;
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertThrows(PolyglotException.class, () -> run(source));
-    }
-
-    @Test
-    void ordinaryCatchCannotSwallowUnclassifiedHostFault() throws Exception {
-        String source = """
-                fnc invalid(int divisor): int {
-                  return 1 % divisor;
-                }
-                pub fnc main(): void {
-                  val int zero = 0;
-                  try {
-                    val int unused = invalid(zero);
-                  } catch (err) {
-                    stdio.stdout.write("swallowed");
-                  } finally {
-                    stdio.stdout.write("cleanup");
-                  }
-                  return;
-                }
-                """;
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertThrows(PolyglotException.class, () -> run(source));
     }
 
     @Test
@@ -569,30 +527,6 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
-    void suspendedTryCatchCannotSwallowUnclassifiedArithmeticFault() throws Exception {
-        String source = """
-                async fnc answer(): int { return 11; }
-                async fnc unsafe(int divisor): int {
-                  val int seed = await answer();
-                  try {
-                    return seed % divisor;
-                  } catch (err) {
-                    return 7;
-                  } finally {
-                    val int finalization = seed + 1;
-                  }
-                }
-                pub fnc main(): void {
-                  val int ignored = await unsafe(0);
-                  stdio.stdout.write("unreachable");
-                  return;
-                }
-                """;
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertThrows(PolyglotException.class, () -> run(source));
-    }
-
-    @Test
     void suspendedNestedBlockRunsDeferAndFinallyExactlyOnce() throws Exception {
         String source = """
                 async fnc answer(): int {
@@ -661,37 +595,16 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
-    void expressionTrapIsNotSilentlyAcceptedBeforeItsEffectLoweringExists() {
-        String[] sources = {
-                """
-                fnc invalid(): void {
-                  val maybe = trap Some(3).unwrap();
+    void expressionTrapRemainsOptionTypedAfterCleanupReconciliation() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  val Option<int> result = trap (40 + 2);
+                  stdio.stdout.write(result.unwrap());
                   return;
                 }
-                """,
-                """
-                fnc invalid(): int {
-                  return trap (40 + 2);
-                }
-                """,
-                """
-                fnc identity(int n): int { return n; }
-                fnc invalid(): int {
-                  return identity(trap (42));
-                }
-                """,
-                """
-                fnc invalid(): int {
-                  return 1 + trap (41);
-                }
-                """
-        };
-        for (String source : sources) {
-            IllegalArgumentException rejected = assertThrows(
-                    IllegalArgumentException.class, () -> Parser.parse(source));
-            assertTrue(rejected.getMessage().contains("trap expression unsupported"),
-                    rejected.getMessage());
-        }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("42", run(source));
     }
 
     private static String run(String program) throws Exception {

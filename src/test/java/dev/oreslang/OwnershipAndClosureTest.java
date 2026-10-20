@@ -569,7 +569,7 @@ final class OwnershipAndClosureTest {
                         }
                         """)));
 
-        assertTrue(error.getMessage().contains("cannot escape its mailbox turn as a bound method"));
+        assertTrue(error.getMessage().contains("direct-call-only"), error::getMessage);
     }
 
 
@@ -595,13 +595,14 @@ final class OwnershipAndClosureTest {
     }
 
     @Test
-    void ordinaryRecordFieldProjectionIsAReadNotAnImplicitPartialMove() {
+    void ordinaryStructFieldProjectionIsAReadNotAnImplicitPartialMove() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc seed(): string { return "a"; }
 
                 fnc ok(): void {
-                  val outer = struct{inner: {value: string}}{inner: struct{value: string}{value: seed()}};
-                  val alias = outer.inner;
+                  const Inner initial = infer<Inner> struct{value: seed()};
+                  val outer = infer struct{inner: initial};
+                  val Inner alias = outer.inner;
                   alias.value = "alias";
                   outer.inner.value = "owner";
                   return;

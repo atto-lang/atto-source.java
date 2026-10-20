@@ -15,8 +15,8 @@ final class SourceBoundaryTraceTest {
             var error = assertThrows(PolyglotException.class, () -> context.eval("ores", """
                     async fnc leaf(): int {
                       rt cooperate;
-                      val int zero = 0;
-                      return 1 / zero;
+                      val int zero = 0; // Integer remainder by zero raises during resumed evaluation.
+                      return 1 % zero;
                     }
                     async fnc middle(): int {
                       val int result = await leaf();

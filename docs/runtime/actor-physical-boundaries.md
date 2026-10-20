@@ -13,9 +13,10 @@ not evidence of memory isolation.
    A suspended callback may resume only by mailbox admission and lease acquisition.
 2. Actors have stable scheduling placement. Hard CPU affinity is explicit and
    fail-closed when requested; a scheduling lane is not a physical CPU guarantee.
-3. Every actor has its own default allocation heap. Isolated actors additionally
-   have a protected address-space boundary. Shared actors also have private heaps;
-   only explicit shared regions cross those private boundaries.
+3. Every actor has its own default actor-local allocation arena, including shared
+   actors. Shared actors do not allocate ordinary mutable state into a common heap;
+   only explicit frozen/shared regions cross actor-local boundaries. Isolated
+   actors additionally require a protected address-space boundary.
 4. Shared children and grandchildren inherit the shared domain. A supervisor can
    participate explicitly. Domain ownership and lifetime are independent of one
    parent's lifetime; shared region reclamation waits for all leases to end.
@@ -98,8 +99,10 @@ must recreate the address space, or demonstrate complete VM teardown and absence
 of retained authority. Never fork a running multithreaded JVM and continue guest
 execution in the child; use a controlled spawn/exec launcher.
 
-For shared actors, use private worker heaps plus explicit mapped shared regions
-as the initial reference design. Shared domain handles carry stable region IDs,
+For shared actors, use actor-local arenas/private worker heaps plus explicit
+mapped shared regions as the initial reference design. The local arena remains the
+ordinary allocation fast path even for a shared actor; shared-domain membership
+adds access to explicit regions rather than replacing that arena. Shared domain handles carry stable region IDs,
 generations, bounds, and permissions. Shared references use validated offsets or
 opaque IDs, never Java references or raw cross-process pointers. A child's spawn
 message grants its inherited domain membership; a grandchild receives the same

@@ -20,49 +20,54 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(20)
 final class ActorCarrierIdentityCleanupTest {
     @Test
-    void leaseViolationDoesNotContaminateRejectedCarrier() throws Exception {
-        CountDownLatch insideOwnerTurn = new CountDownLatch(1);
-        CountDownLatch letOwnerLeave = new CountDownLatch(1);
-        AtomicBoolean leakedToRejectedCarrier = new AtomicBoolean(true);
-        AtomicReference<Throwable> ownerFailure = new AtomicReference<>();
+    void foreignWorkerTurnExecutorCannotForgeOrLeakActorContext() throws Exception {
+        CountDownLatch foreignAttemptFinished = new CountDownLatch(1);
+        AtomicBoolean leakedToForeignThread = new AtomicBoolean(true);
+        AtomicBoolean leakedToAdmittedWorker = new AtomicBoolean(true);
+        AtomicReference<Throwable> foreignFailure = new AtomicReference<>();
+        AtomicBoolean guestExecuted = new AtomicBoolean();
 
         ActorRuntime.TurnExecutor adversarialExecutor = turn -> {
-            Thread owner = new Thread(() -> {
+            Thread foreign = new Thread(() -> {
                 try {
                     turn.run();
                 } catch (Throwable failure) {
-                    ownerFailure.set(failure);
+                    foreignFailure.set(failure);
+                } finally {
+                    leakedToForeignThread.set(
+                            ActorRuntime.inActorExecution()
+                                    || ActorRuntime.currentActorId().isPresent()
+                                    || ActorRuntime.currentActorKind() != null
+                                    || ActorRuntime.currentActorPolicy() != null
+                                    || ActorRuntime.currentActorExecutionDomain() != null);
+                    foreignAttemptFinished.countDown();
                 }
-            }, "ores-test-injected-owner");
-            owner.setDaemon(true);
-            owner.start();
+            }, "ores-test-illegal-foreign-carrier");
+            foreign.setDaemon(true);
+            foreign.start();
             try {
-                assertTrue(insideOwnerTurn.await(5, TimeUnit.SECONDS),
-                        "initial actor turn did not enter");
-                try {
-                    // A second concurrent attempt must fail its beginTurn lease.
-                    turn.run();
-                } catch (IllegalStateException expected) {
-                    // Both propagating and actor-supervised fail-stop are valid.
-                }
+                assertTrue(foreignAttemptFinished.await(5, TimeUnit.SECONDS),
+                        "foreign TurnExecutor attempt did not finish");
+                // The foreign callback already consumed/violated invocation
+                // identity; retry on the admitted worker cannot revive it.
+                assertThrows(IllegalStateException.class, turn::run);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
                 throw new AssertionError(interrupted);
             } finally {
-                leakedToRejectedCarrier.set(
+                leakedToAdmittedWorker.set(
                         ActorRuntime.inActorExecution()
                                 || ActorRuntime.currentActorId().isPresent()
                                 || ActorRuntime.currentActorKind() != null
                                 || ActorRuntime.currentActorPolicy() != null
                                 || ActorRuntime.currentActorExecutionDomain() != null);
-                letOwnerLeave.countDown();
                 try {
-                    owner.join(5000);
+                    foreign.join(5000);
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                     throw new AssertionError(interrupted);
                 }
-                assertFalse(owner.isAlive(), "owner turn must finish before test teardown");
+                assertFalse(foreign.isAlive(), "foreign callback must finish");
             }
         };
 
@@ -70,24 +75,22 @@ final class ActorCarrierIdentityCleanupTest {
         try (ActorRuntime runtime = new ActorRuntime(
                 IsolatePolicy.developer(), config, adversarialExecutor)) {
             var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
-                insideOwnerTurn.countDown();
-                try {
-                    assertTrue(letOwnerLeave.await(5, TimeUnit.SECONDS),
-                            "rejected turn did not release owner");
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    throw new AssertionError(interrupted);
-                }
-                context.self().stop();
+                guestExecuted.set(true);
             });
             ref.send(1);
             assertTrue(ref.awaitTermination(10, TimeUnit.SECONDS));
-            assertFalse(leakedToRejectedCarrier.get(),
-                    "failed actor beginTurn left guest identity on a reusable carrier");
-            assertNull(ownerFailure.get(), "original actor owner turn must still unwind safely");
+            assertFalse(leakedToForeignThread.get(),
+                    "foreign TurnExecutor callback leaked actor ThreadLocal identity");
+            assertFalse(leakedToAdmittedWorker.get(),
+                    "rejected duplicate leaked actor ThreadLocal identity");
+            assertFalse(guestExecuted.get(),
+                    "a foreign worker must never enter actor-owned code");
+            assertInstanceOf(IllegalStateException.class, foreignFailure.get());
+            assertTrue(foreignFailure.get().getMessage().contains("foreign worker"),
+                    () -> "unexpected foreign error: " + foreignFailure.get());
             Throwable cause = ref.failure().orElseThrow(
-                    () -> new AssertionError("overlapping turn must fail-stop the actor"));
-            assertTrue(cause.getMessage().contains("single-writer execution lease"),
+                    () -> new AssertionError("invalid TurnExecutor must fail-stop actor"));
+            assertTrue(cause.getMessage().contains("TurnExecutor returned after an invalid"),
                     () -> "unexpected termination cause: " + cause);
         }
     }
