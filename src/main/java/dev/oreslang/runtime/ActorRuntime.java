@@ -67,6 +67,21 @@ public final class ActorRuntime implements AutoCloseable {
         return earlier;
     }
 
+    /**
+     * Dispatch every independent termination action even if a trusted host
+     * callback throws. A failed action prevents the cascade barrier from
+     * opening; remaining child cancellations must still be attempted.
+     */
+    static Throwable attemptTerminationAction(Throwable earlier, Runnable action) {
+        Objects.requireNonNull(action, "action");
+        try {
+            action.run();
+            return earlier;
+        } catch (Throwable failure) {
+            return appendCleanupFailure(earlier, failure);
+        }
+    }
+
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
     private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
     private static final int MAX_ACTOR_GROUPS_PER_ACTOR = 64;
@@ -8182,34 +8197,50 @@ public final class ActorRuntime implements AutoCloseable {
 
             boolean cascadeDispatchComplete = false;
             try {
-                // The cancellation cascade was claimed under lifecycleLock.
-                // Channel.close and drainOne both invoke callbacks inline;
-                // dispatch those outside the actor monitor so a subscriber
-                // cannot pin it or deadlock a second lifecycle operation.
-                if (cause == null) mailbox.close();
-                else mailbox.close(cause);
-                continuationMailbox.close(cause);
-                drainMailboxReservations();
+                // The cascade was claimed under lifecycleLock. Both close and
+                // drain synchronously invoke arbitrary Future subscribers:
+                // dispatch outside the actor monitor and attempt every
+                // independent release even after one subscriber fails.
+                Throwable dispatchFailure = null;
+                dispatchFailure = attemptTerminationAction(dispatchFailure,
+                        () -> mailbox.close(cause));
+                dispatchFailure = attemptTerminationAction(dispatchFailure,
+                        () -> continuationMailbox.close(cause));
+                dispatchFailure = attemptTerminationAction(dispatchFailure,
+                        this::drainMailboxReservations);
 
-                // Sealing/cancelling a scope can settle Futures and execute
-                // trusted callbacks inline. Never hold the actor lifecycle
-                // monitor while doing so.
+                // Scope cancellation can synchronously execute trusted host
+                // observers. A fatal callback must not skip cancellation of
+                // otherwise-independent pending Futures and child actors.
                 if (ownedTaskScope != null) {
-                    ownedTaskScope.cancel("owning actor terminated");
+                    dispatchFailure = attemptTerminationAction(dispatchFailure,
+                            () -> ownedTaskScope.cancel("owning actor terminated"));
                 }
-
-                // Pending Future subscribers may synchronously request more
-                // lifecycle operations. All of these belong to this cascade,
-                // and must be dispatched before the actor publishes done.
                 Throwable drainFailure = cause == null ? terminated(ref) : cause;
                 for (DrainWaiter waiter : failedDrainWaiters) {
-                    waiter.completion().failFromRuntime(drainFailure);
+                    dispatchFailure = attemptTerminationAction(dispatchFailure,
+                            () -> waiter.completion().failFromRuntime(drainFailure));
                 }
-                for (OresFuture<?> future : pending) future.cancel(false);
+                for (OresFuture<?> future : pending) {
+                    dispatchFailure = attemptTerminationAction(dispatchFailure,
+                            () -> future.cancel(false));
+                }
                 for (ActorCell<?> child : descendants) {
-                    child.cancel(new ActorCancelledException(
-                            child.ref.id(),
-                            "parent actor " + ref.id() + " terminated"));
+                    dispatchFailure = attemptTerminationAction(dispatchFailure,
+                            () -> child.cancel(new ActorCancelledException(
+                                    child.ref.id(),
+                                    "parent actor " + ref.id() + " terminated")));
+                }
+                if (dispatchFailure != null) {
+                    // Fail closed rather than claiming actor quiescence when
+                    // any required close/revocation action threw. Preserve
+                    // prior actor errors and propagate fatal host failures
+                    // only after sibling revocations were attempted.
+                    ref.terminationCause.compareAndSet(null, dispatchFailure);
+                    if (dispatchFailure instanceof Error fatal) throw fatal;
+                    if (dispatchFailure instanceof RuntimeException failure) throw failure;
+                    throw new IllegalStateException(
+                            "actor termination callback failed", dispatchFailure);
                 }
                 cascadeDispatchComplete = true;
             } finally {
