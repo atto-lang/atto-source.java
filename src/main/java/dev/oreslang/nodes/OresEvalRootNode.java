@@ -17,6 +17,7 @@ import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.OresKeyedMap;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -987,7 +988,12 @@ public final class OresEvalRootNode extends RootNode {
         private void defineBinding(Env env, Ast.BindingStmt binding, Object value) {
             Ast.ClassDecl view = staticClassView(binding.declaredType());
             if (view == null) view = staticClassView(binding.initializer(), env);
-            env.define(binding.name(), value, binding.kind(), view);
+            env.define(
+                    binding.name(),
+                    value,
+                    binding.kind(),
+                    view,
+                    binding.mutableReferent());
         }
 
         private Ast.ClassDecl objectDestructureStaticClassView(
@@ -4890,6 +4896,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return value;
             }
+            if (receiver instanceof OresKeyedMap<?, ?> map) {
+                return map.getRequired(index);
+            }
             if (receiver instanceof Map<?, ?> map) {
                 if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
                     throw new IllegalArgumentException(
@@ -4963,6 +4972,19 @@ public final class OresEvalRootNode extends RootNode {
                 object.fields.put(fieldName, value);
                 return value;
             }
+            if (receiver instanceof OresKeyedMap<?, ?> rawMap) {
+                if (!(receiverExpression instanceof Ast.NameExpr owner)
+                        || env == null
+                        || !env.canWriteMap(owner.name(), rawMap)) {
+                    throw new SecurityException(
+                            "Map<K,V> indexed mutation requires a directly owned mutable local binding");
+                }
+                @SuppressWarnings("unchecked")
+                OresKeyedMap<Object, Object> map =
+                        (OresKeyedMap<Object, Object>) rawMap;
+                map.put(key, value);
+                return value;
+            }
             if (receiver instanceof MutableStructValue rawStruct) {
                 if (!(key instanceof String fieldName)) {
                     throw new IllegalArgumentException(
@@ -4983,7 +5005,7 @@ public final class OresEvalRootNode extends RootNode {
                 return value;
             }
             throw new IllegalArgumentException(
-                    "indexed assignment requires mutable class/struct state or a mutable sequence");
+                    "indexed assignment requires a directly owned mutable Map, class/struct state, or a mutable sequence");
         }
 
         private Object unaryValue(String operator, Object value) {
@@ -5048,10 +5070,95 @@ public final class OresEvalRootNode extends RootNode {
                     "unsupported assignment target");
         }
 
+        private Object newGuestMap(Ast.TypeRef type) {
+            if (ActorRuntime.currentActorKind() != null) {
+                throw new SecurityException(
+                        "Map<K,V> allocation inside actors requires actor-owned Map accounting/transport");
+            }
+            if (type.inferArguments() || type.arguments().size() != 2) {
+                throw new IllegalArgumentException(
+                        "Map<K,V> requires exactly two explicit type arguments");
+            }
+
+            Ast.TypeRef keyType = type.arguments().get(0);
+            Ast.TypeRef valueType = type.arguments().get(1);
+            OresKeyedMap.ValueDomain values = mapValueDomain(valueType);
+
+            if (!keyType.isUnion()) {
+                if (!keyType.inferArguments() && keyType.arguments().isEmpty()) {
+                    if (keyType.name().equals("String")
+                            || keyType.name().equals("string")) {
+                        return OresKeyedMap.stringKeys(values);
+                    }
+                    if (keyType.name().equals("Symbol")) {
+                        return OresKeyedMap.symbolKeys(values);
+                    }
+                }
+                throw new IllegalArgumentException(
+                        "Map<K,V> key type must be String, Symbol, or String | Symbol");
+            }
+
+            if (keyType.arguments().size() == 2) {
+                Ast.TypeRef a = keyType.arguments().get(0);
+                Ast.TypeRef b = keyType.arguments().get(1);
+                boolean aString = isStringMapKeyType(a);
+                boolean bString = isStringMapKeyType(b);
+                boolean aSymbol = isSymbolMapKeyType(a);
+                boolean bSymbol = isSymbolMapKeyType(b);
+                if (aString && bSymbol || aSymbol && bString) {
+                    return OresKeyedMap.stringOrSymbolKeys(values);
+                }
+            }
+            throw new IllegalArgumentException(
+                    "Map<K,V> key type must be String, Symbol, or String | Symbol");
+        }
+
+        private static boolean isStringMapKeyType(Ast.TypeRef type) {
+            return !type.inferArguments()
+                    && type.arguments().isEmpty()
+                    && (type.name().equals("String") || type.name().equals("string"));
+        }
+
+        private static boolean isSymbolMapKeyType(Ast.TypeRef type) {
+            return !type.inferArguments()
+                    && type.arguments().isEmpty()
+                    && type.name().equals("Symbol");
+        }
+
+        private static OresKeyedMap.ValueDomain mapValueDomain(Ast.TypeRef type) {
+            if (type.inferArguments() || !type.arguments().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "closed Map<K,V> v1 values must be int, string, bool, or Symbol");
+            }
+            if (Set.of(
+                    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+                    "int", "uint", "bigint").contains(type.name())) {
+                return OresKeyedMap.ValueDomain.INT;
+            }
+            if (type.name().equals("String") || type.name().equals("string")) {
+                return OresKeyedMap.ValueDomain.STRING;
+            }
+            if (type.name().equals("bool") || type.name().equals("Bool")) {
+                return OresKeyedMap.ValueDomain.BOOL;
+            }
+            if (type.name().equals("Symbol")) {
+                return OresKeyedMap.ValueDomain.SYMBOL;
+            }
+            throw new IllegalArgumentException(
+                    "closed Map<K,V> v1 values must be int, string, bool, or Symbol");
+        }
+
         private Object instantiateEvaluated(
                 Ast.NewExpr created,
                 List<Object> args,
                 Env env) {
+            if (created.type().name().equals("Map") && findClass("Map") == null) {
+                if (!args.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "new Map<K,V>() takes no constructor arguments");
+                }
+                return newGuestMap(created.type());
+            }
             if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
                 if (created.type().inferArguments() || !created.type().arguments().isEmpty() || args.size() > 1)
                     throw new IllegalArgumentException("HttpResponse requires zero or one string body");
@@ -6913,6 +7020,13 @@ public final class OresEvalRootNode extends RootNode {
                         indexed.receiver());
             }
             if (expr instanceof Ast.NewExpr created) {
+                if (created.type().name().equals("Map") && findClass("Map") == null) {
+                    if (!created.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "new Map<K,V>() takes no constructor arguments");
+                    }
+                    return newGuestMap(created.type());
+                }
                 if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
                     List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                     return instantiateEvaluated(created, args, env);
@@ -9602,19 +9716,36 @@ public final class OresEvalRootNode extends RootNode {
         }
         private boolean canInitialize(OresObject object) { return constructingObject == object; }
         private void define(String name, Object value, Ast.BindingKind kind) {
-            define(name, value, kind, null);
+            define(name, value, kind, null, kind == Ast.BindingKind.VAL);
         }
         private void define(
                 String name,
                 Object value,
                 Ast.BindingKind kind,
                 Ast.ClassDecl staticClassView) {
-            if (slots.putIfAbsent(name, new Slot(value, kind, staticClassView)) != null) {
+            define(name, value, kind, staticClassView, kind == Ast.BindingKind.VAL);
+        }
+        private void define(
+                String name,
+                Object value,
+                Ast.BindingKind kind,
+                Ast.ClassDecl staticClassView,
+                boolean mutableReferent) {
+            if (value instanceof OresKeyedMap<?, ?> && hasExistingMapAlias(value)) {
+                throw new SecurityException(
+                        "Map<K,V> aliases are forbidden in the closed v1 runtime");
+            }
+            if (slots.putIfAbsent(
+                    name,
+                    new Slot(value, kind, staticClassView, mutableReferent)) != null) {
                 throw new IllegalArgumentException("duplicate binding " + name);
             }
         }
         private void reserve(String name, Ast.BindingKind kind) {
-            if (slots.putIfAbsent(name, new Slot(MISSING, kind, null)) != null) throw new IllegalArgumentException("duplicate binding " + name);
+            if (slots.putIfAbsent(
+                    name,
+                    new Slot(MISSING, kind, null, kind == Ast.BindingKind.VAL)) != null)
+                throw new IllegalArgumentException("duplicate binding " + name);
         }
         private void initialize(String name, Object value) {
             Slot slot = slots.get(name);
@@ -9630,10 +9761,28 @@ public final class OresEvalRootNode extends RootNode {
             return slot == null ? null : slot.staticClassView;
         }
         private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
+        private boolean hasExistingMapAlias(Object value) {
+            for (Slot slot : slots.values()) {
+                if (slot.value == value) return true;
+            }
+            return parent != null && parent.hasExistingMapAlias(value);
+        }
+        private boolean canWriteMap(String name, OresKeyedMap<?, ?> expected) {
+            Slot slot = slots.get(name);
+            if (slot != null) {
+                return slot.value == expected && slot.mutableReferent;
+            }
+            return parent != null && parent.canWriteMap(name, expected);
+        }
         private void assign(String name, Object value) {
             Slot slot = slots.get(name);
             if (slot != null) {
                 if (slot.kind != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + slot.kind.name().toLowerCase() + " binding " + name);
+                if (slot.value instanceof OresKeyedMap<?, ?>
+                        || value instanceof OresKeyedMap<?, ?>) {
+                    throw new SecurityException(
+                            "Map<K,V> rebinding is disabled in the closed v1 runtime");
+                }
                 slot.value = value;
                 return;
             }
@@ -9641,6 +9790,12 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unknown binding " + name);
         }
         private Env snapshot() {
+            for (Slot slot : slots.values()) {
+                if (slot.value instanceof OresKeyedMap<?, ?>) {
+                    throw new SecurityException(
+                            "Map<K,V> cannot cross deferred/closure snapshots in the closed v1 runtime");
+                }
+            }
             Env cp = new Env(
                     parent == null ? null : parent.snapshot(),
                     descendantsNonLexical,
@@ -9774,13 +9929,16 @@ public final class OresEvalRootNode extends RootNode {
         private Object value;
         private final Ast.BindingKind kind;
         private final Ast.ClassDecl staticClassView;
+        private final boolean mutableReferent;
         private Slot(
                 Object value,
                 Ast.BindingKind kind,
-                Ast.ClassDecl staticClassView) {
+                Ast.ClassDecl staticClassView,
+                boolean mutableReferent) {
             this.value = value;
             this.kind = kind;
             this.staticClassView = staticClassView;
+            this.mutableReferent = mutableReferent;
         }
     }
 
