@@ -65,6 +65,21 @@ final class ModelDeclarationParserSliceTest {
     }
 
     @Test
+    void signedI64StaticConstantsAcceptMinimumButNotExpressions() {
+        Ast.ModelDecl model = model(
+                "define model M(delta: int = -9223372036854775808) as AddDelta(delta) end");
+        assertEquals("-9223372036854775808",
+                model.formals().getFirst().defaultValue().source());
+        Ast.ModelDecl literal = model(
+                "define model M as AddDelta(-2) end");
+        assertEquals("-2", literal.operations().getFirst().arguments()
+                .getFirst().value().source());
+        invalid("define model M as AddDelta(-(1 + 1)) end", "MODEL_NONCONSTANT_CONFIG");
+        invalid("define model M as AddDelta(-true) end", "MODEL_NONCONSTANT_CONFIG");
+        invalid("define model M as AddDelta(-2.5) end", "MODEL_NONCONSTANT_CONFIG");
+    }
+
+    @Test
     void modelIsContextualAndNotGloballyReserved() {
         assertDoesNotThrow(() -> Parser.parse("""
                 pub fnc model(): int { return 42; }
