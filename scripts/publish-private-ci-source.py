@@ -466,6 +466,14 @@ def publish(repository, source, branch, trusted_root, source_commit):
     if (created.get("ref") != "refs/heads/" + branch
             or valid_sha(created.get("object", {}).get("sha")) != commit_sha):
         raise Denied("GitHub did not attest the exact new CI branch target")
+    # The create-ref POST body alone is not sufficient evidence of persisted
+    # repository state; independently fetch the fresh ref and fail closed if
+    # another writer changed it or if the API response was inconsistent.
+    observed = gh_api(f"repos/{repository}/git/ref/heads/{branch}")
+    if (observed.get("ref") != "refs/heads/" + branch
+            or observed.get("object", {}).get("type") != "commit"
+            or valid_sha(observed.get("object", {}).get("sha")) != commit_sha):
+        raise Denied("destination CI ref readback differs from published commit")
     return commit_sha, len(files)
 
 
