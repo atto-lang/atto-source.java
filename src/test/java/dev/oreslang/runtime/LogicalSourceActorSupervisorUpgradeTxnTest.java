@@ -530,7 +530,8 @@ final class LogicalSourceActorSupervisorUpgradeTxnTest {
                 assertFalse(mailbox.snapshot().dispatchFrozen());
                 assertEquals(1L, mailbox.snapshot().routeEpoch(),
                         "rollback never increments the physical route epoch");
-                assertFalse(router.ref().address().routeEpoch() != 1L);
+                assertEquals(1L, router.ref().routeEpoch(),
+                        "a failed setup must retain the original logical route");
                 assertEquals(0, router.reapRetired(),
                         "candidate lease must be debited at most once");
             }
