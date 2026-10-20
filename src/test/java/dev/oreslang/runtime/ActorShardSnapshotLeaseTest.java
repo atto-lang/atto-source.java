@@ -132,8 +132,9 @@ final class ActorShardSnapshotLeaseTest {
                             for (int i = 0; i < 3; i++) {
                                 snapshots.add(shard.snapshotColumnLeased(0));
                             }
+                            ActorShardColumns activeShard = shard;
                             assertThrows(IllegalStateException.class,
-                                    () -> shard.snapshotColumnLeased(0));
+                                    () -> activeShard.snapshotColumnLeased(0));
                         } catch (Throwable error) {
                             failure.set(error);
                         } finally {
