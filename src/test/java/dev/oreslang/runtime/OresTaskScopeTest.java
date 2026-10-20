@@ -793,4 +793,71 @@ final class OresTaskScopeTest {
         }
     }
 
+
+    @Test
+    void poisonedDrainCancelsSiblingsButWaitsForTheirPhysicalQuiescence()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            AtomicBoolean ownerDeregistered = new AtomicBoolean();
+            OresTaskScope scope = new OresTaskScope(
+                    scheduler,
+                    ignored -> { },
+                    ignored -> ownerDeregistered.set(true));
+            CountDownLatch entered = new CountDownLatch(2);
+            CountDownLatch releaseCorrupt = new CountDownLatch(1);
+            CountDownLatch releaseSibling = new CountDownLatch(1);
+
+            OresTaskScope.ScopedReadClaim corruptClaim =
+                    new OresTaskScope.ScopedReadClaim("corrupt", 101L, 0L, "$");
+            OresTaskScope.ScopedReadClaim siblingClaim =
+                    new OresTaskScope.ScopedReadClaim("sibling", 102L, 0L, "$");
+
+            OresFuture<Integer> corrupt = scope.fork(resume -> {
+                entered.countDown();
+                assertTrue(releaseCorrupt.await(5, TimeUnit.SECONDS));
+                return OresScheduler.done(1);
+            }, java.util.List.of(corruptClaim));
+            OresFuture<Integer> sibling = scope.fork(resume -> {
+                entered.countDown();
+                assertTrue(releaseSibling.await(5, TimeUnit.SECONDS));
+                return OresScheduler.done(2);
+            }, java.util.List.of(siblingClaim));
+
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            OresFuture<Void> drained = scope.quiesce();
+
+            scope.corruptScopedReadRegionForTest(101L);
+            releaseCorrupt.countDown();
+            assertEquals(1, corrupt.get(5, TimeUnit.SECONDS));
+
+            long cancellationDeadline =
+                    System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!sibling.isCancelled()
+                    && System.nanoTime() < cancellationDeadline) {
+                Thread.sleep(1L);
+            }
+
+            assertTrue(scope.isPoisoned());
+            assertTrue(sibling.isCancelled(),
+                    "poison must revoke sibling Task authority");
+            assertFalse(drained.isDone(),
+                    "poison failure must remain hidden while a sibling carrier is running");
+            assertFalse(ownerDeregistered.get(),
+                    "owner scope must remain registered until physical quiescence");
+
+            releaseSibling.countDown();
+
+            java.util.concurrent.ExecutionException poisoned = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> drained.get(5, TimeUnit.SECONDS));
+            assertNotNull(poisoned.getCause());
+            assertTrue(poisoned.getCause().getMessage().contains("accounting"));
+            assertTrue(ownerDeregistered.get(),
+                    "poisoned scope may deregister only after every child carrier exits");
+            assertEquals(2, scope.activeChildren(),
+                    "poison preserves forensic child/claim state instead of publishing success");
+            assertEquals(2, scope.activeScopedReadClaims());
+        }
+    }
+
 }
