@@ -11,6 +11,7 @@ Status: **DRAFT / trusted host substrate plus localhost HMAC-framed socket adapt
 - `requestClose` admits no further writers. If a physical write is pinned, the socket abort is submitted to the bounded non-caller-runs cleanup domain instead of running `Socket.close()` on the requester. `requestCloseAndAwait` bounds supervisor waiting and quarantines unresolved generations; timeout is never evidence of successful close. `RuntimeBlockingGuard` now runs **before monitor entry** across the lease, receipt bridge, raw correlation table, broker authority, authenticated socket gates and replay gate. Actor carriers therefore cannot park on transport lifecycle diagnostics or receipt/protocol monitors.
 - `CleanupScheduler` MUST be a bounded, non-caller-runs, host-owned worker queue. The runtime now detects same-thread caller-runs execution and quarantines before physical close; rejected scheduling also quarantines without falsely completing futures. The one `Runnable::run` use in the self-test is an intentional **negative** case proving that fail-closed behavior.
 - Cleanup closure is generation/attempt-fenced and single-flight. Duplicate or stale scheduled cleanup callbacks do not double-close a descriptor or steal a later retry.
+- Physical descriptor close ownership is also single-flight across active-write abort and finalization. Once a close callback is entered, an exception is treated as an ambiguous descriptor state and that generation can never invoke the closer a second time. A confirmed abort feeds close confirmation back into the lease, so later finalization retires receipts without a second `Socket.close()`. Scheduler failure before close ownership is claimed remains explicitly retryable.
 - If physical close fails, the session is `QUARANTINED`: no reuse, no new sends, and no fabricated physical completion. `retryQuarantinedClose` is an explicit host-supervisor action; no automatic spinning. If physical close was confirmed but receipt retirement failed, retry skips the physical close and resumes receipt retirement.
 - Verified remote receipts still require independently authenticated peer, frame, route, incarnation, capability and digest authority. `IpcTransportSessionLease` does not authenticate any of those.
 
@@ -25,7 +26,7 @@ Status: **DRAFT / trusted host substrate plus localhost HMAC-framed socket adapt
 
 The Maven/JUnit `IpcReceiptParityTest` includes both the physical-session lease test and the authenticated localhost socket test.
 
-New host test vectors include successful verified receipt, denied stale generation, failed socket write/uncertain terminal, failed physical close quarantine, explicit retry, deferred close task and denied worker capacity, duplicate/stale cleanup task, owner/epoch/generation binding, 512 pinned close-vs-write cases, 512 close-vs-admit races, 512 authenticated-terminal-vs-transport-loss races, plus adversarial monitor contention for lease diagnostics, broker/authority, receipt bridge/publication, raw receipt correlation and inbound replay gates.
+New host test vectors include successful verified receipt, denied stale generation, failed socket write/uncertain terminal, failed physical close quarantine, retry only before physical close begins, deferred close task and denied worker capacity, duplicate/stale cleanup task, owner/epoch/generation binding, writer-drain vs in-flight descriptor-close races, unconfirmed-close no-retry proof, exactly-one-descriptor-close proof, 512 pinned close-vs-write cases, 512 close-vs-admit races, 512 authenticated-terminal-vs-transport-loss races, plus adversarial monitor contention for lease diagnostics, broker/authority, receipt bridge/publication, raw receipt correlation and inbound replay gates.
 
 Local independent Java 21 compilation checked a matching transport-epoch lease algorithm against a minimal host bridge stub under `javac -Xlint:all -Werror` with **6,168 passing assertions**, including 1,024 real Java thread races. This is **NOT an exact source Java compilation**: the actual source-repo host suite has been committed but source-org Actions provide no executed steps.
 
@@ -168,8 +169,8 @@ At the latest audit, the current source blobs are:
 - `IpcReceiptCorrelation.java`: `0db39a49de798f713503f1bcec813f730716297d`
 - `IpcReceiptCompletionBridge.java`: `d320550828f4837f935e0159ab09527546a04dc7`
 - `IpcPhysicalConnectionBroker.java`: `ab1325fd561a88d0a849bd6fb46ab8eb313f1967`
-- `IpcTransportSessionLease.java`: `109f49824327abf4af29691b6d8e41572e88e00e`
-- `IpcAuthenticatedSocketTransport.java`: `f15897e986c1963176dd62cde9eb15f19fb78b2c`
+- `IpcTransportSessionLease.java`: `abdc69e61988ef65cc477c2ca11040725340fa21`
+- `IpcAuthenticatedSocketTransport.java`: `b0e3248cb8fab9a61faca4c5600517a9194a69cf`
 - `RuntimeBlockingGuard.java`: `caebbceb9ef294994c35b6cb6fc0a5c124c8c33a`
 
 The socket adapter now:
