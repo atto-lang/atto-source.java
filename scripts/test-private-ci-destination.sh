@@ -60,6 +60,29 @@ expect_wrapper_reject() {
 
 expect_ok trusted/ci
 
+# The retained .sh launcher is Python in isolated mode. Caller-controlled shell
+# startup hooks and Python import hooks must not execute before its own argument
+# validation, even when an attacker supplies both environment variables.
+startup_marker="$work/startup-hook-executed"
+cat > "$work/malicious-bash-env.sh" <<EOF
+printf 'bash-env\\n' >> "$startup_marker"
+EOF
+mkdir -p "$work/python-hook"
+cat > "$work/python-hook/sitecustomize.py" <<EOF
+from pathlib import Path
+Path(r"$startup_marker").write_text("pythonpath\\n")
+EOF
+rm -f "$startup_marker"
+if env \
+    BASH_ENV="$work/malicious-bash-env.sh" \
+    PYTHONPATH="$work/python-hook" \
+    "$script_dir/run-in-private-ci-destination.sh" > "$work/out" 2>&1; then
+  echo 'Unsafe launcher accepted malformed invocation' >&2
+  exit 1
+fi
+test ! -e "$startup_marker"
+grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
+
 for visibility in public internal null; do
   export MOCK_VISIBILITY="$visibility"
   expect_fail trusted/ci
