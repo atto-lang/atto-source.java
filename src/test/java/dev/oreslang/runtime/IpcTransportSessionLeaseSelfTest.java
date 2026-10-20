@@ -81,6 +81,20 @@ public final class IpcTransportSessionLeaseSelfTest {
     }
 
     public static void main(String[] ignored) throws Exception {
+        // Every lease is physically owner-bound by construction; there is no
+        // nullable compatibility mode that can fall back to unbound retirement.
+        try {
+            new IpcTransportSessionLease(
+                    message(1, "missingOwner"), 79, 1,
+                    new IpcReceiptCompletionBridge(1), null,
+                    (value, preparedFrame) -> { },
+                    () -> { },
+                    IpcTransportSessionLeaseSelfTest::offCallerCleanup);
+            throw new AssertionError("IPC lease accepted a null physical owner");
+        } catch (NullPointerException expected) {
+            check(expected.getMessage().contains("physicalOwner"));
+        }
+
         // Defense in depth: the package-local lease rejects actor carriers
         // before admission, waits, quarantine, or diagnostic monitor entry.
         {
