@@ -58,7 +58,7 @@ public final class TaskScope implements AutoCloseable {
 
     /** Atomically reserve a child slot or reject a sealed scope. */
     public <T> TaskHandle<T> startTask(OresScheduler.Task<T> task) {
-        return startTask(task, () -> { });
+        return startTask(task, noopRetirement());
     }
 
     /**
