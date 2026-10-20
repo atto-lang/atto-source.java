@@ -2,7 +2,6 @@ package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
-import dev.oreslang.parser.Parser;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -33,6 +32,15 @@ public final class BuildTreeShaker {
             importResolutions = freezeNested(importResolutions);
             manifests = Map.copyOf(manifests);
             removedUnits = Set.copyOf(removedUnits);
+        }
+
+        public BuildReachabilityManifest manifest(String entryUnitId) {
+            return new BuildReachabilityManifest(
+                    BuildReachabilityManifest.SCHEMA,
+                    entryUnitId,
+                    new ArrayList<>(build.units().keySet()),
+                    new ArrayList<>(removedUnits),
+                    manifests);
         }
     }
 
