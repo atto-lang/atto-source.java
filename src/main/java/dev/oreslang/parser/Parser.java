@@ -431,6 +431,17 @@ public final class Parser {
     }
 
     private Ast.ModelValue parseModelValue(java.util.Set<String> allowedFormals) {
+        // Signed scalar *literals* belong to model static configuration.
+        // A minus before a parenthesized/call expression is not a constant.
+        if (match(MINUS)) {
+            if (match(INT))
+                return new Ast.ModelValue(Ast.ModelValueKind.INTEGER,
+                        "-" + previous().lexeme());
+            if (match(FLOAT))
+                return new Ast.ModelValue(Ast.ModelValueKind.FLOAT,
+                        "-" + previous().lexeme());
+            throw error(peek(), "MODEL_NONCONSTANT_CONFIG: expected numeric literal after '-'");
+        }
         if (match(INT)) return new Ast.ModelValue(Ast.ModelValueKind.INTEGER, previous().lexeme());
         if (match(FLOAT)) return new Ast.ModelValue(Ast.ModelValueKind.FLOAT, previous().lexeme());
         if (match(TRUE, FALSE)) return new Ast.ModelValue(Ast.ModelValueKind.BOOLEAN, previous().lexeme());
