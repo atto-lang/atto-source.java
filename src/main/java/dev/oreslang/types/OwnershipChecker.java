@@ -3337,18 +3337,51 @@ public final class OwnershipChecker {
     }
 
     private boolean isCopyType(Ast.TypeRef type) {
+        return isCopyType(type, new HashSet<>());
+    }
+
+    private boolean isCopyType(Ast.TypeRef type, Set<String> visitingEnums) {
         if (type == null || type.isBorrow()) return false;
-        if (type.isUnion()) return type.arguments().stream().allMatch(this::isCopyType);
-        if (type.isTupleType()) return type.arguments().stream().allMatch(this::isCopyType);
+        if (type.isUnion()) {
+            return type.arguments().stream()
+                    .allMatch(argument -> isCopyType(argument, visitingEnums));
+        }
+        if (type.isTupleType()) {
+            return type.arguments().stream()
+                    .allMatch(argument -> isCopyType(argument, visitingEnums));
+        }
+
+        Ast.EnumDecl enumeration = findEnum(type.name());
+        if (enumeration != null) {
+            String identity = qualifiedEnumName(enumeration);
+            if (!visitingEnums.add(identity)) {
+                // Directly recursive value enums are not proven finite/copyable
+                // by this minimal ADT slice.
+                return false;
+            }
+            try {
+                for (Ast.EnumCase variant : enumeration.cases()) {
+                    if (variant.payload() != null
+                            && !isCopyType(variant.payload(), visitingEnums)) {
+                        return false;
+                    }
+                }
+                return true;
+            } finally {
+                visitingEnums.remove(identity);
+            }
+        }
+
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void","SharedMutex",
                     "Channel","SelectCase","SelectSet","OptionUnwrapError" -> true;
-            case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
+            case "Option" -> type.arguments().size() == 1
+                    && isCopyType(type.arguments().getFirst(), visitingEnums);
             case "Result" -> type.arguments().size() == 2
-                    && isCopyType(type.arguments().get(0))
-                    && isCopyType(type.arguments().get(1));
+                    && isCopyType(type.arguments().get(0), visitingEnums)
+                    && isCopyType(type.arguments().get(1), visitingEnums);
             default -> false;
         };
     }
