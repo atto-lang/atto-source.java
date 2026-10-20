@@ -61,6 +61,46 @@ final class TrainingErrorNominalMinSliceTest {
         assertEquals("-8\n-10\n", output.toString(StandardCharsets.UTF_8));
     }
 
+    @Test void onePayloadEnumConstructorAndPatternAreTypedNominally() throws Exception {
+        String program = """
+                define enum ParseError as
+                    CODE: int = 1
+                    TEXT: String = 2
+                end
+                fnc render(ParseError error): int {
+                    match error over
+                        on ParseError.CODE(value) -> { return value; }
+                        on ParseError.TEXT(message) -> { return 99; }
+                    end
+                }
+                pub routine main(): void {
+                    stdio.println(render(ParseError.CODE(7)));
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> verify(program));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            Source executable = Source.newBuilder(
+                    OresLanguage.ID, program, "enum-payload-minslice.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            assertDoesNotThrow(() -> context.eval(executable));
+        }
+        assertEquals("7\n", output.toString(StandardCharsets.UTF_8));
+
+        String wrongPayload = """
+                define enum ParseError as
+                    CODE: int = 1
+                end
+                fnc wrong(): ParseError {
+                    return ParseError.CODE("seven");
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(wrongPayload));
+        assertThrows(IllegalArgumentException.class, () -> verify(wrongPayload));
+    }
+
     @Test void foreignNominalEnumWithSameCaseAndTagIsRejected() {
         String program = """
                 define enum TrainingError as
