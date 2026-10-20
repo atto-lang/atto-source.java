@@ -135,7 +135,8 @@ public final class IncrementalCompiler {
                     abiHashes.get(id),
                     dependencies.get(id),
                     normalized.get(id),
-                    checked);
+                    checked,
+                    new OresCompiler.CheckedProgram(checked));
             next.put(id, unit);
             rebuilt.add(id);
         }
@@ -487,9 +488,33 @@ public final class IncrementalCompiler {
             String abiDigest,
             Set<String> dependencies,
             String sourceText,
-            Ast.Program program) {
+            Ast.Program program,
+            OresCompiler.CheckedProgram checkedProgram) {
         public CompiledUnit {
             dependencies = Set.copyOf(dependencies);
+            java.util.Objects.requireNonNull(program, "compiled unit program");
+            if (checkedProgram != null && checkedProgram.program() != program) {
+                throw new IllegalArgumentException(
+                        "compiled unit checked-program proof must bind the exact program identity");
+            }
+        }
+
+        /**
+         * Backward-compatible construction does not mint a checked-program
+         * proof. Such a unit is data-only and cannot enter the prechecked
+         * Truffle parse bridge.
+         */
+        public CompiledUnit(
+                String unitId,
+                String packageId,
+                String namespace,
+                String sourceDigest,
+                String abiDigest,
+                Set<String> dependencies,
+                String sourceText,
+                Ast.Program program) {
+            this(unitId, packageId, namespace, sourceDigest, abiDigest,
+                    dependencies, sourceText, program, null);
         }
     }
 
