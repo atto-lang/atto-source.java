@@ -408,6 +408,13 @@ class ProtectedReviewCoverageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "full publisher test step"):
             validate(self.owners, damaged)
 
+    def test_full_publisher_path_shadowable_env_launcher_is_denied(self):
+        damaged = self.workflow.replace(
+            "/usr/bin/env -i PATH=/usr/bin:/bin HOME=/ PRIVATE_CI_TEST_REPEATS=3 /bin/bash scripts/run-private-ci-regressions-local.sh",
+            "env -i PATH=/usr/bin:/bin HOME=/ PRIVATE_CI_TEST_REPEATS=3 /bin/bash scripts/run-private-ci-regressions-local.sh")
+        with self.assertRaisesRegex(ValueError, "full publisher test step"):
+            validate(self.owners, damaged)
+
     def test_full_publisher_inherited_shell_env_is_denied(self):
         damaged = self.workflow.replace(
             "/usr/bin/env -i PATH=/usr/bin:/bin HOME=/ PRIVATE_CI_TEST_REPEATS=3 /bin/bash scripts/run-private-ci-regressions-local.sh",
