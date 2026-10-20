@@ -1334,15 +1334,35 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    /** Trusted VM-owned metadata, never copied or serialized as guest mail. */
-    private record CallBinding(
-            GenerationalReplyRegistry.Ticket<?> ticket,
-            GenerationalReplyRegistry.Endpoint callee) {
-        private CallBinding {
-            Objects.requireNonNull(ticket, "reply ticket");
-            Objects.requireNonNull(callee, "callee endpoint");
+    /** Trusted VM-owned metadata, never copied or serialized as guest mail.
+     * Only the admitted callee turn stages a response; the VM publishes it
+     * after handler and persistent-state validation return successfully. */
+    private static final class CallBinding {
+        private final GenerationalReplyRegistry.Ticket<?> ticket;
+        private final GenerationalReplyRegistry.Endpoint callee;
+        private Object response;
+        private boolean staged;
+        private CallBinding(GenerationalReplyRegistry.Ticket<?> ticket,
+                            GenerationalReplyRegistry.Endpoint callee) {
+            this.ticket = Objects.requireNonNull(ticket, "reply ticket");
+            this.callee = Objects.requireNonNull(callee, "callee endpoint");
         }
-
+        GenerationalReplyRegistry.Ticket<?> ticket() { return ticket; }
+        GenerationalReplyRegistry.Endpoint callee() { return callee; }
+        boolean stage(Object value) {
+            if (staged || ticket.state() != GenerationalReplyRegistry.State.PENDING) return false;
+            ticket.validateResponse(value);
+            response = value;
+            staged = true;
+            return true;
+        }
+        @SuppressWarnings("unchecked")
+        void commit() {
+            if (!staged) return;
+            GenerationalReplyRegistry.Ticket<Object> typed =
+                    (GenerationalReplyRegistry.Ticket<Object>) ticket;
+            typed.reply(callee, response);
+        }
         void failUnanswered() {
             if (ticket.state() == GenerationalReplyRegistry.State.PENDING) {
                 ticket.reject(callee,
@@ -7800,10 +7820,7 @@ public final class ActorRuntime implements AutoCloseable {
                         // caller Future. No raw actor-private pointer may escape.
                         Object safe = isPrivateKind(kind) ? isolateCopy(value)
                                 : freezeForTransport(value);
-                        @SuppressWarnings("unchecked")
-                        GenerationalReplyRegistry.Ticket<Object> ticket =
-                                (GenerationalReplyRegistry.Ticket<Object>) activeCall.ticket();
-                        return ticket.reply(activeCall.callee(), safe);
+                        return activeCall.stage(safe);
                     }
                     @Override public Optional<SharedCodeImageStore.CodeImage> codeImage() {
                         return Optional.ofNullable(codeImage);
@@ -7928,6 +7945,12 @@ public final class ActorRuntime implements AutoCloseable {
                             // at construction but later retain a mutable JVM
                             // object across turns.
                             validatePrivateBehaviorState(ref.id(), behavior);
+                        }
+                        // Publish success only after the whole admitted handler
+                        // and post-handler ownership checks have returned.
+                        // If handler throws, MessageEnvelope.close rejects it.
+                        if (activeEnvelope.call() != null) {
+                            activeEnvelope.call().commit();
                         }
                     }
                     // A source receive that suspended is not processed until
