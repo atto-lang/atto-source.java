@@ -294,6 +294,25 @@ final class RepeatingSequenceShapeSafetyTest {
     }
 
     @Test
+    void unknownCannotForgePatternProofThroughWrapperOrUnion() {
+        var joined = Types.unionOf(List.of(Types.Primitive.INT, Types.Primitive.STRING));
+        var shape = new Types.ListType(joined,
+                List.of(Types.Primitive.INT, Types.Primitive.STRING));
+        var optional = new Types.Named("Option", List.of(shape));
+        var result = new Types.Named("Result", List.of(shape, Types.Primitive.BOOL));
+        var tuple = new Types.Tuple(List.of(Types.Primitive.INT, shape));
+        var record = new Types.Record(java.util.Map.of("items", shape));
+        var union = Types.unionOf(List.of(shape, Types.Primitive.BOOL));
+        for (Types.Type wrapped : List.of(optional, result, tuple, record, union)) {
+            assertTrue(Types.containsPatternedList(wrapped));
+            assertFalse(Types.isAssignable(Types.Unknown.INSTANCE, wrapped));
+            assertFalse(Types.isAssignable(new Types.Generic("Unbound"), wrapped));
+            assertTrue(Types.isAssignable(wrapped, wrapped));
+        }
+        assertFalse(Types.containsPatternedList(new Types.ListType(joined)));
+    }
+
+    @Test
     void genericTypeInferenceUsesRepeatedSlotTypesInsteadOfTheElementUnion() {
         accepts("""
                 fnc preserve<T>(Array[...(T, string, bool)] input):
