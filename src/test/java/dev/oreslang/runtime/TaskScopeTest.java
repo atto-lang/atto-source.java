@@ -81,12 +81,27 @@ public class TaskScopeTest {
             CountDownLatch entered = new CountDownLatch(1);
             CountDownLatch release = new CountDownLatch(1);
             AtomicInteger retired = new AtomicInteger();
+            AtomicReference<TaskScope> retiredScope = new AtomicReference<>();
+            AtomicReference<TaskHandle<Integer>> retiredChild = new AtomicReference<>();
 
             TaskHandle<Integer> child = scope.startTask(resume -> {
                 entered.countDown();
                 awaitUninterruptibly(release);
                 return OresScheduler.done(7);
-            }, retired::incrementAndGet);
+            }, new TaskScope.RetirementHook<>() {
+                @Override
+                public void retireNeverStarted(TaskScope actualScope) {
+                    fail("running child must not use never-started retirement");
+                }
+
+                @Override
+                public void retireAfterPhysicalQuiescence(
+                        TaskScope actualScope, TaskHandle<Integer> actualChild) {
+                    retired.incrementAndGet();
+                    retiredScope.set(actualScope);
+                    retiredChild.set(actualChild);
+                }
+            });
 
             assertTrue(entered.await(3, TimeUnit.SECONDS));
             assertTrue(child.cancel("stop"));
