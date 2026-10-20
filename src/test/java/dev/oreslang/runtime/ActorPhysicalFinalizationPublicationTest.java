@@ -639,4 +639,36 @@ final class ActorPhysicalFinalizationPublicationTest {
     }
 
 
+    @Test
+    void terminalObserverStopCannotSelfJoinPhysicalFinalization() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+
+            var callbackEntered = new CountDownLatch(1);
+            var nestedStopFailure = new AtomicReference<Throwable>();
+            actor.getDone().whenCompleteRuntime((ignored, failure) -> {
+                callbackEntered.countDown();
+                try {
+                    actor.stop();
+                    nestedStopFailure.set(new AssertionError(
+                            "terminal observer unexpectedly joined its own finalization"));
+                } catch (Throwable rejected) {
+                    nestedStopFailure.set(rejected);
+                }
+            });
+
+            actor.stop();
+            assertTrue(callbackEntered.await(5, TimeUnit.SECONDS));
+            Throwable rejected = nestedStopFailure.get();
+            assertInstanceOf(IllegalStateException.class, rejected);
+            assertTrue(rejected.getMessage().contains(
+                    "cannot join its own physical finalization"));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(runtime.physicallyFinalizedForHotUpgrade(actor));
+        }
+    }
+
+
 }
