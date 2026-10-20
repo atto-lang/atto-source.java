@@ -375,6 +375,10 @@ public final class ModelGraphCompiler {
         boolean seenDefault = false;
         for (Ast.ModelParam parameter : declaration.parameters()) {
             validateModelIdentifier(parameter.name(), "model parameter");
+            requireExecutableScalarType(
+                    parameter.type(),
+                    "MODEL_INVALID_CONFIG_TYPE",
+                    "model parameter '" + parameter.name() + "'");
             if (sourceParameters.putIfAbsent(parameter.name(), parameter) != null) {
                 fail("MODEL_DUPLICATE_PARAMETER",
                         "duplicate model parameter '" + parameter.name() + "'");
@@ -572,6 +576,10 @@ public final class ModelGraphCompiler {
 
         Set<String> parameters = new LinkedHashSet<>();
         for (Ast.Param parameter : operation.parameters()) {
+            requireExecutableScalarType(
+                    parameter.type(),
+                    "MODEL_INVALID_OP_SIGNATURE",
+                    "operation '" + sourceName + "' parameter '" + parameter.name() + "'");
             if (parameter.mutable() || parameter.structural()
                     || !parameters.add(parameter.name())) {
                 fail("MODEL_INVALID_OP_SIGNATURE",
@@ -579,6 +587,10 @@ public final class ModelGraphCompiler {
                                 + "' must use distinct immutable ordinary parameters");
             }
         }
+        requireExecutableScalarType(
+                operation.returnType(),
+                "MODEL_INVALID_OP_SIGNATURE",
+                "operation '" + sourceName + "' return type");
         Ast.ReturnStmt returned = (Ast.ReturnStmt) operation.body().getFirst();
         if (!pureExpression(returned.value(), parameters)) {
             fail("MODEL_EFFECTFUL_BODY",
@@ -645,6 +657,22 @@ public final class ModelGraphCompiler {
         if (value instanceof dev.oreslang.runtime.OresSymbol) return Ast.TypeRef.simple("Symbol");
         fail("MODEL_INVALID_CONST", "unsupported literal constant");
         throw new AssertionError();
+    }
+
+    private static void requireExecutableScalarType(
+            Ast.TypeRef type,
+            String code,
+            String where) {
+        if (type == null
+                || type.isBorrow()
+                || type.inferArguments()
+                || !type.arguments().isEmpty()
+                || !Set.of("int", "float", "bool", "string", "Symbol")
+                        .contains(canonicalType(type))) {
+            fail(code,
+                    where + " must be an owned executable-v1 scalar "
+                            + "(int, float, bool, string, or Symbol)");
+        }
     }
 
     public static boolean sameType(Ast.TypeRef left, Ast.TypeRef right) {
