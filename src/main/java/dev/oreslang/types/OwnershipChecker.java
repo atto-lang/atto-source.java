@@ -1300,6 +1300,8 @@ public final class OwnershipChecker {
             if (enumCase != null) {
                 int expected = enumCase.payload() == null ? 0 : 1;
                 if (call.typeArgumentsPresent()
+                        || call.arguments().stream()
+                                .anyMatch(argument -> argument instanceof Ast.SpreadExpr)
                         || call.arguments().size() != expected) {
                     throw error(
                             "invalid nominal enum constructor "
