@@ -18,6 +18,7 @@ import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.OresEntry;
+import dev.oreslang.runtime.OresTuple;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -3869,7 +3870,7 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(
                                             t,
                                             failure == null
-                                                    ? List.copyOf(values)
+                                                    ? new OresTuple(values)
                                                     : null,
                                             failure));
                     return;
@@ -5032,6 +5033,9 @@ public final class OresEvalRootNode extends RootNode {
                 struct.put(fieldName, value);
                 return value;
             }
+            if (receiver instanceof OresTuple) {
+                throw new IllegalArgumentException("Tuple values are immutable positional products");
+            }
             if (receiver instanceof List<?> raw) {
                 @SuppressWarnings("unchecked")
                 List<Object> list = (List<Object>) raw;
@@ -5368,6 +5372,11 @@ public final class OresEvalRootNode extends RootNode {
                 if (value instanceof GeneratorRuntime.Step<?> step) {
                     return step.done() ? GeneratorRuntime.Step.doneStep()
                             : GeneratorRuntime.Step.yielded(detachAsyncValue(step.value(), visiting));
+                }
+                if (value instanceof OresTuple tuple) {
+                    ArrayList<Object> copy = new ArrayList<>(tuple.size());
+                    for (Object item : tuple) copy.add(detachAsyncValue(item, visiting));
+                    return new OresTuple(copy);
                 }
                 if (value instanceof List<?> list) {
                     ArrayList<Object> copy = new ArrayList<>(list.size());
@@ -7076,7 +7085,11 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
                 return result;
             }
-            if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
+            if (expr instanceof Ast.TupleExpr tuple) {
+                ArrayList<Object> elements = new ArrayList<>(tuple.elements().size());
+                for (Ast.Expr item : tuple.elements()) elements.add(eval(item, env));
+                return new OresTuple(elements);
+            }
             if (expr instanceof Ast.ObjectExpr object) {
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 if (object.explicitStruct()) {
@@ -7785,6 +7798,10 @@ public final class OresEvalRootNode extends RootNode {
                     return new BoundMethod(object, name, env == null ? null : env.accessClass());
                 }
                 throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
+            }
+            if (receiver instanceof OresTuple
+                    && (name.equals("add") || name.equals("set"))) {
+                throw new IllegalArgumentException("Tuple values do not expose mutable List methods");
             }
             if (receiver instanceof List<?> rawList) {
                 return switch (name) {
@@ -8824,7 +8841,7 @@ public final class OresEvalRootNode extends RootNode {
                 return true;
             }
             if (pattern instanceof Ast.TuplePattern tuplePattern) {
-                if (!(value instanceof List<?> tuple)
+                if (!(value instanceof OresTuple tuple)
                         || tuple.size() != tuplePattern.elements().size()) return false;
                 for (int i = 0; i < tuplePattern.elements().size(); i++) {
                     if (!patternMatches(
@@ -9014,7 +9031,7 @@ public final class OresEvalRootNode extends RootNode {
                 return false;
             }
             if (target.isTupleType()) {
-                if (!(value instanceof List<?> tuple)
+                if (!(value instanceof OresTuple tuple)
                         || tuple.size() != target.arguments().size()) return false;
                 for (int i = 0; i < tuple.size(); i++) {
                     if (!oresTypeMatches(tuple.get(i), target.arguments().get(i))) {
@@ -9047,7 +9064,8 @@ public final class OresEvalRootNode extends RootNode {
                         && oresTypeMatches(entry.value(), target.arguments().get(1));
             }
             if (name.equals("Result")) return value instanceof ResultValue;
-            if (name.equals("Array") || name.equals("List")) return value instanceof List<?>;
+            if (name.equals("Array") || name.equals("List"))
+                return value instanceof List<?> && !(value instanceof OresTuple);
             if (name.equals("Generator") || name.equals("Iterator")) return value instanceof GeneratorRuntime.Generator<?>;
             if (name.equals("AsyncGenerator") || name.equals("AsyncIterator")) return value instanceof GeneratorRuntime.AsyncGenerator<?>;
             if (name.equals("IteratorResult")) return value instanceof GeneratorRuntime.Step<?>;
@@ -9253,6 +9271,18 @@ public final class OresEvalRootNode extends RootNode {
                 return valueEquals(a.value(), b.value(), seen);
             }
 
+            // Keep Array and Tuple nominally distinct at runtime. Host Java
+            // List equality is never the Oreslang guest value contract.
+            if (left instanceof OresTuple || right instanceof OresTuple) {
+                if (!(left instanceof OresTuple a) || !(right instanceof OresTuple b)
+                        || a.size() != b.size()) return false;
+                if (comparisonPairSeen(left, right, seen)) return true;
+                for (int i = 0; i < a.size(); i++) {
+                    if (!valueEquals(a.get(i), b.get(i), seen)) return false;
+                }
+                return true;
+            }
+
             Map<?, ?> leftFields = structuralFields(left);
             Map<?, ?> rightFields = structuralFields(right);
             if (leftFields != null || rightFields != null) {
@@ -9450,7 +9480,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (int i = 0; i < fixed.length; i++) {
                     fixed[i] = shapeReturnedValue(declared.arguments().get(i), fixed[i], callable + " tuple[" + i + "]", resolving);
                 }
-                return java.util.Arrays.asList(fixed);
+                return new OresTuple(java.util.Arrays.asList(fixed));
             }
 
             if (declared.isRecordType()) {
@@ -9482,6 +9512,9 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (declared.name().equals("Array") || declared.name().equals("List")) {
+                if (value instanceof OresTuple) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
                 if (declared.arguments().size() != 1) return value;
                 List<?> items = asSequence(value);
                 ArrayList<Object> shaped = new ArrayList<>(items.size());
@@ -10094,6 +10127,16 @@ public final class OresEvalRootNode extends RootNode {
                             append(entry.getKey(), depth + 1);
                             write("=");
                             append(entry.getValue(), depth + 1);
+                            if (output.length() >= MAX_CHARS) break;
+                        }
+                        write("}");
+                    } else if (value instanceof OresTuple tuple) {
+                        write("tuple {");
+                        boolean first = true;
+                        for (Object element : tuple) {
+                            if (!first) write(", ");
+                            first = false;
+                            append(element, depth + 1);
                             if (output.length() >= MAX_CHARS) break;
                         }
                         write("}");
