@@ -39,7 +39,7 @@ final class OresEntryRuntimeTest {
         OresEntry entry = new OresEntry(cyclic, "payload");
         cyclic.add(entry);
 
-        assertEquals("OresEntry", entry.toString());
+        assertEquals("OresEntry<opaque>", entry.toString());
         assertEquals(System.identityHashCode(entry), entry.hashCode());
         assertSame(entry, entry);
         assertNotEquals(entry, new OresEntry(cyclic, "payload"));
@@ -55,19 +55,13 @@ final class OresEntryRuntimeTest {
         OresEntry left = new OresEntry(1L, "one");
         OresEntry right = new OresEntry(1L, "one");
         assertNotEquals(left, right);
-        assertEquals("OresEntry", right.toString());
+        assertEquals("OresEntry<opaque>", right.toString());
     }
 
     @Test
-    void nullPayloadsRemainLegalAndTraversable() {
-        OresEntry entry = new OresEntry(null, null);
-        assertNull(entry.key());
-        assertNull(entry.value());
-        assertEquals(java.util.Arrays.asList(null, null), entry.sharedStateChildren());
-
-        OresEntry frozen = assertInstanceOf(OresEntry.class, ActorRuntime.freeze(entry));
-        assertNull(frozen.key());
-        assertNull(frozen.value());
+    void hostConstructionRejectsNullComponents() {
+        assertThrows(NullPointerException.class, () -> new OresEntry(null, "value"));
+        assertThrows(NullPointerException.class, () -> new OresEntry("key", null));
     }
 
 }
