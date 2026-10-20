@@ -113,6 +113,23 @@ final class TaskAccessVerifierTest {
         assertThrows(IllegalStateException.class, () -> ledger.admit(List.of()));
     }
 
+    @Test void unverifiedEmptyTaskFootprintsCannotBeAdmitted() {
+        var ledger = new TaskAccessVerifier();
+        assertThrows(IllegalArgumentException.class,
+                () -> ledger.admit(List.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> ledger.admitTyped(List.of(), (type, trait) -> true));
+        // These failures must not mint a scope domain or ticket, change
+        // parent authority, or leak a capacity reservation.
+        assertEquals(0, ledger.activeChildren());
+        var root = TaskAccessVerifier.Place.whole(WORLD);
+        var valid = ledger.admit(List.of(write(root)));
+        assertEquals(1, ledger.activeChildren());
+        assertFalse(ledger.parentMayAccess(write(root)));
+        ledger.quiescent(valid);
+        ledger.finishScope();
+    }
+
     @Test void admissionFailureDoesNotReservePartialClaims() {
         var ledger = new TaskAccessVerifier();
         var root = TaskAccessVerifier.Place.whole(WORLD);
