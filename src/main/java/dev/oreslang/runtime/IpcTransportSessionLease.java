@@ -258,17 +258,21 @@ final class IpcTransportSessionLease {
      * write pins do not drain by a supervisor deadline. Never marks an
      * executing physical close as retired or interrupts its cleanup worker.
      */
-    synchronized boolean quarantineIfUnsettled(Throwable failure) {
+    boolean quarantineIfUnsettled(Throwable failure) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport quarantine");
         Objects.requireNonNull(failure, "failure");
-        if (phase == Phase.RETIRED || phase == Phase.QUARANTINED) return false;
-        if (phase == Phase.FINALIZING && cleanupExecuting) {
-            if (closeFailure == null) closeFailure = failure;
-            return false;
+        synchronized (this) {
+            if (phase == Phase.RETIRED || phase == Phase.QUARANTINED) return false;
+            if (phase == Phase.FINALIZING && cleanupExecuting) {
+                if (closeFailure == null) closeFailure = failure;
+                return false;
+            }
+            closeFailure = failure;
+            phase = Phase.QUARANTINED;
+            notifyAll();
+            return true;
         }
-        closeFailure = failure;
-        phase = Phase.QUARANTINED;
-        notifyAll();
-        return true;
     }
 
     /** An explicit supervisor retry never reopens a quarantined session. */
