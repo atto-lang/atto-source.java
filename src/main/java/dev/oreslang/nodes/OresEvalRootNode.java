@@ -17,6 +17,7 @@ import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.OresSmartPointers;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -6649,6 +6650,10 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("env")) return new EnvFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
+                if (Set.of("Box", "Arc", "Rc", "RefCell").contains(name.name())
+                        && findClass(name.name()) == null) {
+                    return new SmartPointerFactory(name.name());
+                }
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("Channel")) return new ChannelFactory();
@@ -7487,6 +7492,125 @@ public final class OresEvalRootNode extends RootNode {
                     case "value" -> selected.value();
                     default -> throw new IllegalArgumentException(
                             "unknown SelectResult member " + name);
+                };
+            }
+            if (receiver instanceof SmartPointerFactory factory) {
+                if (!name.equals("new")) {
+                    throw new IllegalArgumentException(
+                            "unknown smart-pointer factory member " + name);
+                }
+                return (Invokable) factory::create;
+            }
+            if (receiver instanceof OresSmartPointers.Box<?> box) {
+                return switch (name) {
+                    case "take" -> (Invokable) args -> {
+                        requireZero(args, "Box.take");
+                        return box.take();
+                    };
+                    case "is_live" -> (Invokable) args -> {
+                        requireZero(args, "Box.is_live");
+                        return box.live();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown Box member " + name);
+                };
+            }
+            if (receiver instanceof OresSmartPointers.Arc<?> arc) {
+                return switch (name) {
+                    case "clone" -> (Invokable) args -> {
+                        requireZero(args, "Arc.clone");
+                        return arc.retain();
+                    };
+                    case "downgrade" -> (Invokable) args -> {
+                        requireZero(args, "Arc.downgrade");
+                        return arc.downgrade();
+                    };
+                    case "strong_count" -> (Invokable) args -> {
+                        requireZero(args, "Arc.strong_count");
+                        return arc.strongCount();
+                    };
+                    case "weak_count" -> (Invokable) args -> {
+                        requireZero(args, "Arc.weak_count");
+                        return arc.weakCount();
+                    };
+                    case "is_closed" -> (Invokable) args -> {
+                        requireZero(args, "Arc.is_closed");
+                        return arc.closed();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown Arc member " + name);
+                };
+            }
+            if (receiver instanceof OresSmartPointers.Weak<?> weak) {
+                return switch (name) {
+                    case "upgrade" -> (Invokable) args -> {
+                        requireZero(args, "Weak.upgrade");
+                        java.util.Optional<?> upgraded = weak.upgrade();
+                        return upgraded.isPresent()
+                                ? new OptionValue(true, upgraded.orElseThrow())
+                                : new OptionValue(false, null);
+                    };
+                    case "strong_count" -> (Invokable) args -> {
+                        requireZero(args, "Weak.strong_count");
+                        return weak.strongCount();
+                    };
+                    case "weak_count" -> (Invokable) args -> {
+                        requireZero(args, "Weak.weak_count");
+                        return weak.weakCount();
+                    };
+                    case "is_closed" -> (Invokable) args -> {
+                        requireZero(args, "Weak.is_closed");
+                        return weak.closed();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown Weak member " + name);
+                };
+            }
+            if (receiver instanceof OresSmartPointers.Rc<?> rc) {
+                return switch (name) {
+                    case "clone" -> (Invokable) args -> {
+                        requireZero(args, "Rc.clone");
+                        return rc.retain();
+                    };
+                    case "downgrade" -> (Invokable) args -> {
+                        requireZero(args, "Rc.downgrade");
+                        return rc.downgrade();
+                    };
+                    case "strong_count" -> (Invokable) args -> {
+                        requireZero(args, "Rc.strong_count");
+                        return rc.strongCount();
+                    };
+                    case "weak_count" -> (Invokable) args -> {
+                        requireZero(args, "Rc.weak_count");
+                        return rc.weakCount();
+                    };
+                    case "is_closed" -> (Invokable) args -> {
+                        requireZero(args, "Rc.is_closed");
+                        return rc.closed();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown Rc member " + name);
+                };
+            }
+            if (receiver instanceof OresSmartPointers.RcWeak<?> weak) {
+                return switch (name) {
+                    case "upgrade" -> (Invokable) args -> {
+                        requireZero(args, "RcWeak.upgrade");
+                        java.util.Optional<?> upgraded = weak.upgrade();
+                        return upgraded.isPresent()
+                                ? new OptionValue(true, upgraded.orElseThrow())
+                                : new OptionValue(false, null);
+                    };
+                    case "strong_count" -> (Invokable) args -> {
+                        requireZero(args, "RcWeak.strong_count");
+                        return weak.strongCount();
+                    };
+                    case "weak_count" -> (Invokable) args -> {
+                        requireZero(args, "RcWeak.weak_count");
+                        return weak.weakCount();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown RcWeak member " + name);
                 };
             }
             if (receiver instanceof MutexFactory factory) {
@@ -10076,6 +10200,21 @@ public final class OresEvalRootNode extends RootNode {
     }
     private enum FutureFactory { INSTANCE }
     private enum BooleanOpsNamespace { INSTANCE }
+
+    private record SmartPointerFactory(String kind) {
+        private Object create(List<Object> args) {
+            requireOne(args, kind + ".new");
+            Object value = args.getFirst();
+            return switch (kind) {
+                case "Box" -> OresSmartPointers.box(value);
+                case "Arc" -> OresSmartPointers.arc(value);
+                case "Rc" -> OresSmartPointers.rc(value);
+                case "RefCell" -> OresSmartPointers.refCell(value);
+                default -> throw new IllegalStateException(
+                        "unknown smart-pointer factory " + kind);
+            };
+        }
+    }
 
     private record MutexFactory(boolean shared, OresContext context) {
         private Object create(List<Object> args) {
