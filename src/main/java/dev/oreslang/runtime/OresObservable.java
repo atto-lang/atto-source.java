@@ -66,27 +66,52 @@ public abstract class OresObservable<T> {
     }
 
     /**
-     * Cold, replayable observable backed by an immutable subscription snapshot.
+     * Cold, replayable source with a construction-time immutable snapshot.
+     * Subsequent caller mutations cannot change any subscription.
      */
     public static <T> OresObservable<T> fromValues(List<? extends T> values) {
         Objects.requireNonNull(values, "values");
         ArrayList<T> snapshot = new ArrayList<>(values.size());
-        snapshot.addAll(values);
-        List<T> immutable = Collections.unmodifiableList(snapshot);
+        for (T value : values) {
+            snapshot.add(Objects.requireNonNull(value,
+                    "rx-ores finite sources cannot contain null values"));
+        }
+        return fromIterable(Collections.unmodifiableList(snapshot));
+    }
 
+    /**
+     * Cold, lazy Iterable source; each subscription owns a fresh iterator
+     * initialized on first demand. Never invoke a guest mapper here.
+     * Fatal host VM failures must not be turned into recoverable pull Futures.
+     */
+    public static <T> OresObservable<T> fromIterable(Iterable<? extends T> values) {
+        Objects.requireNonNull(values, "values");
         return new OresObservable<>() {
             @Override
             protected OresSubscription<T> subscribeFromRuntime() {
                 return new OresSubscription<>() {
-                    private int index;
+                    private java.util.Iterator<? extends T> iterator;
+                    private boolean iteratorInitialized;
 
                     @Override
                     protected OresFuture<OresNotification<T>> nextFromRuntime() {
-                        if (index >= immutable.size()) {
-                            return OresFuture.completed(OresNotification.complete());
+                        try {
+                            if (!iteratorInitialized) {
+                                iterator = Objects.requireNonNull(values.iterator(),
+                                        "rx-ores iterable returned null iterator");
+                                iteratorInitialized = true;
+                            }
+                            if (!iterator.hasNext()) {
+                                return OresFuture.completed(OresNotification.complete());
+                            }
+                            T value = Objects.requireNonNull(iterator.next(),
+                                    "rx-ores iterable emitted null");
+                            return OresFuture.completed(OresNotification.next(value));
+                        } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                            throw fatal;
+                        } catch (Throwable failure) {
+                            return OresFuture.failed(failure);
                         }
-                        T value = immutable.get(index++);
-                        return OresFuture.completed(OresNotification.next(value));
                     }
                 };
             }
