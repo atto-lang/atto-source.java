@@ -51,7 +51,11 @@ public final class RealtimePrimitiveCompiler {
     public record SourceReport(String entry, long maxSourceSteps, int maxCallDepth,
                                int reachableFunctions, String assurance) { }
 
-    public record Artifact(Path classFile, String bytecodeSha256, SourceReport sourceReport) { }
+    public record Artifact(
+            Path classFile,
+            String bytecodeSha256,
+            SourceReport sourceReport,
+            RealtimeClassfileAudit.Report classfileReport) { }
 
     private record Cost(long steps, int depth) { }
     private final Map<String, Ast.FunctionDecl> functions = new LinkedHashMap<>();
@@ -105,7 +109,12 @@ public final class RealtimePrimitiveCompiler {
         if (exit != 0) throw invalid("generated Java failed verification by javac");
         Path result = directory.resolve(CLASS_NAME + ".class");
         if (!Files.isRegularFile(result)) throw invalid("javac produced no classfile");
-        return new Artifact(result, sha256(Files.readAllBytes(result)), report);
+        RealtimeClassfileAudit.Report classfileReport = RealtimeClassfileAudit.audit(result);
+        return new Artifact(
+                result,
+                sha256(Files.readAllBytes(result)),
+                report,
+                classfileReport);
     }
 
     private SourceReport report(String entry, int arity, Budget budget) {
