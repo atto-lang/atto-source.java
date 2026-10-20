@@ -49,6 +49,16 @@ public final class V3CallLoweringPreview {
             }
             Objects.requireNonNull(unverifiedBodyType, "preview type");
             Objects.requireNonNull(action, "slot action");
+            boolean rawOption = unverifiedBodyType.name().equals("Option")
+                    && unverifiedBodyType.arguments().size() == 1
+                    && !unverifiedBodyType.inferArguments()
+                    && !unverifiedBodyType.isBorrow();
+            // Syntactic shape is not a nominal proof, but a claimed proof
+            // must not contradict the visible shape of the formal type.
+            if (rawOption != requiresNominalOptionProof) {
+                throw new IllegalArgumentException(
+                        "Option-proof flag contradicts the v3 formal type shape");
+            }
             if (evaluatedSourceIndex < -1 || originalCallItemIndex < -1) {
                 throw new IllegalArgumentException("invalid source origin");
             }
