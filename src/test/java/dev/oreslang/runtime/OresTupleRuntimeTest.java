@@ -49,6 +49,18 @@ final class OresTupleRuntimeTest {
     }
 
     @Test
+    void positionalArraySnapshotCannotMutateTupleStorage() {
+        OresTuple tuple = new OresTuple(List.of(3, 5, 8));
+        Object[] shaped = tuple.elements().toArray();
+        assertArrayEquals(new Object[] {3, 5, 8}, shaped);
+        shaped[0] = 99;
+        assertEquals(3, tuple.get(0));
+        assertEquals(3, tuple.elements().get(0));
+        assertThrows(UnsupportedOperationException.class,
+                () -> tuple.elements().set(1, 100));
+    }
+
+    @Test
     void hostCallbacksNeverDefineTupleEqualityHashOrLogging() {
         OresTuple a = new OresTuple(List.of(new Hostile()));
         OresTuple b = new OresTuple(List.of(new Hostile()));
