@@ -268,6 +268,36 @@ class PrivateCiV3Test(unittest.TestCase):
                 v3.authorize_write(
                     Path("."), "trusted/ci", POLICY, carrier)
 
+    def test_publish_rejects_contract_repository_id_not_in_reviewed_allowlist(self):
+        carrier = contract()
+        mismatched = dict(carrier, repository_id=carrier["repository_id"] + 1)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "snapshot"
+            source.mkdir()
+            with (
+                patch.object(v3.legacy, "require_preflight"),
+                patch.object(
+                    v3.legacy, "checked_policy_approval",
+                    return_value=(POLICY, carrier["repository_id"]),
+                ),
+                patch.object(
+                    v3.legacy, "verify_protected_origin",
+                    return_value=PROTECTED,
+                ),
+                patch.object(v3, "checked_control_plane"),
+                patch.object(v3, "checked_contract", return_value=mismatched),
+                patch.object(v3, "verify_source_pr") as verify_source_pr,
+            ):
+                with self.assertRaisesRegex(
+                    v3.Denied, "contract repository ID"
+                ):
+                    v3.publish(
+                        "trusted/ci", source, "4" * 40, 1482,
+                        "ci/test-plans/java-pr1482.json", root,
+                    )
+                verify_source_pr.assert_not_called()
+
     def test_publish_binds_receipt_branch_and_authorization_ref(self):
         carrier = contract()
         writes = []
@@ -299,6 +329,10 @@ class PrivateCiV3Test(unittest.TestCase):
             with (
                 patch.object(v3.legacy, "require_preflight"),
                 patch.object(v3.legacy, "checked_policy_fingerprint", return_value=POLICY),
+                patch.object(
+                    v3.legacy, "checked_policy_approval",
+                    return_value=(POLICY, carrier["repository_id"]),
+                ),
                 patch.object(
                     v3.legacy, "verify_protected_origin", return_value=PROTECTED
                 ) as verify_origin,
@@ -447,6 +481,10 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3.legacy, "require_preflight"),
                 patch.object(v3.legacy, "checked_policy_fingerprint", return_value=POLICY),
                 patch.object(
+                    v3.legacy, "checked_policy_approval",
+                    return_value=(POLICY, carrier["repository_id"]),
+                ),
+                patch.object(
                     v3.legacy,
                     "verify_protected_origin",
                     side_effect=[PROTECTED, PROTECTED, v3.Denied("protection revoked")],
@@ -510,6 +548,10 @@ class PrivateCiV3Test(unittest.TestCase):
             with (
                 patch.object(v3.legacy, "require_preflight"),
                 patch.object(v3.legacy, "checked_policy_fingerprint", return_value=POLICY),
+                patch.object(
+                    v3.legacy, "checked_policy_approval",
+                    return_value=(POLICY, carrier["repository_id"]),
+                ),
                 patch.object(v3.legacy, "verify_protected_origin", return_value=PROTECTED),
                 patch.object(v3, "checked_control_plane"),
                 patch.object(v3, "checked_contract", return_value=carrier),
@@ -575,6 +617,10 @@ class PrivateCiV3Test(unittest.TestCase):
             with (
                 patch.object(v3.legacy, "require_preflight"),
                 patch.object(v3.legacy, "checked_policy_fingerprint", return_value=POLICY),
+                patch.object(
+                    v3.legacy, "checked_policy_approval",
+                    return_value=(POLICY, carrier["repository_id"]),
+                ),
                 patch.object(v3.legacy, "verify_protected_origin", return_value=PROTECTED),
                 patch.object(v3, "checked_control_plane"),
                 patch.object(v3, "checked_contract", return_value=carrier),
@@ -643,6 +689,10 @@ class PrivateCiV3Test(unittest.TestCase):
             with (
                 patch.object(v3.legacy, "require_preflight"),
                 patch.object(v3.legacy, "checked_policy_fingerprint", return_value=POLICY),
+                patch.object(
+                    v3.legacy, "checked_policy_approval",
+                    return_value=(POLICY, carrier["repository_id"]),
+                ),
                 patch.object(v3.legacy, "verify_protected_origin", return_value=PROTECTED),
                 patch.object(v3, "checked_control_plane"),
                 patch.object(v3, "checked_contract", return_value=carrier),
@@ -788,7 +838,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     "trusted/ci", "ci/authorized-" + COMMIT, 1323598177
                 )
             )
-        checked_repo.assert_called_once_with("trusted/ci")
+        checked_repo.assert_called_once_with("trusted/ci", 1323598177)
 
     def test_delete_exact_ref_missing_is_idempotent(self):
         with patch.object(v3, "live_ref_sha", return_value=None):
