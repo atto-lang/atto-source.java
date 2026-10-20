@@ -48,9 +48,16 @@ The opt-in AST pass also runs `CallbackOrderingAnalyzer`:
   an effect certification.
 - A wildcard event name cannot establish a definite installed subscription.
 
-- Complex aliasing, method callbacks, explicit listener detachment,
-  host FFI, multi-actor scheduling, hot reload, async registration,
-  and interprocedural effect summaries still require compiler integration.
+- The lexical pass now invalidates prior syntactic registration evidence for
+  `off`, `removeListener` / `remove_listener`, and `removeAllListeners` /
+  `remove_all_listeners`. Unknown event names conservatively invalidate every
+  registered event on the same recognized emitter. This models possible
+  detachment only: it does not prove listener identity, successful removal,
+  registration completion, or subscription retention through actor turns.
+- Complex aliasing, dynamic/method callbacks, other library-specific
+  detachment APIs, host FFI, multi-actor scheduling, hot reload, async
+  registration, and interprocedural effect summaries still require compiler
+  integration.
 
 ### Ownership / borrow checker plan
 
