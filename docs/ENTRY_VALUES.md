@@ -2,6 +2,23 @@
 
 Oreslang distinguishes positional products from key/value products.
 
+Tuples have a nominal runtime carrier, `OresTuple`, distinct from Array/List
+values. A tuple and an array with identical elements **do not compare equal**
+and cannot satisfy each other's runtime type tests or tuple patterns. The
+carrier is immutable and retains its tuple-kind tag across synchronous and
+suspendable evaluation, typed returns, async value detachment, and actor
+freeze/private-heap copy. Returning an array from a tuple-declared function
+(or a tuple from an Array-declared function) fails closed at the return boundary
+rather than silently retagging a Java list. Builtin fallback `tuple(...)`
+produces the same nominal tuple carrier as `tuple { ... }`; a user-defined
+`tuple` function still wins by the existing lexical/arity rules.
+
+Java host `OresTuple.equals/hashCode` are identity-only, just as for
+`OresEntry`; Oreslang `==` uses explicit guest tuple value semantics. This
+is an internal tagged List adapter, **not** a generic Java List value-equivalence
+API, and Java host equality must never substitute for guest matching.
+
+
 ```ores
 const pair = (1, 2);              // Tuple<int,int>
 const explicit = tuple {1, 2};    // Tuple<int,int>
