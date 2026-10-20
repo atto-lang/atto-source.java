@@ -1971,10 +1971,18 @@ public final class ActorRuntime implements AutoCloseable {
             if (supervisors.get(id) != this) {
                 throw new IllegalArgumentException("foreign supervisor runtime");
             }
+            // Closing removes a group from the live registry. Check closure
+            // first so a stale same-runtime group is reported as terminated,
+            // not misleadingly as an unauthorized supervisor reassignment.
+            if (group.closed()) {
+                throw new IllegalStateException("ActorGroup is closed");
+            }
             if (actorGroups.get(group.id()) != group || group.supervisor != this) {
                 throw new IllegalArgumentException(
                         "ActorGroup is not directly bound to this supervisor");
             }
+            // spawnWorker retains structured lifecycle authority before B can
+            // become ready; close racing this call fails admission/tears down B.
             return group.spawnWorker(kind, policy, behaviorFactory);
         }
 
