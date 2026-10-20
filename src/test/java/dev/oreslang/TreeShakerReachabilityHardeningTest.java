@@ -79,6 +79,70 @@ final class TreeShakerReachabilityHardeningTest {
         assertTrue(result.removed("B.Thing"));
     }
 
+
+    @Test
+    void retainedOverloadFamilyScansDependenciesFromEveryArity() {
+        Ast.FunctionDecl depOne = fn(
+                "dep_one", Ast.Visibility.PRIVATE, Ast.TypeRef.simple("int"),
+                List.of(new Ast.ReturnStmt(new Ast.LiteralExpr(1L))));
+        Ast.FunctionDecl depTwo = fn(
+                "dep_two", Ast.Visibility.PRIVATE, Ast.TypeRef.simple("int"),
+                List.of(new Ast.ReturnStmt(new Ast.LiteralExpr(2L))));
+
+        Ast.FunctionDecl pickOne = new Ast.FunctionDecl(
+                "pick",
+                Ast.CallableKind.FNC,
+                Ast.Visibility.PRIVATE,
+                false,
+                Ast.ActorKind.NONE,
+                List.of(),
+                List.of(new Ast.Param(Ast.TypeRef.simple("int"), "a")),
+                Ast.TypeRef.simple("int"),
+                List.of(),
+                List.of(new Ast.ReturnStmt(
+                        new Ast.CallExpr(new Ast.NameExpr("dep_one"), List.of()))));
+        Ast.FunctionDecl pickTwo = new Ast.FunctionDecl(
+                "pick",
+                Ast.CallableKind.FNC,
+                Ast.Visibility.PRIVATE,
+                false,
+                Ast.ActorKind.NONE,
+                List.of(),
+                List.of(
+                        new Ast.Param(Ast.TypeRef.simple("int"), "a"),
+                        new Ast.Param(Ast.TypeRef.simple("int"), "b")),
+                Ast.TypeRef.simple("int"),
+                List.of(),
+                List.of(new Ast.ReturnStmt(
+                        new Ast.CallExpr(new Ast.NameExpr("dep_two"), List.of()))));
+        Ast.FunctionDecl main = new Ast.FunctionDecl(
+                "main",
+                Ast.CallableKind.ROUTINE,
+                Ast.Visibility.PUBLIC,
+                false,
+                Ast.ActorKind.NONE,
+                List.of(),
+                List.of(),
+                Ast.TypeRef.simple("void"),
+                List.of(),
+                List.of(new Ast.ExprStmt(
+                        new Ast.CallExpr(
+                                new Ast.NameExpr("pick"),
+                                List.of(new Ast.LiteralExpr(7L))))));
+
+        Ast.Program input = new Ast.Program(List.of(
+                new Ast.ModuleDecl(
+                        Parser.ROOT_MODULE,
+                        List.of(depOne, depTwo, pickOne, pickTwo, main))));
+
+        TreeShaker.Result result = TreeShaker.shake(input, BuildOptions.executable());
+
+        assertTrue(result.retained(Parser.ROOT_MODULE + ".pick"));
+        assertTrue(result.retained(Parser.ROOT_MODULE + ".dep_one"));
+        assertTrue(result.retained(Parser.ROOT_MODULE + ".dep_two"),
+                "family-level v1 retention must scan dependencies from every overload");
+    }
+
     @Test
     void libraryBuildDropsPrivateTypeAliases() {
         Ast.Program input = new Ast.Program(List.of(
