@@ -268,7 +268,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 }
             raise AssertionError(route)
         with patch.object(v3.legacy, "gh_api", side_effect=api):
-            with self.assertRaisesRegex(v3.Denied, "exact open PR head"):
+            with self.assertRaisesRegex(v3.Denied, "exact reviewed open PR head"):
                 v3.verify_source_pr(1482, "8" * 40)
 
     def test_verify_source_pr_rejects_source_repository_id_replacement(self):
@@ -287,6 +287,117 @@ class PrivateCiV3Test(unittest.TestCase):
         with patch.object(v3.legacy, "gh_api", side_effect=api):
             with self.assertRaisesRegex(v3.Denied, "identity/state"):
                 v3.verify_source_pr(1482, "8" * 40)
+
+    def test_verify_source_pr_accepts_independent_exact_head_codeowner_approval(self):
+        head_sha = "8" * 40
+        reviews_route = (
+            f"repos/{v3.legacy.SOURCE_REPO}/pulls/1482/reviews?per_page=100"
+        )
+        def api(route, method="GET", payload=None):
+            if route == "repos/" + v3.legacy.SOURCE_REPO:
+                return {
+                    "id": v3.SOURCE_REPOSITORY_ID,
+                    "full_name": v3.legacy.SOURCE_REPO,
+                    "private": True,
+                    "visibility": "private",
+                    "archived": False,
+                    "disabled": False,
+                    "fork": False,
+                }
+            if route == "repos/" + v3.legacy.SOURCE_REPO + "/pulls/1482":
+                return {
+                    "number": 1482,
+                    "state": "open",
+                    "draft": False,
+                    "user": {"login": "contributor"},
+                    "head": {
+                        "sha": head_sha,
+                        "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                    },
+                    "base": {
+                        "ref": "main",
+                        "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                    },
+                }
+            if route == reviews_route:
+                return {
+                    "reviews": [{
+                        "id": 41,
+                        "state": "APPROVED",
+                        "commit_id": head_sha,
+                        "submitted_at": "2026-10-20T18:00:00Z",
+                        "user": {"login": v3.TRUSTED_SOURCE_REVIEWER},
+                    }]
+                }
+            raise AssertionError(route)
+        with patch.object(v3.legacy, "gh_api", side_effect=api):
+            self.assertEqual(
+                v3.verify_source_pr(1482, head_sha),
+                v3.SOURCE_REPOSITORY_ID,
+            )
+
+    def test_verify_source_pr_rejects_stale_dismissed_or_self_approval(self):
+        head_sha = "8" * 40
+        reviews_route = (
+            f"repos/{v3.legacy.SOURCE_REPO}/pulls/1482/reviews?per_page=100"
+        )
+        def make_api(state="APPROVED", commit_id=None, author="contributor"):
+            commit_id = head_sha if commit_id is None else commit_id
+            def api(route, method="GET", payload=None):
+                if route == "repos/" + v3.legacy.SOURCE_REPO:
+                    return {
+                        "id": v3.SOURCE_REPOSITORY_ID,
+                        "full_name": v3.legacy.SOURCE_REPO,
+                        "private": True,
+                        "visibility": "private",
+                        "archived": False,
+                        "disabled": False,
+                        "fork": False,
+                    }
+                if route == "repos/" + v3.legacy.SOURCE_REPO + "/pulls/1482":
+                    return {
+                        "number": 1482,
+                        "state": "open",
+                        "draft": False,
+                        "user": {"login": author},
+                        "head": {
+                            "sha": head_sha,
+                            "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                        },
+                        "base": {
+                            "ref": "main",
+                            "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                        },
+                    }
+                if route == reviews_route:
+                    return {
+                        "reviews": [{
+                            "id": 42,
+                            "state": state,
+                            "commit_id": commit_id,
+                            "submitted_at": "2026-10-20T18:00:00Z",
+                            "user": {"login": v3.TRUSTED_SOURCE_REVIEWER},
+                        }]
+                    }
+                raise AssertionError(route)
+            return api
+
+        for label, kwargs in (
+            ("stale", {"commit_id": "9" * 40}),
+            ("dismissed", {"state": "DISMISSED"}),
+        ):
+            with self.subTest(label=label):
+                with patch.object(v3.legacy, "gh_api", side_effect=make_api(**kwargs)):
+                    with self.assertRaisesRegex(v3.Denied, "exact-HEAD"):
+                        v3.verify_source_pr(1482, head_sha)
+
+        with patch.object(
+            v3.legacy,
+            "gh_api",
+            side_effect=make_api(author=v3.TRUSTED_SOURCE_REVIEWER),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "self-authorize"):
+                v3.verify_source_pr(1482, head_sha)
 
     def test_authorize_write_rechecks_carrier_eligibility(self):
         carrier = contract()
