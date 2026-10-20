@@ -92,7 +92,7 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /** Scheduler-owned lifecycle of one exact compiler child. */
-    public enum CompilerAdmissionState {
+    enum CompilerAdmissionState {
         PREPARED,
         BOUND,
         REGISTERED,
@@ -215,7 +215,7 @@ public final class OresScheduler implements AutoCloseable {
      * compiler authority to the exact handle and receives the final physical
      * quiescence notification for ordered resource retirement.</p>
      */
-    public interface CompilerChildLifecycle {
+    interface CompilerChildLifecycle {
         void bind(CompilerTaskHandle<?> child);
         void physicallyQuiescent(CompilerTaskHandle<?> child);
     }
