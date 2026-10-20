@@ -127,7 +127,7 @@ public final class TypeChecker {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.ModelDecl model) {
                     throw new IllegalArgumentException(
-                            "MODEL_LOWERING_UNSUPPORTED: model '" + model.name()
+                            "MODEL_LOWERING_NOT_IMPLEMENTED: model '" + model.name()
                             + "' requires typed op/effect/ownership resolution and backend lowering");
                 }
             }
