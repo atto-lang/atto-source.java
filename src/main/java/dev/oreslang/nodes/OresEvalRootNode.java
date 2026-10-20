@@ -5678,11 +5678,17 @@ public final class OresEvalRootNode extends RootNode {
                         "enum constructor " + enumCase.qualifiedName()
                                 + " expects " + expected + " argument(s)");
             }
+            Object payload = expected == 0
+                    ? null
+                    : shapeReturnedValue(
+                            enumCase.payload(),
+                            args.getFirst(),
+                            "enum constructor " + enumCase.qualifiedName());
             return new NominalEnumValue(
                     enumCase.owner(),
                     enumCase.name(),
                     enumCase.tag(),
-                    expected == 0 ? null : args.getFirst());
+                    payload);
         }
 
         private static boolean isMlScalarIntrinsicName(String name) {
@@ -8213,6 +8219,28 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("AsyncGenerator") || name.equals("AsyncIterator")) return value instanceof GeneratorRuntime.AsyncGenerator<?>;
             if (name.equals("IteratorResult")) return value instanceof GeneratorRuntime.Step<?>;
 
+            NominalEnumRegistry.EnumType enumeration =
+                    nominalEnums.enums().get(name);
+            if (enumeration != null) {
+                if (!(value instanceof NominalEnumValue nominal)
+                        || !nominal.enumName().equals(name)) {
+                    return false;
+                }
+                NominalEnumRegistry.Case enumCase =
+                        nominalEnums.caseOrNull(
+                                nominal.enumName() + "." + nominal.variant());
+                if (enumCase == null || enumCase.tag() != nominal.tag()) {
+                    return false;
+                }
+                if (enumCase.payload() == null) {
+                    return nominal.payload() == null;
+                }
+                return nominal.payload() != null
+                        && oresTypeMatches(
+                                nominal.payload(),
+                                enumCase.payload());
+            }
+
             if (value instanceof OresObject object) {
                 Ast.ClassDecl targetClass = findClass(name);
                 if (targetClass != null) return object.owner.classIsA(object.klass, targetClass, new LinkedHashSet<>());
@@ -8236,6 +8264,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
+            if (value instanceof NominalEnumValue nominal) return nominal.enumName();
             if (value instanceof ActorRuntime.ActorOutput<?>) return "ActorOutput";
             if (value instanceof ActorRuntime.ActorOutputStream<?>) return "ActorOutputStream";
             if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
@@ -8608,6 +8637,40 @@ public final class OresEvalRootNode extends RootNode {
                     shapeReturnedValue(member.getValue(), nested, callable + "." + member.getKey(), resolving);
                 }
                 return value;
+            }
+
+            NominalEnumRegistry.EnumType enumType =
+                    nominalEnums.enums().get(declared.name());
+            if (enumType != null) {
+                if (!(value instanceof NominalEnumValue nominal)
+                        || !nominal.enumName().equals(enumType.name())) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                NominalEnumRegistry.Case enumCase =
+                        nominalEnums.caseOrNull(
+                                nominal.enumName() + "." + nominal.variant());
+                if (enumCase == null || enumCase.tag() != nominal.tag()) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                if (enumCase.payload() == null) {
+                    if (nominal.payload() != null) {
+                        throw returnTypeMismatch(callable, declared, value);
+                    }
+                    return value;
+                }
+                if (nominal.payload() == null) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                Object payload = shapeReturnedValue(
+                        enumCase.payload(),
+                        nominal.payload(),
+                        callable + " enum payload",
+                        resolving);
+                return new NominalEnumValue(
+                        nominal.enumName(),
+                        nominal.variant(),
+                        nominal.tag(),
+                        payload);
             }
 
             if (declared.name().equals("Array") || declared.name().equals("List")) {
