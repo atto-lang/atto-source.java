@@ -105,4 +105,25 @@ final class TrapFailurePolicyTest {
         }
         assertFalse(TrapFailurePolicy.isTrappable(failure, GuestPanic.class));
     }
+
+    @Test void structuredScopePoisonCannotBeTrappedOrCaught() {
+        StructuredTaskScopePoisonException poison =
+                new StructuredTaskScopePoisonException(
+                        "structured Task scope authority accounting poisoned",
+                        new IllegalStateException("region accounting corrupt"));
+
+        assertFalse(TrapFailurePolicy.isTrappable(poison, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(poison, GuestPanic.class));
+
+        CompletionException wrapped = new CompletionException(
+                new IllegalStateException("future failed", poison));
+        assertFalse(TrapFailurePolicy.isTrappable(wrapped, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(wrapped, GuestPanic.class));
+
+        IllegalStateException cleanup = new IllegalStateException("ordinary cleanup");
+        cleanup.addSuppressed(poison);
+        assertFalse(TrapFailurePolicy.isTrappable(cleanup, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(cleanup, GuestPanic.class));
+    }
+
 }
