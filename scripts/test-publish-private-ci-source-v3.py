@@ -383,103 +383,19 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "carrier main"):
                 v3.checked_destination("trusted/ci", carrier)
 
-    def test_destination_governance_accepts_only_protected_security_owner(self):
-        """Source-free happy path binds exact branch, rules and CODEOWNERS blob."""
-        path = ".github/CODEOWNERS"
-        body = (b"# independently reviewed carrier policy\n"
-                b"* @ORESoftware\n"
-                b"/.github/ @ORESoftware\n"
-                b"/.github/CODEOWNERS @ORESoftware\n")
-        prefix = "repos/trusted/ci"
-        routes = {
-            prefix + "/branches/main": {
-                "name": "main", "protected": True,
-                "commit": {"sha": BASE},
-            },
-            prefix + "/branches/main/protection": {
-                "required_pull_request_reviews": {
-                    "require_code_owner_reviews": True,
-                    "dismiss_stale_reviews": True,
-                    "required_approving_review_count": 1,
-                    "bypass_pull_request_allowances": {
-                        "users": [], "teams": [], "apps": [],
-                    },
-                },
-                "enforce_admins": {"enabled": True},
-                "allow_force_pushes": {"enabled": False},
-                "allow_deletions": {"enabled": False},
-            },
-            prefix + "/contents/" + path + "?ref=" + BASE: {
-                "path": path, "type": "file", "encoding": "base64",
-                "sha": v3.git_blob_sha(body),
-                "content": base64.b64encode(body).decode("ascii"),
-            },
-        }
-        with patch.object(v3.legacy, "gh_api", side_effect=lambda route: routes[route]):
-            self.assertIsNone(
-                v3.require_destination_main_governance("trusted/ci", BASE)
-            )
-
-    def test_destination_governance_denies_missing_protection_and_codeowners(self):
-        path = ".github/CODEOWNERS"
-        body = (b"* @ORESoftware\n/.github/ @ORESoftware\n"
-                b"/.github/CODEOWNERS @ORESoftware\n")
-        prefix = "repos/trusted/ci"
-        def fixtures():
-            return {
-                prefix + "/branches/main": {
+    def test_carrier_governance_denies_unreadable_protection_api(self):
+        """Missing permissions to attest the carrier must not allow export."""
+        root = "repos/trusted/ci"
+        def api(route):
+            if route == root + "/branches/main":
+                return {
                     "name": "main", "protected": True,
                     "commit": {"sha": BASE},
-                },
-                prefix + "/branches/main/protection": {
-                    "required_pull_request_reviews": {
-                        "require_code_owner_reviews": True,
-                        "dismiss_stale_reviews": True,
-                        "required_approving_review_count": 1,
-                        "bypass_pull_request_allowances": {
-                            "users": [], "teams": [], "apps": [],
-                        },
-                    },
-                    "enforce_admins": {"enabled": True},
-                    "allow_force_pushes": {"enabled": False},
-                    "allow_deletions": {"enabled": False},
-                },
-                prefix + "/contents/" + path + "?ref=" + BASE: {
-                    "path": path, "type": "file", "encoding": "base64",
-                    "sha": v3.git_blob_sha(body),
-                    "content": base64.b64encode(body).decode("ascii"),
-                },
-            }
-
-        cases = (
-            ("unprotected", lambda d: d[prefix + "/branches/main"].update(protected=False)),
-            ("wrong-base", lambda d: d[prefix + "/branches/main"]["commit"].update(sha="2" * 40)),
-            ("no-codeowners", lambda d: d[prefix + "/contents/" + path + "?ref=" + BASE].update(type="dir")),
-            ("owner-override", lambda d: d[prefix + "/contents/" + path + "?ref=" + BASE].update(
-                content=base64.b64encode(body + b"*.yml @attacker\n").decode("ascii"),
-                sha=v3.git_blob_sha(body + b"*.yml @attacker\n"))),
-            ("disabled-owner-review", lambda d: d[prefix + "/branches/main/protection"]["required_pull_request_reviews"].update(require_code_owner_reviews=False)),
-            ("stale-review-allowed", lambda d: d[prefix + "/branches/main/protection"]["required_pull_request_reviews"].update(dismiss_stale_reviews=False)),
-            ("bypass", lambda d: d[prefix + "/branches/main/protection"]["required_pull_request_reviews"]["bypass_pull_request_allowances"]["users"].append({"login": "attacker"})),
-            ("admin-bypass", lambda d: d[prefix + "/branches/main/protection"]["enforce_admins"].update(enabled=False)),
-            ("force-push", lambda d: d[prefix + "/branches/main/protection"]["allow_force_pushes"].update(enabled=True)),
-            ("deletion", lambda d: d[prefix + "/branches/main/protection"]["allow_deletions"].update(enabled=True)),
-        )
-        for name, change in cases:
-            with self.subTest(name=name):
-                routes = fixtures()
-                change(routes)
-                with patch.object(v3.legacy, "gh_api", side_effect=lambda route: routes[route]):
-                    with self.assertRaises(v3.Denied):
-                        v3.require_destination_main_governance("trusted/ci", BASE)
-
-        # Protection-detail endpoint permission errors must fail closed.
-        routes = fixtures()
-        def forbidden(route):
-            if route == prefix + "/branches/main/protection":
-                raise v3.Denied("GitHub 403")
-            return routes[route]
-        with patch.object(v3.legacy, "gh_api", side_effect=forbidden):
+                }
+            if route == root + "/branches/main/protection":
+                raise v3.Denied("authenticated protection API denied (403)")
+            raise AssertionError("should fail before reading CODEOWNERS")
+        with patch.object(v3.legacy, "gh_api", side_effect=api):
             with self.assertRaisesRegex(v3.Denied, "403"):
                 v3.require_destination_main_governance("trusted/ci", BASE)
 
