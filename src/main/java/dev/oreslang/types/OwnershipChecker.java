@@ -832,6 +832,22 @@ public final class OwnershipChecker {
                     ? ownershipRoot(state.borrowSource)
                     : ownershipRoot(state);
 
+            if (isScopedReadPermitState(state)) {
+                // An inherited child permit is already protected by the
+                // physically-live outer structured child. It may cross an
+                // unrelated nested scope drain without being re-lent to one of
+                // the nested scope's children.
+                if (state.borrowSource == null
+                        || state.scopedPermitRegionId <= 0L
+                        || state.scopedPermitRegionId != region.regionId
+                        || state.scopedPermitGeneration != region.regionGeneration) {
+                    throw new IllegalStateException(
+                            "stale inherited scoped Task read permit for '"
+                                    + state.debugName + "'");
+                }
+                continue;
+            }
+
             if (state.kind == ValueKind.IMM_BORROW || state.type.isBorrow()) {
                 if (!context.readBorrowStates.contains(state)) {
                     throw error("cannot nb scope exit while an uncaptured immutable "
