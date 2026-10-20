@@ -375,6 +375,82 @@ final class ActorTaskTerminationCascadeTest {
     }
 
     @Test
+    void channelCloseSubscriberCannotPinActorLifecycleMonitor() throws Exception {
+        // This regression exercises the actual actor mailbox Channel.close,
+        // not a synthetic Future or an artificially injected exit hook.
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+
+            // The mailbox and its lifecycle lock are intentionally private.
+            // Inspect them here rather than weakening production actor APIs
+            // just to add a test-only channel-close subscriber.
+            java.lang.reflect.Field actorsField =
+                    ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            java.util.Map<Object, Object> cells =
+                    (java.util.Map<Object, Object>) actorsField.get(runtime);
+            Object cell = cells.get(actor.id());
+            assertNotNull(cell, "spawned actor should be registered");
+
+            java.lang.reflect.Field mailboxField =
+                    cell.getClass().getDeclaredField("mailbox");
+            mailboxField.setAccessible(true);
+            ChannelRuntime.Channel<?> mailbox =
+                    (ChannelRuntime.Channel<?>) mailboxField.get(cell);
+
+            java.lang.reflect.Field lockField =
+                    cell.getClass().getDeclaredField("lifecycleLock");
+            lockField.setAccessible(true);
+            Object lifecycleLock = lockField.get(cell);
+
+            CountDownLatch enteredCloseCallback = new CountDownLatch(1);
+            CountDownLatch releaseCloseCallback = new CountDownLatch(1);
+            mailbox.readAsync().whenCompleteRuntime((value, failure) -> {
+                enteredCloseCallback.countDown();
+                awaitUninterruptibly(releaseCloseCallback);
+            });
+
+            AtomicReference<Throwable> stopError = new AtomicReference<>();
+            Thread stopper = new Thread(() -> {
+                try { actor.stop(); }
+                catch (Throwable failure) { stopError.set(failure); }
+            });
+            stopper.start();
+            Thread probe = null;
+            try {
+                assertTrue(enteredCloseCallback.await(5, TimeUnit.SECONDS),
+                        "closing an empty mailbox must wake pending readers");
+                CountDownLatch acquired = new CountDownLatch(1);
+                probe = new Thread(() -> {
+                    synchronized (lifecycleLock) {
+                        acquired.countDown();
+                    }
+                });
+                probe.start();
+                assertTrue(acquired.await(1, TimeUnit.SECONDS),
+                        "a blocked close subscriber must not hold lifecycleLock");
+                assertFalse(actor.done().isDone(),
+                        "actor done cannot precede close-callback dispatch");
+            } finally {
+                releaseCloseCallback.countDown();
+            }
+
+            if (probe != null) {
+                probe.join(5000);
+                assertFalse(probe.isAlive());
+            }
+            stopper.join(5000);
+            assertFalse(stopper.isAlive());
+            assertNull(stopError.get());
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(actor.done().isDone());
+        }
+    }
+
+    @Test
     void actorDoneWaitsForOwnedFutureCancellationCallbacksAfterTaskScopeJoin()
             throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
