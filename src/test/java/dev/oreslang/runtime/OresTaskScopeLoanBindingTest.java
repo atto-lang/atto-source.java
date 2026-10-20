@@ -96,6 +96,32 @@ final class OresTaskScopeLoanBindingTest {
     }
 
     @Test
+    void rejectedAdmissionCleanupFailureKeepsNeverStartedLoanPinned() {
+        RecordingLoan loan = new RecordingLoan();
+        OresScheduler scheduler = new OresScheduler(1);
+        scheduler.close();
+        AsyncRuntime runtime = new AsyncRuntime();
+        OresTaskScope scope = new OresTaskScope(runtime);
+        try {
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> scope.startCompilerFrame(
+                            scheduler,
+                            resume -> new OresScheduler.Done<>(13),
+                            () -> { throw new IllegalStateException(
+                                    "rejected cleanup failed"); },
+                            loan));
+            assertEquals(0, loan.neverStarted.get(),
+                    "cleanup must succeed before never-started loan release");
+            assertEquals(0, loan.physical.get());
+            assertFalse(scope.physicallyQuiescent(),
+                    "failed rejected-admission cleanup keeps owner pin");
+            assertThrows(IllegalStateException.class, scope::close);
+        } finally {
+            runtime.close();
+        }
+    }
+
+    @Test
     void resourceCleanupFailureDoesNotReleaseCompilerLoan() {
         RecordingLoan loan = new RecordingLoan();
         OresScheduler scheduler = new OresScheduler(1);
