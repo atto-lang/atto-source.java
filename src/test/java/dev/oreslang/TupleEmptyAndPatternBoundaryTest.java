@@ -234,9 +234,9 @@ final class TupleEmptyAndPatternBoundaryTest {
                 .build()) {
             context.eval(guest);
         }
-        assertEquals("6\\n6\\n6",
+        assertEquals("6\n6\n6",
                 output.toString(StandardCharsets.UTF_8)
-                        .replace("\\r\\n", "\\n")
+                        .replace("\r\n", "\n")
                         .strip());
     }
 
