@@ -339,6 +339,25 @@ final class RepeatingSequenceShapeSafetyTest {
     }
 
     @Test
+    void entryComponentReificationRetainsTypeAliasCycleDetection() {
+        rejectsAtTypecheck("""
+                type Recursive = Entry<int, Recursive>;
+                pub fnc main(): void {
+                  val x = 1 as Recursive;
+                  return;
+                }
+                """);
+        rejectsAtTypecheck("""
+                type A = Entry<int, B>;
+                type B = A;
+                pub fnc main(): void {
+                  val x = 1 as A;
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void nestedAliasesAndBorrowWrappersCannotEraseOrInventShape() {
         var element = Types.unionOf(List.of(
                 Types.Primitive.INT, Types.Primitive.STRING, Types.Primitive.BOOL));
