@@ -319,4 +319,18 @@ final class RepeatingSequenceShapeSafetyTest {
         assertTrue(Types.isAssignable(new Types.Borrow(shaped, true),
                 new Types.Borrow(shaped, true)));
     }
+
+    @Test
+    void sharedMutexAdmissionRetainsThePatternedPayloadSafetyContract() {
+        accepts("""
+                fnc good(SharedMutex<Array[...(int, string, bool)]> values): void {
+                  return;
+                }
+                """);
+        rejectsAtTypecheck("""
+                fnc bad(SharedMutex<Array[...(int, Mutex<int>, bool)]> values): void {
+                  return;
+                }
+                """);
+    }
 }
