@@ -765,6 +765,7 @@ public final class UnaryTcpSessionAdapterCheck {
         }
     }
 
+    @SuppressWarnings("try")
     private static void adapterCloseUnblocksAuthentication() throws Exception {
         CountDownLatch authenticationEntered = new CountDownLatch(1);
         AtomicInteger dispatches = new AtomicInteger();
@@ -1092,6 +1093,7 @@ public final class UnaryTcpSessionAdapterCheck {
         }
     }
 
+    @SuppressWarnings("removal")
     private static void fatalCancellationFailureClassification() {
         UnaryTcpSessionAdapter.rethrowJvmFatal(
                 new IllegalStateException("ordinary callback failure"));
