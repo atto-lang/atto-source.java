@@ -792,3 +792,14 @@ Added source-free mocked regressions cover an unlisted workflow, truncated tree,
 and mid-transfer workflow-manifest drift. Exact source GitHub Actions execution
 remains a separate evidence requirement; a workflow conclusion without executed
 steps is not treated as test execution.
+
+
+#### Immutable Actions dependency pinning
+
+Carrier admission also requires GitHub's repository Actions policy to report
+`sha_pinning_required=true`. A workflow using mutable action tags such as
+`actions/checkout@v4` is therefore insufficient for an authorized private-source
+carrier even if the action is GitHub-owned. The security boundary requires
+full-length immutable action commit SHAs in addition to the selected-actions
+allowlist, read-only default token permissions, disabled PR-review approval,
+disabled private forking, and bounded retention.
