@@ -77,6 +77,11 @@ final class LogicalSourceActorCandidateQuarantineBarrierTest {
                 ArrayList<Object> ledger =
                         (ArrayList<Object>) field("retiredCandidates").get(router);
                 Field quarantined = field("retirementQuarantined");
+                Field pins = HotReloadManager.Generation.class
+                        .getDeclaredField("actorRoutePins");
+                pins.setAccessible(true);
+                assertEquals(1, pins.getInt(next),
+                        "unpublished candidate has exactly one generation pin");
                 synchronized (field("routeLock").get(router)) {
                     ledger.add(owner);
                     quarantined.setBoolean(router, true);
@@ -86,6 +91,8 @@ final class LogicalSourceActorCandidateQuarantineBarrierTest {
                     assertEquals(0, router.reapRetired());
                     assertTrue(quarantined.getBoolean(router),
                             "a live unpublished candidate must block reopening");
+                    assertEquals(1, pins.getInt(next),
+                            "a live candidate must retain its executable image");
                     assertThrows(IllegalStateException.class,
                             () -> router.ref().send(41L),
                             "quarantined route must reject physical mail admission");
@@ -102,6 +109,8 @@ final class LogicalSourceActorCandidateQuarantineBarrierTest {
                 assertEquals(1, router.reapRetired(),
                         "candidate code pin is retired only after physical finalization");
                 assertTrue(ledger.isEmpty());
+                assertEquals(0, pins.getInt(next),
+                        "final physical retirement must debit exactly one image pin");
                 assertFalse(quarantined.getBoolean(router),
                         "all physical owners retired: route can reopen");
                 assertEquals(0, router.reapRetired(),
