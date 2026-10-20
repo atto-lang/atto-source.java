@@ -129,6 +129,38 @@ final class RuntimePermissionsTest {
     }
 
     @Test
+    void requireNetworkBindEnforcesExactAndEphemeralScopes() {
+        RuntimePermissions exact = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "127.0.0.1:8443");
+        assertDoesNotThrow(() -> exact.requireNetworkBind(
+                "127.0.0.1", 8443, "test.bind"));
+        assertThrows(SecurityException.class, () -> exact.requireNetworkBind(
+                "127.0.0.1", 8444, "test.bind"));
+        assertThrows(SecurityException.class, () -> exact.requireNetworkBind(
+                "127.0.0.1", 0, "test.bind"));
+
+        RuntimePermissions ephemeral = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "127.0.0.1");
+        assertDoesNotThrow(() -> ephemeral.requireNetworkBind(
+                "127.0.0.1", 0, "test.bind"));
+
+        RuntimePermissions ambiguousDeny = ephemeral.withDenied(
+                RuntimePermissions.Permission.NET, "127.0.0.1:22");
+        assertThrows(SecurityException.class, () -> ambiguousDeny.requireNetworkBind(
+                "127.0.0.1", 0, "test.bind"));
+
+        RuntimePermissions ipv6 = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "::1");
+        assertDoesNotThrow(() -> ipv6.requireNetworkBind(
+                "::1", 0, "test.bind"));
+        assertDoesNotThrow(() -> ipv6.requireNetworkBind(
+                "::1", 9443, "test.bind"));
+        assertThrows(SecurityException.class, () -> ipv6.withDenied(
+                        RuntimePermissions.Permission.NET, "[::1]:22")
+                .requireNetworkBind("::1", 0, "test.bind"));
+    }
+
+    @Test
     void applicationArgumentsRoundTripScopedRules() throws Exception {
         Path root = Files.createTempDirectory("ores-perm-roundtrip-");
         RuntimePermissions original = RuntimePermissions.denyAll()
