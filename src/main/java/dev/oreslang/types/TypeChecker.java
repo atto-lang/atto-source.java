@@ -275,6 +275,9 @@ public final class TypeChecker {
             } else if (decl instanceof Ast.FieldDecl field) {
                 name = field.name();
                 category = "binding";
+            } else if (decl instanceof Ast.EnumDecl enumeration) {
+                name = enumeration.name();
+                category = "enum";
             } else {
                 continue; // interfaces and aliases occupy the type namespace
             }
@@ -8045,7 +8048,22 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "enum '" + enumeration.name() + "' must declare at least one case");
         }
+        Set<String> names = new HashSet<>();
+        Set<Integer> tags = new HashSet<>();
+        int previousTag = 0;
         for (Ast.EnumCase variant : enumeration.cases()) {
+            if (!names.add(variant.name())) {
+                throw new IllegalArgumentException(
+                        "duplicate enum case "
+                                + enumeration.name() + "." + variant.name());
+            }
+            if (variant.tag() <= 0 || variant.tag() <= previousTag
+                    || !tags.add(variant.tag())) {
+                throw new IllegalArgumentException(
+                        "enum '" + enumeration.name()
+                                + "' requires unique positive monotonically increasing tags");
+            }
+            previousTag = variant.tag();
             if (variant.payload() != null) {
                 Type payload = resolve(variant.payload(), Set.of(), null);
                 if (payload == Primitive.VOID) {
