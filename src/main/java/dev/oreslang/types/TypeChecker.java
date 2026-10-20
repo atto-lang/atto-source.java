@@ -4661,6 +4661,14 @@ public final class TypeChecker {
                     targetRecord.kind());
         }
         if (source instanceof ListType sourceList && target instanceof ListType targetList) {
+            // This overlay is also used by casts and type-pattern bindings,
+            // not just assignments followed by requireAssignable. Copying
+            // target slots could forge a positional proof or silently erase a
+            // mutable-alias restriction. Match the source unit exactly.
+            if (!sourceList.repeatUnit().equals(targetList.repeatUnit())) {
+                throw new IllegalArgumentException(
+                        "cannot erase or forge a repeating collection shape through type refinement");
+            }
             List<Type> slots = targetList.repeatUnit();
             if (sourceList.patterned() && targetList.patterned()
                     && sourceList.repeatUnit().size() == slots.size()) {
