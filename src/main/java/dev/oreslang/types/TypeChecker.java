@@ -531,6 +531,9 @@ public final class TypeChecker {
             boolean valid = iface.genericParameters().size() == 1
                     && iface.parents().isEmpty() && iface.members().size() == 1
                     && iface.members().getFirst() instanceof Ast.InterfaceFunctionDecl method
+                    // awaitability is a nominal capability, never a structural
+                    // duck-typed witness inferred from a similarly named method.
+                    && !method.structural()
                     && method.name().equals("get_future")
                     && method.parameters().isEmpty()
                     && method.genericParameters().isEmpty()
