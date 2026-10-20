@@ -41,7 +41,14 @@ public final class RealtimeExecutionContract {
         }
 
         public boolean withinDeadline() {
-            return worstCaseResponseNanos() <= deadlineNanos;
+            try {
+                long total = Math.addExact(
+                        Math.addExact(wcetNanos, blockingNanos),
+                        Math.addExact(interferenceNanos, jitterNanos));
+                return total <= deadlineNanos;
+            } catch (ArithmeticException overflow) {
+                return false;
+            }
         }
     }
 
