@@ -6947,6 +6947,18 @@ public final class OresEvalRootNode extends RootNode {
                         indexed.receiver());
             }
             if (expr instanceof Ast.NewExpr created) {
+                // The suspended NewExpr path already dispatches through
+                // instantiateEvaluated(). Direct (non-suspending) evaluation
+                // must recognize the identical builtin constructor; otherwise
+                // an ordinary synchronous entry point throws "unknown class
+                // Future" even for an already type-checked provider.
+                if (created.type().name().equals("Future") && findClass("Future") == null) {
+                    List<Object> args = new ArrayList<>(created.arguments().size());
+                    for (Ast.Expr argument : created.arguments()) {
+                        args.add(eval(argument, env));
+                    }
+                    return instantiateEvaluated(created, args, env);
+                }
                 if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
                     List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                     return instantiateEvaluated(created, args, env);
