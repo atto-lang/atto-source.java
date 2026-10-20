@@ -76,6 +76,12 @@ final class IpcTransportSessionLease {
     private final CleanupScheduler scheduler;
     private Phase phase = Phase.OPEN;
     private int activeWrites;
+    // A descriptor close may be owned either by active-write abort or by
+    // finalization, but never by both. "attempted && !confirmed && !executing"
+    // is permanently ambiguous/unsafe: the close callback threw after entry,
+    // so this generation must never invoke physical close a second time.
+    private boolean physicalCloseAttempted;
+    private boolean physicalCloseExecuting;
     private boolean physicalCloseConfirmed;
     private boolean receiptsRetired;
     private Throwable closeFailure;
@@ -238,7 +244,13 @@ final class IpcTransportSessionLease {
         }
     }
 
-    /** An explicit supervisor retry never reopens a quarantined session. */
+    /**
+     * An explicit supervisor retry never reopens a quarantined session.
+     * Only failures that happened before physical close began are retryable.
+     * Once a close callback was entered but did not confirm success, invoking
+     * it again would rely on descriptor-close idempotence and risks closing a
+     * reused/native descriptor.
+     */
     void retryQuarantinedClose() {
         RuntimeBlockingGuard.requireBlockingHostThread(
                 "IPC transport quarantined close retry");
@@ -247,9 +259,82 @@ final class IpcTransportSessionLease {
             if (phase != Phase.QUARANTINED || activeWrites != 0) {
                 throw new IllegalStateException("transport not quarantined");
             }
+            if (physicalCloseAttempted && !physicalCloseConfirmed) {
+                throw new IllegalStateException(
+                        "physical close attempt unconfirmed; descriptor reuse unsafe");
+            }
             phase = Phase.FINALIZING;
         }
         scheduleFinalization();
+    }
+
+    /**
+     * Claim physical close ownership for an active-write abort. The claim is
+     * made under the same lifecycle monitor used by finalization, preventing a
+     * writer-drain race from invoking the descriptor closer concurrently.
+     */
+    boolean beginExternalPhysicalClose() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC external physical close claim");
+        synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
+            if ((phase != Phase.CLOSING && phase != Phase.QUARANTINED)
+                    || activeWrites <= 0
+                    || physicalCloseAttempted
+                    || physicalCloseExecuting
+                    || physicalCloseConfirmed) {
+                return false;
+            }
+            physicalCloseAttempted = true;
+            physicalCloseExecuting = true;
+            return true;
+        }
+    }
+
+    /**
+     * Complete the exact external close claim. Successful abort confirmation
+     * is fed back into the lease so finalization retires receipts without
+     * calling the descriptor closer again.
+     */
+    void completeExternalPhysicalClose(Throwable failure) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC external physical close completion");
+        boolean finalize = false;
+        synchronized (this) {
+            if (!physicalCloseAttempted || !physicalCloseExecuting
+                    || physicalCloseConfirmed) {
+                throw new IllegalStateException(
+                        "IPC external physical close completion without claim");
+            }
+            physicalCloseExecuting = false;
+            if (failure != null) {
+                if (closeFailure == null) closeFailure = failure;
+                phase = Phase.QUARANTINED;
+                notifyAll();
+                return;
+            }
+
+            physicalCloseConfirmed = true;
+            if (phase == Phase.CLOSING && activeWrites == 0) {
+                phase = Phase.FINALIZING;
+                finalize = true;
+            }
+            notifyAll();
+        }
+        if (finalize) scheduleFinalization();
+    }
+
+    boolean externalPhysicalCloseRetryable() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC external physical close retry diagnostic");
+        synchronized (this) {
+            absorbDeferredSchedulerFailureLocked();
+            return phase == Phase.QUARANTINED
+                    && activeWrites > 0
+                    && !physicalCloseAttempted
+                    && !physicalCloseExecuting
+                    && !physicalCloseConfirmed;
+        }
     }
 
     private void releaseWrite() {
@@ -266,6 +351,10 @@ final class IpcTransportSessionLease {
     /** Only called while holding this monitor. */
     private boolean beginFinalization() {
         if (phase == Phase.CLOSING && activeWrites == 0) {
+            // An abort may already own the descriptor close while the writer
+            // is unwinding. Its completion will schedule finalization after
+            // close confirmation; do not race a second close here.
+            if (physicalCloseExecuting) return false;
             phase = Phase.FINALIZING;
             return true;
         }
@@ -316,6 +405,8 @@ final class IpcTransportSessionLease {
                     "cleanup scheduler executed on an actor carrier"));
             return;
         }
+
+        final boolean closeNeeded;
         synchronized (this) {
             absorbDeferredSchedulerFailureLocked();
             if (phase != Phase.FINALIZING || cleanupAttempt != attempt
@@ -328,20 +419,50 @@ final class IpcTransportSessionLease {
                 notifyAll();
                 return;
             }
+
             cleanupExecuting = true;
+            closeNeeded = !physicalCloseConfirmed;
+            if (closeNeeded) {
+                if (physicalCloseExecuting) {
+                    closeFailure = new IllegalStateException(
+                            "physical close already executing");
+                    cleanupExecuting = false;
+                    phase = Phase.QUARANTINED;
+                    notifyAll();
+                    return;
+                }
+                if (physicalCloseAttempted) {
+                    closeFailure = new IllegalStateException(
+                            "physical close attempt unconfirmed; descriptor reuse unsafe");
+                    cleanupExecuting = false;
+                    phase = Phase.QUARANTINED;
+                    notifyAll();
+                    return;
+                }
+                physicalCloseAttempted = true;
+                physicalCloseExecuting = true;
+            }
         }
+
         try {
-            if (!physicalCloseConfirmed) closer.closeAndConfirm();
+            if (closeNeeded) closer.closeAndConfirm();
         } catch (Exception | Error failure) {
             synchronized (this) {
+                physicalCloseExecuting = false;
                 closeFailure = failure;
                 cleanupExecuting = false;
                 phase = Phase.QUARANTINED;
                 notifyAll();
             }
-            return; // Never declare the descriptor reusable.
+            return; // Never invoke an unconfirmed physical close a second time.
         }
-        synchronized (this) { physicalCloseConfirmed = true; }
+
+        synchronized (this) {
+            if (closeNeeded) {
+                physicalCloseExecuting = false;
+                physicalCloseConfirmed = true;
+            }
+        }
         try {
             // Arbitrary dependent user callbacks can run: no session lock held.
             receipts.transportLost(
@@ -438,9 +559,17 @@ final class IpcTransportSessionLease {
         synchronized (this) {
             absorbDeferredSchedulerFailureLocked();
             return activeWrites >= 0 && activeWrites <= limit
-                    && (!physicalCloseConfirmed || activeWrites == 0)
-                    && (phase != Phase.RETIRED || (physicalCloseConfirmed && receiptsRetired))
-                    && (phase != Phase.OPEN || !physicalCloseConfirmed)
+                    && (!physicalCloseExecuting
+                        || (physicalCloseAttempted && !physicalCloseConfirmed))
+                    && (!physicalCloseConfirmed
+                        || (physicalCloseAttempted && !physicalCloseExecuting))
+                    && (phase != Phase.RETIRED
+                        || (physicalCloseConfirmed && receiptsRetired
+                            && activeWrites == 0))
+                    && (phase != Phase.OPEN
+                        || (!physicalCloseAttempted
+                            && !physicalCloseExecuting
+                            && !physicalCloseConfirmed))
                     && (phase != Phase.FINALIZING || activeWrites == 0)
                     && (!cleanupExecuting || phase == Phase.FINALIZING);
         }
