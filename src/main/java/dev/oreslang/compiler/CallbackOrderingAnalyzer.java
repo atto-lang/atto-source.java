@@ -141,7 +141,11 @@ public final class CallbackOrderingAnalyzer {
         }
 
         private void publish(Event event, String invoker, State state) {
-            if (!registered(event, state)) {
+            // A preceding wildcard subscription remains uncertain, never
+            // proof that this exact event has an installed listener.
+            boolean syntacticSubscription = state.registered.stream()
+                    .anyMatch(prior -> matches(prior, event));
+            if (!syntacticSubscription) {
                 state.pending.putIfAbsent(event, new Exposure(event, invoker));
             } else {
                 // A source-level call named on()/once() is only a syntactic
