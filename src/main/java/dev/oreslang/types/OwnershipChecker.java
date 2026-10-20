@@ -831,7 +831,21 @@ public final class OwnershipChecker {
             VarState region = state.borrowSource != null
                     ? ownershipRoot(state.borrowSource)
                     : ownershipRoot(state);
-            if (!context.readRegions.contains(region)) {
+
+            if (state.kind == ValueKind.IMM_BORROW || state.type.isBorrow()) {
+                if (!context.readBorrowStates.contains(state)) {
+                    throw error("cannot nb scope exit while an uncaptured immutable "
+                            + "borrow is live; only the exact compiler-permitted "
+                            + "scoped read capture may cross the drain");
+                }
+                continue;
+            }
+
+            // The storage root itself records the persistent shared-loan count.
+            // It may remain live because the exact captured borrow above is
+            // protected by this scope's physical-quiescence barrier.
+            if (state.immutableBorrows > 0
+                    && !context.readRegions.contains(region)) {
                 throw error("cannot nb scope exit while an ordinary borrow is live; "
                         + "only compiler-permitted scoped read captures may cross the drain");
             }
@@ -2563,6 +2577,7 @@ public final class OwnershipChecker {
                 region.regionId = ++nextRegionId;
             }
             structured.readRegions.add(region);
+            structured.readBorrowStates.add(source);
             proofs.add(Ast.TaskCaptureProof.scopedRead(
                     capture.name,
                     region.regionId,
@@ -4224,6 +4239,8 @@ public final class OwnershipChecker {
 
     private static final class StructuredBorrowContext {
         private final Set<VarState> readRegions =
+                java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+        private final Set<VarState> readBorrowStates =
                 java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     }
 
