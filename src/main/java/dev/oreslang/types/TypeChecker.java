@@ -1781,6 +1781,11 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.TaskScopeStmt taskScope) {
+            if (currentActorKind != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "nb scope is not enabled inside actor execution until "
+                                + "actor quota/hot-reload structured-scope integration is proven");
+            }
             checkBlock(taskScope.body(), env, generics, expectedReturn, self);
             return;
         }
