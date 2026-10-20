@@ -1664,6 +1664,12 @@ public final class TypeChecker {
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
         if (stmt instanceof Ast.BindingStmt binding) {
+            if (currentConstructorOwner != null
+                    && capturesConstructorSelfValue(binding.initializer())) {
+                throw new IllegalArgumentException(
+                        "constructor self cannot be aliased or packaged into a local value "
+                                + "before definite class-field initialization and escape safety are proven");
+            }
             boolean namedInference = binding.inferredTypeName() != null;
             Type declaredAhead = namedInference || binding.declaredType() == null
                     ? null : resolve(binding.declaredType(), generics, self);
@@ -1753,6 +1759,12 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
+            if (currentConstructorOwner != null
+                    && capturesConstructorSelfValue(destructure.initializer())) {
+                throw new IllegalArgumentException(
+                        "constructor self cannot be aliased or packaged through destructuring "
+                                + "before definite class-field initialization and escape safety are proven");
+            }
             Type source = deref(typeOf(destructure.initializer(), env, generics, self));
             if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
                 List<Type> elementTypes = sequenceDestructureTypes(source, destructure.bindings());
@@ -6372,6 +6384,57 @@ public final class TypeChecker {
     private static String constantStringIndexKey(Ast.Expr expr, Env env) {
         Object value = constantIndexKey(expr, env);
         return value instanceof String key ? key : null;
+    }
+
+    /**
+     * Reject constructor-local value forms that directly preserve or package
+     * the construction-scoped self capability. This is intentionally narrower
+     * than referencesConstructorSelf(): ordinary derived reads such as
+     * `const int x = self.value` do not create a self alias and remain governed
+     * by the normal definite-initialization rules.
+     */
+    private static boolean capturesConstructorSelfValue(Ast.Expr expression) {
+        if (expression == null || expression instanceof Ast.LiteralExpr) return false;
+        if (expression instanceof Ast.NameExpr name) return name.name().equals("self");
+        if (expression instanceof Ast.CastExpr cast) {
+            return capturesConstructorSelfValue(cast.value());
+        }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            return capturesConstructorSelfValue(conditional.whenTrue())
+                    || capturesConstructorSelfValue(conditional.whenFalse());
+        }
+        if (expression instanceof Ast.MatchExpr match) {
+            return match.arms().stream()
+                    .anyMatch(arm -> capturesConstructorSelfValue(arm.value()));
+        }
+        if (expression instanceof Ast.TrapExpr trapped) {
+            return capturesConstructorSelfValue(trapped.expression());
+        }
+        if (expression instanceof Ast.UnaryExpr unary
+                && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
+            return capturesConstructorSelfValue(unary.operand());
+        }
+        if (expression instanceof Ast.RuntimeCallExpr runtime
+                && (runtime.operation().equals("borrow")
+                        || runtime.operation().equals("copy")
+                        || runtime.operation().equals("take")
+                        || runtime.operation().equals("share"))) {
+            return runtime.arguments().stream()
+                    .anyMatch(TypeChecker::capturesConstructorSelfValue);
+        }
+        if (expression instanceof Ast.ListExpr list) {
+            return list.elements().stream()
+                    .anyMatch(TypeChecker::capturesConstructorSelfValue);
+        }
+        if (expression instanceof Ast.TupleExpr tuple) {
+            return tuple.elements().stream()
+                    .anyMatch(TypeChecker::capturesConstructorSelfValue);
+        }
+        if (expression instanceof Ast.ObjectExpr object) {
+            return object.fields().stream()
+                    .anyMatch(field -> capturesConstructorSelfValue(field.value()));
+        }
+        return false;
     }
 
     /**
