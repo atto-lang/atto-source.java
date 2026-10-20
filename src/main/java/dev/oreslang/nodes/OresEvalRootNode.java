@@ -2235,15 +2235,15 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.SelectStmt select,
                 Env env,
                 SourceFlowCont continuation) {
-            ChannelRuntime.SelectSet set =
-                    buildStaticSelectSet(select, env);
+            StaticSelectInvocation invocation =
+                    buildStaticSelectInvocation(select, env);
             ChannelRuntime.SelectPolicy policy =
                     runtimeSelectPolicy(select.policy());
 
             if (select.mode() == Ast.WaitMode.IMMEDIATE) {
                 java.util.Optional<ChannelRuntime.SelectResult> result;
                 try {
-                    result = set.trySelect(policy);
+                    result = invocation.trySelect(policy);
                 } catch (RuntimeException | Error failure) {
                     continuation.accept(task, SourceFlow.throwing(failure));
                     return;
@@ -2258,7 +2258,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             OresFuture<ChannelRuntime.SelectResult> future =
-                    set.selectAsync(policy);
+                    invocation.selectAsync(policy);
             if (select.mode() == Ast.WaitMode.NONBLOCKING) {
                 if (!ActorRuntime.inActorExecution()) {
                     future.cancel(false);
@@ -2332,6 +2332,7 @@ public final class OresEvalRootNode extends RootNode {
                 Env parent,
                 SourceFlowCont continuation) {
             Env loopEnv = new Env(parent);
+            loopEnv.enableLoopSelectPlans();
             if (loop.initializer() == null) {
                 runForIteration(
                         task,
@@ -2449,6 +2450,16 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.LoopStmt loop,
                 Env env,
                 SourceFlowCont continuation) {
+            Env loopEnv = new Env(env);
+            loopEnv.enableLoopSelectPlans();
+            runLoopSuspendableIteration(task, loop, loopEnv, continuation);
+        }
+
+        private void runLoopSuspendableIteration(
+                SourceTask task,
+                Ast.LoopStmt loop,
+                Env env,
+                SourceFlowCont continuation) {
             runBlock(
                     task,
                     loop.body(),
@@ -2462,7 +2473,7 @@ public final class OresEvalRootNode extends RootNode {
                                 || flow.kind() == SourceFlowKind.THROW) {
                             continuation.accept(t, flow);
                         } else {
-                            runLoopSuspendable(
+                            runLoopSuspendableIteration(
                                     t,
                                     loop,
                                     env,
@@ -4778,6 +4789,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (stmt instanceof Ast.ForStmt loop) {
                 Env loopEnv = new Env(env);
+                loopEnv.enableLoopSelectPlans();
                 if (loop.initializer() != null) {
                     executeStatement(
                             loop.initializer(),
@@ -4802,12 +4814,14 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.LoopStmt loop) {
+                Env loopEnv = new Env(env);
+                loopEnv.enableLoopSelectPlans();
                 while (true) {
                     context.schedulerSafepoint();
                     try {
                         executeBlock(
                                 loop.body(),
-                                env,
+                                loopEnv,
                                 inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
                     } catch (ContinueSignal ignored) {
                         continue;
@@ -4822,12 +4836,12 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.SelectStmt selected,
                 Env env,
                 boolean tailBarrier) {
-            ChannelRuntime.SelectSet set = buildStaticSelectSet(selected, env);
+            StaticSelectInvocation invocation = buildStaticSelectInvocation(selected, env);
             ChannelRuntime.SelectPolicy policy = runtimeSelectPolicy(selected.policy());
 
             if (selected.mode() == Ast.WaitMode.IMMEDIATE) {
                 java.util.Optional<ChannelRuntime.SelectResult> result =
-                        set.trySelect(policy);
+                        invocation.trySelect(policy);
                 if (result.isPresent()) {
                     executeSelectedArm(
                             selected,
@@ -4840,7 +4854,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             OresFuture<ChannelRuntime.SelectResult> future =
-                    set.selectAsync(policy);
+                    invocation.selectAsync(policy);
 
             if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
                 if (!ActorRuntime.inActorExecution()) {
@@ -4872,6 +4886,82 @@ public final class OresEvalRootNode extends RootNode {
                     (ChannelRuntime.SelectResult)
                             awaitBlockingChannelFuture(future, "select");
             executeSelectedArm(selected, result, env, tailBarrier, false);
+        }
+
+        /**
+         * An implicit loop-local plan is sound only for side-effect-free,
+         * loop-invariant READ operands: direct immutable channel variables
+         * bound at or above this loop's lexical anchor. A shadowing binding,
+         * mutable name, dynamic expression or WRITE forces ordinary lowering.
+         * Crucially, the static site's FAIR ticket is still consumed once for
+         * every invocation (including try/default/cancellation).
+         */
+        private record StaticSelectInvocation(
+                ChannelRuntime.SelectSet set,
+                boolean hoisted,
+                long staticTicket) {
+            private java.util.Optional<ChannelRuntime.SelectResult> trySelect(
+                    ChannelRuntime.SelectPolicy policy) {
+                return hoisted
+                        ? set.tryStaticSelect(policy, staticTicket)
+                        : set.trySelect(policy);
+            }
+
+            private OresFuture<ChannelRuntime.SelectResult> selectAsync(
+                    ChannelRuntime.SelectPolicy policy) {
+                return hoisted
+                        ? set.selectStaticAsync(policy, staticTicket)
+                        : set.selectAsync(policy);
+            }
+        }
+
+        private StaticSelectInvocation buildStaticSelectInvocation(
+                Ast.SelectStmt selected, Env env) {
+            ChannelRuntime.SelectSet cached = cachedLoopSelectSet(selected, env);
+            if (cached != null) {
+                return new StaticSelectInvocation(
+                        cached, true, staticSelectTicket(selected));
+            }
+            return new StaticSelectInvocation(
+                    buildStaticSelectSet(selected, env), false, 0L);
+        }
+
+        private ChannelRuntime.SelectSet cachedLoopSelectSet(
+                Ast.SelectStmt selected, Env env) {
+            Env anchor = env.nearestSelectPlanAnchor();
+            if (anchor == null) return null;
+
+            // Reject every operand that could require evaluation each
+            // iteration, even when this source site was cached previously.
+            for (Ast.SelectArm arm : selected.arms()) {
+                if (arm.operation() == Ast.ChannelOperation.WRITE) return null;
+                if (arm.operation() == Ast.ChannelOperation.READ) {
+                    if (!(arm.channel() instanceof Ast.NameExpr name)
+                            || env.immutableLoopChannel(name.name(), anchor) == null) {
+                        return null;
+                    }
+                }
+            }
+
+            ChannelRuntime.SelectSet cached = anchor.loopSelectPlans.get(selected);
+            if (cached != null) return cached;
+
+            ArrayList<ChannelRuntime.SelectCase> cases =
+                    new ArrayList<>(selected.arms().size());
+            for (Ast.SelectArm arm : selected.arms()) {
+                if (arm.operation() == Ast.ChannelOperation.DEFAULT) {
+                    cases.add(ChannelRuntime.defaultCase());
+                } else {
+                    // The whitelist above proved a direct, immutable,
+                    // non-shadowed lexical channel; do not run guest code.
+                    Ast.NameExpr name = (Ast.NameExpr) arm.channel();
+                    cases.add(ChannelRuntime.read(
+                            env.immutableLoopChannel(name.name(), anchor)));
+                }
+            }
+            ChannelRuntime.SelectSet result = new ChannelRuntime.SelectSet(cases);
+            anchor.loopSelectPlans.put(selected, result);
+            return result;
         }
 
         private ChannelRuntime.SelectSet buildStaticSelectSet(
@@ -8305,6 +8395,40 @@ public final class OresEvalRootNode extends RootNode {
         private final String lexicalModule;
         private final OresObject constructingObject;
         private final Map<String, Slot> slots = new HashMap<>();
+        // Instantiated only for an executing loop, never on a shared AST node.
+        // Dynamic and write arms deliberately do not enter this cache.
+        private IdentityHashMap<Ast.SelectStmt, ChannelRuntime.SelectSet> loopSelectPlans;
+
+        private void enableLoopSelectPlans() {
+            loopSelectPlans = new IdentityHashMap<>();
+        }
+
+        private Env nearestSelectPlanAnchor() {
+            for (Env cursor = this; cursor != null; cursor = cursor.parent) {
+                if (cursor.loopSelectPlans != null) return cursor;
+            }
+            return null;
+        }
+
+        private ChannelRuntime.Channel<?> immutableLoopChannel(
+                String name, Env anchor) {
+            // Per-iteration local names may shadow an outer immutable name;
+            // evaluating those once would be a semantic bug.
+            for (Env cursor = this; cursor != anchor; cursor = cursor.parent) {
+                if (cursor == null || cursor.slots.containsKey(name)) return null;
+            }
+            for (Env cursor = anchor; cursor != null; cursor = cursor.parent) {
+                Slot slot = cursor.slots.get(name);
+                if (slot == null) continue;
+                if (slot.kind != Ast.BindingKind.VAL
+                        || !(slot.value instanceof ChannelRuntime.Channel<?> channel)) {
+                    return null;
+                }
+                return channel;
+            }
+            return null;
+        }
+
         private Env(Env parent) {
             this(
                     parent,
