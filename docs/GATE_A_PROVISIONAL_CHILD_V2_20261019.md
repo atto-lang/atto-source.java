@@ -136,3 +136,30 @@ produce real steps/logs. Zero-step Actions failures are not test runs.
 - The cross-org transfer allowlist remains empty in protected `main`;
   source-export security issue #962 remains open. Spare runner capacity
   does not override independent security approval.
+
+
+## Further Gate A race audit: live-exit registration and stress (Oct 19)
+
+- Corrected `AsyncRuntime.awaitTaskExit(completion)` live-map race:
+  `taskExits.remove` now occurs **after** `TaskExit.markExited()` and
+  therefore after the trusted retirement hook and physical-exit witness.
+  The cancelled-before-entry worker no longer removes another thread's
+  in-progress retirement registration.
+- New `OresTaskOrdinaryRetirementTest.runtimeAwaitTaskExitDoesNotSkipPendingTrustedRetirement`
+  blocks the release callback and asserts that the host joiner cannot
+  escape while retirement is in progress.
+- New `OresTaskScopeAdmissionStressTest` runs 600 source-runtime concurrent
+  admission/cancellation/close rounds, checking no ownership escape and
+  `getDone` success after shutdown. This class was committed but is NOT
+  currently included in the explicitly enumerated `concurrency-contract`
+  selector because the workflow edit was blocked; full Maven discovery
+  should pick it up when a source-authorized runner is available.
+- Source-free alternate carrier run
+  https://github.com/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra/actions/runs/39344662318
+  PASSED actual JDK21 `-Xlint:all -Werror` compilation, 10,000
+  independently coded cancellation/entry races and 725,760 bounded
+  transition sequences covering both successful/failed retirement.
+  **These are specification-model checks, not executed Oreslang source.**
+- Review remains blocked by source-org zero-step Actions runs and security
+  issue #962's still-empty approved destination allowlist. No private
+  source mirror was created.
