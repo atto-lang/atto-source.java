@@ -19,7 +19,7 @@ final class ReachabilityManifestTest {
                 end
 
                 define module Live
-                  pub fnc answer(): int { return 42; }
+                  pub fnc answer(int value): int { return value + 1; }
                 end
 
                 define class Box as
@@ -28,7 +28,7 @@ final class ReachabilityManifestTest {
 
                 pub routine main(): void {
                   val Box box = new Box();
-                  stdio.stdout.write(Live.answer() + box.value);
+                  stdio.stdout.write(Live.answer(box.value));
                   return;
                 }
                 """, BuildOptions.executable(Map.of()));
