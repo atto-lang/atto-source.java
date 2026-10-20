@@ -6,10 +6,16 @@ cache entries, and logs.
 
 ## Destination approval
 
-The policy file `.github/private-ci-approved-repositories.txt` is **empty by
+The policy file `.github/private-ci-approved-repositories.txt` is **deny by
 default**. No cross-repository mirroring is authorized until maintainers and
-security reviewers explicitly add an exact `owner/repo` destination through a
-reviewed, protected-branch change.
+security reviewers add one exact five-field authorization through a reviewed,
+protected-branch change:
+
+`owner/repo repository-id carrier-base-commit carrier-base-tree workflow-blob-sha`
+
+All four identities after the slug are immutable. A slug-only approval, a
+floating default branch, or a workflow-only pin is insufficient because the
+carrier workflow can execute other files from its base tree.
 
 **Origin protection is mandatory.** Before reading private source files, the
 publisher now checks the live GitHub identity of
@@ -54,18 +60,32 @@ scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
   --source-commit FULL_40_CHARACTER_ORIGIN_COMMIT_SHA
 ```
 
-The checked-in policy file must explicitly list the destination. The
-publisher checks the live GitHub identity and `visibility=private` /
-`private=true` before sending any private bytes and rechecks visibility
-immediately before each write. Every GitHub API write is constructed from
-that **same validated owner/repo**, rather than a caller-provided URL, Git
-remote, shell command or separate destination argument. It creates blobs,
-then a **fresh standalone source tree with no `base_tree`**, followed by a
-root tree that replaces the **entire** `private-oreslang-source/` directory
-in the destination's default tree. This removes stale files from previous
-snapshots while preserving unrelated destination workflows and files.
-Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
-branches, including `main`, are never updated.
+The checked-in policy file must explicitly list the destination, immutable
+repository ID, reviewed carrier base commit/tree, and exact carrier workflow
+blob. Before reading private source bytes, the publisher verifies the live
+destination is still the same private, non-archived, non-disabled, non-fork
+repository; its default branch still equals the reviewed base commit; that
+commit still resolves to the reviewed base tree; and the workflow blob at that
+exact base commit still matches policy. Repointing `main` or modifying any
+carrier-local script therefore invalidates authorization rather than silently
+changing the execution control plane.
+
+Every GitHub API write is constructed from that **same validated owner/repo**,
+rather than a caller-provided URL, Git remote, shell command or separate
+destination argument. It creates blobs, then a **fresh standalone source tree
+with no `base_tree`**, followed by a root tree that replaces the **entire**
+`private-oreslang-source/` directory in the reviewed carrier base tree. This
+removes stale source files while preserving only the reviewed carrier control
+plane. The carrier commit message binds the exact source commit/tree, carrier
+base commit/tree, source repository slug, and immutable source repository ID.
+
+After the final protected-origin recheck, the publisher creates only fresh
+refs: the requested `ci/oreslang-*` payload branch and the exact
+`ci/authorized-<carrier-commit-sha>` connector authorization ref required by
+the reviewed carrier workflow. Existing branches, including `main`, are never
+updated. The carrier validates both refs bind the same commit before private
+source checkout and is responsible for deleting both ephemeral refs after the
+run.
 
 An explicitly supplied `--source-commit` now pins the **exact original
 private Git commit**. Before uploading, the publisher retrieves that commit's
@@ -106,8 +126,10 @@ python3 scripts/test-publish-private-ci-source.py
 ```
 
 The Bash test uses a temporary policy checkout; Python tests mock all GitHub
-API operations. The real policy remains empty and **no destination is
-authorized** unless separately reviewed.
+API operations. An approval proposal on a feature branch is **not**
+authorization: the protected source `main` policy must contain the exact
+reviewed tuple, and the publisher's live protected-origin checks must pass,
+before any private source bytes may be transferred.
 
 ## Active disclosure incident
 
