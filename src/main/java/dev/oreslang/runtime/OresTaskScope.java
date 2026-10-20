@@ -30,6 +30,31 @@ public final class OresTaskScope implements AutoCloseable {
     private final AsyncRuntime runtime;
     private final OresTaskScope parent;
     private final Object gate = new Object();
+    /** Identity-only epoch for compiler-minted scoped-loan admission. */
+    private final Object compilerScopeEpoch = new Object();
+
+    /**
+     * Compiler-issued memory-loan lifecycle. Implementations are expected to
+     * be opaque capabilities: ordinary guest/host code cannot manufacture the
+     * verifier ticket that they retire.
+     */
+    public interface CompilerLoanRetirement {
+        void bindScope(Object scopeEpoch);
+        void bindChild(Object scopeEpoch, OresTask<?> child);
+        void retireNeverStarted(Object scopeEpoch);
+        void retireAfterPhysicalQuiescence(Object scopeEpoch, OresTask<?> child);
+    }
+
+    private static final CompilerLoanRetirement NO_COMPILER_LOAN =
+            new CompilerLoanRetirement() {
+                @Override public void bindScope(Object scopeEpoch) { }
+                @Override public void bindChild(
+                        Object scopeEpoch, OresTask<?> child) { }
+                @Override public void retireNeverStarted(Object scopeEpoch) { }
+                @Override public void retireAfterPhysicalQuiescence(
+                        Object scopeEpoch, OresTask<?> child) { }
+            };
+
     // All members of one owned tree share a strict admission/plan monitor.
     // Lock order: treeAdmissionGate -> individual scope.gate.
     private final Object treeAdmissionGate;
@@ -152,7 +177,8 @@ public final class OresTaskScope implements AutoCloseable {
      */
     <T> OresTask<T> startCompilerFrame(
             OresScheduler scheduler, OresScheduler.Task<T> frame) {
-        return startCompilerFrame(scheduler, frame, () -> { });
+        return startCompilerFrame(
+                scheduler, frame, () -> { }, NO_COMPILER_LOAN);
     }
 
     /**
@@ -170,9 +196,24 @@ public final class OresTaskScope implements AutoCloseable {
     <T> OresTask<T> startCompilerFrame(
             OresScheduler scheduler, OresScheduler.Task<T> frame,
             Runnable onPhysicalExit) {
+        return startCompilerFrame(
+                scheduler, frame, onPhysicalExit, NO_COMPILER_LOAN);
+    }
+
+    /**
+     * Compiler-only scoped-memory admission. The loan capability binds first
+     * to this exact scope epoch and then to the exact provisional child owner.
+     * Scheduler rejection and physical exit are different retirement edges.
+     */
+    <T> OresTask<T> startCompilerFrame(
+            OresScheduler scheduler, OresScheduler.Task<T> frame,
+            Runnable onPhysicalExit,
+            CompilerLoanRetirement loanRetirement) {
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(frame, "frame");
         Objects.requireNonNull(onPhysicalExit, "onPhysicalExit");
+        Objects.requireNonNull(loanRetirement, "loanRetirement");
+        loanRetirement.bindScope(compilerScopeEpoch);
 
         // Reserve the owner before executable dispatch, but never run a
         // scheduler, guest turn or code-image release under admission locks.
@@ -182,6 +223,7 @@ public final class OresTaskScope implements AutoCloseable {
         try {
             pendingFence = new OresFuture<>();
             pendingOwner = OresTask.provisional(pendingFence);
+            loanRetirement.bindChild(compilerScopeEpoch, pendingOwner);
             pendingSlot = new OwnershipSlot();
             pendingSlot.task = pendingOwner;
             synchronized (treeAdmissionGate) {
@@ -217,11 +259,20 @@ public final class OresTaskScope implements AutoCloseable {
             }
             Throwable releaseFailure = null;
             try {
-                onPhysicalExit.run();
+                loanRetirement.retireNeverStarted(compilerScopeEpoch);
             } catch (RuntimeException | Error failure) {
                 releaseFailure = failure;
                 if (failure != preparationFailure)
                     preparationFailure.addSuppressed(failure);
+            }
+            if (releaseFailure == null) {
+                try {
+                    onPhysicalExit.run();
+                } catch (RuntimeException | Error failure) {
+                    releaseFailure = failure;
+                    if (failure != preparationFailure)
+                        preparationFailure.addSuppressed(failure);
+                }
             }
             if (pendingFence != null) {
                 Throwable fenceFailure = releaseFailure != null
@@ -251,6 +302,13 @@ public final class OresTaskScope implements AutoCloseable {
                 // before completing the quiescence Future, because generic
                 // Future observers swallow callback exceptions.
                 try {
+                    loanRetirement.retireAfterPhysicalQuiescence(
+                            compilerScopeEpoch, ownedChild);
+                } catch (RuntimeException | Error loanFailure) {
+                    exitFence.failFromRuntime(loanFailure);
+                    return;
+                }
+                try {
                     onPhysicalExit.run();
                 } catch (RuntimeException | Error releaseFailure) {
                     exitFence.failFromRuntime(releaseFailure);
@@ -273,11 +331,20 @@ public final class OresTaskScope implements AutoCloseable {
             // a failed remove is reported both to the caller and joiners.
             Throwable releaseFailure = null;
             try {
-                onPhysicalExit.run();
+                loanRetirement.retireNeverStarted(compilerScopeEpoch);
             } catch (RuntimeException | Error failure) {
                 releaseFailure = failure;
                 if (failure != rejectedBeforeDispatch)
                     rejectedBeforeDispatch.addSuppressed(failure);
+            }
+            if (releaseFailure == null) {
+                try {
+                    onPhysicalExit.run();
+                } catch (RuntimeException | Error failure) {
+                    releaseFailure = failure;
+                    if (failure != rejectedBeforeDispatch)
+                        rejectedBeforeDispatch.addSuppressed(failure);
+                }
             }
             Throwable bookkeepingFailure = null;
             if (releaseFailure == null) {
