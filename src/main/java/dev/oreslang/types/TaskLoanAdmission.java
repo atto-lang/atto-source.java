@@ -78,13 +78,6 @@ public final class TaskLoanAdmission
             OresTask<?> child) {
         requireScope(scopeEpoch);
         Objects.requireNonNull(child, "runtime child");
-        if (state == State.SCOPE_BOUND) {
-            // A provisional child may have been allocated even if bindChild
-            // itself failed before committing the compiler capability state.
-            // The runtime must still present that exact provisional identity.
-            runtimeChild = child;
-            state = State.CHILD_BOUND;
-        }
         if (state != State.CHILD_BOUND || runtimeChild != child) {
             throw new IllegalArgumentException(
                     "never-started Task loan retirement requires the exact bound child");
