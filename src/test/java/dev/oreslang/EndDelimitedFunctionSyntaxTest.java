@@ -203,16 +203,16 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
-    void optionalDoMayBeSeparatedFromReturnTypeByCommentsButNotSemicolon() {
+    void optionalDoMayCrossCommentsOnTheHeaderLineButNeverAPhysicalNewline() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
                 "fnc value() -> int /* boundary */ do return 7; end")));
 
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc value() -> int /* boundary */
                 do
                     return 7
                 end
-                """)));
+                """));
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse(
                 "fnc value() -> int; /* not a body boundary */ do return 7; end"));
