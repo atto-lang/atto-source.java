@@ -348,3 +348,26 @@ failed with zero executed steps. The source `main` branch reports
 `protected: false`, and the protected destination allowlist contains no
 approved entries. Do not copy private source to that carrier until reviewed
 origin and destination contracts allow it.
+
+
+### 2026-10-20 follow-up audit: evaluator parity and intrinsic identity
+
+Both the suspension-aware `evalSuspendable(NewExpr)` path and the direct
+synchronous `eval(NewExpr)` path must funnel source
+`new Future<T>(producer)` through the same checked `instantiateEvaluated`
+intrinsic. Before this audit, the direct path attempted normal class
+construction and failed with `unknown class Future`. The draft now contains
+the direct-path fix and a synchronous `main` regression test.
+
+`Future` is sealed against locally defined classes and type aliases; both
+the type checker and evaluator fail closed if a linked class collides with
+the intrinsic name. The guest regression set also exercises `Future<void>`
+completion and its zero-payload await.
+
+These tests have been **committed but not executed on the real Java/GraalVM
+compiler**. The dedicated PR-head workflow continues to fail with zero
+steps and no assigned runner. A private cross-org copy is not an acceptable
+substitute: the protected source-origin and reviewed carrier allowlist remain
+unsatisfied. A passing synthetic host-adapter harness, if available, is not
+a substitute for exact-head guest tests.
+
