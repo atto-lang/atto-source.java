@@ -9786,6 +9786,10 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresMutex.Guard<?> guard) return !guard.released();
             if (!seen.add(value)) return false;
 
+            if (value instanceof OresEntry entry) {
+                return containsLiveMutexGuard(entry.key(), seen)
+                        || containsLiveMutexGuard(entry.value(), seen);
+            }
             if (value instanceof OptionValue option) {
                 return option.present() && containsLiveMutexGuard(option.value(), seen);
             }
@@ -9844,6 +9848,11 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (!seen.add(value)) return;
 
+            if (value instanceof OresEntry entry) {
+                releaseMutexGuardsInValue(entry.key(), failed, seen);
+                releaseMutexGuardsInValue(entry.value(), failed, seen);
+                return;
+            }
             if (value instanceof OptionValue option) {
                 if (option.present()) releaseMutexGuardsInValue(option.value(), failed, seen);
                 return;
