@@ -72,7 +72,7 @@ public final class ReachabilityManifest {
         result.compileTimeConstants().entrySet().stream()
                 .sorted((left, right) -> CODE_POINT_ORDER.compare(left.getKey(), right.getKey()))
                 .forEach(entry -> {
-                    validateUnicode("compile-time constant name", entry.getKey());
+                    validateSymbol("compile-time constant name", entry.getKey());
                     validateConstant(entry.getKey(), entry.getValue());
                     constants.put(entry.getKey(), entry.getValue());
                 });
@@ -143,7 +143,7 @@ public final class ReachabilityManifest {
     private static List<String> executableRoots(Set<String> requested, Set<String> retained) {
         ArrayList<String> roots = new ArrayList<>();
         for (String entryPoint : requested) {
-            validateUnicode("entry point", entryPoint);
+            validateSymbol("entry point", entryPoint);
             String resolved = resolveRetainedEntryPoint(entryPoint, retained);
             if (resolved == null) {
                 throw new IllegalArgumentException(
@@ -218,7 +218,7 @@ public final class ReachabilityManifest {
     private static List<String> sorted(Set<String> values) {
         ArrayList<String> sorted = new ArrayList<>(values.size());
         for (String value : values) {
-            validateUnicode("symbol", value);
+            validateSymbol("symbol", value);
             sorted.add(value);
         }
         sorted.sort(CODE_POINT_ORDER);
@@ -236,6 +236,23 @@ public final class ReachabilityManifest {
             ri += Character.charCount(rcp);
         }
         return Integer.compare(left.length() - li, right.length() - ri);
+    }
+
+    private static void validateSymbol(String label, String value) {
+        validateUnicode(label, value);
+        int codePoints = value.codePointCount(0, value.length());
+        if (codePoints == 0 || codePoints > 1024) {
+            throw new IllegalArgumentException(
+                    label + " must contain 1..1024 Unicode code points");
+        }
+        for (int i = 0; i < value.length();) {
+            int codePoint = value.codePointAt(i);
+            if (codePoint <= 0x1f || codePoint == 0x7f) {
+                throw new IllegalArgumentException(
+                        label + " contains a forbidden control character");
+            }
+            i += Character.charCount(codePoint);
+        }
     }
 
     private static void validateUnicode(String label, String value) {
