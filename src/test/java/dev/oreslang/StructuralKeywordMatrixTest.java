@@ -186,6 +186,42 @@ final class StructuralKeywordMatrixTest {
     }
 
     @Test
+    void structuralPairsDoNotReinterpretNumericOrNestedTupleSlots() {
+        Types.Tuple actual = new Types.Tuple(java.util.List.of(
+                Types.Primitive.INT, Types.Primitive.STRING));
+        Types.Tuple unsafeFloatView = new Types.Tuple(java.util.List.of(
+                Types.Primitive.FLOAT, Types.Primitive.STRING));
+        assertFalse(Types.isAssignable(actual, unsafeFloatView),
+                "readonly structural pairs must not reinterpret stored int slots as float");
+        assertTrue(Types.isAssignable(actual, new Types.Tuple(java.util.List.of(
+                Types.Primitive.INT, Types.Primitive.STRING))));
+
+        Types.Tuple nestedActual = new Types.Tuple(java.util.List.of(actual));
+        Types.Tuple nestedUnsafe = new Types.Tuple(java.util.List.of(unsafeFloatView));
+        assertFalse(Types.isAssignable(nestedActual, nestedUnsafe),
+                "nested positional aliases must preserve actual slot representations");
+
+        Types.Tuple fixedArray = new Types.Tuple(
+                java.util.List.of(Types.Primitive.INT), Types.TupleKind.FIXED_ARRAY);
+        Types.Tuple fixedArrayFloat = new Types.Tuple(
+                java.util.List.of(Types.Primitive.FLOAT), Types.TupleKind.FIXED_ARRAY);
+        assertFalse(Types.isAssignable(fixedArray, fixedArrayFloat),
+                "mutable fixed array slots cannot be covariantly widened");
+        assertFalse(Types.isAssignable(actual, new Types.Tuple(
+                actual.elements(), Types.TupleKind.FIXED_ARRAY)),
+                "Tuple and fixed Array remain distinct physical kinds");
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc wants(structural Tuple<float, string> pair): float {
+                  return pair[0];
+                }
+                fnc invalid(): float {
+                  return wants(tuple {1, "untouched"});
+                }
+                """)), "structural tuple float parameter must reject an int slot");
+    }
+
+    @Test
     void nestedStructuralLoansNeverExposeWritableRecords() {
         var parameterProgram = Parser.parse("""
                 fnc forbidden(structural { inner: { value: int } } loan): void {
