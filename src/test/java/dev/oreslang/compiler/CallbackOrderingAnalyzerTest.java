@@ -84,8 +84,8 @@ final class CallbackOrderingAnalyzerTest {
                     doMore(|| -> { randie.emit("done", true); });
                 }
                 """);
-        assertFalse(containsRule(result, "ORES-CB-006"),
-                "wildcard subscription must not establish a definite installed listener");
+        assertTrue(containsRule(result, "ORES-CB-006"),
+                "wildcard subscription must remain unverified rather than appear safe");
     }
 
     @Test
