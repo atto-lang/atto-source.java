@@ -93,6 +93,15 @@ public final class RealtimeActorSourceEffectsSelfTest {
         reject("callback declares suspends", actor(variant(false, true, false)));
         reject("static actor callback", actor(variant(false, false, true)));
 
+        var sibling = new Ast.MethodDecl("helper", Ast.Visibility.PRIVATE,
+                false, false, false, false, false, null,
+                List.of(), List.of(), i32(), List.of(), List.of(ret(num(0))));
+        var withSibling = new Ast.ClassDecl("Ticker", Ast.Visibility.PUBLIC,
+                false, Ast.ActorKind.PRIVATE, List.of(), List.of(), List.of(),
+                List.of(), null, List.of(method(List.of(ret(name("x")))), sibling));
+        reject("unverified sibling actor method", new Ast.Program(
+                List.of(new Ast.ModuleDecl("test", List.of(withSibling)))));
+
         var withField = new Ast.ClassDecl("Ticker", Ast.Visibility.PUBLIC,
                 false, Ast.ActorKind.PRIVATE, List.of(), List.of(), List.of(),
                 List.of(new Ast.FieldDecl("field", Ast.Visibility.PUBLIC,
@@ -112,7 +121,7 @@ public final class RealtimeActorSourceEffectsSelfTest {
             if (!e.getMessage().contains("RT-ACTOR-SOURCE:")) throw e;
             rejects++;
         }
-        if (rejects != 19) throw new AssertionError("expected 19 negatives, found " + rejects);
-        System.out.println("PASS: checked-AST conservative actor callback gate, 19 negative cases");
+        if (rejects != 20) throw new AssertionError("expected 20 negatives, found " + rejects);
+        System.out.println("PASS: checked-AST conservative actor callback gate, 20 negative cases");
     }
 }
