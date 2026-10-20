@@ -1072,12 +1072,15 @@ class PrivateCiV3Test(unittest.TestCase):
                     "verified_exact_source_tree",
                     return_value=SOURCE_TREE,
                 ),
+                patch.object(v3, "secrets") as entropy,
                 patch.object(v3, "authorize_write") as authorize_write,
                 patch.object(v3, "verify_carrier_directories") as directory_proof,
                 patch.object(v3, "verify_published_root_and_commit") as commit_proof,
+                patch.object(v3, "require_handoff_refs_absent") as absent_guard,
                 patch.object(v3, "require_exact_ref") as require_exact_ref,
                 patch.object(v3.legacy, "gh_api", side_effect=api),
             ):
+                entropy.token_hex.return_value = "0" * 32
                 result = v3.publish(
                     "trusted/ci",
                     source,
@@ -1096,6 +1099,10 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(authorize_write.call_count, 7)
         directory_proof.assert_called_once()
         commit_proof.assert_called_once()
+        absent_guard.assert_called_once_with(
+            "trusted/ci", "ci/oreslang-" + SOURCE_TREE,
+            "ci/authorized-" + COMMIT, carrier["repository_id"]
+        )
 
         self.assertEqual(result["branch"], "ci/oreslang-" + SOURCE_TREE)
         self.assertEqual(
@@ -1134,6 +1141,8 @@ class PrivateCiV3Test(unittest.TestCase):
                 + v3.legacy.SOURCE_REPO
                 + " id "
                 + str(v3.SOURCE_REPOSITORY_ID)
+                + "\\nhandoff-nonce "
+                + "0" * 32
             ),
         )
         refs = [
@@ -1218,6 +1227,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "authorize_write"),
                 patch.object(v3, "verify_carrier_directories"),
                 patch.object(v3, "verify_published_root_and_commit"),
+                patch.object(v3, "require_handoff_refs_absent") as absent_guard,
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1284,6 +1294,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "authorize_write"),
                 patch.object(v3, "verify_carrier_directories"),
                 patch.object(v3, "verify_published_root_and_commit"),
+                patch.object(v3, "require_handoff_refs_absent") as absent_guard,
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1355,6 +1366,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "authorize_write"),
                 patch.object(v3, "verify_carrier_directories"),
                 patch.object(v3, "verify_published_root_and_commit"),
+                patch.object(v3, "require_handoff_refs_absent") as absent_guard,
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1429,6 +1441,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "authorize_write"),
                 patch.object(v3, "verify_carrier_directories"),
                 patch.object(v3, "verify_published_root_and_commit"),
+                patch.object(v3, "require_handoff_refs_absent") as absent_guard,
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
