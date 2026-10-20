@@ -102,19 +102,18 @@ public final class OresTaskScope implements AutoCloseable {
             retryRetirementAfterExit();
         }
 
-        private void retryRetirementAfterExit() {
-            boolean publish = false;
-            synchronized (this) {
-                if (releaseComplete) return;
-                if (!exitObserved) {
-                    throw new IllegalStateException(
-                            "trusted Task retirement attempted before physical carrier exit");
-                }
-                retirement.run();
-                releaseComplete = true;
-                publish = true;
+        private synchronized void retryRetirementAfterExit() {
+            if (releaseComplete) return;
+            if (!exitObserved) {
+                throw new IllegalStateException(
+                        "trusted Task retirement attempted before physical carrier exit");
             }
-            if (publish) retired.completeFromRuntime(null);
+            retirement.run();
+            // Publish the retirement fence while this same owner lock is still
+            // held. A concurrent close that observes releaseComplete must also
+            // observe the slot-removal callback before it can return.
+            releaseComplete = true;
+            retired.completeFromRuntime(null);
         }
     }
 
@@ -219,14 +218,17 @@ public final class OresTaskScope implements AutoCloseable {
 
     /**
      * Trusted host lifecycle seam for code-generation and external-resource
-     * leases. The onPhysicalExit callback runs exactly once AFTER the final
+     * leases. The onPhysicalExit callback is first invoked AFTER the final
      * guest carrier turn has unwound, not when the cancelable result settles.
+     * If it throws, the exact callback remains owned and may be retried by a
+     * later host close; successful retirement is published exactly once.
      * A suspends call uses its parent's existing Task and does not re-enter
      * this admission path. A child task needs its own independent code pin.
      *
      * The caller must acquire its pin BEFORE admission and must preserve it
      * on all preparation, cancellation and close paths. The callback must
-     * be nonblocking, host-only and not execute guest code. The code-image
+     * be nonblocking, host-only, retry-safe/idempotent on failure, and must
+     * not execute guest code. The code-image
      * owner must independently check its active pin counts before unload.
      */
     <T> OresTask<T> startCompilerFrame(
