@@ -121,4 +121,36 @@ final class TaskAdmissionRuntimeBridgeTest {
                 .findFirst()
                 .orElseThrow();
     }
+
+    @Test
+    void convenienceProofLookupAlsoRejectsLookalikeBoundary() {
+        OresCompiler.ExecutionAnalysis first =
+                OresCompiler.parseAndProveForExecution("""
+                        pub routine main(): void {
+                            let worker = nb {
+                                return 1;
+                            };
+                            return;
+                        }
+                        """);
+        OresCompiler.ExecutionAnalysis second =
+                OresCompiler.parseAndProveForExecution("""
+                        pub routine main(): void {
+                            let worker = nb {
+                                return 1;
+                            };
+                            return;
+                        }
+                        """);
+
+        Ast.TaskExpr exact = onlyTask(first.program());
+        Ast.TaskExpr lookalike = onlyTask(second.program());
+
+        assertTrue(first.taskAdmissions().transfersFor(exact).isEmpty());
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> first.taskAdmissions().transfersFor(lookalike));
+        assertTrue(failure.getMessage().contains("exact AST boundary"));
+    }
+
 }
