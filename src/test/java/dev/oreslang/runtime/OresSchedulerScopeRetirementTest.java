@@ -96,4 +96,61 @@ final class OresSchedulerScopeRetirementTest {
             }
         }
     }
+    @Test
+    void duplicatePhysicalRetirementCallbacksAreIdempotent() throws Exception {
+        java.util.concurrent.atomic.AtomicReference<Runnable> retireHook =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicInteger releases =
+                new java.util.concurrent.atomic.AtomicInteger();
+        CountDownLatch hookPublished = new CountDownLatch(1);
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> task = scheduler.start(new OresScheduler.Task<>() {
+                @Override
+                public OresScheduler.Step<Integer> resume(OresScheduler.Resume resume) {
+                    return OresScheduler.done(17);
+                }
+                @Override
+                public void afterCarrierQuiescent(Runnable retire) {
+                    retireHook.set(retire);
+                    hookPublished.countDown();
+                }
+            }, releases::incrementAndGet);
+            assertTrue(hookPublished.await(5, TimeUnit.SECONDS));
+            assertFalse(task.isDone(), "deferred retirement has not yet occurred");
+            retireHook.get().run();
+            retireHook.get().run();
+            assertEquals(17, task.get(5, TimeUnit.SECONDS));
+            assertEquals(1, releases.get(), "resources must retire exactly once");
+        }
+    }
+
+    @Test
+    void cancelledFutureStillNeedsPhysicalRetirementCallback() throws Exception {
+        java.util.concurrent.atomic.AtomicReference<Runnable> retireHook =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicInteger releases =
+                new java.util.concurrent.atomic.AtomicInteger();
+        CountDownLatch hookPublished = new CountDownLatch(1);
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> task = scheduler.start(new OresScheduler.Task<>() {
+                @Override
+                public OresScheduler.Step<Integer> resume(OresScheduler.Resume resume) {
+                    return OresScheduler.done(17);
+                }
+                @Override
+                public void afterCarrierQuiescent(Runnable retire) {
+                    retireHook.set(retire);
+                    hookPublished.countDown();
+                }
+            }, releases::incrementAndGet);
+            assertTrue(hookPublished.await(5, TimeUnit.SECONDS));
+            assertTrue(task.cancel(false));
+            assertTrue(task.isCancelled());
+            assertEquals(0, releases.get(), "cancellation is not physical quiescence");
+            retireHook.get().run();
+            retireHook.get().run();
+            assertEquals(1, releases.get());
+        }
+    }
+
 }
