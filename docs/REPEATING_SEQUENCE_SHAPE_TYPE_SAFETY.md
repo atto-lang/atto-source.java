@@ -28,3 +28,28 @@ The LLVM main frontend currently implements a narrower typed-i64 source subset; 
 - This patch now has **13 JUnit test methods**, but no test has been shown to execute: GitHub Actions failed before runner steps on the exact source branch. Source-level inspection is not compilation or execution.
 - A separate **public** GitHub organization (`flags-2-env/flags-2-env`) had successful Actions jobs on 2026-10-20, but it is not approved or private and must **never** receive Oreslang private source.
 - The candidate private carrier test-plan [PR #17](https://github.com/opto-sync-test/go-java-validation/pull/17) and source security [issue #1699](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1699) remain review-only; an actual code mirror must not be created before authorized protected merge, provenance checks and independently observed runner capacity.
+
+## Recursive proof-laundering audit (2026-10-20)
+
+A positional repeating-list guarantee may appear nested in a nominal generic
+(`Option<Array[...(...) ]>` or `Result<Array[...(...)], E>`), tuple, record,
+borrow, callback or union. Neither `Unknown` nor an unconstrained top-level
+generic value is evidence of such a proof. The type model recursively inspects
+the target wrapper, and the compiler repeats this admission test **before**
+union branches are considered. Otherwise an untyped value could be accepted
+through a different union alternative while being assigned a type containing
+a shaped array.
+
+The regression suite includes structural checks for wrappers, unions, positive
+self-assignability and negative unknown/unbound-generic assignments. **These
+tests are committed but not executed:** at the exact current source head, Java
+Actions `ci` and `fast-ci` continue to fail before any steps.
+
+A source-free private CI capacity and pinned GraalVM/Maven preflight **did pass**
+in `sonus-auris-test/clients-api-contract` ([runner proof](https://github.com/sonus-auris-test/clients-api-contract/actions/runs/39476154145),
+[toolchain proof](https://github.com/sonus-auris-test/clients-api-contract/actions/runs/39476281654)).
+Those probes establish temporary runner/toolchain availability, **not**
+authorization to transfer private Oreslang source into an unrelated repository.
+Approval requires an isolated private destination and a protected, independently
+reviewed source allowlist/immutable carrier contract; security review is tracked
+by [#1699](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1699).
