@@ -191,6 +191,34 @@ final class StructuralKeywordMatrixTest {
                     pub val int id = 0;
                   end
 
+                  define interface HasPublicId
+                    id: int;
+                  end
+
+                  fnc interface_arg(structural HasPublicId value): int {
+                    return value.id;
+                  }
+
+                  fnc record_arg(structural {id: int} value): int {
+                    return value.id;
+                  }
+
+                  fnc struct_arg(structural struct{id: int} value): int {
+                    return value.id;
+                  }
+
+                  fnc class_arg(structural FieldOnly value): int {
+                    return value.id;
+                  }
+
+                  fnc trait_arg(structural KeyValue value): string {
+                    return value.value;
+                  }
+
+                  fnc entry_arg(structural Entry<int, string> value): string {
+                    return value.value;
+                  }
+
                   fnc class_case(Root value, DerivedArg arg): int {
                     match value over
                       on structural Contract shaped -> {
@@ -258,6 +286,12 @@ final class StructuralKeywordMatrixTest {
                     stdio.println(field_only_class_case());
                     stdio.println(empty_shape_case(99));
                     stdio.println(empty_shape_case(record{id: 1}));
+                    stdio.println(interface_arg(new Candidate()));
+                    stdio.println(record_arg(record{id: 21, extra: true}));
+                    stdio.println(struct_arg(record{id: 22, extra: true}));
+                    stdio.println(class_arg(record{id: 23, extra: true}));
+                    stdio.println(trait_arg(Entry.of(2, "trait")));
+                    stdio.println(entry_arg(record{key: 3, value: "entry-arg", extra: true}));
                     stdio.println(entry_target_case());
                     stdio.println(entry_actual_case());
                     stdio.println(pair_case(tuple {5, "pair"}));
@@ -282,7 +316,7 @@ final class StructuralKeywordMatrixTest {
         }
 
         assertEquals(
-                "7\n8\n13\nfalse\ntrue\nshape\nentry\npair",
+                "7\n8\n13\nfalse\ntrue\n7\n21\n22\n23\ntrait\nentry-arg\nshape\nentry\npair",
                 output.toString(StandardCharsets.UTF_8)
                         .replace("\r\n", "\n")
                         .strip());
