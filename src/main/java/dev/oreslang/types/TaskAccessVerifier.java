@@ -143,10 +143,17 @@ final class TaskAccessVerifier {
         return admit(typed.stream().map(TypedClaim::claim).toList());
     }
 
+    private static final class ScopeEpoch { }
+
     /** Opaque compiler-issued child identity. A cancelled Ticket is still live. */
     public static final class Ticket {
+        private final ScopeEpoch scopeEpoch;
         private final long id;
-        private Ticket(long id) { this.id = id; }
+
+        private Ticket(ScopeEpoch scopeEpoch, long id) {
+            this.scopeEpoch = Objects.requireNonNull(scopeEpoch, "scopeEpoch");
+            this.id = id;
+        }
     }
 
     private static final class Child {
