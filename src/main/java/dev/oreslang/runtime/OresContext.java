@@ -181,6 +181,11 @@ public final class OresContext implements AutoCloseable {
         runtimePermissions.require(permission, resource, api);
     }
 
+    public void requireNetworkBind(String host, int port, String api) {
+        requireCapability(IsolatePolicy.Capability.NETWORK, api);
+        runtimePermissions.requireNetworkBind(host, port, api);
+    }
+
     static void requireEffectiveCapability(
             IsolatePolicy contextPolicy,
             IsolatePolicy.Capability capability,
