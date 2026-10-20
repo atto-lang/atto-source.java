@@ -140,6 +140,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
+        private final dev.oreslang.types.NominalEnumRegistry.Registry nominalEnums;
         private final IdentityHashMap<Ast.MethodDecl, Ast.ClassDecl> methodOwners = new IdentityHashMap<>();
 
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
@@ -180,6 +181,16 @@ public final class OresEvalRootNode extends RootNode {
 
         private record TailCall(Invocation invocation) { }
 
+        private record EnumNamespace(
+                dev.oreslang.types.NominalEnumRegistry.EnumType enumeration) { }
+
+        private record EnumValue(
+                String owner,
+                String variant,
+                int tag,
+                Object payload,
+                boolean hasPayload) { }
+
         private static final class TailCallSignal extends RuntimeException {
             private final Invocation invocation;
             private TailCallSignal(Invocation invocation) {
@@ -193,6 +204,8 @@ public final class OresEvalRootNode extends RootNode {
             this.program = program;
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
+            this.nominalEnums =
+                    dev.oreslang.types.NominalEnumRegistry.build(program);
             indexImports();
             indexDeclarations();
         }
@@ -5887,6 +5900,9 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
+                dev.oreslang.types.NominalEnumRegistry.EnumType enumType =
+                        nominalEnums.enumType(name.name());
+                if (enumType != null) return new EnumNamespace(enumType);
                 if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                     return BooleanOpsNamespace.INSTANCE;
                 }
@@ -6347,6 +6363,25 @@ public final class OresEvalRootNode extends RootNode {
                     // Storage-level operation only: literal, non-recursive, no regex/host interop.
                     // Context-sensitive escaping policy belongs in Oreslang libraries.
                     return text.replace(needle, replacement);
+                };
+            }
+            if (receiver instanceof EnumNamespace namespace) {
+                dev.oreslang.types.NominalEnumRegistry.Variant variant =
+                        namespace.enumeration().requireVariant(name);
+                return (Invokable) args -> {
+                    int expected = variant.payload() == null ? 0 : 1;
+                    if (args.size() != expected) {
+                        throw new IllegalArgumentException(
+                                "enum constructor " + variant.qualifiedName()
+                                        + " expects " + expected + " argument(s)");
+                    }
+                    Object payload = expected == 0 ? null : args.getFirst();
+                    return new EnumValue(
+                            variant.owner(),
+                            variant.name(),
+                            variant.tag(),
+                            payload,
+                            expected == 1);
                 };
             }
             if (receiver instanceof HostClassFacade host) {
@@ -7918,6 +7953,26 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (pattern instanceof Ast.ConstructorPattern constructor) {
                 String name = constructor.constructor();
+                dev.oreslang.types.NominalEnumRegistry.Variant nominalVariant =
+                        nominalEnums.variant(name);
+                if (nominalVariant != null) {
+                    if (!(value instanceof EnumValue enumValue)
+                            || !enumValue.owner().equals(nominalVariant.owner())
+                            || !enumValue.variant().equals(nominalVariant.name())
+                            || enumValue.tag() != nominalVariant.tag()) {
+                        return false;
+                    }
+                    if (nominalVariant.payload() == null) {
+                        return !enumValue.hasPayload()
+                                && constructor.arguments().isEmpty();
+                    }
+                    return enumValue.hasPayload()
+                            && constructor.arguments().size() == 1
+                            && patternMatches(
+                                    constructor.arguments().getFirst(),
+                                    enumValue.payload(),
+                                    bindings);
+                }
                 if (name.equals("Some")) {
                     if (!(value instanceof OptionValue option) || !option.present() || constructor.arguments().size() != 1) return false;
                     return patternMatches(constructor.arguments().getFirst(), option.value(), bindings);
@@ -8279,6 +8334,18 @@ public final class OresEvalRootNode extends RootNode {
                         && right instanceof ActorRuntime.ActorRef<?> b
                         && a.kind() == b.kind()
                         && a.id().equals(b.id());
+            }
+            if (left instanceof EnumValue || right instanceof EnumValue) {
+                if (!(left instanceof EnumValue a)
+                        || !(right instanceof EnumValue b)
+                        || !a.owner().equals(b.owner())
+                        || !a.variant().equals(b.variant())
+                        || a.tag() != b.tag()
+                        || a.hasPayload() != b.hasPayload()) {
+                    return false;
+                }
+                return !a.hasPayload()
+                        || valueEquals(a.payload(), b.payload(), seen);
             }
 
             if (left instanceof OptionValue || right instanceof OptionValue) {
