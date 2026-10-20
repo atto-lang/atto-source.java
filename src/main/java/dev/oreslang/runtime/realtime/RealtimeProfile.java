@@ -19,6 +19,7 @@ public final class RealtimeProfile {
         NONE,
         MISSING_TIMING_BUDGET,
         MANAGED_HEAP_ACCESS,
+        TRACING_GC_INTERFERENCE,
         RUNTIME_CODE_GENERATION,
         UNKNOWN_FFI,
         UNBOUNDED_ALLOCATION,
@@ -30,6 +31,7 @@ public final class RealtimeProfile {
 
     public record Effects(
             boolean managedHeapAccess,
+            boolean tracingCollectorMayPause,
             boolean runtimeCodeGeneration,
             boolean unknownFfi,
             boolean unboundedAllocation,
@@ -65,6 +67,7 @@ public final class RealtimeProfile {
                 case NONE -> "OK";
                 case MISSING_TIMING_BUDGET -> "RT003_WCET_UNPROVEN";
                 case MANAGED_HEAP_ACCESS -> "RT004_MANAGED_HEAP_ESCAPE";
+                case TRACING_GC_INTERFERENCE -> "RT011_COLLECTOR_INTERFERENCE";
                 case RUNTIME_CODE_GENERATION -> "RT005_DYNAMIC_CODE";
                 case UNKNOWN_FFI -> "RT007_UNKNOWN_FFI";
                 case UNBOUNDED_ALLOCATION -> "RT001_UNBOUNDED_ALLOCATION";
@@ -87,6 +90,9 @@ public final class RealtimeProfile {
         }
         if (effects.managedHeapAccess()) {
             return new Result(Failure.MANAGED_HEAP_ACCESS);
+        }
+        if (effects.tracingCollectorMayPause()) {
+            return new Result(Failure.TRACING_GC_INTERFERENCE);
         }
         if (effects.runtimeCodeGeneration()) {
             return new Result(Failure.RUNTIME_CODE_GENERATION);
