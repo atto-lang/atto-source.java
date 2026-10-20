@@ -64,7 +64,8 @@ public final class StaticSafetyAnalyzer {
                         for (Ast.MethodDecl method : cls.methods()) {
                             String k = key(mod, cls.name() + "." + method.name(), method.parameters().size());
                             addBody(k, method.body());
-                            if (cls.actorKind() != Ast.ActorKind.NONE && method.name().equals("on_message")) {
+                            if (cls.actorKind() != Ast.ActorKind.NONE
+                                    && (method.name().equals("receive") || method.name().equals("on_message"))) {
                                 actorHandlers.put(mod + "::" + cls.name(), k);
                             }
                         }
