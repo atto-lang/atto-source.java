@@ -110,7 +110,8 @@ public final class Types {
             // Proof metadata cannot claim an element type narrower than any
             // slot in the repeating sequence.
             for (Type slot : repeatUnit) {
-                if (slot == Primitive.VOID || slot == Primitive.NULL
+                if (element == Unknown.INSTANCE || slot == Unknown.INSTANCE
+                        || slot == Primitive.VOID || slot == Primitive.NULL
                         || !Types.isAssignable(slot, element)) {
                     throw new IllegalArgumentException(
                             "repeating collection slot must be a value subtype of element join");
