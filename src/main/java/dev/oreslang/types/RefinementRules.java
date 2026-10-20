@@ -25,7 +25,11 @@ public final class RefinementRules {
     public record Interval(String property, long min, long max, Set<Long> excluded) {
         public Interval {
             excluded = Set.copyOf(excluded);
-            if (min > max)
+            // Public host proof records must not manufacture a metric outside
+            // the closed scalar refinement kernel or negative Unicode length.
+            if (!"value".equals(property) && !"length".equals(property))
+                throw new IllegalArgumentException("unsupported refinement metric");
+            if (min > max || (property.equals("length") && min < 0))
                 throw new IllegalArgumentException("unsatisfiable refinement interval");
             for (long hole : excluded) {
                 if (hole < min || hole > max)
@@ -99,7 +103,14 @@ public final class RefinementRules {
     }
 
     private static boolean qualifiedIdentity(String identity) {
-        return identity != null && identity.matches(
+        // Descriptor hashing and nominal wrapper creation may be reached by
+        // untrusted schema input. Reject oversized identities before regex,
+        // digest construction or unbounded module-path storage.
+        if (identity == null || identity.length() > 256) return false;
+        int components = 1;
+        for (int i = 0; i < identity.length(); i++)
+            if (identity.charAt(i) == '.' && ++components > 16) return false;
+        return identity.matches(
                 "[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)+");
     }
 
