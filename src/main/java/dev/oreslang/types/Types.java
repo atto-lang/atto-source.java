@@ -107,6 +107,15 @@ public final class Types {
         public ListType {
             Objects.requireNonNull(element, "list element");
             repeatUnit = List.copyOf(repeatUnit);
+            // Proof metadata cannot claim an element type narrower than any
+            // slot in the repeating sequence.
+            for (Type slot : repeatUnit) {
+                if (slot == Primitive.VOID || slot == Primitive.NULL
+                        || !Types.isAssignable(slot, element)) {
+                    throw new IllegalArgumentException(
+                            "repeating collection slot must be a value subtype of element join");
+                }
+            }
         }
         public ListType(Type element) { this(element, List.of()); }
         public boolean patterned() { return !repeatUnit.isEmpty(); }
