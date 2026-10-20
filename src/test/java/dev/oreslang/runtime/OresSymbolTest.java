@@ -39,7 +39,9 @@ class OresSymbolTest {
     }
 
     @Test void maliciousOrOversizedNamesAreRejectedWithoutInterning() {
-        for (String name : List.of("", "\u0000", "\u0085", "abc\u202edef", "\ud800", "\udc00", "a".repeat(257))) {
+        for (String name : List.of(
+                "", "\u0000", "\u0085", "\u2028", "\u2029",
+                "abc\u202edef", "\ud800", "\udc00", "a".repeat(257))) {
             assertThrows(IllegalArgumentException.class, () -> OresSymbol.process(name), name);
         }
         assertEquals(256, OresSymbol.process("é".repeat(128)).name().getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
