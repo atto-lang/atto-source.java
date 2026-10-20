@@ -181,6 +181,24 @@ final class MinimalNominalEnumGuestTest {
                 () -> TypeChecker.check(Parser.parse(program)));
     }
 
+    @Test void qualifiedBareCaseDoesNotDependOnEnumCapitalization() {
+        String program = """
+                define enum training_error as
+                    STALE = 1
+                    INVALID = 2
+                end
+
+                fnc render(training_error value): int {
+                    match value over
+                        on training_error.STALE -> { return 1; }
+                        on training_error.INVALID -> { return 2; }
+                    end
+                }
+                """;
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+    }
+
     @Test void actorCannotUseAmbientSameFileNominalEnum() {
         String program = """
                 define enum TrainingError as
