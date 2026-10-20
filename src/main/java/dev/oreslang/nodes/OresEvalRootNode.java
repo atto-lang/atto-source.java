@@ -9001,13 +9001,17 @@ public final class OresEvalRootNode extends RootNode {
             return Env.MISSING;
         }
 
+        /** One structural proof per generic specialization, not per declaration. */
+        private record StructuralContractVisit(
+                Object declaration, Map<String, Ast.TypeRef> bindings) { }
+
         private boolean structuralClassMatches(
                 Object value,
                 Ast.ClassDecl contract,
                 Map<String, Ast.TypeRef> bindings,
-                Set<Ast.ClassDecl> seen) {
+                Set<StructuralContractVisit> seen) {
             if (!isStructuralValueCarrier(value)) return false;
-            if (!seen.add(contract)) return true;
+            if (!seen.add(new StructuralContractVisit(contract, Map.copyOf(bindings)))) return true;
             // A field-only class is a valid readonly structural contract for
             // records and structs. Only a method requirement needs an actual
             // Oreslang object's dynamic method dispatch table.
@@ -9066,11 +9070,13 @@ public final class OresEvalRootNode extends RootNode {
                 Object value,
                 Ast.InterfaceDecl iface,
                 Map<String, Ast.TypeRef> bindings,
-                Set<Ast.InterfaceDecl> seen) {
+                Set<StructuralContractVisit> seen) {
             // Even a zero-member interface remains an object-shape predicate.
             // Otherwise scalars and actor identities could satisfy it vacuously.
             if (!isStructuralValueCarrier(value)) return false;
-            if (!seen.add(iface)) return true;
+            // A diamond can reach the same generic interface with different
+            // substitutions. They are distinct obligations, not one proof.
+            if (!seen.add(new StructuralContractVisit(iface, Map.copyOf(bindings)))) return true;
 
             for (Ast.TypeRef parentRef : iface.parents()) {
                 Ast.TypeRef concreteParent = substituteStructuralType(parentRef, bindings);
