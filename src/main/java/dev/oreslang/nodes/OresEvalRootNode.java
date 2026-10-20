@@ -4519,6 +4519,17 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     return new ReadonlyRecordValue(fields);
                 }
+                if (value instanceof NominalEnumValue nominal) {
+                    return nominal.payload() == null
+                            ? nominal
+                            : new NominalEnumValue(
+                                    nominal.enumName(),
+                                    nominal.variant(),
+                                    nominal.tag(),
+                                    detachAsyncValue(
+                                            nominal.payload(),
+                                            visiting));
+                }
                 if (value instanceof OptionValue option) {
                     return option.present()
                             ? new OptionValue(true, detachAsyncValue(option.value(), visiting))
@@ -9195,6 +9206,10 @@ public final class OresEvalRootNode extends RootNode {
 
             if (!seen.add(value)) return true;
 
+            if (value instanceof NominalEnumValue nominal) {
+                return nominal.payload() == null
+                        || runtimeSharedSafe(nominal.payload(), seen);
+            }
             if (value instanceof OptionValue option) {
                 return !option.present() || runtimeSharedSafe(option.value(), seen);
             }
