@@ -173,4 +173,26 @@ final class EntryValueTest {
                         .replace("\r\n", "\n")
                         .strip());
     }
+    @Test
+    void builtinEntryNamespaceCannotBeShadowedAtModuleScope() {
+        IllegalArgumentException klass = rejected("""
+                define class Entry as
+                end
+                """);
+        assertTrue(klass.getMessage().contains("cannot be shadowed"), klass.getMessage());
+
+        IllegalArgumentException alias = rejected("""
+                type Entry<K,V> = Tuple[K,V];
+                fnc main(): void { return; }
+                """);
+        assertTrue(alias.getMessage().contains("cannot be shadowed"), alias.getMessage());
+
+        IllegalArgumentException generic = rejected("""
+                fnc bad<Entry>(Entry value): void {
+                  return;
+                }
+                """);
+        assertTrue(generic.getMessage().contains("cannot shadow"), generic.getMessage());
+    }
+
 }
