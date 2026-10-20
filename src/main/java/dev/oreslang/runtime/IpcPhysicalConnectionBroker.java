@@ -20,6 +20,90 @@ final class IpcPhysicalConnectionBroker {
         void fill(byte[] target);
     }
 
+    /**
+     * Broker-only one-shot physical connection authority. Its constructor is
+     * private so no sibling runtime class can synthesize a loose credential
+     * tuple and bypass broker freshness/generation policy.
+     */
+    static final class Authority implements AutoCloseable {
+        static final class Transfer {
+            private final long generation;
+            private final Object physicalOwner;
+            private final byte[] macKey;
+            private final byte[] connectionBinding;
+
+            private Transfer(long generation,
+                             Object physicalOwner,
+                             byte[] macKey,
+                             byte[] connectionBinding) {
+                this.generation = generation;
+                this.physicalOwner = physicalOwner;
+                this.macKey = macKey;
+                this.connectionBinding = connectionBinding;
+            }
+
+            long generation() { return generation; }
+            Object physicalOwner() { return physicalOwner; }
+            byte[] macKey() { return macKey; }
+            byte[] connectionBinding() { return connectionBinding; }
+
+            void destroy() {
+                Arrays.fill(macKey, (byte) 0);
+                Arrays.fill(connectionBinding, (byte) 0);
+            }
+        }
+
+        private final long generation;
+        private Object physicalOwner;
+        private byte[] macKey;
+        private byte[] connectionBinding;
+        private boolean terminal;
+
+        private Authority(long generation,
+                          Object physicalOwner,
+                          byte[] macKey,
+                          byte[] connectionBinding) {
+            this.generation = generation;
+            this.physicalOwner = physicalOwner;
+            this.macKey = macKey;
+            this.connectionBinding = connectionBinding;
+        }
+
+        synchronized Transfer consume() {
+            if (terminal) {
+                throw new IllegalStateException(
+                        "IPC physical connection authority already consumed or destroyed");
+            }
+
+            // Allocate before changing authority state. If allocation fails,
+            // no ownership transfer occurred and the authority remains intact.
+            Transfer transfer = new Transfer(
+                    generation, physicalOwner, macKey, connectionBinding);
+            terminal = true;
+            physicalOwner = null;
+            macKey = null;
+            connectionBinding = null;
+            return transfer;
+        }
+
+        synchronized boolean consumedOrDestroyed() {
+            return terminal;
+        }
+
+        @Override
+        public synchronized void close() {
+            if (terminal) return;
+            terminal = true;
+            physicalOwner = null;
+            if (macKey != null) Arrays.fill(macKey, (byte) 0);
+            if (connectionBinding != null) {
+                Arrays.fill(connectionBinding, (byte) 0);
+            }
+            macKey = null;
+            connectionBinding = null;
+        }
+    }
+
     private final BindingSource bindingSource;
     private long lastGeneration;
 
@@ -29,16 +113,14 @@ final class IpcPhysicalConnectionBroker {
     }
 
     /**
-     * Package-local deterministic source injection is for trusted host tests;
-     * production callers use the SecureRandom-backed constructor.
+     * Deterministic source injection is package-local for trusted host tests.
+     * Production callers use the SecureRandom-backed constructor.
      */
     IpcPhysicalConnectionBroker(BindingSource bindingSource) {
         this.bindingSource = Objects.requireNonNull(bindingSource, "bindingSource");
     }
 
-    synchronized IpcPhysicalConnectionAuthority mint(
-            long generation,
-            byte[] negotiatedMacKey) {
+    synchronized Authority mint(long generation, byte[] negotiatedMacKey) {
         if (generation <= 0) {
             throw new IllegalArgumentException(
                     "physical generation must be positive");
@@ -59,15 +141,10 @@ final class IpcPhysicalConnectionBroker {
         try {
             boolean nonzero = false;
             // A trustworthy random source will succeed on the first attempt;
-            // the bounded retry also makes all-zero deterministic test sources
-            // fail closed without an unbounded loop.
+            // bounded retry makes a broken deterministic source fail closed.
             for (int attempt = 0; attempt < 4 && !nonzero; ++attempt) {
                 Arrays.fill(binding, (byte) 0);
                 bindingSource.fill(binding);
-                if (binding.length != CONNECTION_BINDING_BYTES) {
-                    throw new IllegalStateException(
-                            "IPC binding source changed binding length");
-                }
                 for (byte value : binding) nonzero |= value != 0;
             }
             if (!nonzero) {
@@ -75,12 +152,8 @@ final class IpcPhysicalConnectionBroker {
                         "IPC connection binding source produced all-zero binding");
             }
 
-            IpcPhysicalConnectionAuthority authority =
-                    new IpcPhysicalConnectionAuthority(
-                            generation,
-                            new Object(),
-                            privateMacKey,
-                            binding);
+            Authority authority = new Authority(
+                    generation, new Object(), privateMacKey, binding);
             // Advance only after the complete authority has been allocated.
             lastGeneration = generation;
             return authority;
@@ -89,99 +162,5 @@ final class IpcPhysicalConnectionBroker {
             Arrays.fill(binding, (byte) 0);
             throw mintFailure;
         }
-    }
-}
-
-/**
- * One-shot broker-minted physical connection authority.
- *
- * <p>Before consumption, close() destroys private credentials. On successful
- * consumption, ownership of the private arrays transfers to the transport and
- * this object drops every reference to them. A consumed or destroyed
- * authority can never be reused.</p>
- */
-final class IpcPhysicalConnectionAuthority implements AutoCloseable {
-    static final class Transfer {
-        private final long generation;
-        private final Object physicalOwner;
-        private final byte[] macKey;
-        private final byte[] connectionBinding;
-
-        private Transfer(long generation,
-                         Object physicalOwner,
-                         byte[] macKey,
-                         byte[] connectionBinding) {
-            this.generation = generation;
-            this.physicalOwner = physicalOwner;
-            this.macKey = macKey;
-            this.connectionBinding = connectionBinding;
-        }
-
-        long generation() { return generation; }
-        Object physicalOwner() { return physicalOwner; }
-        byte[] macKey() { return macKey; }
-        byte[] connectionBinding() { return connectionBinding; }
-
-        void destroy() {
-            Arrays.fill(macKey, (byte) 0);
-            Arrays.fill(connectionBinding, (byte) 0);
-        }
-    }
-
-    private final long generation;
-    private Object physicalOwner;
-    private byte[] macKey;
-    private byte[] connectionBinding;
-    private boolean terminal;
-
-    IpcPhysicalConnectionAuthority(
-            long generation,
-            Object physicalOwner,
-            byte[] macKey,
-            byte[] connectionBinding) {
-        if (generation <= 0) {
-            throw new IllegalArgumentException(
-                    "physical generation must be positive");
-        }
-        this.generation = generation;
-        this.physicalOwner = Objects.requireNonNull(
-                physicalOwner, "physicalOwner");
-        this.macKey = Objects.requireNonNull(macKey, "macKey");
-        this.connectionBinding = Objects.requireNonNull(
-                connectionBinding, "connectionBinding");
-    }
-
-    synchronized Transfer consume() {
-        if (terminal) {
-            throw new IllegalStateException(
-                    "IPC physical connection authority already consumed or destroyed");
-        }
-
-        // Allocate the transfer before changing this object's state. If the VM
-        // cannot allocate it, the authority remains intact and retryable.
-        Transfer transfer = new Transfer(
-                generation, physicalOwner, macKey, connectionBinding);
-        terminal = true;
-        physicalOwner = null;
-        macKey = null;
-        connectionBinding = null;
-        return transfer;
-    }
-
-    synchronized boolean consumedOrDestroyed() {
-        return terminal;
-    }
-
-    @Override
-    public synchronized void close() {
-        if (terminal) return;
-        terminal = true;
-        physicalOwner = null;
-        if (macKey != null) Arrays.fill(macKey, (byte) 0);
-        if (connectionBinding != null) {
-            Arrays.fill(connectionBinding, (byte) 0);
-        }
-        macKey = null;
-        connectionBinding = null;
     }
 }
