@@ -190,6 +190,19 @@ assert_exit() {
 assert_exit 0 run_preflight SYNTH_PROTECTED=true \
   bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch"
 
+# A source checkout is an untrusted Git repository. A local replace ref must not
+# rewrite the authenticated commit/tree inspected by the authorization gate.
+printf '%s\n' replacement-only > "$repo/replacement-only.txt"
+git -C "$repo" add replacement-only.txt
+git -C "$repo" -c user.name=CI-Feature -c user.email=ci-feature@example.invalid \
+  commit -qm 'synthetic malicious replacement object'
+replacement="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" replace "$head" "$replacement"
+GIT_NO_REPLACE_OBJECTS=1 git -C "$repo" reset --hard -q "$head"
+assert_exit 0 run_preflight SYNTH_PROTECTED=true \
+  bash scripts/preflight-private-ci-mirror.sh "$repo" pr:1425 "$head" "$tree" "$dest_branch"
+git -C "$repo" replace -d "$head" >/dev/null
+
 # Post-merge verification may target the authenticated current main head.
 assert_exit 0 run_preflight SYNTH_PROTECTED=true \
   bash scripts/preflight-private-ci-mirror.sh "$control" main "$main_sha" "$main_tree" "$dest_branch"
