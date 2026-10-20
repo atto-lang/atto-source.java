@@ -1306,7 +1306,7 @@ public final class OresEvalRootNode extends RootNode {
                         "Task capture lowering differs from the exact joined proof");
             }
 
-            Env captured = caller.taskProjection(proofNames);
+            Env captured = caller.taskProjection(admitted);
             TaskTransferLease lease = TaskTransferLease.retain(admitted, captured);
             try {
                 return startSourceBlockTask(
@@ -9292,17 +9292,48 @@ public final class OresEvalRootNode extends RootNode {
          * Copy-safe scalars are isolated by slot; owned heap references are
          * transferred only after the compiler has consumed their owners.
          */
-        private Env taskProjection(List<String> captureNames) {
-            Env cp = new Env(null, descendantsNonLexical, accessClass,
-                    null, lexicalModule, lexicalContainerClass);
-            cp.structuredTaskScope = structuredTaskScope;
-            for (String name : captureNames) {
+        private Env taskProjection(
+                List<TaskAdmissionProof.AdmittedTransfer> transfers) {
+            Objects.requireNonNull(transfers, "Task transfers");
+
+            // Validate the entire exact proof before mutating any source slot.
+            // That keeps projection failure atomic while making the runtime
+            // enforce the compiler's affine move rather than merely trusting
+            // later guest code not to observe the old binding.
+            ArrayList<Slot> sources = new ArrayList<>(transfers.size());
+            ArrayList<Object> values = new ArrayList<>(transfers.size());
+            java.util.HashSet<String> seen = new java.util.HashSet<>();
+            for (TaskAdmissionProof.AdmittedTransfer transfer : transfers) {
+                String name = transfer.name();
+                if (!seen.add(name)) {
+                    throw new IllegalStateException(
+                            "duplicate Task capture '" + name + "' in joined proof");
+                }
                 Slot slot = findTaskCapture(name);
                 if (slot == null || slot.value == MISSING) {
                     throw new IllegalStateException(
                             "Task capture '" + name + "' missing at spawn");
                 }
-                cp.slots.put(name, new Slot(slot.value, slot.kind));
+                sources.add(slot);
+                values.add(slot.value);
+            }
+
+            Env cp = new Env(null, descendantsNonLexical, accessClass,
+                    null, lexicalModule, lexicalContainerClass);
+            cp.structuredTaskScope = structuredTaskScope;
+            for (int i = 0; i < transfers.size(); i++) {
+                TaskAdmissionProof.AdmittedTransfer transfer = transfers.get(i);
+                Slot source = sources.get(i);
+                cp.slots.put(
+                        transfer.name(),
+                        new Slot(values.get(i), source.kind));
+            }
+            for (int i = 0; i < transfers.size(); i++) {
+                if (transfers.get(i).ownership()
+                        != dev.oreslang.types.TaskTransferProvenance
+                                .TransferKind.COPY) {
+                    sources.get(i).value = MISSING;
+                }
             }
             return cp;
         }
