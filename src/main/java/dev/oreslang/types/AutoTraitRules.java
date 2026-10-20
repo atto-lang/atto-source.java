@@ -118,9 +118,12 @@ public final class AutoTraitRules {
             case ARC, WEAK -> {
                 TypeModel value = exactlyOne(type);
                 Capabilities nested = infer(value);
-                boolean admitted = type.shareableDomain()
+                boolean concurrent = type.shareableDomain()
                         && nested.send() && nested.sync();
-                yield new Capabilities(admitted, admitted, admitted);
+                yield new Capabilities(
+                        concurrent,
+                        concurrent,
+                        concurrent && nested.share());
             }
             case RC -> {
                 exactlyOne(type);
