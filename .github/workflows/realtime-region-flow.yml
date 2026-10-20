@@ -1,0 +1,34 @@
+name: Realtime actor-region flow contract
+on:
+  push:
+    paths:
+      - 'src/main/java/dev/oreslang/compiler/RealtimeRegionFlow.java'
+      - 'src/test/java/dev/oreslang/compiler/RealtimeRegionFlowSelfTest.java'
+      - '.github/workflows/realtime-region-flow.yml'
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/compiler/RealtimeRegionFlow.java'
+      - 'src/test/java/dev/oreslang/compiler/RealtimeRegionFlowSelfTest.java'
+      - '.github/workflows/realtime-region-flow.yml'
+permissions:
+  contents: read
+jobs:
+  region-ir:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Build standalone actor-region IR proof kernel
+        run: |
+          mkdir -p target/rt-region-classes
+          javac --release 21 -d target/rt-region-classes \
+            src/main/java/dev/oreslang/compiler/RealtimeRegionFlow.java \
+            src/test/java/dev/oreslang/compiler/RealtimeRegionFlowSelfTest.java
+      - name: Exercise lifetime, sharing, borrowing and effect admission
+        run: java -ea -cp target/rt-region-classes dev.oreslang.compiler.RealtimeRegionFlowSelfTest
