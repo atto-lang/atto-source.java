@@ -145,4 +145,83 @@ final class ExecutionPermitTest {
         assertThrows(IllegalStateException.class,
                 () -> restored.split(List.of(access(1), access(2))));
     }
+
+    @Test
+    void concurrentRejoinVersusNestedSplitHasOneWinnerAndNoPartialConsumption()
+            throws Exception {
+        java.util.concurrent.ExecutorService pool =
+                java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            for (int round = 0; round < 500; round++) {
+                ExecutionPermit<Region, IntAccessSet> root =
+                        ExecutionPermit.mintRoot(
+                                new Region("r-" + round),
+                                1,
+                                access(1, 2, 3, 4));
+                List<ExecutionPermit<Region, IntAccessSet>> outer =
+                        root.split(List.of(access(1, 2), access(3, 4)));
+                ExecutionPermit<Region, IntAccessSet> first = outer.getFirst();
+                ExecutionPermit<Region, IntAccessSet> second = outer.get(1);
+
+                java.util.concurrent.CountDownLatch start =
+                        new java.util.concurrent.CountDownLatch(1);
+                java.util.concurrent.atomic.AtomicReference<
+                        ExecutionPermit<Region, IntAccessSet>> rejoined =
+                        new java.util.concurrent.atomic.AtomicReference<>();
+                java.util.concurrent.atomic.AtomicReference<
+                        List<ExecutionPermit<Region, IntAccessSet>>> nested =
+                        new java.util.concurrent.atomic.AtomicReference<>();
+
+                java.util.concurrent.Future<?> rejoinAttempt = pool.submit(() -> {
+                    await(start);
+                    try {
+                        rejoined.set(ExecutionPermit.rejoin(List.of(first, second)));
+                    } catch (IllegalStateException expectedLostRace) {
+                        // Nested split consumed first.
+                    }
+                });
+                java.util.concurrent.Future<?> splitAttempt = pool.submit(() -> {
+                    await(start);
+                    try {
+                        nested.set(first.split(List.of(access(1), access(2))));
+                    } catch (IllegalStateException expectedLostRace) {
+                        // Outer rejoin consumed first.
+                    }
+                });
+
+                start.countDown();
+                rejoinAttempt.get(5, TimeUnit.SECONDS);
+                splitAttempt.get(5, TimeUnit.SECONDS);
+
+                assertNotEquals(rejoined.get() == null, nested.get() == null,
+                        "exactly one linear permit transition must win");
+
+                if (nested.get() != null) {
+                    assertTrue(second.isLive(),
+                            "failed outer rejoin must not partially consume its sibling");
+                    ExecutionPermit<Region, IntAccessSet> restoredFirst =
+                            ExecutionPermit.rejoin(nested.get());
+                    ExecutionPermit<Region, IntAccessSet> restoredRoot =
+                            ExecutionPermit.rejoin(List.of(restoredFirst, second));
+                    assertTrue(restoredRoot.isLive());
+                } else {
+                    assertNotNull(rejoined.get());
+                    assertTrue(rejoined.get().isLive());
+                }
+            }
+        } finally {
+            pool.shutdownNow();
+            assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    private static void await(java.util.concurrent.CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException(interrupted);
+        }
+    }
+
 }
