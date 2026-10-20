@@ -131,12 +131,17 @@ public final class AutoTraitRules {
                 Capabilities nested = infer(value);
                 yield new Capabilities(nested.send(), false, false);
             }
-            case MUTEX, RWLOCK -> {
+            case MUTEX -> {
                 TypeModel value = exactlyOne(type);
                 Capabilities nested = infer(value);
                 // Like Rust's synchronization containers, cross-lane shared
                 // access only requires moving T into/out of the protected slot.
                 yield new Capabilities(nested.send(), nested.send(), false);
+            }
+            case RWLOCK -> {
+                Capabilities nested = infer(exactlyOne(type));
+                // Concurrent readers expose shared T, so T must also be Sync.
+                yield new Capabilities(nested.send(), nested.send() && nested.sync(), false);
             }
             case DYN -> new Capabilities(
                     type.dynBounds().contains(AutoTrait.SEND),

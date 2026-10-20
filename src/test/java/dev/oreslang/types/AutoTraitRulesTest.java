@@ -66,6 +66,18 @@ final class AutoTraitRulesTest {
     }
 
     @Test
+    void rwLockRequiresSyncPayloadForConcurrentReaders() {
+        var cell = AutoTraitRules.TypeModel.wrapped(REFCELL, AutoTraitRules.TypeModel.scalar(), false);
+        var mutex = AutoTraitRules.infer(AutoTraitRules.TypeModel.wrapped(MUTEX, cell, false));
+        var rwlock = AutoTraitRules.infer(AutoTraitRules.TypeModel.wrapped(RWLOCK, cell, false));
+        assertTrue(mutex.send());
+        assertTrue(mutex.sync());
+        assertTrue(rwlock.send());
+        assertFalse(rwlock.sync());
+        assertFalse(rwlock.share());
+    }
+
+    @Test
     void dynObjectsPreserveOnlyExplicitAutoTraitBounds() {
         var plain = AutoTraitRules.TypeModel.dyn(Set.of(), true);
         assertEquals(
