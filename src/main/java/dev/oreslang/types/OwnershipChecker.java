@@ -14,7 +14,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Ownership / borrow / closure-capture analysis.
@@ -34,7 +33,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * - moving an outer value from a repeating loop is rejected conservatively.
  */
 public final class OwnershipChecker {
-    private static final AtomicLong NEXT_REGION_ID = new AtomicLong();
+    private long nextRegionId;
 
     private record ResolvedMethod(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.MethodDecl method) { }
     private record ResolvedField(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.FieldDecl field) { }
@@ -2546,6 +2545,9 @@ public final class OwnershipChecker {
 
             VarState region = ownershipRoot(source.borrowSource);
             requireUsable(region, region.debugName, false);
+            if (region.regionId == 0L) {
+                region.regionId = ++nextRegionId;
+            }
             structured.readRegions.add(region);
             proofs.add(Ast.TaskCaptureProof.scopedRead(
                     capture.name,
@@ -4104,8 +4106,8 @@ public final class OwnershipChecker {
         /** Synthetic aggregate aliases, currently used by the implicit arguments tuple. */
         private List<VarState> aggregateSources = List.of();
         private String debugName = "<value>";
-        /** Opaque compiler region identity for this storage root. */
-        private final long regionId = NEXT_REGION_ID.incrementAndGet();
+        /** Opaque compiler region identity; allocated on first scoped capture. */
+        private long regionId;
         /** Storage lifetime generation; advanced on future reuse/reinitialization. */
         private long regionGeneration;
         /** Direct borrow provenance used by scoped Task capture proofs. */
