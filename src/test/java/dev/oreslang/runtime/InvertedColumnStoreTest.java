@@ -174,6 +174,96 @@ final class InvertedColumnStoreTest {
     }
 
     @Test
+    void malformedRowTransformsNeverPartiallyCommit() {
+        try (var store = new InvertedColumnStore(
+                InvertedColumnStore.Kind.I32, InvertedColumnStore.Kind.BOOL)) {
+            var handle = store.push(7, true);
+            Object[] before = store.snapshot(handle);
+            assertThrows(IllegalStateException.class, () ->
+                    store.transformRow(handle, row -> new Object[]{12}));
+            assertArrayEquals(before, store.snapshot(handle));
+            assertThrows(IllegalArgumentException.class, () ->
+                    store.transformRow(handle, row -> new Object[]{12, "not bool"}));
+            assertArrayEquals(before, store.snapshot(handle));
+            assertThrows(IllegalStateException.class, () ->
+                    store.transformRow(handle, row -> null));
+            assertArrayEquals(before, store.snapshot(handle));
+            assertThrows(ArithmeticException.class, () ->
+                    store.transformRow(handle, row -> {
+                        row[0] = 99;
+                        throw new ArithmeticException("abort before commit");
+                    }));
+            assertArrayEquals(before, store.snapshot(handle));
+            store.transformRow(handle, row -> {
+                row[0] = 8;
+                row[1] = false;
+                return row;
+            });
+            assertArrayEquals(new Object[]{8, false}, store.snapshot(handle));
+        }
+    }
+
+    @Test
+    void reentrantStoreOperationsTaintAndAbortWholeRowTransaction() {
+        try (var store = new InvertedColumnStore(
+                InvertedColumnStore.Kind.I32, InvertedColumnStore.Kind.I64)) {
+            var h = store.push(7, 9L);
+            var other = store.push(10, 11L);
+            Object[] before = store.snapshot(h);
+            // Even catching the rejected nested operation is not permission
+            // to publish a row computed from an invalid transaction.
+            assertThrows(IllegalStateException.class, () ->
+                    store.transformRow(h, row -> {
+                        row[0] = 25;
+                        assertThrows(IllegalStateException.class, () -> store.set(other, 0, 200));
+                        return row;
+                    }));
+            assertArrayEquals(before, store.snapshot(h));
+            assertArrayEquals(new Object[]{10, 11L}, store.snapshot(other));
+            assertThrows(IllegalStateException.class, () ->
+                    store.transformRow(h, row -> {
+                        row[1] = 99L;
+                        assertThrows(IllegalStateException.class, store::size);
+                        return row;
+                    }));
+            assertArrayEquals(before, store.snapshot(h));
+            assertThrows(IllegalStateException.class, () ->
+                    store.transformRow(h, row -> {
+                        assertThrows(IllegalStateException.class, () -> store.reserve(10));
+                        return row;
+                    }));
+            assertEquals(2, store.size());
+            assertThrows(IllegalStateException.class, () ->
+                    store.transformRow(h, row -> {
+                        assertThrows(IllegalStateException.class, () ->
+                                store.transformRow(other, nested -> nested));
+                        return row;
+                    }));
+            assertArrayEquals(before, store.snapshot(h));
+            // A tainted attempt must not poison the *next* valid transaction.
+            store.transformRow(h, row -> {
+                row[0] = 12;
+                return row;
+            });
+            assertArrayEquals(new Object[]{12, 9L}, store.snapshot(h));
+        }
+    }
+
+    @Test
+    void teardownInsideRowTransformRevokesStoreAndCannotCommit() {
+        var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32);
+        var h = store.push(7);
+        assertThrows(IllegalStateException.class, () ->
+                store.transformRow(h, row -> {
+                    row[0] = 999;
+                    store.close();
+                    return row;
+                }));
+        assertThrows(IllegalStateException.class, () -> store.get(h, 0));
+        assertThrows(IllegalStateException.class, () -> store.push(1));
+    }
+
+    @Test
     void deterministicHandleStressPreservesRows() {
         try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32,
                                                  InvertedColumnStore.Kind.BOOL)) {
