@@ -1,0 +1,2 @@
+Source-free runner admission check for stack-trace hardening PR #1719.
+No source code, credentials, or artifacts are mirrored.
