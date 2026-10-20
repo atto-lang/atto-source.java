@@ -84,18 +84,52 @@ final class TaskLoanAdmissionTest {
     }
 
     @Test
-    void neverStartedRetirementIsASeparateOneShotLifecycleEdge() {
+    void preChildRetirementIsASeparateOneShotLifecycleEdge() {
         TaskAccessVerifier verifier = new TaskAccessVerifier();
         TaskLoanAdmission admission = admission(verifier);
         OresTaskScope.CompilerScopeEpoch scopeEpoch = epochForTest();
 
         admission.bindScope(scopeEpoch);
         assertEquals(1, verifier.activeChildren());
-        admission.retireNeverStarted(scopeEpoch);
+        admission.retireBeforeChildBound(scopeEpoch);
         assertEquals(0, verifier.activeChildren());
         assertTrue(admission.retiredForTesting());
         assertThrows(IllegalStateException.class,
-                () -> admission.retireNeverStarted(scopeEpoch));
+                () -> admission.retireBeforeChildBound(scopeEpoch));
+    }
+
+    @Test
+    void childBoundNeverStartedRetirementRequiresExactRuntimeChild()
+            throws Exception {
+        TaskAccessVerifier verifier = new TaskAccessVerifier();
+        TaskLoanAdmission admission = admission(verifier);
+        OresTaskScope.CompilerScopeEpoch scopeEpoch = epochForTest();
+
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            OresTask<Integer> exact = scope.submit(() -> 10);
+            OresTask<Integer> lookalike = scope.submit(() -> 11);
+            assertNull(AsyncRuntime.await(exact.getDone()));
+            assertNull(AsyncRuntime.await(lookalike.getDone()));
+
+            admission.bindScope(scopeEpoch);
+            admission.bindChild(scopeEpoch, exact);
+
+            assertThrows(IllegalStateException.class,
+                    () -> admission.retireBeforeChildBound(scopeEpoch),
+                    "scope-only retirement must be invalid after child binding");
+            assertThrows(IllegalArgumentException.class,
+                    () -> admission.retireNeverStarted(
+                            scopeEpoch, lookalike),
+                    "lookalike child must not retire a never-started loan");
+            assertEquals(1, verifier.activeChildren());
+
+            admission.retireNeverStarted(scopeEpoch, exact);
+            assertEquals(0, verifier.activeChildren());
+            assertTrue(admission.retiredForTesting());
+            assertThrows(IllegalStateException.class,
+                    () -> admission.retireNeverStarted(scopeEpoch, exact));
+        }
     }
 
     @Test
