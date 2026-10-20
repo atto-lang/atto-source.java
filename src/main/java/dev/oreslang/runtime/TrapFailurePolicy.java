@@ -85,6 +85,19 @@ public final class TrapFailurePolicy {
             if (!explicitGuestCatch && current instanceof SecurityException) {
                 return false;
             }
+            // A valid guest Throw in the primary cause chain must not launder
+            // an unrelated host exception attached as suppressed cleanup.
+            // The interpreter-authenticated fault type is an exact Class
+            // object supplied by trusted runtime code, never a mutable stack
+            // trace, class-name string or extension/subtype.
+            if (!(current instanceof GuestControlSignal.Throw
+                    || current instanceof java.util.concurrent.CompletionException
+                    || current instanceof java.util.concurrent.ExecutionException
+                    || (explicitGuestCatch && current instanceof SecurityException)
+                    || (trustedGuestFailureType != null
+                        && current.getClass() == trustedGuestFailureType))) {
+                return false;
+            }
             if (current.getCause() != null) pending.addLast(current.getCause());
             for (Throwable suppressed : current.getSuppressed()) pending.addLast(suppressed);
         }
