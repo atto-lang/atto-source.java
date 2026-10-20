@@ -541,23 +541,17 @@ def publish(repository, source, branch, trusted_root, source_commit):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("repository", help="approved private owner/repo")
-    p.add_argument("--source-dir", required=True, type=Path)
-    p.add_argument("--branch", required=True)
-    p.add_argument("--source-commit", required=True,
-                   help="exact source-origin 40-hex Git commit to prove")
-    args = p.parse_args(argv)
-    # Policy and code are taken from the same trusted checkout as this script.
-    root = Path(__file__).resolve().parent.parent
-    try:
-        commit, count = publish(
-            args.repository, args.source_dir, args.branch, root, args.source_commit)
-    except Denied as exc:
-        print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
-        return 1
-    print(f"PRIVATE_CI_SNAPSHOT_CREATED: files={count} commit={commit}")
-    return 0
+    # This module remains importable by the v3 dispatcher for its audited
+    # traversal, exact-tree and GitHub API helpers.  It is intentionally not
+    # an export entry point: legacy publication lacks the v3 protected carrier
+    # contract, immutable destination-ID binding, reviewed test-plan binding,
+    # receipt, authorization-ref handshake and rollback protocol.
+    print(
+        "PRIVATE_CI_DESTINATION_REJECTED: legacy publisher is disabled; "
+        "use scripts/run-in-private-ci-destination.sh (v3)",
+        file=sys.stderr,
+    )
+    return 1
 
 
 if __name__ == "__main__":
