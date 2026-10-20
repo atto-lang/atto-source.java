@@ -15,7 +15,7 @@ import java.util.concurrent.CompletionStage;
  * Never runs arbitrary CompletableFuture completion callbacks with its gate
  * held. Source actor scheduling must separately project results onto CONTROL.
  */
-public final class IpcReceiptCompletionBridge {
+final class IpcReceiptCompletionBridge {
     private final Object gate = new Object();
     private final IpcReceiptCorrelation correlations;
     private final Map<Long, CompletableFuture<IpcReceiptCorrelation.Stage>> completions =
