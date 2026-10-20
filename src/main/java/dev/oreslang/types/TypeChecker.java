@@ -230,6 +230,10 @@ public final class TypeChecker {
                         throw new IllegalArgumentException(
                                 "HttpResponse is a sealed transport response type; user classes cannot shadow it");
                     }
+                    if (klass.name().equals("Future")) {
+                        throw new IllegalArgumentException(
+                                "Future is a sealed intrinsic type; user classes cannot shadow its constructor checks");
+                    }
                     localNames.add(klass.name());
                 }
                 else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
@@ -238,6 +242,10 @@ public final class TypeChecker {
                     if (alias.name().equals("HttpResponse")) {
                         throw new IllegalArgumentException(
                                 "HttpResponse is a sealed transport response type; type aliases cannot shadow it");
+                    }
+                    if (alias.name().equals("Future")) {
+                        throw new IllegalArgumentException(
+                                "Future is a sealed intrinsic type; type aliases cannot shadow its constructor checks");
                     }
                     localNames.add(alias.name());
                 }
