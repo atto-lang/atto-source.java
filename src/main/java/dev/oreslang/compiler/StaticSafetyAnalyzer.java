@@ -175,7 +175,7 @@ public final class StaticSafetyAnalyzer {
                 }
             } else if (!(stmt instanceof Ast.BreakStmt || stmt instanceof Ast.ContinueStmt)) {
                 throw new IllegalArgumentException("unsupported statement for static analysis: "
-                        + stmt.getClass().getName());
+                        + "unknown");
             }
         }
 
@@ -249,7 +249,7 @@ public final class StaticSafetyAnalyzer {
                 if (lambda.blockBody() != null) walkBody(lambda.blockBody());
             } else if (!(expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr)) {
                 throw new IllegalArgumentException("unsupported expression for static analysis: "
-                        + expr.getClass().getName());
+                        + "unknown");
             }
         }
 
