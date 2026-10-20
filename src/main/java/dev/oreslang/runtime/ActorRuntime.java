@@ -4300,7 +4300,7 @@ public final class ActorRuntime implements AutoCloseable {
     private void validatePrivateBehaviorCapture(ActorId owner, String fieldName, Object value) {
         if (value == null || isScalar(value) || value instanceof Class<?>) return;
 
-        if (value instanceof ActorShardColumns shard) {
+        if (value instanceof ActorShardBacking shard) {
             if (!shard.ownedBy(this, owner) || !shard.isPrivateBacked()) {
                 throw new SecurityException(
                         "private actor behavior cannot capture a foreign or shared shard in " + fieldName);
