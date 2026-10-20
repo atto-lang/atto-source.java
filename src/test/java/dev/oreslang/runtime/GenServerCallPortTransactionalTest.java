@@ -47,7 +47,9 @@ final class GenServerCallPortTransactionalTest {
         assertFalse(port.reply(call.ticket(), actor(1), 42));
         var next = port.register(actor(1));
         assertTrue(port.reply(next.ticket(), actor(1), 12));
-        assertEquals(12, assertDoesNotThrow(next.future()::get));
+        Integer nextValue = assertDoesNotThrow(
+                (org.junit.jupiter.api.function.ThrowingSupplier<Integer>) next.future()::get);
+        assertEquals(12, nextValue.intValue());
     }
 
     @Test void runtimeCancellationRevokesTicketBeforeNotifyingWaiters() {
@@ -64,7 +66,9 @@ final class GenServerCallPortTransactionalTest {
         assertFalse(port.reply(call.ticket(), actor(1), 1));
         var next = port.register(actor(1));
         assertTrue(port.reply(next.ticket(), actor(1), 2));
-        assertEquals(2, assertDoesNotThrow(next.future()::get));
+        Integer nextValue = assertDoesNotThrow(
+                (org.junit.jupiter.api.function.ThrowingSupplier<Integer>) next.future()::get);
+        assertEquals(2, nextValue.intValue());
     }
 
     @Test void authenticTargetAndOriginalTicketAreRequiredAfterReuse() throws Exception {
