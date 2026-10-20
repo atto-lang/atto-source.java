@@ -159,6 +159,67 @@ final class SelectPlanLanguageTest {
         assertEquals("123", run(program));
     }
 
+    @Test
+    void mutableChannelBindingIsReevaluatedOnEveryLoopIteration() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  val Channel<int> a = Channel.new<int>(1);
+                  val Channel<int> b = Channel.new<int>(1);
+                  writech a, 11;
+                  writech b, 22;
+                  let Channel<int> chosen = a;
+                  for val turn of [1, 2] {
+                    if turn == 2 then chosen = b; fi
+                    select first {
+                      when readch chosen: val message {
+                        stdio.stdout.write(message);
+                        stdio.stdout.write(":");
+                      }
+                      default: {
+                        stdio.stdout.write("miss:");
+                      }
+                    }
+                  }
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("11:22:", run(program),
+                "hoisting a mutable channel binding would wrongly read from a");
+    }
+
+    @Test
+    void hoistedLoopDescriptorCannotEscapeIntoAnotherFunctionInvocation() throws Exception {
+        String program = """
+                pub fnc drain(Channel<int> source): void {
+                  for val turn of [1] {
+                    select first {
+                      when readch source: val message {
+                        stdio.stdout.write(message);
+                      }
+                      default: {
+                        stdio.stdout.write("miss");
+                      }
+                    }
+                  }
+                  return;
+                }
+
+                pub fnc main(): void {
+                  val Channel<int> a = Channel.new<int>(1);
+                  val Channel<int> b = Channel.new<int>(1);
+                  writech a, 3;
+                  writech b, 4;
+                  drain(a);
+                  drain(b);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("34", run(program),
+                "loop plan must be scoped to this invocation's Env");
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "select-plan.ores")
