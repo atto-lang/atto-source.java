@@ -8913,6 +8913,10 @@ public final class OresEvalRootNode extends RootNode {
         private boolean structuralAggregateMatches(
                 Object value,
                 Map<String, Ast.TypeRef> requiredMembers) {
+            // An empty contract still proves an aggregate/capability boundary.
+            // In particular, neither scalar values nor actor identities satisfy
+            // structural {} merely because it has no required members.
+            if (!isStructuralValueCarrier(value)) return false;
             for (Map.Entry<String, Ast.TypeRef> required : requiredMembers.entrySet()) {
                 Object member = publicStructuralMember(value, required.getKey());
                 if (member == Env.MISSING || !oresTypeMatches(member, required.getValue())) {
@@ -8920,6 +8924,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             return true;
+        }
+
+        private boolean isStructuralValueCarrier(Object value) {
+            return value instanceof Map<?, ?>
+                    || value instanceof OresEntry
+                    || (value instanceof OresObject object
+                            && object.klass.actorKind() == Ast.ActorKind.NONE);
         }
 
         private Object publicStructuralMember(Object value, String name) {
@@ -8956,11 +8967,12 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.ClassDecl contract,
                 Map<String, Ast.TypeRef> bindings,
                 Set<Ast.ClassDecl> seen) {
+            if (!isStructuralValueCarrier(value)) return false;
             if (!seen.add(contract)) return true;
-            if (!(value instanceof OresObject object)
-                    || object.klass.actorKind() != Ast.ActorKind.NONE) {
-                return false;
-            }
+            // A field-only class is a valid readonly structural contract for
+            // records and structs. Only a method requirement needs an actual
+            // Oreslang object's dynamic method dispatch table.
+            OresObject object = value instanceof OresObject instance ? instance : null;
 
             for (Ast.TypeRef parentRef : contract.parents()) {
                 Ast.TypeRef concreteParent = substituteStructuralType(parentRef, bindings);
@@ -8994,6 +9006,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (required.visibility() != Ast.Visibility.PUBLIC || required.isStatic()) {
                     continue;
                 }
+                if (object == null) return false;
                 Ast.MethodDecl actual = object.owner.findMethod(
                         object.klass,
                         CallableSelector.instance(required.name(), required.parameters().size()));
