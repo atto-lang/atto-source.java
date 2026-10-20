@@ -111,7 +111,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             codeowners_file = (
                 "# Terminal private-export ownership rules\n"
                 + "\n".join(
-                    path + " @ores-truffle-oreslang/security-review"
+                    path + " @ORESoftware"
                     for path in pub.SECURITY_CODEOWNER_PATHS
                 )
                 + "\n"
@@ -183,21 +183,21 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     with self.assertRaisesRegex(pub.Denied, "strict required CI"):
                         ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
-    def test_origin_rejects_bare_organization_codeowner(self):
+    def test_origin_rejects_author_codeowner_instead_of_independent_security_owner(self):
         bad = (
-            "\n".join(path + " @ORESoftware"
+            "\n".join(path + " @the1mills"
                       for path in pub.SECURITY_CODEOWNER_PATHS)
             + "\n"
         ).encode("utf-8")
         api, _ = self.verified_origin_api(codeowners_file=bad)
         digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
         with patch.object(pub, "gh_api", side_effect=api):
-            with self.assertRaisesRegex(pub.Denied, "Oreslang team"):
+            with self.assertRaisesRegex(pub.Denied, "independent security owner"):
                 ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
     def test_origin_rejects_nonterminal_security_codeowners(self):
         valid = (
-            "\n".join(path + " @ores-truffle-oreslang/security-review"
+            "\n".join(path + " @ORESoftware"
                       for path in pub.SECURITY_CODEOWNER_PATHS)
             + "\n/scripts/ @the1mills\n"
         ).encode("utf-8")
