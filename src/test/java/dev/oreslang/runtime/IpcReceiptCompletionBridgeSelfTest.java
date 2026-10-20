@@ -225,6 +225,13 @@ public final class IpcReceiptCompletionBridgeSelfTest {
             denied(() -> transport.admit(env(2, "loss")));
             check(transport.lost() == 0);
             check(transport.bridge().invariant());
+            try {
+                transport.accept(message, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+                throw new AssertionError("ACK accepted after physical transport loss");
+            } catch (IllegalStateException expectedLoss) {
+                check("IPC physical transport already lost".equals(
+                        expectedLoss.getMessage()));
+            }
         }
 
         // Textual session reuse is not authority. A route/capability upgrade
@@ -268,8 +275,11 @@ public final class IpcReceiptCompletionBridgeSelfTest {
                     fire.await();
                     transport.accept(
                             message, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
-                } catch (IllegalArgumentException | IllegalStateException expectedRetired) {
-                    // Physical loss won.
+                } catch (IllegalStateException expectedLoss) {
+                    if (!"IPC physical transport already lost".equals(
+                            expectedLoss.getMessage())) {
+                        problem.compareAndSet(null, expectedLoss);
+                    }
                 } catch (Throwable failure) {
                     problem.compareAndSet(null, failure);
                 }
@@ -319,8 +329,11 @@ public final class IpcReceiptCompletionBridgeSelfTest {
                             message,
                             IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
                     terminalWins.incrementAndGet();
-                } catch (IllegalArgumentException | IllegalStateException expectedRetired) {
-                    // Loss won.
+                } catch (IllegalStateException expectedLoss) {
+                    if (!"IPC physical transport already lost".equals(
+                            expectedLoss.getMessage())) {
+                        problem.compareAndSet(null, expectedLoss);
+                    }
                 } catch (Throwable failure) {
                     problem.compareAndSet(null, failure);
                 }
