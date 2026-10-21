@@ -14,12 +14,18 @@ package dev.oreslang.runtime;
  * read/write operations fail with ChannelClosedException.</p>
  */
 public final class OresStream<T> implements AutoCloseable {
+    /**
+     * Phase-1 hard admission ceiling. Never silently clamp capacity: callers
+     * must explicitly choose a bounded queue smaller than this resource cap.
+     * The broader isolate memory budget is a separate runtime admission gate.
+     */
+    public static final int MAX_CAPACITY = 65_536;
     private final ChannelRuntime.Channel<T> channel;
 
     public OresStream(int capacity) {
-        if (capacity < 1) {
+        if (capacity < 1 || capacity > MAX_CAPACITY) {
             throw new IllegalArgumentException(
-                    "Stream<T> requires a positive bounded capacity");
+                    "Stream<T> capacity must be between 1 and " + MAX_CAPACITY);
         }
         this.channel = new ChannelRuntime.Channel<>(capacity);
     }
