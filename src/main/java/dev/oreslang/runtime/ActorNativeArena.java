@@ -536,6 +536,11 @@ public final class ActorNativeArena implements AutoCloseable {
         ByteBuffer data = slab(address);
         int start = offset(address);
         for (int i = 0; i < value.length(); i++) data.putChar(start + i * 2, value.charAt(i));
+        /* These ByteBuffer writes bypass the scalar slab write() helper.
+         * Record the logical byte span once, never its guest string data. */
+        if (!value.isEmpty()) {
+            recordNativeAccess(address, Math.multiplyExact(value.length(), Character.BYTES), true);
+        }
     }
 
     private static boolean isTextTag(long tag) {
@@ -548,6 +553,9 @@ public final class ActorNativeArena implements AutoCloseable {
         ByteBuffer source = slab(address);
         int start = offset(address);
         for (int i = 0; i < length; i++) data[i] = source.getChar(start + i * 2);
+        if (length != 0) {
+            recordNativeAccess(address, Math.multiplyExact(length, Character.BYTES), false);
+        }
         return new String(data);
     }
 
