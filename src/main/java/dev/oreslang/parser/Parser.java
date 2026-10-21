@@ -1301,6 +1301,22 @@ public final class Parser {
         return declared != null ? declared : annotated != null ? annotated : Ast.TypeRef.simple("void");
     }
 
+    // A pipe after a name-first type may be a union separator or the
+    // parameter-list terminator. The latter is followed by the slim arrow.
+    // Preserve unrestricted unions in ordinary (...) parameter declarations.
+    private Ast.TypeRef parsePipeParameterType() {
+        Ast.TypeRef first = parseTypeAtom();
+        if (!check(PIPE) || checkNext(ARROW)) return first;
+
+        List<Ast.TypeRef> options = new ArrayList<>();
+        options.add(first);
+        do {
+            consume(PIPE, "expected '|' between union parameter types");
+            options.add(parseTypeAtom());
+        } while (check(PIPE) && !checkNext(ARROW));
+        return Ast.TypeRef.union(options);
+    }
+
     private List<Ast.Param> parseDeclaredPipeParameters() {
         if (check(PIPE)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
@@ -1312,9 +1328,7 @@ public final class Parser {
             if (!structural && check(IDENT) && checkNext(COLON)) {
                 String name = advance().lexeme();
                 consume(COLON, "expected ':' after compatibility parameter name");
-                // The trailing '|' closes the parameter list, not a union type.
-                // Parenthesized union types remain available through parseTypeAtom.
-                Ast.TypeRef type = parseTypeAtom();
+                Ast.TypeRef type = parsePipeParameterType();
                 boolean mutable = match(MUT);
                 params.add(new Ast.Param(type, name, false, mutable));
                 continue;
@@ -1425,9 +1439,7 @@ public final class Parser {
             if (!structural && check(IDENT) && checkNext(COLON)) {
                 String name = advance().lexeme();
                 consume(COLON, "expected ':' after compatibility parameter name");
-                // The trailing '|' closes the parameter list, not a union type.
-                // Parenthesized union types remain available through parseTypeAtom.
-                Ast.TypeRef type = parseTypeAtom();
+                Ast.TypeRef type = parseTypeRef();
                 boolean mutable = match(MUT);
                 params.add(new Ast.Param(type, name, false, mutable));
                 continue;
@@ -3816,7 +3828,7 @@ public final class Parser {
                 } else if (check(IDENT) && checkNext(COLON)) {
                     String name = advance().lexeme();
                     consume(COLON, "expected ':' after lambda parameter name");
-                    Ast.TypeRef type = parseTypeRef();
+                    Ast.TypeRef type = parsePipeParameterType();
                     boolean mutable = match(MUT);
                     params.add(new Ast.Param(type, name, false, mutable));
                 } else {
