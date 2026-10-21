@@ -2401,6 +2401,38 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
 
+                if (stmt instanceof Ast.TaskScopeStmt taskScope) {
+                    if (ActorRuntime.inActorExecution()) {
+                        continuation.accept(
+                                task,
+                                SourceFlow.throwing(new IllegalStateException(
+                                        "task scope inside actor execution is not enabled until "
+                                                + "actor quota/hot-reload lifetime authority is proven")));
+                        return;
+                    }
+
+                    final TaskScope runtimeScope;
+                    try {
+                        runtimeScope = OresScheduler.requireCurrent().newTaskScope();
+                    } catch (RuntimeException | Error failure) {
+                        continuation.accept(task, SourceFlow.throwing(failure));
+                        return;
+                    }
+
+                    Env scopedEnv = env.withStructuredTaskScope(runtimeScope);
+                    runBlock(
+                            task,
+                            taskScope.body(),
+                            scopedEnv,
+                            (t, flow) ->
+                                    finishStructuredTaskScope(
+                                            t,
+                                            runtimeScope,
+                                            flow,
+                                            continuation));
+                    return;
+                }
+
                 if (stmt instanceof Ast.BreakStmt) {
                     continuation.accept(task, SourceFlow.breaking());
                     return;
@@ -2944,6 +2976,93 @@ public final class OresEvalRootNode extends RootNode {
                                 (ChannelRuntime.SelectResult) value,
                                 env, continuation);
                     });
+        }
+
+        private void finishStructuredTaskScope(
+                SourceTask task,
+                TaskScope scope,
+                SourceFlow flow,
+                SourceFlowCont continuation) {
+            boolean cancellingForUnwind =
+                    flow.kind() == SourceFlowKind.THROW;
+            SourceFlow pending = flow;
+            try {
+                if (cancellingForUnwind) {
+                    scope.cancel("source structured Task scope unwinding");
+                } else {
+                    scope.seal();
+                }
+            } catch (RuntimeException | Error failure) {
+                pending = mergeCleanupFailure(pending, failure);
+                cancellingForUnwind = true;
+            }
+
+            OresFuture<Void> drained = scope.getDone();
+            SourceFlow pendingFlow = pending;
+            boolean cleanupCancellation = cancellingForUnwind;
+
+            if (drained.isDone()) {
+                try {
+                    drained.join();
+                    continuation.accept(
+                            task,
+                            mergeStructuredChildOutcome(
+                                    pendingFlow,
+                                    scope,
+                                    cleanupCancellation));
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(
+                            task,
+                            mergeCleanupFailure(pendingFlow, failure));
+                }
+                return;
+            }
+
+            task.suspend(
+                    drained,
+                    (resumed, ignored, failure) -> {
+                        if (failure != null) {
+                            continuation.accept(
+                                    resumed,
+                                    mergeCleanupFailure(
+                                            pendingFlow,
+                                            OresFuture.unwrap(failure)));
+                            return;
+                        }
+                        continuation.accept(
+                                resumed,
+                                mergeStructuredChildOutcome(
+                                        pendingFlow,
+                                        scope,
+                                        cleanupCancellation));
+                    });
+        }
+
+        private SourceFlow mergeStructuredChildOutcome(
+                SourceFlow flow,
+                TaskScope scope,
+                boolean cancellationWasCleanup) {
+            dev.oreslang.runtime.TaskHandle.TaskOutcome<?> outcome =
+                    scope.firstNonSuccessOutcome();
+            if (outcome == null
+                    || outcome instanceof dev.oreslang.runtime.TaskHandle.Success<?>) {
+                return flow;
+            }
+            if (outcome instanceof dev.oreslang.runtime.TaskHandle.Failed<?> failed) {
+                return mergeCleanupFailure(flow, failed.failure());
+            }
+            if (outcome instanceof dev.oreslang.runtime.TaskHandle.Cancelled<?> cancelled) {
+                if (cancellationWasCleanup) {
+                    return flow;
+                }
+                return mergeCleanupFailure(
+                        flow,
+                        new java.util.concurrent.CancellationException(
+                                "structured Task child cancelled: "
+                                        + cancelled.reason()));
+            }
+            throw new IllegalStateException(
+                    "unknown structured Task child outcome " + outcome);
         }
 
         private void runForSuspendable(
