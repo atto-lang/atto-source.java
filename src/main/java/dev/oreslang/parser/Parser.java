@@ -34,6 +34,22 @@ public final class Parser {
         return new Parser(new Lexer(source).scan()).parseProgram();
     }
 
+    /**
+     * Parse one entire interpolation as an expression, never a statement.
+     * Nested cpu/gpu domains cannot bypass the compilation-unit preflight.
+     */
+    static Ast.Expr parseInterpolatedExpression(String source) {
+        Parser parser = new Parser(new Lexer(source).scan());
+        for (Token token : parser.tokens) {
+            if (token.type() == GPU || token.type() == CPU || token.type() == QUANTUM) {
+                throw parser.error(token, "execution domain requires checked backend lowering");
+            }
+        }
+        Ast.Expr result = parser.parseExpression();
+        parser.consume(EOF, "expected end of template interpolation expression");
+        return result;
+    }
+
     public static ParseResult parseWithWarnings(String source) {
         Parser parser = new Parser(new Lexer(source).scan());
         Ast.Program program = parser.parseProgram();
@@ -3617,6 +3633,7 @@ public final class Parser {
             return new Ast.LiteralExpr(new Ast.Imaginary(Double.parseDouble(raw)));
         }
         if (match(STRING)) return new Ast.LiteralExpr(previous().lexeme());
+        if (match(TEMPLATE_LITERAL)) return TemplateLiterals.lower(previous().lexeme());
         if (match(SYMBOL_LITERAL)) return new Ast.LiteralExpr(dev.oreslang.runtime.OresSymbol.process(previous().lexeme()));
         if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
@@ -3759,7 +3776,7 @@ public final class Parser {
         List<Ast.ObjectField> fields = new ArrayList<>();
         if (!check(RBRACE)) {
             do {
-                if (check(BACKTICK)) {
+                if (check(BACKTICK) || check(TEMPLATE_LITERAL)) {
                     throw error(peek(),
                             "struct fields must be statically named for AOT compilation; "
                                     + "computed/backtick field names are not supported");
