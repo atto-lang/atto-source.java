@@ -55,6 +55,8 @@ public final class ActorNativeArena implements AutoCloseable {
     private final ArrayList<ByteBuffer> slabs = new ArrayList<>();
     private final ArrayList<Long> slabBases = new ArrayList<>();
     private final ArrayList<Runnable> releases = new ArrayList<>();
+    /** Native object addresses may only be admitted after the arena issues their authority. */
+    private final IdentityHashMap<NativeValue, Long> issuedNativeOffsets = new IdentityHashMap<>();
     private final IdentityHashMap<NativeValue, Long> referenceOffsets = new IdentityHashMap<>();
     private final Map<Long, NativeValue> referencesByOffset = new HashMap<>();
     private final Set<Region> regions = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -82,7 +84,29 @@ public final class ActorNativeArena implements AutoCloseable {
             throw new IllegalArgumentException("duplicate native object field");
         }
         long slots = allocate(Math.multiplyExact(layout.size(), SLOT_BYTES));
-        return new Fields(layout, slots, uninitialized);
+        Fields fields = new Fields(layout, slots, uninitialized);
+        issuedNativeOffsets.put(fields, slots);
+        return fields;
+    }
+
+    /**
+     * Explicitly attest a runtime-owned facade to an allocation issued here.
+     * A claimed nativeArena/nativeOffset on an arbitrary Java object is not
+     * sufficient to grant actor memory authority.
+     */
+    public synchronized void registerNativeFacade(NativeValue facade, NativeValue backing) {
+        checkAccess();
+        Objects.requireNonNull(facade, "facade");
+        Long issued = issuedNativeOffsets.get(backing);
+        if (!(backing instanceof Fields) || issued == null
+                || backing.nativeArena() != this || backing.nativeOffset() != issued
+                || facade.nativeArena() != this || facade.nativeOffset() != issued) {
+            throw new SecurityException("native facade backing was not issued by this actor arena");
+        }
+        Long existing = issuedNativeOffsets.putIfAbsent(facade, issued);
+        if (existing != null && !existing.equals(issued)) {
+            throw new SecurityException("native facade attempted to change actor-relative address");
+        }
     }
 
     public synchronized long committedBytes() { return committed; }
@@ -564,8 +588,9 @@ public final class ActorNativeArena implements AutoCloseable {
         } else if (value instanceof NativeValue v) {
             if (v.nativeArena() != this) throw new SecurityException("foreign actor arena reference");
             long address = v.nativeOffset();
-            if (address < 0) {
-                throw new SecurityException("actor-native value has no actor-relative address");
+            Long issued = issuedNativeOffsets.get(v);
+            if (address < 0 || issued == null || issued.longValue() != address) {
+                throw new SecurityException("actor-native reference was not issued by this arena");
             }
             tag = REFERENCE;
             Long prior = referenceOffsets.putIfAbsent(v, address);
@@ -678,6 +703,7 @@ public final class ActorNativeArena implements AutoCloseable {
         releases.clear();
         referencesByOffset.clear();
         referenceOffsets.clear();
+        issuedNativeOffsets.clear();
         committed = 0;
     }
 
