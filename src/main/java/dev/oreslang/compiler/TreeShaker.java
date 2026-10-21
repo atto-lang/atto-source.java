@@ -230,6 +230,9 @@ public final class TreeShaker {
                 return created.arguments().stream().anyMatch(this::containsLambda);
             }
             if (expression instanceof Ast.AwaitExpr awaited) return containsLambda(awaited.expression());
+            // Task bodies are independently scheduled effect regions. Never
+            // constant-inline a callable through this boundary.
+            if (expression instanceof Ast.TaskExpr) return true;
             if (expression instanceof Ast.ListExpr list) {
                 return list.elements().stream().anyMatch(this::containsLambda);
             }
@@ -974,6 +977,15 @@ public final class TreeShaker {
             if (expression instanceof Ast.AwaitExpr awaited) {
                 return new Ast.AwaitExpr(rewriteExpression(awaited.expression(), module, locals));
             }
+            if (expression instanceof Ast.TaskExpr task) {
+                return new Ast.TaskExpr(
+                        task.domain(),
+                        rewriteStatements(
+                                task.body(),
+                                module,
+                                new LinkedHashMap<>(locals)),
+                        task.legacyNb());
+            }
             if (expression instanceof Ast.ChannelOpExpr operation) {
                 return new Ast.ChannelOpExpr(
                         operation.operation(),
@@ -1386,6 +1398,10 @@ public final class TreeShaker {
                 for (Ast.Expr argument : created.arguments()) scanExpression(module, argument, locals);
             } else if (expression instanceof Ast.AwaitExpr awaited) {
                 scanExpression(module, awaited.expression(), locals);
+            } else if (expression instanceof Ast.TaskExpr task) {
+                // Task execution is deferred but its referenced code/types are
+                // still reachable from the enclosing executable.
+                scanStatements(module, task.body(), new LinkedHashSet<>(locals));
             }
             else if (expression instanceof Ast.ChannelOpExpr operation) {
                 scanExpression(module, operation.channel(), locals);
