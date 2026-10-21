@@ -7,9 +7,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 
-/** Context-owned host I/O. Never invokes guest code or parks an actor carrier.
- * The underlying filesystem/socket calls may block a host worker. Admission is
- * bounded independently of virtual thread implementation and has no caller-runs path.
+/** Legacy host-I/O worker adapter retained only for migration/reference tests.
+ *
+ * <p>This is <strong>not</strong> a compliant Oreslang stdlib backend: submitted
+ * operations may block a per-operation virtual worker. The strict stdlib surface
+ * must never call this class; use a readiness/completion provider instead.</p>
  */
 public final class AsyncNativeIo implements AutoCloseable {
     private final ExecutorService workers = Executors.newThreadPerTaskExecutor(
