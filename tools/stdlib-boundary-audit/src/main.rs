@@ -121,8 +121,74 @@ fn lex(s: &str) -> Result<Vec<Token>, String> {
     Ok(out)
 }
 
+fn dotted_name(tokens: &[Token], start: usize, parts: &[&str]) -> bool {
+    if parts.is_empty() {
+        return false;
+    }
+    let mut index = start;
+    for (part_index, part) in parts.iter().enumerate() {
+        if !tokens.get(index).is_some_and(|token| token.name(part)) {
+            return false;
+        }
+        index += 1;
+        if part_index + 1 < parts.len() {
+            if !tokens.get(index).is_some_and(|token| token.symbol('.')) {
+                return false;
+            }
+            index += 1;
+        }
+    }
+    true
+}
+
+const FORBIDDEN_BLOCKING_IO: &[&[&str]] = &[
+    &["stdio", "print"],
+    &["stdio", "println"],
+    &["stdio", "stdout", "write"],
+    &["stdio", "stdout", "println"],
+    &["stdio", "stdout", "log"],
+    &["stdio", "stdout", "logList"],
+    &["stdio", "stdin", "read_line"],
+    &["fs", "read_text"],
+    &["fs", "write_text"],
+    &["fs", "write_text_atomic"],
+    &["fs", "append_text"],
+    &["fs", "list_dir"],
+    &["fs", "is_dir"],
+    &["fs", "is_symlink"],
+    &["fs", "exists"],
+    &["fs", "remove"],
+    &["fs", "mkdir_all"],
+    &["File", "read_text"],
+    &["File", "write_text"],
+    &["File", "write_text_atomic"],
+    &["File", "append_text"],
+    &["File", "list_dir"],
+    &["File", "is_dir"],
+    &["File", "is_symlink"],
+    &["File", "exists"],
+    &["File", "remove"],
+    &["File", "mkdir_all"],
+    &["network", "connect"],
+    &["net", "connect"],
+    &["http", "listen"],
+    &["http", "get_text"],
+    &["http", "post_text"],
+];
+
 fn inspect(source: &str) -> Result<(), String> {
     let tokens = lex(source)?;
+    for index in 0..tokens.len() {
+        for path in FORBIDDEN_BLOCKING_IO {
+            if dotted_name(&tokens, index, path) {
+                return Err(format!(
+                    "line {}: synchronous/blocking stdlib I/O path '{}' is forbidden; use async or continuation-suspending strict I/O",
+                    tokens[index].line,
+                    path.join(".")
+                ));
+            }
+        }
+    }
     for (i, t) in tokens.iter().enumerate() {
         if t.name("java")
             && tokens
@@ -279,5 +345,28 @@ mod tests {
     #[test]
     fn accepts_utf8_text() {
         assert!(inspect("let s = 'π';").is_ok());
+    }
+    #[test]
+    fn rejects_sync_stdio_write() {
+        assert!(inspect("fnc f(): void { stdio.stdout.write(\"x\"); }").is_err());
+    }
+    #[test]
+    fn rejects_sync_filesystem_read() {
+        assert!(inspect("fnc f(): void { fs.read_text(\"x\"); }").is_err());
+    }
+    #[test]
+    fn rejects_sync_network_connect_alias() {
+        assert!(inspect("fnc f(): void { net.connect(\"x\", 80); }").is_err());
+    }
+    #[test]
+    fn accepts_async_io_names() {
+        assert!(inspect(
+            "fnc f(): void { fs.read_text_async(\"x\"); stdio.stdout.write_async(\"x\"); }"
+        )
+        .is_ok());
+    }
+    #[test]
+    fn accepts_logically_blocking_name_only_when_canonical_suffix_is_explicit() {
+        assert!(inspect("fnc f(): void { fs.read_text_blocking(\"x\"); }").is_ok());
     }
 }
