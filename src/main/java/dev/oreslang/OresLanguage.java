@@ -8,6 +8,7 @@ import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.nodes.OresInteropRootNode;
+import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresContext;
@@ -179,8 +180,19 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
 
         Ast.Program program = consumePrecheckedProgram(codeUnitId, text);
         if (program == null) {
-            program = OresCompiler.parseAndTypeCheck(text);
+            Ast.Program parsed = Parser.parse(text);
+            rejectGuestHostImports(parsed);
+            program = OresCompiler.analyze(parsed);
+        } else {
+            // Linked/prechecked callers are expected to have enforced the same
+            // rule already, but the language entrypoint remains fail-closed.
+            rejectGuestHostImports(program);
         }
+        RootCallTarget evaluator = new OresEvalRootNode(this, program, codeUnitId).getCallTarget();
+        return new OresInteropRootNode(this, evaluator).getCallTarget();
+    }
+
+    private static void rejectGuestHostImports(Ast.Program program) {
         for (Ast.ImportDecl imported : program.imports()) {
             if (ImportRules.isJavaPath(imported.path())) {
                 throw new SecurityException(
@@ -188,7 +200,5 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
                                 + "; use a typed core/stdlib API");
             }
         }
-        RootCallTarget evaluator = new OresEvalRootNode(this, program, codeUnitId).getCallTarget();
-        return new OresInteropRootNode(this, evaluator).getCallTarget();
     }
 }
