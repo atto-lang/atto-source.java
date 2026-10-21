@@ -131,6 +131,51 @@ final class SourceActorUnaryRequestExecutionTest {
                 failure.getMessage());
     }
 
+    @Test
+    void requestWithoutUnaryRunIsRejectedByTypeChecker() {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<ActorRef<Worker>> mail): void {
+                    val invalid = mail.value.request("ping");
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val server = spawn Worker();
+                  val client = spawn Worker();
+                  client.send(server);
+                  await client.get_done();
+                  return;
+                }
+                """;
+        PolyglotException failure = assertThrows(PolyglotException.class,
+                () -> run(program, "source-actor-unary-no-run.ores"));
+        assertTrue(failure.getMessage().contains("does not declare unary run"),
+                failure.getMessage());
+    }
+
+    @Test
+    void requestOutsideActorExecutionIsRejectedByTypeChecker() {
+        String program = """
+                define actor Worker as
+                  run(String request): String { return "pong"; }
+                end
+
+                pub async routine main(): void {
+                  val server = spawn Worker();
+                  val pending = server.request("ping");
+                  val result = await pending;
+                  return;
+                }
+                """;
+        PolyglotException failure = assertThrows(PolyglotException.class,
+                () -> run(program, "source-actor-unary-outside-actor.ores"));
+        assertTrue(failure.getMessage().contains("requires an executing source actor"),
+                failure.getMessage());
+    }
+
     private static String run(String sourceText, String name) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, sourceText, name)
