@@ -151,9 +151,9 @@ public final class OresKeyedMap<K, V> {
     // Java monitors are reentrant. A key-aware validator must never be able
     // to mutate this same map while an outer mutation is still validating.
     private boolean entryValidationActive;
-    // A caller-supplied host Map can invoke this map's methods from size(),
-    // entrySet(), iterator.next() or Entry getters during a putAll snapshot.
-    // Reject such reentrant mutation until the whole batch is committed.
+    // Detached putAll inputs are snapshotted before any internal Map/JSON
+    // lock is acquired. During the later checked batch admission/commit phase,
+    // reject reentrant mutation until the whole batch is committed.
     private boolean bulkMutationActive;
 
     private OresKeyedMap(
@@ -468,29 +468,35 @@ public final class OresKeyedMap<K, V> {
 
     /**
      * Validate the entire incoming batch before modifying the destination.
-     * No partial insertion occurs if any key or value is invalid. Entries are
-     * copied to immutable pairs before validation so mutable source Map.Entry
-     * objects cannot change after the validation pass.
+     * No partial insertion occurs if any key or value is invalid.
+     *
+     * <p>The caller-supplied Map is untrusted foreign input. Snapshot all of
+     * its potentially callback-capable operations before acquiring either the
+     * JSON graph-admission lock or this Map's monitor. Admission below sees
+     * only detached immutable entry pairs.</p>
      */
     public void putAll(Map<? extends K, ? extends V> values) {
+        List<Map.Entry<K, V>> prepared = snapshotBatch(values);
+        if (prepared.isEmpty()) {
+            return;
+        }
         if (valueDomain == ValueDomain.JSON) {
             synchronized (JSON_GRAPH_ADMISSION_LOCK) {
                 synchronized (this) {
-                    putAllUnderMonitor(values);
+                    putAllPreparedUnderMonitor(prepared);
                 }
             }
             return;
         }
         synchronized (this) {
-            putAllUnderMonitor(values);
+            putAllPreparedUnderMonitor(prepared);
         }
     }
 
-    private void putAllUnderMonitor(Map<? extends K, ? extends V> values) {
-        rejectReentrantMutation();
+    private List<Map.Entry<K, V>> snapshotBatch(
+            Map<? extends K, ? extends V> values) {
         Objects.requireNonNull(values, "map entries");
-        bulkMutationActive = true;
-        try {
+
         // Host-supplied Map.size() is not trusted. Enforce the guest bound
         // before using it as an allocation hint, then enforce it again while
         // consuming entries (custom Maps may lie about their size).
@@ -499,10 +505,6 @@ public final class OresKeyedMap<K, V> {
             throw new IllegalArgumentException("typed Map batch exceeds maximum key count");
         }
         List<Map.Entry<K, V>> prepared = new ArrayList<>(reportedSize);
-        // Snapshot the hostile host collection before invoking any entry
-        // validator. A custom Map may lie about size() or change cardinality
-        // while iterating; such an input must not trigger validator side
-        // effects for a batch that is rejected before semantic admission.
         for (Map.Entry<? extends K, ? extends V> entry : values.entrySet()) {
             if (prepared.size() >= MAX_ENTRIES) {
                 throw new IllegalArgumentException("typed Map batch exceeds maximum key count");
@@ -515,58 +517,63 @@ public final class OresKeyedMap<K, V> {
         if (prepared.size() != reportedSize) {
             throw new IllegalArgumentException("host Map size changed during batch snapshot");
         }
+        return List.copyOf(prepared);
+    }
 
-        if (prepared.isEmpty()) {
-            return;
-        }
-
-        // A caller may supply IdentityHashMap or a custom Map whose equality
-        // differs from the guest Map's nominal String/Symbol equality. Reject
-        // duplicate *logical* keys before any writes rather than letting
-        // iteration order silently determine the winning value.
-        Set<K> incomingKeys = new HashSet<>();
-        for (Map.Entry<K, V> entry : prepared) {
-            K key = entry.getKey();
-            V value = entry.getValue();
-            checkKey(key);
-            checkValueDomain(value);
-            if (!incomingKeys.add(key)) {
-                throw new IllegalArgumentException("duplicate logical key in Map batch");
-            }
-        }
-
-        Set<K> additions = new HashSet<>();
-        long additionalKeyWireBytes = 0L;
-        for (Map.Entry<K, V> entry : prepared) {
-            K key = entry.getKey();
-            if (!entries.containsKey(key) && additions.add(key)) {
-                additionalKeyWireBytes += wireKeyBytes(key);
-                if (additionalKeyWireBytes > MAX_KEY_SET_WIRE_BYTES - storedKeyWireBytes) {
-                    throw new IllegalArgumentException("typed Map exceeds aggregate key byte budget");
+    private void putAllPreparedUnderMonitor(List<Map.Entry<K, V>> prepared) {
+        rejectReentrantMutation();
+        bulkMutationActive = true;
+        try {
+            // A caller may supply IdentityHashMap or a custom Map whose equality
+            // differs from the guest Map's nominal String/Symbol equality.
+            // Reject duplicate logical keys before any writes.
+            Set<K> incomingKeys = new HashSet<>();
+            for (Map.Entry<K, V> entry : prepared) {
+                K key = entry.getKey();
+                V value = entry.getValue();
+                checkKey(key);
+                checkValueDomain(value);
+                if (!incomingKeys.add(key)) {
+                    throw new IllegalArgumentException(
+                            "duplicate logical key in Map batch");
                 }
             }
-        }
-        if (additions.size() > MAX_ENTRIES - entries.size()) {
-            throw new IllegalArgumentException("typed Map exceeds maximum key count");
-        }
 
-        // Stage every host allocation/hash-table expansion before policy hooks.
-        // Keys are already restricted to immutable String/Symbol values, so
-        // staging cannot dispatch arbitrary guest equality/hash callbacks.
-        LinkedHashMap<K, V> staged = new LinkedHashMap<>(entries);
-        for (Map.Entry<K, V> entry : prepared) {
-            staged.put(entry.getKey(), entry.getValue());
-        }
+            Set<K> additions = new HashSet<>();
+            long additionalKeyWireBytes = 0L;
+            for (Map.Entry<K, V> entry : prepared) {
+                K key = entry.getKey();
+                if (!entries.containsKey(key) && additions.add(key)) {
+                    additionalKeyWireBytes += wireKeyBytes(key);
+                    if (additionalKeyWireBytes
+                            > MAX_KEY_SET_WIRE_BYTES - storedKeyWireBytes) {
+                        throw new IllegalArgumentException(
+                                "typed Map exceeds aggregate key byte budget");
+                    }
+                }
+            }
+            if (additions.size() > MAX_ENTRIES - entries.size()) {
+                throw new IllegalArgumentException(
+                        "typed Map exceeds maximum key count");
+            }
 
-        // Only a structurally admissible, fully staged candidate may invoke
-        // compiler-owned policy validators. The live map remains unchanged if
-        // any policy check rejects the candidate.
-        for (Map.Entry<K, V> entry : prepared) {
-            runEntryValidator(entry.getKey(), entry.getValue());
-        }
+            // Stage every internal allocation/hash-table expansion before
+            // policy hooks. Keys are already restricted to immutable
+            // String/Symbol values, so staging cannot dispatch guest callbacks.
+            LinkedHashMap<K, V> staged = new LinkedHashMap<>(entries);
+            for (Map.Entry<K, V> entry : prepared) {
+                staged.put(entry.getKey(), entry.getValue());
+            }
 
-        entries = staged;
-        storedKeyWireBytes += additionalKeyWireBytes;
+            // Only a structurally admissible, fully staged candidate may invoke
+            // compiler-owned policy validators. The live map remains unchanged
+            // if any policy check rejects the candidate.
+            for (Map.Entry<K, V> entry : prepared) {
+                runEntryValidator(entry.getKey(), entry.getValue());
+            }
+
+            entries = staged;
+            storedKeyWireBytes += additionalKeyWireBytes;
         } finally {
             bulkMutationActive = false;
         }
