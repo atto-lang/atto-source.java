@@ -2386,6 +2386,15 @@ public final class OwnershipChecker {
             arg = new Ast.UnaryExpr("&", runtime.arguments().getFirst());
         }
         if (param.structural() && !param.type().isBorrow()) {
+            // A readonly structural parameter is a loan, never an ownership
+            // transfer. An explicit rt take here would move the owner even
+            // though the called parameter cannot retain that ownership.
+            if (arg instanceof Ast.RuntimeCallExpr runtime
+                    && runtime.operation().equals("take")) {
+                throw error(callable + " argument " + position
+                        + " cannot rt take into a readonly structural parameter; "
+                        + "pass the value directly or use rt copy");
+            }
             ValueInfo argument = checkExpr(arg, scope, false);
             if (containsMutexGuardType(argument.type)
                     || (mutexCriticalSectionDepth > 0 && argument.type.isBorrow())) {
