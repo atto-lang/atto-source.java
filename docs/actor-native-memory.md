@@ -76,6 +76,29 @@ generation and execution owner. Its existing restriction on untrusted transfers
 is preserved. TCP/FD movement still needs a corresponding checked handle path;
 this patch does not assert that those adapters are implemented.
 
+## Scoped native read leases and same-size payload reuse
+
+`ActorNativeArena.Region.leaseReadOnly(offset, length)` provides an owner-checked,
+bounds-checked native slice. While any read lease is live, the backing region
+rejects writes and explicit release. The lease has no exported memory address,
+cannot be used by a foreign actor, and becomes invalid on physical actor
+finalization; a closed lease cannot read again.
+
+`ActorShardColumns.leaseColumnReadOnly(field)` applies this to a physically
+contiguous SoA column without a copy. AoS, AoSoA and grouped SoAoS do not
+silently create a contiguous column pointer: callers must explicitly request a
+copy or a future strided borrow. Current freezing is coarse-grained for the
+entire region, not merely the selected column. Explicit shard close fails
+without refunding its reservation if an immutable lease remains outstanding.
+These host-side handles are still managed facades and do not establish
+cross-actor sharing, raw-pointer validity, or allocation-free guest execution.
+
+Arena-backed object fields now overwrite supported string/numeric-text/symbol
+payloads in place when the new payload has precisely the same UTF-16 length.
+This prevents repeated fixed-width text writes from steadily consuming native
+arena bytes. Payloads that grow or change size still use actor-lifetime slab
+allocation, so general lifetime-based reclaim/reuse remains unfinished.
+
 ## Remaining work before strict no-managed-allocation admission
 
 This patch does **not** make the Java evaluator allocation-free. It still uses
