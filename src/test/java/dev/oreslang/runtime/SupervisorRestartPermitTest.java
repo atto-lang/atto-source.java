@@ -69,19 +69,23 @@ final class SupervisorRestartPermitTest {
             assertEquals(failed.generation(), permit.failedGeneration());
             assertEquals(0, runtime.supervisorControlBacklog());
 
-            ActorRuntime.ActorRef<String> replacement = runtime.restartAfterFailure(
-                    permit,
-                    ActorRuntime.ActorKind.SHARED,
-                    IsolatePolicy.developer(),
-                    context -> (message, turn) -> { });
-            assertNotEquals(failed.id(), replacement.id());
+            ActorRuntime.ActorRef<String> replacement =
+                    runtime.restartAfterFailure(permit);
+            assertEquals(failed.id(), replacement.id());
             assertTrue(replacement.generation() > failed.generation());
+            replacement.getReady().get(3, TimeUnit.SECONDS);
+
+            assertThrows(
+                    ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> failed.send("stale-generation"));
+            failed.stop();
+            assertTrue(replacement.isAlive(),
+                    "old generation lifecycle operations must not stop replacement");
+            assertTrue(runtime.snapshot(failed).isEmpty());
+            assertTrue(runtime.snapshot(replacement).isPresent());
+
             assertThrows(IllegalStateException.class,
-                    () -> runtime.restartAfterFailure(
-                            permit,
-                            ActorRuntime.ActorKind.SHARED,
-                            IsolatePolicy.developer(),
-                            context -> (message, turn) -> { }));
+                    () -> runtime.restartAfterFailure(permit));
 
             replacement.stop();
             replacement.getDone().get(3, TimeUnit.SECONDS);

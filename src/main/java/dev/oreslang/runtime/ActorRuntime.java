@@ -257,10 +257,29 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public final class SupervisorRestartPermit {
         private final SupervisorControlEvent terminalEvent;
+        private final IsolatePolicy policy;
+        private final BehaviorFactory<?> behaviorFactory;
+        private final boolean trustedFactory;
+        private final SharedCodeImageStore.CodeImage codeImage;
+        private final ActorCodeExecutor codeExecutor;
+        private final String codeActorType;
+        private final ActorRef<?> parentRef;
+        private final ActorGroupId managedGroupId;
         private final AtomicBoolean consumed = new AtomicBoolean();
 
-        private SupervisorRestartPermit(SupervisorControlEvent terminalEvent) {
+        private SupervisorRestartPermit(
+                SupervisorControlEvent terminalEvent,
+                ActorCell<?> failedCell) {
             this.terminalEvent = Objects.requireNonNull(terminalEvent, "terminalEvent");
+            Objects.requireNonNull(failedCell, "failedCell");
+            this.policy = failedCell.policy;
+            this.behaviorFactory = failedCell.behaviorFactory;
+            this.trustedFactory = failedCell.trustedFactory;
+            this.codeImage = failedCell.codeImage;
+            this.codeExecutor = failedCell.codeExecutor;
+            this.codeActorType = failedCell.codeActorType;
+            this.parentRef = failedCell.parent == null ? null : failedCell.parent.ref;
+            this.managedGroupId = failedCell.managedByGroup.get();
         }
 
         public ActorId failedActorId() { return terminalEvent.actorId(); }
@@ -1296,7 +1315,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
 
             SupervisorRestartPermit permit =
-                    new SupervisorRestartPermit(pending.event);
+                    new SupervisorRestartPermit(pending.event, cell);
             if (!pendingSupervisorControls.remove(actorId, pending)) {
                 continue;
             }
@@ -1312,18 +1331,16 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Spawn one fresh incarnation under an exact, one-shot restart permit.
+     * Recreate the failed logical actor as a fresh generation. ActorId is
+     * stable; generation is the incarnation fence. The failed actor definition,
+     * kind, policy, code identity, structured parent and lifecycle ActorGroup
+     * ownership are all retained by the permit.
      */
+    @SuppressWarnings("unchecked")
     public <M> ActorRef<M> restartAfterFailure(
-            SupervisorRestartPermit permit,
-            ActorKind kind,
-            IsolatePolicy policy,
-            BehaviorFactory<M> behaviorFactory) {
+            SupervisorRestartPermit permit) {
         requireSupervisorContext("restart a failed actor incarnation");
         Objects.requireNonNull(permit, "permit");
-        Objects.requireNonNull(kind, "kind");
-        Objects.requireNonNull(policy, "policy");
-        Objects.requireNonNull(behaviorFactory, "behaviorFactory");
         if (!permit.ownedBy(this)) {
             throw new IllegalArgumentException(
                     "restart permit belongs to a different ActorRuntime");
@@ -1332,17 +1349,58 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException("supervisor restart permit already consumed");
         }
         try {
-            ActorRef<M> replacement = spawn(kind, policy, behaviorFactory);
-            if (replacement.generation() <= permit.failedGeneration()) {
+            ActorCell<?> parent = permit.parentRef == null
+                    ? null : exactActorCell(permit.parentRef);
+            if (permit.parentRef != null && parent == null) {
+                throw new IllegalStateException(
+                        "failed actor's structured parent incarnation is no longer live");
+            }
+
+            ActorRef<M> replacement = spawnInternal(
+                    permit.failedActorKind(),
+                    permit.policy,
+                    (BehaviorFactory<M>) permit.behaviorFactory,
+                    permit.trustedFactory,
+                    permit.codeImage,
+                    permit.codeExecutor,
+                    permit.codeActorType,
+                    permit.failedActorId(),
+                    parent,
+                    permit.managedGroupId);
+            if (!replacement.id().equals(permit.failedActorId())
+                    || replacement.generation() <= permit.failedGeneration()) {
                 try { replacement.cancel(); } catch (RuntimeException ignored) { }
                 throw new IllegalStateException(
-                        "replacement generation did not advance past failed incarnation");
+                        "replacement did not preserve logical identity with a newer generation");
             }
             return replacement;
         } catch (RuntimeException | Error failure) {
             permit.consumed.set(false);
             throw failure;
         }
+    }
+
+    /**
+     * Compatibility surface: a restart cannot silently change actor definition.
+     * Callers that retained the original factory may use this overload.
+     */
+    public <M> ActorRef<M> restartAfterFailure(
+            SupervisorRestartPermit permit,
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory) {
+        Objects.requireNonNull(permit, "permit");
+        Objects.requireNonNull(kind, "kind");
+        Objects.requireNonNull(policy, "policy");
+        Objects.requireNonNull(behaviorFactory, "behaviorFactory");
+        if (kind != permit.failedActorKind()
+                || !policy.equals(permit.policy)
+                || permit.codeExecutor != null
+                || permit.behaviorFactory != behaviorFactory) {
+            throw new IllegalArgumentException(
+                    "restart must preserve the failed actor's exact kind, policy and definition");
+        }
+        return restartAfterFailure(permit);
     }
 
     /**
@@ -5734,6 +5792,30 @@ public final class ActorRuntime implements AutoCloseable {
             SharedCodeImageStore.CodeImage codeImage,
             ActorCodeExecutor codeExecutor,
             String codeActorType) {
+        return spawnInternal(
+                kind,
+                policy,
+                behaviorFactory,
+                trustedFactory,
+                codeImage,
+                codeExecutor,
+                codeActorType,
+                null,
+                null,
+                null);
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory,
+            boolean trustedFactory,
+            SharedCodeImageStore.CodeImage codeImage,
+            ActorCodeExecutor codeExecutor,
+            String codeActorType,
+            ActorId fixedActorId,
+            ActorCell<?> fixedParent,
+            ActorGroupId fixedManagedGroup) {
         requireCallerRuntimeAffinity("spawn actors");
         requireNotActorGroupMailman("spawn actors");
         Objects.requireNonNull(kind);
@@ -5755,7 +5837,8 @@ public final class ActorRuntime implements AutoCloseable {
             Objects.requireNonNull(behaviorFactory, "behaviorFactory");
         }
 
-        ActorCell<?> parentForPolicy = currentActor.get();
+        ActorCell<?> parentForPolicy =
+                fixedParent != null ? fixedParent : currentActor.get();
         if (parentForPolicy != null) {
             parentForPolicy.policy.require(
                     IsolatePolicy.Capability.ACTOR_SPAWN,
@@ -5791,7 +5874,8 @@ public final class ActorRuntime implements AutoCloseable {
             requireStatelessActorFactory(behaviorFactory);
         }
 
-        ActorCell<?> parent = currentActor.get();
+        ActorCell<?> parent =
+                fixedParent != null ? fixedParent : currentActor.get();
         synchronized (runtimeLifecycleLock) {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
             reserveActorSlot();
@@ -5802,7 +5886,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // All potentially throwing incarnation construction belongs
                 // inside the same rollback boundary as actor registration.
                 // Otherwise generation exhaustion leaks the reserved actor slot.
-                ActorId id = ActorId.create();
+                ActorId id = fixedActorId == null
+                        ? ActorId.create() : fixedActorId;
                 long generation = nextActorGeneration.getAndIncrement();
                 if (generation <= 0) {
                     throw new IllegalStateException("actor generation sequence exhausted");
@@ -5832,7 +5917,8 @@ public final class ActorRuntime implements AutoCloseable {
                         // lifecycle group. The spawn lineage is not a new
                         // supervisor or a new group. Event-bus membership
                         // remains opt-in and is never inherited here.
-                        ActorGroupId inheritedId = parent.managedByGroup.get();
+                        ActorGroupId inheritedId = fixedManagedGroup != null
+                                ? fixedManagedGroup : parent.managedByGroup.get();
                         ActorGroup inherited = inheritedId == null
                                 ? null : actorGroups.get(inheritedId);
                         if (inheritedId != null && inherited == null) {
@@ -5854,19 +5940,54 @@ public final class ActorRuntime implements AutoCloseable {
                                                     + inherited.memberLimit);
                                 }
                                 cell.managedByGroup.set(inheritedId);
-                                inherited.managedWorkers.put(id, ref);
+                                if (inherited.managedWorkers.putIfAbsent(id, ref) != null) {
+                                    throw new IllegalStateException(
+                                            "ActorGroup already manages actor id " + id);
+                                }
                                 parent.children.add(cell);
                                 linkedToParent = true;
-                                actors.put(id, cell);
+                                if (actors.putIfAbsent(id, cell) != null) {
+                                    throw new IllegalStateException(
+                                            "actor id is already live: " + id);
+                                }
                             }
                         } else {
                             parent.children.add(cell);
                             linkedToParent = true;
-                            actors.put(id, cell);
+                            if (actors.putIfAbsent(id, cell) != null) {
+                                throw new IllegalStateException(
+                                        "actor id is already live: " + id);
+                            }
+                        }
+                    }
+                } else if (fixedManagedGroup != null) {
+                    ActorGroup inherited = actorGroups.get(fixedManagedGroup);
+                    if (inherited == null) {
+                        throw new IllegalStateException(
+                                "failed actor's lifecycle ActorGroup no longer exists");
+                    }
+                    synchronized (inherited.authorityLock) {
+                        inherited.requireOpen();
+                        if (inherited.managedWorkers.size() >= inherited.memberLimit) {
+                            throw new IllegalStateException(
+                                    "ActorGroup managed worker limit exceeded: maximum "
+                                            + inherited.memberLimit);
+                        }
+                        cell.managedByGroup.set(fixedManagedGroup);
+                        if (inherited.managedWorkers.putIfAbsent(id, ref) != null) {
+                            throw new IllegalStateException(
+                                    "ActorGroup already manages actor id " + id);
+                        }
+                        if (actors.putIfAbsent(id, cell) != null) {
+                            throw new IllegalStateException(
+                                    "actor id is already live: " + id);
                         }
                     }
                 } else {
-                    actors.put(id, cell);
+                    if (actors.putIfAbsent(id, cell) != null) {
+                        throw new IllegalStateException(
+                                "actor id is already live: " + id);
+                    }
                 }
                 actorCount.incrementAndGet();
                 return ref;
