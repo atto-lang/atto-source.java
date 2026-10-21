@@ -83,7 +83,13 @@ diagnostic renderer, not trusted filesystem paths or credential-free URLs.
 Absolute Unix/Windows paths are reduced to their final filename; URL
 authorities (including userinfo), query strings and fragments are not printed.
 Ordinary relative source/module names remain recognizable. All rendered
-labels are still bounded and control-character sanitized.
+labels are still bounded and control-character sanitized. For code-unit
+metadata, an input longer than **4,096 UTF-16 units** is rejected before
+any path or URL parsing: it renders exactly `<source-id-too-long>`.
+This guards the error-reporting path against expensive processing of giant
+credential-bearing source identifiers. A label that is at most 4,096 units
+can still be scanned, but its rendered code-unit component is capped at 160
+UTF-16 units (including any ellipsis).
 
 **Scope:** this redaction applies to source *marker labels*. It does not
 rewrite the original Throwable message/cause, arbitrary user-created
