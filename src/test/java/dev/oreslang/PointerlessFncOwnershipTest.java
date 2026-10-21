@@ -182,14 +182,14 @@ final class PointerlessFncOwnershipTest {
                 fnc update(borrow mut Array<int> values): void { values.add(7); return; }
                 fnc ok(): void {
                   val Array<int> values = new Array<int>();
-                  update(rt borrow mut values);
+                  update(rt mut borrow values);
                   return;
                 }
                 """)));
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(): void {
                   val Array<int> values = new Array<int>();
-                  val first = rt borrow mut values;
+                  val first = rt mut borrow values;
                   val second = rt borrow values;
                   return;
                 }
@@ -332,7 +332,7 @@ final class PointerlessFncOwnershipTest {
                 fnc overlap(structural Box a, borrow mut Box b): void { return; }
                 fnc bad(): void {
                   let mut Box box = new Box();
-                  overlap(box, rt borrow mut box);
+                  overlap(box, rt mut borrow box);
                   return;
                 }
                 """,
@@ -348,7 +348,7 @@ final class PointerlessFncOwnershipTest {
                 fnc overlap(borrow Box a, borrow mut Box b): void { return; }
                 fnc bad(): void {
                   let mut Box box = new Box();
-                  overlap(rt borrow box, rt borrow mut box);
+                  overlap(rt borrow box, rt mut borrow box);
                   return;
                 }
                 """)) {
@@ -365,7 +365,7 @@ final class PointerlessFncOwnershipTest {
 
     @Test
     void readOnlyStructuralParameterCannotConsumeOrAcquireExclusiveOwner() {
-        for (String argument : java.util.List.of("rt take box", "rt borrow mut box")) {
+        for (String argument : java.util.List.of("rt take box", "rt mut borrow box")) {
             IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse("""
                             define class Box as
