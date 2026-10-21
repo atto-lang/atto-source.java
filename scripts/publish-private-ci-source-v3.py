@@ -937,11 +937,13 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     if not isinstance(source_pr, int) or isinstance(source_pr, bool) or source_pr <= 0:
         raise Denied("invalid source PR number")
 
-    # Authorize before reading private source bytes.
-    legacy.require_preflight(repository, trusted_root)
+    # Authorize before reading private source bytes. This gate is data-only:
+    # do not execute checkout-controlled preflight scripts before the control
+    # plane is bound byte-for-byte to reviewed source main.
     approved_policy, approved_repository_id = legacy.checked_policy_approval(
         trusted_root, repository
     )
+    legacy.checked_repo(repository, approved_repository_id)
     authority_sha = authorized_main_sha(
         repository, approved_policy, approved_repository_id
     )
