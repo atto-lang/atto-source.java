@@ -610,4 +610,43 @@ final class DynamicPropertyAccessRuntimeTest {
                 "2\n4\n",
                 output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
     }
+    @Test
+    void builtinEntryDynamicReadUsesNominalRuntimeDomain() {
+        String source = """
+                fnc selector(): string {
+                    return "value";
+                }
+
+                fnc read(Entry<int, int> entry, string key): int {
+                    return entry[key];
+                }
+
+                pub fnc main(): void {
+                    const entry = Entry.of(20, 22);
+                    stdio.println(read(entry, selector()));
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(OresLanguage.ID, source, "dynamic-entry-read.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(output)
+                    .build()) {
+                context.eval(program);
+            }
+        });
+
+        assertEquals(
+                "22\n",
+                output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
+    }
+
 }
