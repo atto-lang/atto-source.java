@@ -6681,6 +6681,20 @@ public final class TypeChecker {
 
     private Type builtinCollectionMember(Type receiver, String member) {
         receiver = deref(receiver);
+        if (isTypedMapType(receiver)) {
+            Type key = typedMapKeyType(receiver);
+            Type value = typedMapValueType(receiver);
+            return switch (member) {
+                case "size" -> Primitive.INT;
+                case "has" -> new Function(List.of(key), Primitive.BOOL);
+                case "get" -> new Function(
+                        List.of(key),
+                        new Named("Option", List.of(value)));
+                // take/remove mutate or transfer ownership and need an
+                // owner-aware runtime call lowering before exposure.
+                default -> null;
+            };
+        }
         if (receiver instanceof ListType list) {
             return switch (member) {
                 case "size" -> Primitive.INT;
