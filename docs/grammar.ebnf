@@ -6,7 +6,7 @@ namespace_decl  = "namespace" IDENT ";" ;
 import_decl     = "import" import_spec "from" STRING_LITERAL ";" ;
 import_spec     = "*" "as" IDENT
                 | import_kind import_names ;
-import_kind     = "module" | "actor" | "class" | "fnc"
+import_kind     = "module" | "actor" | "class" | "fnc" | "kernel"
                 | "interface" | "contract" | "trait" | "struct"
                 | "type" | "types" ;
 import_names    = IDENT { "," IDENT } [ "as" IDENT ]
@@ -19,6 +19,7 @@ top_level_item  = annotated_module_decl
                 | actor_decl
                 | actor_callable_decl
                 | callable_decl
+                | kernel_decl
                 | class_decl
                 | interface_decl
                 | type_decl
@@ -31,6 +32,7 @@ module_member   = contract_decl
                 | actor_decl
                 | actor_callable_decl
                 | callable_decl
+                | kernel_decl
                 | class_decl
                 | interface_decl
                 | type_decl
@@ -44,6 +46,11 @@ callable_decl   = { annotation } visibility { callable_modifier } callable_kind 
                   ( "(" [ param_list ] ")" return_spec block
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
 callable_kind   = "fnc" | "routine" ;
+
+kernel_decl     = { annotation } "define" visibility "kernel" IDENT "as"
+                  { kernel_member } "end" ;
+kernel_member   = { annotation } visibility "fnc" callable_name [ generic_params ]
+                  "(" [ param_list ] ")" return_spec block ;
 
 actor_callable_decl
                 = { annotation } visibility { "async" | "nlex" | "structural" | "shared" } "actor" "fnc" callable_name [ generic_params ]
