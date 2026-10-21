@@ -12,6 +12,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Rust policy tests
-        run: cargo test --manifest-path tools/no-python-check/Cargo.toml --locked
+        run: cargo test --manifest-path tools/no-python-check/Cargo.toml
       - name: Reject Python files and execution
-        run: cargo run --manifest-path tools/no-python-check/Cargo.toml --locked -- .
+        run: cargo run --manifest-path tools/no-python-check/Cargo.toml -- .
