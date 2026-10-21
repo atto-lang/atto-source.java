@@ -95,6 +95,51 @@ final class SupervisorRestartPermitTest {
     }
 
     @Test
+    void restartPreservesLifecycleGroupOwnershipAcrossGeneration() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorRef<String> failed = runtime.spawnShared(
+                    () -> (message, context) -> {
+                        throw new IllegalStateException("managed-restart");
+                    });
+            group.manageWorker(failed);
+            failed.getReady().get(3, TimeUnit.SECONDS);
+            failed.send("fail");
+
+            assertThrows(
+                    ExecutionException.class,
+                    () -> failed.getDone().get(3, TimeUnit.SECONDS));
+
+            ActorRuntime.SupervisorRestartPermit permit = null;
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (permit == null && System.nanoTime() < deadline) {
+                permit = runtime.tryAcquireSupervisorRestartPermit(
+                                failed.id(), failed.generation())
+                        .orElse(null);
+                if (permit == null) Thread.sleep(1);
+            }
+            assertNotNull(permit);
+
+            ActorRuntime.ActorRef<String> replacement =
+                    runtime.restartAfterFailure(permit);
+            replacement.getReady().get(3, TimeUnit.SECONDS);
+
+            assertEquals(failed.id(), replacement.id());
+            assertTrue(replacement.generation() > failed.generation());
+            assertFalse(group.workers().contains(failed));
+            assertTrue(group.workers().contains(replacement),
+                    "lifecycle ownership must move to the replacement incarnation");
+
+            failed.stop();
+            assertTrue(replacement.isAlive(),
+                    "stale generation must not inherit group lifecycle authority");
+            replacement.stop();
+            replacement.getDone().get(3, TimeUnit.SECONDS);
+            group.close();
+        }
+    }
+
+    @Test
     void ordinaryAcknowledgementDoesNotFabricateRestartPermit() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorRef<String> failed = runtime.spawnShared(
