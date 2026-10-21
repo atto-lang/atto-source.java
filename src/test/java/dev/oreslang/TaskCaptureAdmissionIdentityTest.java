@@ -45,7 +45,8 @@ final class TaskCaptureAdmissionIdentityTest {
         Ast.copyCheckedMetadata(task, clone);
         assertThrows(
                 IllegalStateException.class,
-                () -> Ast.CheckedTaskCaptures.require(clone));
+                () -> Ast.CheckedTaskCaptures.require(
+                        checked, clone, epoch));
     }
 
     @Test
