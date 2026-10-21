@@ -20,10 +20,11 @@ while synchronized on the arena. Exhaustion increments a sticky dropped
 count; dropped>0 disqualifies complete evidence. Recorder buffers are wiped
 and detached during physical arena close.
 
-Recorder snapshots include a nonzero **host-process-local scope ID**. These IDs
-separate independent arena recorder instances within one JVM process, but are
-not globally unique; the test runner must bind them to a verified run/process
-identity. Direct text payload reads and writes now produce one logical byte-span
+Recorder snapshots include a nonzero **JVM class-loader-local scope ID**. These
+IDs separate instances of one loaded recorder class, but can repeat across
+independent class loaders, processes, GraalVM isolates, or hot reloads. The
+trusted runner must bind them to verified run/process/isolate/class-loader
+and actor-incarnation identities before comparing allocations. Direct text payload reads and writes now produce one logical byte-span
 record for nonempty strings, in addition to scalar slab accesses. The collector
 still lacks complete guest memory and scheduler coverage.
 
