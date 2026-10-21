@@ -74,6 +74,9 @@ public final class OwnershipChecker {
         this.checkedProgram =
                 java.util.Objects.requireNonNull(program, "ownership program");
         this.taskCheckEpoch = Ast.CheckedTaskCaptures.newCheckEpoch();
+        // Rechecking an existing immutable Program immediately invalidates
+        // older executable Task proofs. A failed check must fail closed.
+        Ast.CheckedTaskCaptures.beginCheck(checkedProgram, taskCheckEpoch);
         this.validatedShortAliases = new IdentityHashMap<>(validatedShortAliases);
         index(program);
     }
