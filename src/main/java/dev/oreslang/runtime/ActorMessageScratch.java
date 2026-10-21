@@ -31,6 +31,8 @@ public final class ActorMessageScratch {
     private int cursorByte;
     private long usedBytes;
     private long reservedBytes;
+    /** An outstanding checked borrow pins its logical message and native backing. */
+    private int readBorrows;
 
     ActorMessageScratch(ActorNativeArena arena, long actorLimit) {
         this.arena = Objects.requireNonNull(arena, "arena");
@@ -52,8 +54,16 @@ public final class ActorMessageScratch {
     synchronized void finishMessage() {
         arena.assertOwner();
         if (!active) throw new IllegalStateException("no active logical message scratch epoch");
-        // Views are revoked immediately. Physical pages are retained for bounded
-        // reuse and explicitly freed by ActorNativeArena after actor quiescence.
+        if (readBorrows != 0) {
+            throw new IllegalStateException("cannot complete a message with live scratch borrows");
+        }
+        // Epoch checks guard stale pointers; eagerly scrub used native spans so
+        // plaintext does not linger between messages. Backing is kept/charged.
+        for (int index = 0; index <= cursorBlock && index < blocks.size(); index++) {
+            ActorNativeArena.Region block = blocks.get(index);
+            int bytes = index == cursorBlock ? cursorByte : block.capacity();
+            block.clearRange(0, bytes);
+        }
         active = false;
         usedBytes = 0;
         cursorBlock = 0;
@@ -215,6 +225,79 @@ public final class ActorMessageScratch {
         public void writeDouble(int offset, double value) {
             synchronized (ActorMessageScratch.this) {
                 region.writeDouble(checkedIndex(offset, Double.BYTES), value);
+            }
+        }
+
+        /**
+         * Native-backed, epoch-checked read borrow. A live read borrow freezes
+         * its entire native block and prevents the logical message from ending.
+         * No host pointer, raw MemorySegment or ByteBuffer escapes to guest code.
+         */
+        public ReadBorrow borrowReadOnly() {
+            synchronized (ActorMessageScratch.this) {
+                checkedIndex(0, length);
+                ActorNativeArena.Region.ReadOnlyLease lease =
+                        region.leaseReadOnly(start, length);
+                try {
+                    readBorrows = Math.addExact(readBorrows, 1);
+                    return new ReadBorrow(issuedEpoch, lease);
+                } catch (RuntimeException | Error failure) {
+                    lease.close();
+                    throw failure;
+                }
+            }
+        }
+    }
+
+    /** An actor-scoped immutable borrow that pins the message until release. */
+    public final class ReadBorrow implements AutoCloseable {
+        private final long issuedEpoch;
+        private final ActorNativeArena.Region.ReadOnlyLease nativeLease;
+        private boolean released;
+
+        private ReadBorrow(long issuedEpoch,
+                ActorNativeArena.Region.ReadOnlyLease nativeLease) {
+            this.issuedEpoch = issuedEpoch;
+            this.nativeLease = nativeLease;
+        }
+
+        private void checkLive() {
+            arena.assertOwner();
+            if (released) throw new IllegalStateException("message scratch read borrow is closed");
+            if (!active || issuedEpoch != epoch) {
+                throw new IllegalStateException("stale message scratch read borrow");
+            }
+        }
+
+        public byte readByte(int relative) {
+            synchronized (ActorMessageScratch.this) {
+                checkLive();
+                return nativeLease.readByte(relative);
+            }
+        }
+
+        public long readLong(int relative) {
+            synchronized (ActorMessageScratch.this) {
+                checkLive();
+                return nativeLease.readLong(relative);
+            }
+        }
+
+        public double readDouble(int relative) {
+            synchronized (ActorMessageScratch.this) {
+                checkLive();
+                return nativeLease.readDouble(relative);
+            }
+        }
+
+        @Override public void close() {
+            synchronized (ActorMessageScratch.this) {
+                if (released) return;
+                // While the arena lives, Region.ReadOnlyLease.close checks
+                // ownership before releasing. A foreign actor cannot unpin.
+                nativeLease.close();
+                released = true;
+                readBorrows--;
             }
         }
     }
