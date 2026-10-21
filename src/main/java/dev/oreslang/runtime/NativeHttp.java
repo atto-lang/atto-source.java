@@ -435,7 +435,7 @@ public final class NativeHttp implements AutoCloseable {
     }
 
     /** A generation-bound capability; moving invalidates every alias of the sender wrapper. */
-    public final class Exchange implements ActorNativeArena.NativeValue {
+    public final class Exchange implements ActorNativeArena.NativeCapability {
         private final State state;
         private final Object owner;
         private final long generation;
